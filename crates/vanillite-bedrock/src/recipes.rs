@@ -101,6 +101,7 @@ fn write_tag_descriptor(out: &mut Vec<u8>, tag: &str) {
     io::write_varu32(out, 1);
     io::write_str(out, "item_tag");
     io::write_str(out, tag);
+    io::write_vari32(out, 32767); // aux: every descriptor but "name" carries one
     io::write_vari32(out, 1);
 }
 
@@ -553,6 +554,11 @@ mod tests {
             None,
             "the trim recipe takes the Java result"
         );
+        // Item tag descriptors carry an aux value before the count (#182: without it the
+        // client read the count -1 and rejected `crafting_data`).
+        let mut tag = b"\x18minecraft:trim_templates".to_vec();
+        tag.extend_from_slice(&[0xfe, 0xff, 0x03, 0x02]);
+        assert!(body.windows(tag.len()).any(|w| w == tag));
     }
 
     #[test]

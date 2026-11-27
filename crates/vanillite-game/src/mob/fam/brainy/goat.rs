@@ -701,7 +701,7 @@ fn prepare_ram_tick(
         .map(|p| BlockPos::containing(p.x, p.y, p.z));
     if now_target != Some(target_pos) {
         entity_event(t, 59);
-        t.mob().nav.stop();
+        t.nav().stop();
         choose_ram_position(t, target, candidate, reached_at);
     } else if t.block_pos() == start {
         entity_event(t, 58);
@@ -864,7 +864,7 @@ fn drop_horn(t: &mut Tick<'_, '_>) -> bool {
     let dz = f64::from(-0.2 + r.next_float() * 0.4);
     let pos = t.pos();
     let (uuid, y_rot, item_random) = crate::mob::new_item_entity_with_motion();
-    let stack = crate::mob::equipment::stack("minecraft:goat_horn");
+    let stack = create_horn(t.core().uuid(), state(t.mob_ref()).screaming);
     t.env.out.push(crate::survival::Effect::DropItem {
         random: item_random,
         uuid,
@@ -1095,4 +1095,48 @@ fn clear_transition(t: &Tick<'_, '_>, dims: crate::mob::Dimensions, a: Vec3, b: 
         }
     }
     true
+}
+
+/// `Goat.createHorn`: a goat horn with an instrument of `#regular_goat_horns` or
+/// `#screaming_goat_horns`, picked by a random seeded from the goat's UUID hash.
+fn create_horn(uuid: u128, screaming: bool) -> crate::item::ItemStack {
+    let mut stack = crate::mob::equipment::stack("minecraft:goat_horn");
+    let tag = if screaming {
+        "#minecraft:screaming_goat_horns"
+    } else {
+        "#minecraft:regular_goat_horns"
+    };
+    let Some(ids) =
+        crate::player::play::game_data().map(|d| d.holder_set("minecraft:instrument", tag))
+    else {
+        return stack;
+    };
+    if ids.is_empty() {
+        return stack;
+    }
+    // `UUID.hashCode`.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    let hash = {
+        let hilo = ((uuid >> 64) as u64) ^ (uuid as u64);
+        ((hilo >> 32) as i32) ^ (hilo as i32)
+    };
+    let mut random = vanillite_base::random::LegacyRandom::new(i64::from(hash));
+    let len = i32::try_from(ids.len()).unwrap_or(i32::MAX);
+    let pick = usize::try_from(vanillite_base::random::RandomSource::next_int_bounded(
+        &mut random,
+        len,
+    ))
+    .unwrap_or(0);
+    if let Some(&id) = ids.get(pick) {
+        let mut out = Vec::new();
+        vanillite_protocol::codec::write_varint(
+            &mut out,
+            i32::try_from(id).unwrap_or(-1).wrapping_add(1),
+        );
+        stack.patch_mut().set(
+            vanillite_protocol::components::ids::INSTRUMENT,
+            out.into_boxed_slice(),
+        );
+    }
+    stack
 }

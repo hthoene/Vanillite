@@ -12,6 +12,7 @@ pub mod id {
     pub const SERVER_TO_CLIENT_HANDSHAKE: u32 = 3;
     pub const CLIENT_TO_SERVER_HANDSHAKE: u32 = 4;
     pub const DISCONNECT: u32 = 5;
+    pub const PACKET_VIOLATION_WARNING: u32 = 156;
     pub const RESOURCE_PACKS_INFO: u32 = 6;
     pub const RESOURCE_PACK_STACK: u32 = 7;
     pub const RESOURCE_PACK_CLIENT_RESPONSE: u32 = 8;
@@ -91,7 +92,7 @@ pub mod id {
     pub const REMOVE_OBJECTIVE: u32 = 106;
     pub const SET_DISPLAY_OBJECTIVE: u32 = 107;
     pub const SET_SCORE: u32 = 108;
-    pub const OPEN_SIGN: u32 = 202;
+    pub const OPEN_SIGN: u32 = 303;
     pub const PLAYER_ENCHANT_OPTIONS: u32 = 146;
     pub const LECTERN_UPDATE: u32 = 125;
     pub const PLAYER_TOGGLE_CRAFTER_SLOT_REQUEST: u32 = 306;
@@ -280,16 +281,17 @@ pub mod meta {
     pub const FLAG_CHESTED: u32 = 36;
 }
 
-/// Entity metadata, written in key order.
+/// Entity metadata, written in key order (some client features need sorted keys).
 #[derive(Debug, Default)]
 pub struct Metadata {
-    count: u32,
+    /// Key and start in `data` of each entry, in call order.
+    entries: Vec<(u32, usize)>,
     data: Vec<u8>,
 }
 
 impl Metadata {
     fn entry(&mut self, key: u32, kind: u8) {
-        self.count = self.count.saturating_add(1);
+        self.entries.push((key, self.data.len()));
         io::write_varu32(&mut self.data, key);
         io::write_varu32(&mut self.data, u32::from(kind));
         self.data.push(kind);
@@ -332,8 +334,23 @@ impl Metadata {
 
     /// Writes the entries.
     pub fn write(&self, out: &mut Vec<u8>) {
-        io::write_varu32(out, self.count);
-        out.extend_from_slice(&self.data);
+        io::write_len(out, self.entries.len());
+        let mut order: Vec<(u32, usize, usize)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, &(key, start))| {
+                let end = self
+                    .entries
+                    .get(i.saturating_add(1))
+                    .map_or(self.data.len(), |e| e.1);
+                (key, start, end)
+            })
+            .collect();
+        order.sort_by_key(|e| e.0);
+        for (_, start, end) in order {
+            out.extend_from_slice(self.data.get(start..end).unwrap_or_default());
+        }
     }
 }
 
@@ -657,17 +674,29 @@ pub fn add_player(p: &AddPlayer<'_>, v: &Version) -> Vec<u8> {
         .byte(meta::ALWAYS_SHOW_NAME, 1)
         .write(&mut out);
     out.extend_from_slice(&[0, 0]); // no entity properties
-    // Ability data: unique id, permissions, no layers.
+    // Ability data: unique id, permissions and the base layer the client expects.
     out.extend_from_slice(&p.entity_id.to_le_bytes());
     out.push(1);
     out.push(0);
-    io::write_varu32(&mut out, 0);
+    io::write_varu32(&mut out, 1);
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&ability::ALL.to_le_bytes());
+    let values = ability::BUILD
+        | ability::MINE
+        | ability::DOORS
+        | ability::CONTAINERS
+        | ability::ATTACK_PLAYERS
+        | ability::ATTACK_MOBS;
+    out.extend_from_slice(&values.to_le_bytes());
+    for speed in [0.05f32, 1.0, 0.1] {
+        out.extend_from_slice(&speed.to_le_bytes());
+    }
     io::write_varu32(&mut out, 0); // entity links
     if !v.before_26_60() {
         out.push(0); // not a passenger of a block
     }
     io::write_str(&mut out, ""); // device id
-    out.extend_from_slice(&0i32.to_le_bytes()); // build platform
+    out.extend_from_slice(&BUILD_PLATFORM_UNKNOWN.to_le_bytes());
     out
 }
 
@@ -709,6 +738,10 @@ fn write_empty_item(out: &mut Vec<u8>) {
     out.extend_from_slice(&[0; 8]);
 }
 
+/// Build platform (device OS) of players the server does not know the device of. The client
+/// rejects 0 as an invalid enum value: the known platforms start at 1 (Android).
+const BUILD_PLATFORM_UNKNOWN: i32 = -1;
+
 /// One `player_list` entry to add.
 #[derive(Debug)]
 pub struct ListEntry<'a> {
@@ -734,7 +767,7 @@ pub fn player_list_add(entries: &[ListEntry<'_>], v: &Version) -> Vec<u8> {
             io::write_str(&mut out, ""); // PlayFab id
         }
         io::write_str(&mut out, ""); // platform chat id
-        out.extend_from_slice(&0i32.to_le_bytes()); // build platform
+        out.extend_from_slice(&BUILD_PLATFORM_UNKNOWN.to_le_bytes());
         e.skin.write(&mut out, v);
         out.extend_from_slice(&[0, 0, 0]); // teacher, host, sub-client
         out.extend_from_slice(&0i32.to_be_bytes()); // player colour
@@ -2075,7 +2108,7 @@ pub struct MapUpdate<'a> {
     pub locked: bool,
     pub scale: u8,
     pub decorations: Option<&'a [MapDecoration]>,
-    /// Start x, start y, width, height and the ABGR pixels of the rectangle (row by row).
+    /// Start x, start y, width, height and the ARGB pixels of the rectangle (row by row).
     pub texture: Option<(u8, u8, u8, u8, &'a [u32])>,
 }
 
@@ -2205,5 +2238,94 @@ mod tests {
                 StackAction::CraftLoom { pattern: *b"cre\0" },
             ]
         );
+    }
+
+    /// Reference layout of one added `player_list` entry for protocol 2225 (1.26.60), field by
+    /// field as gophertunnel's `PlayerListEntry`/`Skin` (v1.26.60) encode it.
+    fn reference_entry(e: &ListEntry<'_>) -> Vec<u8> {
+        fn var(out: &mut Vec<u8>, mut v: u64) {
+            while v >= 0x80 {
+                out.push(u8::try_from(v & 0x7f).unwrap_or(0) | 0x80);
+                v >>= 7;
+            }
+            out.push(u8::try_from(v).unwrap_or(0));
+        }
+        fn bytes(out: &mut Vec<u8>, b: &[u8]) {
+            var(out, u64::try_from(b.len()).unwrap_or(0));
+            out.extend_from_slice(b);
+        }
+        let s = e.skin;
+        let mut out = vec![1, 0]; // entry variant: add; legacy action byte: add
+        let [hi, lo] =
+            [e.uuid >> 64, e.uuid & u128::from(u64::MAX)].map(|h| u64::try_from(h).unwrap_or(0));
+        out.extend_from_slice(&hi.to_le_bytes());
+        out.extend_from_slice(&lo.to_le_bytes());
+        let id = u64::from_ne_bytes(((e.entity_id << 1) ^ (e.entity_id >> 63)).to_ne_bytes());
+        var(&mut out, id);
+        bytes(&mut out, e.name.as_bytes());
+        bytes(&mut out, e.xuid.as_bytes());
+        bytes(&mut out, b""); // PlayFab id
+        bytes(&mut out, b""); // platform chat id
+        out.extend_from_slice(&(-1i32).to_le_bytes()); // build platform: unknown
+        bytes(&mut out, s.id.as_bytes());
+        bytes(&mut out, &s.resource_patch);
+        out.extend_from_slice(&s.width.to_le_bytes());
+        out.extend_from_slice(&s.height.to_le_bytes());
+        bytes(&mut out, &s.data);
+        var(&mut out, 0); // animations
+        out.extend_from_slice(&[0; 8]); // cape width, height
+        bytes(&mut out, b""); // cape data
+        bytes(&mut out, &s.geometry);
+        bytes(&mut out, &s.geometry_version);
+        bytes(&mut out, b""); // animation data
+        bytes(&mut out, b""); // cape id
+        bytes(&mut out, s.id.as_bytes()); // full id
+        out.push(if s.slim { 0 } else { 1 }); // arm size: slim 0, wide 1
+        out.extend_from_slice(&[0; 4]); // skin colour (BE ARGB)
+        var(&mut out, 0); // persona pieces
+        var(&mut out, 0); // piece tint colours
+        out.extend_from_slice(&[0; 5]); // premium, persona, cape on classic, primary, override
+        bytes(&mut out, b"True"); // trusted
+        bytes(&mut out, b""); // profile hash
+        out.extend_from_slice(&[0, 0, 0]); // teacher, host, sub-client
+        out.extend_from_slice(&[0; 4]); // player colour (BE ARGB)
+        out
+    }
+
+    #[test]
+    fn player_list_add_matches_v2225_layout() {
+        let java = crate::skin::Skin::plain();
+        let bedrock = crate::skin::Skin {
+            id: "c18e65aa-7b21-4637-9b63-8ad63622ef01_Alex".into(),
+            resource_patch: br#"{"geometry":{"default":"geometry.humanoid.customSlim"}}"#.to_vec(),
+            width: 128,
+            height: 128,
+            data: vec![0x7f; 128 * 128 * 4],
+            geometry: b"{}".to_vec(),
+            geometry_version: b"1.26.60".to_vec(),
+            slim: true,
+        };
+        let entries = [
+            ListEntry {
+                uuid: 0x0011_2233_4455_6677_8899_aabb_ccdd_eeff,
+                entity_id: 7,
+                name: "Steve",
+                xuid: "",
+                skin: &java,
+            },
+            ListEntry {
+                uuid: 0xfedc_ba98_7654_3210_0123_4567_89ab_cdef,
+                entity_id: -3,
+                name: ".Bedrock",
+                xuid: "2535400000000001",
+                skin: &bedrock,
+            },
+        ];
+        let v = Version::of(2225).unwrap_or_else(Version::latest);
+        let mut expected = vec![2];
+        for e in &entries {
+            expected.extend(reference_entry(e));
+        }
+        assert_eq!(player_list_add(&entries, v), expected);
     }
 }

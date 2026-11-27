@@ -130,6 +130,7 @@ impl Rule {
     pub const IMMEDIATE_RESPAWN: Rule = Rule(17);
     pub const KEEP_INVENTORY: Rule = Rule(18);
     pub const LIMITED_CRAFTING: Rule = Rule(20);
+    pub const LOCATOR_BAR: Rule = Rule(21);
     pub const BLOCK_EXPLOSION_DROP_DECAY: Rule = Rule(4);
     pub const MAX_COMMAND_SEQUENCE_LENGTH: Rule = Rule(25);
     pub const MAX_ENTITY_CRAMMING: Rule = Rule(26);

@@ -234,13 +234,15 @@ pub fn tick(t: &mut Tick<'_, '_>, s: &mut UseSpell) {
             }
             _ => {
                 if let Some(target) = t.mob_ref().target {
-                    effects::living::add_to_entity(
+                    let me = t.id;
+                    effects::living::add_to_entity_from(
                         t.level,
                         t.ents,
                         t.env,
                         t.cx,
                         target,
                         EffectInstance::new(MobEffect::BLINDNESS, 400, 0),
+                        Some(me),
                     );
                 }
             }

@@ -621,7 +621,9 @@ impl Conn {
                 self.peer.player = profile.id.0;
                 self.out.control(Out::Player(profile.id.0));
                 let client_info = self.configure().await?;
-                self.play(profile, client_info, overridden).await
+                let transferred = hs.intent == Intent::Transfer;
+                self.play(profile, client_info, overridden, transferred)
+                    .await
             }
         }
     }
@@ -995,6 +997,7 @@ impl Conn {
         profile: GameProfile,
         client_info: ClientInfo,
         login_overridden: bool,
+        transferred: bool,
     ) -> Result<()> {
         self.enter(State::Play, None);
         self.joined = Some((Instant::now(), profile.name.clone()));
@@ -1011,6 +1014,7 @@ impl Conn {
             latency: self.keepalive.latency.clone(),
             injector: injected.injector(),
             login_overridden,
+            transferred,
         };
         self.injected = Some(injected);
         if self.shared.joins.try_send(joined).is_err() {

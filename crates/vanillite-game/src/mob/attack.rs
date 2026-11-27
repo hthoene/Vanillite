@@ -31,6 +31,17 @@ pub fn combat_data() -> std::sync::Arc<crate::player::play::GameData> {
         .unwrap_or_else(|| std::sync::Arc::clone(EMPTY.get_or_init(Default::default)))
 }
 
+/// The wire id of a game mode (`GameType.getId`).
+fn game_mode_id(mode: vanillite_config::GameMode) -> i32 {
+    use vanillite_config::GameMode;
+    match mode {
+        GameMode::Survival => 0,
+        GameMode::Creative => 1,
+        GameMode::Adventure => 2,
+        GameMode::Spectator => 3,
+    }
+}
+
 /// The facts predicates test of a living entity.
 pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
     let e = ents.store.get(id)?;
@@ -109,6 +120,14 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
             .mob(id)
             .filter(|m| m.kind == super::Kind::Mooshroom)
             .and_then(|m| u8::try_from(crate::mob::fam::wildlife::st(m).variant).ok()),
+        fall_flying: flags.contains(EntityFlags::FALL_FLYING),
+        in_water: ents.player(id).map_or_else(
+            || ents.mob(id).is_some_and(|m| m.fluids.in_water()),
+            |p| p.survival.fluids.in_water(),
+        ),
+        player: ents
+            .player(id)
+            .map(|p| (game_mode_id(p.game_mode), p.survival.food.food_level)),
     })
 }
 
@@ -145,7 +164,8 @@ pub fn damage_context<'a>(
     }
 }
 
-/// A player's attribute value from the base and the modifiers of its equipment.
+/// A player's attribute value from the base, the modifiers of its equipment and those of
+/// its status effects (Strength, Weakness, Haste, Mining Fatigue, Luck, ...).
 pub fn player_attribute(
     ents: &Entities,
     player: EntityId,
@@ -160,6 +180,16 @@ pub fn player_attribute(
     let mut mods = Vec::new();
     for slot in crate::player::encode::EQUIPMENT_SLOTS {
         item::attribute_modifiers(p.inventory.equipment(slot), slot, name, &mut mods);
+    }
+    let effects = &p.survival.effects.modifiers;
+    if !effects.is_empty()
+        && let Some(id) = item::attribute_id(name)
+        && let Ok(id) = u8::try_from(id)
+    {
+        for m in effects.of(crate::effect::attribute::Attribute(id)) {
+            #[allow(clippy::as_conversions)]
+            mods.push((m.operation as u8, m.amount));
+        }
     }
     item::attribute_value(base, &mods, min, max)
 }
@@ -206,6 +236,157 @@ fn is_alive(ents: &Entities, id: EntityId) -> bool {
             .is_some_and(|p| !p.survival.is_dead_or_dying())
 }
 
+/// Whether the attacked entity is a `LivingEntity` (a mob, armor stand or player). The
+/// dragon's body is hit through its parts, which are not.
+pub(crate) fn is_living_target(ents: &Entities, id: EntityId) -> bool {
+    ents.player(id).is_some()
+        || ents
+            .mob(id)
+            .is_some_and(|m| m.kind != super::Kind::EnderDragon)
+}
+
+/// `isAttackable`: not items, experience orbs, arrows and tridents, falling blocks, eyes of
+/// ender or firework rockets.
+pub(crate) fn is_attackable(ents: &Entities, id: EntityId) -> bool {
+    use vanillite_data::entity::ids;
+    ents.store.get(id).is_some_and(|e| {
+        ![
+            ids::ITEM,
+            ids::EXPERIENCE_ORB,
+            ids::ARROW,
+            ids::SPECTRAL_ARROW,
+            ids::TRIDENT,
+            ids::FALLING_BLOCK,
+            ids::EYE_OF_ENDER,
+            ids::FIREWORK_ROCKET,
+        ]
+        .contains(&e.kind())
+    })
+}
+
+/// `Entity.getTeam`: the scoreboard team of a player (its name holds the score) or of another
+/// entity (its UUID).
+pub fn team_of(
+    ents: &Entities,
+    env: &Env<'_>,
+    id: EntityId,
+) -> Option<crate::scoreboard::TeamFacts> {
+    let holder = match ents.player(id) {
+        Some(p) => p.profile.name.clone(),
+        None => vanillite_protocol::types::Uuid(ents.store.get(id)?.uuid()).to_string(),
+    };
+    (env.entity_team)(&holder)
+}
+
+/// `Entity.considersEntityAsAlly(other)`: the same team; a tamed wolf, cat, parrot or
+/// nautilus stands by its owner and the owner's allies (`TamableAnimal`), an allay by the
+/// player it likes.
+fn considers_ally(ents: &Entities, env: &Env<'_>, id: EntityId, other: EntityId) -> bool {
+    use super::Kind;
+    if let Some(m) = ents.mob(id) {
+        let tamable = matches!(
+            m.kind,
+            Kind::Wolf | Kind::Cat | Kind::Parrot | Kind::Nautilus | Kind::ZombieNautilus
+        );
+        if tamable
+            && m.tame
+            && let Some(owner) = super::tame::owner_of(ents, m)
+        {
+            return other == owner || considers_ally(ents, env, owner, other);
+        }
+        if m.kind == Kind::Allay
+            && ents.player(other).is_some()
+            && super::fam::mount::ai::liked_player(m)
+                .is_some_and(|u| ents.store.get(other).is_some_and(|e| e.uuid() == u))
+        {
+            return true;
+        }
+    }
+    team_of(ents, env, id)
+        .is_some_and(|t| team_of(ents, env, other).is_some_and(|o| o.name == t.name))
+}
+
+/// `Entity.isAlliedTo(other)`.
+pub fn is_allied(ents: &Entities, env: &Env<'_>, a: EntityId, b: EntityId) -> bool {
+    a == b || considers_ally(ents, env, a, b) || considers_ally(ents, env, b, a)
+}
+
+/// `ServerPlayer.canHarmPlayer(target)`: the pvp rule, then `doTeamsAllowDamage` (members of
+/// one team hurt each other only with friendly fire).
+pub fn can_harm_player(
+    ents: &Entities,
+    env: &Env<'_>,
+    attacker: EntityId,
+    target: EntityId,
+) -> bool {
+    if !env.rules.bool(crate::survival::rules::Rule::PVP) {
+        return false;
+    }
+    let Some(team) = team_of(ents, env, attacker) else {
+        return true;
+    };
+    team.friendly_fire || team_of(ents, env, target).is_none_or(|t| t.name != team.name)
+}
+
+/// `Projectile.deflect(ProjectileDeflection.AIM_DEFLECT, by, owner, true, 1.0)` of a
+/// `#redirectable_projectile` (ghast fireballs, wind charges): it flies on along the look of
+/// `by` (keeps its motion without one), belongs to `owner` and accelerates again
+/// (`onDeflection(true)`); a wind charge refuses while its `noDeflectTicks` run. `false` for
+/// other entities.
+pub(crate) fn aim_deflect(
+    ents: &mut Entities,
+    target: EntityId,
+    by: Option<EntityId>,
+    owner: Option<EntityId>,
+) -> bool {
+    use super::missile::MissileKind;
+    let Some(d) = ents.missile(target) else {
+        return false;
+    };
+    let redirectable = matches!(
+        d.kind,
+        MissileKind::Fireball | MissileKind::WindCharge | MissileKind::BreezeWindCharge
+    );
+    if !redirectable || d.removed || super::fam::mount::wind::refuses_deflection(d) {
+        return false;
+    }
+    let look = by.and_then(|b| ents.store.get(b)).map(|e| {
+        let r = e.rot();
+        super::view_vector(r.x_rot, r.y_rot)
+    });
+    let owner_uuid = owner.and_then(|o| ents.store.get(o)).map(|e| e.uuid());
+    if let Some(d) = ents.missile_mut(target) {
+        d.owner = owner;
+        d.owner_uuid = owner_uuid;
+        d.acceleration = 0.1;
+    }
+    if let Some(look) = look
+        && let Some(mut e) = ents.store.get_mut(target)
+    {
+        e.set_velocity(look);
+        // `needsSync`.
+        e.set_flags(EntityFlags::HAS_IMPULSE, true);
+    }
+    true
+}
+
+/// `Player.deflectProjectile`: a player's hit sends a `#redirectable_projectile` off along the
+/// player's look as its new owner ([`aim_deflect`]), with the `attack.nodamage` sound.
+pub(crate) fn deflect_projectile(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    target: EntityId,
+) -> bool {
+    if !aim_deflect(ents, target, Some(player), Some(player)) {
+        return false;
+    }
+    if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
+        player_sound(env, pos, "minecraft:entity.player.attack.nodamage");
+    }
+    true
+}
+
 /// `Player.attack(entity)`.
 pub fn player_attack(
     level: &Level,
@@ -215,7 +396,8 @@ pub fn player_attack(
     attacker: EntityId,
     target: EntityId,
 ) {
-    if attacker == target || !is_alive(ents, target) {
+    // `cannotAttack`.
+    if attacker == target || !is_attackable(ents, target) {
         return;
     }
     let Some(e) = ents.store.get(attacker) else {
@@ -224,7 +406,6 @@ pub fn player_attack(
     let ppos = e.pos();
     let flags = e.flags();
     let y_rot = e.rot().y_rot;
-    let known_movement = e.pos() - e.old_pos();
     let Some(p) = ents.player(attacker) else {
         return;
     };
@@ -276,9 +457,129 @@ pub fn player_attack(
     if let Some(p) = ents.player_mut(attacker) {
         p.survival.attack_ticker = 0;
     }
-    if base_damage <= 0.0 && magic_boost <= 0.0 {
+    if deflect_projectile(ents, env, attacker, target) {
         return;
     }
+    if base_damage > 0.0 || magic_boost > 0.0 {
+        let hit = Hit {
+            weapon: &weapon,
+            source,
+            base_damage,
+            magic_boost,
+            scale,
+            smash,
+            fall_distance,
+            in_water,
+            climbing,
+            blind,
+            ppos,
+            flags,
+            y_rot,
+        };
+        attack_hit(level, ents, env, cx, attacker, target, hit);
+    }
+    post_piercing_attack(level, ents, env, cx, attacker);
+}
+
+/// `LivingEntity.postPiercingAttack` of a player after a melee attack or a jab
+/// (`EnchantmentHelper.doPostPiercingAttackEffects`): the `post_piercing_attack` effects of
+/// its weapon in the main hand (Lunge) on the player itself.
+pub fn post_piercing_attack(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    user: EntityId,
+) {
+    let Some(p) = ents.player(user) else {
+        return;
+    };
+    // `getWeaponItem`.
+    let weapon = p
+        .survival
+        .spin_attack
+        .as_ref()
+        .map_or_else(|| p.inventory.selected_item().clone(), |s| s.item.clone());
+    if weapon.is_empty() {
+        return;
+    }
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
+    let effects = {
+        let ecx = EnchantContext {
+            types: env.types,
+            tags,
+            this: facts(ents, user),
+            attacker: None,
+            direct_attacker: None,
+            attacking_player: None,
+            source: None,
+            raining: false,
+            thundering: false,
+            location: None,
+        };
+        enchants.post_piercing_attack_effects(&weapon, &ecx, env.random)
+    };
+    for (effect, ench_level) in effects {
+        run_entity_effect(
+            level,
+            ents,
+            env,
+            cx,
+            &effect,
+            ench_level,
+            user,
+            Some((user, EquipmentSlot::MainHand)),
+        );
+    }
+}
+
+/// The attack values `Player.attack` computed before the hit.
+struct Hit<'a> {
+    weapon: &'a ItemStack,
+    source: DamageSource,
+    base_damage: f32,
+    magic_boost: f32,
+    scale: f32,
+    smash: bool,
+    fall_distance: f64,
+    in_water: bool,
+    climbing: bool,
+    blind: bool,
+    ppos: Vec3,
+    flags: EntityFlags,
+    y_rot: f32,
+}
+
+/// The hit of `Player.attack` with damage to deal: knockback, critical and sweep attacks,
+/// the hurt and what follows it.
+fn attack_hit(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    attacker: EntityId,
+    target: EntityId,
+    hit: Hit<'_>,
+) {
+    let Hit {
+        weapon,
+        source,
+        mut base_damage,
+        magic_boost,
+        scale,
+        smash,
+        fall_distance,
+        in_water,
+        climbing,
+        blind,
+        ppos,
+        flags,
+        y_rot,
+    } = hit;
+    let combat = combat_data();
+    let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
+    let living = is_living_target(ents, target);
     let full = scale > 0.9;
     let sprinting = flags.contains(EntityFlags::SPRINTING);
     let on_ground = flags.contains(EntityFlags::ON_GROUND);
@@ -286,9 +587,9 @@ pub fn player_attack(
     if knockback_attack {
         player_sound(env, ppos, "minecraft:entity.player.attack.knockback");
     }
-    base_damage += mace_bonus(ents, env, attacker, target, &weapon, &source, fall_distance);
+    base_damage += mace_bonus(ents, env, attacker, target, weapon, &source, fall_distance);
     let passenger = ents.vehicle_of(attacker).is_some();
-    // `canCriticalAttack`: the target is always living here (`is_alive`).
+    // `canCriticalAttack`: only living entities.
     let crit = full
         && fall_distance > 0.0
         && !on_ground
@@ -296,16 +597,22 @@ pub fn player_attack(
         && !in_water
         && !blind
         && !passenger
-        && !sprinting;
+        && !sprinting
+        && living;
     if crit {
         base_damage *= 1.5;
     }
     let total = base_damage + magic_boost;
-    // `isSweepAttack`: a full strength sword hit on the ground while not moving fast.
+    // `isSweepAttack`: a full strength sword hit on the ground while moving slower than 2.5
+    // times the speed (`getSpeed`: the movement speed attribute; the sprint modifier never
+    // counts, a sprinting full strength hit is a knockback attack).
     let sweep = full && !crit && !knockback_attack && on_ground && {
-        let speed = if sprinting { 0.13 } else { 0.1 };
-        let max = speed * 2.5;
-        known_movement.x * known_movement.x + known_movement.z * known_movement.z < max * max
+        let known = crate::spear::known_movement(ents, attacker);
+        #[allow(clippy::cast_possible_truncation)]
+        let speed =
+            player_attribute(ents, attacker, "minecraft:movement_speed", 0.1, 0.0, 1024.0) as f32;
+        let max = f64::from(speed) * 2.5;
+        known.x * known.x + known.z * known.z < max * max
             && crate::player::play::game_data()
                 .is_some_and(|d| d.item_in_tag(weapon.item, "minecraft:swords"))
     };
@@ -321,14 +628,9 @@ pub fn player_attack(
     #[allow(clippy::cast_possible_truncation)]
     let kb = {
         let ecx = damage_context(ents, env.types, tags, target, &source);
-        enchants.modify_knockback(&weapon, &ecx, env.random, kb_base as f32) / 2.0
+        enchants.modify_knockback(weapon, &ecx, env.random, kb_base as f32) / 2.0
     };
     let kb = kb + if knockback_attack { 0.5 } else { 0.0 };
-    // Dragon parts are not living entities: no knockback from the attack itself.
-    let part = ents
-        .mob(target)
-        .is_some_and(|m| m.kind == super::Kind::EnderDragon);
-    let kb = if part { 0.0 } else { kb };
     let by = Some((attacker, total, true));
     extra_knockback(ents, env, attacker, target, kb, y_rot, old_movement, by);
     if sweep {
@@ -363,22 +665,43 @@ pub fn player_attack(
     if magic_boost > 0.0 {
         animate(env, target, network_id, MAGIC_CRITICAL_HIT);
     }
+    // `setLastHurtMob`: no mob for entities that are not living.
     if let Some(p) = ents.player_mut(attacker) {
-        p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
+        p.survival.last_hurt_mob = living.then_some((target, p.survival.tick_count));
     }
-    // `itemAttackInteraction`: `hurtEnemy`, the post attack effects, `postHurtEnemy`.
-    if smash {
+    // `itemAttackInteraction`: `hurtEnemy`, the post attack effects, `postHurtEnemy`; the item
+    // only hurts living entities (the dragon through its parts).
+    let enemy = ents.mob(target).is_some() || ents.player(target).is_some();
+    if enemy && smash {
         mace_hurt_enemy(ents, env, cx, attacker, target, fall_distance);
     }
-    weapon_used_stat(ents, attacker, &weapon, target);
-    post_attack(level, ents, env, cx, target, &source, Some(&weapon));
-    hurt_weapon(ents, env, attacker, &weapon);
-    if smash && let Some(p) = ents.player_mut(attacker) {
-        // `MaceItem.postHurtEnemy`: `resetFallDistance`.
-        p.survival.fall_distance = 0.0;
+    weapon_used_stat(ents, attacker, weapon, target);
+    post_attack(level, ents, env, cx, target, &source, Some(weapon));
+    if enemy {
+        hurt_weapon(ents, env, attacker, weapon);
+        if smash && let Some(p) = ents.player_mut(attacker) {
+            // `MaceItem.postHurtEnemy`: `resetFallDistance`.
+            p.survival.fall_distance = 0.0;
+        }
     }
-    // `damageStatsAndHearts`: `DAMAGE_DEALT` of the health the living target lost,
-    // then dark hearts for more than one heart of damage.
+    damage_stats_and_hearts(ents, cx, attacker, target, old_health);
+    if let Some(p) = ents.player_mut(attacker) {
+        player::cause_food_exhaustion(p, 0.1);
+    }
+}
+
+/// `Player.damageStatsAndHearts`: `DAMAGE_DEALT` of the health the living target lost, then
+/// dark hearts for more than one heart of damage.
+pub(crate) fn damage_stats_and_hearts(
+    ents: &mut Entities,
+    cx: &mut MobContext,
+    attacker: EntityId,
+    target: EntityId,
+    old_health: Option<f32>,
+) {
+    if !is_living_target(ents, target) {
+        return;
+    }
     if let (Some(old), Some(now)) = (old_health, living_health(ents, target)) {
         let damage = old - now;
         if let Some(p) = ents.player_mut(attacker) {
@@ -401,25 +724,22 @@ pub fn player_attack(
             );
         }
     }
-    if let Some(p) = ents.player_mut(attacker) {
-        player::cause_food_exhaustion(p, 0.1);
-    }
 }
 
 /// `LivingEntity.getHealth` of a mob or player.
-fn living_health(ents: &Entities, id: EntityId) -> Option<f32> {
+pub(crate) fn living_health(ents: &Entities, id: EntityId) -> Option<f32> {
     ents.mob(id)
         .map(|m| m.health)
         .or_else(|| ents.player(id).map(|p| p.survival.health))
 }
 
-/// `ClientboundAnimatePacket.CRITICAL_HIT`.
+/// `ClientboundAnimatePacket.CRITICAL_HIT` (`ServerPlayer.crit`).
 const CRITICAL_HIT: u8 = 1;
-/// `ClientboundAnimatePacket.MAGIC_CRITICAL_HIT`.
-const MAGIC_CRITICAL_HIT: u8 = 2;
+/// `ClientboundAnimatePacket.MAGIC_CRITICAL_HIT` (`ServerPlayer.magicCrit`).
+pub(crate) const MAGIC_CRITICAL_HIT: u8 = 2;
 
 /// `sendToTrackingPlayersAndSelf(new ClientboundAnimatePacket(entity, action))`.
-fn animate(env: &mut Env<'_>, target: EntityId, network_id: i32, action: u8) {
+pub(crate) fn animate(env: &mut Env<'_>, target: EntityId, network_id: i32, action: u8) {
     env.out.push(Effect::Tracking {
         entity: target,
         with_self: true,
@@ -608,6 +928,25 @@ fn knockback_resistance(ents: &Entities, id: EntityId) -> f64 {
     player_attribute(ents, id, "minecraft:knockback_resistance", 0.0, 0.0, 1.0)
 }
 
+/// `Entity.push(x, y, z)` of an entity that is not living (`needsSync`); wind charges keep
+/// their course.
+fn push_entity(ents: &mut Entities, id: EntityId, push: Vec3) {
+    use super::missile::MissileKind;
+    if ents.missile(id).is_some_and(|d| {
+        matches!(
+            d.kind,
+            MissileKind::WindCharge | MissileKind::BreezeWindCharge
+        )
+    }) {
+        return;
+    }
+    if let Some(mut e) = ents.store.get_mut(id) {
+        let v = e.as_ref().velocity();
+        e.set_velocity(v + push);
+        e.set_flags(EntityFlags::HAS_IMPULSE, true);
+    }
+}
+
 /// `causeExtraKnockback`: knocks the target back in the attacker's facing and slows the
 /// attacker; a hit player gets its new motion at once.
 #[allow(clippy::too_many_arguments)]
@@ -627,12 +966,16 @@ pub(crate) fn extra_knockback(
             f64::from(vanillite_base::math::sin(rad)),
             f64::from(vanillite_base::math::cos(rad)),
         );
-        // Dragon parts are not living entities: they only take the hit, no knockback.
-        if !ents
-            .mob(target)
-            .is_some_and(|m| m.kind == super::Kind::EnderDragon)
-        {
+        if is_living_target(ents, target) {
             combat::knock_living(ents, env, target, f64::from(amount), sin, -cos, by);
+        } else if ents.mob(target).is_none() {
+            // Other entities are pushed (`Entity.push`); the dragon's parts take only the hit.
+            let (s, c) = (
+                vanillite_base::math::sin(rad),
+                vanillite_base::math::cos(rad),
+            );
+            let push = Vec3::new(f64::from(-s * amount), 0.1, f64::from(c * amount));
+            push_entity(ents, target, push);
         }
         if let Some(mut e) = ents.store.get_mut(attacker) {
             let v = e.as_ref().velocity();
@@ -712,6 +1055,14 @@ fn sweep_attack(
         if id == attacker || id == target || !is_alive(ents, id) {
             continue;
         }
+        // Allies (teammates, the player's tamed animals, an allay that likes it) and marker
+        // armor stands are spared.
+        let marker = ents.mob(id).is_some_and(|m| {
+            m.kind == super::Kind::ArmorStand && crate::decoration::stand::is_marker(m)
+        });
+        if marker || is_allied(ents, env, attacker, id) {
+            continue;
+        }
         let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
             continue;
         };
@@ -728,7 +1079,7 @@ fn sweep_attack(
                 ents,
                 env,
                 id,
-                0.4,
+                f64::from(0.4_f32),
                 f64::from(vanillite_base::math::sin(rad)),
                 -f64::from(vanillite_base::math::cos(rad)),
                 Some((attacker, damage, false)),
@@ -950,11 +1301,14 @@ fn run_entity_effect(
             }
         }
         EntityEffect::PlaySound {
-            sound,
+            sounds,
             volume,
             pitch,
         } => {
             let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
+                return;
+            };
+            let Some(sound) = EntityEffect::sound_of_level(sounds, ench_level) else {
                 return;
             };
             let source = ents.mob(target).map_or(
@@ -972,8 +1326,132 @@ fn run_entity_effect(
                 crate::survival::sound_seed(),
             );
         }
+        EntityEffect::ApplyExhaustion(amount) => {
+            if let Some(p) = ents.player_mut(target) {
+                player::cause_food_exhaustion(p, amount.calculate(ench_level));
+            }
+        }
+        EntityEffect::ApplyImpulse {
+            direction,
+            coordinate_scale,
+            magnitude,
+        } => apply_impulse(
+            ents,
+            env,
+            target,
+            *direction,
+            *coordinate_scale,
+            magnitude.calculate(ench_level),
+        ),
         EntityEffect::Unsupported => {}
     }
+}
+
+/// `ApplyEntityImpulse.apply`: `direction` turned by the entity's look
+/// (`getLookQuaternion().transform`), scaled per axis and by `magnitude`, is added to its
+/// motion; a player learns it at once, a living entity gets 10 ticks of impulse grace.
+fn apply_impulse(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    direction: [f64; 3],
+    scale: [f64; 3],
+    magnitude: f32,
+) {
+    let Some(rot) = ents.store.get(target).map(|e| e.rot()) else {
+        return;
+    };
+    let d = look_transform(rot.x_rot, rot.y_rot, direction);
+    let m = f64::from(magnitude);
+    let impulse = Vec3::new(d.x * scale[0] * m, d.y * scale[1] * m, d.z * scale[2] * m);
+    if !(impulse.x.is_finite() && impulse.y.is_finite() && impulse.z.is_finite()) {
+        return;
+    }
+    let player = ents.player(target).is_some();
+    let Some(mut e) = ents.store.get_mut(target) else {
+        return;
+    };
+    let v = e.as_ref().velocity() + impulse;
+    let network_id = e.as_ref().network_id().0;
+    e.set_velocity(v);
+    if player {
+        env.out.push(Effect::To {
+            player: target,
+            packet: SharedPacket::of(&SetEntityMotion {
+                entity_id: network_id,
+                movement: LpVec3(vanillite_protocol::types::Vec3 {
+                    x: v.x,
+                    y: v.y,
+                    z: v.z,
+                }),
+            }),
+        });
+    } else {
+        // `syncVelocity`.
+        e.set_flags(EntityFlags::HAS_IMPULSE, true);
+    }
+    // `applyPostImpulseGraceTime(10)`.
+    if let Some(p) = ents.player_mut(target) {
+        p.survival.impulse_grace = p.survival.impulse_grace.max(10);
+    }
+}
+
+/// `Entity.calculateViewQuaternion(xRot, yRot).transform(v)`: JOML's
+/// `Quaternionf().rotationY(-yRot°).rotateX(xRot°)` in floats applied to a double vector.
+fn look_transform(x_rot: f32, y_rot: f32, v: [f64; 3]) -> Vec3 {
+    // `org.joml.Math.sin` and `cosFromSin` without fast math.
+    #[allow(clippy::cast_possible_truncation)]
+    let sin = |a: f32| f64::from(a).sin() as f32;
+    let cos_from_sin = |sin: f32, angle: f32| {
+        #[allow(clippy::cast_possible_truncation)]
+        let cos = f64::from(1.0 - sin * sin).sqrt() as f32;
+        const PI2: f32 = 6.283_185_5;
+        let a = angle + 1.570_796_4;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let mut b = a - (a / PI2) as i32 as f32 * PI2;
+        if b < 0.0 {
+            b += PI2;
+        }
+        if b >= std::f32::consts::PI { -cos } else { cos }
+    };
+    let half = |a: f32| {
+        let s = sin(a * 0.5);
+        (s, cos_from_sin(s, a * 0.5))
+    };
+    // `rotationY`: (0, s, 0, c).
+    let (sy, cy) = half(-y_rot * super::DEG_TO_RAD);
+    let (x, y, z, w) = (0.0_f32, sy, 0.0_f32, cy);
+    // `rotateX`.
+    let (sx, cx) = half(x_rot * super::DEG_TO_RAD);
+    let (x, y, z, w) = (
+        w * sx + x * cx,
+        y * cx + z * sx,
+        z * cx - y * sx,
+        w * cx - x * sx,
+    );
+    // `transform(double, double, double, Vector3d)`.
+    let (xx, yy, zz, ww) = (x * x, y * y, z * z, w * w);
+    let (xy, xz, yz, xw, zw, yw) = (x * y, x * z, y * z, x * w, z * w, y * w);
+    let k = 1.0 / (xx + yy + zz + ww);
+    let d = |f: f32| f64::from(f);
+    let row = |a: f32, b: f32, c: f32| d(a) * v[0] + (d(b) * v[1] + d(c) * v[2]);
+    Vec3::new(
+        row(
+            (xx - yy - zz + ww) * k,
+            2.0 * (xy - zw) * k,
+            2.0 * (xz + yw) * k,
+        ),
+        row(
+            2.0 * (xy + zw) * k,
+            (yy - xx - zz + ww) * k,
+            2.0 * (yz - xw) * k,
+        ),
+        row(
+            2.0 * (xz - yw) * k,
+            2.0 * (yz + xw) * k,
+            (zz - xx - yy + ww) * k,
+        ),
+    )
 }
 
 /// The burst sounds of the `explode` effects as static names.
@@ -1171,47 +1649,25 @@ pub fn weapon_used_stat(
     }
 }
 
-/// `ItemStack.hurtEnemy` / `postHurtEnemy`: the weapon loses `item_damage_per_attack`
-/// durability (with Unbreaking) unless the player is in creative mode.
+/// `ItemStack.postHurtEnemy` of the main hand weapon: it loses `item_damage_per_attack`
+/// durability ([`hurt_equipment`]: Unbreaking, not in creative mode).
 fn hurt_weapon(ents: &mut Entities, env: &mut Env<'_>, attacker: EntityId, weapon: &ItemStack) {
+    hurt_weapon_in(ents, env, attacker, weapon, EquipmentSlot::MainHand);
+}
+
+/// `ItemStack.postHurtEnemy` of the weapon in `slot`.
+pub(crate) fn hurt_weapon_in(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    attacker: EntityId,
+    weapon: &ItemStack,
+    slot: EquipmentSlot,
+) {
     let Some(w) = item::item_id(weapon).info().weapon else {
         return;
     };
-    let unbreaking = crate::player::play::game_data()
-        .map_or(0, |d| d.enchantment_level(weapon, "minecraft:unbreaking"));
-    let mut amount: i32 = 0;
-    for _ in 0..w.item_damage_per_attack {
-        #[allow(clippy::cast_precision_loss)]
-        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
-        if unbreaking <= 0 || env.random.next_float() < chance {
-            amount = amount.saturating_add(1);
-        }
-    }
-    let pos = ents.store.get(attacker).map(|e| e.pos());
-    let Some(p) = ents.player_mut(attacker) else {
-        return;
-    };
-    if p.game_mode == vanillite_config::GameMode::Creative || amount == 0 {
-        return;
-    }
-    let crate::player::PlayerData {
-        inventory,
-        advancements,
-        stats,
-        ..
-    } = p;
-    let Some(tool) = inventory.selected_item_mut() else {
-        return;
-    };
-    if !item::is_damageable(tool) {
-        return;
-    }
-    let new_damage = item::damage(tool).saturating_add(amount);
-    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), tool, new_damage)
-        && let Some(pos) = pos
-    {
-        player_sound(env, pos, "minecraft:entity.item.break");
-    }
+    let amount = i32::try_from(w.item_damage_per_attack).unwrap_or(i32::MAX);
+    hurt_equipment(ents, env, attacker, slot, amount);
 }
 
 /// The equipment of a player for armour and protection (`getArmorSlots` plus the hands).

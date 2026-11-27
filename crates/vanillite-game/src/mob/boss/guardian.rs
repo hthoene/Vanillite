@@ -310,7 +310,7 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut GuardianGoal) -> bool {
                 .is_some_and(|o| t.pos().distance_to_sqr(o.pos) > 9.0)
         }
         GuardianGoal::MoveTowardsRestriction { .. } | GuardianGoal::Stroll { .. } => {
-            !t.mob_ref().nav.is_done()
+            !t.nav_ref().is_done()
         }
         GuardianGoal::LookAtGuardian { look_at, time } => {
             let Some(o) = look_at.and_then(|id| t.other(id)) else {
@@ -327,7 +327,7 @@ pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut GuardianGoal) {
     match g {
         GuardianGoal::Attack { attack_time } => {
             *attack_time = -10;
-            t.mob().nav.stop();
+            t.nav().stop();
             if let Some(target) = t.mob_ref().target {
                 look_at_entity(t, target, 90.0, 90.0);
             }
@@ -357,7 +357,7 @@ pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut GuardianGoal) {
             trigger_stroll(t.mob());
         }
         GuardianGoal::MoveTowardsRestriction { .. } => {}
-        GuardianGoal::Stroll { .. } => t.mob().nav.stop(),
+        GuardianGoal::Stroll { .. } => t.nav().stop(),
         GuardianGoal::LookAtGuardian { look_at, .. } => *look_at = None,
         GuardianGoal::Target { state, .. } => {
             goals::set_target(t, None);
@@ -385,7 +385,7 @@ fn attack_tick(t: &mut Tick<'_, '_>, attack_time: &mut i32) {
     let Some(target) = t.mob_ref().target else {
         return;
     };
-    t.mob().nav.stop();
+    t.nav().stop();
     look_at_entity(t, target, 90.0, 90.0);
     if !has_line_of_sight(t, target) {
         goals::set_target(t, None);
@@ -692,7 +692,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
             param: if silent { 0.0 } else { 1.0 },
         });
         for player in cursed {
-            t.ents.add_effect(player, curse_effect(), true);
+            crate::effect::living::add_detached_from(t.ents, player, curse_effect(), Some(t.id));
             t.env.out.push(Effect::To {
                 player,
                 packet: std::sync::Arc::clone(&packet),
@@ -748,7 +748,7 @@ pub fn curse_targets(ents: &Entities, pos: Vec3) -> Vec<EntityId> {
 /// `GuardianMoveControl.tick`.
 pub fn tick_move_control(t: &mut Tick<'_, '_>) {
     let ctl = t.mob_ref().move_ctl;
-    if ctl.operation != Operation::MoveTo || t.mob_ref().nav.is_done() {
+    if ctl.operation != Operation::MoveTo || t.nav_ref().is_done() {
         let m = t.mob();
         m.speed = 0.0;
         m.zza = 0.0;

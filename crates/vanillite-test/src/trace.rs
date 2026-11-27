@@ -175,7 +175,7 @@ impl Trace {
             index: HashMap::new(),
             frames: Vec::new(),
             blessed_for: None,
-            clients: crate::client_view::ClientViews::default(),
+            clients: crate::client_view::ClientViews::with_attributes(true),
         }
     }
 

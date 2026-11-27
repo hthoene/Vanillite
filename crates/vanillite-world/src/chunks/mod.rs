@@ -62,7 +62,7 @@ use vanillite_chunk::slots::{
     ChunkCodec, ChunkGenerator, ChunkStore, Completion, CompletionTarget, DimensionId, LightEngine,
     Neighbours, Priority, RecordKey, RecordMeta, StoreOp, StoreResult, Token, WorldInfo,
 };
-use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
+use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk, SectionSummary};
 
 pub use levels::{
     BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL,
@@ -487,6 +487,22 @@ impl ChunkView<'_> {
         self.holders.full_block(pos).map(|(state, _)| state)
     }
 
+    /// [`ChunkView::block`] of every position in the box from `min` to `max` (inclusive), in
+    /// X, then Z, then Y order (Y varies fastest), with one chunk lookup per chunk.
+    #[inline]
+    pub fn blocks_in(&self, min: BlockPos, max: BlockPos, f: impl FnMut(Option<BlockStateId>)) {
+        full_blocks_in(self.holders, min, max, f);
+    }
+
+    /// The summary of section `section_y` of the full chunk at `chunk`, `None` outside full
+    /// chunks and the build height.
+    #[inline]
+    pub fn section_summary(&self, chunk: ChunkPos, section_y: i32) -> Option<SectionSummary> {
+        self.holders
+            .full_section(chunk, section_y)
+            .map(|section| section.summary())
+    }
+
     /// Whether the chunk is loaded as a full chunk.
     #[inline]
     pub fn is_full(&self, pos: ChunkPos) -> bool {
@@ -494,6 +510,40 @@ impl ChunkView<'_> {
             .get(&pos)
             .and_then(|h| h.chunk.as_ref())
             .is_some_and(|c| c.status == ChunkStatus::Full)
+    }
+}
+
+/// The block states of the full chunks in the box from `min` to `max` (inclusive), in X, then
+/// Z, then Y order, with one chunk lookup per chunk; `None` outside full chunks and the build
+/// height.
+fn full_blocks_in(
+    holders: &Holders,
+    min: BlockPos,
+    max: BlockPos,
+    mut f: impl FnMut(Option<BlockStateId>),
+) {
+    let mut last: Option<(ChunkPos, Option<&ProtoChunk>)> = None;
+    for x in min.x..=max.x {
+        for z in min.z..=max.z {
+            let chunk_pos = ChunkPos::new(x >> 4, z >> 4);
+            let chunk = match last {
+                Some((pos, chunk)) if pos == chunk_pos => chunk,
+                _ => {
+                    let chunk = holders.get(&chunk_pos).and_then(|holder| {
+                        let chunk = holder
+                            .chunk
+                            .as_ref()
+                            .filter(|c| c.status == ChunkStatus::Full)?;
+                        Some(&**chunk)
+                    });
+                    last = Some((chunk_pos, chunk));
+                    chunk
+                }
+            };
+            for y in min.y..=max.y {
+                f(chunk.and_then(|c| c.chunk.block((x & 15) as u32, y, (z & 15) as u32)));
+            }
+        }
     }
 }
 
@@ -2234,6 +2284,9 @@ impl Chunks {
             let Some(mut holder) = self.holders.map_mut().remove(&pos) else {
                 continue;
             };
+            if let Some(chunk) = holder.chunk.as_ref() {
+                self.forget_unkept_light(chunk);
+            }
             if let Some(chunk) = holder
                 .chunk
                 .as_mut()
@@ -2269,6 +2322,61 @@ impl Chunks {
             }
         }
         self.save_chunks(save, false);
+    }
+
+    /// Light the neighbours of an unloaded chunk only kept because of it is gone, as in
+    /// Vanilla's light engine ([`vanillite_chunk::light::forget_unkept_light`]). Like Vanilla,
+    /// clients are not told; they see it when the chunk is sent again.
+    fn forget_unkept_light(&mut self, unloaded: &Arc<ProtoChunk>) {
+        if unloaded.status < ChunkStatus::InitializeLight {
+            return;
+        }
+        let pos = unloaded.pos;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let center = ChunkPos::new(pos.x + dx, pos.z + dz);
+                if center == pos {
+                    continue;
+                }
+                let lit = |holder: &Holder| {
+                    holder
+                        .chunk
+                        .as_ref()
+                        .filter(|c| c.status >= ChunkStatus::InitializeLight)
+                        .cloned()
+                };
+                if !self
+                    .holders
+                    .get(&center)
+                    .is_some_and(|h| !h.busy && lit(h).is_some())
+                {
+                    continue;
+                }
+                let around: [Option<Arc<ProtoChunk>>; 9] = std::array::from_fn(|i| {
+                    let at =
+                        ChunkPos::new(center.x + i as i32 % 3 - 1, center.z + i as i32 / 3 - 1);
+                    if at == pos {
+                        Some(Arc::clone(unloaded))
+                    } else {
+                        self.holders.get(&at).and_then(lit)
+                    }
+                });
+                let unloaded_index = ((pos.z - center.z + 1) * 3 + (pos.x - center.x + 1)) as usize;
+                let area: [Option<&vanillite_chunk::Chunk>; 9] =
+                    std::array::from_fn(|i| around[i].as_ref().map(|c| &c.chunk));
+                let mut light = around[4].as_ref().map(|c| c.chunk.light().clone()).unwrap();
+                if !vanillite_chunk::light::forget_unkept_light(&mut light, &area, unloaded_index) {
+                    continue;
+                }
+                drop(around);
+                if let Some(holder) = self.holders.map_mut().get_mut(&center)
+                    && let Some(chunk) = holder.chunk.as_mut()
+                {
+                    *Arc::make_mut(chunk).chunk.light_mut() = light;
+                    holder.touch(center, &mut self.changed);
+                }
+            }
+        }
     }
 
     // --- Saving --------------------------------------------------------------------------
@@ -2657,29 +2765,7 @@ impl Chunks {
             }
             return;
         }
-        let mut last: Option<(ChunkPos, Option<&ProtoChunk>)> = None;
-        for x in min.x..=max.x {
-            for z in min.z..=max.z {
-                let chunk_pos = ChunkPos::new(x >> 4, z >> 4);
-                let chunk = match last {
-                    Some((pos, chunk)) if pos == chunk_pos => chunk,
-                    _ => {
-                        let chunk = self.holders.get(&chunk_pos).and_then(|holder| {
-                            let chunk = holder
-                                .chunk
-                                .as_ref()
-                                .filter(|c| c.status == ChunkStatus::Full)?;
-                            Some(&**chunk)
-                        });
-                        last = Some((chunk_pos, chunk));
-                        chunk
-                    }
-                };
-                for y in min.y..=max.y {
-                    f(chunk.and_then(|c| c.chunk.block((x & 15) as u32, y, (z & 15) as u32)));
-                }
-            }
-        }
+        full_blocks_in(&self.holders, min, max, f);
     }
 
     /// [`Chunks::block`] of an accessible chunk ([`Chunks::is_accessible`]) with one map

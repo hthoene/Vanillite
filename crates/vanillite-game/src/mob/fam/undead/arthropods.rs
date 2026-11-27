@@ -297,10 +297,12 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
             _ => 0,
         };
         if seconds > 0 {
+            let me = t.id;
             super::add_effect(
                 t.ents,
                 target,
                 EffectInstance::new(effects::MobEffect::POISON, seconds * 20, 0),
+                Some(me),
             );
         }
     }
@@ -405,7 +407,7 @@ pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             direction,
             do_merge,
         } => {
-            if t.mob_ref().target.is_some() || !t.mob_ref().nav.is_done() {
+            if t.mob_ref().target.is_some() || !t.nav_ref().is_done() {
                 return false;
             }
             let griefing = t.env.rules.bool(Rule::MOB_GRIEFING);
@@ -441,7 +443,7 @@ pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::SpiderTarget(c) => common::can_continue(t, c),
-        Goal::SilverfishMergeWithStone { do_merge, .. } => !*do_merge && !t.mob_ref().nav.is_done(),
+        Goal::SilverfishMergeWithStone { do_merge, .. } => !*do_merge && !t.nav_ref().is_done(),
         _ => goal_can_use(t, g),
     }
 }

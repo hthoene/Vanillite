@@ -48,6 +48,9 @@ pub struct State {
     pub eating_counter: i32,
     pub mouth_counter: i32,
     pub stand_counter: i32,
+    /// `standAnim` and `standAnimO`: the rearing animation, which lifts and moves the rider.
+    pub stand_anim: f32,
+    pub stand_anim_o: f32,
     pub sprint_counter: i32,
     /// `AbstractHorse.gallopSoundCounter`.
     pub gallop_counter: i32,
@@ -723,7 +726,7 @@ impl FamilyHooks for Hooks {
     fn check_spawn_rules(
         kind: Kind,
         level: &Level,
-        _env: &Environment,
+        env: &Environment,
         pos: BlockPos,
         random: &mut LegacyRandom,
         reason: SpawnReason,
@@ -737,7 +740,10 @@ impl FamilyHooks for Hooks {
             Kind::Parrot => parrot::spawn_rules(level, pos, reason),
             Kind::Llama => llama::spawn_rules(level, pos, reason),
             Kind::SkeletonHorse => horse::skeleton_spawn_rules(level, pos, reason),
-            Kind::ZombieHorse => horse::zombie_spawn_rules(level, pos, reason),
+            // `SpawnPlacements`: `Monster::checkMonsterSpawnRules`.
+            Kind::ZombieHorse => {
+                crate::mob::spawn::check_monster_spawn_rules(kind, level, env, pos, random, reason)
+            }
             Kind::Panda
             | Kind::Horse
             | Kind::Donkey
@@ -824,6 +830,12 @@ impl FamilyHooks for Hooks {
             Kind::Panda => panda::before_tick(t),
             Kind::PolarBear => polar_bear::before_tick(t),
             _ => {}
+        }
+    }
+
+    fn after_tick(t: &mut Tick<'_, '_>) {
+        if is_horse(t.mob_ref().kind) {
+            horse::after_tick(t.mob());
         }
     }
 
@@ -1168,7 +1180,7 @@ impl FamilyHooks for Hooks {
         match g {
             Goal::Idle => false,
             Goal::Guard(c, cg) => cond_holds(t, *c) && crate::mob::common::can_continue(t, cg),
-            Goal::TamePanic { .. } => !t.mob_ref().nav.is_done(),
+            Goal::TamePanic { .. } => !t.nav_ref().is_done(),
             Goal::Horse(g) => horse::can_continue(t, g),
             Goal::Llama(g) => llama::can_continue(t, g),
             Goal::Wolf(g) => wolf::can_continue(t, g),

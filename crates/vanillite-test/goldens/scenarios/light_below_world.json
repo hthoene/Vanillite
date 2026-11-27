@@ -1,0 +1,10 @@
+{"format":1,
+"region":[[-1,-64,-2],[7,-62,2]],
+"palette":[
+"minecraft:stone",
+"minecraft:air",
+"minecraft:glowstone"],
+"frames":[
+{"tick":0,"blocks":[24,0,1,1,110,0],"block_ticks":[],"fluid_ticks":[],"entities":[],"light":[135,0]},
+{"tick":1,"changes":[[0,-64,0,2]],"block_ticks":[],"fluid_ticks":[],"entities":[],"light":[19,0,1,15,4,0,1,8,110,0]},
+{"tick":2,"changes":[[0,-64,0,0]],"block_ticks":[],"fluid_ticks":[],"entities":[],"light":[135,0]}]}

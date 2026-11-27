@@ -40,6 +40,12 @@ pub trait Blocks {
     /// (`MovingPistonBlock.getCollisionShape` from its block entity); none without access to
     /// block entities.
     fn moving_piston_boxes(&self, _pos: BlockPos, _out: &mut Vec<[f64; 6]>) {}
+    /// Whether no block of the section at section coordinates (`x`, `y`, `z`) has a special
+    /// collision shape (large, dynamic like a moving piston, or neither empty nor a full cube),
+    /// so the ring and edge cells of [`block_boxes`] there add nothing. `false` = unknown.
+    fn plain_collision(&self, _x: i32, _y: i32, _z: i32) -> bool {
+        false
+    }
 }
 
 impl Blocks for Level {
@@ -159,11 +165,27 @@ pub fn block_boxes_for(
     let max_y = floor(area.max_y + EPSILON) + 1;
     let min_z = floor(area.min_z - EPSILON) - 1;
     let max_z = floor(area.max_z + EPSILON) + 1;
+    // Ring and edge cells only count with a large collision shape or a moving piston: without
+    // such blocks in the sections around, only the inner cells are read (same boxes, same
+    // order).
+    let inner = (min_x >> 4..=max_x >> 4).all(|sx| {
+        (min_z >> 4..=max_z >> 4)
+            .all(|sz| (min_y >> 4..=max_y >> 4).all(|sy| blocks.plain_collision(sx, sy, sz)))
+    });
+    let shrink = i32::from(inner);
+    let (read_min, read_max) = (
+        BlockPos::new(min_x + shrink, min_y + shrink, min_z + shrink),
+        BlockPos::new(max_x - shrink, max_y - shrink, max_z - shrink),
+    );
     // The box's states in one read, in the loops' order.
-    let volume = [max_x - min_x, max_y - min_y, max_z - min_z]
-        .iter()
-        .map(|&d| usize::try_from(d + 1).unwrap_or(0))
-        .product::<usize>();
+    let volume = [
+        read_max.x - read_min.x,
+        read_max.y - read_min.y,
+        read_max.z - read_min.z,
+    ]
+    .iter()
+    .map(|&d| usize::try_from(d + 1).unwrap_or(0))
+    .product::<usize>();
     let mut inline = [BlockState::AIR; BOX_READ_INLINE];
     let mut spilled = Vec::new();
     let states: &mut [BlockState] = if volume <= BOX_READ_INLINE {
@@ -172,15 +194,11 @@ pub fn block_boxes_for(
         spilled.resize(volume, BlockState::AIR);
         &mut spilled
     };
-    blocks.states_in(
-        BlockPos::new(min_x, min_y, min_z),
-        BlockPos::new(max_x, max_y, max_z),
-        states,
-    );
+    blocks.states_in(read_min, read_max, states);
     let mut states = states.iter().copied();
-    for x in min_x..=max_x {
-        for z in min_z..=max_z {
-            for y in min_y..=max_y {
+    for x in read_min.x..=read_max.x {
+        for z in read_min.z..=read_max.z {
+            for y in read_min.y..=read_max.y {
                 let Some(state) = states.next() else {
                     return;
                 };

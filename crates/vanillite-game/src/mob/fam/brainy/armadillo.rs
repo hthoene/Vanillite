@@ -201,7 +201,7 @@ fn roll_up(t: &mut Tick<'_, '_>) {
         return;
     }
     // `stopInPlace`.
-    t.mob().nav.stop();
+    t.nav().stop();
     let m = t.mob();
     m.xxa = 0.0;
     m.zza = 0.0;

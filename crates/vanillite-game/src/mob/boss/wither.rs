@@ -1760,7 +1760,12 @@ fn skull_hit_entity(t: &mut SpecialTick<'_, '_>, skull: &Skull, target: EntityId
         let seconds = wither_seconds(t.env.difficulty);
         if seconds > 0 {
             let effect = EffectInstance::new(MobEffect::WITHER, 20 * seconds, 1);
-            t.ents.add_effect(target, effect, true);
+            // `getEffectSource()`: the owner, else the skull.
+            let by = skull
+                .owner
+                .filter(|&o| t.ents.store.contains(o))
+                .or(Some(id));
+            crate::effect::living::add_detached_from(t.ents, target, effect, by);
         }
     }
 }
