@@ -79,6 +79,28 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
         ),
         can_see_sky: false,
         fishing_hook: None,
+        vehicle: ents
+            .vehicle_of(id)
+            .and_then(|v| ents.store.get(v))
+            .map(|v| v.kind()),
+        cube_size: ents
+            .mob(id)
+            .filter(|m| {
+                matches!(
+                    m.kind,
+                    super::Kind::Slime | super::Kind::MagmaCube | super::Kind::SulfurCube
+                )
+            })
+            .map(crate::mob::fam::undead::cubes::size),
+        raid_captain: ents.mob(id).map(|m| {
+            use crate::mob::fam::illager::{raider, st};
+            st(m).patrol_leader
+                && raider::is_ominous_banner(m.equipment.get(crate::item::EquipmentSlot::Head))
+        }),
+        mooshroom_variant: ents
+            .mob(id)
+            .filter(|m| m.kind == super::Kind::Mooshroom)
+            .and_then(|m| u8::try_from(crate::mob::fam::wildlife::st(m).variant).ok()),
     })
 }
 

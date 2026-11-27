@@ -29,21 +29,12 @@ fn pack() -> PathBuf {
 }
 
 fn json_files(dir: &Path) -> BTreeMap<String, String> {
-    let mut files = BTreeMap::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).unwrap().map(Result::unwrap) {
-            let path = e.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|x| x == "json") {
-                let rel = path.strip_prefix(dir).unwrap().with_extension("");
-                let id = format!("minecraft:{}", rel.to_string_lossy());
-                files.insert(id, std::fs::read_to_string(&path).unwrap());
-            }
-        }
-    }
-    files
+    let mut paths = BTreeMap::new();
+    crate::loot::collect_json(dir, "minecraft:", &mut paths);
+    paths
+        .into_iter()
+        .map(|(id, path)| (id, std::fs::read_to_string(path).unwrap()))
+        .collect()
 }
 
 /// The Vanilla tags of the registries the advancements use, flattened.

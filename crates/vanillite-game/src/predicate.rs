@@ -87,6 +87,14 @@ pub struct EntityFacts {
     pub can_see_sky: bool,
     /// A fishing hook and whether it fishes in open water.
     pub fishing_hook: Option<bool>,
+    /// The type of the entity this one rides.
+    pub vehicle: Option<EntityTypeId>,
+    /// The size of a slime, magma cube or sulfur cube.
+    pub cube_size: Option<i32>,
+    /// Whether a mob leads a patrol or raid wave wearing the ominous banner.
+    pub raid_captain: Option<bool>,
+    /// A mooshroom's colour: 0 red, 1 brown.
+    pub mooshroom_variant: Option<u8>,
 }
 
 /// `EntityPredicate`: the parts the game evaluates (`type`, `flags`); other parts are
@@ -121,6 +129,14 @@ pub struct EntityPredicate {
     pub can_see_sky: Option<bool>,
     /// `type_specific/fishing_hook`: a hook, with `in_open_water` if given.
     pub fishing_hook: Option<Option<bool>>,
+    /// `vehicle`: the types of the ridden entity (other parts are not evaluated).
+    pub vehicle: Option<TypeSet>,
+    /// `type_specific/cube_mob` `size`: the inclusive bounds.
+    pub cube_size: Option<(Option<i32>, Option<i32>)>,
+    /// `type_specific/raider` `is_captain`.
+    pub raid_captain: Option<bool>,
+    /// `components` `minecraft:mooshroom/variant`: 0 red, 1 brown.
+    pub mooshroom_variant: Option<u8>,
     /// Has parts that are not evaluated.
     pub unsupported: bool,
 }
@@ -168,10 +184,23 @@ impl EntityPredicate {
                         "minecraft:cow/variant",
                         "minecraft:pig/variant",
                     ];
+                    const MOOSHROOM: &str = "minecraft:mooshroom/variant";
                     let known = v.as_object().is_some_and(|c| {
-                        c.keys()
-                            .all(|k| k == "minecraft:sheep/color" || FARM.contains(&k.as_str()))
+                        c.keys().all(|k| {
+                            k == "minecraft:sheep/color"
+                                || k == MOOSHROOM
+                                || FARM.contains(&k.as_str())
+                        })
                     });
+                    let mooshroom = v.get(MOOSHROOM);
+                    p.mooshroom_variant = mooshroom.and_then(Value::as_str).and_then(|name| {
+                        match name.strip_prefix("minecraft:").unwrap_or(name) {
+                            "red" => Some(0),
+                            "brown" => Some(1),
+                            _ => None,
+                        }
+                    });
+                    p.unsupported |= mooshroom.is_some() && p.mooshroom_variant.is_none();
                     p.sheep_color = v
                         .get("minecraft:sheep/color")
                         .and_then(Value::as_str)
@@ -188,6 +217,28 @@ impl EntityPredicate {
                     p.unsupported |= !known
                         || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none())
                         || (farm.is_some() && p.farm_variant.is_none());
+                }
+                "vehicle" => {
+                    // Only the type of the vehicle (the jockey drops).
+                    p.vehicle = v
+                        .as_object()
+                        .filter(|o| o.len() == 1)
+                        .and_then(|o| o.iter().next())
+                        .filter(|(k, _)| {
+                            matches!(k.trim_start_matches("minecraft:"), "type" | "entity_type")
+                        })
+                        .and_then(|(_, t)| TypeSet::parse(t));
+                    p.unsupported |= p.vehicle.is_none();
+                }
+                "type_specific/cube_mob" => {
+                    let only = v.as_object().is_some_and(|o| o.len() == 1);
+                    p.cube_size = v.get("size").and_then(int_bounds);
+                    p.unsupported |= !only || p.cube_size.is_none();
+                }
+                "type_specific/raider" => {
+                    let only = v.as_object().is_some_and(|o| o.len() == 1);
+                    p.raid_captain = v.get("is_captain").and_then(Value::as_bool);
+                    p.unsupported |= !only || p.raid_captain.is_none();
                 }
                 "movement" => {
                     // Only a lower bound of `fall_distance` (Wind Burst).
@@ -282,11 +333,38 @@ impl EntityPredicate {
             && flag(self.on_ground, e.on_ground)
             && flag(self.flying, e.flying)
             && flag(self.can_see_sky, e.can_see_sky)
+            && self
+                .vehicle
+                .as_ref()
+                .is_none_or(|t| e.vehicle.is_some_and(|k| t.contains(k, tags)))
+            && self.cube_size.is_none_or(|(min, max)| {
+                e.cube_size
+                    .is_some_and(|s| min.is_none_or(|m| m <= s) && max.is_none_or(|m| s <= m))
+            })
+            && self.raid_captain.is_none_or(|c| e.raid_captain == Some(c))
+            && self
+                .mooshroom_variant
+                .is_none_or(|v| e.mooshroom_variant == Some(v))
             && self.min_fall_distance.is_none_or(|m| e.fall_distance >= m)
             && self.fishing_hook.is_none_or(|want| {
                 e.fishing_hook
                     .is_some_and(|open| want.is_none_or(|w| w == open))
             })
+    }
+}
+
+/// `MinMaxBounds.Ints`: an exact number or `{min, max}`.
+fn int_bounds(v: &Value) -> Option<(Option<i32>, Option<i32>)> {
+    let int = |v: &Value| v.as_i64().and_then(|n| i32::try_from(n).ok());
+    match v {
+        Value::Object(o) if o.keys().all(|k| k == "min" || k == "max") => {
+            let bound = |k: &str| match o.get(k) {
+                None => Some(None),
+                Some(v) => int(v).map(Some),
+            };
+            Some((bound("min")?, bound("max")?))
+        }
+        other => int(other).map(|n| (Some(n), Some(n))),
     }
 }
 
@@ -429,6 +507,54 @@ mod tests {
         sheep.sheared = false;
         sheep.sheep_color = Some(0);
         assert!(!p.test(Some(&sheep), &NoTags));
+    }
+
+    #[test]
+    fn vanilla_mob_loot_predicates() {
+        let parse = |v: serde_json::Value| {
+            let p = EntityPredicate::parse(&v);
+            assert!(!p.unsupported, "{v}");
+            p
+        };
+        let jockey = parse(serde_json::json!({"minecraft:flags": {"is_baby": true},
+            "minecraft:vehicle": {"minecraft:entity_type": "minecraft:chicken"}}));
+        let mut e = EntityFacts {
+            baby: true,
+            ..EntityFacts::default()
+        };
+        assert!(!jockey.test(Some(&e), &NoTags));
+        e.vehicle = Some(vanillite_data::entity::ids::CHICKEN);
+        assert!(jockey.test(Some(&e), &NoTags));
+
+        let big = parse(serde_json::json!(
+            {"minecraft:type_specific/cube_mob": {"size": {"min": 2}}}));
+        let tiny = parse(serde_json::json!({"minecraft:type_specific/cube_mob": {"size": 1}}));
+        let mut e = EntityFacts::default();
+        assert!(!big.test(Some(&e), &NoTags) && !tiny.test(Some(&e), &NoTags));
+        e.cube_size = Some(1);
+        assert!(!big.test(Some(&e), &NoTags) && tiny.test(Some(&e), &NoTags));
+        e.cube_size = Some(4);
+        assert!(big.test(Some(&e), &NoTags) && !tiny.test(Some(&e), &NoTags));
+
+        let captain = parse(serde_json::json!(
+            {"minecraft:type_specific/raider": {"is_captain": true}}));
+        let mut e = EntityFacts {
+            raid_captain: Some(false),
+            ..EntityFacts::default()
+        };
+        assert!(!captain.test(Some(&e), &NoTags));
+        e.raid_captain = Some(true);
+        assert!(captain.test(Some(&e), &NoTags));
+
+        let brown = parse(serde_json::json!(
+            {"minecraft:components": {"minecraft:mooshroom/variant": "brown"}}));
+        let mut e = EntityFacts {
+            mooshroom_variant: Some(0),
+            ..EntityFacts::default()
+        };
+        assert!(!brown.test(Some(&e), &NoTags));
+        e.mooshroom_variant = Some(1);
+        assert!(brown.test(Some(&e), &NoTags));
     }
 
     #[test]
