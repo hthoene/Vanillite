@@ -2537,6 +2537,7 @@ dependencies = [
  "vanillite-storage",
  "vanillite-world",
  "vanillite-worldgen",
+ "zip",
 ]
 
 [[package]]

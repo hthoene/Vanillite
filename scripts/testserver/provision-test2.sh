@@ -69,6 +69,22 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 timedatectl set-timezone Etc/UTC 2> /dev/null || true
 
+# Docker engine with buildx for image tests (`DOCKER_HOST=ssh://vanillite-test2 cargo xtask
+# docker`). qemu-user runs arm64 binaries (`qemu-aarch64 -L <image rootfs> ...`); binfmt cannot be
+# registered in this unprivileged container, so arm64 images themselves do not run in Docker here.
+echo "== docker"
+if ! command -v docker > /dev/null; then
+    . /etc/os-release
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list
+    apt-get update -q
+    apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+fi
+systemctl enable --now docker > /dev/null
+dpkg -s qemu-user > /dev/null 2>&1 || apt-get install -y -q qemu-user
+
 echo "== users"
 id minecraft > /dev/null 2>&1 || useradd --system --home-dir /opt/paper --create-home --shell /usr/sbin/nologin minecraft
 id vanillite > /dev/null 2>&1 || useradd --system --home-dir /opt/vanillite --create-home --shell /usr/sbin/nologin vanillite
