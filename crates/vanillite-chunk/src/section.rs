@@ -155,7 +155,7 @@ impl Section {
     }
 
     /// Block state at local coordinates (0..16).
-    #[inline]
+    #[inline(always)]
     pub fn block(&self, x: u32, y: u32, z: u32) -> BlockStateId {
         self.blocks.get_at(x, y, z)
     }

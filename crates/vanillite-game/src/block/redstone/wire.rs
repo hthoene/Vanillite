@@ -23,7 +23,7 @@ pub(super) fn signal(level: &Level, state: BlockState, pos: BlockPos, direction:
     }
     if direction != Direction::Up {
         let connections = shared::wire_connection_state(level, state, pos);
-        if connections.value(side_name(direction.opposite())) == Some("none") {
+        if !shared::wire_properties().connected(connections, direction.opposite()) {
             return 0;
         }
     }
@@ -247,7 +247,7 @@ pub(super) fn side_name(direction: Direction) -> &'static str {
 
 /// `state.getValue(PROPERTY_BY_DIRECTION.get(direction)).isConnected()`.
 fn is_connected(state: BlockState, direction: Direction) -> bool {
-    state.value(side_name(direction)) != Some("none")
+    shared::wire_properties().connected(state, direction)
 }
 
 /// `isCross`.
