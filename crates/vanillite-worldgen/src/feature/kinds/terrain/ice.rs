@@ -591,10 +591,12 @@ impl FeatureType for SnowAndFreezeFeature {
                 let y = level.height_at(HeightmapKind::MotionBlocking, x, z);
                 let top = BlockPos::new(x, y, z);
                 let below = top.relative(Direction::Down);
-                if self.climates.should_freeze(level, top, below) {
+                // Both read the biome at `top`; placing blocks keeps the biomes.
+                let biome = self.climates.at(level, top);
+                if Climates::freezes(biome, level, below) {
                     level.set_block(below, ids::ICE.default_state(), flags::CLIENTS);
                 }
-                if self.climates.should_snow(level, top) {
+                if Climates::snows(biome, level, top) {
                     level.set_block(top, ids::SNOW.default_state(), flags::CLIENTS);
                     let below_state = level.block(below);
                     if let Some(snowy) = below_state.with("snowy", "true") {

@@ -1,0 +1,77 @@
+{
+  "description": "Spawner placement rules per type (SpawnPlacements.checkSpawnRules with SPAWNER) in daylight: blaze and silverfish spawn at any light, a magma cube spawner always spawns, a zombie spawner needs darkness (isDarkEnoughToSpawn draws from the level random) and spawns nothing.",
+  "tier": "fast",
+  "level_rng": true,
+  "time": 6000,
+  "difficulty": "normal",
+  "rules": {
+    "spawn_monsters": "true"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -60,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -59,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -59 13 minecraft:spawner{SpawnData:{entity:{id:\"minecraft:blaze\"}},Delay:1s,SpawnCount:1s,SpawnRange:1s,RequiredPlayerRange:32s}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 5 -59 13 minecraft:spawner{SpawnData:{entity:{id:\"minecraft:silverfish\"}},Delay:1s,SpawnCount:1s,SpawnRange:1s,RequiredPlayerRange:32s}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 8 -59 13 minecraft:spawner{SpawnData:{entity:{id:\"minecraft:magma_cube\"}},Delay:1s,SpawnCount:1s,SpawnRange:1s,RequiredPlayerRange:32s}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 11 -59 13 minecraft:spawner{SpawnData:{entity:{id:\"minecraft:zombie\"}},Delay:1s,SpawnCount:1s,SpawnRange:1s,RequiredPlayerRange:32s}"
+    }
+  ]
+}

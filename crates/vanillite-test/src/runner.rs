@@ -203,6 +203,9 @@ fn observe(
         world.light(trace.min, trace.max, &mut frame.light);
     }
     frame.level_rng = world.level_rng();
+    if scenario.world.client_view {
+        frame.view = world.client_view()?;
+    }
     for view in &scenario.world.views {
         world.select_dimension(&view.dimension)?;
         world.entities(view.min, view.max, &mut frame.entities);

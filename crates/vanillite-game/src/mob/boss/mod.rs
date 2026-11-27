@@ -223,8 +223,9 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
 }
 
 /// The kind's part of `hurtServer` before the common damage handling: the amount to apply,
-/// or `None` when the hit is ignored (wither invulnerability and armour, dragon parts, warden
-/// anger, guardian thorns are applied here or in [`after_hurt`]).
+/// or `Err` with what `hurtServer` returns when the hit is taken without damage (wither
+/// invulnerability and armour, dragon parts, warden anger, guardian thorns are applied here
+/// or in [`after_hurt`]).
 pub fn filter_hurt(
     level: &Level,
     ents: &mut Entities,
@@ -233,16 +234,20 @@ pub fn filter_hurt(
     target: EntityId,
     source: &DamageSource,
     amount: f32,
-) -> Option<f32> {
-    let kind = ents.mob(target)?.kind;
+) -> Result<f32, bool> {
+    let kind = ents.mob(target).ok_or(false)?.kind;
     match kind {
         Kind::Guardian | Kind::ElderGuardian => {
-            guardian::filter_hurt(level, ents, env, cx, target, source, amount)
+            guardian::filter_hurt(level, ents, env, cx, target, source, amount).ok_or(false)
         }
-        Kind::Wither => wither::filter_hurt(level, ents, env, cx, target, source, amount),
+        Kind::Wither => {
+            wither::filter_hurt(level, ents, env, cx, target, source, amount).ok_or(false)
+        }
         Kind::EnderDragon => dragon::filter_hurt(level, ents, env, cx, target, source, amount),
-        Kind::Warden => warden::filter_hurt(level, ents, env, cx, target, source, amount),
-        _ => Some(amount),
+        Kind::Warden => {
+            warden::filter_hurt(level, ents, env, cx, target, source, amount).ok_or(false)
+        }
+        _ => Ok(amount),
     }
 }
 

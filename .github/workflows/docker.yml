@@ -51,7 +51,8 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       # Docker tags cannot hold the `+` of v<version>+mc<minecraft>, so scripts/release/meta.sh
       # computes them: 0.1.0-beta.1-mc26.3, mc26.3-beta and beta for a pre-release,
-      # 0.1.0-mc26.3, mc26.3 and latest for a stable version. Manual runs: the commit only.
+      # 0.1.0-mc26.3, mc26.3, mc26.3-beta, latest and beta for a stable version; beta and latest
+      # only for the newest version of deploy/minecraft-versions.txt. Manual runs: the commit only.
       - id: release
         if: env.HAS_SECRETS == 'true' && (github.ref_type == 'tag' || inputs.release_tag != '')
         env:

@@ -1,0 +1,57 @@
+{
+  "description": "/data merge entity on an axolotl (#183): loading {Variant:3} into it changes only its variant; its brain, randoms and the level random go on like before.",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 12,
+  "level_rng": true,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -61,
+        6
+      ],
+      "to": [
+        10,
+        -61,
+        10
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "ax",
+      "type": "minecraft:axolotl",
+      "pos": [
+        8.5,
+        -61,
+        8.5
+      ],
+      "seed": 3
+    }
+  ],
+  "actions": [
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:axolotl,limit=1] {Variant:3}"
+    },
+    {
+      "tick": 11,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:3}] run setblock 0 -56 0 minecraft:gold_block"
+    }
+  ]
+}

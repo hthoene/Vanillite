@@ -46,7 +46,7 @@ fn idle_movement() -> Spec {
 }
 
 /// The brain of a hoglin (`Hoglin.BRAIN_PROVIDER`, `HoglinAi.getActivities`) or a zoglin.
-fn hoglin_brain() -> BrainSpec {
+pub(super) fn hoglin_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -109,7 +109,7 @@ fn hoglin_brain() -> BrainSpec {
     }
 }
 
-fn zoglin_brain() -> BrainSpec {
+pub(super) fn zoglin_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,

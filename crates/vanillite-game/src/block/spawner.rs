@@ -14,6 +14,7 @@ use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::BlockBehaviour;
+use crate::item::EquipmentSlot;
 use crate::level::Level;
 use crate::level::block_entity::BlockEntity;
 use crate::level::game_event::{GameEventContext, events};
@@ -126,10 +127,101 @@ impl SpawnData {
         })
     }
 
+    /// `getEquipment`: the `equipment` table (`EquipmentTable`): its loot table and the drop
+    /// chances of the slots (`slot_drop_chances`: one chance for every slot or per slot).
+    pub fn equipment(&self) -> Option<(&str, Vec<(EquipmentSlot, f32)>)> {
+        let c = self.0.get("equipment")?.as_compound()?;
+        let table = c.get("loot_table")?.as_str()?;
+        let float = |t: &Tag| match t {
+            Tag::Float(f) => Some(*f),
+            #[allow(clippy::cast_possible_truncation)]
+            Tag::Double(d) => Some(*d as f32),
+            _ => None,
+        };
+        let chances = match c.get("slot_drop_chances") {
+            Some(Tag::Compound(m)) => m
+                .iter()
+                .filter_map(|(name, v)| {
+                    let i = SLOT_NAMES.iter().position(|n| *n == &*name)?;
+                    Some((
+                        EquipmentSlot::from_ordinal(u8::try_from(i).ok()?)?,
+                        float(v)?,
+                    ))
+                })
+                .collect(),
+            Some(t) => float(t).map_or_else(Vec::new, |f| {
+                (0..8)
+                    .filter_map(EquipmentSlot::from_ordinal)
+                    .map(|s| (s, f))
+                    .collect()
+            }),
+            None => Vec::new(),
+        };
+        Some((table, chances))
+    }
+
     /// The entity compound holds only its `id`: the mob gets `finalizeSpawn`.
     pub fn has_no_configuration(&self) -> bool {
         self.entity()
             .is_some_and(|e| e.len() == 1 && e.get("id").and_then(Tag::as_str).is_some())
+    }
+}
+
+/// The serialized names of the equipment slots by ordinal (`EquipmentSlot.getSerializedName`).
+const SLOT_NAMES: [&str; 8] = [
+    "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
+];
+
+/// `EquipmentUser.equip(lootTable, params, dropChances)` of a mob at `at` (`ORIGIN` and
+/// `THIS_ENTITY`): the table's items (its random sequence, else the level random) go to their
+/// `equippable` slot or the main hand, one item per slot, with the slot's drop chance.
+pub fn equip_from_table(
+    level: &mut Level,
+    mob: &mut MobData,
+    at: Vec3,
+    table: &str,
+    chances: &[(EquipmentSlot, f32)],
+) {
+    let Some(data) = crate::player::play::game_data() else {
+        return;
+    };
+    let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
+    let holder_set = |registry: &str, entry: &str| data.holder_set(registry, entry);
+    let ctx = crate::loot::LootContext {
+        origin: Some(at),
+        item_in_tag: &item_in_tag,
+        enchanting: Some(&data.enchanting),
+        holder_set: &holder_set,
+        this_present: true,
+        ..crate::loot::LootContext::empty()
+    };
+    let mut items = Vec::new();
+    match data.loot.random_sequence(table) {
+        Some(key) => {
+            level.with_random_sequence(key, |r| data.loot.roll(table, &ctx, r, &mut items));
+        }
+        None => data.loot.roll(table, &ctx, level.random(), &mut items),
+    }
+    let mut inserted: Vec<EquipmentSlot> = Vec::new();
+    for mut stack in items {
+        if stack.is_empty() {
+            continue;
+        }
+        // `resolveSlot`: the `equippable` slot, else the main hand; each slot once.
+        let own = EquipmentSlot::from_ordinal(crate::item::item_id(&stack).info().equip_slot)
+            .unwrap_or(EquipmentSlot::MainHand);
+        if inserted.contains(&own) {
+            continue;
+        }
+        // `EquipmentSlot.limit`: armour, body and saddle slots hold one item.
+        if !matches!(own, EquipmentSlot::MainHand | EquipmentSlot::OffHand) {
+            stack.count = stack.count.min(1);
+        }
+        mob.equipment.set(own, stack);
+        if let Some(&(_, chance)) = chances.iter().find(|(s, _)| *s == own) {
+            mob.equipment.set_drop_chance(own, chance);
+        }
+        inserted.push(own);
     }
 }
 
@@ -239,9 +331,9 @@ pub fn no_collision_at(level: &Level, type_id: EntityTypeId, pos: Vec3) -> bool 
 }
 
 /// `SpawnPlacements.checkSpawnRules(type, level, SPAWNER or TRIAL_SPAWNER, pos, random)`:
-/// nothing that is not allowed in Peaceful spawns there (no random drawn); monsters need
-/// darkness (not for trial spawners), animals grass and light; the floor of monsters is not
-/// checked for spawners.
+/// nothing that is not allowed in Peaceful spawns there (no random drawn), then the type's own
+/// placement predicate (blazes, silverfish and slimes any light, magma cubes always, most
+/// monsters darkness except for trial spawners, animals grass and light).
 pub fn spawner_spawn_rules(level: &mut Level, kind: Kind, pos: BlockPos, trial: bool) -> bool {
     let name = kind.type_id().info().name;
     if level.spawner_env.difficulty == Difficulty::Peaceful
@@ -251,22 +343,18 @@ pub fn spawner_spawn_rules(level: &mut Level, kind: Kind, pos: BlockPos, trial: 
     }
     let env = level.spawner_env.env;
     let mut random = level.random().clone();
-    let ok = if kind.is_monster() {
-        trial || spawn::is_dark_enough_to_spawn(level, &env, pos, &mut random)
-    } else {
-        spawn::check_spawn_rules(
-            level,
-            &env,
-            kind,
-            pos,
-            &mut random,
-            if trial {
-                crate::mob::fam::SpawnReason::TrialSpawner
-            } else {
-                crate::mob::fam::SpawnReason::Spawner
-            },
-        )
-    };
+    let ok = spawn::check_spawn_rules(
+        level,
+        &env,
+        kind,
+        pos,
+        &mut random,
+        if trial {
+            crate::mob::fam::SpawnReason::TrialSpawner
+        } else {
+            crate::mob::fam::SpawnReason::Spawner
+        },
+    );
     *level.random() = random;
     ok
 }
@@ -616,6 +704,10 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
         } else {
             Vec::new()
         };
+        // `AbstractCubeMob.onSyncedDataUpdated(ID_SIZE)`: a cube whose spawn size changed
+        // turns to its head yaw (the loaded 0).
+        let cube_turned = matches!(mob.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube)
+            && crate::mob::fam::undead::cubes::size(&mob) != 1;
         let id = spawn::add_mob_with(
             level,
             mob,
@@ -638,6 +730,7 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
             let rot = e.as_ref().rot();
             e.set_rot(vanillite_world::entity::Rotation {
                 y_head_rot: 0.0,
+                y_rot: if cube_turned { 0.0 } else { rot.y_rot },
                 ..rot
             });
         }

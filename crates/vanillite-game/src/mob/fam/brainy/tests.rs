@@ -142,9 +142,10 @@ fn synched_data_uses_the_class_ids() {
         let mut w = crate::player::encode::DataWriter::new(&mut out, true);
         <super::Hooks as crate::mob::fam::FamilyHooks>::encode_data(&mut w, &m);
     }
-    // Baby (16, boolean), state (18, sniffer state), seed tick (19, int); 17 is age locked.
+    // Baby (16, boolean), age locked (17, boolean), state (18, sniffer state), seed tick (19,
+    // int).
     assert_eq!(out[0], 16);
-    assert!(out.contains(&18) && out.contains(&19));
+    assert!(out.contains(&17) && out.contains(&18) && out.contains(&19));
     let mut out = Vec::new();
     let h = spawned(Kind::Hoglin, 2);
     {

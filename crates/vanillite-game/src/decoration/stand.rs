@@ -317,15 +317,18 @@ pub fn spawn_stand(
 /// new entity's data.
 pub fn apply_entity_data_component(ents: &mut Entities, id: EntityId, stack: &ItemStack) {
     use vanillite_protocol::components::ids;
-    let Some(wire) = stack.component(ids::ENTITY_DATA) else {
-        return;
-    };
-    let Ok(Tag::Compound(mut data)) = vanillite_protocol::components_nbt::to_nbt(
-        ids::ENTITY_DATA,
-        wire,
-        &vanillite_protocol::item::InstalledRegistries,
-    ) else {
-        return;
+    let mut data = match stack.component(ids::ENTITY_DATA) {
+        Some(wire) => match vanillite_protocol::components_nbt::to_nbt(
+            ids::ENTITY_DATA,
+            wire,
+            &vanillite_protocol::item::InstalledRegistries,
+        ) {
+            Ok(Tag::Compound(data)) => data,
+            _ => return,
+        },
+        // The default `entity_data` of a spawn egg: only its `id`.
+        None if crate::item::item_id(stack).name().ends_with("_spawn_egg") => Compound::new(),
+        None => return,
     };
     // `entity.getType() == entityData.type()`.
     let kind = ents.store.get(id).map(|e| e.kind());
@@ -335,8 +338,9 @@ pub fn apply_entity_data_component(ents: &mut Entities, id: EntityId, stack: &It
     {
         return;
     }
-    // Spawn eggs carry only the `id`: nothing to load.
-    if data.is_empty() {
+    // Only the `id`: nothing changes for a decoration; a mob still loads its own data
+    // again (`entity.load`), which makes its brain anew.
+    if data.is_empty() && ents.mob(id).is_none() {
         return;
     }
     let Some(mut tag) = save_any(ents, id) else {
@@ -347,10 +351,11 @@ pub fn apply_entity_data_component(ents: &mut Entities, id: EntityId, stack: &It
     if let Some(u) = uuid {
         tag.insert("UUID", u);
     }
+    let (game_time, day_time) = (ents.game_time, ents.day_time);
     if !super::apply_nbt(ents, id, &tag)
         && let Some(m) = ents.mob_mut(id)
     {
-        crate::mob::nbt::apply_mob(m, &tag);
+        crate::mob::nbt::apply_mob(m, &tag, game_time, day_time);
         if let Some(mut e) = ents.store.get_mut(id) {
             e.mark_data_dirty();
         }

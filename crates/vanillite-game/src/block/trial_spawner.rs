@@ -4,8 +4,8 @@
 //! ejection and the cooldown. Configurations come from the `minecraft:trial_spawner` registry
 //! (by id) or inline.
 //!
-//! Ominous item spawners (`OminousItemSpawner` entities above players and mobs) are not
-//! spawned yet.
+//! Ominous spawners drop items on players and mobs through `OminousItemSpawner` entities
+//! ([`OminousItemSpawner`], ticked by [`tick_item_spawner`]).
 
 use std::collections::HashMap;
 
@@ -298,6 +298,9 @@ pub struct TrialSpawner {
     pub(crate) display: bool,
     /// `isOminous`, from the block state.
     pub(crate) ominous: bool,
+    /// `dispensing`: the items to drop when ominous with their weights, rolled once (not
+    /// saved).
+    pub(crate) dispensing: Option<Vec<(ItemStack, i32)>>,
 }
 
 impl Default for TrialSpawner {
@@ -316,6 +319,7 @@ impl Default for TrialSpawner {
             ejecting_loot_table: None,
             display: false,
             ominous: false,
+            dispensing: None,
         }
     }
 }
@@ -386,6 +390,7 @@ impl TrialSpawner {
                 .map(qualify),
             display: false,
             ominous: false,
+            dispensing: None,
         }
     }
 
@@ -836,6 +841,11 @@ fn spawn_mob(level: &mut Level, pos: BlockPos) -> Option<(u128, EntityId)> {
         Vec::new()
     };
     mob.persistent = true;
+    // `nextSpawnData.getEquipment().ifPresent(mob::equip)`.
+    if let Some((table, chances)) = data.equipment() {
+        let table = table.to_owned();
+        super::spawner::equip_from_table(level, &mut mob, at, &table, &chances);
+    }
     let id = spawn::add_mob_with(
         level,
         mob,
@@ -844,6 +854,18 @@ fn spawn_mob(level: &mut Level, pos: BlockPos) -> Option<(u128, EntityId)> {
         extra,
         crate::mob::fam::SpawnReason::TrialSpawner,
     );
+    // `Entity.load` turned head and body to the loaded yaw (0 without `Rotation`); the random
+    // yaw of `snapTo` turns the entity only.
+    if let Some(m) = level.entities.mob_mut(id) {
+        m.y_body_rot = 0.0;
+    }
+    if let Some(mut e) = level.entities.store.get_mut(id) {
+        let rot = e.as_ref().rot();
+        e.set_rot(vanillite_world::entity::Rotation {
+            y_head_rot: 0.0,
+            ..rot
+        });
+    }
     let uuid = level.entities.store.get(id)?.uuid();
     let flame = i32::from(ominous);
     level.level_event(None, 3011, pos, flame);
@@ -918,6 +940,12 @@ fn tick_and_get_next(level: &mut Level, pos: BlockPos, state: TrialState) -> Tri
             if !s.display {
                 let data = next_spawn_data(level, pos);
                 let has = data.is_some_and(|d| d.entity_type().is_some());
+                if has {
+                    // `EntityType.loadEntityRecursive` of the display entity: it takes the
+                    // next entity id, and its random the next seed of the stream.
+                    let _ = level.network_ids().next();
+                    let _ = crate::mob::new_entity_seed();
+                }
                 if let Some(s) = spawner_mut(level, pos) {
                     s.display = has;
                 }
@@ -957,6 +985,9 @@ fn tick_and_get_next(level: &mut Level, pos: BlockPos, state: TrialState) -> Tri
             }
             let additional = spawner_mut(level, pos).map_or(0, |s| s.additional_players());
             try_detect_players(level, pos, state);
+            if spawner_mut(level, pos).is_some_and(|s| s.ominous) {
+                spawn_ominous_item_spawner(level, pos);
+            }
             let Some(s) = spawner_mut(level, pos) else {
                 return state;
             };
@@ -1167,5 +1198,293 @@ mod tests {
         assert!(s.ready_to_open_shutter(140));
         assert!(s.ready_to_eject(130));
         assert!(!s.ready_to_eject(131));
+    }
+}
+
+// --- Ominous item spawners ---------------------------------------------------------------------
+
+/// `OminousItemSpawner`: drops its item (or shoots it down when it is a projectile) once its
+/// tick count reaches `spawn_item_after_ticks`, then dies.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OminousItemSpawner {
+    pub item: ItemStack,
+    pub spawn_item_after_ticks: i64,
+    /// `tickCount`.
+    pub tick_count: i32,
+}
+
+/// `TrialSpawnerStateData.getDispensingItems`: the `items_to_drop_when_ominous` table rolled
+/// once with the seed of the spawner's low resolution position, each stack weighted by its
+/// count.
+fn dispensing_items(level: &mut Level, pos: BlockPos) -> Vec<(ItemStack, i32)> {
+    if let Some(d) = spawner_mut(level, pos).and_then(|s| s.dispensing.clone()) {
+        return d;
+    }
+    let Some(table) = spawner_mut(level, pos).map(|s| s.active_config().items_to_drop_when_ominous)
+    else {
+        return Vec::new();
+    };
+    let Some(data) = crate::player::play::game_data() else {
+        return Vec::new();
+    };
+    // `lowResolutionPosition`: the world seed plus the packed position divided by 30, 20, 30.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    let low = BlockPos::new(
+        (pos.x as f32 / 30.0).floor() as i32,
+        (pos.y as f32 / 20.0).floor() as i32,
+        (pos.z as f32 / 30.0).floor() as i32,
+    );
+    let seed = level.seed().wrapping_add(low.as_long());
+    let mut rng = vanillite_base::random::LegacyRandom::new(seed);
+    let mut drops = Vec::new();
+    data.loot.random_items(&table, &mut rng, &mut drops);
+    if drops.is_empty() {
+        return Vec::new();
+    }
+    let list: Vec<(ItemStack, i32)> = drops
+        .into_iter()
+        .map(|d| {
+            let weight = d.count;
+            (d.with_count(1), weight)
+        })
+        .collect();
+    if let Some(s) = spawner_mut(level, pos) {
+        s.dispensing = Some(list.clone());
+    }
+    list
+}
+
+/// `TrialSpawnerState.spawnOminousOminousItemSpawner`: every tick an item is picked from the
+/// dispensing list (a level random draw); after the cooldown an item spawner appears above a
+/// random tracked mob or detected player.
+fn spawn_ominous_item_spawner(level: &mut Level, pos: BlockPos) {
+    let items = dispensing_items(level, pos);
+    let total: i32 = items.iter().map(|(_, w)| *w).sum();
+    if total <= 0 {
+        return;
+    }
+    let mut pick = level.random().next_int_bounded(total);
+    let mut item = ItemStack::EMPTY;
+    for (stack, w) in items {
+        pick -= w;
+        if pick < 0 {
+            item = stack;
+            break;
+        }
+    }
+    if item.is_empty() {
+        return;
+    }
+    let game_time = level.game_time();
+    if spawner_mut(level, pos).is_none_or(|s| game_time < s.cooldown_ends_at) {
+        return;
+    }
+    let Some(at) = position_to_spawn_item_spawner(level, pos) else {
+        return;
+    };
+    // `new OminousItemSpawner`: the entity's random takes the next seed of the stream.
+    let _ = crate::mob::new_entity_seed();
+    let after = i64::from(level.random().next_int_between_inclusive(60, 120));
+    let network_ids = std::sync::Arc::clone(level.network_ids_arc());
+    let new = vanillite_world::entity::NewEntity::new(
+        vanillite_data::entity::ids::OMINOUS_ITEM_SPAWNER,
+        network_ids.next(),
+        crate::mob::new_uuid(),
+        at,
+    );
+    let id = level.entities.spawn_special(
+        new,
+        crate::mob::boss::special::SpecialData::OminousItemSpawner(Box::new(OminousItemSpawner {
+            item,
+            spawn_item_after_ticks: after,
+            tick_count: 0,
+        })),
+    );
+    if !level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+    {
+        return;
+    }
+    let r = level.random();
+    let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
+    level.play_block_sound(
+        None,
+        BlockPos::containing(at.x, at.y, at.z),
+        sound_id("block.trial_spawner.spawn_item_begin"),
+        SOUND,
+        1.0,
+        pitch,
+    );
+    let ticks =
+        spawner_mut(level, pos).map_or(0, |s| s.ominous_config.get().ticks_between_item_spawners());
+    if let Some(s) = spawner_mut(level, pos) {
+        s.cooldown_ends_at = game_time + ticks;
+    }
+}
+
+/// `calculatePositionToSpawnSpawner`: above a detected player (not creative or spectator,
+/// alive, within the required range) or a tracked mob in range, chosen by `nextBoolean`.
+fn position_to_spawn_item_spawner(level: &mut Level, pos: BlockPos) -> Option<Vec3> {
+    let s = spawner_mut(level, pos)?;
+    let range = f64::from(s.required_player_range);
+    let (detected, mobs) = (s.detected_players.clone(), s.current_mobs.clone());
+    let c = center(pos);
+    let ents = &level.entities;
+    let near = |id: EntityId| {
+        ents.store
+            .get(id)
+            .is_some_and(|e| e.pos().distance_to_sqr(c) <= range * range)
+    };
+    let players: Vec<EntityId> = detected
+        .iter()
+        .filter_map(|u| ents.player_by_uuid(*u))
+        .filter(|&id| {
+            ents.player(id).is_some_and(|p| {
+                !matches!(p.game_mode, GameMode::Creative | GameMode::Spectator)
+                    && !p.survival.is_dead_or_dying()
+            }) && near(id)
+        })
+        .collect();
+    if players.is_empty() {
+        return None;
+    }
+    let mobs: Vec<EntityId> = mobs
+        .iter()
+        .filter_map(|(u, id)| id.or_else(|| find_mob(level, pos, *u)))
+        .filter(|&id| level.entities.mob(id).is_some_and(|m| m.is_alive()) && near(id))
+        .collect();
+    let r = level.random();
+    let eligible = if r.next_boolean() { mobs } else { players };
+    let target = match eligible.len() {
+        0 => return None,
+        1 => eligible[0],
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        n => eligible[usize::try_from(r.next_int_bounded(n as i32)).unwrap_or(0)],
+    };
+    // `calculatePositionAbove`: up to the height plus 2 to 5 blocks, stopped by blocks (the
+    // visual shapes are taken as the collision shapes); the centre of the block below.
+    let e = level.entities.store.get(target)?;
+    let (from, height) = (e.pos(), e.dims().height);
+    #[allow(clippy::cast_precision_loss)]
+    let up = height + 2.0 + level.random().next_int_bounded(4) as f32;
+    let to = Vec3::new(from.x, from.y + f64::from(up), from.z);
+    let hit = physics::clip(level, from, to)
+        .map_or_else(|| BlockPos::containing(to.x, to.y, to.z), |(b, _)| b);
+    let down = Vec3::new(
+        f64::from(hit.x) + 0.5,
+        f64::from(hit.y) + 0.5 - 1.0,
+        f64::from(hit.z) + 0.5,
+    );
+    let below = BlockPos::containing(down.x, down.y, down.z);
+    level
+        .block(below)
+        .collision_shape()
+        .is_empty()
+        .then_some(down)
+}
+
+/// `OminousItemSpawner.tick` on the server (`tickNonPassenger` counts the tick first): the
+/// warning sound 36 ticks before, then the item drops or flies down, level event 3021, the
+/// `entity_place` game event of the new entity, and the spawner dies (`entity_die`).
+pub fn tick_item_spawner(level: &mut Level, id: EntityId) {
+    use crate::mob::boss::special::SpecialData;
+    let Some(SpecialData::OminousItemSpawner(s)) = level.entities.special_mut(id) else {
+        return;
+    };
+    s.tick_count += 1;
+    let (tick, after) = (i64::from(s.tick_count), s.spawn_item_after_ticks);
+    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let block = BlockPos::containing(pos.x, pos.y, pos.z);
+    if tick == after - 36 {
+        level.play_block_sound(
+            None,
+            block,
+            sound_id("block.trial_spawner.about_to_spawn_item"),
+            crate::level::SOUND_NEUTRAL,
+            1.0,
+            1.0,
+        );
+    }
+    if tick < after {
+        return;
+    }
+    let item = match level.entities.special_mut(id) {
+        Some(SpecialData::OminousItemSpawner(s)) => std::mem::take(&mut s.item),
+        _ => ItemStack::EMPTY,
+    };
+    if !item.is_empty() {
+        let spawned = match super::dispenser::projectile_item_config(&item) {
+            Some((uncertainty, power, event)) => {
+                if let Some(event) = event {
+                    level.level_event(None, event, block, 0);
+                }
+                super::dispenser::spawn_projectile_item(
+                    level,
+                    pos,
+                    Direction::Down,
+                    &item,
+                    power,
+                    uncertainty,
+                )
+            }
+            // `new ItemEntity(level, x, y, z, item)`: its motion from its own random.
+            None => super::drops::spawn_item_moving(level, pos, item, None, 0, None),
+        };
+        level.level_event(None, 3021, block, 1);
+        let events = crate::level::game_event::events();
+        level.game_event(
+            events.entity_place,
+            pos,
+            crate::level::game_event::GameEventContext::of(spawned),
+        );
+    }
+    // `kill`: removed, then `entity_die`.
+    let events = crate::level::game_event::events();
+    level.game_event(
+        events.entity_die,
+        pos,
+        crate::level::game_event::GameEventContext::of(Some(id)),
+    );
+    level.entities.despawn(id);
+}
+
+/// The synched data of an ominous item spawner: `DATA_ITEM` (8).
+pub fn item_spawner_entity_data(out: &mut Vec<u8>, s: &OminousItemSpawner, all: bool) {
+    use vanillite_protocol::codec::Encode;
+    if all {
+        // `EntityDataSerializers.ITEM_STACK`.
+        crate::mob::boss::data::item(out, 8, 7, |o| s.item.encode(o));
+    }
+}
+
+/// `addAdditionalSaveData`.
+pub fn save_item_spawner(s: &OminousItemSpawner, out: &mut Compound) {
+    if !s.item.is_empty() {
+        out.insert(
+            "item",
+            Tag::Compound(crate::item_nbt::stack_to_nbt(&s.item)),
+        );
+    }
+    out.insert(
+        "spawn_item_after_ticks",
+        Tag::Long(s.spawn_item_after_ticks),
+    );
+}
+
+/// `readAdditionalSaveData`.
+pub fn load_item_spawner(tag: &Compound) -> OminousItemSpawner {
+    OminousItemSpawner {
+        item: tag
+            .get("item")
+            .and_then(Tag::as_compound)
+            .map_or(ItemStack::EMPTY, crate::item_nbt::stack_from_nbt),
+        spawn_item_after_ticks: match tag.get("spawn_item_after_ticks") {
+            Some(Tag::Long(v)) => *v,
+            _ => 0,
+        },
+        tick_count: 0,
     }
 }

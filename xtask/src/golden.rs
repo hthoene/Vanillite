@@ -181,6 +181,10 @@ fn sets(root: &Path, key: &Key) -> Result<Vec<Set>> {
     let bulk_dir = key.bulk_dir(root).join("scenarios");
     let mut files = Vec::new();
     collect_files(&scenarios, "json", &mut files)?;
+    // Soak scenarios (#166) keep their per-tick checksums in the bulk store, recorded by
+    // `cargo xtask parity soak`; they have no golden of their own.
+    let soak = scenarios.join("soak");
+    files.retain(|p| !p.starts_with(&soak));
     files.sort();
     for path in files {
         let name = path

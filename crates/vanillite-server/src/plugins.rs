@@ -397,6 +397,17 @@ impl ServerAccess for Services {
         }
     }
 
+    fn update_commands(&self, player: u128) -> bool {
+        let Some(global) = self.global.upgrade() else {
+            return false;
+        };
+        if global.players.connection(Uuid(player)).is_none() {
+            return false;
+        }
+        crate::commands::permissions_changed(&global, player);
+        true
+    }
+
     fn is_operator(&self, player: u128) -> bool {
         self.global
             .upgrade()
@@ -416,6 +427,30 @@ impl ServerAccess for Services {
     fn block_state_name(&self, state: u32) -> Option<String> {
         let state = BlockState(u16::try_from(state).ok()?);
         state.is_valid().then(|| state_text(state))
+    }
+
+    fn block_burnable(&self, state: u32) -> bool {
+        u16::try_from(state)
+            .map(BlockState)
+            .is_ok_and(|s| s.is_valid() && vanillite_game::block::fire::ignite_odds(s) > 0)
+    }
+
+    fn registry_entries(&self, registry: &str) -> Option<Vec<String>> {
+        let global = self.global.upgrade()?;
+        let packs = global.packs.loaded()?;
+        let registry = packs.registry(registry)?;
+        Some(registry.entries().iter().map(|e| e.id.clone()).collect())
+    }
+
+    fn registry_tag(&self, registry: &str, tag: &str) -> Option<Vec<String>> {
+        let global = self.global.upgrade()?;
+        let packs = global.packs.loaded()?;
+        let tags = packs.tags(registry)?;
+        if tag.is_empty() {
+            Some(tags.keys().cloned().collect())
+        } else {
+            tags.get(tag).cloned()
+        }
     }
 
     fn rule(&self, key: &str) -> Option<String> {

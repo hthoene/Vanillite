@@ -76,7 +76,7 @@ fn croak() -> Spec {
     fr(Behavior::Croak { counter: 0 })
 }
 
-fn frog_brain() -> BrainSpec {
+pub(super) fn frog_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -226,7 +226,7 @@ fn frog_brain() -> BrainSpec {
     }
 }
 
-fn tadpole_brain() -> BrainSpec {
+pub(super) fn tadpole_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -514,8 +514,8 @@ pub fn feed_tadpole(ix: &mut Interact<'_, '_>) -> Interaction {
     Interaction::Success
 }
 
-/// Synched data: frogs baby (16), age locked (17, never here), variant (18), tongue target
-/// (19); tadpoles from bucket (16), age locked (17).
+/// Synched data: frogs baby (16), age locked (17), variant (18), tongue target (19); tadpoles
+/// from bucket (16), age locked (17).
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     let s = state(m);
     if m.kind == Kind::Tadpole {
@@ -523,7 +523,7 @@ pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
         w.boolean(17, s.playing_dead, false);
         return;
     }
-    w.boolean(16, m.baby, false);
+    crate::mob::fam::companion::encode_ageable(w, m);
     w.varint(
         18,
         crate::player::encode::serializer::FROG_VARIANT,

@@ -260,6 +260,38 @@ pub fn hurt_crystal(
     true
 }
 
+/// `EndCrystal.kill`: the fight learns of the destroyed crystal (`onDestroyedBy` with a
+/// `generic` source), then it is removed without an explosion (`KILLED`, `ENTITY_DIE`).
+/// `false` when `id` is no living crystal.
+pub fn kill_crystal(ents: &mut Entities, env: &Env<'_>, cx: &mut MobContext, id: EntityId) -> bool {
+    let Some(e) = ents.store.get(id) else {
+        return false;
+    };
+    let (uuid, pos) = (e.uuid(), e.pos());
+    let Some(c) = crystal_mut(ents, id) else {
+        return false;
+    };
+    if c.removed {
+        return false;
+    }
+    c.removed = true;
+    cx.dragon_events.push(DragonEvent::CrystalDestroyed {
+        crystal: id,
+        uuid,
+        pos: BlockPos::containing(pos.x, pos.y, pos.z),
+        source: DamageSource::of(env.types.generic),
+    });
+    cx.discarded.push(id);
+    cx.actions.push(WorldAction::Level(
+        crate::mob::boss::warden::LevelAction::GameEvent {
+            event: crate::level::game_event::events().entity_die,
+            pos,
+            context: crate::level::game_event::GameEventContext::of(Some(id)),
+        },
+    ));
+    true
+}
+
 /// Where the segment enters `b`, as a fraction (`AABB.clip`).
 fn segment_box(from: Vec3, to: Vec3, b: &Aabb) -> Option<f64> {
     crate::mob::projectile::segment_box(from, to, b)
@@ -484,7 +516,9 @@ pub fn save(d: &SpecialData, out: &mut Compound) -> Option<()> {
             out.insert("leftOwner", Tag::Byte(i8::from(f.left_owner)));
             out.insert("acceleration_power", Tag::Double(f.acceleration_power));
         }
-        SpecialData::WitherSkull(_) | SpecialData::ThrownPotion(_) => {}
+        SpecialData::WitherSkull(_)
+        | SpecialData::ThrownPotion(_)
+        | SpecialData::OminousItemSpawner(_) => {}
     }
     Some(())
 }

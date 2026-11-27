@@ -53,6 +53,43 @@ pub fn kind_of(stack: &ItemStack) -> Option<EntityTypeId> {
     }
 }
 
+/// `ThrowablePotionItem.asProjectile` at `at` (a dispenser, an ominous item spawner) and
+/// `Projectile.spawnProjectileUsingShoot` along `dir`: a potion of one of `stack` without an
+/// owner. Returns the potion entity.
+pub fn spawn_shot(
+    ents: &mut Entities,
+    network_ids: &NetworkIds,
+    at: Vec3,
+    stack: &ItemStack,
+    dir: Vec3,
+    power: f32,
+    uncertainty: f32,
+) -> Option<EntityId> {
+    let kind = kind_of(stack)?;
+    // The potion's own random (its constructor takes the next entity seed), then `shoot`
+    // draws the spread from it.
+    let mut own = vanillite_base::random::LegacyRandom::new(crate::mob::new_entity_seed());
+    let (velocity, rot) = crate::mob::projectile::shoot(&mut own, dir, power, uncertainty);
+    let mut new = NewEntity::new(kind, network_ids.next(), crate::mob::new_uuid(), at);
+    new.velocity = velocity;
+    new.rot = rot;
+    new.flags = EntityFlags::HAS_IMPULSE;
+    let mut potion = stack.clone();
+    potion.count = 1;
+    let id = ents.spawn_special(
+        new,
+        SpecialData::ThrownPotion(Box::new(ThrownPotion {
+            owner: None,
+            owner_uuid: None,
+            stack: potion,
+            left_owner: false,
+            tick_count: 0,
+            has_been_shot: false,
+        })),
+    );
+    ents.launched(id, None).then_some(id)
+}
+
 /// `ThrowablePotionItem.use` (with the throw sound of `SplashPotionItem` /
 /// `LingeringPotionItem`): throws a copy of `stack` from the eyes of `thrower` and shrinks the
 /// stack unless the thrower has infinite materials. Returns the potion entity.

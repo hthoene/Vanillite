@@ -610,12 +610,8 @@ impl ServerWorld {
             plugins.players_moved(&mut crate::plugins::PluginWorld(self, ctx.global), &moves);
         }
         plugins.run_world_tasks(&mut crate::plugins::PluginWorld(self, ctx.global), ctx.tick);
-        self.survival.moves(
-            &mut self.level.entities,
-            &self.level.chunks,
-            ctx.global,
-            &self.dimension,
-        );
+        self.survival
+            .moves(&mut self.level, ctx.global, &self.dimension);
         self.post_player_game_events();
         self.mobs.player_actions(
             &mut self.level,
@@ -651,7 +647,7 @@ impl ServerWorld {
             // `advanceWeatherCycle`, then `tickTime`: the overworld advances the shared game
             // time, every world runs on it. The world border moves first.
             self.level.border.tick();
-            self.survival.tick_level(&self.level.entities, ctx.global);
+            self.survival.tick_level(&mut self.level, ctx.global);
             self.level.set_weather(self.survival.weather);
             self.level
                 .settings

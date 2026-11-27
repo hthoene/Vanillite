@@ -74,6 +74,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
     if d.kind != MissileKind::Trident {
         return;
     }
+    let was_in_ground = d.in_ground;
     let mut own = vanillite_base::random::LegacyRandom::from_state(d.random_state);
     let Some(e) = t.ents.store.get(id) else {
         return;
@@ -249,7 +250,11 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         e.set_pos(pos);
         e.set_velocity(velocity);
         e.set_rot(Rotation { ..rot });
-        e.mark_data_dirty();
+        // Only `IN_GROUND` of the synched values changes here; resending it would restart the
+        // client's shake.
+        if d.in_ground != was_in_ground {
+            e.mark_data_dirty();
+        }
     }
     d.random_state = own.state();
     if let Some(m) = t.ents.missile_mut(id) {

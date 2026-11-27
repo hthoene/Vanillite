@@ -257,6 +257,11 @@ pub struct MobData {
     /// `flyDist` and `nextFlap` (chickens and parrots flap when the flight passes it).
     pub fly_dist: f32,
     pub next_flap: f32,
+    /// `crystalSoundIntensity` and `lastCrystalSoundPlayTick` (the amethyst chime of steps).
+    pub crystal_intensity: f32,
+    pub last_crystal_tick: i32,
+    /// `AbstractHorse.gallopSoundCounter`.
+    pub gallop_counter: i32,
     /// The state of bosses and the other kinds with their own machinery.
     pub boss: boss::Ext,
     /// The last world tick the mob counts as active for `performance.activation-range` (in
@@ -383,6 +388,9 @@ impl MobData {
             next_step: 1.0,
             fly_dist: 0.0,
             next_flap: 1.0,
+            crystal_intensity: 0.0,
+            last_crystal_tick: 0,
+            gallop_counter: 0,
             boss: boss::new_ext(kind),
             active_until: 0,
         };
@@ -799,12 +807,6 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// `stepOn` of the block at the position for the entity standing on it.
     StepOn(BlockPos, EntityId),
-    /// `Mob.finalizeSpawn` of a mob made outside a spawn (a cured zombie villager): the
-    /// follow range bonus and left-handedness from the level random.
-    MobSpawnBonus(EntityId),
-    /// `HoneyBlock.maybeDoSlideEffects` of a sliding player: the slide sound and particles,
-    /// each one time in five by the level random.
-    HoneySlideEffects(EntityId),
     /// `onProjectileHit` of the block at the position, hit by the projectile at the point
     /// with the speed.
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
@@ -837,7 +839,7 @@ pub enum WorldAction {
     /// `CreakingHeartBlockEntity.creakingHurt` of the heart at the position.
     CreakingHurt(BlockPos),
     /// `container.startOpen(user)` (`true`) or `stopOpen(user)` of a block container by a mob.
-    ContainerOpen(crate::block::container::ContainerRef, bool),
+    ContainerOpen(crate::block::container::ContainerRef, bool, EntityId),
     /// `setItem` of the given slots of a block container by a mob, then `setChanged`.
     ContainerSlots(
         crate::block::container::ContainerRef,
@@ -882,49 +884,6 @@ impl WorldAction {
                     crate::block::contact::step_on(level, pos, id);
                 }
             }
-            WorldAction::MobSpawnBonus(id) => {
-                let bonus = level.random().triangle(0.0, 0.114_850_000_000_000_01);
-                let left_handed = level.random().next_float() < 0.05;
-                if let Some(m) = level.entities.mob_mut(id) {
-                    m.attrs.follow_range *= 1.0 + bonus;
-                    m.left_handed = left_handed;
-                }
-            }
-            WorldAction::HoneySlideEffects(id) => {
-                let Some((pos, network_id)) = level
-                    .entities
-                    .store
-                    .get(id)
-                    .map(|e| (e.pos(), e.network_id().0))
-                else {
-                    return true;
-                };
-                if level.random().next_int_bounded(5) == 0
-                    && let Some(sound) = vanillite_data::registry::SOUND_EVENT
-                        .id("minecraft:block.honey_block.slide")
-                {
-                    // `Player.playSound`: heard by everyone but the player.
-                    level.play_sound(
-                        Some(id),
-                        pos.x,
-                        pos.y,
-                        pos.z,
-                        sound,
-                        crate::level::SOUND_PLAYERS,
-                        1.0,
-                        1.0,
-                    );
-                }
-                if level.random().next_int_bounded(5) == 0 {
-                    let packet = vanillite_protocol::SharedPacket::of(
-                        &vanillite_protocol::packets::play::clientbound::EntityEvent {
-                            entity_id: network_id,
-                            event: 53,
-                        },
-                    );
-                    level.output().nearby_packets.push((pos, 160.0, packet));
-                }
-            }
             WorldAction::TrampleFarmland(pos, id) => {
                 crate::block::contact::trample_farmland(level, pos, Some(id));
             }
@@ -963,7 +922,7 @@ impl WorldAction {
             WorldAction::CreakingHurt(pos) => {
                 crate::block::creaking_heart::creaking_hurt(level, pos)
             }
-            WorldAction::ContainerOpen(c, open) => {
+            WorldAction::ContainerOpen(c, open, by) => {
                 let halves = match c {
                     crate::block::container::ContainerRef::Block(p) => [Some(p), None],
                     crate::block::container::ContainerRef::Double(a, b) => [Some(a), Some(b)],
@@ -972,9 +931,9 @@ impl WorldAction {
                 };
                 for p in halves.into_iter().flatten() {
                     if open {
-                        crate::block::container::start_open(level, p, false);
+                        crate::block::container::start_open(level, p, false, Some(by));
                     } else {
-                        crate::block::container::stop_open(level, p, false);
+                        crate::block::container::stop_open(level, p, false, Some(by));
                     }
                 }
             }
@@ -1550,5 +1509,5 @@ mod size_tests {
         );
     }
 
-    const LIMIT: usize = 1776;
+    const LIMIT: usize = 1792;
 }

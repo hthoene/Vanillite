@@ -77,7 +77,7 @@ fn look_target_same_medium(t: &mut Tick<'_, '_>) -> bool {
     crate::mob::is_water(t.level.block(pos)) == in_water(t)
 }
 
-fn brain_spec() -> BrainSpec {
+pub(super) fn brain_spec() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -464,11 +464,10 @@ fn bucket_stack(m: &MobData, item: &str) -> crate::item::ItemStack {
     stack
 }
 
-/// Synched data: baby (16), age locked (17, never here), variant (18), playing dead (19), from
-/// bucket (20).
+/// Synched data: baby (16), age locked (17), variant (18), playing dead (19), from bucket (20).
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     let s = state(m);
-    w.boolean(16, m.baby, false);
+    crate::mob::fam::companion::encode_ageable(w, m);
     w.int(18, s.variant, 0);
     w.boolean(19, s.playing_dead, false);
     w.boolean(20, s.from_bucket, false);

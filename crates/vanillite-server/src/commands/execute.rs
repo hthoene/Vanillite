@@ -362,7 +362,8 @@ pub(crate) fn modify(
         }
         ExecuteOp::Summon => {
             let id = args.identifier("entity").ok_or_else(|| missing("entity"))?;
-            let target = summon(env, source, id, source.pos, &vanillite_nbt::Compound::new())?;
+            let empty = vanillite_nbt::Compound::new();
+            let target = summon(env, source, id, source.pos, &empty, true)?;
             one(with_entity(source, &target))
         }
         ExecuteOp::On(relation) => {
@@ -520,6 +521,7 @@ pub(crate) fn summon(
     id: &str,
     pos: Vec3,
     nbt: &vanillite_nbt::Compound,
+    finalize: bool,
 ) -> Result<Target, CommandError> {
     summon_for(
         env,
@@ -527,18 +529,21 @@ pub(crate) fn summon(
         id,
         pos,
         nbt,
+        finalize,
         vanillite_abi::spawn_reason::COMMAND,
     )
 }
 
 /// [`summon`] for a plugin's spawn reason (`vanillite_abi::spawn_reason`: `COMMAND`, or
-/// `PLUGIN` for `entity_spawn`); a plugin that cancels the spawn makes it fail.
+/// `PLUGIN` for `entity_spawn`); a plugin that cancels the spawn makes it fail. `finalize`:
+/// mobs get `finalizeSpawn` (`/summon` without NBT).
 pub(crate) fn summon_for(
     env: &mut Env<'_>,
     source: &CommandSource,
     id: &str,
     pos: Vec3,
     nbt: &vanillite_nbt::Compound,
+    finalize: bool,
     reason: u32,
 ) -> Result<Target, CommandError> {
     use vanillite_game::entities::{FallingBlockData, PrimedTntData};
@@ -564,14 +569,16 @@ pub(crate) fn summon_for(
     if source.world != env.world || kind == ids::PLAYER {
         return Err(failed());
     }
-    // Decorations, armor stands and mannequins take their seed when their data is created.
+    // Decorations, armor stands, mannequins and mobs take their seed when their data is
+    // created.
     let decor = vanillite_game::decoration::is_decor_kind(kind)
         || vanillite_game::mob::kinds::Kind::by_name(id)
             .is_some_and(|k| k.family() == vanillite_game::mob::Family::Decor);
+    let own_seed = decor || vanillite_game::mob::kinds::Kind::by_name(id).is_some();
     // The seed a fresh UUID's new entity took (its own random).
     let mut fresh_seed = None;
     let mut fresh_uuid = || {
-        if decor {
+        if own_seed {
             vanillite_game::mob::new_uuid()
         } else {
             let (uuid, seed) = env.level.new_uuid_and_seed();
@@ -607,7 +614,9 @@ pub(crate) fn summon_for(
         // Mobs with behaviour: `finalizeSpawn` with the command reason.
         let table = env.global.systems.mob_spawns.get().map(Arc::as_ref);
         let difficulty = env.global.level.difficulty();
-        let id = vanillite_game::mob::spawn::summon(env.level, table, mob, pos, difficulty, reason);
+        let id = vanillite_game::mob::spawn::summon(
+            env.level, table, mob, pos, difficulty, reason, finalize,
+        );
         if !env.level.entities.store.contains(id) {
             // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
             return Err(failed());
@@ -743,7 +752,8 @@ pub(crate) fn summon_for(
                 .and_then(Tag::as_i64)
                 .is_none_or(|v| v != 0),
             BlockPos::new(0, 0, 0),
-            vanillite_game::mob::new_entity_seed(),
+            // The seed the fresh UUID's entity took: one draw of the seed stream per entity.
+            fresh_seed.unwrap_or_else(vanillite_game::mob::new_entity_seed),
         );
         data.time = nbt
             .get("Time")

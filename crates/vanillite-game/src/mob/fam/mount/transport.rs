@@ -337,7 +337,7 @@ fn on_reached_interaction(
     if ticks == 1 {
         clear_opened_chest(t);
         if let Some(c) = target_container(t, pos, state) {
-            t.cx.actions.push(WorldAction::ContainerOpen(c, true));
+            t.cx.actions.push(WorldAction::ContainerOpen(c, true, t.id));
             golem_mut(t.mob()).opened_chest = Some((pos, c));
         }
         set_state(t, golem_state);
@@ -362,7 +362,8 @@ fn on_start_travelling(t: &mut Tick<'_, '_>, s: &mut Transport) {
 /// `clearOpenedChestPos` (with the lid it opened closing).
 pub fn clear_opened_chest(t: &mut Tick<'_, '_>) {
     if let Some((_, c)) = golem_mut(t.mob()).opened_chest.take() {
-        t.cx.actions.push(WorldAction::ContainerOpen(c, false));
+        t.cx.actions
+            .push(WorldAction::ContainerOpen(c, false, t.id));
     }
 }
 

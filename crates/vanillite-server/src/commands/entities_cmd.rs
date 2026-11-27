@@ -330,8 +330,15 @@ fn summon(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
         .coordinates("pos")
         .map_or(source.pos, |c| resolve_position(source, c));
     let empty = Compound::new();
-    let nbt = args.compound("nbt").unwrap_or(&empty);
-    let entity = super::execute::summon(env, source, id, pos, nbt)?;
+    let given = args.compound("nbt");
+    let entity = super::execute::summon(
+        env,
+        source,
+        id,
+        pos,
+        given.unwrap_or(&empty),
+        given.is_none(),
+    )?;
     source.send_success(
         env.global,
         Component::translatable("commands.summon.success", vec![entity.display()]),
@@ -508,7 +515,8 @@ pub(crate) fn hurt_any(
     hurt
 }
 
-/// `Entity.kill`: living entities take `genericKill` damage, the others are removed.
+/// `Entity.kill`: living entities take `genericKill` damage, the others are removed; the
+/// dragon and end crystals tell the End fight (their own `kill`).
 pub(crate) fn kill_any(
     level: &mut vanillite_game::level::Level,
     global: &Global,
@@ -528,10 +536,20 @@ pub(crate) fn kill_any(
         for (event, pos, context) in events {
             level.game_event(event, pos, context);
         }
+    } else if level
+        .entities
+        .mob(id)
+        .is_some_and(|m| m.kind == vanillite_game::mob::Kind::EnderDragon)
+    {
+        WorldSurvival::with_entities(level, global, dimension, |_, ents, _, cx| {
+            vanillite_game::mob::boss::dragon::kill(ents, cx, id)
+        });
     } else if level.entities.mob(id).is_some() {
         let source = DamageSource::of(global.level.damage_types.generic_kill);
         hurt_any(level, global, dimension, id, source, f32::MAX);
-    } else {
+    } else if !WorldSurvival::with_entities(level, global, dimension, |_, ents, e, cx| {
+        vanillite_game::mob::boss::dragon::crystal::kill_crystal(ents, e, cx, id)
+    }) {
         level.entities.despawn(id);
     }
 }

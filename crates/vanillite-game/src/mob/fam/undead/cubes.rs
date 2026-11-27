@@ -680,8 +680,18 @@ pub fn on_die(_h: &mut Hurt<'_, '_>) {}
 
 // --- Sulfur cubes -------------------------------------------------------------------------
 
-fn has_body_item(m: &MobData) -> bool {
+pub fn has_body_item(m: &MobData) -> bool {
     !m.equipment.get(EquipmentSlot::Body).is_empty()
+}
+
+/// `SulfurCube.loadFromBucketTag` after the default data: `setAge`, `setAgeLocked`, then
+/// `setFromBucket(true)`.
+pub fn load_from_bucket(m: &mut MobData, age: i32, age_locked: bool) {
+    m.age = age;
+    m.baby = age < 0;
+    let c = cs_mut(m);
+    c.age_locked = age_locked;
+    c.from_bucket = true;
 }
 
 /// `requiresCustomPersistence`: a block inside or from a bucket.
@@ -827,31 +837,21 @@ fn bucket(ix: &mut Interact<'_, '_>, pos: Vec3) -> Interaction {
     if !m.is_alive() {
         return Interaction::Pass;
     }
-    let Some(item) = vanillite_data::registry::ITEM.id("minecraft:sulfur_cube_bucket") else {
-        return Interaction::Pass;
-    };
-    let mut data = Compound::new();
-    if let Some(name) = m.custom_name.as_deref()
-        && let Some(tag) = crate::mob::nbt::component_tag(name)
+    // `SulfurCube.saveToBucketTag`: the default data, the swallowed block as
+    // `sulfur_cube_content`, the age and the age lock.
+    let (mut stack, mut data) = crate::mob::fam::bucket_default(m, "minecraft:sulfur_cube_bucket");
+    let body = m.equipment.get(EquipmentSlot::Body);
+    if !body.is_empty()
+        && let Some(id) =
+            vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:sulfur_cube_content")
     {
-        data.insert("CustomName", tag);
+        let mut bytes = Vec::new();
+        body.encode_template(&mut bytes);
+        stack.patch_mut().set(id, bytes.into());
     }
-    if m.no_ai {
-        data.insert("NoAI", true);
-    }
-    if m.silent {
-        data.insert("Silent", true);
-    }
-    data.insert("Health", m.health);
     data.insert("age", m.age);
     data.insert("age_locked", cs(m).is_some_and(|c| c.age_locked));
-    let mut stack = ItemStack::new(item, 1);
-    if let Some(id) =
-        vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:bucket_entity_data")
-        && let Some(bytes) = crate::mob::nbt::tag_component(&Tag::Compound(data))
-    {
-        stack.patch_mut().set(id, bytes);
-    }
+    crate::mob::fam::set_bucket_data(&mut stack, data);
     play(ix, pos, "minecraft:item.bucket.fill_sulfur_cube");
     crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
     crate::mob::animal::fill_held(ix.ents, ix.env, ix.player, ix.hand, stack);

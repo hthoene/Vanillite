@@ -1981,9 +1981,10 @@ pub fn spawn_for_chunk_generation(
     }
 }
 
-/// Spawns a mob by command (`/summon`): `finalizeSpawn` with `COMMAND`, persistent. `reason`
-/// is the plugins' `vanillite_abi::spawn_reason` (`COMMAND`, or `PLUGIN` for `entity_spawn`);
-/// a plugin may cancel the spawn (the returned mob is then gone).
+/// Spawns a mob by command (`/summon`): loaded facing south (`Rotation` defaults to zero),
+/// then `finalizeSpawn` with `COMMAND` when `finalize` (`/summon` without NBT). `reason` is the
+/// plugins' `vanillite_abi::spawn_reason` (`COMMAND`, or `PLUGIN` for `entity_spawn`); a
+/// plugin may cancel the spawn (the returned mob is then gone).
 pub fn summon(
     level: &mut Level,
     table: Option<&SpawnTable>,
@@ -1991,26 +1992,30 @@ pub fn summon(
     pos: Vec3,
     difficulty: Difficulty,
     reason: u32,
+    finalize_spawn: bool,
 ) -> EntityId {
     let seed = crate::mob::new_entity_seed();
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let env = Environment::default();
-    let extra = with_level_random(level, |level, random| {
-        finalize(
-            level,
-            table,
-            &env,
-            &mut mob,
-            block,
-            difficulty,
-            0,
-            SpawnReason::Command,
-            random,
-        )
-    });
-    let y_rot = level.random().next_float() * 360.0;
-    add_mob_with_code(level, mob, pos, y_rot, extra, reason)
+    let extra = if finalize_spawn {
+        with_level_random(level, |level, random| {
+            finalize(
+                level,
+                table,
+                &env,
+                &mut mob,
+                block,
+                difficulty,
+                0,
+                SpawnReason::Command,
+                random,
+            )
+        })
+    } else {
+        Vec::new()
+    };
+    add_mob_with_code(level, mob, pos, 0.0, extra, reason)
 }
 
 /// `CatSpawner`'s state.

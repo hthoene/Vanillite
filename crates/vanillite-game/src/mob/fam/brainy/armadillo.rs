@@ -47,7 +47,7 @@ fn is_player(t: &Tick<'_, '_>, id: EntityId) -> bool {
     t.ents.player(id).is_some()
 }
 
-fn brain_spec() -> BrainSpec {
+pub(super) fn brain_spec() -> BrainSpec {
     let mut panic = Spec::animal_panic(2.0);
     // `ArmadilloPanic`: environmental causes only, rolling out first.
     if let Some(bh::Behavior::AnimalPanic { causes, .. }) = panic.behavior_mut() {
@@ -349,9 +349,9 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     r
 }
 
-/// Synched data: baby (16), age locked (17, never here), state (18).
+/// Synched data: baby (16), age locked (17), state (18).
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
-    w.boolean(16, m.baby, false);
+    crate::mob::fam::companion::encode_ageable(w, m);
     w.varint(
         18,
         crate::player::encode::serializer::ARMADILLO_STATE,
