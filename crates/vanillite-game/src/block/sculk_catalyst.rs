@@ -124,9 +124,16 @@ impl Catalyst {
             .map(|c| {
                 let mut t = Compound::new();
                 t.insert("pos", Tag::IntArray(vec![c.pos.x, c.pos.y, c.pos.z]));
-                t.insert("charge", Tag::Int(c.charge));
-                t.insert("decay_delay", Tag::Int(c.decay_delay));
-                t.insert("update_delay", Tag::Int(c.update_delay));
+                // `optionalFieldOf` with a default: omitted when it holds the default.
+                if c.charge != 0 {
+                    t.insert("charge", Tag::Int(c.charge));
+                }
+                if c.decay_delay != 1 {
+                    t.insert("decay_delay", Tag::Int(c.decay_delay));
+                }
+                if c.update_delay != 0 {
+                    t.insert("update_delay", Tag::Int(c.update_delay));
+                }
                 if let Some(f) = c.facings {
                     t.insert(
                         "facings",

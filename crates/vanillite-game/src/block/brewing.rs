@@ -125,13 +125,10 @@ impl BrewingStand {
     pub fn save(&self, out: &mut Compound) {
         super::lock::save(&self.lock, out);
         super::container::save_name(&self.custom_name, out);
-        out.insert(
-            "BrewTime",
-            Tag::Short(i16::try_from(self.brew_time).unwrap_or(0)),
-        );
+        out.insert("BrewTime", Tag::Int(self.brew_time));
         out.insert("total_brew_time", Tag::Int(self.total_brew_time));
-        super::container::save_items(&self.items, out);
-        out.insert("Fuel", Tag::Byte(i8::try_from(self.fuel).unwrap_or(0)));
+        super::container::save_items_always(&self.items, out);
+        out.insert("Fuel", Tag::Int(self.fuel));
         out.insert("total_fuel", Tag::Int(self.total_fuel));
         out.insert("speed_multiplier", Tag::Float(self.speed));
     }
