@@ -7,6 +7,29 @@
 - Optional: [sccache](https://github.com/mozilla/sccache) as `RUSTC_WRAPPER` shares compiled
   dependencies between checkouts.
 - A JDK 25 is needed only for `cargo xtask vanilla update` and golden regeneration.
+- `cargo xtask setup` once per clone (`--global`: for every clone of this user): installs the
+  merge driver for generated and collective files (see [Merging](#merging)).
+
+## Merging
+
+Many branches land in parallel, so files that every branch extends are built to merge without
+conflicts:
+
+- **Merge driver** `vanillite` (`xtask/src/merge.rs`, installed by `cargo xtask setup`, a copy
+  of the xtask binary under `.git/vanillite/` or with `--global` under
+  `~/.local/share/vanillite/`). `.gitattributes` lists the files it merges: `Cargo.lock` (per
+  package; dependency lists as sets), the golden `KEYS.toml` files (per entry), the Pterodactyl
+  egg (per field and per variable), `Cargo.toml` files and the rule catalogue (two insertions at
+  the same place keep both; TOML must still parse, Rust must pass rustfmt) and `lib.rs`,
+  `mod.rs`, `main.rs` (the same for `mod`/`use` lines). Any other conflict stays a normal
+  conflict. Run `cargo xtask setup` again after the driver changes.
+- **After a merge** run `cargo xtask regen`: it rewrites the generated files from their sources
+  (codegen and the egg; cargo updates `Cargo.lock` while building xtask). A conflict in a
+  generated file is resolved by taking either side and running it.
+- **One file per entry** where a list grows with every change: parity scenarios
+  (`scenarios/*.json`) and their known divergences (`scenarios/divergences/<scenario>.toml`).
+  Keep new registries that way (directory scanning), or sorted with one entry per line and a
+  trailing separator.
 
 ## Everyday commands
 
@@ -21,6 +44,7 @@
 | `cargo xtask codegen --check` | Generated tables match `data/vanilla/`. |
 | `cargo xtask egg --check` | The Pterodactyl egg matches the configuration schema (`cargo xtask egg` regenerates it). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
+| `cargo xtask regen` | After a merge: rewrite generated files (codegen, egg). |
 
 ## New Minecraft versions
 
@@ -172,7 +196,7 @@ Adding a mob:
    the first random call Vanillite makes differently (a missing goal, a draw from the wrong
    random, a different call order). The number of draws between two `rng` states shows how
    many calls each side made.
-4. Fix it, or record what is left in `scenarios/divergences.toml` (tick, cause, owner): the
+4. Fix it, or record what is left in `scenarios/divergences/<scenario>.toml` (tick, cause, owner): the
    check then stays green while the first difference is at exactly that tick, fails when it
    moves earlier (a regression) and asks to raise the tick when it moves later. Editing that
    file needs no new recording.

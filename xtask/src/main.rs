@@ -17,6 +17,7 @@
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
 //! cargo xtask bench list | report | nightly [--no-push]
+//! cargo xtask setup [--global] | regen
 //! ```
 
 mod bench;
@@ -26,6 +27,7 @@ mod docker;
 mod egg;
 mod golden;
 mod loadtest;
+mod merge;
 mod multiversion;
 mod normalize;
 mod vanilla;
@@ -140,7 +142,14 @@ pub const USAGE: &str = "usage:
   cargo xtask bench nightly [--no-push]
       When origin/dev has code newer than the published results: runs `bench all --publish` in
       the worktree target/bench/tree and commits the results on the branch
-      bench/results-<date> (pushed unless --no-push; then hand it to the normal landing).";
+      bench/results-<date> (pushed unless --no-push; then hand it to the normal landing).
+  cargo xtask setup [--global]
+      Install the git merge driver `vanillite` for the files .gitattributes marks (Cargo.lock,
+      golden KEYS.toml, the egg, Cargo.toml, module lists, the rule catalogue): parallel
+      additions there merge without conflicts. --global: for all clones of this user.
+  cargo xtask regen
+      After a merge: rewrite the generated files (vanillite-data codegen, the egg) from their
+      sources; cargo updates Cargo.lock on the way.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -162,6 +171,11 @@ fn main() -> ExitCode {
         ["egg", rest @ ..] => egg::run(&repo_root(), rest),
         ["loadtest", rest @ ..] => loadtest::run(&repo_root(), rest),
         ["bench", rest @ ..] => bench::run(&repo_root(), rest),
+        ["setup", rest @ ..] => merge::setup(rest),
+        ["regen"] => merge::regen(&repo_root()),
+        ["merge-driver", base, ours, theirs, marker, path] => {
+            merge::driver(base, ours, theirs, marker, path)
+        }
         _ => Err(USAGE.to_owned()),
     };
     match result {

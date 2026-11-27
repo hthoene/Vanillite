@@ -1,0 +1,3 @@
+tick = 18
+cause = "Vanillite plays the ambient sound on tick 18 (roll 15 < ambientSoundTime 17); Vanilla's counter is lower (cause not found yet)"
+owner = "architect #120"

@@ -231,13 +231,12 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
     let diff = expected.diff(&serial, DIFF_LIMIT);
     match (known, first) {
         (Some(d), None) => Err(format!(
-            "matches the golden now: remove its entry (tick {}: {}) from \
-             scenarios/divergences.toml",
-            d.tick, d.cause
+            "matches the golden now: remove scenarios/divergences/{}.toml (tick {}: {})",
+            scenario.name, d.tick, d.cause
         )),
         (Some(d), Some(t)) => Err(format!(
             "the first divergence moved from tick {} to tick {t} ({}; {}, owner {}): {} the \
-             tick in scenarios/divergences.toml if intended:\n  {}",
+             tick in scenarios/divergences/{}.toml if intended:\n  {}",
             d.tick,
             scenario.description,
             d.cause,
@@ -247,6 +246,7 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
             } else {
                 "regression, or lower"
             },
+            scenario.name,
             diff.join("\n  ")
         )),
         _ => Err(format!(

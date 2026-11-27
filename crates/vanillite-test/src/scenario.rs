@@ -84,11 +84,12 @@
 //! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line
 //! as the server (permission level 4) at the origin of the overworld before that tick.
 //!
-//! Known divergences from Vanilla live in `scenarios/divergences.toml`, not in the scenario
-//! (so they change without a new recording):
+//! Known divergences from Vanilla live in `scenarios/divergences/<scenario>.toml`, not in the
+//! scenario (so they change without a new recording), one file per scenario so parallel
+//! changes never touch the same file:
 //!
 //! ```toml
-//! [mob_zombie_chase]
+//! # scenarios/divergences/mob_zombie_chase.toml
 //! tick = 1
 //! cause = "the zombie lacks the villager, iron golem and turtle target goals"
 //! owner = "gameplay-developer #58"
@@ -247,7 +248,7 @@ pub struct Hurt {
     pub amount: f32,
 }
 
-/// A known divergence from Vanilla (`scenarios/divergences.toml`).
+/// A known divergence from Vanilla (`scenarios/divergences/<scenario>.toml`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Divergence {
     /// The tick of the first difference.
@@ -532,20 +533,19 @@ fn pos(v: Option<&Value>) -> Result<BlockPos, String> {
     Ok(BlockPos::new(c(0)?, c(1)?, c(2)?))
 }
 
-/// The known divergence of a scenario from `scenarios/divergences.toml`.
+/// The known divergence of a scenario from `scenarios/divergences/<name>.toml`.
 fn divergence(name: &str) -> Result<Option<Divergence>, String> {
-    let path = Scenario::dir().join("divergences.toml");
+    let path = Scenario::dir()
+        .join("divergences")
+        .join(format!("{name}.toml"));
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    let table: toml::Table = text
+    let entry: toml::Table = text
         .parse()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    let Some(entry) = table.get(name) else {
-        return Ok(None);
-    };
     let field = |k: &str| {
         entry
             .get(k)
@@ -557,7 +557,7 @@ fn divergence(name: &str) -> Result<Option<Divergence>, String> {
             .get("tick")
             .and_then(toml::Value::as_integer)
             .and_then(|t| u32::try_from(t).ok())
-            .ok_or_else(|| format!("{}: [{name}] needs a tick", path.display()))?,
+            .ok_or_else(|| format!("{}: needs a tick", path.display()))?,
         cause: field("cause").to_owned(),
         owner: field("owner").to_owned(),
     }))

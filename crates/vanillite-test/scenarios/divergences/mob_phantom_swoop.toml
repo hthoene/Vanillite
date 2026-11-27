@@ -1,0 +1,3 @@
+tick = 2
+cause = "the phantom's motion differs in the last bits on tick 2 (float/double rounding of the circling movement)"
+owner = "architect #120"
