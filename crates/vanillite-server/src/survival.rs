@@ -91,6 +91,9 @@ pub(crate) struct WorldSurvival {
 
 /// Receivers from which effects are delivered in parallel parts (fewer: on the tick thread).
 const PARALLEL_RECEIVERS: usize = 256;
+/// Pairs (effect, receiver) from which a delivery runs in parallel parts: below, splitting
+/// costs more than it saves.
+const PARALLEL_PAIRS: usize = 128 * 1024;
 /// Receivers per part of a parallel delivery at least.
 const RECEIVERS_PER_PART: usize = 128;
 
@@ -929,11 +932,11 @@ impl WorldSurvival {
         self.build_grid(entities);
         let mut out = std::mem::take(&mut self.outgoing);
         out.begin(entities);
-        match self
-            .compute
-            .clone()
-            .filter(|c| c.phase_threads() > 1 && self.receivers.len() >= PARALLEL_RECEIVERS)
-        {
+        match self.compute.clone().filter(|c| {
+            c.phase_threads() > 1
+                && self.receivers.len() >= PARALLEL_RECEIVERS
+                && effects.len().saturating_mul(self.receivers.len()) >= PARALLEL_PAIRS
+        }) {
             Some(compute) => self.deliver_parts(&effects, entities, global, &mut out, &compute),
             None => self.deliver_serial(&effects, entities, global, &mut out),
         }
