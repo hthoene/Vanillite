@@ -16,6 +16,7 @@ pub mod equipment;
 pub mod fam;
 pub mod goals;
 pub mod golem_build;
+pub mod item_components;
 pub mod kinds;
 pub mod living;
 pub mod missile;
@@ -195,6 +196,9 @@ pub struct MobData {
     pub goal_path: Option<path::Path>,
     /// Index into the `minecraft:*_variant` registry (pigs, cows, chickens); 0 = default.
     pub variant: i32,
+    /// Index into the `minecraft:{pig,cow,chicken}_sound_variant` registry (`classic` by
+    /// default, see [`kinds::classic_sound_variant`]).
+    pub sound_variant: u8,
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
@@ -341,6 +345,7 @@ impl MobData {
             goal_path: None,
             // Chickens, cows and pigs start as the temperate variant (registry index 1).
             variant: i32::from(matches!(kind, Kind::Chicken | Kind::Cow | Kind::Pig)),
+            sound_variant: kinds::classic_sound_variant(kind),
             xp_reward: 0,
             effects: crate::effect::ActiveEffects::default(),
             absorption: 0.0,
@@ -972,6 +977,9 @@ impl WorldAction {
 pub struct MobContext {
     pub finder: path::PathFinder,
     pub boxes: Vec<Aabb>,
+    /// `movementThisTick` of the mob that ticks: the moves of `Entity.move`, for the blocks
+    /// on their way (`applyEffectsFromBlocks`).
+    pub movements: Vec<crate::survival::inside::Movement>,
     pub actions: Vec<WorldAction>,
     pub env: Environment,
     pub settings: MobSettings,

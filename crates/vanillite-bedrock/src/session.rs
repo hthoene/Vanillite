@@ -397,7 +397,11 @@ impl Session {
         if !self.name.is_empty() {
             log::info!("Bedrock player {} disconnected: {message}", self.name);
         } else {
-            log::debug!("Bedrock connection {} closed: {message}", self.peer);
+            log::info!(
+                "Bedrock connection {} closed during {:?}: {message}",
+                self.peer,
+                self.phase
+            );
         }
         self.send(id::DISCONNECT, &bp::disconnect(message));
         self.flush_batch();
@@ -406,7 +410,17 @@ impl Session {
         self.closing = Some(Instant::now());
     }
 
-    pub(crate) fn close_silently(&mut self) {
+    /// Closes without telling the client (it left, timed out or broke the protocol).
+    pub(crate) fn close_silently(&mut self, why: &str) {
+        if self.phase == Phase::Playing {
+            log::info!("Bedrock player {} lost connection: {why}", self.name);
+        } else {
+            log::info!(
+                "Bedrock connection {} lost during {:?}: {why}",
+                self.peer,
+                self.phase
+            );
+        }
         self.java_tx = None;
         self.done = true;
     }
@@ -437,7 +451,7 @@ impl Session {
         }
         let c = &self.shared.config;
         if now.saturating_duration_since(self.rak.last_receive) > c.idle_timeout {
-            self.close_silently();
+            self.close_silently("timed out");
             return;
         }
         if self.phase != Phase::Playing
@@ -473,13 +487,12 @@ impl Session {
         let received = match self.rak.receive(data, now) {
             Ok(r) => r,
             Err(e) => {
-                log::debug!("Dropping Bedrock peer {}: {e}", self.peer);
-                self.close_silently();
+                self.close_silently(&format!("RakNet error: {e}"));
                 return;
             }
         };
         if received.disconnected {
-            self.close_silently();
+            self.close_silently("the client disconnected");
             return;
         }
         for game in received.game {
@@ -524,6 +537,10 @@ impl Session {
                 let protocol = crate::io::Reader::new(body).be_i32()?;
                 let accepted = self.shared.config.accepts(protocol);
                 let Some(version) = Version::of(protocol).filter(|_| accepted) else {
+                    log::info!(
+                        "Bedrock client {} speaks unsupported protocol {protocol}",
+                        self.peer
+                    );
                     let (oldest, latest) = self.shared.config.accepted_range();
                     let s = if protocol < oldest.protocol {
                         status::FAILED_CLIENT
@@ -539,6 +556,7 @@ impl Session {
                     return Ok(());
                 };
                 self.version = version;
+                log::debug!("Bedrock client {} speaks protocol {protocol}", self.peer);
                 let threshold = self.shared.config.compression_threshold;
                 self.send(id::NETWORK_SETTINGS, &bp::network_settings(threshold));
                 self.flush_batch();
@@ -660,7 +678,7 @@ impl Session {
                 }
             }
             (Phase::NetworkSettings | Phase::Login | Phase::Handshake, _) => {
-                self.kick("Unexpected packet during login");
+                self.kick(&format!("Unexpected packet {pid} during login"));
             }
             // Everything else (emotes, ...) is not translated.
             _ => {}
@@ -1585,6 +1603,7 @@ pub(crate) async fn run(
     mtu: u16,
     mut datagrams: mpsc::Receiver<Vec<u8>>,
 ) {
+    log::info!("Bedrock connection from {peer} (MTU {mtu})");
     let mut s = Session::new(shared, peer, mtu, Instant::now());
     let mut java: Option<mpsc::Receiver<Vec<u8>>> = None;
     let mut events = s.events_rx.take();

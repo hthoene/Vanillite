@@ -25,8 +25,9 @@ use crate::player::encode::{DataWriter, serializer};
 pub const VARIANT_PALE: i32 = 3;
 /// `wolf_sound_variant` ids: angry, big, classic, cute, grumpy, puglin, sad.
 pub const SOUND_CLASSIC: u8 = 2;
-const SOUND_NAMES: [&str; 7] = ["angry", "big", "classic", "cute", "grumpy", "puglin", "sad"];
-const VARIANT_NAMES: [&str; 9] = [
+pub(crate) const SOUND_NAMES: [&str; 7] =
+    ["angry", "big", "classic", "cute", "grumpy", "puglin", "sad"];
+pub(crate) const VARIANT_NAMES: [&str; 9] = [
     "ashen", "black", "chestnut", "pale", "rusty", "snowy", "spotted", "striped", "woods",
 ];
 

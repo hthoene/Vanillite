@@ -387,11 +387,19 @@ pub struct LevelOutput {
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
 #[derive(Clone)]
 pub struct Generation {
-    pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// Released while the server is empty; [`Generation::terrain`] builds it again.
+    pub shared: vanillite_worldgen::SharedTerrain,
     /// The dimension it generates.
     pub dimension: String,
     /// `WorldOptions.generateStructures`.
     pub structures: bool,
+}
+
+impl Generation {
+    /// The generator.
+    pub fn terrain(&self) -> Arc<vanillite_worldgen::generator::TerrainGenerator> {
+        self.shared.get()
+    }
 }
 
 impl std::fmt::Debug for Generation {
@@ -468,6 +476,9 @@ pub struct Level {
     weather: crate::survival::weather::LevelWeather,
     game_time: i64,
     output: LevelOutput,
+    /// The block phase of the last explosion, waiting for the entities it hit to take their
+    /// damage ([`Level::finish_explosion`]).
+    pending_blast: Option<explosion::PendingBlast>,
     /// Menus blocks asked to open for the player that used them (`player.openMenu`); taken
     /// by the player handlers.
     menu_requests: Vec<crate::menu::container::MenuRequest>,
@@ -598,6 +609,7 @@ impl Level {
             weather: crate::survival::weather::LevelWeather::default(),
             game_time: 0,
             output: LevelOutput::default(),
+            pending_blast: None,
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_block_uses: Vec::new(),

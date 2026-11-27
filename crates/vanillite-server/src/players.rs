@@ -1156,10 +1156,13 @@ impl WorldPlayers {
                 };
                 player.connection.play.tick(&mut play, sink.as_ref());
             }
-            // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1).
+            // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1), where
+            // the player's server-side travel took it (as its push and the cubes' touch,
+            // `player_ai_step_end`).
+            let step = player.survival.server_step;
+            let reach = aabb.offset(step.x, step.y, step.z).inflate(1.0, 0.5, 1.0);
             if player.game_mode != GameMode::Spectator {
                 let store = &level.entities.store;
-                let reach = aabb.inflate(1.0, 0.5, 1.0);
                 let mut near = Vec::new();
                 store.for_each_non_player_in(&reach, |e| {
                     if crate::blocks::is_item(store, e) {
@@ -1247,7 +1250,7 @@ impl WorldPlayers {
                     id,
                     &mut player.survival,
                     &mut player.inventory,
-                    &aabb.inflate(1.0, 0.5, 1.0),
+                    &reach,
                     global,
                     &mut taken_orbs,
                 );
@@ -1262,7 +1265,7 @@ impl WorldPlayers {
                     has_ceiling: global
                         .dimensions
                         .world(dimension_name)
-                        .and_then(|w| global.level.dimension_types.get(w.index()))
+                        .and_then(|w| global.dimensions.facts(w))
                         .is_some_and(|t| t.has_ceiling),
                 };
                 vanillite_game::carried::tick(level, owner, player);

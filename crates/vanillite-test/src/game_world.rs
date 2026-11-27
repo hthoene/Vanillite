@@ -821,6 +821,7 @@ impl GameWorld {
         if self.level.output().explosion_hurts.is_empty()
             && self.level.output().falling_hurts.is_empty()
         {
+            self.level.finish_explosion();
             return;
         }
         let hurts = std::mem::take(&mut self.level.output().explosion_hurts);
@@ -852,6 +853,8 @@ impl GameWorld {
                 combat::hurt(level, ents, env, cx, hurt.target, source, hurt.amount);
             }
         });
+        // `interactWithBlocks` after `hurtEntities`.
+        self.level.finish_explosion();
         self.finish_removals();
     }
 
@@ -958,27 +961,34 @@ impl GameWorld {
                     survival_player::do_tick_ai(&mut entity, data, env, result)
                 };
                 // `pushEntities` and `touch` at the end of the player's `aiStep`.
-                vanillite_game::mob::living::player_push_entities(ents, id);
-                vanillite_game::mob::fam::undead::cubes::player_touch(level, ents, env, cx, id);
-                // `touch` → `AbstractArrow.playerTouch`: arrows and tridents it picks up.
-                if let Some(reach) = ents.store.get(id).map(|e| e.aabb().inflate(1.0, 0.5, 1.0)) {
-                    let mut near = Vec::new();
-                    ents.store.for_each_non_player_in(&reach, |e| near.push(e));
-                    let mut players = std::mem::take(&mut ents.players);
-                    let row = ents.store.get(id).map(|e| e.kind_row());
-                    for p in near {
-                        if let Some(data) = row.and_then(|r| players.get_mut(r))
-                            && vanillite_game::mob::projectile::try_pickup(ents, p, data, id)
-                        {
-                            ents.despawn(p);
+                vanillite_game::mob::living::player_ai_step_end(
+                    level,
+                    ents,
+                    env,
+                    cx,
+                    id,
+                    |ents, reach| {
+                        // `touch` → `AbstractArrow.playerTouch`: arrows and tridents it picks
+                        // up.
+                        let mut near = Vec::new();
+                        ents.store.for_each_non_player_in(reach, |e| near.push(e));
+                        let mut players = std::mem::take(&mut ents.players);
+                        let row = ents.store.get(id).map(|e| e.kind_row());
+                        for p in near {
+                            if let Some(data) = row.and_then(|r| players.get_mut(r))
+                                && vanillite_game::mob::projectile::try_pickup(ents, p, data, id)
+                            {
+                                ents.despawn(p);
+                            }
                         }
-                    }
-                    // Then one of the touched orbs (`Util.getRandom`): `ExperienceOrb.playerTouch`.
-                    if let Some(data) = row.and_then(|r| players.get_mut(r)) {
-                        touch_orb(ents, data, &reach);
-                    }
-                    ents.players = players;
-                }
+                        // Then one of the touched orbs (`Util.getRandom`):
+                        // `ExperienceOrb.playerTouch`.
+                        if let Some(data) = row.and_then(|r| players.get_mut(r)) {
+                            touch_orb(ents, data, reach);
+                        }
+                        ents.players = players;
+                    },
+                );
                 let Entities { store, players, .. } = &mut *ents;
                 let Some(mut entity) = store.get_mut(id) else {
                     continue;

@@ -14,7 +14,9 @@ use vanillite_abi::{self as abi, Status, status};
 use vanillite_nbt::Tag;
 
 mod v16;
+mod v18;
 use v16::*;
+use v18::*;
 
 use crate::{
     AccessOp, BlockBox, BossBarOp, Inner, Location, Particles, Plugin, ScoreReply, ScoreboardOp,
@@ -176,6 +178,12 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     packet_name,
     packet_send,
     protocol_version,
+    world_create,
+    world_load,
+    world_unload,
+    world_count,
+    world_info,
+    player_move,
     packet_receive,
 };
 

@@ -21,6 +21,7 @@ use crate::structure::{
     GenerationContext, GenerationStub, PieceBase, PieceSettings, StructureParser, StructurePiece,
     StructureType, TemplatePiece,
 };
+use crate::template::TemplateRef;
 use crate::template::structure::RANDOMIZABLE_CONTAINERS;
 use crate::template::{BoundingBox, Rotation, StructureTemplate};
 
@@ -71,7 +72,7 @@ const PIVOT: BlockPos = BlockPos::new(4, 0, 15);
 pub struct ShipwreckStructure {
     pub is_beached: bool,
     /// The templates of [`BEACHED`] or [`OCEAN`].
-    templates: Vec<(&'static str, Arc<StructureTemplate>)>,
+    templates: Vec<(&'static str, TemplateRef)>,
 }
 
 impl StructureType for ShipwreckStructure {
@@ -82,10 +83,7 @@ impl StructureType for ShipwreckStructure {
         let names: &[&'static str] = if is_beached { &BEACHED } else { &OCEAN };
         Ok(Self {
             is_beached,
-            templates: names
-                .iter()
-                .map(|&id| Ok((id, parser.template(id)?)))
-                .collect::<Result<_, Error>>()?,
+            templates: names.iter().map(|&id| (id, parser.template(id))).collect(),
         })
     }
 
@@ -108,13 +106,8 @@ impl StructureType for ShipwreckStructure {
                 .random
                 .next_int_bounded(self.templates.len() as i32) as usize;
             let (name, template) = &self.templates[index];
-            let mut piece = ShipwreckPiece::new(
-                name,
-                Arc::clone(template),
-                offset,
-                rotation,
-                self.is_beached,
-            );
+            let mut piece =
+                ShipwreckPiece::new(name, template.get(), offset, rotation, self.is_beached);
             if piece.is_too_big_to_fit_in_world_gen_region() {
                 let bb = *piece.bounding_box();
                 let height = if self.is_beached {

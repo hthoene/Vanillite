@@ -254,9 +254,61 @@ fn direct_signal(_level: &Level, state: BlockState, _pos: BlockPos, direction: D
     }
 }
 
-/// `Entity.checkInsideBlocks` in its simplest form: `entityInside` of every block the entity's
-/// bounding box (shrunk by 1e-5) touches, in x, y, z order. The entity collision code calls this
-/// after moving an entity; pressure plates, tripwires and detector rails react through it.
+/// The blocks with an `entityInside` behaviour of their own (pressure plates, tripwire,
+/// detector rails, buttons, big dripleaves) an entity of the size `dims` is inside on
+/// `movements`, in the order of `Entity.checkInsideBlocks` ([`crate::survival::inside`]).
+pub fn for_each_inside(
+    level: &Level,
+    dims: vanillite_world::entity::Dimensions,
+    movements: &[crate::survival::inside::Movement],
+    mut each: impl FnMut(BlockPos),
+) {
+    let view = level.view();
+    let walker = crate::survival::inside::Walker {
+        blocks: &view,
+        facts: None,
+        dims,
+        fast_fall: false,
+    };
+    walker.walk(movements, |cell| {
+        if cell.in_block && level.has_entity_inside(cell.state) {
+            each(cell.pos);
+        }
+        true
+    });
+}
+
+/// `entityInside` of the blocks of [`for_each_inside`], right away.
+pub fn entity_inside_along(
+    level: &mut Level,
+    entity: EntityId,
+    dims: vanillite_world::entity::Dimensions,
+    movements: &[crate::survival::inside::Movement],
+) {
+    // Few blocks react: they wait here while the walk reads the level.
+    let mut first = [BlockPos::new(0, 0, 0); 8];
+    let mut count = 0;
+    let mut more = Vec::new();
+    for_each_inside(level, dims, movements, |pos| {
+        if let Some(slot) = first.get_mut(count) {
+            *slot = pos;
+        } else {
+            more.push(pos);
+        }
+        count += 1;
+    });
+    for pos in first.iter().take(count).chain(&more) {
+        if !level.entities.store.contains(entity) {
+            return;
+        }
+        level.entity_inside(*pos, entity);
+    }
+}
+
+/// `Entity.applyEffectsFromBlocks` for the blocks with a behaviour of their own: `stepOn` of
+/// the block below, then `entityInside` of the blocks the entity is inside on its way (a
+/// player's moves since its last tick, see [`crate::survival::inside`]). Pressure plates,
+/// tripwires and detector rails react through it.
 pub fn check_inside_blocks(level: &mut Level, entity: EntityId) {
     // `isAffectedByBlocks`: not spectators.
     if level
@@ -266,11 +318,11 @@ pub fn check_inside_blocks(level: &mut Level, entity: EntityId) {
     {
         return;
     }
-    let Some((aabb, pos, flags)) = level
+    let Some((dims, pos, flags)) = level
         .entities
         .store
         .get(entity)
-        .map(|e| (e.aabb(), e.pos(), e.flags()))
+        .map(|e| (e.dims(), e.pos(), e.flags()))
     else {
         return;
     };
@@ -284,25 +336,22 @@ pub fn check_inside_blocks(level: &mut Level, entity: EntityId) {
         }
         super::sculk::step_on_block(level, on, entity);
     }
-    let eps = 1.0e-5;
-    let min = (
-        (aabb.min_x + eps).floor() as i32,
-        (aabb.min_y + eps).floor() as i32,
-        (aabb.min_z + eps).floor() as i32,
-    );
-    let max = (
-        (aabb.max_x - eps).floor() as i32,
-        (aabb.max_y - eps).floor() as i32,
-        (aabb.max_z - eps).floor() as i32,
-    );
-    for x in min.0..=max.0 {
-        for y in min.1..=max.1 {
-            for z in min.2..=max.2 {
-                let pos = BlockPos::new(x, y, z);
-                if level.is_loaded(pos) {
-                    level.entity_inside(pos, entity);
-                }
+    // A player's way stays for its own tick (fire, lava, berry bushes).
+    let path = level
+        .entities
+        .player_mut(entity)
+        .map(|p| std::mem::take(&mut p.connection.movement.path));
+    match path {
+        Some(mut path) => {
+            crate::survival::inside::finish(&mut path, pos, pos);
+            entity_inside_along(level, entity, dims, &path);
+            if let Some(p) = level.entities.player_mut(entity) {
+                p.connection.movement.path = path;
             }
+        }
+        None => {
+            let still = [crate::survival::inside::Movement::still(pos)];
+            entity_inside_along(level, entity, dims, &still);
         }
     }
 }

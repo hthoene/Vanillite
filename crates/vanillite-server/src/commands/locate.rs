@@ -94,18 +94,19 @@ pub(super) fn locate(
                 .as_ref()
                 .filter(|g| g.structures)
                 .and_then(|g| {
+                    let terrain = g.terrain();
                     let wanted: Vec<StructureId> = ids
                         .iter()
-                        .filter_map(|id| g.terrain.structures().structure_id(id))
+                        .filter_map(|id| terrain.structures().structure_id(id))
                         .collect();
                     nearest_structure(
-                        &g.terrain,
+                        &terrain,
                         &wanted,
                         origin,
                         level_height(env),
                         MAX_STRUCTURE_SEARCH_RADIUS,
                     )
-                    .map(|(pos, id)| (pos, g.terrain.structures().structure(id).name.clone()))
+                    .map(|(pos, id)| (pos, terrain.structures().structure(id).name.clone()))
                 });
             let Some((pos, name)) = found else {
                 return Err(CommandError::new(
@@ -127,7 +128,7 @@ pub(super) fn locate(
         LocateOp::Biome => {
             let arg = resource_or_tag(args, "biome")?;
             let found = env.level.generation.as_ref().and_then(|g| {
-                let terrain = &g.terrain;
+                let terrain = &g.terrain();
                 let accepted = |id: u16| {
                     let name = &terrain.biomes().get(id).name;
                     match arg {
@@ -344,10 +345,7 @@ fn generation(
 )> {
     let packs = env.global.packs.loaded()?;
     let generator = env.level.generation.as_ref()?;
-    Some((
-        std::sync::Arc::clone(packs),
-        std::sync::Arc::clone(&generator.terrain),
-    ))
+    Some((std::sync::Arc::clone(packs), generator.terrain()))
 }
 
 /// The random of a placement (`level.getRandom()`).

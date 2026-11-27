@@ -50,14 +50,20 @@ pub struct BiomeData {
     pub frozen_temperature_modifier: bool,
     /// Carver ids (`worldgen/carver`) in order.
     pub carvers: Vec<String>,
-    /// The full entry, for data this struct does not model.
-    pub json: Value,
+    /// `features`: the placed features of each decoration step (lists of ids, a tag or
+    /// inline features).
+    pub features: Vec<Value>,
 }
 
 impl BiomeData {
     /// Parses a biome entry (`Biome.DIRECT_CODEC`: the climate settings are inlined at the top
     /// level, `carvers` is a carver holder set).
-    fn from_json(name: &str, id: BiomeId, json: Value, packs: &LoadedPacks) -> Result<Self, Error> {
+    fn from_json(
+        name: &str,
+        id: BiomeId,
+        mut json: Value,
+        packs: &LoadedPacks,
+    ) -> Result<Self, Error> {
         let err = |what: &str| Error::new(format!("biome {name}: {what}"));
         let float = |field: &str| {
             json.get(field)
@@ -83,6 +89,12 @@ impl BiomeData {
             packs,
         )
         .map_err(|e| err(&e.to_string()))?;
+        // Only the feature lists are kept of the entry: the rest (spawners, effects) is not
+        // needed here and would cost about 60 KiB per biome and registry.
+        let features = match json.get_mut("features").map(Value::take) {
+            Some(Value::Array(steps)) => steps,
+            _ => Vec::new(),
+        };
         Ok(Self {
             name: name.to_owned(),
             id,
@@ -91,7 +103,7 @@ impl BiomeData {
             has_precipitation,
             frozen_temperature_modifier,
             carvers,
-            json,
+            features,
         })
     }
 }

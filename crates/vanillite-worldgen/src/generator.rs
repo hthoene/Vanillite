@@ -40,7 +40,7 @@ use crate::structure::{
     Beardifier, GenerationContext, LevelHeight, NeighbourStarts, PieceContext, ReferencedStarts,
     StructureId, StructurePlacement, StructureRegistry, StructureStart, StructureState,
 };
-use crate::template::BoundingBox;
+use crate::template::{BoundingBox, StructureTemplateManager};
 use crate::volume::DensityVolume;
 
 /// A generation step of Vanilla's chunk pyramid that this crate implements.
@@ -234,6 +234,8 @@ pub struct TerrainGenerator {
     uncarvable: BlockSet,
     features: FeatureSet,
     structures: StructureRegistry,
+    /// The template cache the features and structures read through.
+    templates: Arc<StructureTemplateManager>,
     grass_block: BlockId,
     mycelium: BlockId,
     dirt: BlockId,
@@ -243,13 +245,65 @@ pub struct TerrainGenerator {
     origin: OnceLock<ChunkPos>,
 }
 
+/// What a generator searched for on first use. A generator built again for the same world
+/// takes it over ([`TerrainGenerator::restore`]) instead of searching again.
+#[derive(Clone, Debug, Default)]
+pub struct TerrainMemo {
+    origin: Option<ChunkPos>,
+    /// The ring positions of concentric rings placements, by structure set.
+    rings: Vec<(usize, Vec<ChunkPos>)>,
+}
+
 impl TerrainGenerator {
+    /// What this generator has searched for so far.
+    pub fn memo(&self) -> TerrainMemo {
+        let rings = self.structures.sets().iter().enumerate();
+        TerrainMemo {
+            origin: self.origin.get().copied(),
+            rings: rings
+                .filter_map(|(index, set)| match &set.placement {
+                    StructurePlacement::ConcentricRings { rings, .. } => {
+                        Some((index, rings.positions.get()?.clone()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Takes over what a generator of the same packs, dimension and seed has searched for.
+    pub fn restore(&self, memo: &TerrainMemo) {
+        if let Some(origin) = memo.origin {
+            let _ = self.origin.set(origin);
+        }
+        for (index, positions) in &memo.rings {
+            if let Some(StructurePlacement::ConcentricRings { rings, .. }) =
+                self.structures.sets().get(*index).map(|set| &set.placement)
+            {
+                let _ = rings.positions.set(positions.clone());
+            }
+        }
+    }
+
     /// Builds the generator: parses the dimension's settings, derives the random state from
     /// `seed` and compiles every density function the stages use into one program.
     pub fn new(
         packs: &LoadedPacks,
         dimension: DimensionSpec<'_>,
         seed: i64,
+    ) -> Result<Self, Error> {
+        let templates = Arc::new(StructureTemplateManager::new(packs));
+        Self::with_templates(packs, dimension, seed, templates)
+    }
+
+    /// [`Self::new`] reading structure templates through `templates`: the server's one cache
+    /// (Vanilla's `StructureTemplateManager`, which also sees the world's `generated`
+    /// templates) instead of an own one over the packs.
+    pub fn with_templates(
+        packs: &LoadedPacks,
+        dimension: DimensionSpec<'_>,
+        seed: i64,
+        templates: Arc<StructureTemplateManager>,
     ) -> Result<Self, Error> {
         let settings = NoiseGeneratorSettings::load(packs, dimension.noise_settings)?;
         let random_state = RandomState::new(packs, seed, settings.legacy_random_source)?;
@@ -300,10 +354,16 @@ impl TerrainGenerator {
             &random_state,
             &biome_source.possible_biomes(),
             WorldGenerationContext::for_settings(&settings, dimension.min_y, dimension.height),
+            &templates,
         )?;
 
-        let structures =
-            StructureRegistry::load(packs, &biomes, &features, &biome_source.possible_biomes())?;
+        let structures = StructureRegistry::load(
+            packs,
+            &biomes,
+            &features,
+            &biome_source.possible_biomes(),
+            &templates,
+        )?;
 
         let block = |name: &str| {
             BlockId::by_name(name).ok_or_else(|| Error::new(format!("unknown block {name}")))
@@ -330,6 +390,7 @@ impl TerrainGenerator {
             uncarvable: BlockSet::from_tag(packs, "minecraft:uncarvable"),
             features,
             structures,
+            templates,
             grass_block: block("minecraft:grass_block")?,
             mycelium: block("minecraft:mycelium")?,
             dirt: block("minecraft:dirt")?,
@@ -380,6 +441,11 @@ impl TerrainGenerator {
     pub fn new_chunk(&self, pos: ChunkPos) -> ProtoChunk {
         let plains = self.biomes.id_of("minecraft:plains").unwrap_or(0);
         ProtoChunk::new(pos, self.level_min_y, self.level_height, plains)
+    }
+
+    /// The structure template cache of this generator.
+    pub fn templates(&self) -> &Arc<StructureTemplateManager> {
+        &self.templates
     }
 
     /// The parsed features and their global order.

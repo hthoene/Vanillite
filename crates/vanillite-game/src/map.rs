@@ -1538,8 +1538,9 @@ pub fn exploration_map(
         vanillite_base::math::floor(origin.y),
         vanillite_base::math::floor(origin.z),
     );
+    let terrain = generation.terrain();
     let found = explorer.nearest_structure(
-        &generation.terrain,
+        &terrain,
         &request.destination,
         at,
         request.search_radius,
@@ -1556,7 +1557,7 @@ pub fn exploration_map(
         generation.dimension.clone(),
     );
     let id = map_id(&map)?;
-    let mut watery = explorer.water_on_map_outlines(&generation.terrain);
+    let mut watery = explorer.water_on_map_outlines(&terrain);
     maps.with(id, |data| {
         render_biome_preview(data, sea_level, &mut *watery)
     });

@@ -419,11 +419,11 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
                 seed,
             );
         }
-        if let Some(item) = vanillite_data::registry::ITEM.id(bucket) {
-            let stack = crate::item::ItemStack::new(item, 1);
-            crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
-        }
-        crate::mob::animal::fill_held_pub(ix, bucket);
+        let Some(stack) = ix.ents.mob(ix.target).map(|m| bucket_stack(m, bucket)) else {
+            return Interaction::Pass;
+        };
+        crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
+        crate::mob::animal::fill_held(ix.ents, ix.env, ix.player, ix.hand, stack);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
             m.removed = true;
         }
@@ -434,6 +434,34 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
         return crate::mob::animal::animal_interact_pub(ix);
     }
     Interaction::Pass
+}
+
+/// `saveToBucketTag` of axolotls (with `axolotl/variant` and the hunting cooldown) and
+/// tadpoles: the default bucket data, their age and age lock.
+fn bucket_stack(m: &MobData, item: &str) -> crate::item::ItemStack {
+    let (mut stack, mut data) = crate::mob::fam::bucket_default(m, item);
+    let s = state(m);
+    if m.kind == crate::mob::Kind::Axolotl {
+        if let Some(id) =
+            vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:axolotl/variant")
+        {
+            let mut v = Vec::new();
+            vanillite_protocol::codec::write_varint(&mut v, s.variant);
+            stack.patch_mut().set(id, v.into());
+        }
+        data.insert("Age", m.age);
+        data.insert("AgeLocked", false);
+        if let Some(b) = m.brain.as_deref()
+            && b.has(M::HasHuntingCooldown)
+        {
+            data.insert("HuntingCooldown", b.ttl(M::HasHuntingCooldown));
+        }
+    } else {
+        data.insert("Age", s.tadpole_age);
+        data.insert("AgeLocked", s.playing_dead);
+    }
+    crate::mob::fam::set_bucket_data(&mut stack, data);
+    stack
 }
 
 /// Synched data: baby (16), variant (17), playing dead (18), from bucket (19).

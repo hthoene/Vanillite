@@ -490,9 +490,84 @@ pub fn max_head_y_rot(m: &MobData) -> f32 {
     }
 }
 
+/// The entries of the `pig_sound_variant`, `cow_sound_variant` and `chicken_sound_variant`
+/// registries in registry (network id) order; empty for other kinds.
+pub fn sound_variant_names(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Pig => &["big", "classic", "mini"],
+        Kind::Cow => &["classic", "moody"],
+        Kind::Chicken => &["classic", "picky"],
+        _ => &[],
+    }
+}
+
+/// The registry index of the `classic` sound variant (the entity data default).
+pub fn classic_sound_variant(kind: Kind) -> u8 {
+    u8::from(kind == Kind::Pig)
+}
+
+/// `getSoundSet` of pigs, cows and chickens: the ambient, hurt, death and eat sound events of
+/// the mob's sound variant (`entity.<kind>[_<variant>]`; babies of pigs and chickens use
+/// `entity.baby_<kind>`).
+fn farm_sound_set(m: &MobData) -> [&'static str; 4] {
+    macro_rules! sets {
+        ($key:expr; $($p:literal)*) => {
+            match $key {
+                $($p => [
+                    concat!("minecraft:entity.", $p, ".ambient"),
+                    concat!("minecraft:entity.", $p, ".hurt"),
+                    concat!("minecraft:entity.", $p, ".death"),
+                    concat!("minecraft:entity.", $p, ".eat"),
+                ],)*
+                _ => [
+                    "minecraft:entity.pig.ambient",
+                    "minecraft:entity.pig.hurt",
+                    "minecraft:entity.pig.death",
+                    "minecraft:entity.pig.eat",
+                ],
+            }
+        };
+    }
+    let v = sound_variant_names(m.kind)
+        .get(usize::from(m.sound_variant))
+        .copied()
+        .unwrap_or("classic");
+    let prefix = match (m.kind, m.baby, v) {
+        (Kind::Pig, true, _) => "baby_pig",
+        (Kind::Chicken, true, _) => "baby_chicken",
+        (Kind::Pig, _, "big") => "pig_big",
+        (Kind::Pig, _, "mini") => "pig_mini",
+        (Kind::Cow, _, "moody") => "cow_moody",
+        (Kind::Cow, ..) => "cow",
+        (Kind::Chicken, _, "picky") => "chicken_picky",
+        (Kind::Chicken, ..) => "chicken",
+        _ => "pig",
+    };
+    sets!(prefix; "pig" "pig_big" "pig_mini" "baby_pig" "cow" "cow_moody" "chicken"
+        "chicken_picky" "baby_chicken")
+}
+
+/// The sound event of a pig, cow or chicken of its sound variant.
+pub fn farm_sound(m: &MobData, sound: DefaultSound) -> &'static str {
+    let set = farm_sound_set(m);
+    match sound {
+        DefaultSound::Ambient => set[0],
+        DefaultSound::Hurt => set[1],
+        DefaultSound::Death => set[2],
+    }
+}
+
+/// `playEatingSound` of a pig: the eat sound of its sound variant.
+pub fn pig_eat_sound(m: &MobData) -> &'static str {
+    farm_sound_set(m)[3]
+}
+
 pub fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
     if !m.kind.classic() {
         return fam::ambient_sound(m);
+    }
+    if matches!(m.kind, Kind::Pig | Kind::Cow | Kind::Chicken) {
+        return Some(farm_sound(m, DefaultSound::Ambient));
     }
     if m.kind == Kind::Enderman && classic::enderman(m).creepy {
         return Some("minecraft:entity.enderman.scream");
@@ -502,7 +577,9 @@ pub fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
 
 /// `getHurtSound` of a mob.
 pub fn hurt_sound(m: &MobData) -> &'static str {
-    if m.kind.classic() {
+    if matches!(m.kind, Kind::Pig | Kind::Cow | Kind::Chicken) {
+        farm_sound(m, DefaultSound::Hurt)
+    } else if m.kind.classic() {
         m.kind.hurt_sound()
     } else {
         fam::hurt_sound(m)
@@ -511,7 +588,9 @@ pub fn hurt_sound(m: &MobData) -> &'static str {
 
 /// `getDeathSound` of a mob.
 pub fn death_sound(m: &MobData) -> &'static str {
-    if m.kind.classic() {
+    if matches!(m.kind, Kind::Pig | Kind::Cow | Kind::Chicken) {
+        farm_sound(m, DefaultSound::Death)
+    } else if m.kind.classic() {
         m.kind.death_sound()
     } else {
         fam::death_sound(m)
@@ -742,8 +821,11 @@ pub fn finalize_spawn(
 }
 
 fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
-    if m.kind == Kind::CaveSpider {
-        // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`.
+    if m.kind == Kind::CaveSpider
+        || m.kind == Kind::Axolotl && ctx.reason == fam::SpawnReason::Bucket
+    {
+        // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`; nor does
+        // `Axolotl.finalizeSpawn` for a mob from a bucket.
         return;
     }
     // `Mob.finalizeSpawn`: follow range bonus and left-handedness; the kinds that call
@@ -780,9 +862,12 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                 FarmClimate::Temperate => 1,
                 FarmClimate::Warm => 2,
             };
-            // `pig_sound_variant` has three entries, the cow's and the chicken's two.
-            let sounds = if m.kind == Kind::Pig { 3 } else { 2 };
-            let _ = m.random.next_int_bounded(sounds);
+            // `*SoundVariants.pickRandomSoundVariant`: any entry of the registry.
+            let sounds = sound_variant_names(m.kind).len();
+            let i = m
+                .random
+                .next_int_bounded(i32::try_from(sounds).unwrap_or(1));
+            m.sound_variant = u8::try_from(i).unwrap_or(0);
         }
         if group_index > 0 && m.random.next_float() <= 0.05 {
             m.age = -24000;
@@ -815,7 +900,52 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                 }
             }
         }
+        Kind::Spider => spider_finalize(m, ctx),
         _ => {}
+    }
+}
+
+/// `Spider.finalizeSpawn` (after `Mob.finalizeSpawn`): 1 % carry a skeleton, and on hard the
+/// first spider of a group may choose a lasting effect for the whole group.
+fn spider_finalize(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
+    use crate::effect::{EffectInstance, MobEffect};
+    if m.random.next_int_bounded(100) == 0 {
+        let seed = crate::mob::new_entity_seed();
+        let mut rider = MobData::new(Kind::Skeleton, seed);
+        let mut inner = fam::SpawnContext {
+            group: fam::GroupData::None,
+            group_index: 0,
+            extra: Vec::new(),
+            ride: None,
+            ..*ctx
+        };
+        finalize_spawn(&mut rider, &mut inner, &mut m.random);
+        ctx.extra.push(fam::ExtraMob {
+            mob: rider,
+            offset: Vec3::ZERO,
+            relation: fam::Relation::RidesIt,
+        });
+    }
+    let effect = if let fam::GroupData::Spider(effect) = ctx.group {
+        effect
+    } else {
+        let mut effect = None;
+        if ctx.difficulty == Difficulty::Hard
+            && m.random.next_float() < 0.1 * ctx.special_multiplier
+        {
+            // `SpiderEffectsGroupData.setRandomEffect`.
+            effect = Some(match m.random.next_int_bounded(5) {
+                0 | 1 => MobEffect::SPEED,
+                2 => MobEffect::STRENGTH,
+                3 => MobEffect::REGENERATION,
+                _ => MobEffect::INVISIBILITY,
+            });
+        }
+        ctx.group = fam::GroupData::Spider(effect);
+        effect
+    };
+    if let Some(effect) = effect {
+        m.effects.force_add(EffectInstance::new(effect, -1, 0));
     }
 }
 

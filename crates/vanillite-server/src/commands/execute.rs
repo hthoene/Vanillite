@@ -168,9 +168,8 @@ fn facing(source: &CommandSource, at: Vec3) -> CommandSource {
 fn teleport_scale(global: &crate::global::Global, from: WorldId, to: WorldId) -> f64 {
     let scale = |w: WorldId| {
         global
-            .level
-            .dimension_types
-            .get(w.index())
+            .dimensions
+            .facts(w)
             .map_or(1.0, |t| t.coordinate_scale)
     };
     scale(from) / scale(to)

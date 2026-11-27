@@ -18,6 +18,7 @@ use crate::structure::{
     GenerationContext, GenerationStub, PieceBase, PieceSettings, StructureParser, StructurePiece,
     StructureType, TemplatePiece,
 };
+use crate::template::TemplateRef;
 use crate::template::transform::rotate_state;
 use crate::template::{BoundingBox, Rotation, StructureProcessor, StructureTemplate};
 
@@ -48,17 +49,14 @@ pub(crate) fn ignore_structure_and_air() -> StructureProcessor {
 #[derive(Debug)]
 pub struct NetherFossilStructure {
     pub height: HeightProvider,
-    templates: Vec<Arc<StructureTemplate>>,
+    templates: Vec<TemplateRef>,
 }
 
 impl StructureType for NetherFossilStructure {
     fn parse(json: &Value, parser: &mut StructureParser<'_>) -> Result<Self, Error> {
         Ok(Self {
             height: HeightProvider::from_json(field(json, "height")?)?,
-            templates: FOSSILS
-                .iter()
-                .map(|id| parser.template(id))
-                .collect::<Result<_, _>>()?,
+            templates: FOSSILS.iter().map(|id| parser.template(id)).collect(),
         })
     }
 
@@ -95,7 +93,7 @@ impl StructureType for NetherFossilStructure {
             let index = random.next_int_bounded(FOSSILS.len() as i32) as usize;
             builder.add_piece(Box::new(NetherFossilPiece::new(
                 FOSSILS[index],
-                Arc::clone(&self.templates[index]),
+                self.templates[index].get(),
                 position,
                 rotation,
             )));

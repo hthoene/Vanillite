@@ -1104,34 +1104,6 @@ pub fn hopper_suck(level: &mut Level, id: EntityId) {
     }
 }
 
-/// Players push the minecarts they walk into (`LivingEntity.pushEntities` of the players →
-/// `AbstractMinecart.push`); a player's own push is its client's.
-pub fn players_push(ents: &mut Entities) {
-    if ents.minecarts.is_empty() {
-        return;
-    }
-    let players: Vec<(EntityId, vanillite_base::Aabb)> = ents
-        .players
-        .iter()
-        .filter(|(_, p)| {
-            p.game_mode != vanillite_config::GameMode::Spectator
-                && !p.survival.is_dead_or_dying()
-                && !p.survival.simulate_movement
-        })
-        .filter_map(|(id, _)| ents.store.get(id).map(|e| (id, e.aabb())))
-        .collect();
-    let mut carts = Vec::new();
-    for (player, aabb) in players {
-        carts.clear();
-        ents.store.for_each_in(&aabb, false, |o| carts.push(o));
-        for &cart in &carts {
-            if ents.minecart(cart).is_some() {
-                push_by(ents, cart, player);
-            }
-        }
-    }
-}
-
 /// `causeFallDamage` of a TNT minecart: a fall of 3 or more blocks sets it off.
 pub(crate) fn fall_on(
     ents: &mut Entities,

@@ -19,6 +19,9 @@
 //! traces a ray along the player's view, mobs drop twice the experience and, with
 //! `protect.enabled`, phantoms do not spawn naturally.
 //!
+//! ABI 1.8: `/hello lobby` creates the flat extra world `hello_lobby` (own folder, like a
+//! Multiverse world) on first use and moves the player there once it is loaded.
+//!
 //! Build it with `cargo build -p vanillite-example-hello` and put `plugin.toml` and the library
 //! into `plugins/hello/` (or `plugins/hello/native/<target-triple>/`).
 
@@ -273,6 +276,14 @@ impl Plugin for Hello {
                     }),
                 )
                 .then(
+                    Command::literal("lobby").executes(|_: &mut Hello, ctx, invocation| {
+                        let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
+                            return Ok(0);
+                        };
+                        Ok(i32::from(to_lobby(ctx.server(), player)))
+                    }),
+                )
+                .then(
                     Command::literal("look").executes(|_: &mut Hello, ctx, invocation| {
                         let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
                             return Ok(0);
@@ -339,6 +350,9 @@ impl Plugin for Hello {
                 surface: i32::try_from(surface).unwrap_or(64),
             });
         }
+        registrar.on_world_load(priority::MONITOR, |_, _, event| {
+            vanillite_plugin::info!("World {} is loaded", event.key());
+        });
         vanillite_plugin::info!("Hello is loaded");
         Ok(Hello { greetings: 0 })
     }
@@ -625,3 +639,31 @@ impl ChunkGenerator for Flat {
 }
 
 vanillite_plugin::export_plugin!(Hello);
+
+/// The extra world of `/hello lobby`.
+const LOBBY: &str = "hello_lobby";
+
+/// Moves a player onto the flat lobby world, which is created on first use; `false` while it
+/// is still loading.
+fn to_lobby(server: Server, player: Uuid) -> bool {
+    let creator = vanillite_plugin::WorldCreator::new(LOBBY).generator("flat");
+    let Ok(world) = server.create_world(&creator) else {
+        return false;
+    };
+    if !server.world_details(world).is_some_and(|d| d.loaded) {
+        let _ = server.send_message(player, "The lobby is being created, try again in a moment");
+        return false;
+    }
+    // The classic flat layers end at y -61.
+    let to = Location {
+        world,
+        pos: Vec3 {
+            x: 0.5,
+            y: -60.0,
+            z: 0.5,
+        },
+        yaw: 0.0,
+        pitch: 0.0,
+    };
+    server.move_player(player, to).is_ok()
+}

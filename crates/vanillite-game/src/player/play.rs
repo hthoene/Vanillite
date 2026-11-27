@@ -532,8 +532,9 @@ impl Digging {
             if state.is_air() {
                 self.has_delayed_destroy = false;
             } else {
-                let ticks = self.game_ticks.wrapping_sub(self.delayed_tick_start);
-                let progress = self.increment_progress(ctx, state, pos, ticks);
+                // Vanilla passes `delayedTickStart` itself as the ticks spent: the block breaks
+                // on the first tick after the stop once the game mode is old enough.
+                let progress = self.increment_progress(ctx, state, pos, self.delayed_tick_start);
                 if progress >= 1.0 {
                     self.has_delayed_destroy = false;
                     self.destroy_block(ctx, pos, sink);

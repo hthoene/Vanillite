@@ -324,11 +324,8 @@ pub(super) fn access(global: &Global, op: AccessOp<'_>) -> Result<bool> {
 /// The default clock of a world (`getDefaultClock`).
 fn world_clock(global: &Global, world: u32) -> Option<usize> {
     global
-        .level
-        .default_clocks
-        .get(usize::try_from(world).ok()?)
-        .copied()
-        .flatten()
+        .dimensions
+        .default_clock(crate::world::WorldId(u16::try_from(world).ok()?))
 }
 
 /// The total ticks of a world's default clock.
