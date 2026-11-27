@@ -1138,6 +1138,11 @@ pub fn eye_height(mob: &MobData) -> f64 {
     if let Some(eye) = fam::undead::zombies::baby_eye_height(mob) {
         return f64::from(eye);
     }
+    if mob.baby
+        && let Some((_, _, eye)) = kinds::baby_dimensions(mob.kind)
+    {
+        return f64::from(eye);
+    }
     let info = mob.kind.type_id().info();
     let scale = fam::size_scale(mob).unwrap_or(if mob.baby { 0.5 } else { 1.0 });
     f64::from(info.eye_height * scale)

@@ -618,7 +618,55 @@ pub fn mob_dimensions(m: &MobData) -> Dimensions {
             return d;
         }
     }
+    if m.baby
+        && let Some((width, height, _)) = baby_dimensions(m.kind)
+    {
+        return Dimensions { width, height };
+    }
     fam::dimensions(m).unwrap_or_else(|| dimensions(m.kind.type_id(), m.baby))
+}
+
+/// The `BABY_DIMENSIONS` of the kinds that define their own (width, height, eye height): a
+/// fixed size, or the adult's scaled (`scale` scales the eye height too) with an eye height of
+/// its own where Vanilla sets one.
+pub fn baby_dimensions(kind: Kind) -> Option<(f32, f32, f32)> {
+    let fixed = |w: f32, h: f32, eye: f32| Some((w, h, eye));
+    let scaled = |scale: f32, eye: Option<f32>| {
+        let info = kind.type_id().info();
+        let d = Dimensions::of(kind.type_id());
+        Some((
+            d.width * scale,
+            d.height * scale,
+            eye.unwrap_or(info.eye_height * scale),
+        ))
+    };
+    match kind {
+        Kind::Axolotl => fixed(0.375, 0.21, 0.093_75),
+        Kind::Chicken => fixed(0.3, 0.4, 0.281_25),
+        Kind::Cow | Kind::Mooshroom => fixed(0.45, 0.7, 0.69),
+        Kind::Cat | Kind::Ocelot => fixed(0.3, 0.35, 0.343_75),
+        Kind::Goat => fixed(0.45, 0.65, 0.593_75),
+        Kind::Pig => fixed(0.45, 0.45, 0.406_25),
+        Kind::PolarBear => fixed(0.7, 0.7, 0.343_75),
+        Kind::Rabbit => fixed(0.24, 0.4, 0.39),
+        Kind::Sheep => fixed(0.45, 0.65, 0.656_25),
+        Kind::Squid | Kind::GlowSquid => fixed(0.5, 0.5, 0.37),
+        Kind::Wolf => fixed(0.3, 0.425, 0.343_75),
+        Kind::Strider => fixed(0.45, 0.85, 0.4375),
+        Kind::Hoglin | Kind::Zoglin => fixed(0.75, 0.85, 0.625),
+        Kind::Piglin => fixed(0.49, 0.98, 0.78),
+        Kind::Villager => fixed(0.49, 0.98, 0.63),
+        Kind::Dolphin => scaled(0.65, Some(0.093_75)),
+        Kind::Horse | Kind::SkeletonHorse | Kind::ZombieHorse => scaled(0.7, None),
+        Kind::Llama | Kind::TraderLlama => scaled(0.5, None),
+        Kind::Fox => scaled(0.6, Some(0.343_75)),
+        Kind::HappyGhast => scaled(0.2375, Some(0.468_75)),
+        Kind::Nautilus => scaled(0.5, None),
+        Kind::Panda => scaled(0.5, Some(0.281_25)),
+        Kind::Turtle => scaled(0.3, None),
+        Kind::Armadillo => scaled(0.6, Some(0.218_75)),
+        _ => None,
+    }
 }
 
 /// The dimensions of a mob type (babies at half size).
