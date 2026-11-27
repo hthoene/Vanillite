@@ -161,10 +161,11 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     }
 }
 
-/// `entityInside`.
-fn entity_inside(level: &mut Level, state: BlockState, pos: BlockPos, _entity: EntityId) {
+/// `entityInside`; a plugin may keep a player from pressing it
+/// ([`super::contact::physical_cancelled`]).
+fn entity_inside(level: &mut Level, state: BlockState, pos: BlockPos, entity: EntityId) {
     let signal = signal_for_state(state);
-    if signal == 0 {
+    if signal == 0 && !super::contact::physical_cancelled(level, pos, entity) {
         check_pressed(level, pos, state, signal);
     }
 }

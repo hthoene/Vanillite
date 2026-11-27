@@ -894,12 +894,14 @@ impl PluginHost {
         event.header.cancelled == 0
     }
 
-    /// A player uses `item` in `hand` (from [`abi::hand`]) on a block or in the air. Returns
+    /// A player uses `item` in `hand` (from [`abi::hand`]) on a block or in the air, hits a
+    /// block or the air, or steps on a block; `action` is one of [`abi::interact`]. Returns
     /// `false` when a plugin cancelled it.
     pub fn player_interact(
         &self,
         world: u32,
         player: u128,
+        action: u32,
         hand: u32,
         item: &str,
         block: Option<InteractTarget<'_>>,
@@ -914,11 +916,7 @@ impl PluginHost {
             InteractEvent {
                 world,
                 player: abi::Uuid::from_u128(player),
-                action: if block.is_some() {
-                    abi::interact::USE_ON_BLOCK
-                } else {
-                    abi::interact::USE_ITEM
-                },
+                action,
                 hand,
                 item: abi::Str::new(item),
                 pos: block_pos(block.map_or([0; 3], |b| b.pos)),

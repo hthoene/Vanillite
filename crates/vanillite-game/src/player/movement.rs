@@ -196,6 +196,11 @@ impl Movement {
         }
     }
 
+    /// A teleport waits for the client's confirmation (moves are ignored meanwhile).
+    pub fn awaiting_teleport(&self) -> bool {
+        self.awaiting_position.is_some()
+    }
+
     /// `markClientUnloadedAfterDeath`: the client loads the world again after respawning.
     pub fn mark_client_unloaded(&mut self) {
         self.waiting_for_respawn = true;
@@ -529,6 +534,71 @@ impl Movement {
             moved_upwards,
         });
     }
+}
+
+/// A destination a plugin set: position and rotation when they are finite, the position
+/// clamped like a client's move (`clampHorizontal`, `clampVertical`).
+pub fn checked_place(place: &crate::hooks::Place) -> Option<(Vec3, f32, f32)> {
+    let [x, y, z] = place.pos;
+    if !(x.is_finite()
+        && y.is_finite()
+        && z.is_finite()
+        && place.yaw.is_finite()
+        && place.pitch.is_finite())
+    {
+        return None;
+    }
+    Some((
+        Vec3::new(clamp_horizontal(x), clamp_vertical(y), clamp_horizontal(z)),
+        wrap_degrees(place.yaw),
+        place.pitch.clamp(-90.0, 90.0),
+    ))
+}
+
+/// Bukkit's `PlayerTeleportEvent` (`vanillite_abi::event::PLAYER_TELEPORT`) of the player
+/// `id` going to `to`, `cause` from `vanillite_abi::teleport_cause`: `None` when a plugin
+/// cancelled it, else the destination: a handler's checked and clamped ([`checked_place`];
+/// `world` set for another world, which only callers that can move players between worlds
+/// honour). Without hooks or a listener `to` comes back at once.
+pub fn teleport_event(
+    hooks: Option<&dyn crate::hooks::GameHooks>,
+    ents: &crate::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+    cause: u32,
+    to: crate::hooks::Place,
+) -> Option<crate::hooks::Place> {
+    let kind = vanillite_abi::event::PLAYER_TELEPORT;
+    let Some(hooks) = hooks.filter(|h| h.wants(kind)) else {
+        return Some(to);
+    };
+    let Some(entity) = ents.store.get(id) else {
+        return Some(to);
+    };
+    let rot = entity.rot();
+    let mut ev = crate::hooks::Event {
+        entity: entity.uuid(),
+        entity_type: "minecraft:player".to_owned(),
+        cause,
+        from: crate::hooks::Place::looking(entity.pos(), rot.y_rot, rot.x_rot),
+        to,
+        ..crate::hooks::Event::new(kind)
+    };
+    hooks.event(&mut ev);
+    if ev.cancelled {
+        return None;
+    }
+    if ev.to == to {
+        return Some(to);
+    }
+    Some(match checked_place(&ev.to) {
+        Some((pos, yaw, pitch)) => crate::hooks::Place {
+            world: ev.to.world,
+            pos: [pos.x, pos.y, pos.z],
+            yaw,
+            pitch,
+        },
+        None => to,
+    })
 }
 
 /// `ServerPlayer.teleport` within its world (`teleportSameDimension`, `connection.teleport`):

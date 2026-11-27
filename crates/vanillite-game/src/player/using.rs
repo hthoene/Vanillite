@@ -566,6 +566,30 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
         }
         return;
     }
+    // Bukkit's `PlayerItemConsumeEvent`: cancelled, nothing is consumed and the client sees
+    // its inventory again.
+    if let Some(uuid) = ents.store.get(player).map(|e| e.uuid())
+        && super::player_event(
+            env.hooks,
+            vanillite_abi::event::PLAYER_ITEM_CONSUME,
+            uuid,
+            |e| {
+                e.item = crate::hooks::item_snbt(&stack);
+                e.cause = match u.hand {
+                    Hand::MainHand => vanillite_abi::hand::MAIN,
+                    Hand::OffHand => vanillite_abi::hand::OFF,
+                };
+            },
+        )
+        .is_some_and(|e| e.cancelled)
+    {
+        finished_event(ents, player);
+        if let Some(p) = ents.player_mut(player) {
+            let sink = std::sync::Arc::clone(&p.connection.sink);
+            p.inventory.broadcast_full_state(sink.as_ref());
+        }
+        return;
+    }
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);

@@ -208,6 +208,36 @@ impl PlayerInventory {
             && slot.count < item::max_stack_size(slot).min(menu::CONTAINER_MAX)
     }
 
+    /// How many of `stack` [`PlayerInventory::add`] would take (Bukkit's `canHold`).
+    pub fn room_for(&self, stack: &ItemStack) -> i32 {
+        if stack.is_empty() {
+            return 0;
+        }
+        if item::is_damageable(stack) && item::damage(stack) > 0 {
+            return if self.free_slot().is_some() {
+                stack.count
+            } else {
+                0
+            };
+        }
+        let max = item::max_stack_size(stack).min(menu::CONTAINER_MAX);
+        let mut room: i32 = 0;
+        // The off hand only takes more of what it holds (`getSlotWithRemainingSpace`).
+        let offhand = (!self.offhand.is_empty()).then_some(&self.offhand);
+        for slot in self.items.iter().chain(offhand) {
+            if slot.is_empty() {
+                room = room.saturating_add(max);
+            } else if Self::has_remaining_space(slot, stack) {
+                let max = item::max_stack_size(slot).min(menu::CONTAINER_MAX);
+                room = room.saturating_add(max.saturating_sub(slot.count));
+            }
+            if room >= stack.count {
+                return stack.count;
+            }
+        }
+        room
+    }
+
     /// `getFreeSlot`.
     pub fn free_slot(&self) -> Option<usize> {
         self.items.iter().position(ItemStack::is_empty)

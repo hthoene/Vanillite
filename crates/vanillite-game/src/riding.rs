@@ -236,7 +236,7 @@ pub fn stop_riding(
     crate::decoration::cushion::passenger_left(ents, env, vehicle);
     let alive = ents.store.contains(passenger);
     if alive && let Some(target) = dismount_location(ents, env, vehicle, passenger) {
-        dismount_to(ents, passenger, target);
+        dismount_to(ents, env.hooks, passenger, target);
     }
     Some(vehicle)
 }
@@ -249,12 +249,38 @@ pub fn eject_passengers(ents: &mut Entities, env: &mut Env<'_>, vehicle: EntityI
     }
 }
 
-/// `dismountTo`: players are teleported, others placed.
-fn dismount_to(ents: &mut Entities, passenger: EntityId, target: Vec3) {
+/// `dismountTo`: players are teleported (a plugin may cancel or move it: Bukkit's
+/// `PlayerTeleportEvent` with `DISMOUNT`), others placed.
+fn dismount_to(
+    ents: &mut Entities,
+    hooks: &dyn crate::hooks::GameHooks,
+    passenger: EntityId,
+    target: Vec3,
+) {
     let Some(e) = ents.store.get(passenger) else {
         return;
     };
-    let rot = e.rot();
+    let mut rot = e.rot();
+    let mut target = target;
+    if ents.player(passenger).is_some() && hooks.wants(vanillite_abi::event::PLAYER_TELEPORT) {
+        let to = crate::hooks::Place::looking(target, rot.y_rot, rot.x_rot);
+        let Some(place) = crate::player::movement::teleport_event(
+            Some(hooks),
+            ents,
+            passenger,
+            vanillite_abi::teleport_cause::DISMOUNT,
+            to,
+        ) else {
+            return;
+        };
+        if place.world.is_none() {
+            target = place.vec();
+            (rot.y_rot, rot.x_rot) = (place.yaw, place.pitch);
+        }
+    }
+    let Some(e) = ents.store.get(passenger) else {
+        return;
+    };
     let velocity = e.velocity();
     let on_ground = e.flags().contains(EntityFlags::ON_GROUND);
     let mut body = crate::player::Body {
@@ -274,6 +300,10 @@ fn dismount_to(ents: &mut Entities, passenger: EntityId, target: Vec3) {
     }
     if let Some(mut e) = ents.store.get_mut(passenger) {
         e.set_pos(target);
+        let old = e.as_ref().rot();
+        if old.y_rot != rot.y_rot || old.x_rot != rot.x_rot {
+            e.set_rot(rot);
+        }
     }
 }
 

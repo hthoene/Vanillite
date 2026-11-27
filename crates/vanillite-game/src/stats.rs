@@ -264,6 +264,73 @@ impl StatsCounter {
         std::mem::take(&mut self.scores)
     }
 
+    /// Bukkit's `PlayerStatisticIncrementEvent` for the increases in `changes` (from
+    /// [`StatsCounter::take_score_changes`], in award order), fired after them: a cancelled
+    /// increase is taken back and its score change dropped. Nothing happens unless a plugin
+    /// listens.
+    pub fn fire_increases(
+        &mut self,
+        changes: &mut Vec<(Stat, ScoreChange)>,
+        hooks: &dyn crate::hooks::GameHooks,
+        player: u128,
+    ) {
+        use vanillite_abi::event;
+        if changes.is_empty() || !hooks.wants(event::PLAYER_STATISTIC) {
+            return;
+        }
+        // The value before and after each increase, walking back from the current values.
+        let mut current: FxHashMap<Stat, i64> = FxHashMap::default();
+        let mut steps: Vec<(i64, i64)> = changes
+            .iter()
+            .rev()
+            .map(|&(stat, change)| {
+                let value = current
+                    .entry(stat)
+                    .or_insert_with(|| i64::from(self.get(stat)));
+                let new = *value;
+                match change {
+                    ScoreChange::Add(count) => *value = new.saturating_sub(i64::from(count)),
+                    // Before a reset the value is unknown; the earlier increases see 0.
+                    ScoreChange::Reset => *value = 0,
+                }
+                (*value, new)
+            })
+            .collect();
+        steps.reverse();
+        let mut taken_back: FxHashMap<Stat, i64> = FxHashMap::default();
+        let mut keep = Vec::with_capacity(changes.len());
+        for (&(stat, change), (old, new)) in changes.iter().zip(steps) {
+            let ScoreChange::Add(count) = change else {
+                taken_back.remove(&stat);
+                keep.push(true);
+                continue;
+            };
+            let back = taken_back.get(&stat).copied().unwrap_or(0);
+            let mut ev = crate::hooks::Event {
+                entity: player,
+                entity_type: "minecraft:player".to_owned(),
+                key: stat.name(),
+                value: new.saturating_sub(back),
+                extra: old.saturating_sub(back),
+                ..crate::hooks::Event::new(event::PLAYER_STATISTIC)
+            };
+            hooks.event(&mut ev);
+            if ev.cancelled {
+                *taken_back.entry(stat).or_insert(0) = back.saturating_add(i64::from(count));
+            }
+            keep.push(!ev.cancelled);
+        }
+        for (stat, back) in taken_back {
+            if back != 0 {
+                let value = i64::from(self.get(stat)).saturating_sub(back);
+                let value = value.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+                self.set(stat, i32::try_from(value).unwrap_or(0));
+            }
+        }
+        let mut keep = keep.into_iter();
+        changes.retain(|_| keep.next().unwrap_or(true));
+    }
+
     /// `markAllDirty` (on join).
     pub fn mark_all_dirty(&mut self) {
         self.dirty.extend(self.values.keys().copied());

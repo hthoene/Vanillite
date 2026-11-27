@@ -337,10 +337,13 @@ pub trait GameHooks: Sync {
     }
 
     /// A player uses `item` in `hand` (0 main, 1 off) on a block (position, clicked face as
-    /// `Direction` index, state) or in the air. `false` cancels it.
+    /// `Direction` index, state) or in the air; `action` is one of `vanillite_abi::interact`
+    /// (left clicks on blocks and in the air, steps on pressure plates, tripwire and farmland
+    /// too). `false` cancels it.
     fn player_interact(
         &self,
         _player: u128,
+        _action: u32,
         _hand: u32,
         _item: &str,
         _block: Option<(BlockPos, u32, BlockState)>,

@@ -74,7 +74,25 @@ impl EffectHost for PlayerHost<'_, '_, '_> {
         {
             return false;
         }
-        player::hurt(self.entity, self.player, self.env, source, amount)
+        // The plugins' damage and death events see a causing or direct player (the UUIDs of other
+        // entities are not at hand here).
+        let attackers = match self.players {
+            Some(players) if player::wants_attackers(self.env.hooks) => {
+                let uuid_of = |id: Option<EntityId>| {
+                    id.and_then(|id| players.iter().find(|(_, p)| **p == id).map(|(u, _)| *u))
+                };
+                (uuid_of(source.cause), uuid_of(source.direct))
+            }
+            _ => (None, None),
+        };
+        player::hurt_by(
+            self.entity,
+            self.player,
+            self.env,
+            source,
+            amount,
+            attackers,
+        )
     }
     fn absorption(&self) -> f32 {
         self.player.survival.absorption
