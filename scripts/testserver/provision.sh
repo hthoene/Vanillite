@@ -20,12 +20,16 @@
 #   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
 #   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
 # - vanillite-autodeploy (timer, every 30 minutes): builds the newest green dev commit in
-#   /opt/vanillite-build and deploys it to 30001, 30002, 30030 and the proxy on 30010, with a chat
-#   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Skips a round while a
+#   /opt/vanillite-build and deploys it to 30001, 30002, 30030, 30040 and the proxy on 30010, with a
+#   chat announcement and rollback; log in /var/log/vanillite-autodeploy.log. Skips a round while a
 #   benchmark holds the lock of `vanillite-bench lock`. Manual deploys of a
 #   branch go to 30003-30099.
 # - Vanillite 30030: chunk generation test server (own world, flight allowed, all server-side
 #   movement checks off so fast flying is never teleported back; drop-in chunk-test.conf).
+# - Vanillite 30040: plugin test server (#192; own world, profile paper, drop-in plugins.conf) with
+#   the native example plugins and the Bukkit/Paper layer of the private repository
+#   vanillite-bukkit (JVM, HelloBukkit, VBench), both rebuilt by vanillite-autodeploy. Plugins are
+#   added and removed with `vanillite-plugin 30040 add|remove|list`. No other instance has the layer.
 # - Session recording on Vanillite 30001 (drop-in session-recording.conf, #152): every player
 #   session goes to /opt/vanillite/30001/recordings/<start>/ for `cargo xtask parity replay
 #   30001:latest`; vanillite-recordings-prune (at every start and daily) keeps 7 days, at most
@@ -58,7 +62,7 @@ write_if_changed() {
 echo "== packages"
 export DEBIAN_FRONTEND=noninteractive
 missing=()
-for pkg in openjdk-25-jre-headless curl rsync jq python3 git build-essential; do
+for pkg in openjdk-25-jre-headless openjdk-25-jdk-headless curl rsync jq python3 git build-essential; do
     dpkg -s "$pkg" > /dev/null 2>&1 || missing+=("$pkg")
 done
 if [ ${#missing[@]} -gt 0 ]; then
@@ -394,7 +398,7 @@ write_if_changed /usr/local/bin/vanillite-deploy 755 <<'EOF'
 # this test setup needs into server.properties, copies Paper's whitelist and ops and (re)starts
 # vanillite@<port>.service. Port 30901 is the load test instance: offline mode without
 # whitelist, started but not enabled (`cargo xtask loadtest` stops it after the run).
-# 30001, 30002 and 30030 belong to vanillite-autodeploy (newest green dev), which sets
+# 30001, 30002, 30030 and 30040 belong to vanillite-autodeploy (newest green dev), which sets
 # VANILLITE_DEPLOY_AUTO=1 and the MOTD in VANILLITE_DEPLOY_MOTD.
 # Installed by scripts/testserver/provision.sh.
 set -euo pipefail
@@ -403,9 +407,8 @@ if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 30001 ] || [ "$port" -gt 30999 ]
     echo "port must be 30001-30999 (30000 is Paper)" >&2
     exit 2
 fi
-if { [ "$port" = 30001 ] || [ "$port" = 30002 ] || [ "$port" = 30030 ]; } \
-    && [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
-    echo "30001, 30002 and 30030 run the newest green dev (vanillite-autodeploy): land on dev instead," >&2
+if [[ " 30001 30002 30030 30040 " == *" $port "* ]] && [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
+    echo "30001, 30002, 30030 and 30040 run the newest green dev (vanillite-autodeploy): land on dev instead," >&2
     echo "or test a branch on a port in 30003-30099 and stop it afterwards" >&2
     exit 2
 fi
@@ -1454,7 +1457,149 @@ for kv in allow-flight=true view-distance=16 simulation-distance=10 spawn-protec
         || echo "$kv" >> "$props30030"
 done
 
-echo "== auto-deploy of dev (vanillite-autodeploy: 30001, 30002, 30030, proxy 30010)"
+echo "== plugin test server (Vanillite 30040: native example plugins and the Bukkit layer, #192)"
+# Profile paper; the layer's JVM (libjvm of JDK 25) runs inside the server process. Only this
+# instance has plugins/bukkit: every other instance stays without JVM.
+install -d /etc/systemd/system/vanillite@30040.service.d
+write_if_changed /etc/systemd/system/vanillite@30040.service.d/plugins.conf <<'EOF'
+[Service]
+Environment=VANILLITE_PROFILE=paper
+Environment=JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
+# Room for the JVM next to the server.
+MemoryMax=4G
+EOF
+install -d -o vanillite -g vanillite /opt/vanillite/30040 /opt/vanillite/30040/plugins
+props30040=/opt/vanillite/30040/server.properties
+[ -f "$props30040" ] || install -o vanillite -g vanillite -m 644 /dev/null "$props30040"
+for kv in view-distance=8; do
+    grep -q "^${kv%%=*}=" "$props30040" && sed -i "s|^${kv%%=*}=.*|$kv|" "$props30040" \
+        || echo "$kv" >> "$props30040"
+done
+write_if_changed /usr/local/bin/vanillite-plugin 755 <<'EOF'
+#!/usr/bin/env bash
+# Usage: vanillite-plugin <port> list
+#        vanillite-plugin <port> add <url-or-path> [--no-restart]
+#        vanillite-plugin <port> remove <name> [--no-restart]
+#        vanillite-plugin <port> restart
+# Manages the plugins of Vanillite instance <port> (/opt/vanillite/<port>/plugins). `add` takes a
+# local path or an http(s) URL of
+# - a Bukkit/Paper plugin (.jar with plugin.yml or paper-plugin.yml): plugins/<name>.jar, loaded by
+#   the Bukkit layer (plugins/bukkit, only on 30040),
+# - a native Vanillite plugin: a package file (.vlp) or a directory with plugin.toml and the
+#   library: plugins/<id>.vlp or plugins/<id>/ (an existing config.toml is kept).
+# `remove` takes a name of `list` and moves the plugin (with its data) to plugins/.removed/<time>/.
+# Both restart the instance after a 10 s chat warning unless --no-restart is given.
+# The example plugins on 30040 belong to vanillite-autodeploy: a removed one comes back with the
+# next update of it. Installed by scripts/testserver/provision.sh.
+set -euo pipefail
+usage() { sed -n '2,5s/^# //p' "$0" >&2; exit 2; }
+port=${1:-}
+[[ "$port" =~ ^30[0-9]{3}$ ]] || usage
+dir=/opt/vanillite/$port/plugins
+[ -d "/opt/vanillite/$port" ] || { echo "no instance on $port" >&2; exit 1; }
+restart=true
+args=()
+for a in "${@:2}"; do
+    if [ "$a" = --no-restart ]; then restart=false; else args+=("$a"); fi
+done
+set -- "${args[@]}"
+
+restart_instance() { # <reason>
+    $restart || { echo "restart vanillite@$port to load the change: vanillite-plugin $port restart"; return; }
+    if systemctl is-active --quiet "vanillite@$port"; then
+        vanillite-console "$port" "say Restart in 10 seconds: $1" > /dev/null 2>&1 || true
+        sleep 10
+    fi
+    systemctl restart "vanillite@$port"
+    echo "restarted vanillite@$port"
+}
+
+# Prints "jar <name>" or "vlp <id>" for a plugin file, from its manifest.
+inspect() {
+    python3 -I - "$1" <<'PY'
+import re, sys, tomllib, zipfile
+try:
+    z = zipfile.ZipFile(sys.argv[1])
+except zipfile.BadZipFile:
+    sys.exit("not a .jar or .vlp file")
+names = set(z.namelist())
+if "plugin.toml" in names:
+    print("vlp", tomllib.loads(z.read("plugin.toml").decode())["id"])
+else:
+    for m in ("paper-plugin.yml", "plugin.yml"):
+        if m in names:
+            n = re.search(r"^name:\s*['\"]?([^'\"\s#]+)", z.read(m).decode(), re.M)
+            if n:
+                print("jar", n.group(1))
+                sys.exit()
+    sys.exit("no plugin.toml, plugin.yml or paper-plugin.yml in the file")
+PY
+}
+
+case "${1:-}" in
+    list)
+        install -d "$dir"
+        for p in "$dir"/*; do
+            [ -e "$p" ] || continue
+            name=${p##*/}
+            if [ -f "$p/plugin.toml" ]; then
+                printf '%-24s native  %s\n' "$name" "$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$p/plugin.toml")"
+            elif [[ "$name" == *.vlp ]]; then
+                printf '%-24s native  (package file)\n' "${name%.vlp}"
+            elif [[ "$name" == *.jar ]]; then
+                printf '%-24s bukkit\n' "${name%.jar}"
+            fi
+        done
+        ;;
+    add)
+        src=${2:?usage: vanillite-plugin <port> add <url-or-path>}
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        if [[ "$src" =~ ^https?:// ]]; then
+            curl -fsSL -o "$tmp/download" "$src"
+            src=$tmp/download
+        fi
+        install -d -o vanillite -g vanillite "$dir"
+        if [ -d "$src" ]; then
+            [ -f "$src/plugin.toml" ] || { echo "$src has no plugin.toml" >&2; exit 1; }
+            id=$(python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["id"])' "$src/plugin.toml")
+            install -d -o vanillite -g vanillite "$dir/$id"
+            for f in "$src"/*; do
+                [ -f "$f" ] || continue
+                [ "${f##*/}" = config.toml ] && [ -e "$dir/$id/config.toml" ] && continue
+                install -o vanillite -g vanillite -m 644 "$f" "$dir/$id/"
+            done
+            name=$id
+        else
+            read -r kind name < <(inspect "$src")
+            [ -n "${name:-}" ] || exit 1
+            install -o vanillite -g vanillite -m 644 "$src" "$dir/$name.$kind"
+        fi
+        echo "added $name"
+        restart_instance "plugin $name added"
+        ;;
+    remove)
+        name=${2:?usage: vanillite-plugin <port> remove <name>}
+        [[ "$name" =~ ^[A-Za-z0-9_.-]+$ && "$name" != .* ]] || { echo "bad name $name" >&2; exit 2; }
+        found=()
+        for p in "$dir/$name.jar" "$dir/$name.vlp" "$dir/$name"; do
+            [ -e "$p" ] && found+=("$p")
+        done
+        [ ${#found[@]} -gt 0 ] || { echo "no plugin $name in $dir" >&2; exit 1; }
+        trash=$dir/.removed/$(date '+%Y%m%d-%H%M%S')
+        install -d -o vanillite -g vanillite "$dir/.removed" "$trash"
+        mv "${found[@]}" "$trash/"
+        echo "removed $name (moved to $trash)"
+        restart_instance "plugin $name removed"
+        ;;
+    restart)
+        restart_instance "plugins changed"
+        ;;
+    *) usage ;;
+esac
+EOF
+
+echo "== auto-deploy of dev (vanillite-autodeploy: 30001, 30002, 30030, 30040, proxy 30010)"
 id vanillite-build > /dev/null 2>&1 \
     || useradd --system --home-dir /opt/vanillite-build --create-home --shell /usr/sbin/nologin vanillite-build
 install -d -o vanillite-build -g vanillite-build /opt/vanillite-build
@@ -1462,26 +1607,44 @@ if [ ! -x /opt/vanillite-build/.cargo/bin/rustup ]; then
     curl -fsSL https://sh.rustup.rs | runuser -u vanillite-build -- env HOME=/opt/vanillite-build \
         sh -s -- -y --quiet --no-modify-path --profile minimal --default-toolchain none
 fi
+# vanillite-bukkit is private: the build user reads it with a read-only deploy key.
+install -d -m 700 -o vanillite-build -g vanillite-build /opt/vanillite-build/.ssh
+if [ ! -f /opt/vanillite-build/.ssh/vanillite-bukkit ]; then
+    runuser -u vanillite-build -- ssh-keygen -q -t ed25519 -N '' -C vanillite-test-autodeploy \
+        -f /opt/vanillite-build/.ssh/vanillite-bukkit
+    echo "new deploy key: add it once, read-only, with"
+    echo "  gh repo deploy-key add - -R hthoene/vanillite-bukkit -t vanillite-test-autodeploy <<< '$(cat /opt/vanillite-build/.ssh/vanillite-bukkit.pub)'"
+fi
 install -d /var/lib/vanillite-autodeploy
 write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-autodeploy [run | status [<lines>]]
 # run (vanillite-autodeploy.timer, every 30 minutes): takes the newest dev commit whose CI
-# workflow passed (dev lands often, so the head itself is often still running or cancelled); if
-# it is newer than the deployed one, builds vanillite and vanillite-proxy (release-fast) in
-# /opt/vanillite-build, announces the restart in chat 10 s ahead, deploys 30001, 30002, 30030 and the
-# proxy on 30010 (only those whose binary changed) and rolls all of them back to the previous
-# binaries if one does not come up. An unbuildable or rolled back commit is not tried again; the
-# next green one is.
+# workflow passed (dev lands often, so the head itself is often still running or cancelled) and
+# the head of vanillite-bukkit's main branch. If one of them is newer than the deployed one, builds
+# vanillite, vanillite-proxy and the native example plugins (release-fast) in /opt/vanillite-build
+# and, when it changed, the Bukkit layer (/opt/vanillite-build/bukkit, scripts/build.sh), announces
+# the restart in chat 10 s ahead, deploys 30001, 30002, 30030, 30040 (with its plugins) and the
+# proxy on 30010 (only those whose binary or plugins changed) and rolls all of them back if one
+# does not come up. An unbuildable or rolled back commit is not tried again; the next one is. An
+# unbuildable layer keeps the previous one.
 # Log: /var/log/vanillite-autodeploy.log. Installed by scripts/testserver/provision.sh.
 set -uo pipefail
 repo=https://github.com/hthoene/vanillite.git
 api=https://api.github.com/repos/hthoene/vanillite
-ports=(30001 30002 30030)
+bukkit_repo=git@github.com:hthoene/vanillite-bukkit.git
+bukkit_branch=main
+ports=(30001 30002 30030 30040)
 declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import"
-    [30030]="Vanillite test: chunk generation, no movement checks")
+    [30030]="Vanillite test: chunk generation, no movement checks"
+    [30040]="Vanillite test: plugins (native + Bukkit layer)")
+# The instance with plugins and the example plugins (directories in examples/) it gets.
+plugin_port=30040
+native_examples=(hello-plugin packet-plugin)
 build=/opt/vanillite-build
 state=/var/lib/vanillite-autodeploy
+plugins_cur=$state/plugins-$plugin_port
+plugins_new=$state/plugins-$plugin_port.new
 logfile=/var/log/vanillite-autodeploy.log
 start_timeout=120
 sha=
@@ -1493,6 +1656,7 @@ log() {
 case "${1:-run}" in
     status)
         echo "deployed: $(cat "$state/deployed" 2> /dev/null || echo none)"
+        echo "bukkit layer: $(cat "$state/bukkit-deployed" 2> /dev/null || echo none)"
         tail -n "${2:-15}" "$logfile" 2> /dev/null
         exit 0
         ;;
@@ -1513,7 +1677,9 @@ flock -n 8 || exit 0
 echo "vanillite-autodeploy since $(date -u '+%Y-%m-%d %H:%M UTC')" > /run/vanillite-bench.owner
 
 as_build() {
-    runuser -u vanillite-build -- env HOME="$build" PATH="$build/.cargo/bin:/usr/bin:/bin" "$@"
+    runuser -u vanillite-build -- env HOME="$build" PATH="$build/.cargo/bin:/usr/bin:/bin" \
+        GIT_SSH_COMMAND="ssh -i $build/.ssh/vanillite-bukkit -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+        "$@"
 }
 
 # The newest dev commit whose whole CI workflow (all jobs) succeeded.
@@ -1522,50 +1688,132 @@ sha=$(curl -fsS -H 'Accept: application/vnd.github+json' \
     | jq -r '.workflow_runs[0].head_sha // empty')
 [ -n "$sha" ] || { echo "no green dev commit found (GitHub API unavailable?)" >&2; exit 0; }
 deployed=$(cat "$state/deployed" 2> /dev/null)
-[ "$sha" = "$deployed" ] && exit 0
-[ "$sha" = "$(cat "$state/skipped" 2> /dev/null)" ] && exit 0
+new_dev=true
+if [ "$sha" = "$deployed" ] || [ "$sha" = "$(cat "$state/skipped" 2> /dev/null)" ]; then
+    new_dev=false
+fi
+# The layer: rebuilt when the head of its branch changed.
+bsha=$(as_build git ls-remote "$bukkit_repo" "refs/heads/$bukkit_branch" 2> /dev/null | cut -f1)
+[ -n "$bsha" ] || echo "cannot read $bukkit_repo (deploy key added?)" >&2
+new_bukkit=false
+if [ -n "$bsha" ] && [ "$bsha" != "$(cat "$state/bukkit-deployed" 2> /dev/null)" ] \
+    && [ "$bsha" != "$(cat "$state/bukkit-skipped" 2> /dev/null)" ]; then
+    new_bukkit=true
+fi
+$new_dev || $new_bukkit || exit 0
 as_build bash -ec '
     cd "$HOME"
     [ -d src/.git ] || git clone --quiet "$1" src
     git -C src fetch --quiet origin dev
 ' build "$repo" || { echo "cannot fetch dev" >&2; exit 0; }
 # A re-run of an older commit's CI does not take the servers back.
-if [ -n "$deployed" ] && as_build git -C "$build/src" merge-base --is-ancestor "$sha" "$deployed"; then
-    exit 0
+if $new_dev && [ -n "$deployed" ] && as_build git -C "$build/src" merge-base --is-ancestor "$sha" "$deployed"; then
+    new_dev=false
 fi
+$new_dev || $new_bukkit || exit 0
+# Only the layer changed: the deployed dev commit is built again (no-op in the target dir).
+$new_dev || sha=${deployed:-$sha}
 
-log "building"
+log "building$($new_dev && echo " dev")$($new_bukkit && echo " bukkit layer ${bsha:0:12}")"
 started=$SECONDS
+# The example plugins are built in their own cargo run so they cannot change the server's features.
 if ! as_build bash -ec '
     cd "$HOME/src"
     git checkout --quiet --force --detach "$1"
     rustup toolchain install --profile minimal > /dev/null
-    CARGO_TARGET_DIR="$HOME/target" cargo build --locked --profile release-fast \
-        -p vanillite -p vanillite-proxy
-' build "$sha" > "$state/build.log" 2>&1; then
+    export CARGO_TARGET_DIR="$HOME/target"
+    cargo build --locked --profile release-fast -p vanillite -p vanillite-proxy
+    shift
+    for ex in "$@"; do
+        cargo build --locked --profile release-fast --manifest-path "examples/$ex/Cargo.toml"
+    done
+' build "$sha" "${native_examples[@]}" > "$state/build.log" 2>&1; then
     log "FAILED: build failed after $((SECONDS - started)) s, see $state/build.log"
     tail -n 30 "$state/build.log"
-    echo "$sha" > "$state/skipped"
+    $new_dev && echo "$sha" > "$state/skipped"
     exit 1
 fi
 log "built in $((SECONDS - started)) s"
 server_bin=$build/target/release-fast/vanillite
 proxy_bin=$build/target/release-fast/vanillite-proxy
 
+bukkit_built=false
+if $new_bukkit; then
+    started=$SECONDS
+    if as_build bash -ec '
+        cd "$HOME"
+        [ -d bukkit/.git ] || git clone --quiet "$1" bukkit
+        git -C bukkit fetch --quiet origin "$2"
+        git -C bukkit checkout --quiet --force --detach "$3"
+        export RUSTUP_TOOLCHAIN=$(sed -n "s/^channel = \"\(.*\)\"/\1/p" src/rust-toolchain.toml)
+        bukkit/scripts/build.sh
+    ' build "$bukkit_repo" "$bukkit_branch" "$bsha" > "$state/bukkit-build.log" 2>&1; then
+        bukkit_built=true
+        log "built the bukkit layer ${bsha:0:12} in $((SECONDS - started)) s"
+    else
+        log "FAILED: bukkit layer ${bsha:0:12} does not build, keeping the previous one; see $state/bukkit-build.log"
+        tail -n 30 "$state/bukkit-build.log"
+        echo "$bsha" > "$state/bukkit-skipped"
+    fi
+fi
+
+# The plugins of $plugin_port: the previous set, the example plugins of this build and the layer.
+rm -rf "$plugins_new"
+mkdir -p "$plugins_new"
+[ -d "$plugins_cur" ] && cp -a "$plugins_cur/." "$plugins_new/"
+for ex in "${native_examples[@]}"; do
+    manifest=$build/src/examples/$ex/plugin.toml
+    id=$(sed -n 's/^id = "\(.*\)"/\1/p' "$manifest")
+    lib=$(sed -n 's/^library = "\(.*\)"/\1/p' "$manifest")
+    rm -rf "${plugins_new:?}/$id"
+    mkdir -p "$plugins_new/$id"
+    cp "$manifest" "$build/target/release-fast/lib$lib.so" "$plugins_new/$id/"
+    [ -f "$build/src/examples/$ex/config.toml" ] && cp "$build/src/examples/$ex/config.toml" "$plugins_new/$id/"
+done
+if $bukkit_built; then
+    rm -rf "$plugins_new/bukkit"
+    cp -a "$build/bukkit/build/dist/plugins/." "$plugins_new/"
+fi
+
+# Copies a staged plugin set into the instance: new files replace the old ones (a new inode, so
+# a running server keeps its mapped libraries), a config.toml that exists is kept.
+install_plugins() { # <staged dir>
+    local dst=/opt/vanillite/$plugin_port/plugins f
+    install -d -o vanillite -g vanillite "/opt/vanillite/$plugin_port" "$dst"
+    (cd "$1" && find . -mindepth 1 -type d) | while read -r f; do
+        install -d -o vanillite -g vanillite "$dst/$f"
+    done
+    (cd "$1" && find . -type f) | while read -r f; do
+        [ "${f##*/}" = config.toml ] && [ -e "$dst/$f" ] && continue
+        install -o vanillite -g vanillite -m 644 "$1/$f" "$dst/$f"
+    done
+}
+# Records what runs now.
+commit_state() {
+    echo "$sha" > "$state/deployed"
+    $bukkit_built && echo "$bsha" > "$state/bukkit-deployed"
+    rm -rf "$plugins_cur"
+    mv "$plugins_new" "$plugins_cur"
+}
+
 changed=()
 for port in "${ports[@]}"; do
-    cmp -s "$server_bin" "/opt/vanillite/$port/vanillite" || changed+=("$port")
+    if ! cmp -s "$server_bin" "/opt/vanillite/$port/vanillite"; then
+        changed+=("$port")
+    elif [ "$port" = "$plugin_port" ] && ! diff -rq "$plugins_new" "$plugins_cur" > /dev/null 2>&1; then
+        changed+=("$port")
+    fi
 done
 proxy_changed=false
 cmp -s "$proxy_bin" /opt/vanillite-proxy/vanillite-proxy || proxy_changed=true
 if [ ${#changed[@]} -eq 0 ] && ! $proxy_changed; then
-    echo "$sha" > "$state/deployed"
-    log "ok: binaries unchanged, nothing restarted"
+    commit_state
+    log "ok: binaries and plugins unchanged, nothing restarted"
     exit 0
 fi
 
 # Restarting the proxy disconnects the players of every server behind it.
-msg="Restart in 10 seconds: update to dev ${sha:0:7}"
+msg="Restart in 10 seconds: update to dev ${sha:0:7}$($bukkit_built && echo ", Bukkit layer ${bsha:0:7}")"
 if $proxy_changed; then
     for port in "${ports[@]}"; do vanillite-console "$port" "say $msg" > /dev/null 2>&1; done
     paper-rcon --port 25577 "say $msg" > /dev/null 2>&1
@@ -1601,6 +1849,7 @@ done_ports=()
 for port in "${changed[@]}"; do
     cp -p "/opt/vanillite/$port/vanillite" "$state/prev-$port" 2> /dev/null || rm -f "$state/prev-$port"
     done_ports+=("$port")
+    [ "$port" = "$plugin_port" ] && install_plugins "$plugins_new"
     if ! deploy_server "$port" "$server_bin" "${sha:0:7}"; then
         failed="vanillite@$port did not start within $start_timeout s"
         journalctl -q -u "vanillite@$port" -n 30 -o cat --no-pager
@@ -1619,9 +1868,15 @@ fi
 
 if [ -n "$failed" ]; then
     log "FAILED: $failed; rolling back to ${deployed:0:12}"
-    echo "$sha" > "$state/skipped"
+    # A new dev commit takes the blame; with the deployed one, the new layer does.
+    if $new_dev; then
+        echo "$sha" > "$state/skipped"
+    elif $bukkit_built; then
+        echo "$bsha" > "$state/bukkit-skipped"
+    fi
     for port in "${done_ports[@]}"; do
         if [ -f "$state/prev-$port" ]; then
+            [ "$port" = "$plugin_port" ] && [ -d "$plugins_cur" ] && install_plugins "$plugins_cur"
             deploy_server "$port" "$state/prev-$port" "${deployed:0:7} (rollback)" \
                 || log "rollback of vanillite@$port did not start either"
         fi
@@ -1629,15 +1884,16 @@ if [ -n "$failed" ]; then
     if $proxy_done && [ -f "$state/prev-proxy" ]; then
         deploy_proxy "$state/prev-proxy" || log "rollback of vanillite-proxy did not start either"
     fi
+    rm -rf "$plugins_new"
     log "rolled back"
     exit 1
 fi
-echo "$sha" > "$state/deployed"
-log "ok: deployed to ${changed[*]}$($proxy_changed && echo ' proxy')"
+commit_state
+log "ok: deployed to ${changed[*]}$($proxy_changed && echo ' proxy')$($bukkit_built && echo " (bukkit layer ${bsha:0:12})")"
 EOF
 write_if_changed /etc/systemd/system/vanillite-autodeploy.service <<'EOF'
 [Unit]
-Description=Deploy the newest green dev to Vanillite 30001, 30002 and the proxy (vanillite-autodeploy)
+Description=Deploy the newest green dev to Vanillite 30001, 30002, 30030, 30040 and the proxy (vanillite-autodeploy)
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -1700,6 +1956,7 @@ AUTODEPLOYED = {
     "vanillite@30001.service",
     "vanillite@30002.service",
     "vanillite@30030.service",
+    "vanillite@30040.service",
     "vanillite-proxy.service",
 }
 NO_DISCONNECT = {"vanillite@30901.service"}  # load test bots come and go
