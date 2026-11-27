@@ -1121,7 +1121,8 @@ impl GameWorld {
             .map(|(_, n)| n.as_str())
     }
 
-    fn add_player(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
+    /// Adds a player of the scenario's entities (`index` is its position there).
+    pub fn add_player(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
         let (tx, inbound) = vanillite_protocol::inbound_queue(CLIENT_QUEUE);
         let chat = ChatSettings::default();

@@ -40,7 +40,6 @@ mod data_id {
     pub const PLAYER_MAIN_HAND: u8 = 15;
     pub const TNT_FUSE: u8 = 8;
     pub const TNT_BLOCK_STATE: u8 = 9;
-    pub const EXPERIENCE_ORB_VALUE: u8 = 8;
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
@@ -475,19 +474,6 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             );
         }
     }
-    if entity.kind() == ids::EXPERIENCE_ORB
-        && let Some(orb) = entities.experience_orb(entity.id())
-        && (all || orb.value != 0)
-    {
-        item(
-            &mut out,
-            data_id::EXPERIENCE_ORB_VALUE,
-            serializer::INT,
-            |o| {
-                write_varint(o, orb.value);
-            },
-        );
-    }
     if entity.kind() == ids::ITEM
         && let Some(data) = entities.item(entity.id())
         && (all || !data.stack.is_empty())
@@ -506,6 +492,15 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     }
     out.push(0xFF);
     Some(out)
+}
+
+/// Every synched data item of an entity, as a `set_entity_data` of all values sends them
+/// (ending with the `0xFF` terminator); `None` for an unknown entity.
+pub fn all_entity_data(
+    entities: &Entities,
+    id: vanillite_world::entity::EntityId,
+) -> Option<Vec<u8>> {
+    entity_data(&entities.store.get(id)?, entities, true)
 }
 
 /// Writes synched data items of a mob kind: every value (`all`, updates) or only those that

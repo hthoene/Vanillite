@@ -514,8 +514,8 @@ pub fn feed_tadpole(ix: &mut Interact<'_, '_>) -> Interaction {
     Interaction::Success
 }
 
-/// Synched data: frogs baby (16), variant (17), tongue target (18); tadpoles from bucket (16),
-/// age locked (17).
+/// Synched data: frogs baby (16), age locked (17), variant (18), tongue target (19); tadpoles
+/// from bucket (16), age locked (17).
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     let s = state(m);
     if m.kind == Kind::Tadpole {
@@ -523,9 +523,9 @@ pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
         w.boolean(17, s.playing_dead, false);
         return;
     }
-    w.boolean(16, m.baby, false);
+    crate::mob::fam::companion::encode_ageable(w, m);
     w.varint(
-        17,
+        18,
         crate::player::encode::serializer::FROG_VARIANT,
         s.variant,
         1,
@@ -533,7 +533,7 @@ pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     // `OPTIONAL_UNSIGNED_INT`: 0 for empty, else the network id + 1.
     let tongue = s.tongue_target.map_or(0, |_| 1);
     w.raw(
-        18,
+        19,
         crate::player::encode::serializer::OPTIONAL_UNSIGNED_INT,
         tongue == 0,
         |o| {
