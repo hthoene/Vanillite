@@ -1,0 +1,13 @@
+{
+  "description": "Dispensers shoot splash and lingering potions (ThrowablePotionItem dispense config: power 1.375, uncertainty 3) and fire charges (a small fireball one block out, its direction from three level random triangles, level event 1018); the potions break into an effect cloud or splash, the fireball sets fire where it lands.",
+  "rules": {"spawn_monsters": "false"},
+  "level_rng": true,
+  "region": [[0, -61, 0], [31, -50, 9]],
+  "ticks": 60,
+  "actions": [
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 1 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:splash_potion\",count:1,components:{\"minecraft:potion_contents\":{potion:\"minecraft:healing\"}}}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 4 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:lingering_potion\",count:1,components:{\"minecraft:potion_contents\":{potion:\"minecraft:poison\"}}}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 -60 7 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:fire_charge\",count:2}]}"},
+    {"tick": 5, "op": "command", "command": "fill 1 -60 1 1 -60 7 minecraft:redstone_block"}
+  ]
+}

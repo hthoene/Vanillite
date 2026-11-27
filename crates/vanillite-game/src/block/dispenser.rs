@@ -269,6 +269,9 @@ fn registered(id: ItemId) -> Option<Behaviour> {
         items::EXPERIENCE_BOTTLE,
         items::FIREWORK_ROCKET,
         items::WIND_CHARGE,
+        items::SPLASH_POTION,
+        items::LINGERING_POTION,
+        items::FIRE_CHARGE,
     ];
     if shot.contains(&id) {
         return Some(B::Projectile);
@@ -1356,7 +1359,12 @@ fn projectile_config(stack: &ItemStack) -> (f64, f64, f32, f32, i32) {
         (0.500_009_999_999_747_4, 0.0, 1.0, 0.5, 1004)
     } else if id == items::WIND_CHARGE {
         (1.0, 0.0, 6.666_666_5, 1.0, 1051)
-    } else if id == items::EXPERIENCE_BOTTLE {
+    } else if id == items::FIRE_CHARGE {
+        (1.0, 0.0, 6.666_666_5, 1.0, 1018)
+    } else if id == items::EXPERIENCE_BOTTLE
+        || id == items::SPLASH_POTION
+        || id == items::LINGERING_POTION
+    {
         (0.7, 0.1, 6.0 * 0.5, 1.1 * 1.25, 1002)
     } else {
         (0.7, 0.1, 6.0, 1.1, 1002)
@@ -1366,8 +1374,6 @@ fn projectile_config(stack: &ItemStack) -> (f64, f64, f32, f32, i32) {
 /// `ProjectileDispenseBehavior.execute`: `asProjectile` at the dispense position, then
 /// `spawnProjectileUsingShoot` along the facing.
 fn shoot_projectile(level: &mut Level, source: Source, stack: &ItemStack) {
-    use crate::mob::missile::{self, MissileData, MissileKind};
-    use vanillite_base::random::{LegacyRandom, RandomSource};
     let (scale, up, uncertainty, power, _) = projectile_config(stack);
     let [sx, sy, sz] = source.facing.normal();
     let (sx, sy, sz) = (f64::from(sx), f64::from(sy), f64::from(sz));
@@ -1376,13 +1382,59 @@ fn shoot_projectile(level: &mut Level, source: Source, stack: &ItemStack) {
         f64::from(source.pos.y) + 0.5 + scale * sy + up,
         f64::from(source.pos.z) + 0.5 + scale * sz,
     );
+    let _ = spawn_projectile_item(level, at, source.facing, stack, power, uncertainty);
+}
+
+/// The dispense configuration of a projectile item (`ProjectileItem.createDispenseConfig`):
+/// uncertainty, power and the level event that replaces the dispense sound (if any).
+pub fn projectile_item_config(stack: &ItemStack) -> Option<(f32, f32, Option<i32>)> {
+    let id = item::item_id(stack);
+    let projectile = [
+        items::ARROW,
+        items::TIPPED_ARROW,
+        items::SPECTRAL_ARROW,
+        items::EGG,
+        items::BLUE_EGG,
+        items::BROWN_EGG,
+        items::SNOWBALL,
+        items::EXPERIENCE_BOTTLE,
+        items::SPLASH_POTION,
+        items::LINGERING_POTION,
+        items::FIREWORK_ROCKET,
+        items::FIRE_CHARGE,
+        items::WIND_CHARGE,
+    ]
+    .contains(&id);
+    if !projectile {
+        return None;
+    }
+    let (_, _, uncertainty, power, event) = projectile_config(stack);
+    let event = (id == items::WIND_CHARGE || id == items::FIRE_CHARGE).then_some(event);
+    Some((uncertainty, power, event))
+}
+
+/// `ProjectileItem.asProjectile(level, at, stack, direction)` and
+/// `Projectile.spawnProjectileUsingShoot(projectile, level, stack, step, power, uncertainty)`:
+/// the projectile of `stack` at `at`, shot along `direction`. Returns the new entity.
+pub fn spawn_projectile_item(
+    level: &mut Level,
+    at: Vec3,
+    direction: Direction,
+    stack: &ItemStack,
+    power: f32,
+    uncertainty: f32,
+) -> Option<vanillite_world::entity::EntityId> {
+    use crate::mob::missile::{self, MissileData, MissileKind};
+    use vanillite_base::random::{LegacyRandom, RandomSource};
+    let [sx, sy, sz] = direction.normal();
+    let (sx, sy, sz) = (f64::from(sx), f64::from(sy), f64::from(sz));
     let dir = Vec3::new(sx, sy, sz);
     let network_ids = std::sync::Arc::clone(level.network_ids_arc());
     let id = item::item_id(stack);
     if [items::ARROW, items::TIPPED_ARROW, items::SPECTRAL_ARROW].contains(&id) {
         // `new Arrow(level, x, y, z, stack, null)` with `pickup = ALLOWED`.
         let (entities, _, random) = level.entity_parts();
-        crate::mob::projectile::shoot_arrow(
+        return Some(crate::mob::projectile::shoot_arrow(
             entities,
             &network_ids,
             random,
@@ -1395,8 +1447,7 @@ fn shoot_projectile(level: &mut Level, source: Source, stack: &ItemStack) {
             &stack.with_count(1),
             false,
             1,
-        );
-        return;
+        ));
     }
     if id == items::FIREWORK_ROCKET {
         // `new FireworkRocketEntity(level, stack, x, y, z, true)`, then `shoot`.
@@ -1410,21 +1461,38 @@ fn shoot_projectile(level: &mut Level, source: Source, stack: &ItemStack) {
             Some(Vec3::ZERO),
         );
         shoot_missile(level, rocket, dir, power, uncertainty);
-        return;
+        return Some(rocket);
     }
-    let data = if id == items::WIND_CHARGE {
-        // `WindChargeItem.asProjectile`: a direction around the facing from the level random.
+    if id == items::SPLASH_POTION || id == items::LINGERING_POTION {
+        // `ThrowablePotionItem.createPotion` at the position, then `shoot`.
+        return crate::effect::thrown::spawn_shot(
+            &mut level.entities,
+            &network_ids,
+            at,
+            stack,
+            dir,
+            power,
+            uncertainty,
+        );
+    }
+    let data = if id == items::WIND_CHARGE || id == items::FIRE_CHARGE {
+        // `WindChargeItem` / `FireChargeItem.asProjectile`: a direction around the facing from
+        // the level random (the following `shoot` replaces the movement).
         let r = level.random();
         let _ = (
             r.triangle(sx, 0.114_850_000_000_000_01),
             r.triangle(sy, 0.114_850_000_000_000_01),
             r.triangle(sz, 0.114_850_000_000_000_01),
         );
-        crate::mob::fam::mount::wind::new_charge(MissileKind::WindCharge)
+        if id == items::WIND_CHARGE {
+            crate::mob::fam::mount::wind::new_charge(MissileKind::WindCharge)
+        } else {
+            let mut d = MissileData::new(MissileKind::SmallFireball);
+            d.item = stack.with_count(1);
+            d
+        }
     } else {
-        let Some(kind) = crate::mob::fam::wildlife::snowball::thrown_kind(stack) else {
-            return;
-        };
+        let kind = crate::mob::fam::wildlife::snowball::thrown_kind(stack)?;
         let mut d = MissileData::new(kind);
         d.item = stack.with_count(1);
         d
@@ -1433,7 +1501,7 @@ fn shoot_projectile(level: &mut Level, source: Source, stack: &ItemStack) {
     let (velocity, rot) = crate::mob::projectile::shoot(&mut own, dir, power, uncertainty);
     let mut data = data;
     data.random_state = own.state();
-    missile::spawn(
+    Some(missile::spawn(
         &mut level.entities,
         &network_ids,
         crate::mob::new_uuid(),
@@ -1441,7 +1509,7 @@ fn shoot_projectile(level: &mut Level, source: Source, stack: &ItemStack) {
         velocity,
         rot,
         data,
-    );
+    ))
 }
 
 /// `Projectile.shoot` of a spawned missile with its own random.
