@@ -203,18 +203,17 @@ pub fn tick(t: &mut SpecialTick<'_, '_>) {
         return;
     };
     let (pos, aabb, mut v, mut rot) = (e.pos(), e.aabb(), e.velocity(), e.rot());
-    // The owner of a loaded potion, once it is in the world.
-    let unresolved = match t.ents.special(id) {
-        Some(SpecialData::ThrownPotion(p)) if p.owner.is_none() => p.owner_uuid,
+    // `getOwner()`: the owner by its UUID (a loaded potion, a respawned or relogged thrower).
+    let found = match t.ents.special(id) {
+        Some(SpecialData::ThrownPotion(p)) => {
+            crate::mob::missile::resolve_owner(t.ents, p.owner, p.owner_uuid)
+        }
         _ => None,
     };
-    let found = unresolved.and_then(|u| t.ents.players_by_uuid.get(&u).copied());
     let Some(p) = thrown_mut(t.ents, id) else {
         return;
     };
-    if found.is_some() {
-        p.owner = found;
-    }
+    p.owner = found;
     p.tick_count = p.tick_count.saturating_add(1);
     // `Projectile.tick`: the first tick posts `PROJECTILE_SHOOT` from the thrower.
     if !std::mem::replace(&mut p.has_been_shot, true) {
@@ -228,9 +227,16 @@ pub fn tick(t: &mut SpecialTick<'_, '_>) {
     if !t.level.is_loaded(BlockPos::containing(pos.x, pos.y, pos.z)) {
         return;
     }
+    let drag = crate::mob::projectile::BubbleDrag::Projectile;
+    // `handleFirstTickBubbleColumn`.
+    if tick_count == 1 {
+        crate::mob::projectile::bubble_columns(t.level, t.ents, t.env.random, t.cx, id, None, drag);
+        v = t.ents.store.get(id).map_or(v, |e| e.velocity());
+    }
     // `applyGravity`, `applyInertia`.
     v.y -= 0.05;
-    let in_water = crate::mob::is_water(t.level.block(BlockPos::containing(pos.x, pos.y, pos.z)));
+    // `isInWater()`: water reaches into the box (where the last tick's `baseTick` saw it).
+    let in_water = crate::experience_orb::touching_water(t.level, &aabb);
     v = v * f64::from(if in_water { 0.8_f32 } else { 0.99_f32 });
     // `ProjectileUtil.getHitResultOnMoveVector`.
     let to = pos + v;
@@ -292,6 +298,17 @@ pub fn tick(t: &mut SpecialTick<'_, '_>) {
         e.set_rot(rot);
         e.as_ref().aabb()
     };
+    // `applyEffectsFromBlocks`: the bubble columns on the way.
+    crate::mob::projectile::bubble_columns(
+        t.level,
+        t.ents,
+        t.env.random,
+        t.cx,
+        id,
+        Some(pos),
+        drag,
+    );
+    v = t.ents.store.get(id).map_or(v, |e| e.velocity());
     // `checkLeftOwner`.
     if !left_owner {
         let probe = new_box.expand_towards(v.x, v.y, v.z).inflate(1.0, 1.0, 1.0);
