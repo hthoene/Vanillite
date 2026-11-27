@@ -444,7 +444,11 @@ fn main() -> std::process::ExitCode {
                 break;
             }
             for dir in &args.sessions {
-                let json = match vanillite_test::session::scenario(dir, args.ticks) {
+                let stem = dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("session");
+                let json = match vanillite_test::session::scenario(dir, args.ticks, None) {
                     Ok(j) => j,
                     Err(e) => {
                         eprintln!("parity-fuzz: {e}");
@@ -452,30 +456,37 @@ fn main() -> std::process::ExitCode {
                         continue;
                     }
                 };
-                let stem = dir
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("session");
-                let name = format!("session_{}", slug(stem));
-                let volume = vanillite_test::session::region_volume(&json);
-                println!(
-                    "{name}: {} players, {} packets, {} ticks, region {} blocks",
-                    json["entities"].as_array().map_or(0, Vec::len),
-                    json["actions"].as_array().map_or(0, Vec::len),
-                    json["ticks"],
-                    volume
-                );
-                if let Some(d) = json["description"]
-                    .as_str()
-                    .filter(|d| d.contains(", cut "))
-                {
-                    println!("{name}: {d}");
+                let mut variants = Vec::new();
+                if vanillite_test::session::is_cut(&json) {
+                    // Players far apart: each one alone in a region of its own as well.
+                    for p in vanillite_test::session::players(dir) {
+                        match vanillite_test::session::scenario(dir, args.ticks, Some(&p)) {
+                            Ok(j) => variants.push((format!("session_{}_{p}", slug(stem)), j)),
+                            Err(e) => eprintln!("parity-fuzz: {e}"),
+                        }
+                    }
                 }
-                let sessions = args.out.join("sessions");
-                let _ = std::fs::create_dir_all(&sessions);
-                let text = serde_json::to_string_pretty(&json).unwrap_or_default() + "\n";
-                let _ = std::fs::write(sessions.join(format!("{name}.json")), text);
-                batch.push((name, json, 0));
+                if json["ticks"].as_u64().unwrap_or(0) > 1 || variants.is_empty() {
+                    variants.insert(0, (format!("session_{}", slug(stem)), json));
+                }
+                for (name, json) in variants {
+                    let volume = vanillite_test::session::region_volume(&json);
+                    println!(
+                        "{name}: {} players, {} actions, {} ticks, region {} blocks",
+                        json["entities"].as_array().map_or(0, Vec::len),
+                        json["actions"].as_array().map_or(0, Vec::len),
+                        json["ticks"],
+                        volume
+                    );
+                    if vanillite_test::session::is_cut(&json) {
+                        println!("{name}: {}", json["description"].as_str().unwrap_or(""));
+                    }
+                    let sessions = args.out.join("sessions");
+                    let _ = std::fs::create_dir_all(&sessions);
+                    let text = serde_json::to_string_pretty(&json).unwrap_or_default() + "\n";
+                    let _ = std::fs::write(sessions.join(format!("{name}.json")), text);
+                    batch.push((name, json, 0));
+                }
             }
             for p in &args.replay {
                 let Ok(text) = std::fs::read_to_string(p) else {

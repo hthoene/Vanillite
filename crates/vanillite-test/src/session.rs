@@ -32,8 +32,33 @@ pub const LARGE_REGION: i64 = 2_000_000;
 /// Packets whose body starts with the position of the player or its vehicle (three doubles).
 const MOVES: &[&str] = &["move_player_pos", "move_player_pos_rot", "move_vehicle"];
 
-/// The scenario of the recording in `dir`, at most `max_ticks` long.
-pub fn scenario(dir: &Path, max_ticks: Option<u32>) -> Result<Value, String> {
+/// The anonymous ids of the players that joined in the recording in `dir`.
+pub fn players(dir: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join("packets.jsonl")).unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines().filter(|l| l.contains("\"join\"")) {
+        if let Ok(entry) = serde_json::from_str::<Value>(line)
+            && let Some(name) = entry["join"].as_str()
+            && !out.iter().any(|n| n == name)
+        {
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
+/// Whether the scenario of a session was cut ([`LARGE_REGION`]).
+pub fn is_cut(scenario: &Value) -> bool {
+    scenario["description"]
+        .as_str()
+        .is_some_and(|d| d.contains(", cut before tick"))
+}
+
+/// The scenario of the recording in `dir`, at most `max_ticks` long; with `only`, of that
+/// player alone (players far apart need regions of their own; what targets another player
+/// targets `none`).
+pub fn scenario(dir: &Path, max_ticks: Option<u32>, only: Option<&str>) -> Result<Value, String> {
+    let left_out = |player: &str| only.is_some_and(|o| o != player);
     let read = |name: &str| {
         std::fs::read_to_string(dir.join(name)).map_err(|e| format!("{}: {e}", dir.display()))
     };
@@ -78,6 +103,9 @@ pub fn scenario(dir: &Path, max_ticks: Option<u32>) -> Result<Value, String> {
             break;
         }
         if let Some(name) = entry["join"].as_str() {
+            if left_out(name) {
+                continue;
+            }
             let pos = vec3(&entry["pos"]).ok_or_else(bad)?;
             if !include(pos) {
                 cut = Some(tick);
@@ -97,6 +125,8 @@ pub fn scenario(dir: &Path, max_ticks: Option<u32>) -> Result<Value, String> {
                 spec["join"] = json!(tick);
             }
             entities.push(spec);
+        } else if entry["player"].as_str().is_some_and(left_out) {
+            continue;
         } else if let (Some(player), Some(command)) =
             (entry["player"].as_str(), entry["command"].as_str())
         {
@@ -124,6 +154,11 @@ pub fn scenario(dir: &Path, max_ticks: Option<u32>) -> Result<Value, String> {
                 "data": data,
             });
             if let Some(t) = entry["target"].as_str() {
+                let t = if t.starts_with('p') && left_out(t) {
+                    "none"
+                } else {
+                    t
+                };
                 action["target"] = json!(t);
             }
             actions.push(action);
@@ -153,10 +188,14 @@ pub fn scenario(dir: &Path, max_ticks: Option<u32>) -> Result<Value, String> {
             max[2] + MARGIN_XZ
         ],
     ]);
-    let name = dir
+    let file_name = dir
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("session");
+    let name = match only {
+        Some(p) => format!("{file_name}, player {p} alone"),
+        None => file_name.to_owned(),
+    };
     let description = match cut {
         Some(t) => format!(
             "Session replay of the recording {name} (#152), cut before tick {t}: the players \
