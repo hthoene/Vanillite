@@ -1,0 +1,3 @@
+tick = 0
+cause = "finalizeSpawn of the spider draws a different number of values from the level random than Vanilla (jockey and effect rolls), so the level random differs right after the spawn"
+owner = "gameplay-developer #132"

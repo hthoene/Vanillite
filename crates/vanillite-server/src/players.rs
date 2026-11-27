@@ -1733,6 +1733,19 @@ fn actor_of(
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
+    let permission_level = crate::commands::permission_level(global, entity.uuid());
+    player_actor(entity, game_mode, effects, permission_level, chunks)
+}
+
+/// The player as the packet handlers see it: eye height of its pose, eyes in water, mining
+/// speed effects. The scenario harness builds its packet-level players' actor with it too.
+pub fn player_actor(
+    entity: &EntityRef<'_>,
+    game_mode: GameMode,
+    effects: &vanillite_game::effect::ActiveEffects,
+    permission_level: u8,
+    chunks: &Chunks,
+) -> Actor {
     let pose = entity.pose();
     // `Player.getDefaultDimensions(pose).eyeHeight()`.
     // Eye heights are floats in Vanilla (`EntityDimensions.eyeHeight`).
@@ -1766,7 +1779,7 @@ fn actor_of(
         on_ground: flags.contains(EntityFlags::ON_GROUND),
         sneaking: flags.contains(EntityFlags::CROUCHING),
         game_mode,
-        permission_level: crate::commands::permission_level(global, entity.uuid()),
+        permission_level,
         eyes_in_water,
         dig_speed: effects
             .has_dig_speed()

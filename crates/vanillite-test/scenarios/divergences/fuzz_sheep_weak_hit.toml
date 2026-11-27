@@ -1,0 +1,3 @@
+tick = 18
+cause = "the swing resets the attack strength in Vanilla, so the hit 3 ticks later is weak (0.592 damage); Vanillite deals the full 1"
+owner = "gameplay-developer #132"

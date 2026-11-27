@@ -302,21 +302,33 @@ impl Wire {
         } = self;
         match msg {
             Out::Body(body) | Out::Untapped(body) => match adapter.as_mut() {
-                Some(a) => match a.translate(&body) {
-                    Ok(Some(t)) => encoder.body(t, buf).is_ok(),
-                    Ok(None) => true,
-                    Err(e) => {
-                        log::debug!("multiversion: untranslatable packet: {e}");
-                        true
+                Some(a) => {
+                    let mut open = match a.translate(&body) {
+                        Ok(Some(t)) => encoder.body(t, buf).is_ok(),
+                        Ok(None) => true,
+                        Err(e) => {
+                            log::debug!("multiversion: untranslatable packet: {e}");
+                            true
+                        }
+                    };
+                    while let Some(t) = a.pending() {
+                        open &= encoder.body(t, buf).is_ok();
                     }
-                },
+                    open
+                }
                 None => encoder.body(&body, buf).is_ok(),
             },
             Out::Shared(p) => match adapter.as_mut() {
-                Some(a) => match a.translate_shared(&p) {
-                    Some(t) => encoder.body(t, buf).is_ok(),
-                    None => true,
-                },
+                Some(a) => {
+                    let mut open = match a.translate_shared(&p) {
+                        Some(t) => encoder.body(t, buf).is_ok(),
+                        None => true,
+                    };
+                    while let Some(t) = a.pending() {
+                        open &= encoder.body(t, buf).is_ok();
+                    }
+                    open
+                }
                 None => {
                     let threshold = encoder.threshold();
                     let cached = p.frame(threshold, |body| {
@@ -340,6 +352,9 @@ impl Wire {
                         Ok(Some(t)) => encoder.body(t, buf)?,
                         Ok(None) => {}
                         Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                    }
+                    while let Some(t) = a.pending() {
+                        encoder.body(t, buf)?;
                     }
                     Ok(true)
                 })
@@ -430,16 +445,22 @@ pub(crate) async fn virtual_writer(
             continue;
         };
         record(&sent, sent.now_ms(), &msg);
+        let mut more = Vec::new();
         let body = match msg {
             Out::Batch(frames, threshold) => {
                 let mut bodies = Vec::new();
                 if for_each_body(&frames, threshold, |body| {
                     match adapter.as_mut() {
-                        Some(a) => match a.translate(body) {
-                            Ok(Some(t)) => bodies.push(t.to_vec()),
-                            Ok(None) => {}
-                            Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
-                        },
+                        Some(a) => {
+                            match a.translate(body) {
+                                Ok(Some(t)) => bodies.push(t.to_vec()),
+                                Ok(None) => {}
+                                Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                            }
+                            while let Some(t) = a.pending() {
+                                bodies.push(t.to_vec());
+                            }
+                        }
                         None => bodies.push(body.to_vec()),
                     }
                     Ok(true)
@@ -456,17 +477,29 @@ pub(crate) async fn virtual_writer(
                 continue;
             }
             Out::Body(b) | Out::Untapped(b) => match adapter.as_mut() {
-                Some(a) => a
-                    .translate(&b)
-                    .unwrap_or_else(|e| {
-                        log::debug!("multiversion: untranslatable packet: {e}");
-                        None
-                    })
-                    .map(<[u8]>::to_vec),
+                Some(a) => {
+                    let t = a
+                        .translate(&b)
+                        .unwrap_or_else(|e| {
+                            log::debug!("multiversion: untranslatable packet: {e}");
+                            None
+                        })
+                        .map(<[u8]>::to_vec);
+                    while let Some(t) = a.pending() {
+                        more.push(t.to_vec());
+                    }
+                    t
+                }
                 None => Some(b),
             },
             Out::Shared(p) => match adapter.as_mut() {
-                Some(a) => a.translate_shared(&p).map(<[u8]>::to_vec),
+                Some(a) => {
+                    let t = a.translate_shared(&p).map(<[u8]>::to_vec);
+                    while let Some(t) = a.pending() {
+                        more.push(t.to_vec());
+                    }
+                    t
+                }
                 None => Some(p.body().to_vec()),
             },
             Out::Adapter(a) => {
@@ -480,6 +513,11 @@ pub(crate) async fn virtual_writer(
             && tx.send(body).await.is_err()
         {
             break;
+        }
+        for body in more {
+            if tx.send(body).await.is_err() {
+                return;
+            }
         }
     }
 }
