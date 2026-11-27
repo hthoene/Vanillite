@@ -2095,6 +2095,8 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     let mut bubble_count = 0;
     let dims = t.core().dims();
     let fast_fall = t.mob_ref().fall_distance > 2.5;
+    // `WebBlock.entityInside`: Weaving halves the slowdown.
+    let weaving = t.mob_ref().effects.has(crate::effect::MobEffect::WEAVING);
     let (id, actions, level) = (t.id, &mut t.cx.actions, t.level);
     // `Spider.makeStuckInBlock`: spiders and cave spiders pass cobwebs.
     let spider = matches!(kind, super::Kind::Spider | super::Kind::CaveSpider);
@@ -2109,7 +2111,11 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         }
         if block == ids::COBWEB {
             if !spider {
-                stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
+                stuck = Some(if weaving {
+                    Vec3::new(0.5, 0.25, 0.5)
+                } else {
+                    Vec3::new(0.25, f64::from(0.05_f32), 0.25)
+                });
             }
         } else if block == ids::SWEET_BERRY_BUSH {
             if !matches!(kind, super::Kind::Fox | super::Kind::Bee) {
@@ -2176,6 +2182,21 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     {
         // `WitherRoseBlock.entityInside`.
         let effect = crate::effect::EffectInstance::new(crate::effect::MobEffect::WITHER, 40, 0);
+        let type_id = kind.type_id();
+        crate::effect::consume::add_effect(
+            type_id,
+            effect,
+            &mut crate::effect::living::MobHost { t },
+        );
+    }
+    if inside.eyeblossom
+        && kind == super::Kind::Bee
+        && t.exists()
+        && t.env.difficulty != crate::survival::rules::Difficulty::Peaceful
+        && !t.mob_ref().effects.has(crate::effect::MobEffect::POISON)
+    {
+        // `EyeblossomBlock.entityInside`: `getBeeInteractionEffect`.
+        let effect = crate::effect::EffectInstance::new(crate::effect::MobEffect::POISON, 25, 0);
         let type_id = kind.type_id();
         crate::effect::consume::add_effect(
             type_id,

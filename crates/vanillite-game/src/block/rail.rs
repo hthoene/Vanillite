@@ -704,8 +704,8 @@ fn detector_direct_signal(
     }
 }
 
-/// `getAnalogOutputSignal`: while pressed, the success count of a command block minecart
-/// (always 0: they run no commands yet) or the fill level of a container minecart.
+/// `getAnalogOutputSignal`: while pressed, the success count of a command block minecart or
+/// the fill level of a container minecart.
 fn detector_analog_output(
     level: &Level,
     state: BlockState,
@@ -716,22 +716,19 @@ fn detector_analog_output(
         return 0;
     }
     let ents = &level.entities;
-    let mut command_block = false;
+    let mut command_block = None;
     let mut container = None;
     ents.store
         .for_each_in(&detector_search_box(pos), false, |id| {
             if let Some(m) = ents.minecart(id) {
                 if m.kind == crate::minecart::MinecartKind::CommandBlock {
-                    command_block = true;
+                    command_block.get_or_insert(m.command.success_count);
                 } else if container.is_none() && m.kind.container_size() > 0 {
                     container = Some(crate::minecart::container_signal(m));
                 }
             }
         });
-    if command_block {
-        return 0;
-    }
-    container.unwrap_or(0)
+    command_block.or(container).unwrap_or(0)
 }
 
 /// `getSearchBB(pos)`.

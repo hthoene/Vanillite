@@ -1287,6 +1287,23 @@ fn merge_compound(target: &mut Compound, other: &Compound) {
     }
 }
 
+/// Whether the stack's `block_entity_data` holds `key` (`TypedEntityData.contains`).
+pub fn block_entity_data_contains(stack: &ItemStack, key: &str) -> bool {
+    let Some(wire) = stack.component(components::BLOCK_ENTITY_DATA) else {
+        return false;
+    };
+    let mut reader = vanillite_protocol::codec::Reader::new(wire);
+    if reader.varint().is_err() {
+        return false;
+    }
+    let mut rest = reader.rest();
+    let mut budget = vanillite_nbt::Budget::file();
+    matches!(
+        vanillite_nbt::read::read_network(&mut rest, &mut budget),
+        Ok(Some(Tag::Compound(data))) if data.get(key).is_some()
+    )
+}
+
 /// `BlockItem.updateCustomBlockEntityTag`: the item's `block_entity_data` merged into the
 /// placed block entity (`TypedEntityData.loadInto`), if the types match; the operator-only
 /// kinds (command blocks, lecterns, signs, spawners and trial spawners) only for players

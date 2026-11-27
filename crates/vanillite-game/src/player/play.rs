@@ -1816,6 +1816,23 @@ impl Digging {
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
+            // `JukeboxBlock.setPlacedBy`: a record in the item's block entity data.
+            if placed.block() == vanillite_data::block::ids::JUKEBOX
+                && crate::level::block_entity::block_entity_data_contains(stack, "RecordItem")
+                && let Some(with) = placed.with("has_record", "true")
+            {
+                level.set_block(target, with, crate::level::update::CLIENTS);
+            }
+            // `DriedGhastBlock.setPlacedBy`: its own sound to everyone.
+            if placed.block() == vanillite_data::block::ids::DRIED_GHAST {
+                let sound = if placed.value("waterlogged") == Some("true") {
+                    "block.dried_ghast.place_in_water"
+                } else {
+                    "block.dried_ghast.place"
+                };
+                let sound = crate::block::sound_id(sound);
+                level.play_block_sound(None, target, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
+            }
             // `SignItem.updateCustomBlockEntityTag`: the editor of the front opens.
             if crate::block::sign::is_sign(placed.block())
                 && stack.component(ids::BLOCK_ENTITY_DATA).is_none()

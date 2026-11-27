@@ -1,0 +1,81 @@
+{
+  "description": "A client player whose respawn point is a charged respawn anchor in the Nether dies in the overworld and respawns at the anchor (PlayerList.respawn): the anchor loses a charge and plays block.respawn_anchor.deplete to the player, seeded from the Nether's level random. All Nether chunks in the player's simulation distance are forced.",
+  "dimensions": true,
+  "dimension": "minecraft:the_nether",
+  "level_rng": true,
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      0,
+      -16
+    ],
+    [
+      31,
+      10,
+      31
+    ]
+  ],
+  "views": [
+    {
+      "dimension": "minecraft:overworld",
+      "region": [
+        [
+          4,
+          -61,
+          4
+        ],
+        [
+          12,
+          -58,
+          12
+        ]
+      ]
+    }
+  ],
+  "ticks": 24,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute in minecraft:the_nether run setblock 4 4 4 minecraft:respawn_anchor[charges=2]"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute in minecraft:the_nether run spawnpoint steve 4 4 4"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "kill steve"
+    },
+    {
+      "tick": 8,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "client_command",
+      "data": "00",
+      "what": "ClientCommand { action: PerformRespawn }"
+    }
+  ]
+}

@@ -60,7 +60,18 @@ fn use_item_on(
             )
         });
     if !level.settings.tnt_explodes {
-        // The "TNT explosions are disabled" overlay message is not sent.
+        // `sendOverlayMessage(block.minecraft.tnt.disabled)`.
+        if let Some(p) = level.entities.player(ctx.player) {
+            p.connection.sink.send(
+                &vanillite_protocol::packets::play::clientbound::SystemChat {
+                    content: vanillite_protocol::text::Component::translatable(
+                        "block.minecraft.tnt.disabled",
+                        Vec::new(),
+                    ),
+                    overlay: true,
+                },
+            );
+        }
         return ItemInteraction::Done(Interaction::Pass);
     }
     if allowed {
