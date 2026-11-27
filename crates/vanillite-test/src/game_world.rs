@@ -622,6 +622,8 @@ impl GameWorld {
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
             difficulty,
+            spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
+            spawn_monsters: rules.bool(Rule::SPAWN_MONSTERS),
             ..Default::default()
         };
         level.entities.day_time = env.day_time;
@@ -756,6 +758,11 @@ impl GameWorld {
                     self.finish_removals();
                 }
                 self.bolt_hits = hits;
+                continue;
+            }
+            if kind == ids::OMINOUS_ITEM_SPAWNER {
+                vanillite_game::block::trial_spawner::tick_item_spawner(&mut self.level, id);
+                self.spawn_drops();
                 continue;
             }
             if kind == ids::FALLING_BLOCK {

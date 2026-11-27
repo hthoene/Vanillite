@@ -758,6 +758,16 @@ impl WorldMobs {
                 ents = std::mem::take(&mut level.entities);
                 continue;
             }
+            if kind == ids::OMINOUS_ITEM_SPAWNER {
+                let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+                if !level.chunks.in_entity_ticking_range(chunk) {
+                    continue;
+                }
+                level.entities = ents;
+                vanillite_game::block::trial_spawner::tick_item_spawner(level, id);
+                ents = std::mem::take(&mut level.entities);
+                continue;
+            }
             if kind == ids::ITEM {
                 // `ItemEntity.tick` in the same list as every other entity: `baseTick` handles
                 // the portal before the item moves.
