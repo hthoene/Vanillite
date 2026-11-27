@@ -2137,6 +2137,22 @@ impl Chunks {
         holder.touch_entities(pos, &mut self.changed);
     }
 
+    /// Replaces the rest of the stored data of a full chunk ([`ProtoChunk::extra`]); the chunk
+    /// counts as changed.
+    pub fn set_stored_extra(&mut self, pos: ChunkPos, extra: Option<Arc<[u8]>>) {
+        let Some(holder) = self.holders.get_mut(&pos) else {
+            return;
+        };
+        if holder.busy || holder.status() != Some(ChunkStatus::Full) {
+            return;
+        }
+        let Some(chunk) = holder.chunk.as_mut() else {
+            return;
+        };
+        Arc::make_mut(chunk).extra = extra;
+        holder.touch(pos, &mut self.changed);
+    }
+
     /// Sets `noSave` (`/save-off`): while set, chunks no ticket needs stay loaded instead of
     /// being saved and unloaded (`ChunkMap.tick` skips `processUnloads`).
     pub fn set_no_save(&mut self, no_save: bool) {

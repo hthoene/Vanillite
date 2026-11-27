@@ -7,7 +7,8 @@ use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::light::ChunkLight;
 use vanillite_chunk::slots::{
-    FlatGenerator, LightEngine, Neighbours, NullCodec, NullStore, WorldInfo,
+    ChunkGenerator, ChunkStatus, FlatGenerator, LightEngine, Neighbours, NullCodec, NullStore,
+    WorldInfo,
 };
 use vanillite_data::block::{BlockState, ids};
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, InlineExecutor};
@@ -51,6 +52,14 @@ pub(crate) fn flat_level() -> Level {
 
 /// [`flat_level`] with the given block behaviours.
 pub(crate) fn flat_level_with(behaviours: Behaviours) -> Level {
+    level_with(behaviours, |info| Arc::new(FlatGenerator::classic(info)))
+}
+
+/// [`flat_level_with`] with another chunk generator.
+fn level_with(
+    behaviours: Behaviours,
+    generator: impl FnOnce(&WorldInfo) -> Arc<dyn ChunkGenerator>,
+) -> Level {
     vanillite_chunk::facts::install_vanilla(&[], &[], 1);
     install_tags();
     let info = WorldInfo {
@@ -67,7 +76,7 @@ pub(crate) fn flat_level_with(behaviours: Behaviours) -> Level {
     let slots = ChunkSlots {
         store: Arc::new(NullStore),
         codec: Arc::new(NullCodec),
-        generator: Arc::new(FlatGenerator::classic(&info)),
+        generator: generator(&info),
         light: Arc::new(NoLight),
         executor: Arc::new(InlineExecutor),
     };
@@ -114,6 +123,73 @@ pub(crate) fn tick(level: &mut Level) {
     }
     level.tick_block_entities();
     level.tick_entity_manager();
+}
+
+/// A flat generator whose chunk (8, 0) gets an end crystal from generation, kept in its stored
+/// tags without a UUID like the `end_spike` feature leaves it.
+struct CrystalGenerator(FlatGenerator);
+
+impl ChunkGenerator for CrystalGenerator {
+    fn new_chunk(&self, pos: ChunkPos) -> ProtoChunk {
+        let mut chunk = self.0.new_chunk(pos);
+        if pos == ChunkPos::new(8, 0) {
+            let crystal = vanillite_nbt::Compound::new()
+                .with("id", "minecraft:end_crystal")
+                .with(
+                    "Pos",
+                    vanillite_nbt::List(vec![
+                        vanillite_nbt::Tag::Double(136.5),
+                        vanillite_nbt::Tag::Double(-60.0),
+                        vanillite_nbt::Tag::Double(8.5),
+                    ]),
+                );
+            let tags = vanillite_nbt::Compound::new().with(
+                "entities",
+                vanillite_nbt::Tag::List(vanillite_nbt::List(vec![vanillite_nbt::Tag::Compound(
+                    crystal,
+                )])),
+            );
+            let mut bytes = Vec::new();
+            vanillite_nbt::write::write_network_compound(&tags, &mut bytes).unwrap();
+            chunk.extra = Some(bytes.into());
+        }
+        chunk
+    }
+
+    fn generate(&self, status: ChunkStatus, targets: &mut [ProtoChunk], n: &mut Neighbours<'_>) {
+        self.0.generate(status, targets, n);
+    }
+}
+
+#[test]
+fn generation_entities_come_alive_when_their_chunk_is_full() {
+    let mut level = level_with(Behaviours::vanilla(), |info| {
+        Arc::new(CrystalGenerator(FlatGenerator::classic(info)))
+    });
+    // The chunk becomes full after the level started, like a chunk a player walks into.
+    let far = ChunkPos::new(8, 0);
+    let ticket = level.chunks.player_ticket_level();
+    level.chunks.add_ticket(far, ticket);
+    let simulation = level.chunks.player_simulation_level();
+    level.chunks.add_simulation_ticket(far, simulation);
+    for _ in 0..8 {
+        tick(&mut level);
+    }
+    assert!(level.chunks.entities_loaded(far));
+    let crystals: Vec<_> = level
+        .entities
+        .store
+        .columns()
+        .id
+        .iter()
+        .filter_map(|&id| level.entities.store.get(id))
+        .filter(|e| e.kind() == vanillite_data::entity::ids::END_CRYSTAL)
+        .map(|e| e.uuid())
+        .collect();
+    assert_eq!(crystals.len(), 1);
+    assert_ne!(crystals[0], 0);
+    let extra = level.chunks.chunk(far).unwrap().extra.clone();
+    assert!(!extra.unwrap().windows(8).any(|w| w == b"entities"));
 }
 
 fn level_of(state: BlockState) -> Option<&'static str> {
