@@ -53,7 +53,7 @@ pub fn zeroed(entries: usize, bits: u8) -> Box<[Word]> {
     vec![[0u8; 8]; words_for(entries, bits)].into_boxed_slice()
 }
 
-#[inline]
+#[inline(always)]
 fn locate(index: usize, bits: u8) -> (usize, u32) {
     debug_assert!(index < MAX_ENTRIES && (1..=32).contains(&bits));
     let divisor = DIVISORS[usize::from(bits)];
@@ -69,7 +69,7 @@ const fn mask(bits: u8) -> u64 {
 }
 
 /// Reads entry `index`.
-#[inline]
+#[inline(always)]
 pub fn get(data: &[Word], bits: u8, index: usize) -> u32 {
     let (word, shift) = locate(index, bits);
     ((u64::from_be_bytes(data[word]) >> shift) & mask(bits)) as u32

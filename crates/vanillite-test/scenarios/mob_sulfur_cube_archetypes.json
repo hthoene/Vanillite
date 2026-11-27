@@ -1,0 +1,226 @@
+{
+  "description": "Sulfur cubes swallow blocks of different archetypes (#204, SulfurCubeArchetypes): the goals stop, the attribute modifiers change their bounce, friction and air drag while they fall and slide, buoyant ones float in water while others sink, the look snaps to 90 degrees, a hot one burns the pig it pushes, and hits knock cubes holding a block back by the archetype's power (SulfurCube.knockback) with its hit sound.",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -63,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -63,
+        10
+      ],
+      "to": [
+        13,
+        -61,
+        13
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60,
+        9.5
+      ],
+      "seed": 2,
+      "rot": [
+        180,
+        0
+      ]
+    },
+    {
+      "name": "bouncy",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        2.5,
+        -56,
+        2.5
+      ],
+      "seed": 10
+    },
+    {
+      "name": "sticky",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        5.5,
+        -56,
+        2.5
+      ],
+      "seed": 11
+    },
+    {
+      "name": "light",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        8.5,
+        -56,
+        2.5
+      ],
+      "seed": 12
+    },
+    {
+      "name": "slow_flat",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        2.5,
+        -56,
+        6.5
+      ],
+      "seed": 13
+    },
+    {
+      "name": "fast_sliding",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        5.5,
+        -56,
+        6.5
+      ],
+      "seed": 14
+    },
+    {
+      "name": "slow_bouncy",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        8.5,
+        -56,
+        6.5
+      ],
+      "seed": 15
+    },
+    {
+      "name": "floating",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        11.5,
+        -59,
+        11.5
+      ],
+      "seed": 16
+    },
+    {
+      "name": "sinking",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        12.5,
+        -59,
+        12.5
+      ],
+      "seed": 17
+    },
+    {
+      "name": "hot",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        5.5,
+        -60,
+        12.5
+      ],
+      "seed": 18
+    },
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        5.5,
+        -60,
+        12.5
+      ],
+      "seed": 30
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "bouncy",
+      "item": "minecraft:oak_planks"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "sticky",
+      "item": "minecraft:honeycomb_block"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "light",
+      "item": "minecraft:white_wool"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "slow_flat",
+      "item": "minecraft:iron_block"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "fast_sliding",
+      "item": "minecraft:blue_ice"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "slow_bouncy",
+      "item": "minecraft:stone"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "floating",
+      "item": "minecraft:oak_log"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "sinking",
+      "item": "minecraft:cobblestone"
+    },
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "hot",
+      "item": "minecraft:magma_block"
+    },
+    {
+      "tick": 25,
+      "op": "attack_entity",
+      "entity": "alex",
+      "target": "slow_flat"
+    },
+    {
+      "tick": 30,
+      "op": "attack_entity",
+      "entity": "alex",
+      "target": "bouncy"
+    }
+  ]
+}

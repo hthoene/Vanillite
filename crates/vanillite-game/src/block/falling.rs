@@ -415,6 +415,7 @@ fn tick_move(level: &mut Level, id: EntityId) -> Option<Resume> {
                 crate::level::game_event::GameEventContext {
                     source: Some(id),
                     affected: Some(on_state),
+                    owner: None,
                 },
             );
         }

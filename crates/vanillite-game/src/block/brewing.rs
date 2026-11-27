@@ -38,6 +38,8 @@ pub struct BrewingStand {
     pub last_bottles: [bool; 3],
     /// `CustomName`.
     pub custom_name: Option<Component>,
+    /// `lock` (`LockCode`).
+    pub lock: Option<vanillite_nbt::Tag>,
 }
 
 impl Default for BrewingStand {
@@ -52,6 +54,7 @@ impl Default for BrewingStand {
             ingredient: 0,
             last_bottles: [false; 3],
             custom_name: None,
+            lock: None,
         }
     }
 }
@@ -102,6 +105,7 @@ impl BrewingStand {
                 .and_then(Tag::as_i64)
                 .and_then(|v| i32::try_from(v).ok())
         };
+        self.lock = super::lock::load(nbt);
         self.custom_name = super::container::load_name(nbt);
         super::container::load_items(nbt, &mut self.items);
         self.brew_time = int("BrewTime").unwrap_or(0);
@@ -119,14 +123,12 @@ impl BrewingStand {
 
     /// Saves the stored fields.
     pub fn save(&self, out: &mut Compound) {
+        super::lock::save(&self.lock, out);
         super::container::save_name(&self.custom_name, out);
-        out.insert(
-            "BrewTime",
-            Tag::Short(i16::try_from(self.brew_time).unwrap_or(0)),
-        );
+        out.insert("BrewTime", Tag::Int(self.brew_time));
         out.insert("total_brew_time", Tag::Int(self.total_brew_time));
-        super::container::save_items(&self.items, out);
-        out.insert("Fuel", Tag::Byte(i8::try_from(self.fuel).unwrap_or(0)));
+        super::container::save_items_always(&self.items, out);
+        out.insert("Fuel", Tag::Int(self.fuel));
         out.insert("total_fuel", Tag::Int(self.total_fuel));
         out.insert("speed_multiplier", Tag::Float(self.speed));
     }

@@ -1375,6 +1375,21 @@ impl ServerWorld {
         {
             crate::commands::send_permissions(global, sink.as_ref(), network_id.0, &source);
         }
+        // `PlayerList.respawn`: a respawn point that still is a respawn anchor plays its
+        // deplete sound to the player, seeded from the level random.
+        let anchor = keep_all
+            .filter(|&k| !k)
+            .and_then(|_| self.level.entities.player(id))
+            .and_then(|p| p.survival.respawn.as_ref())
+            .filter(|r| r.dimension == self.dimension)
+            .map(|r| r.pos)
+            .filter(|&pos| {
+                self.level.block(pos).block() == vanillite_data::block::ids::RESPAWN_ANCHOR
+            })
+            .map(|pos| {
+                let seed = vanillite_base::random::RandomSource::next_long(self.level.random());
+                (pos, seed)
+            });
         let player = self.level.entities.player_mut(id)?;
         if keep_all.is_none() {
             // `sendLevelInfo`, `sendAllPlayerInfo`, then the transition's own effects.
@@ -1390,6 +1405,18 @@ impl ServerWorld {
         sink.send(&SetHeldSlot {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
+        if let Some((pos, seed)) = anchor {
+            sink.send(&vanillite_protocol::packets::play::clientbound::Sound::at(
+                vanillite_game::survival::sound_event("minecraft:block.respawn_anchor.deplete"),
+                vanillite_protocol::packets::play::clientbound::SoundSource::Blocks,
+                f64::from(pos.x),
+                f64::from(pos.y),
+                f64::from(pos.z),
+                1.0,
+                1.0,
+                seed,
+            ));
+        }
         if landing.sound {
             sink.send_shared(&Arc::new(crate::world_updates::level_event_packet(
                 PORTAL_TRAVEL_SOUND,

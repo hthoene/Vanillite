@@ -19,6 +19,12 @@ impl Compound {
         self
     }
 
+    pub fn short(&mut self, name: &str, v: i16) -> &mut Self {
+        self.head(2, name);
+        self.0.extend_from_slice(&v.to_le_bytes());
+        self
+    }
+
     pub fn int(&mut self, name: &str, v: i32) -> &mut Self {
         self.head(3, name);
         io::write_vari32(&mut self.0, v);
@@ -35,6 +41,19 @@ impl Compound {
         self.head(10, name);
         self.0.extend_from_slice(&c.0);
         self.0.push(0);
+        self
+    }
+
+    pub fn float(&mut self, name: &str, v: f32) -> &mut Self {
+        self.head(5, name);
+        self.0.extend_from_slice(&v.to_le_bytes());
+        self
+    }
+
+    /// A compound from its encoded payload (entries and end tag).
+    pub fn raw_compound(&mut self, name: &str, payload: &[u8]) -> &mut Self {
+        self.head(10, name);
+        self.0.extend_from_slice(payload);
         self
     }
 

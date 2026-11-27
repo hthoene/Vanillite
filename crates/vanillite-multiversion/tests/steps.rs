@@ -16,7 +16,7 @@ use vanillite_multiversion::{Accepted, ClientboundHalf, ServerboundHalf, State};
 use vanillite_protocol::codec::{write_str, write_varint};
 
 fn json(path: &str) -> Value {
-    let p = format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"));
+    let p = vanillite_multiversion::data_paths::file(path);
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
@@ -31,10 +31,9 @@ struct Ids {
 
 impl Ids {
     fn load(dir: &str) -> Self {
-        let version = std::fs::read_to_string(format!(
-            "{}/../../data/multiversion/{dir}/version.toml",
-            env!("CARGO_MANIFEST_DIR")
-        ))
+        let version = std::fs::read_to_string(vanillite_multiversion::data_paths::file(&format!(
+            "data/multiversion/{dir}/version.toml"
+        )))
         .unwrap();
         Self {
             protocol: version

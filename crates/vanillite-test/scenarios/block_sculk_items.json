@@ -1,0 +1,104 @@
+{
+  "description": "Sculk with non-living sources: a dropped dirt item landing next to a sculk sensor triggers it (HIT_GROUND of an item), a wool item does not (ItemEntity.dampensVibrations), an item lying on a sensor triggers it through stepOn; a snowball thrown from far away lands next to a sensor whose tendril clicking makes a shrieker shriek for the thrower although the snowball is gone.",
+  "tier": "fast",
+  "player_state": true,
+  "level_rng": true,
+  "region": [
+    [
+      16,
+      -61,
+      0
+    ],
+    [
+      47,
+      -55,
+      20
+    ]
+  ],
+  "ticks": 120,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        44.5,
+        -60.0,
+        1.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        24,
+        -60,
+        8
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        18,
+        -60,
+        2
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        32,
+        -60,
+        2
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        44,
+        -60,
+        15
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        45,
+        -60,
+        17
+      ],
+      "block": "minecraft:sculk_shrieker[can_summon=false,shrieking=false,waterlogged=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 26.5 -56 8.5 {Item:{id:\"minecraft:dirt\",count:1},Motion:[0.0,0.0,0.0]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 20.5 -56 2.5 {Item:{id:\"minecraft:white_wool\",count:1},Motion:[0.0,0.0,0.0]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 32.5 -59 2.5 {Item:{id:\"minecraft:cobblestone\",count:1},Motion:[0.0,0.0,0.0],PickupDelay:32767s}"
+    },
+    {
+      "tick": 10,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:snowball"
+    }
+  ]
+}

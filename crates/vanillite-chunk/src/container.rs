@@ -275,7 +275,7 @@ impl<S: Strategy> PalettedContainer<S> {
     }
 
     /// Value at `index`.
-    #[inline]
+    #[inline(always)]
     pub fn get(&self, index: usize) -> u16 {
         match &self.data {
             ContainerData::Single(value) => *value,
@@ -310,7 +310,7 @@ impl<S: Strategy> PalettedContainer<S> {
     }
 
     /// Value at local coordinates.
-    #[inline]
+    #[inline(always)]
     pub fn get_at(&self, x: u32, y: u32, z: u32) -> u16 {
         self.get(S::index(x, y, z))
     }

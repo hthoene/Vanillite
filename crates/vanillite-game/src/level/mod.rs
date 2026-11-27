@@ -344,13 +344,63 @@ pub const SOUND_NEUTRAL: u8 = 6;
 /// `SoundSource.RECORDS`.
 pub const SOUND_RECORDS: u8 = 2;
 
+/// The changed positions of one section, each once, in change order. Long lists check for
+/// duplicates with a bit per block instead of a scan (a `fill` changes whole sections).
+#[derive(Debug, Default, Clone)]
+pub struct SectionChanges {
+    positions: Vec<BlockPos>,
+    seen: Option<Box<[u64; 64]>>,
+}
+
+impl SectionChanges {
+    /// Up to this many positions are checked by a scan.
+    const SCAN: usize = 16;
+
+    /// Adds `pos` unless it is already there.
+    pub fn insert(&mut self, pos: BlockPos) {
+        if let Some(seen) = &mut self.seen {
+            if Self::mark(seen, pos) {
+                self.positions.push(pos);
+            }
+        } else if !self.positions.contains(&pos) {
+            self.positions.push(pos);
+            if self.positions.len() > Self::SCAN {
+                let mut seen = Box::new([0; 64]);
+                for &p in &self.positions {
+                    Self::mark(&mut seen, p);
+                }
+                self.seen = Some(seen);
+            }
+        }
+    }
+
+    /// Sets the bit of `pos`; whether it was clear.
+    fn mark(seen: &mut [u64; 64], pos: BlockPos) -> bool {
+        let index = ((pos.y & 15) << 8 | (pos.z & 15) << 4 | (pos.x & 15)) as usize;
+        let (word, bit) = (index >> 6, 1u64 << (index & 63));
+        let new = seen[word] & bit == 0;
+        seen[word] |= bit;
+        new
+    }
+
+    /// The positions in change order.
+    pub fn positions(&self) -> &[BlockPos] {
+        &self.positions
+    }
+
+    /// Whether no position changed.
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+}
+
 /// What the world sends after a tick: changed blocks per section, block events, level events
 /// and sounds. Filled by the simulation, drained by the server.
 #[derive(Debug, Default)]
 pub struct LevelOutput {
     /// Changed positions (`ChunkHolder.blockChanged`), deduplicated per section, in change
     /// order.
-    pub changed: FxHashMap<SectionPos, Vec<BlockPos>>,
+    pub changed: FxHashMap<SectionPos, SectionChanges>,
     /// Block events that ran (`ClientboundBlockEventPacket`).
     pub block_events: Vec<BlockEvent>,
     /// Level events.
@@ -1034,7 +1084,7 @@ impl Level {
 
     /// `getBlockState(pos)` of the world thread (the tick view, see [`view`]): void air below
     /// and above the world, air in chunks that are not live.
-    #[inline]
+    #[inline(always)]
     pub fn block(&self, pos: BlockPos) -> BlockState {
         match self.chunks.block(pos) {
             Some(state) => BlockState(state),
@@ -1072,6 +1122,9 @@ impl Level {
     /// ([`Level::load_chunk`]). [`Level::block`] reads without loading.
     pub fn block_loading(&mut self, pos: BlockPos) -> BlockState {
         if self.in_height(pos.y) {
+            if let Some(state) = self.chunks.loaded_now_block(pos) {
+                return BlockState(state);
+            }
             self.load_chunk(pos.chunk());
         }
         self.block(pos)
@@ -1413,10 +1466,11 @@ impl Level {
 
     /// `sendBlockUpdated`: the position goes to the clients that see its chunk.
     pub fn send_block_updated(&mut self, pos: BlockPos) {
-        let list = self.output.changed.entry(pos.section()).or_default();
-        if !list.contains(&pos) {
-            list.push(pos);
-        }
+        self.output
+            .changed
+            .entry(pos.section())
+            .or_default()
+            .insert(pos);
     }
 
     // --- Updates -------------------------------------------------------------------------
@@ -1490,8 +1544,9 @@ impl Level {
         if !state.is(vanillite_data::block::ids::REDSTONE_WIRE) {
             return;
         }
+        let wire = shared::wire_properties();
         for direction in shared::HORIZONTAL {
-            if state.value(shared_direction_name(direction)) == Some("none") {
+            if !wire.connected(state, direction) {
                 continue;
             }
             let side = pos.relative(direction);
@@ -1720,17 +1775,5 @@ impl BlockLevel for Level {
 
     fn comparator_output(&self, pos: BlockPos) -> i32 {
         Level::comparator_output(self, pos)
-    }
-}
-
-/// `direction.getSerializedName()` of a horizontal direction (the wire side properties).
-fn shared_direction_name(direction: Direction) -> &'static str {
-    match direction {
-        Direction::North => "north",
-        Direction::South => "south",
-        Direction::West => "west",
-        Direction::East => "east",
-        Direction::Up => "up",
-        Direction::Down => "down",
     }
 }

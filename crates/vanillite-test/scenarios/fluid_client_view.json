@@ -1,0 +1,69 @@
+{
+  "description": "Client view: a player watches water and lava spread on flat ground next to each other (cobblestone where they meet) and the water dry up; the client gets the block changes tick by tick.",
+  "dimensions": true,
+  "client_view": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      14,
+      -59,
+      10
+    ]
+  ],
+  "ticks": 80,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        6.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        180,
+        30
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        8,
+        -60,
+        4
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}

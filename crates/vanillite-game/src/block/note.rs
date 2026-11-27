@@ -105,9 +105,25 @@ fn trigger_event(level: &mut Level, state: BlockState, pos: BlockPos, _: i32, _:
         pitch_from_note(i32::from(state.value_index("note").unwrap_or(0)))
     };
     let sound = match instrument {
-        // The sound of the player head above (`getCustomSoundId`); heads have no block entity
-        // data here yet, so there is none.
-        "custom_head" => return false,
+        // The `note_block_sound` of the head above (`getCustomSoundId`), sent as the
+        // registered sound of that name (a sound only a resource pack knows is not sent).
+        "custom_head" => {
+            let custom = match level.block_entity(pos.above()) {
+                Some(crate::level::BlockEntity::Skull(s)) => s.note_block_sound.clone(),
+                _ => None,
+            };
+            let Some(custom) = custom else {
+                return false;
+            };
+            let name = if custom.contains(':') {
+                custom
+            } else {
+                format!("minecraft:{custom}")
+            };
+            vanillite_data::registry::SOUND_EVENT
+                .id(&name)
+                .unwrap_or(u16::MAX)
+        }
         "zombie" => sound_id("block.note_block.imitate.zombie"),
         "skeleton" => sound_id("block.note_block.imitate.skeleton"),
         "creeper" => sound_id("block.note_block.imitate.creeper"),
@@ -124,6 +140,9 @@ fn trigger_event(level: &mut Level, state: BlockState, pos: BlockPos, _: i32, _:
         }
     };
     let seed = level.random().next_long();
+    if sound == u16::MAX {
+        return true;
+    }
     level.play_seeded_sound(
         None,
         f64::from(pos.x) + 0.5,

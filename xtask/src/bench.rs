@@ -258,19 +258,20 @@ const SCENARIOS: &[Scenario] = &[
                1 and 2 threads), median of 3 runs. \
                Vanillite: the chunk pipeline benchmark (`chunk_bench`: generation, light, \
                storage, then loading the same chunks from disk). Paper: the Chunky plugin \
-               (radius 800, square) in the running server.",
-        servers: &["vanillite", "paper"],
+               (radius 800, square) in the running server. Pumpkin has no pre-generation \
+               command (its chunk generation under load: Flying players).",
+        servers: &["vanillite", "paper", "pumpkin"],
         headline: ("chunks generated per second", "chunks/s", Better::Higher),
         kind: Kind::Pregen,
     },
     Scenario {
         name: "weak",
         title: "Weak hardware: 1 core, 1 GiB",
-        what: "Vanillite in a cgroup with a CPU quota of one core and a memory limit of \
+        what: "The server in a cgroup with a CPU quota of one core and a memory limit of \
                1 GiB, like a small Pterodactyl server: idle RSS, then one player walks \
                (sprint speed) and flies (10 blocks/s) straight through new terrain with the \
                movement checks on. Rubber-banding: server teleports of the bot.",
-        servers: &["vanillite"],
+        servers: &["vanillite", "pumpkin"],
         headline: ("MSPT max with one moving player", "ms", Better::Lower),
         kind: Kind::Weak {
             limits: "1c1g",
@@ -411,6 +412,8 @@ struct Ctx<'a> {
     hardware: Value,
     /// The hardware profile of the current server run (`vanillite-bench limit`).
     limits: Value,
+    /// The hardware profile of the scenarios (`--limits`, default [`loadtest::LIMITS`]).
+    profile: String,
 }
 
 /// `cargo xtask bench ...`.
@@ -446,6 +449,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
     let mut only_servers: Option<Vec<String>> = None;
     let mut publish = false;
     let mut deploy = true;
+    let mut profile = loadtest::LIMITS.to_owned();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match *arg {
@@ -460,6 +464,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
             }
             "--publish" => publish = true,
             "--no-deploy" => deploy = false,
+            "--limits" => profile = (*it.next().ok_or("--limits needs a value")?).to_owned(),
             "all" => names.extend(SCENARIOS.iter().map(|s| s.name)),
             name if SCENARIOS.iter().any(|s| s.name == name) => names.push(name),
             _ => return Err(crate::USAGE.to_owned()),
@@ -499,6 +504,12 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
         ],
     )?
     .is_empty();
+    if publish && profile != loadtest::LIMITS {
+        return Err(format!(
+            "--publish keeps the fixed profile {}: results under --limits are experiments",
+            loadtest::LIMITS
+        ));
+    }
     if publish && dirty {
         return Err("--publish needs a checkout without local changes".into());
     }
@@ -510,6 +521,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
         versions: BTreeMap::new(),
         hardware: Value::Null,
         limits: Value::Null,
+        profile,
     };
     let _lock = loadtest::Lock::take(&ctx.host, &format!("xtask bench from {}", root.display()))?;
     ctx.hardware = loadtest::hardware(&ctx.host)?;
@@ -750,10 +762,12 @@ fn fresh_start(
 ) -> Result<Value> {
     let proxy = matches!(target, Target::Velocity | Target::VanilliteProxy);
     if proxy {
-        reset(ctx, "vanillite", loadtest::LIMITS)?;
+        let limits = ctx.profile.clone();
+        reset(ctx, "vanillite", &limits)?;
         bench_json(&ctx.host, &["start", "vanillite"])?;
     }
-    reset(ctx, target.name(), loadtest::LIMITS)?;
+    let limits = ctx.profile.clone();
+    reset(ctx, target.name(), &limits)?;
     let mut args = vec!["start", target.name()];
     args.extend(profile);
     let started = bench_json(&ctx.host, &args)?;
@@ -1027,7 +1041,7 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
     match target {
         Target::Vanillite => {
             // `vanillite-bench pregen` runs chunk_bench under this profile.
-            ctx.limits = bench_json(&ctx.host, &["profile", loadtest::LIMITS])?;
+            ctx.limits = bench_json(&ctx.host, &["profile", &ctx.profile])?;
             let mut scaling = Map::new();
             let mut lines: Vec<Value> = Vec::new();
             for threads in ["1", "2", "4"] {
@@ -1076,7 +1090,8 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
             let mut cpu = Vec::new();
             let mut last_error = None;
             for _ in 0..REPS {
-                reset(ctx, "paper", loadtest::LIMITS)?;
+                let profile = ctx.profile.clone();
+                reset(ctx, "paper", &profile)?;
                 bench_cmd(&ctx.host, &["chunky", "on"])?;
                 let run = (|| -> Result<(f64, f64)> {
                     let started = bench_json(&ctx.host, &["start", "paper"])?;
@@ -1128,6 +1143,7 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
                 "cpu_ms_per_chunk": round(median(cpu)),
             }))
         }
+        Target::Pumpkin => Err("unsupported: no pre-generation command".to_owned()),
         _ => Ok(json!({
             "status": "unsupported",
             "note": "no pre-generation tool",
@@ -1219,13 +1235,33 @@ fn environment(ctx: &Ctx) -> Value {
             "vanillite": format!("Vanillite dev {}, release-fast build, rule profile vanilla (paper profile as extra rows)", ctx.versions.get("vanillite").map_or("", String::as_str)),
             "paper": format!("{} build 262, default configuration (Paper's own optimisations on), Java 25, -Xms1G -Xmx6G", ctx.versions.get("paper").map_or("Paper 26.3", String::as_str)),
             "vanilla": "Mojang's server.jar 26.3, Java 25, -Xms1G -Xmx6G",
-            "pumpkin": "Pumpkin 0.2.2+26.3-26.60 release binary, defaults (no tick time report, so no MSPT)",
+            "pumpkin": pumpkin_version(ctx.root),
             "velocity": "Velocity 4.3.1 build 45, Java 25, -Xms512M -Xmx2G, modern forwarding",
             "vanillite-proxy": "vanillite-proxy from the same commit, modern forwarding",
         },
-        "mspt": "Vanillite: every tick (tick log). Paper and Vanilla: `/tick query` every 5 s (P50/P95/P99/mean of the last 100 ticks), averaged over the window; max is the highest P99 window.",
+        "mspt": "Vanillite: every tick (tick log). Paper, Vanilla and Pumpkin: `/tick query` every 5 s (P50/P95/P99/mean of the last 100 ticks), averaged over the window; max is the highest P99 window.",
         "noise": NOISE,
     })
+}
+
+/// The Pumpkin release the benchmark server runs (`PUMPKIN_TAG` and `PUMPKIN_COMMIT` of the
+/// provisioning script) and why its numbers are not like-for-like.
+fn pumpkin_version(root: &Path) -> String {
+    let script =
+        std::fs::read_to_string(root.join("scripts/testserver/provision.sh")).unwrap_or_default();
+    let var = |name: &str| {
+        script
+            .lines()
+            .find_map(|l| l.strip_prefix(name)?.strip_prefix('='))
+            .map_or("?", |v| v.trim_matches('"'))
+            .to_owned()
+    };
+    format!(
+        "Pumpkin {} release binary (commit {}), defaults; not like-for-like: its world \
+         generation, mob AI and game mechanics are not Vanilla's, and commands it lacks are n/a",
+        var("PUMPKIN_TAG"),
+        var("PUMPKIN_COMMIT"),
+    )
 }
 
 /// Sends console commands; returns `{sent, failed, errors}`.
@@ -1674,6 +1710,7 @@ fn remote_run(host: &str, stamp: &str) -> Result<Value> {
         versions,
         hardware: Value::Null,
         limits: Value::Null,
+        profile: loadtest::LIMITS.to_owned(),
     };
     Ok(json!({
         "suite": 1,

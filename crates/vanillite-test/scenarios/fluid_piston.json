@@ -1,0 +1,222 @@
+{
+  "description": "Pistons and fluids: a pushed waterlogged slab keeps its water and flows at its new place; a piston pushes stone into a pool (the water there is destroyed and flows back when the piston retracts); a sticky piston pulls a block out of the pool and the water flows in; a piston pushes stone into flowing lava.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -60,
+      0
+    ],
+    [
+      16,
+      -59,
+      12
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        6
+      ],
+      "to": [
+        12,
+        -59,
+        12
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        7
+      ],
+      "to": [
+        11,
+        -59,
+        11
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        1
+      ],
+      "block": "minecraft:oak_slab[type=bottom,waterlogged=true]"
+    },
+    {
+      "tick": 4,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        6,
+        -60,
+        4
+      ],
+      "block": "minecraft:piston[extended=false,facing=south]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        6,
+        -60,
+        5
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 6,
+      "op": "place",
+      "pos": [
+        5,
+        -60,
+        4
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        9,
+        -60,
+        5
+      ],
+      "block": "minecraft:sticky_piston[extended=false,facing=south]"
+    },
+    {
+      "tick": 8,
+      "op": "place",
+      "pos": [
+        9,
+        -59,
+        5
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 20,
+      "op": "place",
+      "pos": [
+        9,
+        -59,
+        5
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        14,
+        -60,
+        1
+      ],
+      "block": "minecraft:piston[extended=false,facing=south]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        14,
+        -60,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        14,
+        -60,
+        4
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        15,
+        -60,
+        1
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 50,
+      "op": "place",
+      "pos": [
+        5,
+        -60,
+        4
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 50,
+      "op": "place",
+      "pos": [
+        0,
+        -60,
+        1
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}

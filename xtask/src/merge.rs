@@ -78,11 +78,10 @@ pub fn setup(args: &[&str]) -> Result<()> {
 }
 
 /// `cargo xtask regen`: rewrites the generated files from their sources after a merge (the
-/// generated Rust of `vanillite-data`, the Pterodactyl egg and the configuration reference;
-/// cargo itself updates `Cargo.lock` when it builds xtask). Golden keys need Java:
+/// Pterodactyl egg and the configuration reference; cargo itself updates `Cargo.lock` when it
+/// builds xtask, and the build generates the Vanilla tables). Golden keys need Java:
 /// `cargo xtask golden check|regen`.
 pub fn regen(root: &Path) -> Result<()> {
-    crate::codegen::run(root, false)?;
     crate::egg::run(root, &[])
 }
 

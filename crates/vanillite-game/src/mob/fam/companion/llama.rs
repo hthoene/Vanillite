@@ -258,10 +258,10 @@ pub fn spit_tick(t: &mut MissileTick<'_, '_>) {
             let source = crate::mob::combat::entity_source(t.ents, kind, owner, t.id);
             crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 1.0);
         }
-        crate::mob::missile::land_event(t.env.out, t.level, t.id, None, end);
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, d.owner, None, end);
     } else if let Some((block, at)) = block_hit {
         crate::mob::missile::hit_block(t.level, t.cx, t.id, block, at);
-        crate::mob::missile::land_event(t.env.out, t.level, t.id, Some(block), at);
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, d.owner, Some(block), at);
         if let Some(m) = t.ents.missile_mut(t.id) {
             m.removed = true;
         }

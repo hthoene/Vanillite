@@ -116,6 +116,63 @@ impl BlockId {
     }
 }
 
+/// A property of one block, resolved once by name: reads and writes of hot code without
+/// looking the property up by name every time ([`BlockState::value_index`] and
+/// [`BlockState::with_index`] for that block).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateProperty {
+    block: BlockId,
+    first_state: u16,
+    stride: u16,
+    count: u16,
+    property: u16,
+}
+
+impl StateProperty {
+    /// The property `name` of `block`.
+    pub fn of(block: BlockId, name: &str) -> Option<Self> {
+        let (info, property, stride, count) = block.default_state().locate(name)?;
+        Some(Self {
+            block,
+            first_state: info.first_state,
+            stride,
+            count,
+            property: u16::try_from(property).ok()?,
+        })
+    }
+
+    /// The block the property belongs to.
+    #[inline]
+    pub fn block(self) -> BlockId {
+        self.block
+    }
+
+    /// The index of the value named `value` (Vanilla's value order).
+    pub fn value_index(self, value: &str) -> Option<u16> {
+        PROPERTIES[usize::from(self.property)]
+            .values
+            .iter()
+            .position(|v| *v == value)
+            .and_then(|i| u16::try_from(i).ok())
+    }
+
+    /// The value index in `state`, a state of [`Self::block`] (as [`BlockState::value_index`]).
+    #[inline]
+    pub fn index(self, state: BlockState) -> u16 {
+        debug_assert_eq!(state.block(), self.block);
+        (state.0 - self.first_state) / self.stride % self.count
+    }
+
+    /// `state`, a state of [`Self::block`], with the value at `index` (`index` below the
+    /// value count; as [`BlockState::with_index`]).
+    #[inline]
+    pub fn with_index(self, state: BlockState, index: u16) -> BlockState {
+        debug_assert!(state.block() == self.block && index < self.count);
+        let old = (state.0 - self.first_state) / self.stride % self.count;
+        BlockState(state.0 - old * self.stride + index * self.stride)
+    }
+}
+
 impl BlockState {
     pub const AIR: Self = Self(0);
 
@@ -217,18 +274,22 @@ impl BlockState {
     }
 
     /// Position of `property` in this state's block and the stride of its values.
+    /// The stride is the product of the value counts of the properties after it (the state
+    /// count is the product of all of them), computed without dividing.
+    #[inline]
     fn locate(self, property: &str) -> Option<(&'static BlockInfo, usize, u16, u16)> {
         let info = self.block().info();
-        let mut stride = info.state_count;
-        for &p in info.properties {
-            let prop = &PROPERTIES[usize::from(p)];
-            let count = u16::try_from(prop.values.len()).ok()?;
-            stride /= count;
-            if prop.name == property {
-                return Some((info, usize::from(p), stride, count));
-            }
+        let properties = info.properties;
+        let i = properties
+            .iter()
+            .position(|&p| PROPERTIES[usize::from(p)].name == property)?;
+        let count = |p: u16| u16::try_from(PROPERTIES[usize::from(p)].values.len()).ok();
+        let mut stride: u16 = 1;
+        for &p in &properties[i + 1..] {
+            stride = stride.checked_mul(count(p)?)?;
         }
-        None
+        let p = properties[i];
+        Some((info, usize::from(p), stride, count(p)?))
     }
 
     /// Value of `property`, e.g. `facing` → `north`.

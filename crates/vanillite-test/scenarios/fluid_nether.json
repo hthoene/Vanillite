@@ -1,0 +1,93 @@
+{
+  "description": "Lava in the Nether flows with slope distance 4, drop-off 1 and tick delay 10 into a hole four away; a dispensed water bucket evaporates (a fizz, nothing placed and the bucket empty), also in front of a cauldron.",
+  "tier": "fast",
+  "level_rng": true,
+  "dimensions": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      3,
+      0
+    ],
+    [
+      15,
+      5,
+      15
+    ]
+  ],
+  "ticks": 90,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        10,
+        3,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        3,
+        12
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        3,
+        4,
+        3
+      ],
+      "block": "minecraft:lava",
+      "dimension": "minecraft:the_nether"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute in minecraft:the_nether run setblock 12 4 12 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:water_bucket\",count:1}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute in minecraft:the_nether run setblock 12 4 9 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:water_bucket\",count:1}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute in minecraft:the_nether run setblock 13 4 9 minecraft:cauldron"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        12,
+        5,
+        12
+      ],
+      "block": "minecraft:redstone_block",
+      "dimension": "minecraft:the_nether"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        12,
+        5,
+        9
+      ],
+      "block": "minecraft:redstone_block",
+      "dimension": "minecraft:the_nether"
+    }
+  ]
+}

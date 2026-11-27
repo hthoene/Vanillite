@@ -106,12 +106,19 @@ fn use_item_on(
             if full || !is_water_potion(stack) {
                 return ItemInteraction::TryWithEmptyHand;
             }
+            // The stat reads the hand stack after `createFilledResult`: a survival player's
+            // last potion is gone by then (`used:air`).
+            let used = if ctx.infinite || stack.count > 1 {
+                id
+            } else {
+                items::AIR
+            };
             bottle_used(
                 level,
                 ctx,
                 stack,
                 ItemStack::new(items::GLASS_BOTTLE.0, 1),
-                id,
+                used,
             );
             let level_now = state.int("level").unwrap_or(1);
             level.set_block_and_update(pos, state.set_int("level", level_now % 3 + 1));
@@ -358,6 +365,7 @@ pub fn lower_fill_level(level: &mut Level, state: BlockState, pos: BlockPos) {
         GameEventContext {
             source: None,
             affected: Some(new_state),
+            owner: None,
         },
     );
 }

@@ -1,0 +1,109 @@
+{
+  "description": "A player with 10 levels breaks an armor stand next to a sculk catalyst (ArmorStand.kill posts ENTITY_DIE with the player as source): the catalyst takes the player's experience reward as charge and blooms, and the player's skipDropExperience lasts: a second stand it breaks feeds no catalyst, and when the player dies there it drops no experience orbs and the catalyst does not bloom again. All chunks in the player's simulation distance are forced.",
+  "tier": "fast",
+  "dimensions": true,
+  "player_state": true,
+  "level_rng": true,
+  "time": 6000,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -62,
+      -16
+    ],
+    [
+      31,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 34,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        7
+      ],
+      "block": "minecraft:sculk_catalyst[bloom=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "xp add alex 10 levels"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:armor_stand 4.5 -60 6.0 {UUID:[I;1,2,3,4],Rotation:[180f,0f]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:armor_stand 6.0 -60 4.5 {UUID:[I;1,2,3,5],Rotation:[90f,0f]}"
+    },
+    {
+      "tick": 3,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000001000000020000000300000004",
+      "what": "Attack { entity_id: 0 }"
+    },
+    {
+      "tick": 5,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000001000000020000000300000004",
+      "what": "Attack { entity_id: 0 }"
+    },
+    {
+      "tick": 14,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000001000000020000000300000005",
+      "what": "Attack { entity_id: 0 }"
+    },
+    {
+      "tick": 16,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000001000000020000000300000005",
+      "what": "Attack { entity_id: 0 }"
+    },
+    {
+      "tick": 20,
+      "op": "command",
+      "command": "damage alex 50 minecraft:generic"
+    }
+  ]
+}

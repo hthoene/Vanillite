@@ -3,7 +3,7 @@
 //!
 //! Vanilla computes the overworld list in Java (`OverworldBiomeBuilder`); the data pack's
 //! `worldgen/multi_noise_biome_source_parameter_list` entries only name the preset. The list is
-//! embedded from Vanilla's `biome_parameters` report (`data/vanilla/biome_parameters/`), which
+//! embedded from Vanilla's `biome_parameters` report (`vanillite_data::raw`), which
 //! writes every quantized value `q` as the float `q / 10000`; rounding `value * 10000` recovers
 //! `q` exactly, so the list equals the one Vanilla builds (the goldens check a hash of it). The
 //! nether list is five literal entries, ported as code.
@@ -16,10 +16,7 @@ use super::climate::{Parameter, ParameterPoint, parameter_bounds};
 use crate::Error;
 
 /// The overworld report: `[{"biome": id, "parameters": {...}}, ...]`.
-const OVERWORLD_JSON: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../data/vanilla/biome_parameters/overworld.json"
-));
+const OVERWORLD_JSON: &str = vanillite_data::raw::OVERWORLD_BIOME_PARAMETERS_JSON;
 
 /// A built-in parameter list preset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

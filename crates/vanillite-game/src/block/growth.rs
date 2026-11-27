@@ -342,7 +342,13 @@ pub(super) fn sweet_berry_random_tick(level: &mut Level, state: BlockState, pos:
     if age < 3 && level.random().next_int_bounded(5) == 0 && level.raw_brightness(pos.above()) >= 9
     {
         let grown = state.set_int("age", age + 1);
-        he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
+        if he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS) {
+            level.game_event_block(
+                crate::level::game_event::events().block_change,
+                pos,
+                crate::level::game_event::GameEventContext::with_state(None, grown),
+            );
+        }
     }
 }
 
@@ -406,6 +412,7 @@ fn turn_to_dirt(level: &mut Level, pos: BlockPos) {
         crate::level::game_event::GameEventContext {
             source: None,
             affected: Some(dirt),
+            owner: None,
         },
     );
 }

@@ -1,7 +1,7 @@
 //! Entity–block contact that changes the world: `stepOn` of the blocks entities stand on and
 //! `FarmlandBlock.fallOn` trampling.
 
-use vanillite_base::{Aabb, BlockPos};
+use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::{BlockId, ids};
 use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::StateExt;
@@ -41,6 +41,49 @@ pub fn step_on(level: &mut Level, pos: BlockPos, entity: EntityId) {
     } else {
         super::sculk::step_on_block(level, pos, entity);
     }
+}
+
+/// `SlimeBlock.stepOn`: an entity resting on slime (vertical speed below 0.1) slows down
+/// horizontally.
+pub fn slime_step_on(v: Vec3) -> Vec3 {
+    let abs_y = v.y.abs();
+    if abs_y < 0.1 {
+        let scale = 0.4 + abs_y * 0.2;
+        v.multiply(scale, 1.0, scale)
+    } else {
+        v
+    }
+}
+
+/// `applyEffectsFromBlocks`' `stepOn` for a non-living entity standing on `on` (XP orbs,
+/// primed TNT): slime slows it, sensors, shriekers and redstone ore react.
+pub fn non_living_step_on(level: &mut Level, on: BlockPos, entity: EntityId) {
+    let block = level.block(on).block();
+    if block == ids::SLIME_BLOCK {
+        let v = level.entities.store.get(entity).map(|e| e.velocity());
+        if let Some(v) = v
+            && let Some(mut e) = level.entities.store.get_mut(entity)
+        {
+            e.set_velocity(slime_step_on(v));
+        }
+    } else if has_step_on(block) {
+        step_on(level, on, entity);
+    }
+}
+
+/// `Entity.checkFallDamage` of a non-living entity that lands at `at` after a fall on the
+/// block at `on`: `FarmlandBlock.fallOn` draws its trample chance before it tests for a living
+/// entity (the other blocks' `fallOn` draw nothing for it), then `HIT_GROUND`.
+pub fn non_living_land(level: &mut Level, entity: EntityId, at: Vec3, on: BlockPos) {
+    let on_state = level.block(on);
+    if on_state.block() == ids::FARMLAND {
+        let _ = vanillite_base::random::RandomSource::next_float(level.random());
+    }
+    level.game_event(
+        events().hit_ground,
+        at,
+        GameEventContext::with_state(Some(entity), on_state),
+    );
 }
 
 /// `FarmlandBlock.fallOn`'s trample test after the chance roll: living entities whose box is
@@ -94,6 +137,7 @@ pub fn trample_farmland(level: &mut Level, pos: BlockPos, source: Option<EntityI
         GameEventContext {
             source,
             affected: Some(dirt),
+            owner: None,
         },
     );
 }
@@ -101,8 +145,33 @@ pub fn trample_farmland(level: &mut Level, pos: BlockPos, source: Option<EntityI
 /// `Block.pushEntitiesUp` from a block whose top was at `top` (fraction of the block) to a full
 /// block: entities in the gap move up onto the new top. Players are left to their client.
 pub fn push_entities_up(level: &mut Level, pos: BlockPos, top: f64) {
+    push_entities_up_between(level, pos, top, 1.0);
+}
+
+/// `Block.pushEntitiesUp(state, newState, level, pos)` for blocks whose collision shapes are
+/// full-width slabs: entities in the gap between the old and the new top move up onto it.
+pub fn push_entities_up_states(
+    level: &mut Level,
+    pos: BlockPos,
+    old: vanillite_data::block::BlockState,
+    new: vanillite_data::block::BlockState,
+) {
+    let top = |s: vanillite_data::block::BlockState| {
+        s.collision_shape().iter().fold(0.0_f64, |m, b| m.max(b[4]))
+    };
+    let (from, to) = (top(old), top(new));
+    if to > from {
+        push_entities_up_between(level, pos, from, to);
+    }
+}
+
+/// [`push_entities_up`] for the gap between `bottom` and `top` (fractions of the block).
+fn push_entities_up_between(level: &mut Level, pos: BlockPos, bottom: f64, top: f64) {
     let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-    push_entities_up_from(level, Aabb::new(x, y + top, z, x + 1.0, y + 1.0, z + 1.0));
+    push_entities_up_from(
+        level,
+        Aabb::new(x, y + bottom, z, x + 1.0, y + top, z + 1.0),
+    );
 }
 
 /// `Block.pushEntitiesUp` for the box `gap` the new state adds: the entities in it move up

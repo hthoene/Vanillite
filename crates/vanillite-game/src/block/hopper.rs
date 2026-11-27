@@ -29,6 +29,8 @@ pub struct Hopper {
     pub loot_table: Option<String>,
     /// `LootTableSeed`.
     pub loot_seed: i64,
+    /// `lock` (`LockCode`).
+    pub lock: Option<vanillite_nbt::Tag>,
 }
 
 impl Default for Hopper {
@@ -40,6 +42,7 @@ impl Default for Hopper {
             ticked_game_time: 0,
             loot_table: None,
             loot_seed: 0,
+            lock: None,
         }
     }
 }

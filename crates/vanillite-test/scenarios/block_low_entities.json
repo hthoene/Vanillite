@@ -1,0 +1,133 @@
+{
+  "description": "Entity contact of block-only Low gaps (#219): falling sand destroys frogspawn it falls into (FrogspawnBlock.entityInside); a bee in an open eyeblossom is poisoned (EyeblossomBlock.entityInside); a zombie with Weaving falls through cobwebs faster than one without (WebBlock.entityInside); a powered note block under a player head with a note_block_sound plays it, drawing the seed from the level random (NoteBlock.triggerEvent with custom_head).",
+  "tier": "fast",
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      28,
+      -55,
+      4
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:water[level=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:frogspawn"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -61,
+        2
+      ],
+      "block": "minecraft:grass_block[snowy=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        2
+      ],
+      "block": "minecraft:open_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -60,
+        2
+      ],
+      "block": "minecraft:cobweb"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -59,
+        2
+      ],
+      "block": "minecraft:cobweb"
+    },
+    {
+      "op": "set",
+      "pos": [
+        18,
+        -60,
+        2
+      ],
+      "block": "minecraft:cobweb"
+    },
+    {
+      "op": "set",
+      "pos": [
+        18,
+        -59,
+        2
+      ],
+      "block": "minecraft:cobweb"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:falling_block 2.5 -56 2.5 {BlockState:{Name:\"minecraft:sand\"},Time:1}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:bee 8.5 -60 2.5 {NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:zombie 14.5 -56 2.5 {active_effects:[{id:\"minecraft:weaving\",duration:400}]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:zombie 18.5 -56 2.5"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 24 -60 2 minecraft:note_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "setblock 24 -59 2 minecraft:player_head{note_block_sound:\"minecraft:entity.pig.ambient\"}"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "setblock 25 -60 2 minecraft:redstone_block"
+    }
+  ],
+  "time": 18000
+}

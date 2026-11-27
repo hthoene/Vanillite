@@ -1,5 +1,5 @@
-//! The Java scoreboard sidebar as a Bedrock sidebar objective, plus entity teleports and the own
-//! movement speed.
+//! The Java scoreboard sidebar as a Bedrock sidebar objective, teams as the colours, prefixes
+//! and suffixes of player name tags, plus entity teleports and the own movement speed.
 
 use rustc_hash::FxHashMap;
 use vanillite_protocol::codec::{Decode, Reader as JReader};
@@ -29,7 +29,160 @@ pub(super) struct Scoreboard {
     next_entry: i64,
 }
 
+/// Most teams and team members kept.
+const MAX_TEAMS: usize = 1024;
+const MAX_MEMBERS: usize = 1 << 16;
+
+/// One Java team: what it adds to its members' name tags.
+#[derive(Debug, Default, Clone)]
+struct Team {
+    prefix: String,
+    suffix: String,
+    /// `ChatFormatting` id of the name colour (0-15).
+    color: Option<i32>,
+    /// `Team.Visibility` id of the name tags.
+    visibility: i32,
+}
+
+/// The Java teams and their members (player names).
+#[derive(Debug, Default)]
+pub(super) struct Teams {
+    teams: FxHashMap<String, Team>,
+    member_of: FxHashMap<String, String>,
+}
+
+impl Team {
+    fn from(p: &pcb::TeamParameters) -> Team {
+        Team {
+            prefix: p.prefix.plain(),
+            suffix: p.suffix.plain(),
+            color: p.color.filter(|c| (0..16).contains(c)),
+            visibility: p.nametag_visibility,
+        }
+    }
+}
+
 impl Session {
+    /// The name tag of a player: team prefix, colour and suffix, empty when the team hides it
+    /// from this player. `None` without a team.
+    pub(super) fn team_name(&self, name: &str) -> Option<String> {
+        let team_name = self.teams.member_of.get(name)?;
+        let team = self.teams.teams.get(team_name)?;
+        let own = self.teams.member_of.get(&self.name) == Some(team_name);
+        // `Team.Visibility`: always, never, hide for other teams, hide for own team.
+        let hidden = match team.visibility {
+            1 => true,
+            2 => !own,
+            3 => own,
+            _ => false,
+        };
+        if hidden {
+            return Some(String::new());
+        }
+        let color = team
+            .color
+            .and_then(|c| b"0123456789abcdef".get(usize::try_from(c).ok()?))
+            .map(|&c| format!("\u{a7}{}", char::from(c)))
+            .unwrap_or_default();
+        let reset = if team.color.is_some() { "\u{a7}r" } else { "" };
+        Some(format!(
+            "{}{color}{name}{reset}{}",
+            team.prefix, team.suffix
+        ))
+    }
+
+    /// Sends the name tags of the player entities named in `names` again.
+    fn refresh_name_tags(&mut self, names: &[String]) {
+        let Some(w) = &self.world else {
+            return;
+        };
+        let targets: Vec<(i32, String)> = w
+            .entities
+            .iter()
+            .filter(|(_, e)| e.kind == super::Kind::Player && e.uuid != 0)
+            .filter_map(|(&id, e)| {
+                let name = w.names.get(&e.uuid)?;
+                names.contains(name).then(|| (id, name.clone()))
+            })
+            .collect();
+        for (java, name) in targets {
+            let tag = self.team_name(&name).unwrap_or(name);
+            let m = bp::Metadata::default().string(bp::meta::NAME, &tag);
+            let runtime = self.actor(java);
+            self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
+        }
+    }
+
+    /// `set_player_team`: a team added, changed or removed, or members joining or leaving.
+    pub(super) fn java_team(&mut self, t: pcb::SetPlayerTeam) {
+        let teams = &mut self.teams;
+        let changed: Vec<String> = match t.action {
+            pcb::TeamAction::Add(p, members) => {
+                if teams.teams.len() >= MAX_TEAMS && !teams.teams.contains_key(&t.name) {
+                    return;
+                }
+                teams.teams.insert(t.name.clone(), Team::from(&p));
+                for m in &members {
+                    if teams.member_of.len() < MAX_MEMBERS {
+                        teams.member_of.insert(m.clone(), t.name.clone());
+                    }
+                }
+                members
+            }
+            pcb::TeamAction::Remove => {
+                teams.teams.remove(&t.name);
+                let gone: Vec<String> = teams
+                    .member_of
+                    .iter()
+                    .filter(|(_, team)| **team == t.name)
+                    .map(|(m, _)| m.clone())
+                    .collect();
+                for m in &gone {
+                    teams.member_of.remove(m);
+                }
+                gone
+            }
+            pcb::TeamAction::Change(p) => {
+                let Some(team) = teams.teams.get_mut(&t.name) else {
+                    return;
+                };
+                *team = Team::from(&p);
+                teams
+                    .member_of
+                    .iter()
+                    .filter(|(_, team)| **team == t.name)
+                    .map(|(m, _)| m.clone())
+                    .collect()
+            }
+            pcb::TeamAction::Join(members) => {
+                if !teams.teams.contains_key(&t.name) {
+                    return;
+                }
+                for m in &members {
+                    if teams.member_of.len() < MAX_MEMBERS || teams.member_of.contains_key(m) {
+                        teams.member_of.insert(m.clone(), t.name.clone());
+                    }
+                }
+                members
+            }
+            pcb::TeamAction::Leave(members) => {
+                for m in &members {
+                    if teams.member_of.get(m) == Some(&t.name) {
+                        teams.member_of.remove(m);
+                    }
+                }
+                members
+            }
+        };
+        // The own team decides what the other teams' visibility rules show.
+        if changed.contains(&self.name) {
+            let all: Vec<String> = self.teams.member_of.keys().cloned().collect();
+            self.refresh_name_tags(&all);
+        } else {
+            self.refresh_name_tags(&changed);
+        }
+    }
+
     /// Shows the sidebar objective again (after a removal or a new objective).
     fn redraw_sidebar(&mut self, previous: Option<&str>) {
         if let Some(old) = previous {
@@ -258,7 +411,9 @@ impl Session {
         else {
             return;
         };
-        if let Some(actor) = crate::blockentity::translate(pos, state, Some(&nbt)) {
+        if let Some(actor) =
+            crate::blockentity::translate(pos, state, Some(&nbt), self.version.palette)
+        {
             self.send(id::BLOCK_ACTOR_DATA, &bp::block_actor_data(pos, &actor));
         }
     }

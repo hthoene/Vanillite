@@ -310,6 +310,7 @@ pub fn empty(
         GameEventContext {
             source,
             affected: Some(new_state),
+            owner: None,
         },
     );
     new_state
@@ -336,6 +337,7 @@ pub(super) fn add_layer(
         GameEventContext {
             source,
             affected: Some(new_state),
+            owner: None,
         },
     );
     if new_level == 7 {

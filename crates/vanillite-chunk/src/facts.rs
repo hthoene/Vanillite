@@ -25,6 +25,8 @@ pub const SPECIAL_COLLISION: u8 = 1 << 4;
 pub const BLOCKS_MOTION: u8 = 1 << 5;
 /// The block is in the `blocks_motion_in_heightmap_no_leaves` tag.
 pub const BLOCKS_MOTION_NO_LEAVES: u8 = 1 << 6;
+/// `BlockState.isRedstoneConductor()`.
+pub const CONDUCTOR: u8 = 1 << 7;
 
 /// Tables handed to [`install`].
 #[derive(Debug, Clone, Copy)]
@@ -140,6 +142,9 @@ pub fn install_vanilla(
             }
             if state.random_ticks() {
                 value |= RANDOM_TICKING;
+            }
+            if state.has(flags::REDSTONE_CONDUCTOR) {
+                value |= CONDUCTOR;
             }
             let fluid = state.fluid_state();
             if !fluid.is_empty() {
