@@ -143,6 +143,16 @@ pub(crate) struct GatewayWait {
     tickets: Vec<(ChunkPos, TicketId)>,
 }
 
+/// What a plugin made of an End gateway's teleport ([`ServerWorld::gateway_event`]).
+enum GatewayExit {
+    /// It does not happen.
+    Cancelled,
+    /// To the gateway's exit.
+    Exit,
+    /// To this place in the world.
+    Elsewhere(Vec3),
+}
+
 /// Where a player lands and what the teleport keeps (`TeleportTransition`).
 struct Landing {
     pos: Vec3,
@@ -176,10 +186,91 @@ impl ServerWorld {
             return;
         }
         if let Some((target, route)) = self.portal_route(ctx.global, id, kind, entry) {
+            let Some(route) = self.portal_event(id, kind, target, route) else {
+                return;
+            };
             // Vanilla handles a player's portal in its connection tick (`ServerPlayer.doTick`),
             // after every level ticked: it arrives after the world phase.
             self.send_away(ctx, id, target, route, true);
         }
+    }
+
+    /// The plugins' portal event (`vanillite_abi::event::ENTITY_PORTAL`) of `id` about to go
+    /// through `kind` into `target` by `route`: `None` when a plugin cancelled it, else the
+    /// route, which a handler may point elsewhere in `target` (the exit portal search starts
+    /// there, or the entity lands there). Without listeners one branch.
+    fn portal_event(
+        &self,
+        id: EntityId,
+        kind: PortalKind,
+        target: WorldId,
+        route: Route,
+    ) -> Option<Route> {
+        let Some(hooks) = self.level.hooks_for(vanillite_abi::event::ENTITY_PORTAL) else {
+            return Some(route);
+        };
+        let entity = self.level.entities.store.get(id)?;
+        let rot = entity.rot();
+        let to = match &route {
+            Route::NetherPortal { scaled, .. } => *scaled,
+            Route::EndPlatform => {
+                let p = portal::END_SPAWN_POINT;
+                Vec3::new(f64::from(p.x) + 0.5, f64::from(p.y), f64::from(p.z) + 0.5)
+            }
+            Route::Spawn => {
+                let p = containing(self.players.level.spawn.0);
+                Vec3::new(f64::from(p.x) + 0.5, f64::from(p.y), f64::from(p.z) + 0.5)
+            }
+            _ => return Some(route),
+        };
+        let code = match kind {
+            PortalKind::Nether => vanillite_abi::portal_kind::NETHER,
+            PortalKind::End => vanillite_abi::portal_kind::END,
+            PortalKind::Gateway => vanillite_abi::portal_kind::END_GATEWAY,
+        };
+        let mut ev = vanillite_game::hooks::Event {
+            entity: entity.uuid(),
+            entity_type: entity.kind().name().to_owned(),
+            cause: code,
+            from: vanillite_game::hooks::Place::looking(entity.pos(), rot.y_rot, rot.x_rot),
+            to: vanillite_game::hooks::Place {
+                world: (target != self.id).then_some(u32::from(target.0)),
+                ..vanillite_game::hooks::Place::at(to)
+            },
+            ..vanillite_game::hooks::Event::new(vanillite_abi::event::ENTITY_PORTAL)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return None;
+        }
+        let new = ev.to.vec();
+        if new == to || !valid_destination(new) {
+            return Some(route);
+        }
+        Some(match route {
+            Route::NetherPortal {
+                approx,
+                to_nether,
+                entry,
+                ..
+            } => Route::NetherPortal {
+                scaled: new,
+                approx,
+                to_nether,
+                entry,
+            },
+            _ if entity.kind() == vanillite_data::entity::ids::PLAYER => Route::Command {
+                pos: new,
+                y_rot: rot.y_rot,
+                x_rot: rot.x_rot,
+            },
+            // Entities keep their motion and rotation (see `place_entity`).
+            _ => Route::Command {
+                pos: new,
+                y_rot: 0.0,
+                x_rot: 0.0,
+            },
+        })
     }
 
     /// Where the entity `id` goes through the nether or end portal `kind` at `entry`
@@ -236,6 +327,9 @@ impl ServerWorld {
         entry: BlockPos,
     ) {
         let Some((target, route)) = self.portal_route(ctx.global, id, kind, entry) else {
+            return;
+        };
+        let Some(route) = self.portal_event(id, kind, target, route) else {
             return;
         };
         let Some(entity) = self.level.entities.store.get(id) else {
@@ -352,6 +446,17 @@ impl ServerWorld {
                     missing: false,
                 })
             }
+            // A plugin pointed the portal elsewhere (`portal_event`): there, with the motion and
+            // rotation.
+            &Route::Command { pos, .. } => Some(Landing {
+                pos,
+                y_rot: 0.0,
+                x_rot: 0.0,
+                relatives: KEEP_MOTION_AND_ROTATION,
+                sound: true,
+                ticket: Some(containing(pos)),
+                missing: false,
+            }),
             _ => None,
         };
         let Some(landing) = landing else {
@@ -423,6 +528,13 @@ impl ServerWorld {
         let Some(id) = self.level.load_travelled_entity(nbt) else {
             return;
         };
+        if !self
+            .level
+            .entities
+            .spawned(id, vanillite_abi::spawn_reason::DIMENSION_TRAVEL, 0)
+        {
+            return;
+        }
         ender_pearl::arrived(&mut self.level.entities, id, |uuid| {
             global.players.contains(Uuid(uuid))
         });
@@ -550,7 +662,15 @@ impl ServerWorld {
         nbt.insert("OnGround", Tag::Byte(1));
         nbt.remove("Passengers");
         global.run_in_world(target, move |world: &mut ServerWorld| {
-            world.level.load_entity(nbt);
+            if world.level.load_entity(nbt) {
+                // The entity just loaded is the last one.
+                let entities = &mut world.level.entities;
+                if let Some(&id) = entities.store.columns().id.last()
+                    && entities.store.get(id).is_some_and(|e| e.uuid() == uuid)
+                {
+                    entities.spawned(id, vanillite_abi::spawn_reason::DIMENSION_TRAVEL, 0);
+                }
+            }
         });
     }
 
@@ -1405,21 +1525,62 @@ impl ServerWorld {
         let destination = portal_blocks::gateway(&self.level, wait.entry)
             .and_then(|gateway| portal_blocks::gateway_destination(&self.level, gateway));
         if let Some(pos) = destination {
-            self.teleport_through_gateway(wait.entity, pos);
+            match self.gateway_event(wait.entity, pos) {
+                GatewayExit::Cancelled => {}
+                GatewayExit::Exit => self.teleport_through_gateway(wait.entity, pos, None),
+                GatewayExit::Elsewhere(to) => {
+                    self.teleport_through_gateway(wait.entity, pos, Some(to));
+                }
+            }
         }
         true
     }
 
-    /// The gateway's teleport within this world: to the bottom centre of `exit`, players
-    /// keeping velocity and rotation, then `PLACE_PORTAL_TICKET`.
-    fn teleport_through_gateway(&mut self, id: EntityId, exit: BlockPos) {
+    /// The plugins' portal event (`vanillite_abi::event::ENTITY_PORTAL`) of an entity about to
+    /// go through an End gateway to `exit`.
+    fn gateway_event(&self, id: EntityId, exit: BlockPos) -> GatewayExit {
+        let Some(hooks) = self.level.hooks_for(vanillite_abi::event::ENTITY_PORTAL) else {
+            return GatewayExit::Exit;
+        };
+        let Some(entity) = self.level.entities.store.get(id) else {
+            return GatewayExit::Cancelled;
+        };
+        let rot = entity.rot();
+        let to = Vec3::new(
+            f64::from(exit.x) + 0.5,
+            f64::from(exit.y),
+            f64::from(exit.z) + 0.5,
+        );
+        let mut ev = vanillite_game::hooks::Event {
+            entity: entity.uuid(),
+            entity_type: entity.kind().name().to_owned(),
+            cause: vanillite_abi::portal_kind::END_GATEWAY,
+            from: vanillite_game::hooks::Place::looking(entity.pos(), rot.y_rot, rot.x_rot),
+            to: vanillite_game::hooks::Place::at(to),
+            ..vanillite_game::hooks::Event::new(vanillite_abi::event::ENTITY_PORTAL)
+        };
+        hooks.event(&mut ev);
+        let new = ev.to.vec();
+        if ev.cancelled {
+            GatewayExit::Cancelled
+        } else if new == to || !valid_destination(new) {
+            GatewayExit::Exit
+        } else {
+            GatewayExit::Elsewhere(new)
+        }
+    }
+
+    /// The gateway's teleport within this world: to the bottom centre of `exit` (or where a
+    /// plugin sent it, `elsewhere`), players keeping velocity and rotation, then
+    /// `PLACE_PORTAL_TICKET`.
+    fn teleport_through_gateway(&mut self, id: EntityId, exit: BlockPos, elsewhere: Option<Vec3>) {
         let entities = &mut self.level.entities;
         let pos = if entities.player(id).is_some() {
-            let pos = Vec3::new(
+            let pos = elsewhere.unwrap_or(Vec3::new(
                 f64::from(exit.x) + 0.5,
                 f64::from(exit.y),
                 f64::from(exit.z) + 0.5,
-            );
+            ));
             let Some(pos) = vanillite_game::player::movement::teleport_within_world(
                 entities,
                 id,
@@ -1432,7 +1593,17 @@ impl ServerWorld {
             };
             pos
         } else {
-            portal::teleport_through_gateway(entities, id, exit)
+            let pos = portal::teleport_through_gateway(entities, id, exit);
+            match elsewhere {
+                Some(to) => {
+                    if let Some(mut e) = entities.store.get_mut(id) {
+                        e.set_pos(to);
+                        e.set_old_pos();
+                    }
+                    to
+                }
+                None => pos,
+            }
         };
         self.place_portal_ticket(containing(pos));
     }
@@ -1619,6 +1790,15 @@ fn free_position(level: &vanillite_game::level::Level, pos: Vec3, width: f32, he
 /// `BlockPos.containing(pos)`.
 fn containing(pos: Vec3) -> BlockPos {
     BlockPos::containing(pos.x, pos.y, pos.z)
+}
+
+/// Whether a plugin's destination is a place an entity can be (finite, inside the world's
+/// coordinate limits).
+fn valid_destination(pos: Vec3) -> bool {
+    [pos.x, pos.y, pos.z].iter().all(|v| v.is_finite())
+        && pos.x.abs() < 30_000_000.0
+        && pos.z.abs() < 30_000_000.0
+        && pos.y.abs() < 20_000_000.0
 }
 
 /// The chunks a traveller's destination needs before it can be placed: the exit portal search,

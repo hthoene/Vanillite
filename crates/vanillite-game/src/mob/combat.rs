@@ -698,6 +698,7 @@ fn die(
         },
     ));
     // `dropAllDeathLoot`: the loot table, then the experience.
+    let mut drops = Vec::new();
     if !baby && env.rules.bool(Rule::MOB_DROPS) {
         let mut loot = table_loot(level, ents, env, target, &source)
             .or_else(|| {
@@ -726,21 +727,50 @@ fn die(
                 loot.push(crate::item::ItemStack::new(item, 1));
             }
         }
-        for stack in loot {
-            // `spawnAtLocation`: an item entity with the default random motion.
-            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
-            env.out.push(Effect::DropItem {
-                uuid,
-                pos,
-                velocity,
-                y_rot,
-                pickup_delay: 10,
-                stack,
-            });
-        }
+        drops = loot;
     }
-    if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
-        award_experience(env, pos, reward);
+    let mut experience =
+        if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
+            reward
+        } else {
+            0
+        };
+    if let Some(hooks) = ents.hooks_for(vanillite_abi::event::ENTITY_DROPS)
+        && let Some(e) = ents.store.get(target)
+    {
+        let mut ev = crate::hooks::Event {
+            entity: e.uuid(),
+            entity_type: e.kind().name().to_owned(),
+            other: source
+                .cause
+                .and_then(|c| ents.store.get(c))
+                .map_or(0, |c| c.uuid()),
+            key: env.types.get(source.kind).id.clone(),
+            item: crate::hooks::items_snbt(&drops),
+            value: i64::from(experience),
+            to: crate::hooks::Place::at(pos),
+            ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
+        };
+        hooks.event(&mut ev);
+        if let Some(new) = crate::hooks::drops_out(&ev) {
+            drops = new;
+        }
+        experience = crate::hooks::experience_value(ev.value);
+    }
+    for stack in drops {
+        // `spawnAtLocation`: an item entity with the default random motion.
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        env.out.push(Effect::DropItem {
+            uuid,
+            pos,
+            velocity,
+            y_rot,
+            pickup_delay: 10,
+            stack,
+        });
+    }
+    if experience > 0 {
+        award_experience(env, pos, experience);
     }
     // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
     // last attacking mob.

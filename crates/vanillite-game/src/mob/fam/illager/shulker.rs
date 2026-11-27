@@ -524,7 +524,7 @@ fn hit_by_bullet(h: &mut Hurt<'_, '_>) {
     let mut baby = MobData::new(Kind::Shulker, crate::mob::new_entity_seed());
     st_mut(&mut baby).color = color;
     let uuid = crate::mob::new_uuid();
-    super::super::super::spawn(
+    let id = super::super::super::spawn(
         h.ents,
         h.level.network_ids(),
         uuid,
@@ -532,4 +532,7 @@ fn hit_by_bullet(h: &mut Hurt<'_, '_>) {
         Rotation::default(),
         baby,
     );
+    let parent = h.ents.store.get(h.target).map_or(0, |e| e.uuid());
+    h.ents
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, parent);
 }

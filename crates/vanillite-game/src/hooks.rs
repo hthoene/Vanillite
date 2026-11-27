@@ -204,6 +204,30 @@ pub fn parse_items(snbt: &str) -> Option<Vec<crate::item::ItemStack>> {
     }
 }
 
+/// The most experience a handler may set (`value` of [`vanillite_abi::event::ENTITY_DROPS`]
+/// and [`vanillite_abi::event::ENTITY_BREED`]): a few hundred orbs at most.
+pub const MAX_EXPERIENCE: i64 = 1_000_000;
+
+/// The most stacks a handler may put in place of drops (`item_out`).
+pub const MAX_DROPS: usize = 256;
+
+/// The most an explosion's radius may become by a handler (`amount` of
+/// [`vanillite_abi::event::ENTITY_EXPLODE`]); Vanilla's fireballs reach 127.
+pub const MAX_EXPLOSION_RADIUS: f64 = 128.0;
+
+/// A handler's experience (`value`), clamped to `0..=`[`MAX_EXPERIENCE`].
+pub fn experience_value(value: i64) -> i32 {
+    i32::try_from(value.clamp(0, MAX_EXPERIENCE)).unwrap_or(0)
+}
+
+/// The drops a handler put in place of an event's (`item_out`, an SNBT list): `None` when
+/// it changed nothing or sent bad SNBT, else at most [`MAX_DROPS`] stacks.
+pub fn drops_out(event: &Event) -> Option<Vec<crate::item::ItemStack>> {
+    let mut items = parse_items(event.item_out.as_deref()?)?;
+    items.truncate(MAX_DROPS);
+    Some(items)
+}
+
 /// What a plugin goal sees of its mob (`vanillite_abi::GoalMob`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GoalMob {

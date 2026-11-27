@@ -35,9 +35,9 @@ use vanillite_abi::{self as abi, Status, status};
 
 pub use commands::{Arg, ArgValue, SUGGEST_PREFIX, Sender};
 pub use events::{GameEvent, InteractTarget, LoginOutcome, NewText, PlayerDeath, TextDecision};
+pub use generator::PluginGeneratorProvider;
 pub use generator::PluginPopulator;
 pub use goals::PluginGoal;
-pub use generator::PluginGeneratorProvider;
 pub use loader::{Manifest, Threading};
 
 /// A message for players.

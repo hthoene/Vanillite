@@ -340,7 +340,13 @@ fn execute(
             );
             #[allow(clippy::cast_precision_loss)]
             let yaw = ((crate::decoration::data_2d(source.facing) & 3) * 90) as f32;
-            crate::decoration::stand::spawn_stand(level, pos, yaw, &stack);
+            crate::decoration::stand::spawn_stand(
+                level,
+                pos,
+                yaw,
+                &stack,
+                vanillite_abi::spawn_reason::DISPENSER,
+            );
             stack.shrink(1);
             stack
         }

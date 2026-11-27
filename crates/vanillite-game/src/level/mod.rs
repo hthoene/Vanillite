@@ -521,6 +521,7 @@ impl std::fmt::Debug for Level {
 impl Level {
     /// Installs the plugin hooks of this world (only when plugins are loaded).
     pub fn set_hooks(&mut self, hooks: Arc<dyn crate::hooks::GameHooks + Send>) {
+        self.entities.set_hooks(Arc::clone(&hooks));
         self.hooks = Some(hooks);
     }
 

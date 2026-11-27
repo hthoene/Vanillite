@@ -93,7 +93,11 @@ pub fn strike(level: &mut Level, column: BlockPos, input: StrikeInput) -> Option
         f64::from(pos.y),
         f64::from(pos.z) + 0.5,
     );
-    Some(spawn(level, at, trap))
+    let id = spawn(level, at, trap);
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+        .then_some(id)
 }
 
 /// Adds a lightning bolt at `pos` (`EntityTypes.LIGHTNING_BOLT.create`): it draws its seed and

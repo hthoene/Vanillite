@@ -73,7 +73,14 @@ fn nether_portal_random_tick(level: &mut Level, _state: BlockState, pos: BlockPo
         f64::from(at.y),
         f64::from(at.z) + 0.5,
     );
-    let id = crate::mob::spawn::add_mob_with(level, mob, position, y_rot, extra);
+    let id = crate::mob::spawn::add_mob_with(
+        level,
+        mob,
+        position,
+        y_rot,
+        extra,
+        crate::mob::fam::SpawnReason::Structure,
+    );
     // `mob.playAmbientSound()`.
     if let Some(m) = level.entities.mob_mut(id) {
         let sound = crate::mob::kinds::ambient_sound(m);

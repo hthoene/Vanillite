@@ -458,7 +458,13 @@ fn set_tadpole_age(t: &mut Tick<'_, '_>, age: i32) {
     state_mut(t.mob()).tadpole_age = age;
     if age >= 24000 {
         // `ageUp`: a persistent frog with `finalizeSpawn(CONVERSION)`.
-        let Some(frog) = super::convert_to(t, Kind::Frog, false, false) else {
+        let Some(frog) = super::convert_to(
+            t,
+            Kind::Frog,
+            false,
+            false,
+            vanillite_abi::transform_reason::METAMORPHOSIS,
+        ) else {
             return;
         };
         let pos = t.ents.store.get(frog).map(|e| e.pos());

@@ -282,9 +282,9 @@ pub(crate) unsafe extern "C" fn mob_goal_add(
             return status::INVALID_ARGUMENT;
         }
         // SAFETY: the plugin passes the context of the running callback.
-        let Some(plugin) = (unsafe { ctx(raw) }).and_then(|c| {
-            crate::Inner::resolve(c.plugin.abi_id).map(|(_, p)| p)
-        }) else {
+        let Some(plugin) = (unsafe { ctx(raw) })
+            .and_then(|c| crate::Inner::resolve(c.plugin.abi_id).map(|(_, p)| p))
+        else {
             drop_user();
             return status::INVALID_ARGUMENT;
         };
@@ -501,9 +501,8 @@ pub(crate) unsafe extern "C" fn raytrace(
             .map(|(a, b)| (a - b) * (a - b))
             .sum::<f64>()
             .sqrt();
-        let known = abi::raytrace_flag::BLOCKS
-            | abi::raytrace_flag::FLUIDS
-            | abi::raytrace_flag::ENTITIES;
+        let known =
+            abi::raytrace_flag::BLOCKS | abi::raytrace_flag::FLUIDS | abi::raytrace_flag::ENTITIES;
         // SEC: a ray crosses at most 1024 blocks.
         if !valid_pos(from) || !valid_pos(to) || distance > 1024.0 || flags & !known != 0 {
             return status::INVALID_ARGUMENT;

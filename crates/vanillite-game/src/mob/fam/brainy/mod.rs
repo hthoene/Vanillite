@@ -188,12 +188,14 @@ pub fn zombifies(t: &Tick<'_, '_>) -> bool {
 }
 
 /// `Mob.convertTo(type, ConversionParams.single(this, keepEquipment, preserveLoot))`: the new
-/// mob takes the place of this one, which is discarded.
+/// mob takes the place of this one, which is discarded. `reason` is the plugins'
+/// `vanillite_abi::transform_reason`; `None` when a plugin cancelled the conversion.
 pub fn convert_to(
     t: &mut Tick<'_, '_>,
     kind: Kind,
     keep_equipment: bool,
     preserve_loot: bool,
+    reason: u32,
 ) -> Option<EntityId> {
     let seed = t.mob().random.next_long_seed();
     let mut new = MobData::new(kind, seed);
@@ -243,7 +245,17 @@ pub fn convert_to(
         )
     };
     let uuid = crate::mob::new_uuid();
+    if !t.ents.transforming(t.id, kind.type_id(), uuid, reason) {
+        return None;
+    }
     let id = crate::mob::spawn(t.ents, t.level.network_ids(), uuid, pos, rot, new);
+    let old_uuid = t.core().uuid();
+    if !t
+        .ents
+        .spawned(id, vanillite_abi::spawn_reason::CONVERSION, old_uuid)
+    {
+        return None;
+    }
     if let Some(mut e) = t.ents.store.get_mut(id) {
         e.set_velocity(velocity);
         e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, on_ground);
@@ -351,6 +363,9 @@ pub fn gift_loot(t: &mut Tick<'_, '_>, table: &str) -> Vec<ItemStack> {
 /// `Mob.getTargetFromBrain`: keeps `MobData.target` in sync with `ATTACK_TARGET`.
 pub fn sync_target(t: &mut Tick<'_, '_>) {
     let target = brain::brain_ref(t).entity(MemoryType::AttackTarget);
+    if !crate::mob::brain::target_changed(t, target) {
+        return;
+    }
     t.mob().target = target;
 }
 

@@ -1160,7 +1160,10 @@ impl Raid {
             )
         });
         apply_raid_buffs(&mut mob, self, wave);
-        let id = spawn::add_mob_with(level, mob, at, 0.0, extra);
+        let id = spawn::add_mob_with(level, mob, at, 0.0, extra, SpawnReason::Event);
+        if !level.entities.store.contains(id) {
+            return None;
+        }
         if let Some(mut e) = level.entities.store.get_mut(id) {
             e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, true);
         }

@@ -244,6 +244,12 @@ pub fn spit_tick(t: &mut MissileTick<'_, '_>) {
     if let Some(m) = t.ents.missile_mut(t.id) {
         m.left_owner = left_owner;
     }
+    // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored, the spit flies on.
+    let hit_event = |what| crate::mob::missile::hit_event(t.level, t.ents, t.id, d.owner, what);
+    let hit = hit.filter(|&target| hit_event(crate::mob::missile::HitWhat::Entity(target)));
+    let block_hit = block_hit.filter(|&(block, at)| {
+        hit.is_some() || hit_event(crate::mob::missile::HitWhat::Block(block, at))
+    });
     if let Some(target) = hit {
         if let Some(owner) = d.owner.filter(|o| {
             t.ents.mob(*o).is_some_and(MobData::is_alive) || t.ents.player(*o).is_some()

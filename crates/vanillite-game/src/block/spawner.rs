@@ -565,7 +565,19 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
         } else {
             Vec::new()
         };
-        let id = spawn::add_mob_with(level, mob, at, y_rot, extra);
+        let id = spawn::add_mob_with(
+            level,
+            mob,
+            at,
+            y_rot,
+            extra,
+            crate::mob::fam::SpawnReason::Spawner,
+        );
+        if !level.entities.store.contains(id) {
+            // `tryAddFreshEntityWithPassengers` failed (a plugin cancelled the spawn).
+            delay(level, pos);
+            return;
+        }
         level.level_event(None, 2004, pos, 0);
         entity_place_event(level, id, block);
         delayed = true;

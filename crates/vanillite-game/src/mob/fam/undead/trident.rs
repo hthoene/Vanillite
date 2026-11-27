@@ -178,6 +178,14 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
             } else {
                 None
             };
+            // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored, the trident flies on.
+            let hit_event =
+                |what| crate::mob::missile::hit_event(t.level, t.ents, id, d.owner, what);
+            let entity_hit = entity_hit
+                .filter(|&(target, _)| hit_event(crate::mob::missile::HitWhat::Entity(target)));
+            let block_hit = block_hit.filter(|&(hit_pos, at)| {
+                entity_hit.is_some() || hit_event(crate::mob::missile::HitWhat::Block(hit_pos, at))
+            });
             if let Some((target, hit)) = entity_hit {
                 pos = hit;
                 hit_entity(t, &mut d, target, pos);

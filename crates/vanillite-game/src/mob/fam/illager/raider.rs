@@ -534,11 +534,21 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
         if id == t.id {
             continue;
         }
-        if let Some(m) = t.ents.mob_mut(id)
-            && m.kind == kind
-            && m.target.is_none()
-            && m.is_alive()
-            && !(is_illager(kind) && by_illager)
+        let alerted = t.ents.mob(id).is_some_and(|m| {
+            m.kind == kind
+                && m.target.is_none()
+                && m.is_alive()
+                && !(is_illager(kind) && by_illager)
+        });
+        if alerted
+            && crate::mob::goals::target_event(
+                t.ents,
+                id,
+                None,
+                Some(by),
+                vanillite_abi::target_reason::RETALIATE,
+            )
+            && let Some(m) = t.ents.mob_mut(id)
         {
             m.target = Some(by);
         }

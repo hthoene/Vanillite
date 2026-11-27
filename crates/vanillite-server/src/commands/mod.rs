@@ -57,7 +57,7 @@ pub(crate) use data::{apply_entity_nbt, entity_nbt};
 pub(crate) use data_cmd::merge_compound;
 pub(crate) use entities_cmd::kill_any;
 pub(crate) use exec::{find_player, permission_event};
-pub(crate) use execute::summon;
+pub(crate) use execute::summon_for;
 pub(crate) use operator::handle as handle_admin;
 pub(crate) use particle::particle;
 pub(crate) use player_data::add_experience;

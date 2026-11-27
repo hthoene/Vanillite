@@ -525,7 +525,18 @@ fn split(t: &mut Tick<'_, '_>) {
     } else {
         2 + t.mob().random.next_int_bounded(3)
     };
+    if count > 0
+        && !t.ents.transforming(
+            t.id,
+            kind.type_id(),
+            0,
+            vanillite_abi::transform_reason::SPLIT,
+        )
+    {
+        return;
+    }
     let pos = t.pos();
+    let parent = t.core().uuid();
     for i in 0..count {
         #[allow(clippy::cast_precision_loss)]
         let xd = ((i % 2) as f32 - 0.5) * offset;
@@ -551,7 +562,7 @@ fn split(t: &mut Tick<'_, '_>) {
         new.y_body_rot = y_rot;
         let at = Vec3::new(pos.x + f64::from(xd), pos.y + 0.5, pos.z + f64::from(zd));
         let uuid = crate::mob::new_uuid();
-        crate::mob::spawn(
+        let id = crate::mob::spawn(
             t.ents,
             t.level.network_ids(),
             uuid,
@@ -559,6 +570,8 @@ fn split(t: &mut Tick<'_, '_>) {
             super::rotation(y_rot),
             new,
         );
+        t.ents
+            .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, parent);
     }
 }
 

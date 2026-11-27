@@ -242,7 +242,10 @@ fn spawn_owned(
     if data.owner_uuid.is_none() {
         data.owner_uuid = t.ents.store.get(t.id).map(|e| e.uuid());
     }
-    spawn(
+    // Evoker fangs are no projectile: only their spawn.
+    let fangs = data.kind == MissileKind::EvokerFangs;
+    let owner = data.owner;
+    let id = spawn(
         t.ents,
         t.level.network_ids(),
         uuid,
@@ -250,7 +253,17 @@ fn spawn_owned(
         velocity,
         rot,
         data,
-    )
+    );
+    if fangs {
+        let parent = owner
+            .and_then(|o| t.ents.store.get(o))
+            .map_or(0, |e| e.uuid());
+        t.ents
+            .spawned(id, vanillite_abi::spawn_reason::DEFAULT, parent);
+    } else {
+        t.ents.launched(id, owner);
+    }
+    id
 }
 
 /// What one projectile tick works on.
@@ -323,6 +336,81 @@ pub fn tick(
     if ents.missile(id).is_some_and(|d| d.removed) {
         cx.discarded.push(id);
     }
+}
+
+/// What a projectile is about to hit, for [`hit_event`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HitWhat {
+    /// An entity.
+    Entity(EntityId),
+    /// A block, at a point on it.
+    Block(vanillite_base::BlockPos, Vec3),
+}
+
+/// The plugins' hit event (`vanillite_abi::event::PROJECTILE_HIT`, Bukkit's
+/// `preHitTargetOrDeflectSelf`) of `projectile`, shot by `shooter`: whether the hit happens
+/// (`false`: a plugin cancelled it and the projectile ignores it). Without listeners one
+/// branch.
+pub fn hit_event(
+    level: &Level,
+    ents: &Entities,
+    projectile: EntityId,
+    shooter: Option<EntityId>,
+    hit: HitWhat,
+) -> bool {
+    let Some(hooks) = ents.hooks_for(vanillite_abi::event::PROJECTILE_HIT) else {
+        return true;
+    };
+    let Some(e) = ents.store.get(projectile) else {
+        return true;
+    };
+    let uuid_of = |id: EntityId| ents.store.get(id).map_or(0, |e| e.uuid());
+    let mut ev = crate::hooks::Event {
+        entity: e.uuid(),
+        entity_type: e.kind().name().to_owned(),
+        source: shooter.map_or(0, uuid_of),
+        to: crate::hooks::Place::at(e.pos()),
+        ..crate::hooks::Event::new(vanillite_abi::event::PROJECTILE_HIT)
+    };
+    match hit {
+        HitWhat::Entity(target) => {
+            ev.other = uuid_of(target);
+            ev.other_type = ents
+                .store
+                .get(target)
+                .map_or_else(String::new, |t| t.kind().name().to_owned());
+        }
+        HitWhat::Block(pos, at) => {
+            ev.pos = pos;
+            ev.state = Some(level.block(pos));
+            ev.cause = face_at(pos, at);
+            ev.to = crate::hooks::Place::at(at);
+        }
+    }
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// The face of the block at `pos` nearest to the point `at` on it (`Direction` 3D data value:
+/// down, up, north, south, west, east).
+fn face_at(pos: vanillite_base::BlockPos, at: Vec3) -> u32 {
+    let (x, y, z) = (
+        at.x - f64::from(pos.x),
+        at.y - f64::from(pos.y),
+        at.z - f64::from(pos.z),
+    );
+    let faces = [
+        (y, 0),
+        (1.0 - y, 1),
+        (z, 2),
+        (1.0 - z, 3),
+        (x, 4),
+        (1.0 - x, 5),
+    ];
+    faces
+        .into_iter()
+        .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
+        .map_or(1, |f| f.1)
 }
 
 /// `Projectile.onHitBlock`: `onProjectileHit` of the block `projectile` hit at `at`, applied

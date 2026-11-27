@@ -948,7 +948,8 @@ impl GameHooks for WorldHooks {
         killer: Option<u128>,
         death: &mut vanillite_game::hooks::Death,
     ) {
-        self.hooks().player_death(player, damage_type, killer, death);
+        self.hooks()
+            .player_death(player, damage_type, killer, death);
     }
 
     fn entity_death(

@@ -104,8 +104,7 @@ impl Events {
         callback: abi::EventFn,
         user: *mut c_void,
     ) -> Status {
-        let known = known_kind(kind)
-            || (kind < MASK_BITS && self.custom_name(kind).is_some());
+        let known = known_kind(kind) || (kind < MASK_BITS && self.custom_name(kind).is_some());
         if !known || flags & !abi::subscribe_flag::IGNORE_CANCELLED != 0 {
             return status::UNSUPPORTED;
         }
@@ -657,7 +656,11 @@ impl PluginHost {
     /// Fires an event of the kinds added since ABI 1.6 when a plugin listens; `world` is the
     /// event's world when the caller owns it (handlers may then touch it). Writes the
     /// handlers' changes back into `event`; returns whether it was fired.
-    pub fn game_event(&self, world: Option<&mut dyn WorldAccess>, event: &mut GameEvent<'_>) -> bool {
+    pub fn game_event(
+        &self,
+        world: Option<&mut dyn WorldAccess>,
+        event: &mut GameEvent<'_>,
+    ) -> bool {
         if !self.wants(event.kind) {
             return false;
         }
