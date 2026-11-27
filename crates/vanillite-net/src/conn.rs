@@ -252,7 +252,7 @@ impl Conn {
         };
         match &self.joined {
             Some((at, name)) if at.elapsed() < EARLY_DROP => log::warn!(
-                "{name} ({}) dropped {:.1}s after joining: {why}; last packets sent: {}",
+                "Suspicious disconnect: {name} ({}) dropped {:.1}s after joining: {why}\n  last packets sent: {}",
                 self.addr,
                 at.elapsed().as_secs_f32(),
                 self.out.sent_log().dump()
