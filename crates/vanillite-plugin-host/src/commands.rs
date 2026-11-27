@@ -20,7 +20,10 @@ pub const SUGGEST_PREFIX: &str = "vanillite-plugin:";
 /// Who runs a plugin command.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Sender {
-    /// The player, `None` for the console.
+    /// One of [`abi::sender`]; with `CONSOLE` (the default) a sender with a player counts
+    /// as `PLAYER`.
+    pub kind: u32,
+    /// The player (or entity for `ENTITY`), `None` for the console and command blocks.
     pub player: Option<u128>,
     /// The sender's world.
     pub world: Option<u32>,
@@ -47,6 +50,16 @@ pub enum ArgValue {
     Players(Vec<u128>),
     /// A resolved block position.
     Pos([i32; 3]),
+    /// Selected entities.
+    Entities(Vec<u128>),
+    /// A resolved position.
+    Vec3([f64; 3]),
+    /// A resolved rotation: yaw and pitch.
+    Rotation([f64; 2]),
+    /// A value of an argument type plugins get as text ([`abi::arg`] kind and the text).
+    Raw(u32, String),
+    /// A value of an argument type plugins get as an integer ([`abi::arg`] kind and value).
+    Int(u32, i64),
 }
 
 /// A parsed argument.
@@ -118,7 +131,7 @@ fn copy_nodes(spec: &abi::CommandSpec) -> Result<Vec<Node>, String> {
         if parent.is_some_and(|p| p >= i) || (i > 0 && parent.is_none()) {
             return Err("node parents must come first, with one root".into());
         }
-        if raw.kind == abi::node::ARGUMENT && raw.arg_type > abi::arg::BLOCK_POS {
+        if raw.kind == abi::node::ARGUMENT && raw.arg_type > abi::arg::UUID {
             return Err(format!("unknown argument type {}", raw.arg_type));
         }
         if raw.executes > 0xffff || raw.suggests > 0xffff {
@@ -243,6 +256,24 @@ fn argument_type(node: &Node) -> ArgumentType {
             single: false,
             players_only: true,
         },
+        abi::arg::ENTITY => ArgumentType::Entity {
+            single: true,
+            players_only: false,
+        },
+        abi::arg::ENTITIES => ArgumentType::Entity {
+            single: false,
+            players_only: false,
+        },
+        abi::arg::VEC3 => ArgumentType::Vec3 { center: true },
+        abi::arg::ROTATION => ArgumentType::Rotation,
+        abi::arg::IDENTIFIER => ArgumentType::Identifier,
+        abi::arg::BLOCK_STATE => ArgumentType::BlockState,
+        abi::arg::ITEM_STACK => ArgumentType::ItemStack,
+        abi::arg::COMPONENT => ArgumentType::Component,
+        abi::arg::NBT_COMPOUND => ArgumentType::NbtCompound,
+        abi::arg::GAME_MODE => ArgumentType::GameMode,
+        abi::arg::TIME => ArgumentType::Time { min: 0 },
+        abi::arg::UUID => ArgumentType::Uuid,
         _ => ArgumentType::BlockPos,
     }
 }
@@ -444,7 +475,9 @@ fn build<C: Copy>(
 
 fn encode_sender(sender: &Sender) -> abi::Sender {
     abi::Sender {
-        kind: if sender.player.is_some() {
+        kind: if sender.kind != abi::sender::CONSOLE {
+            sender.kind
+        } else if sender.player.is_some() {
             abi::sender::PLAYER
         } else {
             abi::sender::CONSOLE
@@ -464,7 +497,9 @@ fn encode_args(args: &[Arg]) -> (Vec<abi::CommandArg>, Vec<Vec<abi::Uuid>>) {
     let players: Vec<Vec<abi::Uuid>> = args
         .iter()
         .map(|a| match &a.value {
-            ArgValue::Players(p) => p.iter().map(|u| abi::Uuid::from_u128(*u)).collect(),
+            ArgValue::Players(p) | ArgValue::Entities(p) => {
+                p.iter().map(|u| abi::Uuid::from_u128(*u)).collect()
+            }
             _ => Vec::new(),
         })
         .collect();
@@ -481,6 +516,11 @@ fn encode_args(args: &[Arg]) -> (Vec<abi::CommandArg>, Vec<Vec<abi::Uuid>>) {
                 pos: abi::BlockPos { x: 0, y: 0, z: 0 },
                 players: players.as_ptr(),
                 player_count: players.len(),
+                vec: abi::Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
             };
             match &a.value {
                 ArgValue::Bool(b) => r.int = i64::from(*b),
@@ -490,6 +530,29 @@ fn encode_args(args: &[Arg]) -> (Vec<abi::CommandArg>, Vec<Vec<abi::Uuid>>) {
                 ArgValue::Double(v) => (r.kind, r.float) = (abi::arg::DOUBLE, *v),
                 ArgValue::Text(s) => (r.kind, r.text) = (abi::arg::STRING, abi::Str::new(s)),
                 ArgValue::Players(_) => r.kind = abi::arg::PLAYERS,
+                ArgValue::Entities(_) => r.kind = abi::arg::ENTITIES,
+                ArgValue::Vec3([x, y, z]) => {
+                    (r.kind, r.vec) = (
+                        abi::arg::VEC3,
+                        abi::Vec3 {
+                            x: *x,
+                            y: *y,
+                            z: *z,
+                        },
+                    );
+                }
+                ArgValue::Rotation([yaw, pitch]) => {
+                    (r.kind, r.vec) = (
+                        abi::arg::ROTATION,
+                        abi::Vec3 {
+                            x: *yaw,
+                            y: *pitch,
+                            z: 0.0,
+                        },
+                    );
+                }
+                ArgValue::Raw(kind, s) => (r.kind, r.text) = (*kind, abi::Str::new(s)),
+                ArgValue::Int(kind, v) => (r.kind, r.int) = (*kind, *v),
                 ArgValue::Pos([x, y, z]) => {
                     (r.kind, r.pos) = (
                         abi::arg::BLOCK_POS,

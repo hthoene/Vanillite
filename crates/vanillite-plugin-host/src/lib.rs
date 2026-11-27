@@ -57,6 +57,238 @@ pub struct Title<'a> {
     pub times: [i32; 3],
 }
 
+/// A sound for one player ([`vanillite_abi::SoundSpec`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sound<'a> {
+    /// The sound event, e.g. `minecraft:entity.experience_orb.pickup`.
+    pub sound: &'a str,
+    /// The category, an index into `/playsound`'s sources ([`vanillite_abi::sound_source`]).
+    pub source: u32,
+    /// Where it plays.
+    pub pos: [f64; 3],
+    /// Volume.
+    pub volume: f32,
+    /// Pitch.
+    pub pitch: f32,
+    /// Seed of the variant choice.
+    pub seed: i64,
+}
+
+/// Particles for one player ([`vanillite_abi::ParticleSpec`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Particles<'a> {
+    /// The particle type, e.g. `minecraft:dust`.
+    pub particle: &'a str,
+    /// Its options (empty for types without).
+    pub options: vanillite_nbt::Compound,
+    /// Where they appear.
+    pub pos: [f64; 3],
+    /// Spread or direction.
+    pub delta: [f64; 3],
+    /// Speed.
+    pub speed: f32,
+    /// Count.
+    pub count: i32,
+    /// Visible up to 512 blocks away.
+    pub force: bool,
+}
+
+/// What the server knows about an online player.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlayerInfo {
+    /// Its world.
+    pub world: u32,
+    /// Its game mode ([`vanillite_abi::game_mode`]).
+    pub game_mode: u32,
+    /// Its operator level, 0 for none.
+    pub op_level: u32,
+    /// Its latency in milliseconds.
+    pub ping: i32,
+    /// Its IP address.
+    pub address: String,
+}
+
+/// Tick statistics ([`vanillite_abi::ServerStats`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ServerStats {
+    /// The tick count.
+    pub tick: u64,
+    /// Average milliseconds per tick.
+    pub mspt: f64,
+    /// Ticks per second.
+    pub tps: f64,
+    /// The tick rate.
+    pub tick_rate: f64,
+    /// Online players.
+    pub online: u32,
+    /// The player limit.
+    pub max_players: u32,
+}
+
+/// A change or query of the Vanilla scoreboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScoreboardOp<'a> {
+    /// Adds an objective.
+    AddObjective {
+        /// Its name.
+        name: &'a str,
+        /// Its criterion, e.g. `dummy`.
+        criteria: &'a str,
+        /// Its display name.
+        display: Text<'a>,
+    },
+    /// Removes an objective.
+    RemoveObjective {
+        /// Its name.
+        name: &'a str,
+    },
+    /// Shows an objective in a display slot, or clears the slot.
+    Display {
+        /// The slot ([`vanillite_abi::display_slot`]).
+        slot: u32,
+        /// The objective; `None` clears the slot.
+        objective: Option<&'a str>,
+    },
+    /// Reads a score ([`ScoreReply::Score`]).
+    GetScore {
+        /// The objective.
+        objective: &'a str,
+        /// The holder.
+        holder: &'a str,
+    },
+    /// Sets a score.
+    SetScore {
+        /// The objective.
+        objective: &'a str,
+        /// The holder.
+        holder: &'a str,
+        /// The value.
+        value: i32,
+    },
+    /// Resets a score.
+    ResetScore {
+        /// The objective; `None` for all.
+        objective: Option<&'a str>,
+        /// The holder.
+        holder: &'a str,
+    },
+    /// Adds a team.
+    AddTeam {
+        /// Its name.
+        name: &'a str,
+    },
+    /// Removes a team.
+    RemoveTeam {
+        /// Its name.
+        name: &'a str,
+    },
+    /// Puts a holder into a team.
+    JoinTeam {
+        /// The team.
+        team: &'a str,
+        /// The holder.
+        holder: &'a str,
+    },
+    /// Takes a holder out of its team.
+    LeaveTeam {
+        /// The holder.
+        holder: &'a str,
+    },
+    /// Changes a team option as `/team modify`.
+    ModifyTeam {
+        /// The team.
+        team: &'a str,
+        /// The option, e.g. `prefix`.
+        option: &'a str,
+        /// The value.
+        value: &'a str,
+    },
+    /// The team of a holder ([`ScoreReply::Team`]).
+    TeamOf {
+        /// The holder.
+        holder: &'a str,
+    },
+}
+
+/// The answer of a [`ScoreboardOp`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScoreReply {
+    /// Changed.
+    Done,
+    /// A score.
+    Score(i32),
+    /// A team name.
+    Team(String),
+}
+
+/// A change of a boss bar; keys are full resource locations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BossBarOp<'a> {
+    /// Creates a boss bar.
+    Create {
+        /// Its key.
+        key: &'a str,
+        /// Its name.
+        name: Text<'a>,
+    },
+    /// Removes a boss bar.
+    Remove {
+        /// Its key.
+        key: &'a str,
+    },
+    /// Changes a property ([`vanillite_abi::bossbar_prop`]).
+    Set {
+        /// Its key.
+        key: &'a str,
+        /// The property.
+        prop: u32,
+        /// The value.
+        value: i64,
+    },
+    /// Renames it.
+    SetName {
+        /// Its key.
+        key: &'a str,
+        /// The name.
+        name: Text<'a>,
+    },
+    /// Shows or hides it for a player.
+    Player {
+        /// Its key.
+        key: &'a str,
+        /// The player.
+        player: u128,
+        /// Show or hide.
+        show: bool,
+    },
+}
+
+/// A query or change of an access list ([`vanillite_abi::access_list`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccessOp<'a> {
+    /// The list.
+    pub list: u32,
+    /// The player.
+    pub player: u128,
+    /// The player's name, or the IP address for `IP_BAN`.
+    pub name: &'a str,
+    /// `None` to query; `Some((add, reason))` to change.
+    pub change: Option<(bool, &'a str)>,
+}
+
+/// Where an entity is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Location {
+    /// The world.
+    pub world: u32,
+    /// The position.
+    pub pos: [f64; 3],
+    /// Yaw in degrees.
+    pub yaw: f32,
+    /// Pitch in degrees.
+    pub pitch: f32,
+}
+
 /// Server-wide services for plugins, callable from any thread.
 pub trait ServerAccess: Send + Sync {
     /// UUIDs of the online players.
@@ -96,6 +328,73 @@ pub trait ServerAccess: Send + Sync {
     /// Shows a title to a player; `false` when offline.
     fn send_title(&self, _player: u128, _title: &Title<'_>) -> bool {
         false
+    }
+    /// Plays a sound to a player; `false` when offline or the sound is no resource location.
+    fn play_sound(&self, _player: u128, _sound: &Sound<'_>) -> bool {
+        false
+    }
+    /// Stops sounds (`None`: any) of a category (`None`: all) for a player; `false` when
+    /// offline.
+    fn stop_sound(&self, _player: u128, _sound: Option<&str>, _source: Option<u32>) -> bool {
+        false
+    }
+    /// Shows particles to a player: [`vanillite_abi::status::INVALID_ARGUMENT`] for an
+    /// unknown particle or bad options, [`vanillite_abi::status::NOT_FOUND`] when offline.
+    fn spawn_particle(&self, _player: u128, _particles: &Particles<'_>) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Sends a player to another server; `false` when offline.
+    fn transfer(&self, _player: u128, _host: &str, _port: u16) -> bool {
+        false
+    }
+    /// Sends a plugin message to a player; `false` when offline.
+    fn send_plugin_message(&self, _player: u128, _channel: &str, _data: &[u8]) -> bool {
+        false
+    }
+    /// What the server knows about an online player.
+    fn player_info(&self, _player: u128) -> Option<PlayerInfo> {
+        None
+    }
+    /// Changes or reads the Vanilla scoreboard; changes reach the players with the next
+    /// scoreboard flush.
+    fn scoreboard(&self, _op: ScoreboardOp<'_>) -> Result<ScoreReply, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Changes a custom boss bar.
+    fn boss_bar(&self, _op: BossBarOp<'_>) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Tick statistics.
+    fn stats(&self) -> Option<ServerStats> {
+        None
+    }
+    /// Replaces the message of the day of the server list.
+    fn set_motd(&self, _motd: Text<'_>) -> bool {
+        false
+    }
+    /// Reads or changes an access list; returns whether the player is (or was changed) on it.
+    fn access(&self, _op: AccessOp<'_>) -> Result<bool, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// The time of day of a world.
+    fn world_time(&self, _world: u32) -> Option<i64> {
+        None
+    }
+    /// Sets the time of day of a world.
+    fn set_world_time(&self, _world: u32, _time: i64) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Sets the weather ([`vanillite_abi::weather`]) for a duration (-1: random).
+    fn set_weather(&self, _world: u32, _weather: u32, _duration: i32) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// A game rule's value by name.
+    fn game_rule(&self, _name: &str) -> Option<String> {
+        None
+    }
+    /// Sets a game rule.
+    fn set_game_rule(&self, _name: &str, _value: &str) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
     }
 }
 
@@ -148,6 +447,138 @@ pub trait WorldAccess {
     /// dropped by the server when left empty); [`vanillite_abi::status::NOT_FOUND`] when the
     /// entity is not here.
     fn entity_data_mut(&mut self, _entity: u128) -> Result<&mut vanillite_nbt::Compound, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// A property ([`vanillite_abi::player_prop`]) of a player of this world.
+    fn player_get(&self, _player: u128, _prop: u32) -> Result<f64, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Changes a property of a player of this world.
+    fn player_set(&mut self, _player: u128, _prop: u32, _value: f64) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Where an entity (or player) of this world is.
+    fn entity_location(&self, _entity: u128) -> Result<Location, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The type of an entity of this world, e.g. `minecraft:zombie`.
+    fn entity_type(&self, _entity: u128) -> Result<String, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Teleports an entity of this world (players also to another world).
+    fn teleport(&mut self, _entity: u128, _to: Location) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Sets an entity's motion.
+    fn set_velocity(&mut self, _entity: u128, _velocity: [f64; 3]) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Spawns an entity as `/summon` does; returns its UUID.
+    fn spawn_entity(
+        &mut self,
+        _kind: &str,
+        _pos: [f64; 3],
+        _nbt: &vanillite_nbt::Compound,
+    ) -> Result<u128, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Removes an entity (not a player).
+    fn remove_entity(&mut self, _entity: u128) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The entities within `radius` of `center`, nearest first, optionally of one type.
+    fn entities_near(&self, _center: [f64; 3], _radius: f64, _kind: Option<&str>) -> Vec<u128> {
+        Vec::new()
+    }
+
+    /// An entity's data as `/data get entity` shows it.
+    fn entity_nbt(&self, _entity: u128) -> Result<vanillite_nbt::Compound, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Merges data into an entity as `/data merge entity` (not players).
+    fn merge_entity_nbt(
+        &mut self,
+        _entity: u128,
+        _nbt: &vanillite_nbt::Compound,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Gives a living entity an effect ([`vanillite_abi::effect_flag`] flags).
+    fn add_effect(
+        &mut self,
+        _entity: u128,
+        _effect: &str,
+        _duration: i32,
+        _amplifier: i32,
+        _flags: u32,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Removes an effect (`None`: all) from a living entity.
+    fn remove_effect(&mut self, _entity: u128, _effect: Option<&str>) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Gives a player an item (its NBT form, `{id, count, components}`) as `/give` does.
+    fn give_item(&mut self, _player: u128, _item: &vanillite_nbt::Compound) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The item in a slot (named as `/item` does) of an entity, in its NBT form; empty for
+    /// an empty slot.
+    fn item(&self, _entity: u128, _slot: &str) -> Result<vanillite_nbt::Compound, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Puts an item (its NBT form; empty for none) into a slot of an entity.
+    fn set_item(
+        &mut self,
+        _entity: u128,
+        _slot: &str,
+        _item: &vanillite_nbt::Compound,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The block entity at a position as `/data get block` shows it.
+    fn block_entity_nbt(&self, _pos: [i32; 3]) -> Result<vanillite_nbt::Compound, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Merges data into a block entity as `/data merge block`.
+    fn merge_block_entity_nbt(
+        &mut self,
+        _pos: [i32; 3],
+        _nbt: &vanillite_nbt::Compound,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Grants or revokes a player's advancement criterion (`None`: all criteria).
+    fn set_advancement(
+        &mut self,
+        _player: u128,
+        _advancement: &str,
+        _criterion: Option<&str>,
+        _grant: bool,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Whether a player has completed an advancement.
+    fn advancement_done(&self, _player: u128, _advancement: &str) -> Result<bool, Status> {
         Err(vanillite_abi::status::UNSUPPORTED)
     }
 }
@@ -294,12 +725,23 @@ impl Plugin {
 }
 
 /// An event subscription.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Subscriber {
     pub(crate) plugin: u32,
     pub(crate) priority: i32,
+    /// [`abi::subscribe_flag`] bits.
+    pub(crate) flags: u32,
     pub(crate) callback: abi::EventFn,
     pub(crate) user: SendPtr,
+}
+
+/// A service a plugin offers to others.
+#[derive(Debug)]
+pub(crate) struct Service {
+    pub(crate) plugin: u32,
+    pub(crate) name: String,
+    pub(crate) version: u32,
+    pub(crate) table: SendPtr,
 }
 
 /// The permission provider.
@@ -322,6 +764,12 @@ pub(crate) struct Inner {
     pub(crate) events: events::Events,
     pub(crate) commands: commands::Commands,
     pub(crate) permission: RwLock<Option<PermissionProvider>>,
+    /// Registered permission nodes with their [`abi::permission_default`].
+    pub(crate) permission_defaults: RwLock<HashMap<String, u32>>,
+    /// Services by registration order.
+    pub(crate) services: RwLock<Vec<Service>>,
+    /// Plugin message channels: (plugin, channel).
+    pub(crate) channels: RwLock<Vec<(u32, String)>>,
     pub(crate) generator: Mutex<Option<(u32, abi::ChunkGeneratorProvider)>>,
     pub(crate) tasks: scheduler::Tasks,
     pub(crate) server: OnceLock<Arc<dyn ServerAccess>>,
@@ -417,6 +865,9 @@ impl PluginHost {
             events: events::Events::default(),
             commands: commands::Commands::default(),
             permission: RwLock::new(None),
+            permission_defaults: RwLock::new(HashMap::new()),
+            services: RwLock::new(Vec::new()),
+            channels: RwLock::new(Vec::new()),
             generator: Mutex::new(None),
             tasks: scheduler::Tasks::default(),
             server: OnceLock::new(),
@@ -711,6 +1162,16 @@ impl PluginHost {
             *slot = Arc::clone(&new);
         }
         self.inner.events.remove_plugin(&self.inner, old.local);
+        self.inner
+            .services
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|s| s.plugin != old.local);
+        self.inner
+            .channels
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(p, _)| *p != old.local);
         self.inner.commands.begin_reload(old.local);
         self.inner.reloading.store(old.local + 1, Ordering::Release);
         // SAFETY: the host table is static; `load` is the validated entry of the new build.
@@ -779,6 +1240,14 @@ impl Inner {
     pub(crate) fn forget(&self, local: u32) {
         self.events.remove_plugin(self, local);
         self.tasks.drop_plugin(self, local);
+        self.services
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|s| s.plugin != local);
+        self.channels
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(p, _)| *p != local);
         let mut permission = self
             .permission
             .write()

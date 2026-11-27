@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 4;
+pub const ABI_MINOR: u16 = 5;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -276,6 +276,16 @@ abi! {
             /// A player uses its item on a block or in the air ([`InteractEvent`]);
             /// cancellable: nothing happens and the client is corrected. Since ABI 1.4.
             PLAYER_INTERACT = 18,
+            /// A player sent a message on a channel a plugin registered
+            /// ([`PluginMessageEvent`]). Since ABI 1.5.
+            PLAYER_PLUGIN_MESSAGE = 19,
+            /// A player completed an advancement ([`AdvancementEvent`]). Since ABI 1.5.
+            PLAYER_ADVANCEMENT_DONE = 20,
+        }
+        /// Flags of `subscribe_flags`. Since ABI 1.5.
+        pub mod subscribe_flag: u32 {
+            /// The handler is skipped while the event is cancelled (Bukkit's `ignoreCancelled`).
+            IGNORE_CANCELLED = 1,
         }
         /// Event priorities: handlers run from the lowest to the highest value, then monitors.
         pub mod priority: i32 {
@@ -336,6 +346,36 @@ abi! {
             PLAYERS = 9,
             /// A block position, relative coordinates resolved ([`CommandArg::pos`]).
             BLOCK_POS = 10,
+            /// One entity: a selector or a UUID ([`CommandArg::players`], one entry). Since
+            /// ABI 1.5.
+            ENTITY = 11,
+            /// Entities: a selector or a UUID ([`CommandArg::players`]). Since ABI 1.5.
+            ENTITIES = 12,
+            /// A position, relative and local coordinates resolved ([`CommandArg::vec`]).
+            /// Since ABI 1.5.
+            VEC3 = 13,
+            /// A rotation, relative values resolved ([`CommandArg::vec`]: `x` yaw, `y`
+            /// pitch). Since ABI 1.5.
+            ROTATION = 14,
+            /// A resource location, e.g. `minecraft:stone` ([`CommandArg::text`], with its
+            /// namespace). Since ABI 1.5.
+            IDENTIFIER = 15,
+            /// A block state with optional NBT, as typed ([`CommandArg::text`]). Since ABI 1.5.
+            BLOCK_STATE = 16,
+            /// An item with optional components, as typed ([`CommandArg::text`]), e.g.
+            /// `diamond_sword[damage=5]`. Since ABI 1.5.
+            ITEM_STACK = 17,
+            /// A text component in SNBT or JSON, as typed ([`CommandArg::text`]). Since
+            /// ABI 1.5.
+            COMPONENT = 18,
+            /// An SNBT compound, as typed ([`CommandArg::text`]). Since ABI 1.5.
+            NBT_COMPOUND = 19,
+            /// A game mode ([`CommandArg::int`], one of [`game_mode`]). Since ABI 1.5.
+            GAME_MODE = 20,
+            /// A duration like `5s` or `2d`, in ticks ([`CommandArg::int`]). Since ABI 1.5.
+            TIME = 21,
+            /// A UUID in its text form ([`CommandArg::text`]). Since ABI 1.5.
+            UUID = 22,
         }
         /// Command senders ([`Sender::kind`]).
         pub mod sender: u32 {
@@ -343,6 +383,11 @@ abi! {
             CONSOLE = 0,
             /// A player ([`Sender::player`]).
             PLAYER = 1,
+            /// A command block or command block minecart. Since ABI 1.5.
+            COMMAND_BLOCK = 2,
+            /// An entity that is no player, e.g. through `execute as` ([`Sender::player`] holds
+            /// its UUID). Since ABI 1.5.
+            ENTITY = 3,
         }
         /// Answers of a permission provider.
         pub mod permission: u32 {
@@ -364,6 +409,18 @@ abi! {
             NO_BLOCK = u32::MAX,
             /// The most blocks one `blocks_get` or `blocks_set` call covers. Since ABI 1.2.
             MAX_BOX_VOLUME = 1 << 24,
+            /// The first event kind `event_register` hands out. Since ABI 1.5.
+            FIRST_CUSTOM_EVENT = 192,
+            /// The last event kind `event_register` hands out. Since ABI 1.5.
+            LAST_CUSTOM_EVENT = 255,
+            /// The longest plugin message in bytes (Vanilla's limit of client payloads).
+            /// Since ABI 1.5.
+            MAX_PLUGIN_MESSAGE = 32767,
+            /// The most channels a plugin registers. Since ABI 1.5.
+            MAX_CHANNELS = 128,
+            /// The longest SNBT text the host parses (entity, item and block entity data).
+            /// Since ABI 1.5.
+            MAX_SNBT = 1 << 21,
         }
         /// Why a login was refused ([`LoginEvent::reason`]). Since ABI 1.4.
         pub mod login_reason: u32 {
@@ -435,6 +492,167 @@ abi! {
             MAX_KEYS = 256,
             /// The longest key in bytes.
             MAX_KEY = 256,
+        }
+        /// Sound categories ([`SoundSpec::source`], `player_stop_sound`), as `/playsound`'s
+        /// sources. Since ABI 1.5.
+        pub mod sound_source: u32 {
+            /// `master`.
+            MASTER = 0,
+            /// `music`.
+            MUSIC = 1,
+            /// `record`.
+            RECORD = 2,
+            /// `weather`.
+            WEATHER = 3,
+            /// `block`.
+            BLOCK = 4,
+            /// `hostile`.
+            HOSTILE = 5,
+            /// `neutral`.
+            NEUTRAL = 6,
+            /// `player`.
+            PLAYER = 7,
+            /// `ambient`.
+            AMBIENT = 8,
+            /// `voice`.
+            VOICE = 9,
+            /// `ui`.
+            UI = 10,
+            /// Every category (`player_stop_sound` only).
+            ANY = u32::MAX,
+        }
+        /// Properties of a player for `player_get` and `player_set`. Values are `f64`;
+        /// flags are 0 or 1. Since ABI 1.5.
+        pub mod player_prop: u32 {
+            /// Health (0 kills the player).
+            HEALTH = 1,
+            /// Maximum health (the `max_health` attribute; read only).
+            MAX_HEALTH = 2,
+            /// Food level, 0 to 20.
+            FOOD = 3,
+            /// Saturation, 0 to the food level.
+            SATURATION = 4,
+            /// Exhaustion, 0 to 40.
+            EXHAUSTION = 5,
+            /// Experience level.
+            XP_LEVEL = 6,
+            /// Progress to the next level, 0 to 1.
+            XP_PROGRESS = 7,
+            /// Total experience points (read only).
+            XP_TOTAL = 8,
+            /// Game mode, one of [`game_mode`] (set: as `/gamemode`, with the change event).
+            GAME_MODE = 9,
+            /// Flying now.
+            FLYING = 10,
+            /// May fly.
+            MAY_FLY = 11,
+            /// Flying speed (Vanilla's default 0.05).
+            FLY_SPEED = 12,
+            /// Walking speed (Vanilla's default 0.1).
+            WALK_SPEED = 13,
+            /// The selected hotbar slot, 0 to 8.
+            SELECTED_SLOT = 14,
+            /// Air supply in ticks.
+            AIR = 15,
+            /// Ticks it still burns.
+            FIRE_TICKS = 16,
+        }
+        /// Flags of `entity_effect_add`. Since ABI 1.5.
+        pub mod effect_flag: u32 {
+            /// Ambient (as from a beacon).
+            AMBIENT = 1,
+            /// Without particles.
+            HIDE_PARTICLES = 2,
+            /// Without the icon in the inventory and HUD.
+            HIDE_ICON = 4,
+        }
+        /// Scoreboard display slots (`objective_display`), Vanilla's `DisplaySlot` ids; the
+        /// team sidebars follow as `SIDEBAR_TEAM_BLACK + colour index`. Since ABI 1.5.
+        pub mod display_slot: u32 {
+            /// The player list.
+            LIST = 0,
+            /// The sidebar.
+            SIDEBAR = 1,
+            /// Below the name.
+            BELOW_NAME = 2,
+            /// The sidebar of members of black teams (+ colour index up to 15, white).
+            SIDEBAR_TEAM_BLACK = 3,
+        }
+        /// Properties of a boss bar for `bossbar_set`. Since ABI 1.5.
+        pub mod bossbar_prop: u32 {
+            /// The value, 0 to the maximum.
+            VALUE = 0,
+            /// The maximum, at least 1.
+            MAX = 1,
+            /// The colour, one of [`bossbar_color`].
+            COLOR = 2,
+            /// The style, one of [`bossbar_style`].
+            STYLE = 3,
+            /// Visible (0 or 1).
+            VISIBLE = 4,
+        }
+        /// Boss bar colours. Since ABI 1.5.
+        pub mod bossbar_color: u32 {
+            /// Pink.
+            PINK = 0,
+            /// Blue.
+            BLUE = 1,
+            /// Red.
+            RED = 2,
+            /// Green.
+            GREEN = 3,
+            /// Yellow.
+            YELLOW = 4,
+            /// Purple.
+            PURPLE = 5,
+            /// White.
+            WHITE = 6,
+        }
+        /// Boss bar styles. Since ABI 1.5.
+        pub mod bossbar_style: u32 {
+            /// One bar.
+            PROGRESS = 0,
+            /// 6 notches.
+            NOTCHED_6 = 1,
+            /// 10 notches.
+            NOTCHED_10 = 2,
+            /// 12 notches.
+            NOTCHED_12 = 3,
+            /// 20 notches.
+            NOTCHED_20 = 4,
+        }
+        /// The server's access lists (`access_set`, `access_get`). Since ABI 1.5.
+        pub mod access_list: u32 {
+            /// Operators (`ops.json`, level 4 on add).
+            OPERATOR = 0,
+            /// The whitelist.
+            WHITELIST = 1,
+            /// Banned players.
+            BAN = 2,
+            /// Banned IP addresses (the address in `name`).
+            IP_BAN = 3,
+            /// Whether the whitelist is on (`add` switches it on, otherwise off).
+            WHITELIST_ON = 4,
+        }
+        /// Who has a registered permission node when no provider decides. Since ABI 1.5.
+        pub mod permission_default: u32 {
+            /// Nobody.
+            FALSE = 0,
+            /// Everyone.
+            TRUE = 1,
+            /// Operators (the default of unregistered nodes).
+            OP = 2,
+            /// Everyone but operators.
+            NOT_OP = 3,
+        }
+        /// Weather (`world_set_weather`). Since ABI 1.5.
+        pub mod weather: u32 {
+            /// Clear.
+            CLEAR = 0,
+            /// Rain.
+            RAIN = 1,
+            /// Thunder.
+            THUNDER = 2,
         }
         /// How `block_set_id` and `blocks_set` change blocks. Since ABI 1.2.
         pub mod set_mode: u32 {
@@ -561,6 +779,11 @@ abi! {
             pub name: Str,
             /// Its world.
             pub world: u32,
+            /// The join or leave message as a JSON text component (empty for none). Since
+            /// ABI 1.5.
+            pub message: Str,
+            /// Replaces the join or leave message; an empty text shows none. Since ABI 1.5.
+            pub message_out: *const TextOut,
         }
         /// [`event::PLAYER_CHAT`] and [`event::PLAYER_COMMAND`].
         pub struct PlayerTextEvent {
@@ -749,6 +972,119 @@ abi! {
             /// Ticks to fade out.
             pub fade_out: i32,
         }
+        /// [`event::PLAYER_PLUGIN_MESSAGE`]. Since ABI 1.5.
+        pub struct PluginMessageEvent {
+            /// Header (not cancellable).
+            pub header: EventHeader,
+            /// The player's world.
+            pub world: u32,
+            /// The player.
+            pub player: Uuid,
+            /// The channel, e.g. `myplugin:sync`.
+            pub channel: Str,
+            /// The payload.
+            pub data: Bytes,
+        }
+        /// [`event::PLAYER_ADVANCEMENT_DONE`]. Since ABI 1.5.
+        pub struct AdvancementEvent {
+            /// Header (not cancellable).
+            pub header: EventHeader,
+            /// The player's world.
+            pub world: u32,
+            /// The player.
+            pub player: Uuid,
+            /// The advancement, e.g. `minecraft:story/mine_stone`.
+            pub advancement: Str,
+        }
+        /// An event of a kind from `event_register`, fired by a plugin with `event_fire`.
+        /// Since ABI 1.5.
+        pub struct CustomEvent {
+            /// Header; cancellable.
+            pub header: EventHeader,
+            /// The name the kind was registered with.
+            pub name: Str,
+            /// The id of the plugin that fired it.
+            pub source: Str,
+            /// The payload, in a format the plugins agree on.
+            pub data: Bytes,
+        }
+        /// A sound for `player_play_sound`. Since ABI 1.5.
+        pub struct SoundSpec {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// The sound event, e.g. `minecraft:entity.experience_orb.pickup` (also sounds of
+            /// resource packs).
+            pub sound: Str,
+            /// One of [`sound_source`].
+            pub source: u32,
+            /// Where it plays.
+            pub pos: Vec3,
+            /// Volume (1 is normal; above 1 widens its range).
+            pub volume: f32,
+            /// Pitch, 0.5 to 2.
+            pub pitch: f32,
+            /// Seed of the sound's variant choice.
+            pub seed: i64,
+        }
+        /// Particles for `player_spawn_particle`. Since ABI 1.5.
+        pub struct ParticleSpec {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// The particle as `/particle` takes it: its id with options as SNBT, e.g.
+            /// `minecraft:dust{color:[1.0,0.0,0.0],scale:1.0}`.
+            pub particle: Str,
+            /// Where they appear.
+            pub pos: Vec3,
+            /// The spread on each axis (with `count` 0: the direction of motion).
+            pub delta: Vec3,
+            /// Speed.
+            pub speed: f32,
+            /// Count (0: one particle moving along `delta`).
+            pub count: i32,
+            /// Non-zero to show them up to 512 blocks away (`force`), else 32.
+            pub force: u32,
+        }
+        /// What `player_info` reports about an online player. Since ABI 1.5.
+        pub struct PlayerInfo {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// Its world.
+            pub world: u32,
+            /// Its game mode, one of [`game_mode`].
+            pub game_mode: u32,
+            /// Its operator level, 0 for none.
+            pub op_level: u32,
+            /// Its latency in milliseconds, as the player list shows it.
+            pub ping: i32,
+        }
+        /// What `server_stats` reports. Since ABI 1.5.
+        pub struct ServerStats {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// The server's tick count.
+            pub tick: u64,
+            /// Average milliseconds per tick over the last 100 ticks.
+            pub mspt: f64,
+            /// Ticks per second over the last 100 ticks (at most the tick rate).
+            pub tps: f64,
+            /// The tick rate (20 unless changed with `/tick rate`).
+            pub tick_rate: f64,
+            /// Online players.
+            pub online: u32,
+            /// The player limit.
+            pub max_players: u32,
+        }
+        /// A place in a world. Since ABI 1.5.
+        pub struct Location {
+            /// The world.
+            pub world: u32,
+            /// The position.
+            pub pos: Vec3,
+            /// Yaw in degrees.
+            pub yaw: f32,
+            /// Pitch in degrees.
+            pub pitch: f32,
+        }
         /// Where a task runs.
         pub struct Owner {
             /// One of [`owner`].
@@ -851,6 +1187,8 @@ abi! {
             pub players: *const Uuid,
             /// Number of players.
             pub player_count: usize,
+            /// Positions and rotations (`VEC3`, `ROTATION`). Since ABI 1.5.
+            pub vec: Vec3,
         }
         /// A command to run.
         pub struct CommandInvocation {
@@ -1063,6 +1401,203 @@ abi! {
             /// `sink`. Since ABI 1.4.
             pub entity_data_keys:
                 unsafe extern "C" fn(*mut Context, u32, Uuid, *const ByteSink) -> Status,
+            /// Subscribes to an event kind with a priority and flags from [`subscribe_flag`]
+            /// (`load` only). Since ABI 1.5.
+            pub subscribe_flags:
+                unsafe extern "C" fn(PluginId, u32, i32, u32, EventFn, *mut c_void) -> Status,
+            /// Removes the plugin's handlers of an event kind, at any time. Since ABI 1.5.
+            pub unsubscribe: unsafe extern "C" fn(PluginId, u32) -> Status,
+            /// The event kind of a plugin event name (e.g. `economy:balance_change`): the same
+            /// kind for the same name in every plugin, from [`limits::FIRST_CUSTOM_EVENT`] on.
+            /// Since ABI 1.5.
+            pub event_register: unsafe extern "C" fn(PluginId, Str, *mut u32) -> Status,
+            /// Fires a plugin event ([`CustomEvent`]) to the handlers of its kind on the calling
+            /// thread (not to the firing plugin's own: plugins are never re-entered); `ctx`
+            /// (may be null) is the caller's context, whose world the handlers may touch.
+            /// Writes whether a handler cancelled it. Since ABI 1.5.
+            pub event_fire:
+                unsafe extern "C" fn(PluginId, *mut Context, u32, Bytes, *mut u32) -> Status,
+            /// Offers a service to other plugins: a table of functions (any `repr(C)` record,
+            /// static or alive until unregistered) under a name and version; replaces the
+            /// plugin's earlier offer of that name. Since ABI 1.5.
+            pub service_register:
+                unsafe extern "C" fn(PluginId, Str, u32, *const c_void) -> Status,
+            /// Withdraws a service of the plugin. Since ABI 1.5.
+            pub service_unregister: unsafe extern "C" fn(PluginId, Str) -> Status,
+            /// The newest table offered under a name and its version; [`status::NOT_FOUND`]
+            /// when nobody offers it. Since ABI 1.5.
+            pub service_get:
+                unsafe extern "C" fn(PluginId, Str, *mut u32, *mut *const c_void) -> Status,
+            /// The enabled plugins, one `id version` per line, in load order. Since ABI 1.5.
+            pub plugin_list: unsafe extern "C" fn(PluginId, *const ByteSink) -> Status,
+            /// Sets a key of the loaded `config.toml` to a value in TOML (`5`, `"text"`,
+            /// `[1, 2]`); dotted keys create tables. Since ABI 1.5.
+            pub config_set: unsafe extern "C" fn(PluginId, Str, Str) -> Status,
+            /// Writes the loaded configuration to `config.toml`. Since ABI 1.5.
+            pub config_save: unsafe extern "C" fn(PluginId) -> Status,
+            /// A value of the configuration as TOML text (also lists and tables). Since
+            /// ABI 1.5.
+            pub config_toml: unsafe extern "C" fn(PluginId, Str, *mut StrBuf) -> Status,
+            /// Registers a permission node with who has it when no provider decides (from
+            /// [`permission_default`]); `node.*` patterns are not expanded. Since ABI 1.5.
+            pub permission_register: unsafe extern "C" fn(PluginId, Str, u32) -> Status,
+            /// What the server knows about an online player. Since ABI 1.5.
+            pub player_info: unsafe extern "C" fn(PluginId, Uuid, *mut PlayerInfo) -> Status,
+            /// An online player's IP address. Since ABI 1.5.
+            pub player_address: unsafe extern "C" fn(PluginId, Uuid, *mut StrBuf) -> Status,
+            /// Plays a sound to one player. Since ABI 1.5.
+            pub player_play_sound: unsafe extern "C" fn(PluginId, Uuid, *const SoundSpec) -> Status,
+            /// Stops a sound (empty: all) of a category ([`sound_source`], `ANY` for all) for
+            /// a player. Since ABI 1.5.
+            pub player_stop_sound: unsafe extern "C" fn(PluginId, Uuid, Str, u32) -> Status,
+            /// Shows particles to one player. Since ABI 1.5.
+            pub player_spawn_particle:
+                unsafe extern "C" fn(PluginId, Uuid, *const ParticleSpec) -> Status,
+            /// Sends a player to another server (host and port); the server must accept
+            /// transfers. Since ABI 1.5.
+            pub player_transfer: unsafe extern "C" fn(PluginId, Uuid, Str, u32) -> Status,
+            /// Registers a channel the plugin receives plugin messages on, e.g. `myplugin:sync`
+            /// (`load` only; at most [`limits::MAX_CHANNELS`]). Since ABI 1.5.
+            pub register_channel: unsafe extern "C" fn(PluginId, Str) -> Status,
+            /// Sends a plugin message (custom payload) to a player (at most 1 MiB). Since
+            /// ABI 1.5.
+            pub player_send_plugin_message:
+                unsafe extern "C" fn(PluginId, Uuid, Str, Bytes) -> Status,
+            /// Adds a scoreboard objective: name, criterion (e.g. `dummy`), display name.
+            /// [`status::INVALID_ARGUMENT`] when it exists. Since ABI 1.5.
+            pub objective_add: unsafe extern "C" fn(PluginId, Str, Str, Str, u32) -> Status,
+            /// Removes an objective. Since ABI 1.5.
+            pub objective_remove: unsafe extern "C" fn(PluginId, Str) -> Status,
+            /// Shows an objective in a display slot ([`display_slot`]); an empty name clears
+            /// the slot. Since ABI 1.5.
+            pub objective_display: unsafe extern "C" fn(PluginId, u32, Str) -> Status,
+            /// A score of a holder (a player name or an entity UUID) in an objective;
+            /// [`status::NOT_FOUND`] when it has none. Since ABI 1.5.
+            pub score_get: unsafe extern "C" fn(PluginId, Str, Str, *mut i32) -> Status,
+            /// Sets a score. Since ABI 1.5.
+            pub score_set: unsafe extern "C" fn(PluginId, Str, Str, i32) -> Status,
+            /// Resets a holder's score in an objective (empty: in all). Since ABI 1.5.
+            pub score_reset: unsafe extern "C" fn(PluginId, Str, Str) -> Status,
+            /// Adds a team. Since ABI 1.5.
+            pub team_add: unsafe extern "C" fn(PluginId, Str) -> Status,
+            /// Removes a team. Since ABI 1.5.
+            pub team_remove: unsafe extern "C" fn(PluginId, Str) -> Status,
+            /// Puts a holder into a team (leaving its old one). Since ABI 1.5.
+            pub team_join: unsafe extern "C" fn(PluginId, Str, Str) -> Status,
+            /// Takes a holder out of its team. Since ABI 1.5.
+            pub team_leave: unsafe extern "C" fn(PluginId, Str) -> Status,
+            /// Changes a team option as `/team modify` names it (`displayName`, `color`,
+            /// `prefix`, `suffix` take JSON text or a colour name; `friendlyFire`,
+            /// `seeFriendlyInvisibles` take `true`/`false`; `nametagVisibility`,
+            /// `deathMessageVisibility`, `collisionRule` their Vanilla values). Since ABI 1.5.
+            pub team_modify: unsafe extern "C" fn(PluginId, Str, Str, Str) -> Status,
+            /// The team of a holder; [`status::NOT_FOUND`] for none. Since ABI 1.5.
+            pub team_of: unsafe extern "C" fn(PluginId, Str, *mut StrBuf) -> Status,
+            /// Creates a boss bar (a Vanilla custom boss bar, saved with the world) with a
+            /// key (`namespace:path`; without a namespace the plugin's id) and a name.
+            /// Since ABI 1.5.
+            pub bossbar_create: unsafe extern "C" fn(PluginId, Str, Str, u32) -> Status,
+            /// Removes a boss bar. Since ABI 1.5.
+            pub bossbar_remove: unsafe extern "C" fn(PluginId, Str) -> Status,
+            /// Changes a boss bar property ([`bossbar_prop`]). Since ABI 1.5.
+            pub bossbar_set: unsafe extern "C" fn(PluginId, Str, u32, i64) -> Status,
+            /// Renames a boss bar. Since ABI 1.5.
+            pub bossbar_set_name: unsafe extern "C" fn(PluginId, Str, Str, u32) -> Status,
+            /// Shows (non-zero) or hides a boss bar for a player. Since ABI 1.5.
+            pub bossbar_player: unsafe extern "C" fn(PluginId, Str, Uuid, u32) -> Status,
+            /// Tick statistics and player counts. Since ABI 1.5.
+            pub server_stats: unsafe extern "C" fn(PluginId, *mut ServerStats) -> Status,
+            /// Replaces the server list's message of the day. Since ABI 1.5.
+            pub server_set_motd: unsafe extern "C" fn(PluginId, Str, u32) -> Status,
+            /// Adds to (non-zero) or removes from an access list ([`access_list`]): player
+            /// UUID and name (IP address for `IP_BAN`), reason for bans. Since ABI 1.5.
+            pub access_set: unsafe extern "C" fn(PluginId, u32, Uuid, Str, u32, Str) -> Status,
+            /// Whether a player (or address) is on an access list (0 or 1). Since ABI 1.5.
+            pub access_get: unsafe extern "C" fn(PluginId, u32, Uuid, Str, *mut u32) -> Status,
+            /// The time of day of a world in ticks (`/time query daytime` without the
+            /// modulo). Since ABI 1.5.
+            pub world_time: unsafe extern "C" fn(PluginId, u32, *mut i64) -> Status,
+            /// Sets the time of day (`/time set`). Since ABI 1.5.
+            pub world_set_time: unsafe extern "C" fn(PluginId, u32, i64) -> Status,
+            /// Sets the weather ([`weather`]) for a duration in ticks (-1: Vanilla's random
+            /// duration), as `/weather`. Since ABI 1.5.
+            pub world_set_weather: unsafe extern "C" fn(PluginId, u32, i32) -> Status,
+            /// A game rule's value as `/gamerule` shows it, by its name
+            /// (e.g. `keep_inventory`). Since ABI 1.5.
+            pub game_rule_get: unsafe extern "C" fn(PluginId, Str, *mut StrBuf) -> Status,
+            /// Sets a game rule (`true`, `false` or a number). Since ABI 1.5.
+            pub game_rule_set: unsafe extern "C" fn(PluginId, Str, Str) -> Status,
+            /// A property ([`player_prop`]) of a player of the owned world. Since ABI 1.5.
+            pub player_get: unsafe extern "C" fn(*mut Context, u32, Uuid, u32, *mut f64) -> Status,
+            /// Changes a property of a player of the owned world. Since ABI 1.5.
+            pub player_set: unsafe extern "C" fn(*mut Context, u32, Uuid, u32, f64) -> Status,
+            /// Where an entity (or player) of the owned world is. Since ABI 1.5.
+            pub entity_location:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, *mut Location) -> Status,
+            /// The type of an entity of the owned world, e.g. `minecraft:zombie`. Since
+            /// ABI 1.5.
+            pub entity_type: unsafe extern "C" fn(*mut Context, u32, Uuid, *mut StrBuf) -> Status,
+            /// Teleports an entity of the owned world; players may go to another world
+            /// (`Location::world`), other entities only within theirs. Since ABI 1.5.
+            pub entity_teleport:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, *const Location) -> Status,
+            /// Sets an entity's motion in blocks per tick. Since ABI 1.5.
+            pub entity_set_velocity: unsafe extern "C" fn(*mut Context, u32, Uuid, Vec3) -> Status,
+            /// Spawns an entity as `/summon` does (type, position, SNBT data or empty); writes
+            /// its UUID. Since ABI 1.5.
+            pub entity_spawn:
+                unsafe extern "C" fn(*mut Context, u32, Str, Vec3, Str, *mut Uuid) -> Status,
+            /// Removes an entity (not a player) of the owned world. Since ABI 1.5.
+            pub entity_remove: unsafe extern "C" fn(*mut Context, u32, Uuid) -> Status,
+            /// The entities of the owned world within a radius of a position, nearest first,
+            /// optionally of one type (empty: any): writes up to `cap` UUIDs and the total
+            /// count. Since ABI 1.5.
+            pub entities_near: unsafe extern "C" fn(
+                *mut Context,
+                u32,
+                Vec3,
+                f64,
+                Str,
+                *mut Uuid,
+                usize,
+                *mut usize,
+            ) -> Status,
+            /// An entity's data as `/data get entity` shows it, as SNBT to the sink. Since
+            /// ABI 1.5.
+            pub entity_nbt:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, *const ByteSink) -> Status,
+            /// Merges SNBT into an entity's data as `/data merge entity` (not players).
+            /// Since ABI 1.5.
+            pub entity_nbt_merge: unsafe extern "C" fn(*mut Context, u32, Uuid, Str) -> Status,
+            /// Gives a living entity an effect (e.g. `minecraft:speed`): duration in ticks
+            /// (-1: infinite), amplifier, flags from [`effect_flag`]. Since ABI 1.5.
+            pub entity_effect_add:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, Str, i32, i32, u32) -> Status,
+            /// Removes an effect (empty: all) from a living entity. Since ABI 1.5.
+            pub entity_effect_remove: unsafe extern "C" fn(*mut Context, u32, Uuid, Str) -> Status,
+            /// Gives a player an item as `/give` does (what does not fit drops): the item as
+            /// SNBT, e.g. `{id:"minecraft:diamond",count:3}`. Since ABI 1.5.
+            pub player_give: unsafe extern "C" fn(*mut Context, u32, Uuid, Str) -> Status,
+            /// The item in a slot of an entity, slots named as `/item` does
+            /// (`container.0`, `weapon.mainhand`, `armor.head`, `enderchest.3`, ...), as SNBT
+            /// to the sink (`{}` for an empty slot). Since ABI 1.5.
+            pub entity_item_get:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, Str, *const ByteSink) -> Status,
+            /// Puts an item (SNBT, `{}` for none) into a slot of an entity. Since ABI 1.5.
+            pub entity_item_set: unsafe extern "C" fn(*mut Context, u32, Uuid, Str, Str) -> Status,
+            /// The block entity at a position as `/data get block` shows it, as SNBT to the
+            /// sink; [`status::NOT_FOUND`] without one. Since ABI 1.5.
+            pub block_entity_nbt:
+                unsafe extern "C" fn(*mut Context, u32, BlockPos, *const ByteSink) -> Status,
+            /// Merges SNBT into a block entity as `/data merge block`. Since ABI 1.5.
+            pub block_entity_merge: unsafe extern "C" fn(*mut Context, u32, BlockPos, Str) -> Status,
+            /// Grants (non-zero) or revokes a player's advancement criterion (empty: all of the
+            /// advancement), as `/advancement only`. Since ABI 1.5.
+            pub advancement_set:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, Str, Str, u32) -> Status,
+            /// Whether a player has completed an advancement (0 or 1). Since ABI 1.5.
+            pub advancement_done:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, Str, *mut u32) -> Status,
         }
     }
 }

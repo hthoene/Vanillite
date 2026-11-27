@@ -10,8 +10,9 @@ use vanillite_config::{Config, RuleSet};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_game::hooks::GameHooks;
 use vanillite_plugin_host::{
-    BlockBox, InteractTarget, NewText, PluginHost, ServerAccess, SetMode, Settings, Text, Title,
-    WorldAccess,
+    AccessOp, BlockBox, BossBarOp, InteractTarget, Location, NewText, Particles, PlayerInfo,
+    PluginHost, ScoreReply, ScoreboardOp, ServerAccess, ServerStats, SetMode, Settings, Sound,
+    Text, Title, WorldAccess,
 };
 use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::text::Component;
@@ -21,6 +22,9 @@ use crate::global::Global;
 use crate::player_list::Uuid;
 use crate::server::DIMENSIONS;
 use crate::world::ServerWorld;
+
+mod server_api;
+mod world_api;
 
 /// Priority of plugin background jobs in the compute pool (after urgent world work).
 const BACKGROUND_PRIORITY: u32 = 1 << 20;
@@ -291,6 +295,251 @@ impl ServerAccess for Services {
         });
         true
     }
+
+    fn play_sound(&self, player: u128, sound: &Sound<'_>) -> bool {
+        let Ok(id) = vanillite_protocol::types::Identifier::new(sound.sound) else {
+            return false;
+        };
+        let Some((sink, _)) = self.connection(player) else {
+            return false;
+        };
+        // `(int)(x * 8.0)`: Java's saturating cast.
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let eighths = |v: f64| (v * 8.0) as i32;
+        let [x, y, z] = sound.pos;
+        sink.send(
+            &vanillite_protocol::packets::play::clientbound::SoundDirect {
+                sound: id,
+                fixed_range: None,
+                source: crate::commands::sound_source(u8::try_from(sound.source).unwrap_or(0)),
+                x: eighths(x),
+                y: eighths(y),
+                z: eighths(z),
+                volume: sound.volume,
+                pitch: sound.pitch,
+                seed: sound.seed,
+            },
+        );
+        true
+    }
+
+    fn stop_sound(&self, player: u128, sound: Option<&str>, source: Option<u32>) -> bool {
+        let sound = match sound.map(vanillite_protocol::types::Identifier::new) {
+            Some(Ok(id)) => Some(id),
+            Some(Err(_)) => return false,
+            None => None,
+        };
+        let Some((sink, _)) = self.connection(player) else {
+            return false;
+        };
+        sink.send(&vanillite_protocol::packets::play::clientbound::StopSound {
+            source: source
+                .and_then(|s| u8::try_from(s).ok())
+                .map(crate::commands::sound_source),
+            sound,
+        });
+        true
+    }
+
+    fn spawn_particle(&self, player: u128, particles: &Particles<'_>) -> Result<(), i32> {
+        use vanillite_abi::status;
+        let particle = crate::commands::particle(particles.particle, Some(&particles.options))
+            .map_err(|_| status::INVALID_ARGUMENT)?;
+        let (sink, _) = self.connection(player).ok_or(status::NOT_FOUND)?;
+        let [x, y, z] = particles.pos;
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let [dx, dy, dz] = particles.delta.map(|v| v as f32);
+        sink.send(
+            &vanillite_protocol::packets::play::clientbound::LevelParticles {
+                particle,
+                override_limiter: particles.force,
+                always_show: false,
+                x,
+                y,
+                z,
+                x_dist: dx,
+                y_dist: dy,
+                z_dist: dz,
+                x_max_speed: particles.speed,
+                y_max_speed: particles.speed,
+                z_max_speed: particles.speed,
+                count: particles.count,
+                randomization: 0,
+            },
+        );
+        Ok(())
+    }
+
+    fn transfer(&self, player: u128, host: &str, port: u16) -> bool {
+        let Some((sink, _)) = self.connection(player) else {
+            return false;
+        };
+        sink.send(&vanillite_protocol::packets::play::clientbound::Transfer {
+            host: host.to_owned(),
+            port: i32::from(port),
+        });
+        true
+    }
+
+    fn send_plugin_message(&self, player: u128, channel: &str, data: &[u8]) -> bool {
+        let Ok(channel) = vanillite_protocol::types::Identifier::new(channel) else {
+            return false;
+        };
+        let Some((sink, _)) = self.connection(player) else {
+            return false;
+        };
+        sink.send(
+            &vanillite_protocol::packets::play::clientbound::CustomPayload {
+                channel,
+                data: vanillite_protocol::types::RawBytes(data.to_vec()),
+            },
+        );
+        true
+    }
+
+    fn player_info(&self, player: u128) -> Option<PlayerInfo> {
+        let global = self.global.upgrade()?;
+        let entry = global
+            .players
+            .snapshot()
+            .into_iter()
+            .find(|p| p.uuid.0 == player)?;
+        Some(PlayerInfo {
+            world: u32::from(entry.world.0),
+            game_mode: plugin_game_mode(entry.info.game_mode),
+            op_level: global.access.op_level(player).map_or(0, u32::from),
+            ping: i32::try_from(entry.info.latency).unwrap_or(i32::MAX),
+            address: entry.ip,
+        })
+    }
+
+    fn scoreboard(&self, op: ScoreboardOp<'_>) -> Result<ScoreReply, i32> {
+        let global = self
+            .global
+            .upgrade()
+            .ok_or(vanillite_abi::status::WRONG_PHASE)?;
+        server_api::scoreboard(&global, op)
+    }
+
+    fn boss_bar(&self, op: BossBarOp<'_>) -> Result<(), i32> {
+        let global = self
+            .global
+            .upgrade()
+            .ok_or(vanillite_abi::status::WRONG_PHASE)?;
+        server_api::boss_bar(&global, op)
+    }
+
+    fn stats(&self) -> Option<ServerStats> {
+        let global = self.global.upgrade()?;
+        let (tick, nanos) = {
+            let times = global
+                .tick_times
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (times.ticks(), times.average_nanos())
+        };
+        let tick_rate = f64::from(global.tick_rate().tick_rate());
+        #[allow(clippy::cast_precision_loss)]
+        let mspt = nanos as f64 / 1e6;
+        let tps = if mspt > 0.0 {
+            (1000.0 / mspt).min(tick_rate)
+        } else {
+            tick_rate
+        };
+        Some(ServerStats {
+            tick,
+            mspt,
+            tps,
+            tick_rate,
+            online: u32::try_from(global.players.count()).unwrap_or(u32::MAX),
+            max_players: u32::try_from(global.players.max_players()).unwrap_or(u32::MAX),
+        })
+    }
+
+    fn set_motd(&self, motd: Text<'_>) -> bool {
+        let Some(global) = self.global.upgrade() else {
+            return false;
+        };
+        *global
+            .motd
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(component(motd));
+        true
+    }
+
+    fn access(&self, op: AccessOp<'_>) -> Result<bool, i32> {
+        let global = self
+            .global
+            .upgrade()
+            .ok_or(vanillite_abi::status::WRONG_PHASE)?;
+        server_api::access(&global, op)
+    }
+
+    fn world_time(&self, world: u32) -> Option<i64> {
+        server_api::world_time(&*self.global.upgrade()?, world)
+    }
+
+    fn set_world_time(&self, world: u32, time: i64) -> Result<(), i32> {
+        let global = self
+            .global
+            .upgrade()
+            .ok_or(vanillite_abi::status::WRONG_PHASE)?;
+        server_api::set_world_time(&global, world, time)
+    }
+
+    fn set_weather(&self, _world: u32, weather: u32, duration: i32) -> Result<(), i32> {
+        let global = self
+            .global
+            .upgrade()
+            .ok_or(vanillite_abi::status::WRONG_PHASE)?;
+        server_api::set_weather(&global, weather, duration)
+    }
+
+    fn game_rule(&self, name: &str) -> Option<String> {
+        server_api::game_rule(&*self.global.upgrade()?, name)
+    }
+
+    fn set_game_rule(&self, name: &str, value: &str) -> Result<(), i32> {
+        let global = self
+            .global
+            .upgrade()
+            .ok_or(vanillite_abi::status::WRONG_PHASE)?;
+        server_api::set_game_rule(&global, name, value)
+    }
+}
+
+impl Services {
+    /// The connection of an online player.
+    fn connection(&self, player: u128) -> Option<crate::player_list::Receiver> {
+        self.global.upgrade()?.players.connection(Uuid(player))
+    }
+}
+
+/// A join or leave message after the plugins: `fire` gets it as JSON and returns a plugin's
+/// replacement; an empty replacement shows none.
+pub(crate) fn player_message(
+    global: &Global,
+    message: Component,
+    fire: impl FnOnce(&str) -> Option<NewText>,
+) -> Option<Component> {
+    let wanted = global.plugins.wants(vanillite_abi::event::PLAYER_JOIN)
+        || global.plugins.wants(vanillite_abi::event::PLAYER_LEAVE);
+    if !wanted {
+        return Some(message);
+    }
+    match fire(&message.to_json_string()) {
+        None => Some(message),
+        Some(text) if is_empty(&text) => None,
+        Some(text) => Some(new_component(&text)),
+    }
+}
+
+/// Whether a plugin's replacement text is empty (shows nothing).
+fn is_empty(text: &NewText) -> bool {
+    match text {
+        NewText::Plain(s) => s.is_empty(),
+        NewText::Json(s) => matches!(s.trim(), "" | "\"\""),
+    }
 }
 
 /// A plugin's replacement text as a component.
@@ -364,8 +613,8 @@ pub(crate) fn login(
     }
 }
 
-/// A world lent to a plugin call by its owner.
-pub(crate) struct PluginWorld<'a>(pub(crate) &'a mut ServerWorld);
+/// A world lent to a plugin call by its owner, with the server's shared state.
+pub(crate) struct PluginWorld<'a>(pub(crate) &'a mut ServerWorld, pub(crate) &'a Global);
 
 impl WorldAccess for PluginWorld<'_> {
     fn id(&self) -> u32 {
@@ -461,6 +710,113 @@ impl WorldAccess for PluginWorld<'_> {
             }
         }
         Ok(changed)
+    }
+
+    fn player_get(&self, player: u128, prop: u32) -> Result<f64, i32> {
+        world_api::player_get(self, player, prop)
+    }
+
+    fn player_set(&mut self, player: u128, prop: u32, value: f64) -> Result<(), i32> {
+        world_api::player_set(self, player, prop, value)
+    }
+
+    fn entity_location(&self, entity: u128) -> Result<Location, i32> {
+        world_api::entity_location(self, entity)
+    }
+
+    fn entity_type(&self, entity: u128) -> Result<String, i32> {
+        world_api::entity_type(self, entity)
+    }
+
+    fn teleport(&mut self, entity: u128, to: Location) -> Result<(), i32> {
+        world_api::teleport(self, entity, to)
+    }
+
+    fn set_velocity(&mut self, entity: u128, velocity: [f64; 3]) -> Result<(), i32> {
+        world_api::set_velocity(self, entity, velocity)
+    }
+
+    fn spawn_entity(
+        &mut self,
+        kind: &str,
+        pos: [f64; 3],
+        nbt: &vanillite_nbt::Compound,
+    ) -> Result<u128, i32> {
+        world_api::spawn_entity(self, kind, pos, nbt)
+    }
+
+    fn remove_entity(&mut self, entity: u128) -> Result<(), i32> {
+        world_api::remove_entity(self, entity)
+    }
+
+    fn entities_near(&self, center: [f64; 3], radius: f64, kind: Option<&str>) -> Vec<u128> {
+        world_api::entities_near(self, center, radius, kind)
+    }
+
+    fn entity_nbt(&self, entity: u128) -> Result<vanillite_nbt::Compound, i32> {
+        world_api::entity_nbt(self, entity)
+    }
+
+    fn merge_entity_nbt(&mut self, entity: u128, nbt: &vanillite_nbt::Compound) -> Result<(), i32> {
+        world_api::merge_entity_nbt(self, entity, nbt)
+    }
+
+    fn add_effect(
+        &mut self,
+        entity: u128,
+        effect: &str,
+        duration: i32,
+        amplifier: i32,
+        flags: u32,
+    ) -> Result<(), i32> {
+        world_api::add_effect(self, entity, effect, duration, amplifier, flags)
+    }
+
+    fn remove_effect(&mut self, entity: u128, effect: Option<&str>) -> Result<(), i32> {
+        world_api::remove_effect(self, entity, effect)
+    }
+
+    fn give_item(&mut self, player: u128, item: &vanillite_nbt::Compound) -> Result<(), i32> {
+        world_api::give_item(self, player, item)
+    }
+
+    fn item(&self, entity: u128, slot: &str) -> Result<vanillite_nbt::Compound, i32> {
+        world_api::item(self, entity, slot)
+    }
+
+    fn set_item(
+        &mut self,
+        entity: u128,
+        slot: &str,
+        item: &vanillite_nbt::Compound,
+    ) -> Result<(), i32> {
+        world_api::set_item(self, entity, slot, item)
+    }
+
+    fn block_entity_nbt(&self, pos: [i32; 3]) -> Result<vanillite_nbt::Compound, i32> {
+        world_api::block_entity_nbt(self, pos)
+    }
+
+    fn merge_block_entity_nbt(
+        &mut self,
+        pos: [i32; 3],
+        nbt: &vanillite_nbt::Compound,
+    ) -> Result<(), i32> {
+        world_api::merge_block_entity_nbt(self, pos, nbt)
+    }
+
+    fn set_advancement(
+        &mut self,
+        player: u128,
+        advancement: &str,
+        criterion: Option<&str>,
+        grant: bool,
+    ) -> Result<(), i32> {
+        world_api::set_advancement(self, player, advancement, criterion, grant)
+    }
+
+    fn advancement_done(&self, player: u128, advancement: &str) -> Result<bool, i32> {
+        world_api::advancement_done(self, player, advancement)
     }
 }
 
@@ -599,11 +955,7 @@ impl GameHooks for Hooks<'_> {
         };
         death.keep_inventory = outcome.keep_inventory;
         if let Some(text) = outcome.message {
-            let empty = match &text {
-                NewText::Plain(s) => s.is_empty(),
-                NewText::Json(s) => matches!(s.trim(), "" | "\"\""),
-            };
-            death.message = (!empty).then(|| new_component(&text));
+            death.message = (!is_empty(&text)).then(|| new_component(&text));
         }
     }
 

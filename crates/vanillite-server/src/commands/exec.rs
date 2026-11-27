@@ -191,7 +191,7 @@ pub(crate) fn game_mode(
 }
 
 /// `Level.isInSpawnableBounds`.
-fn in_spawnable_bounds(pos: Vec3) -> bool {
+pub(crate) fn in_spawnable_bounds(pos: Vec3) -> bool {
     let (x, y, z) = (pos.x.floor(), pos.y.floor(), pos.z.floor());
     (-30_000_000.0..30_000_000.0).contains(&x)
         && (-30_000_000.0..30_000_000.0).contains(&z)
@@ -824,7 +824,7 @@ pub(crate) fn deop(
 }
 
 /// `PlayerList.kickUnlistedPlayers` when `enforce-whitelist` is on.
-fn kick_unlisted(global: &Global) {
+pub(crate) fn kick_unlisted(global: &Global) {
     if !global.access.enforce_whitelist || !global.access.whitelist_enabled() {
         return;
     }

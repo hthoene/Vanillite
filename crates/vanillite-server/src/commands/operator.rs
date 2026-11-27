@@ -169,6 +169,11 @@ pub(crate) fn handle(
                 tag: Nbt(Some(Tag::Compound(nbt))),
             });
         }
+        AdminRequest::PluginMessage { channel, data } => {
+            global
+                .plugins
+                .plugin_message(u32::from(world.0), uuid, &channel, &data);
+        }
         AdminRequest::TeleportToEntity(to) => {
             if game_mode != GameMode::Spectator {
                 return;

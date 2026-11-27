@@ -47,7 +47,7 @@ fn advancements(set: &Advancements, index: u32, mode: AdvancementMode) -> Vec<u3
 /// `Action.perform`/`performCriterion` on one player of `level`: the advancements (or the one
 /// criterion) that changed, then the rewards of the completed ones. `show` is false for
 /// `grant everything`, which sends its changes without toasts.
-fn perform_on(
+pub(crate) fn perform_on(
     level: &mut Level,
     id: EntityId,
     action: Grant,

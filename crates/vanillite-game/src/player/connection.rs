@@ -179,6 +179,13 @@ pub enum AdminRequest {
     EntityTagQuery { transaction_id: i32, entity_id: i32 },
     /// `teleport_to_entity`: the spectator menu teleport to the entity with this UUID.
     TeleportToEntity(u128),
+    /// `custom_payload` on a channel outside the `minecraft` namespace, for plugins.
+    PluginMessage {
+        /// The channel.
+        channel: String,
+        /// The payload.
+        data: Vec<u8>,
+    },
 }
 
 /// A player's chat state.
@@ -786,6 +793,13 @@ impl Connection {
                     "multiplayer.disconnect.invalid_packet",
                     vec![],
                 ))));
+            }
+            // Payloads of other namespaces may be plugin messages; Vanilla ignores them.
+            ServerboundPlay::CustomPayload(p) if p.channel.namespace() != "minecraft" => {
+                self.admin(AdminRequest::PluginMessage {
+                    channel: p.channel.as_str().to_owned(),
+                    data: p.data.0,
+                });
             }
             // Keep-alives and ping requests are answered by the network task; cookies, custom
             // payloads, pongs and resource packs come later.

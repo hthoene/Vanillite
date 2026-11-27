@@ -396,6 +396,12 @@ impl NetState {
         }
     }
 
+    /// Replaces the message of the day of the server list (a plugin's).
+    pub(crate) fn set_motd(&mut self, motd: Component) {
+        self.status.description = motd;
+        self.network.status().update(&self.status);
+    }
+
     /// Updates the player count of the server list.
     pub(crate) fn set_online(&mut self, online: usize) {
         if online != self.online {

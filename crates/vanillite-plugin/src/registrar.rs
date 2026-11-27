@@ -8,8 +8,8 @@ use vanillite_abi::{self as abi, Status, status};
 use crate::Plugin;
 use crate::command::{self, Command};
 use crate::events::{
-    BlockChange, EntityDamage, EntityDeath, GameModeChange, Interact, Login, PlayerDeath,
-    PlayerJoin, PlayerText, PlayerWorld, PlayersMoved,
+    AdvancementDone, BlockChange, CustomEvent, EntityDamage, EntityDeath, GameModeChange, Interact,
+    Login, PlayerDeath, PlayerJoin, PlayerText, PlayerWorld, PlayersMoved, PluginMessage,
 };
 use crate::ffi::{Host, guard, str, with_plugin};
 use crate::generator::{self, ChunkGeneratorProvider};
@@ -30,10 +30,25 @@ pub enum Permission {
     Undefined,
 }
 
+/// Who has a registered permission node when no permission provider decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionDefault {
+    /// Nobody.
+    False,
+    /// Everyone.
+    True,
+    /// Operators (the default of unregistered nodes).
+    Op,
+    /// Everyone but operators.
+    NotOp,
+}
+
 /// Registers what a plugin provides. Only valid in [`Plugin::load`].
 pub struct Registrar<P> {
     host: Host,
     error: Option<Error>,
+    /// [`abi::subscribe_flag`] bits for the next subscription.
+    next_flags: u32,
     _plugin: PhantomData<fn(P)>,
 }
 
@@ -50,6 +65,7 @@ impl<P: Plugin> Registrar<P> {
         Registrar {
             host,
             error: None,
+            next_flags: 0,
             _plugin: PhantomData,
         }
     }
@@ -81,11 +97,115 @@ impl<P: Plugin> Registrar<P> {
 
     fn subscribe(&mut self, kind: u32, priority: i32, handler: Handler<P>) -> &mut Self {
         let user = Box::into_raw(Box::new(handler)).cast::<c_void>();
-        // SAFETY: valid host function; `user` stays alive for the life of the library.
-        let s =
-            unsafe { (self.host.api.subscribe)(self.host.id, kind, priority, on_event::<P>, user) };
+        let flags = std::mem::take(&mut self.next_flags);
+        // SAFETY: valid host functions; `user` stays alive for the life of the library.
+        let s = unsafe {
+            if flags == 0 {
+                (self.host.api.subscribe)(self.host.id, kind, priority, on_event::<P>, user)
+            } else {
+                (self.host.api.subscribe_flags)(
+                    self.host.id,
+                    kind,
+                    priority,
+                    flags,
+                    on_event::<P>,
+                    user,
+                )
+            }
+        };
         self.record(s);
         self
+    }
+
+    /// The next `on_*` handler is skipped while its event is cancelled (Bukkit's
+    /// `ignoreCancelled = true`), e.g. `registrar.ignore_cancelled().on_chat(...)`. Since
+    /// ABI 1.5.
+    pub fn ignore_cancelled(&mut self) -> &mut Self {
+        self.next_flags |= abi::subscribe_flag::IGNORE_CANCELLED;
+        self
+    }
+
+    /// Registers a permission node with who has it when no permission provider decides.
+    /// Since ABI 1.5.
+    pub fn permission(&mut self, node: &str, default: PermissionDefault) -> &mut Self {
+        let default = match default {
+            PermissionDefault::False => abi::permission_default::FALSE,
+            PermissionDefault::True => abi::permission_default::TRUE,
+            PermissionDefault::Op => abi::permission_default::OP,
+            PermissionDefault::NotOp => abi::permission_default::NOT_OP,
+        };
+        // SAFETY: valid host function and string.
+        let s = unsafe {
+            (self.host.api.permission_register)(self.host.id, abi::Str::new(node), default)
+        };
+        self.record(s);
+        self
+    }
+
+    /// Receives the plugin messages players send on `channel` (e.g. `myplugin:sync`). No
+    /// world access. Since ABI 1.5.
+    pub fn on_plugin_message(
+        &mut self,
+        channel: &str,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &PluginMessage<'_>) + Send + 'static,
+    ) -> &mut Self {
+        // SAFETY: valid host function and string.
+        let s = unsafe { (self.host.api.register_channel)(self.host.id, abi::Str::new(channel)) };
+        self.record(s);
+        let channel = channel.to_owned();
+        self.subscribe(
+            abi::event::PLAYER_PLUGIN_MESSAGE,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `PluginMessageEvent` for this kind.
+                let raw = unsafe { &*e.cast::<abi::PluginMessageEvent>() };
+                let message = PluginMessage { raw };
+                if message.channel() == channel {
+                    f(p, ctx, &message);
+                }
+            }),
+        )
+    }
+
+    /// A player completed an advancement. No world access. Since ABI 1.5.
+    pub fn on_advancement(
+        &mut self,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &AdvancementDone<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            abi::event::PLAYER_ADVANCEMENT_DONE,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes an `AdvancementEvent` for this kind.
+                let raw = unsafe { &*e.cast::<abi::AdvancementEvent>() };
+                f(p, ctx, &AdvancementDone { raw });
+            }),
+        )
+    }
+
+    /// A plugin event named `name` (any plugin may fire it with [`Server::fire_event`]); the
+    /// context is the firing plugin's. Since ABI 1.5.
+    pub fn on_plugin_event(
+        &mut self,
+        name: &str,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut CustomEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        let Some(kind) = self.server().event_kind(name) else {
+            self.record(status::UNSUPPORTED);
+            return self;
+        };
+        self.subscribe(
+            kind,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `CustomEvent` for plugin event kinds.
+                let raw = unsafe { &mut *e.cast::<abi::CustomEvent>() };
+                f(p, ctx, &mut CustomEvent { raw });
+            }),
+        )
     }
 
     /// A player joined (after the join message). The context owns the player's world.
