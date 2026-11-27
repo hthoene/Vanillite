@@ -239,9 +239,9 @@ pub fn no_collision_at(level: &Level, type_id: EntityTypeId, pos: Vec3) -> bool 
 }
 
 /// `SpawnPlacements.checkSpawnRules(type, level, SPAWNER or TRIAL_SPAWNER, pos, random)`:
-/// nothing that is not allowed in Peaceful spawns there (no random drawn); monsters need
-/// darkness (not for trial spawners), animals grass and light; the floor of monsters is not
-/// checked for spawners.
+/// nothing that is not allowed in Peaceful spawns there (no random drawn), then the type's own
+/// placement predicate (blazes, silverfish and slimes any light, magma cubes always, most
+/// monsters darkness except for trial spawners, animals grass and light).
 pub fn spawner_spawn_rules(level: &mut Level, kind: Kind, pos: BlockPos, trial: bool) -> bool {
     let name = kind.type_id().info().name;
     if level.spawner_env.difficulty == Difficulty::Peaceful
@@ -251,22 +251,18 @@ pub fn spawner_spawn_rules(level: &mut Level, kind: Kind, pos: BlockPos, trial: 
     }
     let env = level.spawner_env.env;
     let mut random = level.random().clone();
-    let ok = if kind.is_monster() {
-        trial || spawn::is_dark_enough_to_spawn(level, &env, pos, &mut random)
-    } else {
-        spawn::check_spawn_rules(
-            level,
-            &env,
-            kind,
-            pos,
-            &mut random,
-            if trial {
-                crate::mob::fam::SpawnReason::TrialSpawner
-            } else {
-                crate::mob::fam::SpawnReason::Spawner
-            },
-        )
-    };
+    let ok = spawn::check_spawn_rules(
+        level,
+        &env,
+        kind,
+        pos,
+        &mut random,
+        if trial {
+            crate::mob::fam::SpawnReason::TrialSpawner
+        } else {
+            crate::mob::fam::SpawnReason::Spawner
+        },
+    );
     *level.random() = random;
     ok
 }
@@ -616,6 +612,10 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
         } else {
             Vec::new()
         };
+        // `AbstractCubeMob.onSyncedDataUpdated(ID_SIZE)`: a cube whose spawn size changed
+        // turns to its head yaw (the loaded 0).
+        let cube_turned = matches!(mob.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube)
+            && crate::mob::fam::undead::cubes::size(&mob) != 1;
         let id = spawn::add_mob_with(
             level,
             mob,
@@ -638,6 +638,7 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
             let rot = e.as_ref().rot();
             e.set_rot(vanillite_world::entity::Rotation {
                 y_head_rot: 0.0,
+                y_rot: if cube_turned { 0.0 } else { rot.y_rot },
                 ..rot
             });
         }
