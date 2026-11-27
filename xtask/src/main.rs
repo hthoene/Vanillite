@@ -128,7 +128,6 @@ pub const USAGE: &str = "usage:
       ~/.cache/vanillite/parity-worlds/ (SHA-256 checked), upgraded or pasted by the pinned
       Vanilla server, then run like soak scenarios (blocks, ticks, entities and block entities
       per tick). Writes target/parity-worlds/summary.md and <world>.md. Runs nightly.
-||||||| base
   cargo xtask parity coverage [--jobs N] [--fuzz-minutes N] [--report-only] [<scenario>...]
       Which Vanilla code the parity scenarios exercise (#257): the recorder plays every
       Vanilla-recorded scenario (fast and bulk) on the pinned jar under the JaCoCo agent
@@ -307,7 +306,6 @@ fn main() -> ExitCode {
         ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
         ["parity", "worlds", rest @ ..] => parity_worlds::worlds(&repo_root(), rest),
-||||||| base
         ["parity", "coverage", rest @ ..] => coverage::run_coverage(&repo_root(), rest),
         ["worldgen", "sweep", rest @ ..] => worldgen::sweep(&repo_root(), rest),
         ["light", "sweep", rest @ ..] => worldgen::light_sweep(&repo_root(), rest),

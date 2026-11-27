@@ -113,6 +113,9 @@ pub fn run_coverage(root: &Path, args: &[&str]) -> Result<()> {
             cmd.current_dir(&work_dir)
                 .arg(jacoco_option(&agent, exec))
                 .arg(format!("-javaagent:{}", parity_agent.display()))
+                // A small scenario world needs little; the default (a quarter of the RAM per
+                // JVM) invites the OOM killer on a shared machine.
+                .arg("-Xmx4g")
                 .arg("-cp")
                 .arg(&classpath)
                 .arg("dev.vanillite.extractor.golden.ScenarioRecorder");
@@ -224,6 +227,9 @@ fn record_all(
 ) -> Result<Vec<String>> {
     let queue: Mutex<VecDeque<usize>> = Mutex::new((0..scenarios.len()).collect());
     let failed = Mutex::new(Vec::new());
+    // Scenarios that failed once: a recorder JVM can also die from outside (the OOM killer of
+    // a shared machine), so each gets a second try in a JVM of its own.
+    let retried = Mutex::new(std::collections::HashSet::new());
     let runs = std::sync::atomic::AtomicUsize::new(0);
     let trace = |i: usize| out.join("traces").join(format!("{i}.json"));
     std::thread::scope(|s| {
@@ -232,7 +238,10 @@ fn record_all(
                 loop {
                     let chunk: Vec<usize> = {
                         let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
-                        let n = q.len().min(CHUNK);
+                        let retry = q
+                            .front()
+                            .is_some_and(|i| retried.lock().is_ok_and(|r| r.contains(i)));
+                        let n = q.len().min(if retry { 1 } else { CHUNK });
                         q.drain(..n).collect()
                     };
                     if chunk.is_empty() {
@@ -257,13 +266,19 @@ fn record_all(
                     }
                     let ok = done(&chunk);
                     if ok < chunk.len() {
-                        let name = scenarios[chunk[ok]].display().to_string();
-                        println!("coverage: {name} failed (log: logs/run-{n:04}.log)");
-                        failed.lock().unwrap_or_else(|e| e.into_inner()).push(name);
-                        queue
+                        let first = retried
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .extend(&chunk[ok + 1..]);
+                            .insert(chunk[ok]);
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        q.extend(&chunk[ok + 1..]);
+                        let name = scenarios[chunk[ok]].display().to_string();
+                        if first {
+                            q.push_front(chunk[ok]);
+                        } else {
+                            println!("coverage: {name} failed (log: logs/run-{n:04}.log)");
+                            failed.lock().unwrap_or_else(|e| e.into_inner()).push(name);
+                        }
                     }
                 }
             });
