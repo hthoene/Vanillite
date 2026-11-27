@@ -1,0 +1,3 @@
+tick = 84
+cause = "a player touching several experience orbs takes the one Util.getRandom picks with the player's own random, which Vanillite does not keep (it draws from the shared entity random)"
+owner = "gameplay-developer #107"

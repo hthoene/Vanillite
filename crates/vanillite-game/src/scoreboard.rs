@@ -794,6 +794,11 @@ impl Scoreboard {
         true
     }
 
+    /// Whether any holder is in a team.
+    pub fn has_team_members(&self) -> bool {
+        !self.team_of.is_empty()
+    }
+
     /// The team of a holder (`getPlayersTeam`).
     pub fn team_of(&self, holder: &str) -> Option<&Team> {
         self.teams.get(self.team_of.get(holder)?)

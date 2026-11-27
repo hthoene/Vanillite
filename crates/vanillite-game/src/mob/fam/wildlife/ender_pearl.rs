@@ -29,8 +29,6 @@ use crate::survival::rules::{Difficulty, Rule};
 
 /// The item's cooldown group.
 pub const ITEM: &str = "minecraft:ender_pearl";
-/// `UseCooldown(1.0F)` of the ender pearl item, in ticks.
-const COOLDOWN: i32 = 20;
 /// `TicketType.ENDER_PEARL.timeout()`.
 pub const TICKET_TICKS: u64 = 40;
 /// `ServerPlayer.ENDER_PEARL_TICKET_RADIUS`.
@@ -55,7 +53,6 @@ pub fn throw(
         return false;
     }
     let creative = p.game_mode == GameMode::Creative;
-    let group = crate::player::cooldowns::group(stack);
     let known = p.connection.movement.known_movement;
     let Some(e) = ents.store.get(player) else {
         return false;
@@ -118,12 +115,7 @@ pub fn throw(
     if !creative {
         stack.shrink(1);
     }
-    if let Some(p) = ents.player_mut(player) {
-        let sink = std::sync::Arc::clone(&p.connection.sink);
-        p.survival
-            .cooldowns
-            .add_group(&group, COOLDOWN, sink.as_ref());
-    }
+    // The `use_cooldown` (1 s) follows in `ItemStack.use` ([`crate::player::item_use`]).
     true
 }
 

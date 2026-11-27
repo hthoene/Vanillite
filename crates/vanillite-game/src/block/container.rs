@@ -832,7 +832,9 @@ impl ContainerRef {
     /// `getItem(slot)` of a `RandomizableContainer` first rolls the loot table of the block
     /// entity holding the slot.
     pub fn unpack(self, level: &mut Level, slot: usize) {
-        if let Some((p, _)) = self.locate(level, slot) {
+        if let ContainerRef::Entity(id) = self {
+            super::chest_loot::unpack_entity(level, id, None);
+        } else if let Some((p, _)) = self.locate(level, slot) {
             super::chest_loot::unpack(level, p, None);
         }
     }
@@ -853,6 +855,7 @@ impl ContainerRef {
                 super::chest_loot::unpack(level, b, None);
                 ContainerRef::Block(b).is_empty(level)
             }
+            // `isChestVehicleEmpty` reads the stacks as they are.
             ContainerRef::Entity(_) | ContainerRef::Composter(..) => self.is_empty(level),
         }
     }

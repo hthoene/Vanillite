@@ -339,7 +339,8 @@ impl MobData {
             sheared: false,
             climbing: false,
             goal_path: None,
-            variant: 0,
+            // Chickens, cows and pigs start as the temperate variant (registry index 1).
+            variant: i32::from(matches!(kind, Kind::Chicken | Kind::Cow | Kind::Pig)),
             xp_reward: 0,
             effects: crate::effect::ActiveEffects::default(),
             absorption: 0.0,
@@ -794,6 +795,10 @@ pub enum WorldAction {
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// A chest minecart or chest boat that still had its loot table was destroyed.
+    DestroyLootVehicle(Box<crate::minecart::LootVehicleDrop>),
+    /// A spawner minecart ticks its spawner (`MinecartSpawner.tick`).
+    SpawnerMinecart(EntityId),
     /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
     OutputSignal(BlockPos),
     /// A command block minecart runs its command (`BaseCommandBlock.performCommand`).
@@ -872,6 +877,10 @@ impl WorldAction {
                 crate::block::projectile_hit::projectile_hit_block(level, pos, at, id, speed);
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::SpawnerMinecart(id) => crate::block::spawner::tick_minecart(level, id),
+            WorldAction::DestroyLootVehicle(ref drop) => {
+                crate::minecart::destroy_with_loot(level, (**drop).clone());
+            }
             WorldAction::OutputSignal(pos) => {
                 level.update_neighbour_for_output_signal(pos, vanillite_data::block::ids::AIR);
             }

@@ -1,0 +1,18 @@
+{
+  "description": "Fishing rods (#107): one player casts at a pig, hooks it and reels it in; another casts onto the grass and reels the bobber in (rod damage, the bobber removed).",
+  "rules": {"spawn_monsters": "false"},
+  "time": 6000,
+  "region": [[0, -61, 0], [23, -50, 15]],
+  "ticks": 60,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [2.5, -60.0, 4.5], "rot": [-90, 10]},
+    {"name": "alex", "type": "minecraft:player", "pos": [2.5, -60.0, 11.5], "rot": [-90, 20]},
+    {"name": "pig", "type": "minecraft:pig", "pos": [7.5, -60.0, 4.5], "seed": 7, "finalize": false}
+  ],
+  "actions": [
+    {"tick": 2, "op": "use_item", "entity": "steve", "item": "minecraft:fishing_rod"},
+    {"tick": 2, "op": "use_item", "entity": "alex", "item": "minecraft:fishing_rod"},
+    {"tick": 25, "op": "use_item", "entity": "steve"},
+    {"tick": 25, "op": "use_item", "entity": "alex"}
+  ]
+}

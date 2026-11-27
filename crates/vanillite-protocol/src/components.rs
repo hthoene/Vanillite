@@ -98,6 +98,7 @@ pub mod ids {
     pub const MAX_DAMAGE: u16 = find("minecraft:max_damage");
     pub const DAMAGE: u16 = find("minecraft:damage");
     pub const UNBREAKABLE: u16 = find("minecraft:unbreakable");
+    pub const DAMAGE_RESISTANT: u16 = find("minecraft:damage_resistant");
     pub const ENCHANTMENTS: u16 = find("minecraft:enchantments");
     pub const TOOL: u16 = find("minecraft:tool");
     pub const CAN_BREAK: u16 = find("minecraft:can_break");

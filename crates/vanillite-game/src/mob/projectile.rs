@@ -215,6 +215,9 @@ pub fn shoot_arrow(
             direct_attacker: Some(arrow),
             attacking_player: None,
             source: None,
+            raining: false,
+            thundering: false,
+            location: None,
         };
         #[allow(clippy::cast_possible_truncation)]
         let dmg = enchants.modify_damage(w, &cx, random, data.base_damage as f32);
@@ -835,4 +838,33 @@ fn aabb_clip_scale(b: &Aabb, from: Vec3, to: Vec3) -> Option<f64> {
         );
     }
     hit.then_some(scale)
+}
+
+/// `AbstractArrow.playerTouch` and `tryPickup` of arrows and tridents: a player takes a
+/// projectile in the ground (a returning trident too) once it no longer shakes. Returns whether
+/// it was taken; the caller sends `take` and removes it.
+pub fn try_pickup(
+    ents: &mut crate::entities::Entities,
+    projectile: EntityId,
+    player: &mut crate::player::PlayerData,
+    player_id: EntityId,
+) -> bool {
+    if ents.missile(projectile).is_some() {
+        return super::fam::undead::trident::try_pickup(ents, projectile, player, player_id);
+    }
+    let Some(a) = ents.arrow(projectile) else {
+        return false;
+    };
+    if !a.in_ground || a.shake > 0 {
+        return false;
+    }
+    let infinite = player.game_mode == vanillite_config::GameMode::Creative;
+    match a.pickup {
+        1 => {
+            let mut item = a.item.clone();
+            player.inventory.add(None, &mut item, infinite)
+        }
+        2 => infinite,
+        _ => false,
+    }
 }

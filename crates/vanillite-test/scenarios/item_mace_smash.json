@@ -1,0 +1,17 @@
+{
+  "description": "A player whose client reports a fall of 5.5 blocks smashes a pig with a mace (#107): the smash damage bonus from the fall distance, the knockback of the pig next to it, the player's motion and fall distance reset, and the smash sound and particles. A second hit without a fall is a plain mace attack.",
+  "rules": {"spawn_monsters": "false"},
+  "time": 6000,
+  "region": [[0, -61, 0], [15, -50, 15]],
+  "ticks": 100,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [6.5, -60.0, 5.5]},
+    {"name": "pig", "type": "minecraft:pig", "pos": [6.5, -60.0, 8.0], "seed": 3, "finalize": false},
+    {"name": "pig2", "type": "minecraft:pig", "pos": [8.5, -60.0, 8.5], "seed": 4, "finalize": false}
+  ],
+  "actions": [
+    {"tick": 60, "op": "use_item", "entity": "steve", "item": "minecraft:mace"},
+    {"tick": 62, "op": "attack_entity", "entity": "steve", "target": "pig", "fall_distance": 5.5},
+    {"tick": 90, "op": "attack_entity", "entity": "steve", "target": "pig2"}
+  ]
+}

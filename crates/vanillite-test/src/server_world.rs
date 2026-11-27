@@ -494,8 +494,14 @@ impl ScenarioWorld for ServerWorld {
     fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
         use vanillite_protocol::packets::play::serverbound::{Hand, UseItem};
         let id = self.player(&op.entity)?;
-        let item = vanillite_data::item::ItemId::by_name(&op.item)
-            .ok_or_else(|| format!("unknown item {}", op.item))?;
+        // Without `item` the hand stays as it is.
+        let item = match &op.item {
+            Some(name) => Some(
+                vanillite_data::item::ItemId::by_name(name)
+                    .ok_or_else(|| format!("unknown item {name}"))?,
+            ),
+            None => None,
+        };
         let level = self.server.world(self.selected_player).level_mut();
         let rot = level
             .entities
@@ -504,9 +510,11 @@ impl ScenarioWorld for ServerWorld {
             .map(|e| e.rot())
             .ok_or("the player is gone")?;
         let p = level.entities.player_mut(id).ok_or("the player is gone")?;
-        let slot = p.inventory.selected;
-        p.inventory
-            .set(slot, vanillite_game::item::ItemStack::new(item.0, op.count));
+        if let Some(item) = item {
+            let slot = p.inventory.selected;
+            p.inventory
+                .set(slot, vanillite_game::item::ItemStack::new(item.0, op.count));
+        }
         let tx = self
             .players
             .iter()

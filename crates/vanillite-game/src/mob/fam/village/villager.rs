@@ -983,6 +983,14 @@ fn struck_by_lightning(t: &mut Tick<'_, '_>) -> bool {
     if difficulty == Difficulty::Peaceful {
         return false;
     }
+    let uuid = t.core().uuid();
+    if !t
+        .env
+        .hooks
+        .entity_transform(uuid, "minecraft:villager", "minecraft:witch", "lightning")
+    {
+        return false;
+    }
     release_all_pois(t);
     let env = t.cx.env;
     let pos = t.block_pos();

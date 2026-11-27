@@ -352,8 +352,9 @@ impl Level {
                 #[allow(clippy::cast_possible_truncation)]
                 let amount = ((pow * pow + pow) / 2.0 * 7.0 * double_radius + 1.0) as f32;
                 let destroyed = self.entities.item_mut(id).is_some_and(|d| {
-                    // The nether star resists explosions (`damage_resistant`).
-                    if crate::item::item_id(&d.stack).name() == "minecraft:nether_star" {
+                    // `ItemStack.canBeHurtBy`: the nether star resists explosions
+                    // (`damage_resistant` with `#is_explosion`).
+                    if crate::item::damage_resistant(&d.stack) == Some("minecraft:is_explosion") {
                         return false;
                     }
                     #[allow(clippy::cast_possible_truncation)]

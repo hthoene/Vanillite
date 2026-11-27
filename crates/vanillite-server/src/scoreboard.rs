@@ -275,6 +275,16 @@ pub(crate) fn display_name(global: &Global, name: &str, uuid: u128) -> Component
     team_display_name(global.systems.scoreboard().team_of(name), name, uuid)
 }
 
+/// `Entity.getTeam` of an entity that is no player: the name of the team its UUID is in.
+pub fn entity_team(global: &Global, uuid: u128) -> Option<Box<str>> {
+    let board = global.systems.scoreboard();
+    if !board.has_team_members() {
+        return None;
+    }
+    let holder = vanillite_protocol::types::Uuid(uuid).to_string();
+    board.team_of(&holder).map(|t| t.name.as_str().into())
+}
+
 /// `ServerPlayer.doTick`'s `updateScoreForCriteria`: the changed built-in criteria (health,
 /// food, air, armour, experience, level) of this world's players.
 pub(crate) fn update_criteria(global: &Global, entities: &mut Entities) {

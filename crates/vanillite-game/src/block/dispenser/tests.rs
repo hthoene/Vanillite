@@ -63,7 +63,11 @@ fn items_on_ground(level: &Level) -> usize {
 
 #[test]
 fn registry_matches_bootstrap() {
-    assert_eq!(behaviour_of(&stack(items::ARROW, 1)), Behaviour::Entity);
+    assert_eq!(behaviour_of(&stack(items::ARROW, 1)), Behaviour::Projectile);
+    assert_eq!(
+        behaviour_of(&stack(items::FIRE_CHARGE, 1)),
+        Behaviour::Entity
+    );
     assert_eq!(behaviour_of(&stack(items::OAK_BOAT, 1)), Behaviour::Entity);
     assert_eq!(
         behaviour_of(&stack(items::HOPPER_MINECART, 1)),
@@ -95,9 +99,9 @@ fn registry_matches_bootstrap() {
 
 #[test]
 fn fallback_items_drop() {
-    let mut level = level_with(&[stack(items::ARROW, 2)]);
+    let mut level = level_with(&[stack(items::FIRE_CHARGE, 2)]);
     fire(&mut level);
-    assert_eq!(contents(&level), vec![stack(items::ARROW, 1)]);
+    assert_eq!(contents(&level), vec![stack(items::FIRE_CHARGE, 1)]);
     assert_eq!(items_on_ground(&level), 1);
     assert_eq!(events(&mut level), vec![1000, 2000]);
 }

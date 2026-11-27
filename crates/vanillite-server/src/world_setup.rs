@@ -621,6 +621,7 @@ pub(crate) fn level_settings(
         infiniburn,
         fast_lava: attribute("minecraft:gameplay/fast_lava"),
         water_evaporates: attribute("minecraft:gameplay/water_evaporates"),
+        snow_golem_melts: attribute("minecraft:gameplay/snow_golem_melts"),
         has_sky_light: info.has_sky_light,
         // `BaseFireBlock.inPortalDimension`.
         portal_dimension: matches!(
@@ -751,9 +752,7 @@ pub(crate) fn tree_features(
 /// The spawn settings of every biome from the data packs: `gameplay/natural_mob_spawns`,
 /// `gameplay/creature_world_gen_spawn_probability` and the farm animal climate tags. `None`
 /// without data packs.
-pub(crate) fn spawn_table(
-    packs: Option<&LoadedPacks>,
-) -> Option<vanillite_game::mob::spawn::SpawnTable> {
+pub fn spawn_table(packs: Option<&LoadedPacks>) -> Option<vanillite_game::mob::spawn::SpawnTable> {
     use vanillite_game::mob::kinds::FarmClimate;
     use vanillite_game::mob::spawn::{BiomeSpawns, Category, SpawnTable};
     let packs = packs?;
@@ -802,6 +801,8 @@ pub(crate) fn spawn_table(
             patrol_spawn: attribute(&attrs, "minecraft:gameplay/can_pillager_patrol_spawn")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
+            snow_golem_melts: attribute(&attrs, "minecraft:gameplay/snow_golem_melts")
+                .and_then(serde_json::Value::as_bool),
             climate: if warm.contains(&id) {
                 FarmClimate::Warm
             } else if cold.contains(&id) {

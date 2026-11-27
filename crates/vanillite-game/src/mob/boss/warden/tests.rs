@@ -69,6 +69,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
             border: None,
             enter_gateway: &mut no_gateway,
             display_name: &names,
+            entity_team: &|_| None,
             random: &mut random,
             out: &mut out,
         };

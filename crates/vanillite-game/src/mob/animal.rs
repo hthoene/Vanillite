@@ -708,7 +708,7 @@ fn own_interact(
                 .mob(target)
                 .is_some_and(|m| m.is_alive() && !m.sheared && !m.baby);
             if ready {
-                shear_sheep(ents, env, target);
+                shear_sheep(level, ents, env, _cx, target);
                 let event = crate::level::game_event::events().shear;
                 entity_game_event(ents, env, target, event, Some(player));
                 hurt_held(ents, env, player, hand, 1);
@@ -833,8 +833,15 @@ pub fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
     combat::mob_sound(ents, env, target, sound);
 }
 
-/// `Sheep.shear`: 1 to 3 wool of its colour pop out.
-fn shear_sheep(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
+/// `Sheep.shear`: the wool of the loot table `shearing/sheep` (1 to 3 of its colour) pops
+/// out, one item each, pushed by the sheep's random.
+fn shear_sheep(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+) {
     sound_at(
         ents,
         env,
@@ -846,36 +853,42 @@ fn shear_sheep(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
         return;
     };
-    let Some(m) = ents.mob_mut(target) else {
-        return;
-    };
-    m.sheared = true;
-    let color = usize::from(classic::sheep(m).color & 15);
-    let count = m.random.next_int_between_inclusive(1, 3);
-    let wool = kinds::SHEEP_WOOL[color];
-    let Some(item) = vanillite_data::registry::ITEM.id(wool) else {
-        return;
-    };
-    for _ in 0..count {
-        let Some(m) = ents.mob_mut(target) else {
-            return;
+    // `dropFromShearingLootTable` while the sheep still has its wool.
+    let drops = {
+        let mut t = super::Tick {
+            level,
+            ents: &mut *ents,
+            env: &mut *env,
+            cx,
+            id: target,
         };
-        let r = &mut m.random;
-        let extra = Vec3::new(
-            f64::from((r.next_float() - r.next_float()) * 0.1),
-            f64::from(r.next_float() * 0.05),
-            f64::from((r.next_float() - r.next_float()) * 0.1),
-        );
-        // `spawnAtLocation(stack, 1.0F)`: an item one block up with the default motion.
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
-        env.out.push(Effect::DropItem {
-            uuid,
-            pos: pos + Vec3::new(0.0, 1.0, 0.0),
-            velocity: velocity + extra,
-            y_rot,
-            pickup_delay: 10,
-            stack: ItemStack::new(item, 1),
-        });
+        super::fam::brainy::gift_loot(&mut t, "minecraft:shearing/sheep")
+    };
+    for drop in drops {
+        for _ in 0..drop.count {
+            let Some(m) = ents.mob_mut(target) else {
+                return;
+            };
+            // `spawnAtLocation(stack, 1.0F)`: an item one block up with the default motion.
+            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+            let r = &mut m.random;
+            let extra = Vec3::new(
+                f64::from((r.next_float() - r.next_float()) * 0.1),
+                f64::from(r.next_float() * 0.05),
+                f64::from((r.next_float() - r.next_float()) * 0.1),
+            );
+            env.out.push(Effect::DropItem {
+                uuid,
+                pos: pos + Vec3::new(0.0, 1.0, 0.0),
+                velocity: velocity + extra,
+                y_rot,
+                pickup_delay: 10,
+                stack: drop.with_count(1),
+            });
+        }
+    }
+    if let Some(m) = ents.mob_mut(target) {
+        m.sheared = true;
     }
     if let Some(mut e) = ents.store.get_mut(target) {
         e.mark_data_dirty();
@@ -1037,17 +1050,173 @@ fn spawn_offspring(
     use_item(ents, player, hand);
 }
 
-/// `ItemStack.interactLivingEntity` of items not handled by the mob: saddles on other
-/// mobs, leads are in `Entity.interact`.
+/// `ItemStack.interactLivingEntity` after the mob passed: the stack's `equippable` component
+/// with `equip_on_interact` (`Equippable.equipOnTarget`), then the item's own
+/// `interactLivingEntity` (dyes on sheep; name tags are in [`mob_interact`]). A consumed
+/// interaction posts `ENTITY_INTERACT` (`Player.interactOn`).
 fn item_interact(
-    _ents: &mut Entities,
-    _env: &mut Env<'_>,
-    _player: EntityId,
-    _target: EntityId,
-    _hand: Hand,
-    _stack: &ItemStack,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    target: EntityId,
+    hand: Hand,
+    stack: &ItemStack,
 ) -> Interaction {
-    Interaction::Pass
+    let mut r = equip_on_target(ents, env, player, target, hand, stack);
+    if r == Interaction::Pass {
+        r = dye_sheep(ents, env, player, target, hand, stack);
+    }
+    if r.consumes() {
+        let event = crate::level::game_event::events().entity_interact;
+        entity_game_event(ents, env, target, event, Some(player));
+    }
+    r
+}
+
+/// `LivingEntity.canUseSlot` of the kinds that restrict their saddle or body slot.
+fn can_use_slot(m: &MobData, slot: item::EquipmentSlot) -> bool {
+    use item::EquipmentSlot::{Body, Saddle};
+    let adult = m.is_alive() && !m.baby;
+    match (m.kind, slot) {
+        (Kind::Pig | Kind::Strider, Saddle) | (Kind::HappyGhast | Kind::SulfurCube, Body) => adult,
+        // `Camel.isTamed` is always true.
+        (Kind::Camel | Kind::CamelHusk, Saddle) => adult,
+        (Kind::Donkey | Kind::Mule, Saddle)
+        | (Kind::Nautilus | Kind::ZombieNautilus, Saddle | Body) => adult && m.tame,
+        _ => true,
+    }
+}
+
+/// `Equippable.equipOnTarget` for the items whose component has `equip_on_interact` (saddles,
+/// harnesses, nautilus armor): an alive mob of the component's allowed entities with that slot
+/// usable and empty takes one item, which it drops for sure when it dies.
+fn equip_on_target(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    target: EntityId,
+    hand: Hand,
+    stack: &ItemStack,
+) -> Interaction {
+    use crate::predicate::EntityTags;
+    let id = item::item_id(stack);
+    let name = id.name();
+    let allowed = if name == "minecraft:saddle" {
+        "minecraft:can_equip_saddle"
+    } else if name.ends_with("_harness") {
+        "minecraft:can_equip_harness"
+    } else if name.ends_with("_nautilus_armor") {
+        "minecraft:can_wear_nautilus_armor"
+    } else {
+        return Interaction::Pass;
+    };
+    let Some(slot) = item::EquipmentSlot::from_ordinal(id.info().equip_slot) else {
+        return Interaction::Pass;
+    };
+    let Some(m) = ents.mob(target) else {
+        return Interaction::Pass;
+    };
+    let kind = m.kind;
+    // A pig keeps its saddle as a flag and takes it in its own `mobInteract`.
+    let fits = kind != Kind::Pig
+        && can_use_slot(m, slot)
+        && m.equipment.get(slot).is_empty()
+        && m.is_alive()
+        && crate::player::play::game_data()
+            .is_some_and(|d| d.entity_in_tag(kind.type_id(), allowed));
+    if !fits {
+        return Interaction::Pass;
+    }
+    let one = stack.with_count(1);
+    use_item(ents, player, hand);
+    let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
+        return Interaction::Pass;
+    };
+    let Some(m) = ents.mob_mut(target) else {
+        return Interaction::Pass;
+    };
+    m.equipment.set(slot, one);
+    m.equipment.set_guaranteed_drop(slot);
+    // `LivingEntity.onEquipItem`: the equip sound (seeded by the mob's random) and `EQUIP`.
+    if !m.silent {
+        let saddle = slot == item::EquipmentSlot::Saddle;
+        let sound = match kind {
+            Kind::Strider if saddle => "minecraft:entity.strider.saddle",
+            Kind::Camel if saddle => "minecraft:entity.camel.saddle",
+            Kind::CamelHusk if saddle => "minecraft:entity.camel_husk.saddle",
+            Kind::Nautilus | Kind::ZombieNautilus if saddle => {
+                if m.fluids.eye_in_water {
+                    "minecraft:item.nautilus_saddle_underwater_equip"
+                } else {
+                    "minecraft:item.nautilus_saddle_equip"
+                }
+            }
+            _ => id.info().equip_sound,
+        };
+        let seed = m.random.next_long();
+        let source = kind.sound_source();
+        play_sound(env.out, None, pos, sound, source, 1.0, 1.0, seed);
+    }
+    let event = crate::level::game_event::events().equip;
+    entity_game_event(ents, env, target, event, Some(target));
+    if let Some(update) = super::equipment::tracking_update(ents, target) {
+        env.out.push(update);
+    }
+    Interaction::Success
+}
+
+/// `DyeItem.interactLivingEntity`: a dye colours an alive, unshorn sheep of another colour.
+fn dye_sheep(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    target: EntityId,
+    hand: Hand,
+    stack: &ItemStack,
+) -> Interaction {
+    let Some(color) = crate::block::sign::dye_color(stack)
+        .and_then(|c| crate::block::sign::DYE_COLORS.iter().position(|d| *d == c))
+        .and_then(|c| u8::try_from(c).ok())
+    else {
+        return Interaction::Pass;
+    };
+    let Some(m) = ents.mob(target) else {
+        return Interaction::Pass;
+    };
+    let old = super::fam::classic::sheep(m).color;
+    if m.kind != Kind::Sheep || !m.is_alive() || m.sheared || old == color {
+        return Interaction::Pass;
+    }
+    let uuid = |ents: &Entities, id| ents.store.get(id).map_or(0, |e| e.uuid());
+    let name = crate::block::sign::DYE_COLORS[usize::from(color)];
+    if !env
+        .hooks
+        .sheep_dye_wool(uuid(ents, target), name, uuid(ents, player))
+    {
+        return Interaction::Pass;
+    }
+    // `level.playSound(player, sheep, ...)`: the player's own client plays it itself.
+    if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+        let seed = crate::survival::sound_seed();
+        play_sound(
+            env.out,
+            Some(player),
+            pos,
+            "minecraft:item.dye.use",
+            SoundSource::Players,
+            1.0,
+            1.0,
+            seed,
+        );
+    }
+    if let Some(m) = ents.mob_mut(target) {
+        super::fam::classic::sheep_mut(m).color = color;
+    }
+    if let Some(mut e) = ents.store.get_mut(target) {
+        e.mark_data_dirty();
+    }
+    use_item(ents, player, hand);
+    Interaction::Success
 }
 
 /// `SpawnEggItem.useOn`: spawns the egg's mob on the clicked block face.

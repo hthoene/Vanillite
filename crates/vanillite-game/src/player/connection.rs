@@ -71,6 +71,8 @@ pub enum EntityAction {
         hand: Hand,
         pos: vanillite_base::BlockPos,
         face: vanillite_base::Direction,
+        /// The clicked point (`BlockHitResult.getLocation`).
+        location: Vec3,
     },
     /// `player_action` `RELEASE_USE_ITEM`.
     ReleaseUseItem,
@@ -83,6 +85,8 @@ pub enum EntityAction {
     PickItem { entity: i32, include_data: bool },
     /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
     Stab,
+    /// `player_command` `START_FALL_FLYING`.
+    StartFallFlying,
 }
 
 /// What a player sends to steer its vehicle.
@@ -583,7 +587,7 @@ impl Connection {
                     match p.action {
                         PlayerAction::StartSprinting => state.sprinting = true,
                         PlayerAction::StopSprinting => state.sprinting = false,
-                        // Riding jumps' end and elytra come later.
+                        // Riding jumps' end comes later.
                         PlayerAction::StartRidingJump => {
                             self.vehicle.jump = Some(p.data);
                         }
@@ -592,9 +596,14 @@ impl Connection {
                                 self.entity_actions.push(EntityAction::OpenVehicleInventory);
                             }
                         }
+                        PlayerAction::StartFallFlying => {
+                            if self.entity_actions.len() < 16 {
+                                self.entity_actions.push(EntityAction::StartFallFlying);
+                            }
+                        }
                         // `if (player.isSleeping()) player.stopSleepInBed(false, true)`.
                         PlayerAction::StopSleeping => self.leave_bed = true,
-                        PlayerAction::StopRidingJump | PlayerAction::StartFallFlying => {}
+                        PlayerAction::StopRidingJump => {}
                     }
                 }
             }
@@ -612,9 +621,7 @@ impl Connection {
                             .equipment(crate::item::EquipmentSlot::OffHand),
                     };
                     let name = crate::item::item_id(stack).name();
-                    let entity_item = name.ends_with("_spawn_egg")
-                        || name == "minecraft:lead"
-                        || name.ends_with("minecart");
+                    let entity_item = crate::player::item_use::uses_entities_on_block(stack);
                     self.play.use_item_on(play, &p, self.sink.as_ref());
                     // `LecternBlockEntity.setBook` resolves a written book for the player.
                     let at = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
@@ -626,10 +633,16 @@ impl Connection {
                         self.chat.requests.push(ChatRequest::ResolveLecternBook(at));
                     }
                     if entity_item && self.play.entity_item_use && self.entity_actions.len() < 16 {
+                        let pos = vanillite_base::BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
                         self.entity_actions.push(EntityAction::UseItemOn {
                             hand: p.hand,
-                            pos: vanillite_base::BlockPos::new(p.pos.x, p.pos.y, p.pos.z),
+                            pos,
                             face: crate::player::play::direction_wrapped(p.face),
+                            location: Vec3::new(
+                                f64::from(pos.x) + f64::from(p.cursor_x),
+                                f64::from(pos.y) + f64::from(p.cursor_y),
+                                f64::from(pos.z) + f64::from(p.cursor_z),
+                            ),
                         });
                     }
                 }

@@ -87,6 +87,7 @@ impl World {
             border: None,
             enter_gateway: &mut no_gateway,
             display_name: &names,
+            entity_team: &|_| None,
             random: &mut self.random,
             out: &mut self.out,
         };
@@ -281,6 +282,7 @@ fn respawn_stages_take_604_ticks() {
             border: None,
             enter_gateway: &mut no_gateway,
             display_name: &names,
+            entity_team: &|_| None,
             random,
             out,
         };

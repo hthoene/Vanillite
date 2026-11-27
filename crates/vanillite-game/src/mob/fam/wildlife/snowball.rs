@@ -3,10 +3,18 @@
 //! in water, go through End gateways and stop at the first block or entity they hit. A
 //! snowball breaks there; blazes take 3 damage, everything else a damage-free hit.
 
-use vanillite_base::random::LegacyRandom;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, Vec3};
 use vanillite_config::GameMode;
-use vanillite_world::entity::{EntityFlags, EntityId, Rotation};
+use vanillite_protocol::packets::play::clientbound::SoundSource;
+use vanillite_world::entity::{EntityFlags, EntityId, NetworkIds, Rotation};
+
+use crate::entities::Entities;
+use crate::item::ItemStack;
+use crate::mob::WorldAction;
+use crate::mob::missile::MissileData;
+use crate::survival::play_sound;
+use crate::survival::player::Env;
 
 use crate::mob::kinds::Kind;
 use crate::mob::missile::{MissileKind, MissileTick};
@@ -57,14 +65,19 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         return Flight::Gone;
     };
     let (owner, mut left, life) = (d.owner, d.left_owner, d.life);
+    let kind = d.kind;
     let Some(core) = t.core() else {
         return Flight::Gone;
     };
     let (pos, mut v, aabb, rot) = (core.pos(), core.velocity(), core.aabb(), core.rot());
     let no_gravity = core.flags().contains(EntityFlags::NO_GRAVITY);
-    // `applyGravity` and `applyInertia`.
+    // `applyGravity` (`getDefaultGravity`: 0.07 for experience bottles) and `applyInertia`.
     if !no_gravity {
-        v.y -= 0.03;
+        v.y -= if kind == MissileKind::ExperienceBottle {
+            0.07
+        } else {
+            0.03
+        };
     }
     let in_water = crate::mob::is_water(
         t.level
@@ -178,6 +191,10 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
     match d.kind {
         MissileKind::Snowball => {}
         MissileKind::EnderPearl => return super::ender_pearl::tick(t),
+        MissileKind::Egg | MissileKind::ExperienceBottle => return tick_egg_or_bottle(t),
+        MissileKind::EyeOfEnder => return super::eye_of_ender::tick(t),
+        MissileKind::FireworkRocket => return crate::firework::tick(t),
+        MissileKind::FishingBobber => return crate::fishing::tick(t),
         _ => return,
     }
     let owner = d.owner;
@@ -197,7 +214,14 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
         crate::mob::missile::hit_block(t.level, t.cx, t.id, block, at);
     }
     crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
-    // `onHit`: the break particles (entity event 3) and gone.
+    break_event(t);
+    if let Some(d) = t.data() {
+        d.removed = true;
+    }
+}
+
+/// The break particles of a thrown item (entity event 3).
+fn break_event(t: &mut MissileTick<'_, '_>) {
     if let Some(e) = t.ents.store.get(t.id) {
         let network_id = e.network_id().0;
         let id = t.id;
@@ -212,9 +236,6 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
             ),
         });
     }
-    if let Some(d) = t.data() {
-        d.removed = true;
-    }
 }
 
 /// `AABB.expandTowards(movement)`.
@@ -227,4 +248,234 @@ fn expand_towards(b: Aabb, v: Vec3) -> Aabb {
         if v.y > 0.0 { b.max_y + v.y } else { b.max_y },
         if v.z > 0.0 { b.max_z + v.z } else { b.max_z },
     )
+}
+
+/// The kind a thrown item flies as: snowballs, eggs and experience bottles.
+pub fn thrown_kind(stack: &ItemStack) -> Option<MissileKind> {
+    if stack.is_empty() {
+        return None;
+    }
+    match crate::item::item_id(stack).name() {
+        "minecraft:snowball" => Some(MissileKind::Snowball),
+        "minecraft:egg" | "minecraft:blue_egg" | "minecraft:brown_egg" => Some(MissileKind::Egg),
+        "minecraft:experience_bottle" => Some(MissileKind::ExperienceBottle),
+        _ => None,
+    }
+}
+
+/// `SnowballItem.use`, `EggItem.use` and `ExperienceBottleItem.use`: the throw sound, the
+/// projectile from the player's eyes (`spawnProjectileFromRotation` with power 1.5, the bottle
+/// 0.7 aimed 20 degrees higher), the use statistic and one item less.
+pub fn player_throw(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    network_ids: &NetworkIds,
+    player: EntityId,
+    stack: &mut ItemStack,
+    kind: MissileKind,
+) {
+    let Some(pos) = ents.store.get(player).map(|e| e.pos()) else {
+        return;
+    };
+    let (sound, source) = match kind {
+        MissileKind::Egg => ("minecraft:entity.egg.throw", SoundSource::Players),
+        MissileKind::ExperienceBottle => (
+            "minecraft:entity.experience_bottle.throw",
+            SoundSource::Neutral,
+        ),
+        _ => ("minecraft:entity.snowball.throw", SoundSource::Neutral),
+    };
+    let pitch = 0.4 / (env.random.next_float() * 0.4 + 0.8);
+    play_sound(
+        env.out,
+        None,
+        pos,
+        sound,
+        source,
+        0.5,
+        pitch,
+        crate::survival::sound_seed(),
+    );
+    // `ThrowableItemProjectile(type, owner, level, stack)`: at the eyes, 0.1 lower.
+    let eye = crate::mob::missile::eye_height(ents, player);
+    let start = Vec3::new(pos.x, pos.y + eye - f64::from(0.1_f32), pos.z);
+    let mut data = MissileData::new(kind);
+    data.item = stack.with_count(1);
+    let (y_offset, pow) = if kind == MissileKind::ExperienceBottle {
+        (-20.0, 0.7)
+    } else {
+        (0.0, 1.5)
+    };
+    crate::mob::missile::spawn_from_rotation(
+        ents,
+        network_ids,
+        player,
+        start,
+        y_offset,
+        pow,
+        1.0,
+        data,
+    );
+    let infinite = ents.player_mut(player).is_some_and(|p| {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+        p.game_mode == GameMode::Creative
+    });
+    if !infinite {
+        stack.shrink(1);
+    }
+}
+
+/// `ThrownEgg` and `ThrownExperienceBottle`: the flight, then `onHit`.
+fn tick_egg_or_bottle(t: &mut MissileTick<'_, '_>) {
+    let Some(d) = t.ents.missile(t.id) else {
+        return;
+    };
+    let (kind, owner) = (d.kind, d.owner);
+    let before = t.core().map(|e| (e.pos(), e.velocity()));
+    let Flight::Hit(target, block, hit_at) = fly(t) else {
+        return;
+    };
+    let Some((at, velocity)) = t.core().map(|e| (e.pos(), e.velocity())) else {
+        return;
+    };
+    let mut random = vanillite_base::random::LegacyRandom::from_state(
+        t.ents.missile(t.id).map_or(0, |d| d.random_state),
+    );
+    if kind == MissileKind::Egg {
+        // `onHitEntity`: a damage-free hit.
+        if let Some(target) = target {
+            let source = thrown_source(t, owner);
+            crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 0.0);
+        }
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, block, hit_at);
+        // `onHit`: one chick in 8, four in 256.
+        if random.next_int_bounded(8) == 0 {
+            let count = if random.next_int_bounded(32) == 0 {
+                4
+            } else {
+                1
+            };
+            let y_rot = t.core().map_or(0.0, |e| e.rot().y_rot);
+            let variant = egg_variant(t.ents.missile(t.id).map(|d| &d.item));
+            for _ in 0..count {
+                if !spawn_chick(t, at, y_rot, variant) {
+                    break;
+                }
+            }
+        }
+        break_event(t);
+    } else {
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, block, hit_at);
+        // `ThrownExperienceBottle.onHit`: the splash particles and sound, 3 to 11 experience.
+        let block = vanillite_base::BlockPos::containing(at.x, at.y, at.z);
+        t.cx.actions
+            .push(WorldAction::LevelEvent(2002, block, -13_083_194));
+        t.cx.actions.push(WorldAction::LevelEvent(1053, block, 0));
+        let amount = 3 + random.next_int_bounded(5) + random.next_int_bounded(5);
+        let direction = match (target, before) {
+            (None, Some((from, _))) => {
+                let to = from + velocity;
+                physics::clip(t.level as &dyn Blocks, from, to)
+                    .map_or(Vec3::ZERO, |(b, p)| face_normal(b, p))
+            }
+            _ => velocity * -1.0,
+        };
+        let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
+        crate::experience_orb::award_in(t.ents, &network_ids, t.env.random, at, direction, amount);
+    }
+    if let Some(d) = t.data() {
+        d.random_state = random.state();
+        d.removed = true;
+    }
+}
+
+/// The unit normal of the face of block `b` the point `at` lies on.
+fn face_normal(b: vanillite_base::BlockPos, at: Vec3) -> Vec3 {
+    let local = at - Vec3::new(f64::from(b.x), f64::from(b.y), f64::from(b.z));
+    let faces = [
+        (local.x.abs(), Vec3::new(-1.0, 0.0, 0.0)),
+        ((1.0 - local.x).abs(), Vec3::new(1.0, 0.0, 0.0)),
+        (local.y.abs(), Vec3::new(0.0, -1.0, 0.0)),
+        ((1.0 - local.y).abs(), Vec3::new(0.0, 1.0, 0.0)),
+        (local.z.abs(), Vec3::new(0.0, 0.0, -1.0)),
+        ((1.0 - local.z).abs(), Vec3::new(0.0, 0.0, 1.0)),
+    ];
+    faces
+        .iter()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map_or(Vec3::ZERO, |f| f.1)
+}
+
+/// The `chicken/variant` of an egg (`DataComponents.CHICKEN_VARIANT`): 0 cold, 1 temperate,
+/// 2 warm.
+fn egg_variant(item: Option<&ItemStack>) -> i32 {
+    let Some(item) = item else {
+        return 1;
+    };
+    if let Some(id) = vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:chicken/variant")
+        && let Some(v) = item.patch().and_then(|p| p.get(id))
+        && let Ok(v) = vanillite_protocol::codec::Reader::new(v).varint()
+    {
+        return v;
+    }
+    match crate::item::item_id(item).name() {
+        "minecraft:blue_egg" => 0,
+        "minecraft:brown_egg" => 2,
+        _ => 1,
+    }
+}
+
+/// A chick from an egg (`EntityType.CHICKEN.create`, `setAge(-24000)`, `snapTo`, the egg's
+/// variant, `fudgePositionAfterSizeChange(ZERO)`): `false` when it finds no room.
+fn spawn_chick(t: &mut MissileTick<'_, '_>, at: Vec3, y_rot: f32, variant: i32) -> bool {
+    let seed = crate::mob::new_entity_seed();
+    let mut chick = crate::mob::MobData::new(Kind::Chicken, seed);
+    chick.age = -24000;
+    chick.baby = true;
+    chick.variant = variant;
+    let height = f64::from(Kind::Chicken.type_id().info().height * 0.5);
+    let width = f64::from(Kind::Chicken.type_id().info().width * 0.5);
+    // The free centre closest to `at` with a box of the chick's size: the centre may move up
+    // to half the chick's height, which lifts it out of a floor the egg broke on.
+    let mut feet = at.y - height / 2.0;
+    let mut scratch = Vec::new();
+    let boxed = |y: f64| {
+        Aabb::new(
+            at.x - width / 2.0,
+            y,
+            at.z - width / 2.0,
+            at.x + width / 2.0,
+            y + height,
+            at.z + width / 2.0,
+        )
+    };
+    if !physics::no_collision(t.level as &dyn Blocks, &boxed(feet), &mut scratch) {
+        let mut boxes = Vec::new();
+        physics::block_boxes(t.level as &dyn Blocks, &boxed(feet), &mut boxes);
+        let top = boxes.iter().fold(feet, |m, b| m.max(b.max_y));
+        if top - feet > height / 2.0 + 5.0e-7
+            || !physics::no_collision(t.level as &dyn Blocks, &boxed(top), &mut scratch)
+        {
+            return false;
+        }
+        feet = top;
+    }
+    let pos = Vec3::new(at.x, feet, at.z);
+    let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
+    crate::mob::spawn(
+        t.ents,
+        &network_ids,
+        crate::mob::new_uuid(),
+        pos,
+        Rotation {
+            y_rot,
+            x_rot: 0.0,
+            y_head_rot: y_rot,
+        },
+        chick,
+    );
+    true
 }
