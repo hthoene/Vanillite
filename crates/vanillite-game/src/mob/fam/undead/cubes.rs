@@ -396,7 +396,8 @@ fn deals_damage(m: &MobData) -> bool {
 }
 
 /// `Player.touch` → `AbstractCubeMob.playerTouch` for a player the server moves itself
-/// (`Survival::simulate_movement`), at the end of its `aiStep`: the cubes in its box grown by
+/// (`Survival::simulate_movement`) or whose world runs the touch in the player's tick
+/// (`Survival::touches_in_tick`), at the end of its `aiStep`: the cubes in its box grown by
 /// (1, 0.5, 1) that deal damage hurt it. The cubes hurt the other players in their own tick
 /// ([`touch_damage`]).
 pub fn player_touch(
@@ -455,7 +456,7 @@ fn touch_damage(t: &mut Tick<'_, '_>) {
             continue;
         };
         let touches = if let Some(p) = t.ents.player(id) {
-            if p.survival.simulate_movement {
+            if p.survival.simulate_movement || p.survival.touches_in_tick {
                 // It touches the cube in its own tick ([`player_touch`]).
                 continue;
             }

@@ -827,6 +827,7 @@ impl GameWorld {
         if self.level.output().explosion_hurts.is_empty()
             && self.level.output().falling_hurts.is_empty()
         {
+            self.level.finish_explosion();
             return;
         }
         let hurts = std::mem::take(&mut self.level.output().explosion_hurts);
@@ -858,6 +859,8 @@ impl GameWorld {
                 combat::hurt(level, ents, env, cx, hurt.target, source, hurt.amount);
             }
         });
+        // `interactWithBlocks` after `hurtEntities`.
+        self.level.finish_explosion();
         self.finish_removals();
     }
 
@@ -948,7 +951,13 @@ impl GameWorld {
                 else {
                     continue;
                 };
-                // `pushEntities` and `touch` at the end of the player's `aiStep`.
+                // `pushEntities` and `touch` at the end of the player's `aiStep`: where its
+                // server-side travel took it; `tickPlayer` puts it back after.
+                let step = data.survival.server_step;
+                let home = entity.as_ref().pos();
+                if step != Vec3::ZERO {
+                    entity.set_pos(home + step);
+                }
                 vanillite_game::mob::living::player_push_entities(ents, id);
                 vanillite_game::mob::fam::undead::cubes::player_touch(level, ents, env, cx, id);
                 // `touch` → `AbstractArrow.playerTouch`: arrows and tridents it picks up.
@@ -969,6 +978,11 @@ impl GameWorld {
                         touch_orb(ents, data, &reach);
                     }
                     ents.players = players;
+                }
+                if step != Vec3::ZERO
+                    && let Some(mut entity) = ents.store.get_mut(id)
+                {
+                    entity.set_pos(home);
                 }
                 let Entities { store, players, .. } = &mut *ents;
                 let Some(mut entity) = store.get_mut(id) else {
@@ -1062,6 +1076,11 @@ impl GameWorld {
         // Nobody moves the mock player: the server does, like Vanilla's. A client player
         // moves by its packets.
         data.survival.simulate_movement = !spec.client;
+        // `tick_players` runs `Player.touch` for every player.
+        data.survival.touches_in_tick = true;
+        // The recorder seeds the player's own random with the entity's seed.
+        data.survival.random =
+            Some(vanillite_game::survival::player::Survival::new_random(spec.seed).state());
         data.survival.y_body_rot = spec.rot[0];
         let id =
             self.level

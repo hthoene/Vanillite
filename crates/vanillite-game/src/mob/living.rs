@@ -2240,15 +2240,18 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             // `Warden.doPush`.
             super::boss::warden::do_push(t, other);
         }
-        // Players the server moves itself take the push too (a client moves the others).
-        let pushed = t.ents.mob(other).is_some()
-            || t.ents
-                .player(other)
-                .is_some_and(|p| p.survival.simulate_movement);
-        if pushed && let Some(mut e) = t.ents.store.get_mut(other) {
+        // Players take the push in their server-side motion too; only one the server moves
+        // itself is synced (a client moves the others).
+        let synced = t
+            .ents
+            .player(other)
+            .is_none_or(|p| p.survival.simulate_movement);
+        if let Some(mut e) = t.ents.store.get_mut(other) {
             let v = e.as_ref().velocity();
             e.set_velocity(Vec3::new(v.x - xa, v.y, v.z - za));
-            e.set_flags(EntityFlags::HAS_IMPULSE, true);
+            if synced {
+                e.set_flags(EntityFlags::HAS_IMPULSE, true);
+            }
         }
         if !climbing {
             let v = t.velocity();

@@ -467,6 +467,9 @@ pub struct Level {
     weather: crate::survival::weather::LevelWeather,
     game_time: i64,
     output: LevelOutput,
+    /// The block phase of the last explosion, waiting for the entities it hit to take their
+    /// damage ([`Level::finish_explosion`]).
+    pending_blast: Option<explosion::PendingBlast>,
     /// Menus blocks asked to open for the player that used them (`player.openMenu`); taken
     /// by the player handlers.
     menu_requests: Vec<crate::menu::container::MenuRequest>,
@@ -591,6 +594,7 @@ impl Level {
             weather: crate::survival::weather::LevelWeather::default(),
             game_time: 0,
             output: LevelOutput::default(),
+            pending_blast: None,
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_block_uses: Vec::new(),

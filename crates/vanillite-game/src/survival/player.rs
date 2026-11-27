@@ -272,8 +272,15 @@ pub struct Survival {
     /// The server moves the player itself (`canSimulateMovement` for a player no client
     /// moves: the parity scenarios' mock players), see [`simulate_travel`].
     pub simulate_movement: bool,
+    /// The world runs `Player.touch` at the end of the player's own `aiStep`
+    /// ([`crate::mob::fam::undead::cubes::player_touch`]), as it does for a player the server
+    /// moves itself; otherwise the cubes hurt the player in their tick.
+    pub touches_in_tick: bool,
     /// `yBodyRot`, only kept while the server moves the player.
     pub y_body_rot: f32,
+    /// The state of the player's own random (`Entity.random`), seeded at its first use
+    /// ([`Survival::own_random`]). The throws of the death drops draw from it.
+    pub random: Option<i64>,
     /// `horizontalCollision` of the last server-side move.
     pub(crate) horizontal_collision: bool,
     /// `fallFlyTicks`: ticks gliding.
@@ -287,6 +294,10 @@ pub struct Survival {
     pub impulse_grace: i32,
     /// `autoSpinAttackTicks`, `autoSpinAttackDmg` and `autoSpinAttackItemStack` of a riptide.
     pub spin_attack: Option<crate::trident::SpinAttack>,
+    /// How far `Player.travel` moves a player its client moves in this tick's `aiStep`
+    /// ([`do_tick_ai`]): Vanilla pushes and touches the entities from there, then
+    /// `tickPlayer` puts the player back where its client has it.
+    pub server_step: Vec3,
     /// A plugin decided at the last death whether the inventory stays (else the game rule at
     /// the respawn decides, as in Vanilla).
     pub keep_inventory_override: Option<bool>,
@@ -371,13 +382,16 @@ impl Default for Survival {
             flying: false,
             raid_omen: crate::raid::PlayerOmen::default(),
             simulate_movement: false,
+            touches_in_tick: false,
             y_body_rot: 0.0,
+            random: None,
             horizontal_collision: false,
             fall_fly_ticks: 0,
             fishing: None,
             impulse_impact: None,
             impulse_grace: 0,
             spin_attack: None,
+            server_step: Vec3::ZERO,
             keep_inventory_override: None,
             first_tick: true,
             sent: Sent::default(),
@@ -518,6 +532,24 @@ fn int(data: &Compound, key: &str) -> Option<i32> {
 }
 
 impl Survival {
+    /// The player's own random where `Entity.random` stands: seeded like a new entity's on its
+    /// first use, after the draw of the `LivingEntity` constructor. Put its state back into
+    /// [`Survival::random`] after drawing.
+    pub fn own_random(&self) -> LegacyRandom {
+        match self.random {
+            Some(state) => LegacyRandom::from_state(state),
+            None => Self::new_random(crate::mob::new_unique_seed()),
+        }
+    }
+
+    /// The own random of a player entity created with `seed`: the `LivingEntity` constructor
+    /// draws its first yaw.
+    pub fn new_random(seed: i64) -> LegacyRandom {
+        let mut random = LegacyRandom::new(seed);
+        random.next_float();
+        random
+    }
+
     /// `isDeadOrDying`.
     pub fn is_dead_or_dying(&self) -> bool {
         self.health <= 0.0
@@ -1533,7 +1565,11 @@ pub fn die(
             }
             amount = crate::hooks::experience_value(ev.value);
         }
-        throw_drops(drops, Vec3::new(pos.x, eye_y - 0.3, pos.z), env);
+        let mut random = player.survival.own_random();
+        // `getEyeY() - 0.3F`.
+        let from = Vec3::new(pos.x, eye_y - f64::from(0.3_f32), pos.z);
+        throw_drops(drops, from, env, &mut random);
+        player.survival.random = Some(random.state());
         if amount > 0 {
             env.out.push(Effect::Experience { pos, amount });
         }
@@ -1596,14 +1632,18 @@ fn take_drops(inventory: &mut crate::inventory::PlayerInventory) -> Vec<crate::i
 }
 
 /// `Inventory.dropAll`'s throws: every stack in a random direction from `from`
-/// (`createItemStackToDrop(stack, true, false)`).
-fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>) {
+/// (`createItemStackToDrop(stack, true, false)`), drawn from the player's own random `random`.
+fn throw_drops(
+    drops: Vec<crate::item::ItemStack>,
+    from: Vec3,
+    env: &mut Env<'_>,
+    random: &mut LegacyRandom,
+) {
     for stack in drops {
-        // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
-        // draws from the player's own random in Vanilla, here from the level random.
+        // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion.
         let (uuid, y_rot, _) = crate::mob::new_item_entity();
-        let pow = env.random.next_float() * 0.5;
-        let dir = env.random.next_float() * std::f32::consts::TAU;
+        let pow = random.next_float() * 0.5;
+        let dir = random.next_float() * std::f32::consts::TAU;
         let velocity = Vec3::new(
             f64::from(-vanillite_base::math::sin(f64::from(dir)) * pow),
             f64::from(0.2f32),
@@ -1863,10 +1903,12 @@ fn tick_after_portal(
         crate::elytra::update_fall_flying(entity, player, env);
     }
     let before_travel = entity.as_ref().aabb();
+    player.survival.server_step = Vec3::ZERO;
     if result == TickResult::Alive {
         if player.survival.simulate_movement {
             simulate_travel(entity, player, env);
         } else {
+            player.survival.server_step = server_step(entity, env);
             travel_motion(entity, player, env);
         }
     }
@@ -2682,6 +2724,36 @@ fn simulate_travel(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
         travel_fall_flying(entity, player, env);
     } else {
         travel_in_air(entity, player, env);
+    }
+}
+
+/// The `Entity.move(MoverType.SELF, deltaMovement)` of `Player.travel` for a player its client
+/// moves: how far the motion takes it past the blocks in the way (after the small motion
+/// cut-off of `aiStep`).
+fn server_step(entity: &EntityMut<'_>, env: &Env<'_>) -> Vec3 {
+    let v = entity.as_ref().velocity();
+    let (x, z) = if v.x * v.x + v.z * v.z < 9.0e-6 {
+        (0.0, 0.0)
+    } else {
+        (v.x, v.z)
+    };
+    let y = if v.y.abs() < 0.003 { 0.0 } else { v.y };
+    let delta = Vec3::new(x, y, z);
+    let blocks = MoveBlocks(env.blocks, env.border);
+    let mut scratch = Vec::new();
+    let movement = crate::mob::physics::collide(
+        &blocks,
+        entity.as_ref().aabb(),
+        delta,
+        0.6,
+        entity.as_ref().flags().contains(EntityFlags::ON_GROUND),
+        &mut scratch,
+    );
+    let length = movement.length_sqr();
+    if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
+        movement
+    } else {
+        Vec3::ZERO
     }
 }
 

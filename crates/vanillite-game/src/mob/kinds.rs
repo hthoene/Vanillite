@@ -815,7 +815,52 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                 }
             }
         }
+        Kind::Spider => spider_finalize(m, ctx),
         _ => {}
+    }
+}
+
+/// `Spider.finalizeSpawn` (after `Mob.finalizeSpawn`): 1 % carry a skeleton, and on hard the
+/// first spider of a group may choose a lasting effect for the whole group.
+fn spider_finalize(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
+    use crate::effect::{EffectInstance, MobEffect};
+    if m.random.next_int_bounded(100) == 0 {
+        let seed = crate::mob::new_entity_seed();
+        let mut rider = MobData::new(Kind::Skeleton, seed);
+        let mut inner = fam::SpawnContext {
+            group: fam::GroupData::None,
+            group_index: 0,
+            extra: Vec::new(),
+            ride: None,
+            ..*ctx
+        };
+        finalize_spawn(&mut rider, &mut inner, &mut m.random);
+        ctx.extra.push(fam::ExtraMob {
+            mob: rider,
+            offset: Vec3::ZERO,
+            relation: fam::Relation::RidesIt,
+        });
+    }
+    let effect = if let fam::GroupData::Spider(effect) = ctx.group {
+        effect
+    } else {
+        let mut effect = None;
+        if ctx.difficulty == Difficulty::Hard
+            && m.random.next_float() < 0.1 * ctx.special_multiplier
+        {
+            // `SpiderEffectsGroupData.setRandomEffect`.
+            effect = Some(match m.random.next_int_bounded(5) {
+                0 | 1 => MobEffect::SPEED,
+                2 => MobEffect::STRENGTH,
+                3 => MobEffect::REGENERATION,
+                _ => MobEffect::INVISIBILITY,
+            });
+        }
+        ctx.group = fam::GroupData::Spider(effect);
+        effect
+    };
+    if let Some(effect) = effect {
+        m.effects.force_add(EffectInstance::new(effect, -1, 0));
     }
 }
 

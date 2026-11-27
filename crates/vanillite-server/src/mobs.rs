@@ -1082,6 +1082,7 @@ impl WorldMobs {
         dimension: &str,
     ) {
         if level.output().explosion_hurts.is_empty() && level.output().falling_hurts.is_empty() {
+            level.finish_explosion();
             return;
         }
         let state = &global.level;
@@ -1180,6 +1181,8 @@ impl WorldMobs {
             );
         }
         level.entities = ents;
+        // `interactWithBlocks` after `hurtEntities`.
+        level.finish_explosion();
         self.finish_removals(level);
     }
 
