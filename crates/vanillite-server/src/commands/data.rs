@@ -13,6 +13,7 @@ use vanillite_world::entity::EntityId;
 
 use super::source::CommandSource;
 use super::{Env, nbt_ops, select};
+use crate::global::Global;
 
 /// Where data lives.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,13 +126,30 @@ pub(crate) fn write(
             env.global.systems.storage().set(id.clone(), data);
             Ok(())
         }
-        DataTarget::Entity { id, .. } => apply_entity_nbt(&mut env.level.entities, *id, &data),
+        DataTarget::Entity { uuid, id } => {
+            apply_entity_nbt(&mut env.level.entities, *id, &data)?;
+            join_team(env.global, *uuid, &data);
+            Ok(())
+        }
         DataTarget::Block(pos) => {
             if env.level.load_block_entity_nbt(*pos, &data) {
                 Ok(())
             } else {
                 Err(CommandError::new("commands.data.block.invalid", vec![]))
             }
+        }
+    }
+}
+
+/// `Entity.load`'s `Team`: the entity joins the scoreboard team, if there is one.
+pub(super) fn join_team(global: &Global, uuid: u128, data: &Compound) {
+    if let Some(team) = data.get("Team").and_then(Tag::as_str) {
+        let holder = vanillite_protocol::types::Uuid(uuid).to_string();
+        let joined = global.systems.scoreboard().join_team(&holder, team);
+        if joined {
+            crate::scoreboard::flush(global);
+        } else {
+            log::warn!("Unable to add entity to team {team:?} (that team probably doesn't exist)");
         }
     }
 }
@@ -189,6 +207,7 @@ pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> 
         });
     if let Some(mut full) = full {
         full.remove("id");
+        vanillite_game::mob::entity_nbt::save_base(entities, id, &mut full);
         let tags = entities.tags_of(id);
         if !tags.is_empty() {
             full.insert(
@@ -216,9 +235,10 @@ pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> 
                 .contains(vanillite_world::entity::EntityFlags::ON_GROUND),
         )),
     );
-    out.insert("Invulnerable", Tag::Byte(0));
+    vanillite_game::mob::entity_nbt::save_flags(e.flags(), &mut out);
     out.insert("PortalCooldown", Tag::Int(0));
     out.insert("UUID", uuid_tag(e.uuid()));
+    vanillite_game::mob::entity_nbt::save_base(entities, id, &mut out);
     let tags = entities.tags_of(id);
     if !tags.is_empty() {
         out.insert(
@@ -296,17 +316,8 @@ fn game_type(mode: vanillite_config::GameMode) -> i32 {
     }
 }
 
-fn read_vec3(tag: Option<&Tag>) -> Option<Vec3> {
-    match tag? {
-        Tag::List(List(v)) => match v.as_slice() {
-            [Tag::Double(x), Tag::Double(y), Tag::Double(z)] => Some(Vec3::new(*x, *y, *z)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// `Entity.load` of what the server keeps: position, motion, rotation and tags. Players
+/// `Entity.load` of a whole entity compound: position, motion, rotation, tags, the common
+/// keys ([`vanillite_game::mob::entity_nbt::load_base`]) and the kind's data. Players
 /// cannot be changed (`commands.data.entity.invalid`).
 pub(crate) fn apply_entity_nbt(
     entities: &mut Entities,
@@ -337,49 +348,46 @@ pub(crate) fn apply_entity_nbt(
     } else if let Some(m) = entities.minecart_mut(id) {
         vanillite_game::mob::nbt::apply_minecart(m, data);
     }
+    vanillite_game::mob::entity_nbt::load_base(entities, id, data, true);
     // `Entity.load`: head and body face the yaw.
-    let yaw = match data.get("Rotation") {
-        Some(Tag::List(List(r))) => match r.as_slice() {
-            [Tag::Float(y), Tag::Float(_)] => Some(*y),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(yaw) = yaw
+    let rotation = vanillite_game::mob::entity_nbt::rotation(data.get("Rotation"));
+    if let Some((yaw, _)) = rotation
         && let Some(m) = entities.mob_mut(id)
     {
         m.y_body_rot = yaw;
     }
     if let Some(mut e) = entities.store.get_mut(id) {
-        if let Some(pos) = read_vec3(data.get("Pos"))
-            .filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
-        {
+        if let Some(pos) = vanillite_game::mob::entity_nbt::vec3(data.get("Pos")) {
             e.set_pos(pos);
         }
-        if let Some(motion) = read_vec3(data.get("Motion")) {
-            let clamp = |v: f64| if v.abs() > 10.0 { 0.0 } else { v };
-            e.set_velocity(Vec3::new(clamp(motion.x), clamp(motion.y), clamp(motion.z)));
+        if let Some(motion) = vanillite_game::mob::entity_nbt::motion(data.get("Motion")) {
+            e.set_velocity(motion);
         }
-        if let Some(Tag::List(List(r))) = data.get("Rotation")
-            && let [Tag::Float(y), Tag::Float(x)] = r.as_slice()
-        {
+        if let Some((y, x)) = rotation {
             // `setRot` keeps yaw and pitch modulo 360; the head keeps the stored yaw.
             let mut rot = e.as_ref().rot();
-            rot.y_rot = *y % 360.0;
-            rot.x_rot = *x % 360.0;
-            rot.y_head_rot = *y;
+            rot.y_rot = y % 360.0;
+            rot.x_rot = x % 360.0;
+            rot.y_head_rot = y;
             e.set_rot(rot);
+        }
+        if let Some(on_ground) = vanillite_game::mob::entity_nbt::get_bool(data, "OnGround") {
+            e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, on_ground);
         }
         e.mark_data_dirty();
     }
     if e_kind_is_item(entities, id)
         && let Some(item) = entities.item_mut(id)
     {
-        if let Some(age) = data.get("Age").and_then(Tag::as_i64) {
-            item.age = i16::try_from(age).unwrap_or(item.age);
+        // `getShortOr`: `NumericTag.shortValue()`, the low 16 bits.
+        #[allow(clippy::cast_possible_truncation)]
+        let short =
+            |key: &str| vanillite_game::mob::entity_nbt::get_int(data, key).map(|v| v as i16);
+        if let Some(age) = short("Age") {
+            item.age = age;
         }
-        if let Some(delay) = data.get("PickupDelay").and_then(Tag::as_i64) {
-            item.pickup_delay = i16::try_from(delay).unwrap_or(item.pickup_delay);
+        if let Some(delay) = short("PickupDelay") {
+            item.pickup_delay = delay;
         }
         if let Some(Tag::Compound(c)) = data.get("Item") {
             item.stack = vanillite_game::inventory::stack_from_nbt(c);

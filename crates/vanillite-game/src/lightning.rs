@@ -518,7 +518,8 @@ pub fn thunder_hit(
         return;
     }
     let source = DamageSource::of(env.types.lightning_bolt);
-    if let Some(d) = ents.item_mut(target) {
+    let invulnerable = crate::mob::entity_nbt::is_invulnerable(ents, target);
+    if let Some(d) = ents.item_mut(target).filter(|_| !invulnerable) {
         d.health -= 5;
         if d.health <= 0 {
             cx.discarded.push(target);

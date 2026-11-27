@@ -399,7 +399,7 @@ impl FamilyHooks for Hooks {
         // `setAge(max(0, age))`.
         m.age = int("Age").max(0);
         m.forced_age = int("ForcedAge");
-        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+        m.age_locked = crate::mob::entity_nbt::get_bool(tag, "AgeLocked").unwrap_or(false);
         m.baby = false;
         let s = state_mut(m);
         merchant::load(&mut s.merchant, tag);

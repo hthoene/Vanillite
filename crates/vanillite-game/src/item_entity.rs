@@ -141,6 +141,8 @@ pub struct Splash {
 /// world).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Burn {
+    /// The item has the `Invulnerable` tag (set before the tick): nothing here hurts it.
+    pub invulnerable: bool,
     /// The item fell into water in `baseTick`, before it moved.
     pub splash_before: Option<Splash>,
     /// How often the item was hurt (`ItemEntity.hurtServer`: one `ENTITY_DAMAGE` each).
@@ -240,7 +242,7 @@ fn water_splash(data: &mut ItemData, pos: Vec3, v: Vec3) -> Splash {
 /// `ItemEntity.hurtServer`: damage the stack does not resist (`canBeHurtBy`) wears the health
 /// down.
 fn hurt(data: &mut ItemData, types: &DamageTypes, kind: DamageKind, damage: f32, burn: &mut Burn) {
-    if burn.destroyed || !item::can_be_hurt_by(&data.stack, types, kind) {
+    if burn.invulnerable || burn.destroyed || !item::can_be_hurt_by(&data.stack, types, kind) {
         return;
     }
     #[allow(clippy::cast_possible_truncation)]

@@ -683,7 +683,11 @@ pub fn hurt(
     }
     let invisible = state(m).is_some_and(|s| s.invisible);
     let fire_immune = is(tag::IS_FIRE) && m.kind.type_id().info().fire_immune;
-    if fire_immune || invisible || is_marker(m) {
+    if fire_immune
+        || invisible
+        || is_marker(m)
+        || crate::mob::entity_nbt::invulnerable_to(ents, types, id, source)
+    {
         return false;
     }
     if is(tag::IS_EXPLOSION) {

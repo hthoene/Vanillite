@@ -21,6 +21,12 @@ impl Attribute {
     pub const ATTACK_DAMAGE: Attribute = Attribute(3);
     pub const ATTACK_KNOCKBACK: Attribute = Attribute(4);
     pub const ATTACK_SPEED: Attribute = Attribute(5);
+    pub const EXPLOSION_KNOCKBACK_RESISTANCE: Attribute = Attribute(12);
+    pub const FLYING_SPEED: Attribute = Attribute(15);
+    pub const FRICTION_MODIFIER: Attribute = Attribute(17);
+    pub const MOVEMENT_EFFICIENCY: Attribute = Attribute(25);
+    pub const STEP_HEIGHT: Attribute = Attribute(33);
+    pub const WATER_MOVEMENT_EFFICIENCY: Attribute = Attribute(37);
     pub const BLOCK_BREAK_SPEED: Attribute = Attribute(7);
     pub const FALL_DAMAGE_MULTIPLIER: Attribute = Attribute(14);
     pub const FOLLOW_RANGE: Attribute = Attribute(16);
@@ -285,6 +291,24 @@ mod tests {
             (Attribute::ATTACK_SPEED, "minecraft:attack_speed"),
             (Attribute::ATTACK_DAMAGE, "minecraft:attack_damage"),
             (Attribute::MAX_HEALTH, "minecraft:max_health"),
+            (Attribute::AIR_DRAG_MODIFIER, "minecraft:air_drag_modifier"),
+            (Attribute::ARMOR_TOUGHNESS, "minecraft:armor_toughness"),
+            (Attribute::ATTACK_KNOCKBACK, "minecraft:attack_knockback"),
+            (
+                Attribute::EXPLOSION_KNOCKBACK_RESISTANCE,
+                "minecraft:explosion_knockback_resistance",
+            ),
+            (Attribute::FLYING_SPEED, "minecraft:flying_speed"),
+            (Attribute::FRICTION_MODIFIER, "minecraft:friction_modifier"),
+            (
+                Attribute::MOVEMENT_EFFICIENCY,
+                "minecraft:movement_efficiency",
+            ),
+            (Attribute::STEP_HEIGHT, "minecraft:step_height"),
+            (
+                Attribute::WATER_MOVEMENT_EFFICIENCY,
+                "minecraft:water_movement_efficiency",
+            ),
             (Attribute::MAX_ABSORPTION, "minecraft:max_absorption"),
             (
                 Attribute::SAFE_FALL_DISTANCE,
