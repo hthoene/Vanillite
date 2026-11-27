@@ -948,13 +948,13 @@ impl FluidPredicate {
 pub struct LocationPredicate {
     position: [Bounds; 3],
     biomes: Option<IdSet>,
-    structures: Option<IdSet>,
+    structures: Option<Box<IdSet>>,
     dimension: Option<String>,
     smokey: Option<bool>,
     /// `LightPredicate`: the `light` bounds.
     light: Option<Bounds>,
-    block: Option<BlockPredicate>,
-    fluid: Option<FluidPredicate>,
+    block: Option<Box<BlockPredicate>>,
+    fluid: Option<Box<FluidPredicate>>,
     can_see_sky: Option<bool>,
 }
 
@@ -981,7 +981,11 @@ impl LocationPredicate {
         Ok(LocationPredicate {
             position,
             biomes: o.get("biomes").map(IdSet::parse).transpose()?,
-            structures: o.get("structures").map(IdSet::parse).transpose()?,
+            structures: o
+                .get("structures")
+                .map(IdSet::parse)
+                .transpose()?
+                .map(Box::new),
             dimension: o.get("dimension").map(string).transpose()?.map(qualify),
             smokey: flag("smokey")?,
             light: o
@@ -991,8 +995,13 @@ impl LocationPredicate {
             block: o
                 .get("block")
                 .map(|b| object(b).and_then(BlockPredicate::parse))
-                .transpose()?,
-            fluid: o.get("fluid").map(FluidPredicate::parse).transpose()?,
+                .transpose()?
+                .map(Box::new),
+            fluid: o
+                .get("fluid")
+                .map(FluidPredicate::parse)
+                .transpose()?
+                .map(Box::new),
             can_see_sky: flag("can_see_sky")?,
         })
     }
