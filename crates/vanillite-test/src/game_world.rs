@@ -926,6 +926,15 @@ impl GameWorld {
             }
             self.finish_removals();
         }
+        // Leads after the entities (`WorldMobs` of the server): orphaned leads, gone knots.
+        let discarded = self.with_env(|level, ents, env, _| {
+            let mut discarded = Vec::new();
+            vanillite_game::mob::tame::tick_leashes(level, ents, env, &mut discarded);
+            discarded
+        });
+        for d in discarded {
+            self.level.entities.despawn(d);
+        }
         // No chunk tickets or other worlds here: every chunk of the scenario is forced.
         self.mobs.travel.clear();
         self.mobs.gateways.clear();
@@ -1671,6 +1680,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
             (inner, _) => common_name_of(inner),
         },
         ("Companion", "TamePanic") => "TamableAnimalPanicGoal",
+        ("Companion", "ClimbPowderSnow") => "ClimbOnTopOfPowderSnowGoal",
         ("Companion", _) => match (variant, word(2)) {
             ("Horse", "RunAround") => "RunAroundLikeCrazyGoal",
             ("Llama", "FollowCaravan") => "LlamaFollowCaravanGoal",

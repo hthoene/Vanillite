@@ -823,7 +823,7 @@ pub(crate) fn nearest_player(
 
 /// `TemptGoal.canUse`: the nearest player (not a spectator) within the tempt range holding a
 /// tempting item in either hand.
-fn tempting_player(t: &mut Tick<'_, '_>, items: TemptItems) -> Option<EntityId> {
+pub(crate) fn tempting_player(t: &mut Tick<'_, '_>, items: TemptItems) -> Option<EntityId> {
     // `minecraft:tempt_range` defaults to 10.
     let range = 10.0;
     let p = t.pos();
@@ -1051,7 +1051,7 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if !panics {
                 return false;
             }
-            match default_random_pos(t, 5, 4) {
+            match super::animal::panic_pos(t) {
                 Some(p) => {
                     *pos = p;
                     true

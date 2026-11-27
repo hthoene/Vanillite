@@ -452,6 +452,25 @@ impl EntityStore {
         id
     }
 
+    /// Gives `id` another UUID (`Entity.setUUID` while loading a summoned entity's data).
+    pub fn set_uuid(&mut self, id: EntityId, uuid: u128) {
+        let Some(row) = self.row(id) else {
+            return;
+        };
+        let old = self.core.uuid[row];
+        if old == uuid {
+            return;
+        }
+        self.unindex_uuid(id, old);
+        self.core.uuid[row] = uuid;
+        match self.by_uuid.entry(uuid) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(id);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => self.duplicate_uuids += 1,
+        }
+    }
+
     /// Removes an entity. The caller removes the returned kind row from its kind store and
     /// reports the entity that moved into that row with [`Self::set_kind_row`]. The removal is
     /// also logged for the tracker until [`Self::clear_removed`].

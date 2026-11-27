@@ -1,0 +1,101 @@
+{
+  "description": "A pig leaves a no-AI horse (/ride dismount): AbstractHorse.getDismountLocationForPassenger puts it beside the horse on its main hand side (getCollisionHorizontalEscapeVector), not on a neighbour block.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 15,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:horse 8.5 -60 8.5 {NoAI:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:pig 8.5 -60 5.5 {NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "ride @e[type=minecraft:pig,limit=1] mount @e[type=minecraft:horse,limit=1]"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "ride @e[type=minecraft:pig,limit=1] dismount"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

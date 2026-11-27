@@ -1,0 +1,110 @@
+{
+  "description": "An armor stand riding a no-AI horse deep under water: LivingEntity.baseTick makes a passenger with its eyes in water leave a #dismounts_underwater vehicle.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 20,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -53,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -53,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -53,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -53,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -54,
+        14
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:horse 8.5 -60 8.5 {NoAI:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:armor_stand 8.5 -60 6.5"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "ride @e[type=minecraft:armor_stand,limit=1] mount @e[type=minecraft:horse,limit=1]"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

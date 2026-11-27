@@ -219,6 +219,11 @@ pub fn fly(t: &mut Tick<'_, '_>, input: Vec3, speed: f32) {
     t.set_velocity(Vec3::new(v.x * drag, v.y * drag, v.z * drag));
 }
 
+/// `HappyGhast.notifyLeashHolder` of a four-point leash: shows the leash holder flag.
+pub fn notify_leash_holder(m: &mut MobData) {
+    ghast_mut(m).leash_holder_time = 5;
+}
+
 /// `HappyGhast.tick`: the leash holder flag and the still timeout (a player standing on top).
 pub fn after_tick(t: &mut Tick<'_, '_>) {
     let tick_count = t.mob_ref().tick_count;

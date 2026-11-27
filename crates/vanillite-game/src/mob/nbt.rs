@@ -477,13 +477,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     m.tame = m.owner.is_some();
     m.order_to_sit = boolean(tag, "Sitting");
     m.in_sitting_pose = m.order_to_sit;
-    m.pending_leash = match tag.get("leash") {
-        Some(Tag::Compound(c)) => uuid_of(c).map(super::LeashRef::Entity),
-        Some(Tag::IntArray(v)) if v.len() == 3 => Some(super::LeashRef::Knot(
-            vanillite_base::BlockPos::new(v[0], v[1], v[2]),
-        )),
-        _ => None,
-    };
+    m.pending_leash = leash_ref(tag);
     match kind {
         Kind::Zombie => {
             super::fam::undead::set_baby(m, boolean(tag, "IsBaby"));
@@ -805,12 +799,24 @@ pub fn save_boat(
     out
 }
 
+/// The `leash` of entity NBT: a holder UUID or a knot position.
+fn leash_ref(tag: &Compound) -> Option<super::LeashRef> {
+    match tag.get("leash") {
+        Some(Tag::Compound(c)) => uuid_of(c).map(super::LeashRef::Entity),
+        Some(Tag::IntArray(v)) if v.len() == 3 => Some(super::LeashRef::Knot(
+            vanillite_base::BlockPos::new(v[0], v[1], v[2]),
+        )),
+        _ => None,
+    }
+}
+
 /// A boat from entity NBT.
 pub fn load_boat(tag: &Compound) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
     let kind = crate::vehicle::BoatKind::of(type_of(tag)?)?;
     let e = load_entity(tag)?;
     let mut b = crate::vehicle::BoatData::new(kind);
     b.custom_name = tag.get("CustomName").and_then(tag_component);
+    b.pending_leash = leash_ref(tag);
     if kind.chest {
         b.loot_table = load_chest_vehicle(tag, &mut b.items);
     }

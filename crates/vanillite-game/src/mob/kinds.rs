@@ -1242,7 +1242,9 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     if kind.ageable() && t.mob_ref().is_alive() {
         // `AgeableMob.aiStep` (`canAgeUp`: not age locked) and `Animal.aiStep`.
         let m = t.mob();
-        if m.age < 0 && !m.age_locked {
+        // `ZombieHorse` and `SkeletonHorse.canAgeUp` are false.
+        let grows = !matches!(m.kind, Kind::ZombieHorse | Kind::SkeletonHorse);
+        if m.age < 0 && !m.age_locked && grows {
             m.age += 1;
         } else if m.age > 0 {
             m.age -= 1;

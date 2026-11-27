@@ -99,6 +99,8 @@ pub struct BoatData {
     /// `LootTable` and `LootTableSeed` of a chest boat until the loot is rolled
     /// ([`crate::block::chest_loot::unpack_entity`]).
     pub loot_table: Option<(String, i64)>,
+    /// A leash read from NBT until its holder is found (`delayedLeashInfo`).
+    pub pending_leash: Option<crate::mob::LeashRef>,
 }
 
 impl BoatData {
@@ -126,6 +128,7 @@ impl BoatData {
                 Vec::new()
             },
             loot_table: None,
+            pending_leash: None,
         }
     }
 }
@@ -375,6 +378,8 @@ pub fn tick_boat(
     if eject {
         crate::riding::eject_passengers(ents, env, id);
     }
+    // `super.tick()`: the end of `Entity.baseTick` (`Leashable.tickLeash`).
+    crate::mob::tame::tick_boat_leash(level, ents, env, id);
     if controlled {
         // The rider's client moves the boat.
         if let Some(mut e) = ents.store.get_mut(id) {
@@ -558,10 +563,12 @@ fn move_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entity
     let pos = e.pos();
     let movement = physics::collide(&level.view(), aabb, delta, 0.0, on_ground, &mut cx.boxes);
     let mut v = delta;
-    if movement.x != delta.x {
+    // `Mth.equal`: a difference below 1e-5 is no collision.
+    let eps = f64::from(1.0e-5_f32);
+    if (movement.x - delta.x).abs() >= eps {
         v.x = 0.0;
     }
-    if movement.z != delta.z {
+    if (movement.z - delta.z).abs() >= eps {
         v.z = 0.0;
     }
     let landed = delta.y != movement.y && delta.y < 0.0;

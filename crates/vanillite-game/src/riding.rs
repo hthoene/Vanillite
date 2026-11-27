@@ -177,6 +177,10 @@ pub fn start_riding(
     if let Some(m) = ents.mob_mut(passenger) {
         m.nav.stop();
     }
+    // `Mob.startRiding`: a leashed mob drops its lead (where it stood).
+    if ents.mob(passenger).is_some() {
+        crate::mob::tame::drop_leash(ents, env, passenger, true);
+    }
     position_riders_of(ents, vehicle);
     send_passengers(ents, env, vehicle);
     true
@@ -254,6 +258,18 @@ pub fn stop_riding_in_level(level: &mut crate::level::Level, passenger: EntityId
 /// `stopRiding`: `passenger` gets off and is placed at the dismount location. Returns the
 /// old vehicle; `None` also when a plugin cancelled it (`VEHICLE_EXIT`: it stays, its
 /// client is corrected).
+/// `LivingEntity.baseTick` with the eyes under water (no bubble column): a passenger of a
+/// vehicle in `#dismounts_underwater` gets off.
+pub fn dismount_underwater(ents: &mut Entities, env: &mut Env<'_>, passenger: EntityId) {
+    if let Some(v) = ents.vehicle_of(passenger)
+        && ents.store.get(v).is_some_and(|e| {
+            crate::effect::entity_in_tag(e.kind(), "minecraft:dismounts_underwater")
+        })
+    {
+        stop_riding(ents, env, passenger);
+    }
+}
+
 pub fn stop_riding(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -463,6 +479,22 @@ fn dismount_location(
         }
         return Some(fallback);
     }
+    if ents.mob(vehicle).is_some_and(|m| {
+        matches!(
+            m.kind,
+            Kind::Horse
+                | Kind::Donkey
+                | Kind::Mule
+                | Kind::ZombieHorse
+                | Kind::SkeletonHorse
+                | Kind::Llama
+                | Kind::TraderLlama
+                | Kind::Camel
+                | Kind::CamelHusk
+        )
+    }) {
+        return Some(horse_dismount(ents, level, vehicle, passenger).unwrap_or(vpos));
+    }
     // `LivingEntity.getDismountLocationForPassenger`: the blocks around the vehicle in
     // `DismountHelper.offsetsForDirection(getMotionDirection())` order.
     let yaw = f64::from(v.rot().y_rot);
@@ -497,6 +529,65 @@ fn dismount_location(
         }
     }
     Some(fallback)
+}
+
+/// `AbstractHorse.getDismountLocationForPassenger`: beside the rider's main hand, then its
+/// other hand (`getDismountLocationInDirection`); `None` falls back to the horse's position.
+fn horse_dismount(
+    ents: &Entities,
+    level: &dyn physics::Blocks,
+    vehicle: EntityId,
+    passenger: EntityId,
+) -> Option<Vec3> {
+    let v = ents.store.get(vehicle)?;
+    let p = ents.store.get(passenger)?;
+    let right = match ents.player(passenger) {
+        Some(pd) => pd.client.main_hand == crate::player::MainHand::Right,
+        None => !ents.mob(passenger).is_some_and(|m| m.left_handed),
+    };
+    let (vw, pw) = (f64::from(v.dims().width), f64::from(p.dims().width));
+    let (vpos, aabb, y_rot) = (v.pos(), v.aabb(), v.rot().y_rot);
+    // `getDismountPoses` with their box sizes.
+    let poses: Vec<(f64, f64)> = if ents.player(passenger).is_some() {
+        vec![(0.6, 1.8), (0.6, 1.5), (0.6, 0.6)]
+    } else {
+        vec![(pw, f64::from(p.dims().height))]
+    };
+    let mut scratch = Vec::new();
+    for main in [true, false] {
+        let side = if right == main { 90.0 } else { -90.0 };
+        // `getCollisionHorizontalEscapeVector(width, passengerWidth, yRot +- 90)`.
+        let distance = (vw + pw + f64::from(1.0e-5_f32)) / 2.0;
+        let a = f64::from((y_rot + side) * (std::f32::consts::PI / 180.0));
+        let (xd, zd) = (-vanillite_base::math::sin(a), vanillite_base::math::cos(a));
+        let scale = xd.abs().max(zd.abs());
+        let (tx, tz) = (
+            vpos.x + f64::from(xd) * distance / f64::from(scale),
+            vpos.z + f64::from(zd) * distance / f64::from(scale),
+        );
+        let limit = aabb.max_y + 0.75;
+        for &(width, height) in &poses {
+            let mut pos = BlockPos::containing(tx, aabb.min_y, tz);
+            loop {
+                let h = block_floor_height(level, pos);
+                if f64::from(pos.y) + h > limit {
+                    break;
+                }
+                if floor_valid(h) {
+                    let t = Vec3::new(tx, f64::from(pos.y) + h, tz);
+                    if can_dismount_to(level, width, height, t, &mut scratch) {
+                        return Some(t);
+                    }
+                }
+                pos = BlockPos::new(pos.x, pos.y + 1, pos.z);
+                // `do { ... } while (!(y < limit))` as Vanilla has it.
+                if f64::from(pos.y) < limit {
+                    break;
+                }
+            }
+        }
+    }
+    None
 }
 
 /// `AbstractMinecart.getDismountLocationForPassenger`: the blocks beside the minecart's

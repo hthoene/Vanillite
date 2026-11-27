@@ -863,7 +863,7 @@ fn drop_horn(t: &mut Tick<'_, '_>) -> bool {
     let dz = f64::from(-0.2 + r.next_float() * 0.4);
     let pos = t.pos();
     let (uuid, y_rot, item_random) = crate::mob::new_item_entity_with_motion();
-    let stack = crate::mob::equipment::stack("minecraft:goat_horn");
+    let stack = create_horn(t);
     t.env.out.push(crate::survival::Effect::DropItem {
         random: item_random,
         uuid,
@@ -874,6 +874,49 @@ fn drop_horn(t: &mut Tick<'_, '_>) -> bool {
         stack,
     });
     true
+}
+
+/// `Goat.createHorn`: a goat horn with an instrument of `#regular_goat_horns` (or
+/// `#screaming_goat_horns`), drawn by a random seeded with the UUID's `hashCode`.
+fn create_horn(t: &Tick<'_, '_>) -> crate::item::ItemStack {
+    let mut stack = crate::mob::equipment::stack("minecraft:goat_horn");
+    let tag = if state(t.mob_ref()).screaming {
+        "#minecraft:screaming_goat_horns"
+    } else {
+        "#minecraft:regular_goat_horns"
+    };
+    let Some(data) = crate::player::play::game_data() else {
+        return stack;
+    };
+    let options = data.holder_set("minecraft:instrument", tag);
+    let Ok(len) = i32::try_from(options.len()) else {
+        return stack;
+    };
+    if len == 0 {
+        return stack;
+    }
+    // `UUID.hashCode`.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    let hash = {
+        let uuid = t.core().uuid();
+        let hilo = ((uuid >> 64) as u64) ^ (uuid as u64);
+        ((hilo >> 32) as i32) ^ (hilo as i32)
+    };
+    let mut random = vanillite_base::random::LegacyRandom::new(i64::from(hash));
+    let pick = usize::try_from(random.next_int_bounded(len)).unwrap_or(0);
+    if let Some(&id) = options.get(pick) {
+        // A registry holder: id + 1.
+        let mut out = Vec::new();
+        vanillite_protocol::codec::write_varint(
+            &mut out,
+            i32::try_from(id).unwrap_or(-1).wrapping_add(1),
+        );
+        stack.patch_mut().set(
+            vanillite_protocol::components::ids::INSTRUMENT,
+            out.into_boxed_slice(),
+        );
+    }
+    stack
 }
 
 /// `getJumpCandidate` (with `LongJumpToPreferredBlock`'s preference for frogs).
