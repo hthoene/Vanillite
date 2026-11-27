@@ -201,6 +201,12 @@ impl Movement {
         self.awaiting_position.is_some()
     }
 
+    /// The teleport the server waits for the client to accept: its id and target
+    /// (`awaitingTeleport`, `awaitingPositionFromClient`).
+    pub fn pending_teleport(&self) -> Option<(i32, Vec3)> {
+        self.awaiting_position.map(|p| (self.awaiting_teleport, p))
+    }
+
     /// `markClientUnloadedAfterDeath`: the client loads the world again after respawning.
     pub fn mark_client_unloaded(&mut self) {
         self.waiting_for_respawn = true;

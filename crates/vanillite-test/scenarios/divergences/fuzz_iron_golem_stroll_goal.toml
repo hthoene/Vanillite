@@ -1,0 +1,3 @@
+tick = 58
+cause = "the iron golem runs GolemStrollGoal where Vanilla runs GolemRandomStrollInVillageGoal"
+owner = "gameplay-developer #132"

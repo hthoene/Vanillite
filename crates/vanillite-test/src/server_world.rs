@@ -428,6 +428,7 @@ impl ScenarioWorld for ServerWorld {
                 ents,
                 row,
                 &name_of,
+                &|_| false,
                 self.spec.player_state,
                 self.spec.sleep_state,
             );
