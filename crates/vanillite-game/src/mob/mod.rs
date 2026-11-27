@@ -693,7 +693,9 @@ impl ExplosionRequest {
     }
 }
 
-/// A change of the world a mob tick causes; applied right after that tick.
+/// A change of the world a mob tick causes; applied right after that entity's tick (see
+/// `docs/architecture/world-access.md`). Reads of the same tick that must see it go through
+/// [`Tick::block`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldAction {
     Explode(ExplosionRequest),
@@ -1193,6 +1195,23 @@ impl Tick<'_, '_> {
     pub fn block_pos(&self) -> BlockPos {
         let p = self.pos();
         BlockPos::containing(p.x, p.y, p.z)
+    }
+
+    /// `getBlockState(pos)` as the ticking entity sees it. Its block changes are queued
+    /// ([`WorldAction`]) and applied after its tick, while in Vanilla they are immediate: this
+    /// read sees its own queued `setBlock` and `destroyBlock` like Vanilla does. Code that reads
+    /// a position it may have changed in the same tick reads through this, not `t.level`.
+    pub fn block(&self, pos: BlockPos) -> BlockState {
+        for action in self.cx.actions.iter().rev() {
+            match *action {
+                WorldAction::SetBlock(at, state, _) if at == pos => return state,
+                WorldAction::DestroyBlock(at, _) if at == pos => {
+                    return self.level.fluid(pos).block_state();
+                }
+                _ => {}
+            }
+        }
+        self.level.block(pos)
     }
 
     /// `getEyeY`.

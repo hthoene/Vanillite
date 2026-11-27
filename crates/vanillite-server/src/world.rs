@@ -95,6 +95,8 @@ pub struct ServerWorld {
     effects: LevelEffects,
     /// The random of the item entities (`Entity.random`).
     item_random: XoroshiroRandom,
+    /// The counters of the world access rules at the last report ([`Self::report_rules`]).
+    reported: RuleCounters,
     updates: WorldUpdates,
     /// The centre chunk of every player with tickets.
     player_tickets: FxHashMap<EntityId, ChunkPos>,
@@ -219,6 +221,7 @@ impl ServerWorld {
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
+            reported: RuleCounters::default(),
             scratch: Vec::new(),
             survival,
             mobs,
@@ -673,6 +676,7 @@ impl ServerWorld {
         crate::scoreboard::flush(ctx.global);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
+        self.report_rules();
         // Save rounds take only the time left in the tick (#47).
         let left = ctx.deadline.saturating_sub(ctx.global.clock.now());
         self.level
@@ -696,21 +700,50 @@ impl ServerWorld {
     fn tick_entities(&mut self, global: &Global) {
         self.mobs
             .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
-        self.mobs
-            .tick_entities(&mut self.level, &mut self.survival, global, &self.dimension);
-        let level = &mut self.level;
-        let min_y = level.min_y();
-        crate::blocks::tick_items(
-            &mut level.entities,
-            &level.chunks,
-            &mut self.item_random,
-            min_y,
-            crate::blocks::ItemSettings {
+        let items = crate::mobs::ItemTick {
+            random: &mut self.item_random,
+            settings: crate::blocks::ItemSettings {
                 lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
                 merge_radius: self.rules.items.merge_radius,
             },
+        };
+        self.mobs.tick_entities(
+            &mut self.level,
+            &mut self.survival,
+            global,
+            &self.dimension,
+            items,
         );
-        self.item_portals();
+    }
+
+    /// Once a minute: how often the two world access rules applied
+    /// (`docs/architecture/world-access.md`). Synchronous chunk loads block the tick and are
+    /// logged; deferred entity world changes only at debug level.
+    fn report_rules(&mut self) {
+        const EVERY: u64 = 20 * 60;
+        if self.ticks == self.reported.at || !self.ticks.is_multiple_of(EVERY) {
+            return;
+        }
+        let now = RuleCounters {
+            at: self.ticks,
+            sync_loads: self.level.chunks.sync_loads(),
+            deferred_actions: self.mobs.deferred_actions(),
+        };
+        let loads = now.sync_loads.count - self.reported.sync_loads.count;
+        if loads > 0 {
+            let waited = now.sync_loads.waited - self.reported.sync_loads.waited;
+            log::info!(
+                "{}: {loads} synchronous chunk loads blocked the tick for {} ms in the last minute",
+                self.dimension,
+                waited.as_millis()
+            );
+        }
+        log::debug!(
+            "{}: {} entity world changes applied after their tick in the last minute",
+            self.dimension,
+            now.deferred_actions - self.reported.deferred_actions
+        );
+        self.reported = now;
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
@@ -952,4 +985,13 @@ fn release_center(
             chunks.remove_simulation_ticket(sim);
         }
     }
+}
+
+/// The counters of the world access rules (`docs/architecture/world-access.md`).
+#[derive(Clone, Copy, Debug, Default)]
+struct RuleCounters {
+    /// The world tick of the counters.
+    at: u64,
+    sync_loads: vanillite_world::chunks::SyncLoads,
+    deferred_actions: u64,
 }
