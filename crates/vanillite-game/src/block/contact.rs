@@ -145,8 +145,30 @@ pub fn trample_farmland(level: &mut Level, pos: BlockPos, source: Option<EntityI
 /// `Block.pushEntitiesUp` from a block whose top was at `top` (fraction of the block) to a full
 /// block: entities in the gap move up onto the new top. Players are left to their client.
 pub fn push_entities_up(level: &mut Level, pos: BlockPos, top: f64) {
+    push_entities_up_between(level, pos, top, 1.0);
+}
+
+/// `Block.pushEntitiesUp(state, newState, level, pos)` for blocks whose collision shapes are
+/// full-width slabs: entities in the gap between the old and the new top move up onto it.
+pub fn push_entities_up_states(
+    level: &mut Level,
+    pos: BlockPos,
+    old: vanillite_data::block::BlockState,
+    new: vanillite_data::block::BlockState,
+) {
+    let top = |s: vanillite_data::block::BlockState| {
+        s.collision_shape().iter().fold(0.0_f64, |m, b| m.max(b[4]))
+    };
+    let (from, to) = (top(old), top(new));
+    if to > from {
+        push_entities_up_between(level, pos, from, to);
+    }
+}
+
+/// [`push_entities_up`] for the gap between `bottom` and `top` (fractions of the block).
+fn push_entities_up_between(level: &mut Level, pos: BlockPos, bottom: f64, top: f64) {
     let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-    let gap = Aabb::new(x, y + top, z, x + 1.0, y + 1.0, z + 1.0);
+    let gap = Aabb::new(x, y + bottom, z, x + 1.0, y + top, z + 1.0);
     let mut found = Vec::new();
     level
         .entities
@@ -161,8 +183,8 @@ pub fn push_entities_up(level: &mut Level, pos: BlockPos, top: f64) {
         }
         // `Shapes.collide(Y, box.move(0, 1, 0), [gap], -1)`: back down onto the new top.
         let min_y = e.as_ref().aabb().min_y;
-        let offset = if min_y >= y {
-            (y - min_y).max(-1.0)
+        let offset = if min_y + 1.0 >= y + top {
+            (y + top - (min_y + 1.0)).max(-1.0)
         } else {
             -1.0
         };

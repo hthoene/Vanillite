@@ -1,0 +1,102 @@
+{
+  "description": "Players and block-only Low gaps (#219): emptying the last water bottle into a water cauldron counts used:air (the stat reads the hand after createFilledResult), a stack of two counts used:potion; a jukebox item whose block_entity_data holds a RecordItem places with has_record=true (JukeboxBlock.setPlacedBy). All chunks in the player's simulation distance are forced.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "progress_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -61,
+      -16
+    ],
+    [
+      31,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 30,
+  "entities": [
+    {
+      "name": "p2",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        180,
+        30
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:water_cauldron[level=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        2
+      ],
+      "block": "minecraft:water_cauldron[level=1]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "p2",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "item": "minecraft:potion",
+      "count": 1,
+      "components": "{\"minecraft:potion_contents\":{\"potion\":\"minecraft:water\"}}"
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "p2",
+      "pos": [
+        7,
+        -60,
+        2
+      ],
+      "item": "minecraft:potion",
+      "count": 2,
+      "components": "{\"minecraft:potion_contents\":{\"potion\":\"minecraft:water\"}}"
+    },
+    {
+      "tick": 7,
+      "op": "use",
+      "entity": "p2",
+      "pos": [
+        9,
+        -61,
+        2
+      ],
+      "face": "up",
+      "item": "minecraft:jukebox",
+      "count": 1,
+      "components": "{\"minecraft:block_entity_data\":{\"id\":\"minecraft:jukebox\",\"RecordItem\":{\"id\":\"minecraft:music_disc_cat\",\"count\":1}}}"
+    }
+  ],
+  "dimensions": true,
+  "datapack": "progress_triggers"
+}

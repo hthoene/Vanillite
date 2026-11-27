@@ -262,8 +262,8 @@ pub fn cave_vines_use(
     for stack in interact_loot(level, "minecraft:harvest/cave_vine", state) {
         super::drops::pop_resource(level, pos, stack);
     }
-    // `Mth.randomBetween(random, 0.8F, 1.2F)`.
-    let pitch = level.random().next_float() * 0.4 + 0.8;
+    // `Mth.randomBetween(random, 0.8F, 1.2F)`: `(1.2F - 0.8F)` is 0.40000004F.
+    let pitch = level.random().next_float() * (1.2_f32 - 0.8_f32) + 0.8;
     level.play_block_sound(
         None,
         pos,

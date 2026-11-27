@@ -75,10 +75,10 @@ pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1);
             if layers < max_height.min(8) {
-                // `Block.pushEntitiesUp` moves entities in the way; scenario worlds have none.
                 let grown = state
                     .with("layers", &(layers + 1).to_string())
                     .unwrap_or(state);
+                super::contact::push_entities_up_states(level, top, state, grown);
                 he::set_block_and_update(level, BLOCK_FORM, top, grown);
             }
         } else {
@@ -301,6 +301,11 @@ pub(super) fn snow_random_tick(level: &mut Level, state: BlockState, pos: BlockP
     if level.light(pos).1 > 11 && he::allows(level, BLOCK_FADE, pos, BlockState::AIR) {
         drops::drop_resources(level, pos, state, None);
         level.remove_block(pos, false);
+        level.game_event_block(
+            crate::level::game_event::events().block_destroy,
+            pos,
+            crate::level::game_event::GameEventContext::with_state(None, state),
+        );
     }
 }
 
@@ -467,6 +472,17 @@ pub(super) fn weathers(block: BlockId) -> bool {
 pub(super) fn copper_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     // Doors weather from their lower half only.
     if state.value("half") == Some("upper") {
+        return;
+    }
+    // `WeatheringCopperChestBlock.randomTick`: not the right half of a double chest, and only
+    // while nobody has the chest open.
+    if state.block().info().kind == vanillite_data::block::BlockKind::WeatheringCopperChestBlock
+        && (state.value("type") == Some("right")
+            || !matches!(
+                level.block_entity(pos),
+                Some(crate::level::block_entity::BlockEntity::Container(c)) if c.openers == 0
+            ))
+    {
         return;
     }
     if level.random().next_float() >= 0.056_888_89 {

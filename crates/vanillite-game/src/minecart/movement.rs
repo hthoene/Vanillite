@@ -705,6 +705,9 @@ fn move_cart(c: &mut Cart<'_, '_>, delta: Vec3) {
             }
             if restitution > 0.0 {
                 // `bounceOn`, then `gameEvent(BOUNCE)`.
+                if effect_state.block() == block_ids::SHELF_MUSHROOM {
+                    crate::survival::player::shelf_mushroom_bounce(c.env.out, new_pos);
+                }
                 crate::survival::game_event(
                     c.env.out,
                     crate::level::game_event::events().bounce,

@@ -557,6 +557,8 @@ fn attempt_place_sculk(level: &mut Level, pos: BlockPos) -> bool {
         if !super::hook_events::allows(level, BLOCK_SPREAD, support_pos, sculk) {
             return false;
         }
+        let old = level.block(support_pos);
+        super::contact::push_entities_up_states(level, support_pos, old, sculk);
         level.set_block_and_update(support_pos, sculk);
         let sound = sound_id("block.sculk.spread");
         level.play_block_sound(None, support_pos, sound, SOUND_BLOCKS, 1.0, 1.0);

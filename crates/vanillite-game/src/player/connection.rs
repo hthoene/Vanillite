@@ -1622,7 +1622,7 @@ impl Connection {
             return;
         }
         let state = play.level.block(pos);
-        let item = state.block().info().item;
+        let item = clone_item(state.block());
         if item == u16::MAX || item == 0 {
             return;
         }
@@ -1757,4 +1757,35 @@ fn play_bundle_sounds(play: &mut PlayContext<'_>, sounds: Vec<crate::bundle::Sou
             pitch,
         );
     }
+}
+
+/// `Block.getCloneItemStack` of blocks without an item of their own: stems give their seeds,
+/// bamboo shoots bamboo, plant bodies their head's item, cave vines glow berries, tall
+/// seagrass seagrass and potted plants the plant.
+fn clone_item(block: vanillite_data::block::BlockId) -> u16 {
+    let own = block.info().item;
+    if own != u16::MAX && own != 0 {
+        return own;
+    }
+    let name = block.name();
+    let mapped = match name {
+        "minecraft:attached_pumpkin_stem" | "minecraft:pumpkin_stem" => "minecraft:pumpkin_seeds",
+        "minecraft:attached_melon_stem" | "minecraft:melon_stem" => "minecraft:melon_seeds",
+        "minecraft:bamboo_sapling" => "minecraft:bamboo",
+        "minecraft:kelp_plant" => "minecraft:kelp",
+        "minecraft:weeping_vines_plant" => "minecraft:weeping_vines",
+        "minecraft:twisting_vines_plant" => "minecraft:twisting_vines",
+        "minecraft:cave_vines" | "minecraft:cave_vines_plant" => "minecraft:glow_berries",
+        "minecraft:tall_seagrass" => "minecraft:seagrass",
+        "minecraft:potted_azalea_bush" => "minecraft:azalea",
+        "minecraft:potted_flowering_azalea_bush" => "minecraft:flowering_azalea",
+        _ => match name.strip_prefix("minecraft:potted_") {
+            Some(plant) => {
+                return vanillite_data::block::BlockId::by_name(&format!("minecraft:{plant}"))
+                    .map_or(u16::MAX, |b| b.info().item);
+            }
+            None => return own,
+        },
+    };
+    vanillite_data::item::ItemId::by_name(mapped).map_or(u16::MAX, |i| i.0)
 }

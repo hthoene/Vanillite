@@ -285,6 +285,7 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
             Some(BlockEntity::Furnace(f)) => f.custom_name.clone(),
             Some(BlockEntity::BrewingStand(b)) => b.custom_name.clone(),
             Some(BlockEntity::Beacon(b)) => b.custom_name.clone(),
+            Some(BlockEntity::EnchantingTable(name)) => name.as_deref().cloned(),
             _ => None,
         }
         .unwrap_or_else(|| title(default))
@@ -406,7 +407,7 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
         Kind::EnchantingTable => Some(request(
             MenuKind::Enchantment,
             Storage::Local,
-            title("container.enchant"),
+            named("container.enchant"),
         )),
         Kind::BrewingStand => Some(request(
             MenuKind::BrewingStand,
@@ -485,6 +486,7 @@ pub fn double_chest_partner(level: &Level, state: BlockState, pos: BlockPos) -> 
     (other_state.block() == state.block()
         && other_state.value("type") != Some("single")
         && other_state.value("type") != Some(kind)
+        && other_state.value("facing") == state.value("facing")
         && matches!(level.block_entity(other), Some(BlockEntity::Container(_))))
     .then_some(other)
 }
@@ -1310,6 +1312,8 @@ pub fn component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
         BlockEntity::Hopper(h) => (&h.custom_name, &h.items),
         BlockEntity::Furnace(f) => (&f.custom_name, &f.items),
         BlockEntity::BrewingStand(b) => (&b.custom_name, &b.items),
+        // `BeaconBlockEntity.collectImplicitComponents`: its custom name.
+        BlockEntity::Beacon(b) => (&b.custom_name, &[]),
         _ => return None,
     };
     if id == ids::CONTAINER_LOOT {
@@ -1363,6 +1367,7 @@ pub fn apply_item_components(level: &mut Level, pos: BlockPos, stack: &ItemStack
             Some(BlockEntity::Hopper(h)) => (&mut h.custom_name, &mut h.items),
             Some(BlockEntity::Furnace(f)) => (&mut f.custom_name, &mut f.items),
             Some(BlockEntity::BrewingStand(b)) => (&mut b.custom_name, &mut b.items),
+            Some(BlockEntity::Beacon(b)) => (&mut b.custom_name, &mut []),
             _ => return,
         };
     if name.is_some() {

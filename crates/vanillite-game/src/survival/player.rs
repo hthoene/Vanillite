@@ -2911,6 +2911,18 @@ fn check_fall_damage(
                 pos,
                 Some(on_state),
             ));
+            // `TurtleEggBlock.fallOn`: one egg in three breaks (spawn protection is not
+            // checked).
+            if on_state.block() == vanillite_data::block::ids::TURTLE_EGG {
+                player
+                    .survival
+                    .world_actions
+                    .push(crate::mob::WorldAction::TrampleTurtleEgg {
+                        pos: on_pos,
+                        can_destroy: true,
+                        randomness: 3,
+                    });
+            }
             match env.facts.landing(on_state) {
                 Landing::Fall(multiplier) => {
                     cause_fall_damage(entity, player, env, fall, multiplier, env.types.fall);
@@ -2930,7 +2942,11 @@ fn check_fall_damage(
                             event: entity_event::HONEY_SLIDE,
                         }),
                     });
-                    cause_fall_damage(entity, player, env, fall, 0.2, env.types.fall);
+                    if cause_fall_damage(entity, player, env, fall, 0.2, env.types.fall) {
+                        // The honey block's fall sound (`soundType.getFallSound()`).
+                        let sound = super::sound_event("minecraft:block.honey_block.fall");
+                        step_sound_event(env, id, pos, sound, 0.5, 0.75);
+                    }
                 }
                 Landing::Stalagmite => {
                     let kind = env.types.stalagmite;
@@ -2972,6 +2988,30 @@ fn check_fall_damage(
     }
 }
 
+/// `ShelfMushroomBlock.bounceOn`: the bounce sound at the block below that affects the
+/// movement (`getBlockPosBelowThatAffectsMyMovement`) of an entity at `pos`.
+pub fn shelf_mushroom_bounce(out: &mut Vec<Effect>, pos: Vec3) {
+    let below = BlockPos::new(
+        vanillite_base::math::floor(pos.x),
+        vanillite_base::math::floor(pos.y - 0.500_001),
+        vanillite_base::math::floor(pos.z),
+    );
+    play_sound(
+        out,
+        None,
+        Vec3::new(
+            f64::from(below.x) + 0.5,
+            f64::from(below.y) + 0.5,
+            f64::from(below.z) + 0.5,
+        ),
+        "minecraft:block.shelf_mushroom.bounce",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Blocks,
+        1.0,
+        1.0,
+        super::sound_seed(),
+    );
+}
+
 /// `calculateFallDamage`.
 pub fn fall_damage(fall_distance: f64, multiplier: f32) -> i32 {
     fall_damage_with(fall_distance, multiplier, SAFE_FALL_DISTANCE)
@@ -2992,9 +3032,9 @@ fn cause_fall_damage(
     fall_distance: f64,
     multiplier: f32,
     kind: DamageKind,
-) {
+) -> bool {
     if Abilities::of(player.game_mode).mayfly {
-        return;
+        return false;
     }
     // `LivingEntity.causeFallDamage`: a fall after an impulse counts from its impact point.
     let fall_distance = match player.survival.impulse_impact {
@@ -3045,6 +3085,7 @@ fn cause_fall_damage(
         let amount = damage as f32;
         hurt(entity, player, env, DamageSource::of(kind), amount);
     }
+    damage > 0
 }
 
 /// `ServerPlayer.checkMovementStatistics`: the distance statistics and the exhaustion of
@@ -3535,6 +3576,11 @@ fn simulate_move(
                 -current.y * 0.0
             };
             if restitution > 0.0 {
+                if effect_state
+                    .is_some_and(|s| s.block() == vanillite_data::block::ids::SHELF_MUSHROOM)
+                {
+                    shelf_mushroom_bounce(env.out, below);
+                }
                 player.survival.game_events.push((
                     crate::level::game_event::events().bounce,
                     below,

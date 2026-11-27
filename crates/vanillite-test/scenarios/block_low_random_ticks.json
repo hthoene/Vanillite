@@ -1,0 +1,105 @@
+{
+  "description": "Random ticks of block-only Low gaps (#219): a single copper chest and the left half of a double copper chest weather, the right half never does (WeatheringCopperChestBlock.randomTick); a growing sweet berry bush posts BLOCK_CHANGE (a sculk sensor next to it hears it); a snow layer in glowstone light melts with BLOCK_DESTROY (a sensor hears it).",
+  "tier": "fast",
+  "level_rng": true,
+  "rules": {
+    "random_tick_speed": "4096"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      44,
+      -58,
+      4
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:copper_chest[facing=north,type=single,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        2
+      ],
+      "block": "minecraft:copper_chest[facing=north,type=left,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        2
+      ],
+      "block": "minecraft:copper_chest[facing=north,type=right,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        20,
+        -61,
+        2
+      ],
+      "block": "minecraft:grass_block[snowy=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        20,
+        -60,
+        2
+      ],
+      "block": "minecraft:sweet_berry_bush[age=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        22,
+        -60,
+        2
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        38,
+        -60,
+        2
+      ],
+      "block": "minecraft:glowstone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        39,
+        -60,
+        2
+      ],
+      "block": "minecraft:snow[layers=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        41,
+        -60,
+        2
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    }
+  ],
+  "actions": []
+}

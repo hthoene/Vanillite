@@ -946,8 +946,13 @@ impl ContainerView<'_> {
                         vanillite_base::BlockPos::new(pos.x + x / 2, pos.y + y, pos.z + z / 2);
                     // `enchantment_power_provider` (bookshelves) with a
                     // `enchantment_power_transmitter` (replaceable) block between.
-                    if self.level.block(shelf).block() == vanillite_data::block::ids::BOOKSHELF
-                        && crate::block::can_be_replaced(self.level.block(between))
+                    let tags = &vanillite_worldgen::behaviour::tags().blocks;
+                    if tags
+                        .enchantment_power_provider
+                        .contains(self.level.block(shelf))
+                        && tags
+                            .enchantment_power_transmitter
+                            .contains(self.level.block(between))
                     {
                         count += 1;
                     }

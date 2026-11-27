@@ -165,6 +165,14 @@ fn is_beam_block(state: BlockState) -> bool {
         || name.ends_with("_stained_glass_pane")
 }
 
+/// `EntitySelector.NO_SPECTATORS`.
+fn not_spectator(level: &Level, id: EntityId) -> bool {
+    level
+        .entities
+        .player(id)
+        .is_none_or(|p| p.game_mode != vanillite_config::GameMode::Spectator)
+}
+
 fn play(level: &mut Level, pos: BlockPos, sound: &str) {
     let id = crate::block::sound_id(sound);
     level.play_block_sound(None, pos, id, SOUND_BLOCKS, 1.0, 1.0);
@@ -236,6 +244,8 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
                 .entities
                 .store
                 .for_each_in(&area, true, |p| players.push(p));
+            // `getEntitiesOfClass` leaves spectators out.
+            players.retain(|&p| not_spectator(level, p));
             for p in players {
                 level.trigger(
                     p,
@@ -306,6 +316,7 @@ fn apply_effects(
         .entities
         .store
         .for_each_in(&area, true, |p| players.push(p));
+    players.retain(|&p| not_spectator(level, p));
     for &p in &players {
         let e = EffectInstance::with_flags(primary, duration, amplifier, true, true, true);
         crate::effect::living::add_to_player(&mut level.entities, p, e);
@@ -342,9 +353,14 @@ pub fn update_effects(
     if !validate_effects(primary, secondary, b.levels) {
         return false;
     }
-    // `beaconData.set`: `filterEffect` keeps only beacon powers.
+    // `beaconData.set`: `filterEffect` keeps only beacon powers; setting the primary power
+    // plays the selection sound while the beam shines.
+    let beam = b.beam_sections > 0;
     b.primary = filter(primary);
     b.secondary = filter(secondary);
+    if beam {
+        play(level, pos, "minecraft:block.beacon.power_select");
+    }
     payment.shrink(1);
     level.block_entity_changed(pos);
     true
@@ -499,6 +515,7 @@ fn conduit_effects(level: &mut Level, pos: BlockPos, frame: u32) {
         .entities
         .store
         .for_each_in(&area, true, |p| players.push(p));
+    players.retain(|&p| not_spectator(level, p));
     for p in players {
         let Some(e) = level.entities.store.get(p) else {
             continue;
