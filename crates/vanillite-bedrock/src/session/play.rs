@@ -650,7 +650,7 @@ impl Session {
             self.version
                 .palette
                 .items()
-                .write_instance(&mut stack, &item, 0);
+                .write_instance(&mut stack, &item, 0, &self.enchantments);
             let body = bp::add_item_actor(uid(d.entity_id), &stack, f3(e.pos), [0.0; 3]);
             self.send(id::ADD_ITEM_ACTOR, &body);
             return;
@@ -838,9 +838,10 @@ impl Session {
             }
         }
         let eq = eq.clone();
+        let enchantments = self.enchantments.clone();
         let one = |s: &ItemStack| {
             let mut out = Vec::new();
-            items.write_instance(&mut out, s, 0);
+            items.write_instance(&mut out, s, 0, &enchantments);
             out
         };
         let empty = ItemStack::EMPTY;
@@ -1269,6 +1270,13 @@ impl Session {
             }
             ids::UPDATE_ATTRIBUTES => self.java_attributes(&mut r),
             ids::BLOCK_EVENT => self.java_block_event(&mut r),
+            ids::UPDATE_RECIPES => {
+                if let Some(list) = crate::recipes::read_stonecutter(&mut r) {
+                    let items = self.version.palette.items();
+                    let body = self.recipes.set_stonecutter(items, list);
+                    self.send(id::CRAFTING_DATA, &body);
+                }
+            }
             ids::RECIPE_BOOK_ADD => {
                 if let Ok(book) = pcb::RecipeBookAdd::decode(&mut r) {
                     let items = self.version.palette.items();

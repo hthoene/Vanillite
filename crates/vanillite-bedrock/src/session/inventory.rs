@@ -47,6 +47,10 @@ pub(super) struct Inventory {
     recipe: Option<ItemStack>,
     /// The Java recipe of a recipe book craft: placed before each craft.
     auto: Option<i32>,
+    /// The Java server made the result itself (enchanting): taking it changes nothing.
+    server_made: bool,
+    /// The filter strings of the request (the anvil's name field).
+    filters: Vec<String>,
 }
 
 impl Default for Inventory {
@@ -63,6 +67,8 @@ impl Default for Inventory {
             crafted: 0,
             recipe: None,
             auto: None,
+            server_made: false,
+            filters: Vec::new(),
         }
     }
 }
@@ -167,6 +173,19 @@ impl Inventory {
                 s.checked_sub(1).filter(|&i| i < 3).and_then(own)
             }
             (Kind::Brewing, container::BREWING_FUEL) => own(4),
+            (Kind::Crafter, container::CRAFTER) => own(s),
+            (Kind::Anvil, container::ANVIL_INPUT)
+            | (Kind::Enchanting, container::ENCHANTING_INPUT)
+            | (Kind::Smithing, container::SMITHING_TEMPLATE)
+            | (Kind::Stonecutter, container::STONECUTTER_INPUT)
+            | (Kind::Grindstone, container::GRINDSTONE_INPUT)
+            | (Kind::Cartography, container::CARTOGRAPHY_INPUT) => own(0),
+            (Kind::Anvil, container::ANVIL_MATERIAL)
+            | (Kind::Enchanting, container::ENCHANTING_MATERIAL)
+            | (Kind::Smithing, container::SMITHING_INPUT)
+            | (Kind::Grindstone, container::GRINDSTONE_ADDITIONAL)
+            | (Kind::Cartography, container::CARTOGRAPHY_ADDITIONAL) => own(1),
+            (Kind::Smithing, container::SMITHING_MATERIAL) => own(2),
             _ => target(r),
         }
     }
@@ -180,8 +199,11 @@ impl Inventory {
                 o.slots.len().saturating_add(i).saturating_sub(9)
             }
             (Some(Target::Menu(i)), None) if (1..MENU).contains(&i) => i,
-            (Some(Target::Created), Some(o)) if o.kind == Kind::Crafting => 0,
             (Some(Target::Created), None) => 0,
+            (Some(Target::Created), Some(_)) => match self.result_slot() {
+                Some(Target::Open(i)) => i,
+                _ => return Err(Refused),
+            },
             _ => return Err(Refused),
         };
         i16::try_from(slot).map_err(|_| Refused)
@@ -191,8 +213,13 @@ impl Inventory {
     fn result_slot(&self) -> Option<Target> {
         match &self.open {
             None => Some(Target::Menu(0)),
-            Some(o) if o.kind == Kind::Crafting => Some(Target::Open(0)),
-            Some(_) => None,
+            Some(o) => match o.kind {
+                Kind::Crafting => Some(Target::Open(0)),
+                Kind::Stonecutter => Some(Target::Open(1)),
+                Kind::Anvil | Kind::Grindstone | Kind::Cartography => Some(Target::Open(2)),
+                Kind::Smithing => Some(Target::Open(3)),
+                _ => None,
+            },
         }
     }
 
@@ -446,6 +473,8 @@ impl Session {
             StackAction::Take { count, src, dst } | StackAction::Place { count, src, dst } => {
                 let (src, dst, n) = (t(&src)?, t(&dst)?, i32::from(count));
                 match (src, dst) {
+                    // The enchanted item is already in its slot on the Java side.
+                    (Target::Created, _) if self.inv.server_made => Ok(()),
                     (Target::Created, d) if d != Target::Created => self.craft_take(n, d),
                     (Target::Created, _) | (_, Target::Created) => Err(Refused),
                     (Target::Cursor, Target::Cursor) => Ok(()),
@@ -511,10 +540,25 @@ impl Session {
                 self.inv.put(s, rest);
                 Ok(())
             }
-            StackAction::CraftRecipe { net_id, .. } => {
-                self.inv.recipe = self.recipes.result(net_id);
+            StackAction::CraftRecipe { net_id, .. } => self.craft_recipe(net_id),
+            StackAction::CraftRecipeOptional { filter, .. } => {
+                if self
+                    .inv
+                    .open
+                    .as_ref()
+                    .is_some_and(|o| o.kind == Kind::Anvil)
+                {
+                    // The anvil's name field; empty keeps no custom name, as on Bedrock.
+                    let name = usize::try_from(filter)
+                        .ok()
+                        .and_then(|i| self.inv.filters.get(i))
+                        .cloned()
+                        .unwrap_or_default();
+                    self.java_send(&psb::RenameItem { name });
+                }
                 Ok(())
             }
+            StackAction::CraftGrindstone => Ok(()),
             StackAction::CraftRecipeAuto { net_id, .. } => {
                 self.inv.recipe = self.recipes.result(net_id);
                 self.inv.auto = Some(self.recipes.java(net_id).ok_or(Refused)?);
@@ -523,6 +567,43 @@ impl Session {
             StackAction::MineBlock | StackAction::Create | StackAction::Results => Ok(()),
             _ => Err(Refused),
         }
+    }
+
+    /// `craft_recipe`: a crafting, stonecutter or smithing recipe, or an enchanting option.
+    fn craft_recipe(&mut self, net_id: u32) -> Result<(), Refused> {
+        let Some(open) = &self.inv.open else {
+            self.inv.recipe = self.recipes.result(net_id);
+            return Ok(());
+        };
+        let container_id = open.container;
+        match open.kind {
+            Kind::Enchanting => {
+                let option = net_id
+                    .checked_sub(super::container::ENCHANT_NET_ID)
+                    .filter(|&o| o < 3)
+                    .ok_or(Refused)?;
+                self.java_send(&psb::ContainerButtonClick {
+                    container_id,
+                    button_id: i32::try_from(option).map_err(|_| Refused)?,
+                });
+                self.inv.server_made = true;
+            }
+            Kind::Stonecutter => {
+                let input = self.inv.get(Target::Open(0));
+                let button = self
+                    .recipes
+                    .stonecutter_button(net_id, input.item)
+                    .filter(|_| !input.is_empty())
+                    .ok_or(Refused)?;
+                self.java_send(&psb::ContainerButtonClick {
+                    container_id,
+                    button_id: button,
+                });
+                self.inv.recipe = self.recipes.result(net_id);
+            }
+            _ => self.inv.recipe = self.recipes.result(net_id),
+        }
+        Ok(())
     }
 
     /// Sets a slot in creative mode: mirror and Java creative slot.
@@ -626,6 +707,8 @@ impl Session {
         self.inv.recipe = None;
         self.inv.auto = None;
         self.inv.created = None;
+        self.inv.server_made = false;
+        self.inv.filters.clone_from(&req.filters);
         let mut ok = true;
         for a in &req.actions {
             let r = if creative {
@@ -700,10 +783,12 @@ impl Session {
 
     pub(super) fn instance(&self, slot: &Slot) -> Vec<u8> {
         let mut out = Vec::with_capacity(16);
-        self.version
-            .palette
-            .items()
-            .write_instance(&mut out, &slot.stack, slot.net);
+        self.version.palette.items().write_instance(
+            &mut out,
+            &slot.stack,
+            slot.net,
+            &self.enchantments,
+        );
         out
     }
 
@@ -714,7 +799,7 @@ impl Session {
         for i in 0..36usize {
             let menu = if i < 9 { i.saturating_add(36) } else { i };
             if let Some(s) = self.inv.slots.get(menu) {
-                items.write_instance(&mut main, &s.stack, s.net);
+                items.write_instance(&mut main, &s.stack, s.net, &self.enchantments);
             }
         }
         self.send(
@@ -724,7 +809,7 @@ impl Session {
         let mut armour = Vec::new();
         for menu in 5..9usize {
             if let Some(s) = self.inv.slots.get(menu) {
-                items.write_instance(&mut armour, &s.stack, s.net);
+                items.write_instance(&mut armour, &s.stack, s.net, &self.enchantments);
             }
         }
         self.send(
