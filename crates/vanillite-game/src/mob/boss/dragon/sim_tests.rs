@@ -224,8 +224,9 @@ fn only_players_and_explosions_hurt_the_dragon() {
     let mut w = World::new();
     let dragon = w.spawn_dragon(Vec3::new(0.5, 100.0, 0.5), Phase::HoldingPattern);
     w.with(|level, ents, env, cx| {
+        // The hit counts (`hurt` is true) but does no damage.
         let source = DamageSource::of(env.types.generic);
-        assert!(!combat::hurt(level, ents, env, cx, dragon, source, 10.0));
+        assert!(combat::hurt(level, ents, env, cx, dragon, source, 10.0));
     });
     assert_eq!(w.level.entities.mob(dragon).unwrap().health, 200.0);
 }
@@ -390,4 +391,86 @@ fn a_player_in_a_new_end_starts_the_fight_and_leaves_its_bar() {
             .any(|e| matches!(e, Effect::To { player: p, .. } if *p == player))
     );
     assert_eq!(w.level.entities.departed_uuid(player), Some(0xABCD));
+}
+
+#[test]
+fn kill_removes_the_fight_dragon_at_once_and_ends_the_fight() {
+    let mut w = World::new();
+    let mut fight = DragonFight::new(None, 0, &mut LegacyRandom::new(1));
+    crate::block::spawner_tests::add_player(
+        &mut w.level,
+        Vec3::new(8.5, -60.0, 8.5),
+        vanillite_config::GameMode::Survival,
+    );
+    let dragon = |level: &Level| {
+        level
+            .entities
+            .mobs
+            .iter()
+            .find(|(_, m)| m.kind == Kind::EnderDragon)
+            .map(|(id, _)| id)
+    };
+    for _ in 0..40 {
+        w.tick_fight(&mut fight);
+        crate::level::tests::tick(&mut w.level);
+        if dragon(&w.level).is_some() {
+            break;
+        }
+    }
+    let id = dragon(&w.level).expect("the fight's dragon");
+    w.level
+        .entities
+        .mob_mut(id)
+        .unwrap()
+        .boss
+        .dragon_mut()
+        .unwrap()
+        .in_fight = true;
+    w.cx.dragon_events.clear();
+    assert!(w.with(|_, ents, _, cx| kill(ents, cx, id)));
+    // `remove(KILLED)`: gone at once, without the dying phase.
+    for d in std::mem::take(&mut w.cx.discarded) {
+        w.level.entities.despawn(d);
+    }
+    assert!(dragon(&w.level).is_none());
+    let events = std::mem::take(&mut w.cx.dragon_events);
+    assert!(matches!(
+        events[..],
+        [DragonEvent::Update { progress, .. }, DragonEvent::Killed { .. }] if progress == 1.0
+    ));
+    let World {
+        level,
+        types,
+        facts,
+        rules,
+        random,
+        out,
+        cx,
+    } = &mut w;
+    let raining = |_| false;
+    let mut no_gateway = |_| false;
+    let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
+    let mut env = Env {
+        hooks: &crate::hooks::NoHooks,
+        types,
+        facts,
+        blocks: &NoBlocks,
+        rules,
+        difficulty: Difficulty::Normal,
+        game_time: 0,
+        min_y: -64,
+        dimension: "minecraft:the_end",
+        raining_at: &raining,
+        border: None,
+        enter_gateway: &mut no_gateway,
+        display_name: &names,
+        entity_team: &|_| None,
+        random,
+        out,
+    };
+    for event in events {
+        fight.handle(level, &mut env, cx, event);
+    }
+    assert!(fight.dragon_killed && fight.previously_killed);
+    assert!(!fight.bar().is_visible());
 }

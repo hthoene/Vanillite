@@ -258,9 +258,9 @@ pub fn hurt_mob(
     if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
         return false;
     }
-    let Some(amount) = super::boss::filter_hurt(level, ents, env, cx, target, &source, amount)
-    else {
-        return false;
+    let amount = match super::boss::filter_hurt(level, ents, env, cx, target, &source, amount) {
+        Ok(amount) => amount,
+        Err(took) => return took,
     };
     let Some(m) = ents.mob_mut(target) else {
         return false;

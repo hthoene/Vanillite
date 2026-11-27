@@ -764,6 +764,8 @@ impl WorldSurvival {
         for id in std::mem::take(&mut cx.discarded) {
             level.entities.despawn(id);
         }
+        // The End fight is the world's: it takes these before its next tick.
+        level.output().dragon_events.append(&mut cx.dragon_events);
         let (entities, network_ids, random) = level.entity_parts();
         deliver_simple(&out, entities, network_ids, random, global);
         for effect in &out {

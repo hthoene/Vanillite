@@ -381,6 +381,9 @@ pub struct LevelOutput {
     pub piglin_anger: Vec<(vanillite_world::entity::EntityId, bool)>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
+    /// What the dragon and the crystals reported outside the entity tick (commands), handed
+    /// to the End fight before its next tick.
+    pub dragon_events: Vec<crate::mob::boss::dragon::DragonEvent>,
     /// Entity packets for the players near a position (position, range): equipment a
     /// dispenser put on an armor stand.
     pub nearby_packets: Vec<(

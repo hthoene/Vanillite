@@ -1,0 +1,14 @@
+{
+  "description": "Commands on a summoned ender dragon and end crystal: damage without a player cause counts but does nothing, kill removes the dragon at once (EnderDragon.kill: no dying phase) and the crystal without an explosion.",
+  "tier": "fast",
+  "rules": {"spawn_monsters": "false", "mob_griefing": "false"},
+  "region": [[-8, -62, -8], [8, -50, 8]],
+  "ticks": 10,
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:ender_dragon 0.5 -55.0 0.5 {NoAI:1b}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:end_crystal 4.5 -60.0 4.5 {ShowBottom:0b}"},
+    {"tick": 3, "op": "command", "command": "damage @e[type=minecraft:ender_dragon,limit=1] 1000"},
+    {"tick": 5, "op": "command", "command": "kill @e[type=minecraft:ender_dragon]"},
+    {"tick": 7, "op": "command", "command": "kill @e[type=minecraft:end_crystal]"}
+  ]
+}

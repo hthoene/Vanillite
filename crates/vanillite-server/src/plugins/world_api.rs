@@ -333,6 +333,7 @@ pub(super) fn spawn_entity(
         &qualified(kind),
         pos,
         nbt,
+        true,
         vanillite_abi::spawn_reason::PLUGIN,
     )
     .map(|target| target.uuid)
