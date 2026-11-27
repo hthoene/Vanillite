@@ -5,7 +5,6 @@
 //! Only the few packets the proxy acts on are decoded; everything else is passed on as the
 //! frame decoder returned it, through reused buffers.
 
-use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,8 +21,8 @@ use vanillite_protocol::text::{ClickEvent, Color, Component, HoverEvent, NamedCo
 use vanillite_protocol::types::{GameProfile, Identifier, RawBytes};
 use vanillite_protocol::{Packet, State};
 
-use crate::backend::{self, Backend};
-use crate::client::{End, Registered, kick, reason};
+use crate::backend::{self, Backend, Refusal};
+use crate::client::{End, Registered, reason};
 use crate::link::{Rx, Tx};
 use crate::zlib;
 use crate::{Control, Shared, admin, bungee};
@@ -83,7 +82,7 @@ enum Kind {
 struct Pending {
     name: Arc<str>,
     kind: Kind,
-    task: JoinHandle<Result<Backend, String>>,
+    task: JoinHandle<Result<Backend, Refusal>>,
 }
 
 struct Session {
@@ -97,8 +96,11 @@ struct Session {
     phase: Phase,
     next: Option<Backend>,
     pending: Option<Pending>,
-    /// Servers still to try for a join or fallback.
-    candidates: VecDeque<Arc<str>>,
+    /// Servers for the join and fallbacks: the forced host's, then the try order.
+    try_order: Vec<Arc<str>>,
+    /// First entry of `try_order` that may still be tried. Like Velocity it only moves
+    /// forward, so a player every server refuses is disconnected instead of passed around.
+    try_index: usize,
     /// Last client information body (without id), replayed to new backends.
     client_info: Vec<u8>,
     /// Last brand payload body (without id), replayed to new backends.
@@ -113,8 +115,8 @@ struct Session {
     old_packs: Vec<u128>,
     /// Copy of an intercepted packet.
     scratch: Vec<u8>,
-    /// Last reason a server connection failed, for the final kick.
-    last_error: String,
+    /// Last reason a server refused the player or was lost, for the final kick.
+    last_error: Component,
     last_client_read: Instant,
     last_backend_read: Instant,
     /// Read timeout of both sides.
@@ -136,11 +138,11 @@ pub(crate) async fn run(
     orders: mpsc::Receiver<Control>,
 ) {
     let config = shared.config();
-    let mut candidates: VecDeque<Arc<str>> = VecDeque::new();
+    let mut try_order: Vec<Arc<str>> = Vec::new();
     let forced = config.forced_hosts.get(&host).into_iter().flatten();
     for name in forced.chain(config.try_order.iter()) {
-        if !candidates.iter().any(|c| **c == **name) {
-            candidates.push_back(Arc::from(name.as_str()));
+        if !try_order.iter().any(|c| **c == **name) {
+            try_order.push(Arc::from(name.as_str()));
         }
     }
     let name = profile.name.clone();
@@ -170,14 +172,15 @@ pub(crate) async fn run(
         phase: Phase::Config,
         next: None,
         pending: None,
-        candidates,
+        try_order,
+        try_index: 0,
         client_info: Vec::new(),
         brand: Vec::new(),
         channels: Vec::new(),
         packs: Vec::new(),
         old_packs: Vec::new(),
         scratch: Vec::new(),
-        last_error: "no server is configured".to_owned(),
+        last_error: Component::text("no server is configured"),
         last_client_read: now,
         last_backend_read: now,
         timeout: config.limits.read_timeout,
@@ -247,19 +250,19 @@ async fn read_backend(backend: Option<&mut Backend>) -> bool {
     }
 }
 
-async fn join_pending(pending: Option<&mut Pending>) -> Result<Backend, String> {
+async fn join_pending(pending: Option<&mut Pending>) -> Result<Backend, Refusal> {
     match pending {
         Some(p) => (&mut p.task)
             .await
-            .unwrap_or_else(|e| Err(format!("connection task failed: {e}"))),
+            .unwrap_or_else(|e| Err(format!("connection task failed: {e}").into())),
         None => std::future::pending().await,
     }
 }
 
 impl Session {
     async fn drive(&mut self) -> Result<(), End> {
-        if !self.connect_next(Kind::Join) {
-            return Err(kick(self.last_error.clone()));
+        if !self.connect_next(Kind::Join, None) {
+            return Err(self.refused());
         }
         self.client_frames()?;
         loop {
@@ -287,7 +290,7 @@ impl Session {
                     if ok {
                         self.backend_frames()?;
                     } else {
-                        self.backend_lost(None)?;
+                        self.backend_lost("the server closed the connection".into())?;
                     }
                 }
                 result = join_pending(self.pending.as_mut()) => {
@@ -301,7 +304,7 @@ impl Session {
                     if client_deadline.is_some_and(|d| now >= d) {
                         return Err(End::Timeout);
                     }
-                    self.backend_lost(Some("timed out".to_owned()))?;
+                    self.backend_lost("timed out".into())?;
                 }
             }
             self.flush().await?;
@@ -313,7 +316,7 @@ impl Session {
         if let Some(b) = self.backend.as_mut()
             && b.tx.flush(timeout).await.is_err()
         {
-            self.backend_lost(Some("connection lost".to_owned()))?;
+            self.backend_lost("connection lost".into())?;
         }
         self.client_tx.flush(timeout).await.map_err(|_| End::Closed)
     }
@@ -456,12 +459,12 @@ impl Session {
             let frame = match next {
                 Ok(Some(f)) => f,
                 Ok(None) => return Ok(()),
-                Err(e) => return self.backend_lost(Some(format!("protocol error: {e}"))),
+                Err(e) => return self.backend_lost(format!("protocol error: {e}").into()),
             };
             match frame {
                 RawFrame::Packet(body) => {
                     let Ok(id) = packet_id(body) else {
-                        return self.backend_lost(Some("protocol error".to_owned()));
+                        return self.backend_lost("protocol error".into());
                     };
                     if !backend_intercepts(self.backend_config, id) {
                         self.client_tx.body(body)?;
@@ -478,14 +481,14 @@ impl Session {
                 } => {
                     // Trusted link: compressed for the client already; only the id is looked at.
                     let Some(id) = zlib::peek_id(data) else {
-                        return self.backend_lost(Some("protocol error".to_owned()));
+                        return self.backend_lost("protocol error".into());
                     };
                     if !backend_intercepts(self.backend_config, id) {
                         self.client_tx.raw(frame)?;
                         continue;
                     }
                     if !zlib::inflate(data, data_len, &mut self.scratch) {
-                        return self.backend_lost(Some("bad compressed data".to_owned()));
+                        return self.backend_lost("bad compressed data".into());
                     }
                     self.backend_packet(id)?;
                 }
@@ -522,9 +525,11 @@ impl Session {
                 self.client_tx.body(&self.scratch)?;
             }
             (true, _) => {
-                let reason = cfg::clientbound::Disconnect::decode(&mut r)
-                    .map_or_else(|_| "disconnected".to_owned(), |d| d.reason.plain());
-                self.backend_lost(Some(reason))?;
+                let reason = cfg::clientbound::Disconnect::decode(&mut r).map_or_else(
+                    |_| "disconnected".into(),
+                    |d| Refusal::Kicked(Box::new(d.reason)),
+                );
+                self.backend_lost(reason)?;
             }
             (false, B_PLAY_START_CFG) => {
                 self.client_tx.body(&self.scratch)?;
@@ -532,9 +537,11 @@ impl Session {
                 self.phase = Phase::BackendReconfig;
             }
             (false, B_PLAY_DISCONNECT) => {
-                let reason = play::clientbound::Disconnect::decode(&mut r)
-                    .map_or_else(|_| "disconnected".to_owned(), |d| d.reason.plain());
-                self.backend_lost(Some(reason))?;
+                let reason = play::clientbound::Disconnect::decode(&mut r).map_or_else(
+                    |_| "disconnected".into(),
+                    |d| Refusal::Kicked(Box::new(d.reason)),
+                );
+                self.backend_lost(reason)?;
             }
             (false, B_PLAY_PAYLOAD) => {
                 let mut pr = Reader::new(after_id(&self.scratch));
@@ -868,16 +875,19 @@ impl Session {
         }
         let name: Arc<str> = Arc::from(name.as_str());
         self.message(format!("Connecting to {name}..."), NamedColor::Gray)?;
-        self.start(name, Kind::Switch);
+        if !self.start(Arc::clone(&name), Kind::Switch) {
+            return self.message(format!("There is no server named {name}."), NamedColor::Red);
+        }
         Ok(())
     }
 
     // ---- backend connections ----
 
-    fn start(&mut self, name: Arc<str>, kind: Kind) {
+    /// Starts connecting to `name`; `false` if it is no longer configured.
+    fn start(&mut self, name: Arc<str>, kind: Kind) -> bool {
         let config = self.shared.config();
         let Some(address) = config.servers.get(&*name).cloned() else {
-            return;
+            return false;
         };
         let task = tokio::spawn(backend::connect(
             Arc::clone(&name),
@@ -886,24 +896,45 @@ impl Session {
             config.limits.connect_timeout,
         ));
         self.pending = Some(Pending { name, kind, task });
+        true
     }
 
-    /// Starts connecting to the next candidate; `false` if none is left.
-    fn connect_next(&mut self, kind: Kind) -> bool {
-        match self.candidates.pop_front() {
-            Some(name) => {
-                self.start(name, kind);
-                true
+    /// Starts connecting to the next server of the try order other than `refused` and the
+    /// current one (Velocity's `getNextServerToTry`); `false` if none is left.
+    fn connect_next(&mut self, kind: Kind, refused: Option<&str>) -> bool {
+        while let Some(name) = self.try_order.get(self.try_index).cloned() {
+            let current = self.backend.as_ref().is_some_and(|b| b.name == name);
+            if !current && refused != Some(&*name) && self.start(name, kind) {
+                return true;
             }
-            None => false,
+            self.try_index = self.try_index.saturating_add(1);
         }
+        false
+    }
+
+    /// The final kick after the servers refused the player: the last reason.
+    fn refused(&self) -> End {
+        End::Kick(Box::new(self.last_error.clone()))
+    }
+
+    /// Records why `name` refused or lost the player: a kick reason is shown as the server
+    /// sent it, a failure says which server failed. Returns the line for the chat.
+    fn note_refusal(&mut self, prefix: &str, name: &str, why: Refusal) -> Component {
+        let line = Component::text(format!("{prefix} {name}: "))
+            .append(why.component())
+            .color(Color::Named(NamedColor::Red));
+        self.last_error = match why {
+            Refusal::Kicked(reason) => *reason,
+            Refusal::Failed(_) => line.clone(),
+        };
+        line
     }
 
     fn connected(
         &mut self,
         name: Arc<str>,
         kind: Kind,
-        result: Result<Backend, String>,
+        result: Result<Backend, Refusal>,
     ) -> Result<(), End> {
         match result {
             Ok(backend) => {
@@ -924,21 +955,20 @@ impl Session {
                 }
                 Ok(())
             }
-            Err(e) => {
+            Err(why) => {
                 log::info!(
-                    "{} could not connect to {name}: {e}",
-                    self.player.profile.name
+                    "{} could not connect to {name}: {}",
+                    self.player.profile.name,
+                    why.plain()
                 );
-                self.last_error = format!("Could not connect to {name}: {e}");
+                let line = self.note_refusal("Could not connect to", &name, why);
                 match kind {
-                    Kind::Switch if self.phase != Phase::Limbo => {
-                        self.message(self.last_error.clone(), NamedColor::Red)
-                    }
+                    Kind::Switch if self.phase != Phase::Limbo => self.chat(line),
                     Kind::Switch | Kind::Join | Kind::Fallback => {
-                        if self.connect_next(kind) {
+                        if self.connect_next(kind, Some(&name)) {
                             Ok(())
                         } else {
-                            Err(kick(self.last_error.clone()))
+                            Err(self.refused())
                         }
                     }
                 }
@@ -984,54 +1014,42 @@ impl Session {
     }
 
     /// The current backend is gone: fall back to another server or disconnect.
-    fn backend_lost(&mut self, why: Option<String>) -> Result<(), End> {
+    fn backend_lost(&mut self, why: Refusal) -> Result<(), End> {
         let Some(lost) = self.backend.take() else {
             return Ok(());
         };
         self.shared.set_server(self.player.profile.id, None);
-        let why = why.unwrap_or_else(|| "the server closed the connection".to_owned());
         log::info!(
-            "{} lost the connection to {}: {why}",
+            "{} lost the connection to {}: {}",
             self.player.profile.name,
-            lost.name
+            lost.name,
+            why.plain()
         );
-        self.last_error = format!("Disconnected from {}: {why}", lost.name);
-        self.candidates = self
-            .shared
-            .config()
-            .try_order
-            .iter()
-            .filter(|n| n.as_str() != &*lost.name)
-            .map(|n| Arc::from(n.as_str()))
-            .collect();
+        let line = self.note_refusal("Disconnected from", &lost.name, why);
         if self.pending.is_some() {
             // A switch is already connecting; it takes the player.
             if self.phase == Phase::Play {
                 self.phase = Phase::Limbo;
-                return self.message(self.last_error.clone(), NamedColor::Red);
+                return self.chat(line);
             }
-            return Err(kick(self.last_error.clone()));
+            return Err(self.refused());
         }
         match self.phase {
             Phase::Config => {
-                if self.connect_next(Kind::Join) {
+                if self.connect_next(Kind::Join, Some(&lost.name)) {
                     Ok(())
                 } else {
-                    Err(kick(self.last_error.clone()))
+                    Err(self.refused())
                 }
             }
             Phase::Play => {
-                if self.candidates.is_empty() {
-                    return Err(kick(self.last_error.clone()));
+                if !self.connect_next(Kind::Fallback, Some(&lost.name)) {
+                    return Err(self.refused());
                 }
                 self.phase = Phase::Limbo;
-                self.message(self.last_error.clone(), NamedColor::Red)?;
-                self.connect_next(Kind::Fallback);
-                Ok(())
+                self.chat(line)
             }
-            Phase::BackendReconfig | Phase::AwaitAck | Phase::Limbo => {
-                Err(kick(self.last_error.clone()))
-            }
+            Phase::BackendReconfig | Phase::AwaitAck | Phase::Limbo => Err(self.refused()),
         }
     }
 }
