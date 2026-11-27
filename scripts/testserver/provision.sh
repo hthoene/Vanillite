@@ -901,8 +901,8 @@ case $cmd in
         ;;
     reset)
         systemctl stop "$(unit_of "$target")" 2> /dev/null || true
-        if [ -e "/run/systemd/system/$(unit_of "$target").d/bench-limit.conf" ]; then
-            rm -f "/run/systemd/system/$(unit_of "$target").d/bench-limit.conf"
+        if [ -e "/run/systemd/system/$(unit_of "$target").d/zz-bench-limit.conf" ]; then
+            rm -f "/run/systemd/system/$(unit_of "$target").d/zz-bench-limit.conf"
             systemctl daemon-reload
         fi
         "$0" props "$target"
@@ -966,7 +966,8 @@ print(json.dumps({"version": v.get("name"), "protocol": v.get("protocol")}))
         exit 1
         ;;
     limit)
-        dropin=/run/systemd/system/$(unit_of "$target").d/bench-limit.conf
+        # Sorts after the unit's other drop-ins (loadtest.conf sets MemoryMax), so it wins.
+        dropin=/run/systemd/system/$(unit_of "$target").d/zz-bench-limit.conf
         install -d "$(dirname "$dropin")"
         printf '[Service]\nCPUQuota=%s%%\nMemoryMax=%sM\nMemorySwapMax=0\n' "${2:?cpu %}" "${3:?MiB}" > "$dropin"
         systemctl daemon-reload

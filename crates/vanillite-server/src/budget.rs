@@ -54,7 +54,8 @@ impl Limits {
             (cpu, "performance.budget.cpu")
         } else {
             match cgroup::cpu_quota() {
-                Some(quota) if quota < cores => (quota, "cgroup CPU quota"),
+                // `available_parallelism` already rounds the quota up to whole cores.
+                Some(quota) if quota <= cores => (quota, "cgroup CPU quota"),
                 _ => (cores, AVAILABLE_CORES),
             }
         };
