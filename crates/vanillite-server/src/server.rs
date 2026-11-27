@@ -24,7 +24,8 @@ use vanillite_storage::player_data::{JsonFile, PlayerDataStore};
 use vanillite_storage::saved_data::SavedDataStore;
 use vanillite_storage::writer::FileWriter;
 use vanillite_storage::{
-    AnvilCodec, IoPool, OwnCodec, RegionStoreProvider, StoreSettings, WorldFormat, WorldLayout,
+    AnvilCodec, IoPool, KeepUnreadable, OwnCodec, RegionStoreProvider, StoreSettings, WorldFormat,
+    WorldLayout,
 };
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, SaveSettings};
 use vanillite_world::entity::NetworkIds;
@@ -539,11 +540,17 @@ impl ServerBuilder {
                 store: storage_provider
                     .create(&info, DimensionId(index))
                     .map_err(|e| StartError::io(&info.dir, e))?,
+                // Records that fail to decode are copied aside before the chunk is generated
+                // again and saved over them (#142).
                 codec: match world_format {
-                    WorldFormat::Anvil => Arc::new(AnvilCodec::new(&info, compression)),
-                    WorldFormat::Vanillite => Arc::new(
+                    WorldFormat::Anvil => Arc::new(KeepUnreadable::new(
+                        AnvilCodec::new(&info, compression),
+                        info.dir.join("unreadable"),
+                    )),
+                    WorldFormat::Vanillite => Arc::new(KeepUnreadable::new(
                         OwnCodec::new(&info, own_level).with_upgrades(Arc::clone(&upgrades)),
-                    ),
+                        info.dir.join("unreadable"),
+                    )),
                 },
                 generator: generator_provider
                     .create(&info)
