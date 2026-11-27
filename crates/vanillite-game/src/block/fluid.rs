@@ -731,6 +731,31 @@ pub fn sponge_on_place(
     }
 }
 
+/// `WetSpongeBlock.onPlace`: where water evaporates (the Nether) the sponge dries at once.
+pub fn wet_sponge_on_place(
+    level: &mut Level,
+    _state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
+    if !level.settings.water_evaporates {
+        return;
+    }
+    level.set_block_and_update(pos, ids::SPONGE.default_state());
+    level.level_event(None, 2009, pos, 0);
+    let pitch =
+        (1.0 + vanillite_base::random::RandomSource::next_float(level.random()) * 0.2) * 0.7;
+    level.play_block_sound(
+        None,
+        pos,
+        super::sound_id("block.wet_sponge.dries"),
+        crate::level::SOUND_BLOCKS,
+        1.0,
+        pitch,
+    );
+}
+
 /// `SpongeBlock.neighborChanged`.
 pub fn sponge_neighbor_changed(
     level: &mut Level,
