@@ -748,10 +748,10 @@ impl GameWorld {
                 hooks: &vanillite_game::hooks::NoHooks,
                 display_name: &names,
                 // Teams come from `team` commands, so only once the command server runs.
-                entity_team: &|uuid| {
+                entity_team: &|holder| {
                     COMMAND_SERVER
                         .get()
-                        .and_then(|g| vanillite_server::entity_team(g, uuid))
+                        .and_then(|g| vanillite_server::entity_team(g, holder))
                 },
             };
             f(level, &mut ents, &mut env, &mut self.mobs)

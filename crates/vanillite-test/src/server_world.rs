@@ -348,7 +348,7 @@ impl ServerWorld {
             players: Vec::new(),
             selected_player: WorldId(0),
             captures: Vec::new(),
-            clients: crate::client_view::ClientViews::default(),
+            clients: crate::client_view::ClientViews::with_attributes(spec.client_attributes),
             client_players: Vec::new(),
         };
         // The recorder's rules (`ScenarioRecorder.rules`).

@@ -1,7 +1,8 @@
 //! The predicates of advancement criteria (`advancements.predicates`) and the loot conditions
-//! they are wrapped in (`LootItemCondition`). Parts the server cannot evaluate yet (structures,
-//! light, data components, named predicates, ...) parse into [`Unsupported`](Condition) parts
-//! that never match, so such criteria are never granted by triggers.
+//! they are wrapped in (`LootItemCondition`). Parts the server cannot evaluate yet (named
+//! predicates, some entity and item sub-predicates, ...) parse into
+//! [`Unsupported`](Condition) parts that never match, so such criteria are never granted by
+//! triggers.
 
 use std::borrow::Cow;
 
@@ -44,6 +45,33 @@ pub trait World {
     fn biome(&self, pos: BlockPos) -> Option<String>;
     /// Whether `id` of `registry` is in `#tag`.
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool;
+    /// `StructureManager.getStructureWithPieceAt(pos, structures).isValid()`: a start of one of
+    /// `structures` has a piece at the loaded `pos`.
+    fn structure_at(&self, _pos: BlockPos, _structures: &IdSet) -> bool {
+        false
+    }
+    /// `CampfireBlock.isSmokeyPos`.
+    fn smokey(&self, _pos: BlockPos) -> bool {
+        false
+    }
+    /// `getMaxLocalRawBrightness(pos)`.
+    fn light(&self, _pos: BlockPos) -> i32 {
+        0
+    }
+    /// `canSeeSky(pos)`.
+    fn can_see_sky(&self, _pos: BlockPos) -> bool {
+        false
+    }
+    /// The progress of the player whose triggers run (`getAdvancements`), for the
+    /// `advancements` of its player predicate.
+    fn progress(&self) -> Option<&super::PlayerAdvancements> {
+        None
+    }
+    /// The entity the player whose triggers run looks at (`PlayerPredicate.lookingAt`: the
+    /// entity hit 100 blocks along its view, if it has a line of sight to it).
+    fn looking_at(&self) -> Option<&EntityView<'static>> {
+        None
+    }
 }
 
 /// An active effect as `MobEffectsPredicate` sees it.
@@ -63,6 +91,16 @@ pub struct PlayerFacts<'a> {
     pub level: i32,
     /// The statistics; `None` in snapshots of other players (stat conditions fail).
     pub stats: Option<&'a StatsCounter>,
+    /// `getFoodData()`: the food level and the saturation.
+    pub food: (i32, f32),
+    /// The known recipes (`getRecipeBook`); `None` in snapshots of other players (recipe
+    /// conditions fail).
+    pub recipes: Option<&'a crate::recipe::book::PlayerRecipeBook>,
+    /// `getLastClientInput()`.
+    pub input: vanillite_protocol::packets::play::serverbound::Input,
+    /// The player whose triggers run: [`World::progress`] and [`World::looking_at`] are its
+    /// own (other players fail `advancements` and `looking_at` conditions).
+    pub own: bool,
 }
 
 /// An entity as the entity predicates see it. With `'static` it is a snapshot that events
@@ -204,11 +242,238 @@ impl IdSet {
     }
 }
 
-/// `EnchantmentPredicate` of the `minecraft:enchantments` item sub-predicate.
+/// `EnchantmentPredicate` of the `minecraft:enchantments` and `minecraft:stored_enchantments`
+/// item sub-predicates.
 #[derive(Clone, Debug, PartialEq)]
 struct EnchantmentMatcher {
     enchantments: Option<IdSet>,
     levels: Bounds,
+}
+
+impl EnchantmentMatcher {
+    /// `containedIn(itemEnchantments)`.
+    fn contained_in(&self, present: &[(u32, i32)], world: &dyn World) -> bool {
+        match &self.enchantments {
+            Some(set) => {
+                let data = crate::player::play::game_data();
+                let name = |id: u32| {
+                    data.as_ref().and_then(|d| {
+                        d.enchantments
+                            .iter()
+                            .find(|(_, v)| **v == id)
+                            .map(|(n, _)| n.clone())
+                    })
+                };
+                // `matchesEnchantment`: a level of 0 does not count.
+                present.iter().any(|&(id, level)| {
+                    level != 0
+                        && self.levels.matches(f64::from(level))
+                        && name(id)
+                            .is_some_and(|n| set.contains("minecraft:enchantment", &n, world))
+                })
+            }
+            None if self.levels != Bounds::default() => present
+                .iter()
+                .any(|&(_, level)| self.levels.matches(f64::from(level))),
+            None => !present.is_empty(),
+        }
+    }
+}
+
+/// One item sub-predicate (`DataComponentPredicate`) of `predicates`.
+#[derive(Clone, Debug, PartialEq)]
+enum SubPredicate {
+    /// `damage`: durability and damage bounds.
+    Damage { durability: Bounds, damage: Bounds },
+    /// `enchantments`, or `stored_enchantments`: every entry finds an enchantment.
+    Enchantments {
+        stored: bool,
+        list: Vec<EnchantmentMatcher>,
+    },
+    /// `potion_contents`: the potions (`effects` is not evaluated).
+    Potions(Option<IdSet>),
+    /// `custom_data`: `NbtUtils.compareNbt` against the custom data.
+    CustomData(vanillite_nbt::Tag),
+    /// `jukebox_playable`: the songs.
+    JukeboxPlayable(Option<IdSet>),
+    /// `trim`: the materials and the patterns.
+    Trim {
+        material: Option<IdSet>,
+        pattern: Option<IdSet>,
+    },
+    /// `villager/variant`: the villager types.
+    VillagerVariant(IdSet),
+    /// `AnyValue`: a component type without a predicate type is present.
+    Present(u16),
+    /// The predicate types that are not evaluated (containers, bundles, fireworks, books,
+    /// attribute modifiers, potion effects): never matches.
+    Unsupported,
+}
+
+/// The holder of a component in its persistent form: a registry id string (else `None`, e.g.
+/// an inline value).
+fn holder_name(tag: Option<&vanillite_nbt::Tag>) -> Option<&str> {
+    tag.and_then(vanillite_nbt::Tag::as_str)
+}
+
+impl SubPredicate {
+    fn parse(name: &str, v: &Value) -> Res<SubPredicate> {
+        let o = || object(v);
+        let set = |o: &Map<String, Value>, k: &str| o.get(k).map(IdSet::parse).transpose();
+        Ok(match name {
+            "minecraft:damage" => {
+                let o = o()?;
+                SubPredicate::Damage {
+                    durability: Bounds::field(o, "durability")?,
+                    damage: Bounds::field(o, "damage")?,
+                }
+            }
+            "minecraft:enchantments" | "minecraft:stored_enchantments" => {
+                let Value::Array(entries) = v else {
+                    return Err(format!("{name} is not a list"));
+                };
+                let mut list = Vec::new();
+                for e in entries {
+                    let e = object(e)?;
+                    list.push(EnchantmentMatcher {
+                        enchantments: set(e, "enchantments")?,
+                        levels: Bounds::field(e, "levels")?,
+                    });
+                }
+                SubPredicate::Enchantments {
+                    stored: name == "minecraft:stored_enchantments",
+                    list,
+                }
+            }
+            "minecraft:potion_contents" => {
+                let o = o()?;
+                if o.contains_key("effects") {
+                    SubPredicate::Unsupported
+                } else {
+                    SubPredicate::Potions(set(o, "potions")?)
+                }
+            }
+            "minecraft:custom_data" => SubPredicate::CustomData(match v {
+                // `TagParser.LENIENT_CODEC`: SNBT or the compound itself.
+                Value::String(s) => vanillite_nbt::snbt::parse_compound(s)
+                    .map(vanillite_nbt::Tag::Compound)
+                    .map_err(|e| format!("bad custom_data {s}: {e:?}"))?,
+                other => crate::item_nbt::json_to_nbt(other),
+            }),
+            "minecraft:jukebox_playable" => SubPredicate::JukeboxPlayable(set(o()?, "song")?),
+            "minecraft:trim" => {
+                let o = o()?;
+                SubPredicate::Trim {
+                    material: set(o, "material")?,
+                    pattern: set(o, "pattern")?,
+                }
+            }
+            "minecraft:villager/variant" => SubPredicate::VillagerVariant(IdSet::parse(v)?),
+            "minecraft:container"
+            | "minecraft:bundle_contents"
+            | "minecraft:firework_explosion"
+            | "minecraft:fireworks"
+            | "minecraft:writable_book_content"
+            | "minecraft:written_book_content"
+            | "minecraft:attribute_modifiers" => SubPredicate::Unsupported,
+            other => match vanillite_protocol::components_nbt::type_by_name(other) {
+                Some(t) => SubPredicate::Present(t),
+                None => return Err(format!("unknown item sub-predicate {other}")),
+            },
+        })
+    }
+
+    /// `matches(components)`: single component predicates need their component.
+    fn matches(&self, stack: &ItemStack, world: &dyn World) -> bool {
+        use crate::item_nbt::{component_to_nbt, effective_component};
+        use vanillite_protocol::components::ids;
+        let nbt = |t: u16| effective_component(stack, t).and_then(|v| component_to_nbt(t, &v));
+        match self {
+            SubPredicate::Damage { durability, damage } => {
+                let Some(d) = effective_component(stack, ids::DAMAGE)
+                    .and_then(|v| vanillite_protocol::codec::Reader::new(&v).varint().ok())
+                else {
+                    return false;
+                };
+                let max = crate::item::max_damage(stack);
+                durability.matches(f64::from(max) - f64::from(d)) && damage.matches(f64::from(d))
+            }
+            SubPredicate::Enchantments { stored, list } => {
+                let t = if *stored {
+                    ids::STORED_ENCHANTMENTS
+                } else {
+                    ids::ENCHANTMENTS
+                };
+                if effective_component(stack, t).is_none() {
+                    return false;
+                }
+                let present = if *stored {
+                    crate::item::stored_enchantments(stack)
+                } else {
+                    crate::item::enchantments(stack)
+                };
+                list.iter().all(|m| m.contained_in(&present, world))
+            }
+            SubPredicate::Potions(potions) => {
+                let Some(contents) = effective_component(stack, ids::POTION_CONTENTS)
+                    .and_then(|v| crate::effect::potion::PotionContents::decode(&v))
+                else {
+                    return false;
+                };
+                potions.as_ref().is_none_or(|set| {
+                    contents
+                        .potion
+                        .and_then(|p| registry::POTION.name(p))
+                        .is_some_and(|n| set.contains("minecraft:potion", n, world))
+                })
+            }
+            SubPredicate::CustomData(expected) => {
+                // `CustomData.EMPTY` without the component.
+                let actual = registry::DATA_COMPONENT_TYPE
+                    .id("minecraft:custom_data")
+                    .and_then(nbt)
+                    .unwrap_or_else(
+                        || vanillite_nbt::Tag::Compound(vanillite_nbt::Compound::new()),
+                    );
+                crate::item_nbt::compare_nbt(expected, &actual)
+            }
+            SubPredicate::JukeboxPlayable(songs) => {
+                if !crate::block::jukebox::is_playable(stack) {
+                    return false;
+                }
+                songs.as_ref().is_none_or(|set| {
+                    let data = crate::player::play::game_data();
+                    crate::block::jukebox::song_of(stack)
+                        .and_then(|id| {
+                            let d = data.as_ref()?;
+                            Some(d.jukebox_songs.get(usize::try_from(id).ok()?)?.name.clone())
+                        })
+                        .is_some_and(|n| set.contains("minecraft:jukebox_song", &n, world))
+                })
+            }
+            SubPredicate::Trim { material, pattern } => {
+                let Some(vanillite_nbt::Tag::Compound(trim)) = nbt(ids::TRIM) else {
+                    return false;
+                };
+                let holder_in = |set: &Option<IdSet>, key: &str, registry: &str| {
+                    set.as_ref().is_none_or(|set| {
+                        holder_name(trim.get(key)).is_some_and(|n| set.contains(registry, n, world))
+                    })
+                };
+                holder_in(material, "material", "minecraft:trim_material")
+                    && holder_in(pattern, "pattern", "minecraft:trim_pattern")
+            }
+            SubPredicate::VillagerVariant(types) => {
+                let Some(t) = registry::DATA_COMPONENT_TYPE.id("minecraft:villager/variant") else {
+                    return false;
+                };
+                holder_name(nbt(t).as_ref())
+                    .is_some_and(|n| types.contains("minecraft:villager_type", n, world))
+            }
+            SubPredicate::Present(t) => effective_component(stack, *t).is_some(),
+            SubPredicate::Unsupported => false,
+        }
+    }
 }
 
 /// `ItemPredicate`.
@@ -217,17 +482,18 @@ pub struct ItemPredicate {
     /// Item ids, or a tag.
     items: Option<Result<Vec<u16>, String>>,
     count: Bounds,
-    /// The exact `minecraft:damage` component.
-    damage: Option<i32>,
-    /// The `minecraft:enchantments` sub-predicate: every entry must match an enchantment.
-    enchantments: Vec<EnchantmentMatcher>,
-    /// Other component matchers are not evaluated: the predicate never matches.
-    supported: bool,
+    /// `DataComponentExactPredicate`: the component types and their values in the persistent
+    /// form the stack's values convert to (`None`: a value that does not convert never
+    /// matches).
+    exact: Vec<(u16, Option<vanillite_nbt::Tag>)>,
+    /// The sub-predicates (`predicates`).
+    predicates: Vec<SubPredicate>,
 }
 
 impl ItemPredicate {
     /// Parses an item predicate.
     pub fn parse(v: &Value) -> Res<ItemPredicate> {
+        use crate::item_nbt::{component_from_nbt, component_to_nbt, json_to_nbt};
         let o = object(v)?;
         let items = match o.get("items").map(IdSet::parse).transpose()? {
             None => None,
@@ -241,49 +507,42 @@ impl ItemPredicate {
                 })
                 .collect::<Res<Vec<_>>>()?)),
         };
-        let mut supported = true;
-        let mut damage = None;
+        let mut exact = Vec::new();
         for (k, v) in o
             .get("components")
             .and_then(Value::as_object)
             .into_iter()
             .flatten()
         {
-            match (
-                qualify(k).as_str(),
-                v.as_i64().and_then(|n| i32::try_from(n).ok()),
-            ) {
-                ("minecraft:damage", Some(n)) => damage = Some(n),
-                _ => supported = false,
-            }
+            let name = qualify(k);
+            let t = vanillite_protocol::components_nbt::type_by_name(&name)
+                .ok_or_else(|| format!("unknown component {name}"))?;
+            // Both sides in the form the stack's wire value converts to.
+            let value =
+                component_from_nbt(t, &json_to_nbt(v)).and_then(|w| component_to_nbt(t, &w));
+            exact.push((t, value));
         }
-        let mut enchantments = Vec::new();
+        let mut predicates = Vec::new();
         for (k, v) in o
             .get("predicates")
             .and_then(Value::as_object)
             .into_iter()
             .flatten()
         {
-            match (qualify(k).as_str(), v) {
-                ("minecraft:enchantments", Value::Array(list)) => {
-                    for e in list {
-                        let e = object(e)?;
-                        enchantments.push(EnchantmentMatcher {
-                            enchantments: e.get("enchantments").map(IdSet::parse).transpose()?,
-                            levels: Bounds::field(e, "levels")?,
-                        });
-                    }
-                }
-                _ => supported = false,
-            }
+            predicates.push(SubPredicate::parse(&qualify(k), v)?);
         }
         Ok(ItemPredicate {
             items,
             count: Bounds::field(o, "count")?,
-            damage,
-            enchantments,
-            supported,
+            exact,
+            predicates,
         })
+    }
+
+    /// Whether every part is evaluated.
+    fn is_supported(&self) -> bool {
+        self.exact.iter().all(|(_, v)| v.is_some())
+            && !self.predicates.contains(&SubPredicate::Unsupported)
     }
 
     /// `test`.
@@ -297,35 +556,16 @@ impl ItemPredicate {
                 .is_some_and(|n| world.in_tag("minecraft:item", tag, n)),
         };
         let count = if stack.is_empty() { 0 } else { stack.count };
-        self.supported
-            && items_ok
+        items_ok
             && self.count.matches(f64::from(count))
-            && self.damage.is_none_or(|d| {
-                crate::item::max_damage(stack) > 0 && crate::item::damage(stack) == d
+            && self.exact.iter().all(|(t, expected)| {
+                expected.as_ref().is_some_and(|expected| {
+                    crate::item_nbt::effective_component(stack, *t)
+                        .and_then(|v| crate::item_nbt::component_to_nbt(*t, &v))
+                        .is_some_and(|actual| actual == *expected)
+                })
             })
-            && (self.enchantments.is_empty() || self.enchantments_match(stack, world))
-    }
-
-    /// `EnchantmentsPredicate.matches`: each entry finds an enchantment of the stack.
-    fn enchantments_match(&self, stack: &ItemStack, world: &dyn World) -> bool {
-        let present = crate::item::enchantments(stack);
-        let data = crate::player::play::game_data();
-        let name = |id: u32| {
-            data.as_ref().and_then(|d| {
-                d.enchantments
-                    .iter()
-                    .find(|(_, v)| **v == id)
-                    .map(|(n, _)| n.clone())
-            })
-        };
-        self.enchantments.iter().all(|m| {
-            present.iter().any(|&(id, level)| {
-                m.levels.matches(f64::from(level))
-                    && m.enchantments.as_ref().is_none_or(|set| {
-                        name(id).is_some_and(|n| set.contains("minecraft:enchantment", &n, world))
-                    })
-            })
-        })
+            && self.predicates.iter().all(|p| p.matches(stack, world))
     }
 }
 
@@ -524,6 +764,13 @@ enum ValueMatcher {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StateMatcher(Vec<(String, ValueMatcher)>);
 
+/// The type of a fluid state property (`BooleanProperty`, `IntegerProperty`).
+#[derive(Clone, Copy, Debug)]
+enum PropertyKind {
+    Bool,
+    Int,
+}
+
 impl StateMatcher {
     /// Parses `{"name": "value" | {"min": .., "max": ..}}`.
     pub fn parse(v: &Value) -> Res<StateMatcher> {
@@ -547,6 +794,40 @@ impl StateMatcher {
             out.push((name.clone(), matcher));
         }
         Ok(StateMatcher(out))
+    }
+
+    /// `matches(FluidState)`: `value` gives the value of a property of the state and its type
+    /// (`None`: the state has no such property).
+    fn matches_values(&self, value: impl Fn(&str) -> Option<(String, PropertyKind)>) -> bool {
+        self.0.iter().all(|(name, matcher)| {
+            let Some((actual, kind)) = value(name) else {
+                return false;
+            };
+            // `Property.getValue(string)` and the values' order.
+            let typed = |v: &str| -> Option<i64> {
+                match kind {
+                    PropertyKind::Bool => match v {
+                        "false" => Some(0),
+                        "true" => Some(1),
+                        _ => None,
+                    },
+                    PropertyKind::Int => v.parse().ok(),
+                }
+            };
+            let Some(actual) = typed(&actual) else {
+                return false;
+            };
+            match matcher {
+                ValueMatcher::Exact(expected) => typed(expected) == Some(actual),
+                ValueMatcher::Range(min, max) => {
+                    min.as_ref()
+                        .is_none_or(|m| typed(m).is_some_and(|m| actual >= m))
+                        && max
+                            .as_ref()
+                            .is_none_or(|m| typed(m).is_some_and(|m| actual <= m))
+                }
+            }
+        })
     }
 
     /// `matches(BlockState)`.
@@ -619,15 +900,62 @@ impl BlockPredicate {
     }
 }
 
+/// `FluidPredicate`: the fluids and the state properties of the fluid state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FluidPredicate {
+    fluids: Option<IdSet>,
+    state: Option<StateMatcher>,
+}
+
+impl FluidPredicate {
+    fn parse(v: &Value) -> Res<FluidPredicate> {
+        let o = object(v)?;
+        Ok(FluidPredicate {
+            fluids: o.get("fluids").map(IdSet::parse).transpose()?,
+            state: o.get("state").map(StateMatcher::parse).transpose()?,
+        })
+    }
+
+    /// `matches(level, pos)` of a loaded position.
+    fn matches(&self, world: &dyn World, pos: BlockPos) -> bool {
+        let Some(state) = world.block(pos) else {
+            return false;
+        };
+        let fluid = state.fluid_state();
+        let info = fluid.info();
+        let name = registry::FLUID
+            .name(info.fluid)
+            .unwrap_or("minecraft:empty");
+        self.fluids
+            .as_ref()
+            .is_none_or(|f| f.contains("minecraft:fluid", name, world))
+            && self.state.as_ref().is_none_or(|s| {
+                // `FlowingFluid.FALLING` and `LEVEL` (flowing fluids only).
+                let flowing = !fluid.is_empty() && !info.source;
+                s.matches_values(|property| match property {
+                    "falling" if !fluid.is_empty() => {
+                        Some((info.falling.to_string(), PropertyKind::Bool))
+                    }
+                    "level" if flowing => Some((info.amount.to_string(), PropertyKind::Int)),
+                    _ => None,
+                })
+            })
+    }
+}
+
 /// `LocationPredicate`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LocationPredicate {
     position: [Bounds; 3],
     biomes: Option<IdSet>,
+    structures: Option<Box<IdSet>>,
     dimension: Option<String>,
-    block: Option<BlockPredicate>,
-    /// Structures, smoke, light, fluids and the sky are not evaluated.
-    supported: bool,
+    smokey: Option<bool>,
+    /// `LightPredicate`: the `light` bounds.
+    light: Option<Bounds>,
+    block: Option<Box<BlockPredicate>>,
+    fluid: Option<Box<FluidPredicate>>,
+    can_see_sky: Option<bool>,
 }
 
 impl LocationPredicate {
@@ -645,26 +973,49 @@ impl LocationPredicate {
             }
             None => [Bounds::default(); 3],
         };
+        let flag = |k: &str| {
+            o.get(k)
+                .map(|v| v.as_bool().ok_or_else(|| format!("{k} is not a boolean")))
+                .transpose()
+        };
         Ok(LocationPredicate {
             position,
             biomes: o.get("biomes").map(IdSet::parse).transpose()?,
+            structures: o
+                .get("structures")
+                .map(IdSet::parse)
+                .transpose()?
+                .map(Box::new),
             dimension: o.get("dimension").map(string).transpose()?.map(qualify),
+            smokey: flag("smokey")?,
+            light: o
+                .get("light")
+                .map(|l| object(l).and_then(|l| Bounds::field(l, "light")))
+                .transpose()?,
             block: o
                 .get("block")
                 .map(|b| object(b).and_then(BlockPredicate::parse))
-                .transpose()?,
-            supported: ["structures", "smokey", "light", "fluid", "can_see_sky"]
-                .iter()
-                .all(|k| !o.contains_key(*k)),
+                .transpose()?
+                .map(Box::new),
+            fluid: o
+                .get("fluid")
+                .map(FluidPredicate::parse)
+                .transpose()?
+                .map(Box::new),
+            can_see_sky: flag("can_see_sky")?,
         })
+    }
+
+    /// Whether every part is evaluated.
+    fn is_supported(&self) -> bool {
+        self.block.as_ref().is_none_or(|b| b.supported)
     }
 
     /// `matches(level, x, y, z)`.
     pub fn matches(&self, world: &dyn World, at: Vec3) -> bool {
-        if !self.supported
-            || !(self.position[0].matches(at.x)
-                && self.position[1].matches(at.y)
-                && self.position[2].matches(at.z))
+        if !(self.position[0].matches(at.x)
+            && self.position[1].matches(at.y)
+            && self.position[2].matches(at.z))
         {
             return false;
         }
@@ -686,7 +1037,33 @@ impl LocationPredicate {
                 return false;
             }
         }
-        self.block.as_ref().is_none_or(|b| b.matches(world, pos))
+        if self
+            .structures
+            .as_ref()
+            .is_some_and(|s| !(loaded && world.structure_at(pos, s)))
+        {
+            return false;
+        }
+        if self
+            .smokey
+            .is_some_and(|s| !(loaded && s == world.smokey(pos)))
+        {
+            return false;
+        }
+        // `LightPredicate.matches`: loaded, with the light in the bounds.
+        if self
+            .light
+            .is_some_and(|l| !(loaded && l.matches(f64::from(world.light(pos)))))
+        {
+            return false;
+        }
+        if self.block.as_ref().is_some_and(|b| !b.matches(world, pos)) {
+            return false;
+        }
+        if self.fluid.as_ref().is_some_and(|f| !f.matches(world, pos)) {
+            return false;
+        }
+        self.can_see_sky.is_none_or(|s| s == world.can_see_sky(pos))
     }
 }
 
@@ -737,11 +1114,7 @@ enum EntityPart {
     /// Slot index into [`EntityView::equipment`] and the predicate.
     Equipment(Vec<(usize, ItemPredicate)>),
     Team(String),
-    Player {
-        game_modes: Option<Vec<GameMode>>,
-        level: Bounds,
-        stats: Vec<(Stat, Bounds)>,
-    },
+    Player(Box<PlayerPart>),
     Vehicle(Box<EntityPredicate>),
     Passenger(Box<EntityPredicate>),
     Effects(MobEffectsPredicate),
@@ -755,6 +1128,114 @@ enum EntityPart {
 /// `EntityPredicate`: all parts must match.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EntityPredicate(Vec<EntityPart>);
+
+/// `PlayerPredicate.AdvancementPredicate`.
+#[derive(Clone, Debug, PartialEq)]
+enum AdvancementCheck {
+    /// `AdvancementDonePredicate`.
+    Done(bool),
+    /// `AdvancementCriterionsPredicate`.
+    Criteria(Vec<(String, bool)>),
+}
+
+/// The keys of `InputPredicate` in [`PlayerPart::input`] order.
+const INPUT_KEYS: [&str; 7] = [
+    "forward", "backward", "left", "right", "jump", "sneak", "sprint",
+];
+
+/// `PlayerPredicate` (`type_specific/player`).
+#[derive(Clone, Debug, PartialEq)]
+struct PlayerPart {
+    game_modes: Option<Vec<GameMode>>,
+    level: Bounds,
+    /// `FoodPredicate`: the food level and the saturation.
+    food: Option<(Bounds, Bounds)>,
+    stats: Vec<(Stat, Bounds)>,
+    /// Recipe ids and whether the player must know them.
+    recipes: Vec<(String, bool)>,
+    advancements: Vec<(String, AdvancementCheck)>,
+    looking_at: Option<EntityPredicate>,
+    /// `InputPredicate` in [`INPUT_KEYS`] order.
+    input: [Option<bool>; 7],
+}
+
+impl PlayerPart {
+    /// `PlayerPredicate.matches(player, level, position)`.
+    fn matches(&self, p: &PlayerFacts<'_>, pos: Vec3, world: &dyn World) -> bool {
+        let level_ok = self.level.matches(f64::from(p.level));
+        let food_ok = self.food.is_none_or(|(level, saturation)| {
+            level.matches(f64::from(p.food.0)) && saturation.matches(f64::from(p.food.1))
+        });
+        let mode_ok = self
+            .game_modes
+            .as_ref()
+            .is_none_or(|m| m.contains(&p.game_mode));
+        let stats_ok = self.stats.is_empty()
+            || p.stats.is_some_and(|counter| {
+                self.stats
+                    .iter()
+                    .all(|(stat, range)| range.matches(f64::from(counter.get(*stat))))
+            });
+        let recipes_ok = self.recipes.is_empty()
+            || p.recipes.is_some_and(|book| {
+                self.recipes
+                    .iter()
+                    .all(|(id, known)| book.contains(id) == *known)
+            });
+        level_ok
+            && food_ok
+            && mode_ok
+            && stats_ok
+            && recipes_ok
+            && (self.advancements.is_empty() || p.own && self.advancements_match(world))
+            && self.looking_at.as_ref().is_none_or(|l| {
+                p.own
+                    && world
+                        .looking_at()
+                        .is_some_and(|target| l.matches(target, world, Some(pos)))
+            })
+            && self.input_matches(p.input)
+    }
+
+    /// The `advancements` of `PlayerPredicate.matches`: each advancement exists and its
+    /// progress passes.
+    fn advancements_match(&self, world: &dyn World) -> bool {
+        let Some(progress) = world.progress() else {
+            return false;
+        };
+        let set = progress.advancements();
+        self.advancements.iter().all(|(id, check)| {
+            let Some(index) = set.index(id) else {
+                return false;
+            };
+            match check {
+                AdvancementCheck::Done(done) => progress.is_done(index) == *done,
+                AdvancementCheck::Criteria(criteria) => criteria.iter().all(|(name, done)| {
+                    set.get(index)
+                        .and_then(|a| a.criterion(name))
+                        .is_some_and(|c| progress.criterion_done(index, c) == *done)
+                }),
+            }
+        })
+    }
+
+    /// `InputPredicate.matches(input)`.
+    fn input_matches(&self, input: vanillite_protocol::packets::play::serverbound::Input) -> bool {
+        let pressed = [
+            input.forward,
+            input.backward,
+            input.left,
+            input.right,
+            input.jump,
+            input.shift,
+            input.sprint,
+        ];
+        self.input
+            .iter()
+            .zip(pressed)
+            .all(|(want, have)| want.is_none_or(|w| w == have))
+    }
+}
 
 const EQUIPMENT: [&str; 7] = [
     "head", "chest", "legs", "feet", "body", "mainhand", "offhand",
@@ -838,14 +1319,23 @@ impl EntityPredicate {
         Ok(EntityPredicate(parts))
     }
 
-    /// `PlayerPredicate`: game mode, level and statistics.
+    /// Whether every part is evaluated, also of the nested predicates.
+    fn is_supported(&self) -> bool {
+        self.0.iter().all(|part| match part {
+            EntityPart::Unsupported => false,
+            EntityPart::Location(l) | EntityPart::SteppingOn(l) => l.is_supported(),
+            EntityPart::Equipment(slots) => slots.iter().all(|(_, p)| p.is_supported()),
+            EntityPart::Vehicle(p) | EntityPart::Passenger(p) => p.is_supported(),
+            EntityPart::Player(p) => p
+                .looking_at
+                .as_ref()
+                .is_none_or(EntityPredicate::is_supported),
+            _ => true,
+        })
+    }
+
+    /// `PlayerPredicate`.
     fn player(o: &Map<String, Value>) -> Res<EntityPart> {
-        let supported = ["food", "recipes", "advancements", "looking_at", "input"]
-            .iter()
-            .all(|k| !o.contains_key(*k));
-        if !supported {
-            return Ok(EntityPart::Unsupported);
-        }
         let game_modes = match o.get("gamemode") {
             None => None,
             Some(Value::String(s)) => Some(vec![game_mode(s).ok_or("unknown game mode")?]),
@@ -875,11 +1365,74 @@ impl EntityPredicate {
             let value = kind.registry().id(&name).ok_or("unknown stat")?;
             stats.push((Stat { kind, value }, Bounds::field(s, "value")?));
         }
-        Ok(EntityPart::Player {
+        let bool_map = |key: &str| -> Res<Vec<(String, bool)>> {
+            o.get(key)
+                .map(object)
+                .transpose()?
+                .into_iter()
+                .flatten()
+                .map(|(k, v)| {
+                    v.as_bool()
+                        .map(|b| (k.clone(), b))
+                        .ok_or_else(|| format!("{key}: {k} is not a boolean"))
+                })
+                .collect()
+        };
+        let recipes = bool_map("recipes")?
+            .into_iter()
+            .map(|(k, b)| (qualify(&k), b))
+            .collect();
+        let mut advancements = Vec::new();
+        for (id, check) in o
+            .get("advancements")
+            .map(object)
+            .transpose()?
+            .into_iter()
+            .flatten()
+        {
+            let check = match check {
+                Value::Bool(done) => AdvancementCheck::Done(*done),
+                Value::Object(criteria) => AdvancementCheck::Criteria(
+                    criteria
+                        .iter()
+                        .map(|(k, v)| {
+                            v.as_bool()
+                                .map(|b| (k.clone(), b))
+                                .ok_or_else(|| format!("criterion {k} is not a boolean"))
+                        })
+                        .collect::<Res<_>>()?,
+                ),
+                other => return Err(format!("bad advancement predicate {other}")),
+            };
+            advancements.push((qualify(id), check));
+        }
+        let food = o
+            .get("food")
+            .map(|f| {
+                let f = object(f)?;
+                Ok::<_, String>((Bounds::field(f, "level")?, Bounds::field(f, "saturation")?))
+            })
+            .transpose()?;
+        let mut input = [None; 7];
+        if let Some(i) = o.get("input") {
+            let i = object(i)?;
+            for (slot, key) in input.iter_mut().zip(INPUT_KEYS) {
+                *slot = i.get(key).and_then(Value::as_bool);
+            }
+        }
+        Ok(EntityPart::Player(Box::new(PlayerPart {
             game_modes,
             level: Bounds::field(o, "level")?,
+            food,
             stats,
-        })
+            recipes,
+            advancements,
+            looking_at: o
+                .get("looking_at")
+                .map(EntityPredicate::parse)
+                .transpose()?,
+            input,
+        })))
     }
 
     /// `matches(entity, level, position)`; `origin` is the position of the context.
@@ -919,20 +1472,7 @@ impl EntityPredicate {
                     .is_some_and(|stack| p.test(stack, world))
             }),
             EntityPart::Team(team) => e.team.as_deref() == Some(team.as_str()),
-            EntityPart::Player {
-                game_modes,
-                level,
-                stats,
-            } => e.player.is_some_and(|p| {
-                game_modes.as_ref().is_none_or(|m| m.contains(&p.game_mode))
-                    && level.matches(f64::from(p.level))
-                    && (stats.is_empty()
-                        || p.stats.is_some_and(|counter| {
-                            stats
-                                .iter()
-                                .all(|(stat, range)| range.matches(f64::from(counter.get(*stat))))
-                        }))
-            }),
+            EntityPart::Player(part) => e.player.is_some_and(|p| part.matches(&p, e.pos, world)),
             EntityPart::Vehicle(p) => e
                 .vehicle
                 .as_ref()
@@ -1035,11 +1575,35 @@ impl Condition {
             }
             "minecraft:all_of" => Condition::AllOf(list("terms")?),
             "minecraft:any_of" => Condition::AnyOf(list("terms")?),
+            // The inversion of what is not evaluated is not evaluated either.
             "minecraft:inverted" => {
-                Condition::Inverted(Box::new(Condition::parse(o.get("term").ok_or("no term")?)?))
+                let term = Condition::parse(o.get("term").ok_or("no term")?)?;
+                if term.is_supported() {
+                    Condition::Inverted(Box::new(term))
+                } else {
+                    Condition::Unsupported
+                }
             }
             _ => Condition::Unsupported,
         })
+    }
+
+    /// Whether every part is evaluated (no [`Condition::Unsupported`] or unsupported
+    /// predicate part inside).
+    fn is_supported(&self) -> bool {
+        match self {
+            Condition::EntityProperties(p) => p.as_ref().is_none_or(EntityPredicate::is_supported),
+            Condition::LocationCheck(p, _) => {
+                p.as_ref().is_none_or(LocationPredicate::is_supported)
+            }
+            Condition::MatchBlock(p) => p.supported,
+            Condition::MatchTool(p) => p.as_ref().is_none_or(ItemPredicate::is_supported),
+            Condition::AllOf(terms) | Condition::AnyOf(terms) => {
+                terms.iter().all(Condition::is_supported)
+            }
+            Condition::Inverted(term) => term.is_supported(),
+            Condition::Unsupported => false,
+        }
     }
 
     /// `test(context)`: conditions that need a missing parameter are false.
@@ -1131,8 +1695,11 @@ mod tests {
         }))
         .unwrap();
         assert!(!structures.test(&ctx(-3.0)));
+        // The inversion of a condition that is not evaluated never passes either.
         let inverted = Condition::parse(&json!({"type": "minecraft:inverted", "term": {"type": "minecraft:random_chance", "chance": 1.0}})).unwrap();
-        assert!(inverted.test(&ctx(0.0)));
+        assert!(!inverted.test(&ctx(0.0)));
+        let inverted = Condition::parse(&json!({"type": "minecraft:inverted", "term": {"type": "minecraft:location_check", "predicate": {"block": {"blocks": "minecraft:dirt"}}}})).unwrap();
+        assert!(inverted.test(&ctx(0.5)));
     }
 
     #[test]

@@ -1,0 +1,70 @@
+{
+  "description": "A thrown trident's owner after a respawn (#230, I3-19): a client player throws a trident that sticks in the ground, dies (/kill) and respawns next to it (its spawn point). Projectile.getOwner looks the owner up again by UUID, so the respawned player (a new entity) still owns the trident and picks it up. All chunks in the player's simulation distance are forced (no asynchronous loads in Vanilla).",
+  "tier": "fast",
+  "dimensions": true,
+  "player_state": true,
+  "time": 6000,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -62,
+      -16
+    ],
+    [
+      31,
+      -50,
+      31
+    ]
+  ],
+  "ticks": 34,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        -90,
+        30
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "spawnpoint steve 7 -60 4"
+    },
+    {
+      "tick": 3,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:trident"
+    },
+    {
+      "tick": 16,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 22,
+      "op": "command",
+      "command": "kill steve"
+    },
+    {
+      "tick": 26,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "client_command",
+      "data": "00",
+      "what": "ClientCommand { action: PerformRespawn }"
+    }
+  ]
+}

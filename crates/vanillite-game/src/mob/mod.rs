@@ -159,6 +159,8 @@ pub struct MobData {
     pub stuck_speed: Vec3,
     /// The last damage and the game time it was taken (`lastDamageSource`, `lastDamageStamp`).
     pub last_damage: Option<(DamageKind, i64)>,
+    /// The causing entity of the last damage (`lastDamageSource.getEntity()`).
+    pub last_damage_cause: Option<EntityId>,
     pub last_hurt_by_player: Option<EntityId>,
     pub last_hurt_by_player_time: i32,
     pub last_hurt_by_mob: Option<EntityId>,
@@ -324,6 +326,7 @@ impl MobData {
             fluids: FluidContact::default(),
             stuck_speed: Vec3::ZERO,
             last_damage: None,
+            last_damage_cause: None,
             last_hurt_by_player: None,
             last_hurt_by_player_time: 0,
             last_hurt_by_mob: None,
@@ -861,6 +864,12 @@ pub enum WorldAction {
     TrampleFarmland(BlockPos, EntityId),
     /// `destroyBlock(pos, drop, breaker)` (ravagers in crops).
     DestroyBlockBy(BlockPos, bool, EntityId),
+    /// Frost Walker's `replace_disk` around a player's position.
+    FrostWalker {
+        pos: Vec3,
+        radius: i32,
+        source: EntityId,
+    },
 }
 
 impl WorldAction {
@@ -897,6 +906,13 @@ impl WorldAction {
             }
             WorldAction::DestroyBlockBy(pos, drop, id) => {
                 level.destroy_block(pos, drop, Some(id));
+            }
+            WorldAction::FrostWalker {
+                pos,
+                radius,
+                source,
+            } => {
+                crate::enchant::location::frost_walker(level, pos, radius, source);
             }
             WorldAction::ProjectileHitBlock(pos, at, id, speed) => {
                 crate::block::projectile_hit::projectile_hit_block(level, pos, at, id, speed);

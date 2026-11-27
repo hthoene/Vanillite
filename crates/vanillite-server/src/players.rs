@@ -731,6 +731,13 @@ impl WorldPlayers {
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
         }
+        // The first `collectEquipmentChanges`: the equipment's attribute modifiers.
+        player.survival.equipment_modifiers = Default::default();
+        if let Some(update) =
+            vanillite_game::effect::living::player_equipment_update(network_id, player, true)
+        {
+            sink.send(&update);
+        }
         // `sendPostEffects` of the first tick (an empty list changes nothing on the client).
         if !player.post_effects.is_empty() {
             crate::commands::send_post_effects(player);
@@ -1170,6 +1177,7 @@ impl WorldPlayers {
             .collect();
         let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
+        let mut attributes = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
@@ -1227,9 +1235,30 @@ impl WorldPlayers {
             // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1), where
             // the player's server-side travel took it (as its push and the cubes' touch,
             // `player_ai_step_end`).
+            // A passenger touches the box spanning it and its vehicle, grown by (1, 0, 1); a
+            // dead player touches nothing.
             let step = player.survival.server_step;
-            let reach = aabb.offset(step.x, step.y, step.z).inflate(1.0, 0.5, 1.0);
-            if player.game_mode != GameMode::Spectator {
+            let own = aabb.offset(step.x, step.y, step.z);
+            let reach = match level
+                .entities
+                .vehicle_of(id)
+                .and_then(|v| level.entities.store.get(v))
+            {
+                Some(v) => {
+                    let b = v.aabb();
+                    vanillite_base::Aabb::new(
+                        own.min_x.min(b.min_x),
+                        own.min_y.min(b.min_y),
+                        own.min_z.min(b.min_z),
+                        own.max_x.max(b.max_x),
+                        own.max_y.max(b.max_y),
+                        own.max_z.max(b.max_z),
+                    )
+                    .inflate(1.0, 0.0, 1.0)
+                }
+                None => own.inflate(1.0, 0.5, 1.0),
+            };
+            if player.game_mode != GameMode::Spectator && player.survival.health > 0.0 {
                 let store = &level.entities.store;
                 let mut near = Vec::new();
                 store.for_each_non_player_in(&reach, |e| {
@@ -1392,6 +1421,15 @@ impl WorldPlayers {
                     changed.push((slot.ordinal(), now.clone()));
                 }
             }
+            // `collectEquipmentChanges`: the attribute modifiers of the new equipment (and of
+            // Frost Walker / Soul Speed) to the client and its trackers.
+            if (!changed.is_empty() || player.survival.equipment_dirty)
+                && let Some(update) = vanillite_game::effect::living::player_equipment_update(
+                    network_id, player, false,
+                )
+            {
+                attributes.push((id, update));
+            }
             if !changed.is_empty() {
                 equipment.push((
                     id,
@@ -1406,6 +1444,17 @@ impl WorldPlayers {
         let entities = &mut level.entities;
         for (picker, thrower, stack) in thrown {
             vanillite_game::mob::animal::item_picked_up(entities, picker, thrower, &stack);
+        }
+        for (id, packet) in attributes {
+            let packet = SharedPacket::of(&packet);
+            if let Some(p) = entities.player(id) {
+                p.connection.sink.send_shared(&packet);
+            }
+            for viewer in blocks.tracker.seen_by(id) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
         }
         for (id, packet) in equipment {
             let packet = SharedPacket::of(&packet);
