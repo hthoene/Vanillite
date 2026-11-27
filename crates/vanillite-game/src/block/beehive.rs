@@ -713,6 +713,10 @@ fn use_item_on(
             emptied = true;
             level.game_event_at(Some(ctx.player), events().fluid_pickup, pos);
         }
+        if emptied {
+            use crate::stats::{Stat, StatType};
+            level.award_stat(ctx.player, Stat::of(StatType::Used, item.0), 1);
+        }
     }
     if !emptied {
         return ItemInteraction::TryWithEmptyHand;

@@ -363,7 +363,6 @@ pub fn apply_darkness_around(
     source: Option<EntityId>,
     radius: f64,
 ) {
-    let _ = source;
     let darkness = EffectInstance::with_flags(
         MobEffect::DARKNESS,
         DARKNESS_DURATION,
@@ -391,7 +390,7 @@ pub fn apply_darkness_around(
         }
     }
     for id in targets {
-        ents.add_effect(id, darkness.clone(), true);
+        crate::effect::living::add_detached_from(ents, id, darkness.clone(), source);
     }
 }
 

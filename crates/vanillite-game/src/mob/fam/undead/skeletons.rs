@@ -396,10 +396,12 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
     }
     let hit = crate::mob::combat::base_mob_attack(t, target);
     if hit {
+        let me = t.id;
         super::add_effect(
             t.ents,
             target,
             EffectInstance::new(effects::MobEffect::WITHER, 200, 0),
+            Some(me),
         );
     }
     Some(hit)

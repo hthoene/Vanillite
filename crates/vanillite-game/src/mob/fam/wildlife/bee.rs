@@ -372,7 +372,8 @@ pub(super) fn sting(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
             _ => 0,
         };
         if seconds > 0 {
-            super::add_effect(t.ents, target, MobEffect::POISON, seconds * 20, 0);
+            let me = t.id;
+            super::add_effect(t.ents, target, MobEffect::POISON, seconds * 20, 0, Some(me));
         }
         if !t.exists() {
             return hurt;
@@ -399,7 +400,7 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         && crate::mob::fam::is_food(Kind::Bee, ix.stack.item)
     {
         use_item(ix.ents, ix.player, ix.hand);
-        super::add_effect(ix.ents, ix.target, e, duration, 0);
+        super::add_effect(ix.ents, ix.target, e, duration, 0, None);
         return Interaction::Success;
     }
     animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack)

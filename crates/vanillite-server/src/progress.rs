@@ -4,14 +4,18 @@
 //! (`Scoreboard.forAllObjectives`), then per player the rewards of its completed advancements
 //! and `flushDirty`.
 
+use std::cell::{OnceCell, RefCell};
 use vanillite_base::BlockPos;
 use vanillite_config::GameMode;
 use vanillite_data::block::BlockState;
-use vanillite_game::advancements::predicate::{EffectView, EntityView, PlayerFacts, World};
-use vanillite_game::advancements::trigger::{Event, TriggerContext, TriggerKind};
+
+use vanillite_game::advancements::predicate::{EffectView, EntityView, IdSet, PlayerFacts, World};
+use vanillite_game::advancements::trigger::{Event, Snapshot, TriggerContext, TriggerKind};
+use vanillite_game::advancements::view;
 use vanillite_game::inventory::PlayerInventory;
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
+use vanillite_game::mob::structures::StructureIndex;
 use vanillite_game::player::PlayerData;
 use vanillite_game::player::join::display_name;
 use vanillite_game::scoreboard::CriteriaKind;
@@ -26,12 +30,20 @@ use crate::global::Global;
 use crate::systems::RegistryTags;
 use crate::world::WorldId;
 
-/// The world as the advancement predicates read it.
+/// The world as the advancement predicates of one player read it.
 struct LevelWorld<'a> {
     level: &'a Level,
     dimension: &'a str,
     tags: &'a RegistryTags,
     biomes: &'a [String],
+    /// The structure data of the chunks the predicates looked at.
+    structures: &'a RefCell<StructureIndex>,
+    /// The player whose triggers run.
+    player: EntityId,
+    /// The players in spectator mode (the players are out of the entities meanwhile).
+    spectators: &'a [EntityId],
+    /// What the player looks at, found on first use.
+    looking_at: OnceCell<Option<Snapshot>>,
 }
 
 impl World for LevelWorld<'_> {
@@ -53,6 +65,39 @@ impl World for LevelWorld<'_> {
             .and_then(|t| t.get(tag))
             .is_some_and(|e| e.iter().any(|e| e == id))
     }
+
+    fn structure_at(&self, pos: BlockPos, structures: &IdSet) -> bool {
+        let mut found = false;
+        self.structures.borrow_mut().structures_at_of(
+            self.level,
+            pos,
+            |name| structures.contains("minecraft:worldgen/structure", name, self),
+            |_, in_piece, _| found |= in_piece,
+        );
+        found
+    }
+
+    fn smokey(&self, pos: BlockPos) -> bool {
+        vanillite_game::block::beehive::is_smokey_pos(self.level, pos)
+    }
+
+    fn light(&self, pos: BlockPos) -> i32 {
+        self.level.max_local_raw_brightness(pos)
+    }
+
+    fn can_see_sky(&self, pos: BlockPos) -> bool {
+        vanillite_game::mob::can_see_sky(self.level, pos)
+    }
+
+    fn looking_at(&self) -> Option<&EntityView<'static>> {
+        self.looking_at
+            .get_or_init(|| {
+                let spectator = |id: EntityId| self.spectators.contains(&id);
+                view::looked_at(self.level, self.player, &spectator)
+                    .and_then(|id| view::snapshot(&self.level.entities, id))
+            })
+            .as_deref()
+    }
 }
 
 /// A player as the entity predicates see it.
@@ -64,6 +109,8 @@ fn player_view<'a>(
     inv: &'a PlayerInventory,
     survival: &Survival,
     stats: &'a StatsCounter,
+    recipes: &'a vanillite_game::recipe::book::PlayerRecipeBook,
+    input: vanillite_protocol::packets::play::serverbound::Input,
     game_mode: GameMode,
     team: Option<String>,
 ) -> EntityView<'a> {
@@ -93,6 +140,10 @@ fn player_view<'a>(
         game_mode,
         level: survival.xp.level,
         stats: Some(stats),
+        food: (survival.food.food_level, survival.food.saturation),
+        recipes: Some(recipes),
+        input,
+        own: true,
     });
     v.effects = survival
         .effects
@@ -155,6 +206,14 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
             id,
         );
     }
+    let spectators: Vec<EntityId> = level
+        .entities
+        .players
+        .iter()
+        .filter(|(_, p)| p.game_mode == GameMode::Spectator)
+        .map(|(id, _)| id)
+        .collect();
+    let structures = RefCell::new(StructureIndex::default());
     let mut players = std::mem::take(&mut level.entities.players);
     let mut scores = Vec::new();
     let mut order = Vec::new();
@@ -200,17 +259,32 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
                 inventory,
                 survival,
                 stats,
+                recipe_book,
+                connection,
                 game_mode,
                 ..
             } = player;
             let view = player_view(
-                level, id, &entity, inventory, survival, stats, *game_mode, team,
+                level,
+                id,
+                &entity,
+                inventory,
+                survival,
+                stats,
+                recipe_book,
+                connection.vehicle.input,
+                *game_mode,
+                team,
             );
             let world = LevelWorld {
                 level,
                 dimension,
                 tags: &tags,
                 biomes,
+                structures: &structures,
+                player: id,
+                spectators: &spectators,
+                looking_at: OnceCell::new(),
             };
             advancements.process(extra, &TriggerContext::new(&world, &view, inventory));
         }
@@ -422,10 +496,13 @@ pub(crate) fn reload_advancements(global: &Global) {
             for id in ids {
                 if let Some(p) = entities.player_mut(id) {
                     let saved = p.advancements.to_json();
+                    // `currentExplosionCause` is the player's, not the progress's.
+                    let cause = p.advancements.explosion_cause.take();
                     p.advancements = vanillite_game::advancements::PlayerAdvancements::load(
                         std::sync::Arc::clone(&set),
                         Some(&saved),
                     );
+                    p.advancements.explosion_cause = cause;
                 }
             }
         });

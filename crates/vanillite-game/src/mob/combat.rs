@@ -459,6 +459,7 @@ pub fn hurt_mob(
     }
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
+        m.last_damage_cause = source.cause;
     }
     // `onMobHurt` of the effects (Infested).
     let view = ents.store.get(target).map(|e| (e.rot(), e.dims().height));
@@ -914,6 +915,30 @@ fn die(
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
+    // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
+    // last attacking mob.
+    let credit = ents.mob(target).and_then(|m| {
+        m.last_hurt_by_player
+            .filter(|_| m.last_hurt_by_player_time > 0)
+            .or(m.last_hurt_by_mob)
+    });
+    // `ServerPlayer.awardKillScore`: `PLAYER_KILLED_ENTITY` of the player with the credit,
+    // before the death loot (the victim still wears its equipment).
+    if let Some(player) = credit
+        .or(source.cause)
+        .filter(|&k| k != target && ents.player(k).is_some())
+    {
+        let types = env.types;
+        view::fire(ents, player, TriggerKind::PLAYER_KILLED_ENTITY, |ents| {
+            let victim = view::snapshot(ents, target)
+                .unwrap_or_else(|| Box::new(EntityView::new(mob_kind.name(), pos)));
+            Event::Killed(
+                TriggerKind::PLAYER_KILLED_ENTITY,
+                victim,
+                Box::new(view::damage_view(ents, types, &source)),
+            )
+        });
+    }
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
@@ -1036,29 +1061,6 @@ fn die(
     }
     if experience > 0 {
         award_experience(env, pos, experience);
-    }
-    // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
-    // last attacking mob.
-    let credit = ents.mob(target).and_then(|m| {
-        m.last_hurt_by_player
-            .filter(|_| m.last_hurt_by_player_time > 0)
-            .or(m.last_hurt_by_mob)
-    });
-    // `ServerPlayer.awardKillScore`: `PLAYER_KILLED_ENTITY` of the player with the credit.
-    if let Some(player) = credit
-        .or(source.cause)
-        .filter(|&k| k != target && ents.player(k).is_some())
-    {
-        let types = env.types;
-        view::fire(ents, player, TriggerKind::PLAYER_KILLED_ENTITY, |ents| {
-            let victim = view::snapshot(ents, target)
-                .unwrap_or_else(|| Box::new(EntityView::new(mob_kind.name(), pos)));
-            Event::Killed(
-                TriggerKind::PLAYER_KILLED_ENTITY,
-                victim,
-                Box::new(view::damage_view(ents, types, &source)),
-            )
-        });
     }
     create_wither_rose(level, ents, env, cx, pos, credit);
     env.out.push(Effect::Died {

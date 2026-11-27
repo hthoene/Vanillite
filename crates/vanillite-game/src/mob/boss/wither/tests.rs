@@ -314,6 +314,7 @@ fn powered_wither_ignores_arrows() {
             has_been_shot: false,
             pierce_level: 0,
             pierced: Vec::new(),
+            pierced_killed: Vec::new(),
             crossbow_sound: false,
             weapon: None,
         },

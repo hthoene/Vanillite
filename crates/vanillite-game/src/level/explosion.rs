@@ -565,14 +565,18 @@ impl Level {
             // `onExplosionHit`: where the explosion hit the player and what caused it; a
             // player's wind charge spares the fall back to that height
             // (`setIgnoreFallDamageFromCurrentImpulse`), other explosions end the grace.
-            if let Some(p) = self.entities.player_mut(id) {
-                crate::advancements::tracking::explosion_hit(p, pos, source);
-                let s = &mut p.survival;
-                if player_wind_charge {
-                    s.impulse_grace = s.impulse_grace.max(40);
-                    s.impulse_impact = Some(pos);
-                } else {
-                    s.impulse_grace = 0;
+            if self.entities.player(id).is_some() {
+                let cause =
+                    source.and_then(|s| crate::advancements::view::snapshot(&self.entities, s));
+                if let Some(p) = self.entities.player_mut(id) {
+                    crate::advancements::tracking::explosion_hit(p, pos, cause);
+                    let s = &mut p.survival;
+                    if player_wind_charge {
+                        s.impulse_grace = s.impulse_grace.max(40);
+                        s.impulse_impact = Some(pos);
+                    } else {
+                        s.impulse_grace = 0;
+                    }
                 }
             }
             let player = self.entities.player(id);

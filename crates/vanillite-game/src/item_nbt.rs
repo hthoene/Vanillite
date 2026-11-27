@@ -35,6 +35,96 @@ pub fn component_from_nbt(type_id: u16, tag: &Tag) -> Option<Box<[u8]>> {
     conv::from_nbt(type_id, tag, &InstalledRegistries).ok()
 }
 
+/// JSON as NBT for the component codecs (numbers as int, long or double; `null` as an empty
+/// compound).
+pub fn json_to_nbt(v: &serde_json::Value) -> Tag {
+    use serde_json::Value;
+    match v {
+        Value::Null => Tag::Compound(Compound::new()),
+        Value::Bool(b) => Tag::Byte(i8::from(*b)),
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => i32::try_from(i).map_or(Tag::Long(i), Tag::Int),
+            None => Tag::Double(n.as_f64().unwrap_or(0.0)),
+        },
+        Value::String(s) => Tag::String(s.clone()),
+        Value::Array(a) => Tag::List(vanillite_nbt::List(a.iter().map(json_to_nbt).collect())),
+        Value::Object(o) => {
+            let mut c = Compound::new();
+            for (k, v) in o {
+                c.insert(k.clone(), json_to_nbt(v));
+            }
+            Tag::Compound(c)
+        }
+    }
+}
+
+/// The `items.json` line (the default components Vanilla's data generator writes, one item
+/// per line) of each item by name, read on first use.
+fn item_lines() -> &'static std::collections::HashMap<&'static str, &'static str> {
+    static LINES: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static str>> =
+        std::sync::OnceLock::new();
+    LINES.get_or_init(|| {
+        vanillite_data::raw::ITEMS_JSON
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("{\"name\":\"")?;
+                let name = &rest[..rest.find('"')?];
+                Some((name, line.trim_end_matches(',')))
+            })
+            .collect()
+    })
+}
+
+/// The wire value of an item type's default component, if it has one.
+pub fn default_component(item: u16, type_id: u16) -> Option<Box<[u8]>> {
+    let name = vanillite_data::registry::ITEM.name(item)?;
+    let component = conv::type_name(type_id)?;
+    let line = item_lines().get(name)?;
+    let json: serde_json::Value = serde_json::from_str(line).ok()?;
+    let value = json.get("components")?.get(component)?;
+    component_from_nbt(type_id, &json_to_nbt(value))
+}
+
+/// `ItemStack.get(type)`: the wire value of the stack's patch, else the item's default
+/// (`None` where the patch removes it or the item has none).
+pub fn effective_component(stack: &ItemStack, type_id: u16) -> Option<std::borrow::Cow<'_, [u8]>> {
+    if stack.is_empty() {
+        return None;
+    }
+    if let Some(p) = stack.patch() {
+        if let Some(v) = p.get(type_id) {
+            return Some(std::borrow::Cow::Borrowed(v));
+        }
+        if p.is_removed(type_id) {
+            return None;
+        }
+    }
+    default_component(stack.item, type_id).map(|v| std::borrow::Cow::Owned(v.into_vec()))
+}
+
+/// `NbtUtils.compareNbt(expected, actual, true)`: every key of an expected compound matches,
+/// every element of an expected list finds a match (an empty list matches only an empty
+/// one), other tags are equal.
+pub fn compare_nbt(expected: &Tag, actual: &Tag) -> bool {
+    match (expected, actual) {
+        (Tag::Compound(e), Tag::Compound(a)) => compare_compounds(e, a),
+        (Tag::List(e), Tag::List(a)) => {
+            if e.0.is_empty() {
+                return a.0.is_empty();
+            }
+            e.0.iter().all(|x| a.0.iter().any(|y| compare_nbt(x, y)))
+        }
+        (e, a) => e == a,
+    }
+}
+
+/// [`compare_nbt`] of two compounds.
+pub fn compare_compounds(expected: &Compound, actual: &Compound) -> bool {
+    expected
+        .iter()
+        .all(|(k, v)| actual.get(k).is_some_and(|a| compare_nbt(v, a)))
+}
+
 /// A component patch in its persistent form (`DataComponentPatch.CODEC`), and the part that
 /// has no persistent form (transient types are dropped as in Vanilla).
 pub fn patch_to_nbt(patch: &ComponentPatch) -> (Compound, ComponentPatch) {

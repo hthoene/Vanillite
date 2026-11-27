@@ -7,6 +7,7 @@
 //! [`EffectEvent`]s; attribute changes go to [`Modifiers`] and are marked dirty.
 
 use vanillite_nbt::Tag;
+use vanillite_world::entity::EntityId;
 
 use super::attribute::{Attribute, Modifiers};
 use super::instance::{self, EffectInstance};
@@ -70,10 +71,12 @@ pub trait EffectHost {
 /// `onEffectUpdated` / `onEffectsRemoved`, and `sendEffectToPassengers` for riders).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectEvent {
-    /// `update_mob_effect`; `blend` for a newly added effect.
+    /// `update_mob_effect`; `blend` for a newly added effect; the entity that caused it
+    /// (`addEffect(effect, source)`).
     Update {
         instance: EffectInstance,
         blend: bool,
+        source: Option<EntityId>,
     },
     /// `remove_mob_effect`.
     Remove(MobEffect),
@@ -158,17 +161,23 @@ impl ActiveEffects {
     }
 
     /// `onEffectAdded`.
-    fn on_added(&mut self, instance: &EffectInstance) {
+    fn on_added(&mut self, instance: &EffectInstance, source: Option<EntityId>) {
         self.dirty = true;
         self.add_modifiers(instance);
         self.events.push(EffectEvent::Update {
             instance: instance.clone(),
             blend: true,
+            source,
         });
     }
 
     /// `onEffectUpdated`.
-    fn on_updated(&mut self, instance: &EffectInstance, refresh_attributes: bool) {
+    fn on_updated(
+        &mut self,
+        instance: &EffectInstance,
+        refresh_attributes: bool,
+        source: Option<EntityId>,
+    ) {
         self.dirty = true;
         if refresh_attributes {
             self.remove_modifiers(instance.effect);
@@ -177,6 +186,7 @@ impl ActiveEffects {
         self.events.push(EffectEvent::Update {
             instance: instance.clone(),
             blend: false,
+            source,
         });
     }
 
@@ -189,10 +199,10 @@ impl ActiveEffects {
 
     /// The merge part of `addEffect`: inserts or updates; returns whether anything changed and
     /// whether the effect is new.
-    fn merge(&mut self, new: EffectInstance) -> (bool, bool) {
+    fn merge(&mut self, new: EffectInstance, source: Option<EntityId>) -> (bool, bool) {
         match self.list.binary_search_by_key(&new.effect, |e| e.effect) {
             Err(i) => {
-                self.on_added(&new);
+                self.on_added(&new, source);
                 self.list.insert(i, new);
                 (true, true)
             }
@@ -202,7 +212,7 @@ impl ActiveEffects {
                 };
                 if current.update(&new) {
                     let updated = current.clone();
-                    self.on_updated(&updated, true);
+                    self.on_updated(&updated, true, source);
                     (true, false)
                 } else {
                     (false, false)
@@ -225,11 +235,11 @@ impl ActiveEffects {
     pub fn force_add(&mut self, new: EffectInstance) {
         match self.list.binary_search_by_key(&new.effect, |e| e.effect) {
             Err(i) => {
-                self.on_added(&new);
+                self.on_added(&new, None);
                 self.list.insert(i, new);
             }
             Ok(i) => {
-                self.on_updated(&new, true);
+                self.on_updated(&new, true, None);
                 if let Some(slot) = self.list.get_mut(i) {
                     *slot = new;
                 }
@@ -407,9 +417,14 @@ fn particle_id(name: &str) -> i32 {
 /// instance of the effect; returns whether anything changed. Runs `onEffectAdded` (the sound)
 /// and `onEffectStarted` (absorption).
 pub fn add(host: &mut dyn EffectHost, new: EffectInstance) -> bool {
+    add_from(host, new, None)
+}
+
+/// [`add`] with the entity that applies the effect (`addEffect(newEffect, source)`).
+pub fn add_from(host: &mut dyn EffectHost, new: EffectInstance, source: Option<EntityId>) -> bool {
     let effect = new.effect;
     let amplifier = new.amplifier();
-    let (changed, added) = host.effects().merge(new);
+    let (changed, added) = host.effects().merge(new, source);
     if added && let Some(sound) = effect.info().sound_on_added {
         host.play_sound(sound);
     }
@@ -472,9 +487,9 @@ pub fn tick(host: &mut dyn EffectHost) {
         }
         let updated = e.clone();
         if downgraded {
-            fx.on_updated(&updated, true);
+            fx.on_updated(&updated, true, None);
         } else if updated.duration % 600 == 0 {
-            fx.on_updated(&updated, false);
+            fx.on_updated(&updated, false, None);
         }
         next = i + 1;
     }

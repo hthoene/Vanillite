@@ -56,6 +56,9 @@ pub struct ArrowData {
     pub pierce_level: u8,
     /// `piercingIgnoreEntityIds`: the entities it pierced (hits them no more).
     pub pierced: Vec<EntityId>,
+    /// `piercedAndKilledEntities`: what a piercing arrow killed, with the type and the
+    /// position at the kill (for `KILLED_BY_ARROW`).
+    pub pierced_killed: Vec<(EntityId, &'static str, Vec3)>,
     /// `soundEvent` is `item.crossbow.hit` (shot from a crossbow) instead of
     /// `entity.arrow.hit`.
     pub crossbow_sound: bool,
@@ -92,6 +95,7 @@ impl ArrowData {
             has_been_shot: false,
             pierce_level: 0,
             pierced: Vec::new(),
+            pierced_killed: Vec::new(),
             crossbow_sound: false,
             weapon: None,
         }
@@ -538,34 +542,70 @@ pub fn tick_arrow(
                         a.spectral_duration,
                         0,
                     );
-                    crate::effect::living::add_to_entity(level, ents, env, cx, target, glowing);
-                } else {
-                    crate::effect::cloud::arrow_hit(level, ents, env, cx, target, &a.item);
-                }
-                // `KILLED_BY_ARROW` of a player's arrow that killed what it hit (no piercing).
-                if let Some(player) = a.owner.filter(|&o| ents.player(o).is_some()) {
-                    let dead = ents.mob(target).map_or_else(
-                        || {
-                            ents.player(target)
-                                .is_some_and(|p| p.survival.is_dead_or_dying())
-                        },
-                        |m| !m.is_alive(),
+                    // `getEffectSource()`: the owner, else the arrow.
+                    crate::effect::living::add_to_entity_from(
+                        level,
+                        ents,
+                        env,
+                        cx,
+                        target,
+                        glowing,
+                        Some(owner),
                     );
-                    if dead {
-                        use crate::advancements::{trigger, view};
-                        view::fire(
-                            ents,
-                            player,
-                            trigger::TriggerKind::KILLED_BY_ARROW,
-                            |ents| {
-                                trigger::Event::KilledByArrow(
-                                    view::snapshots(ents, &[target]),
-                                    1,
-                                    a.weapon.clone(),
-                                )
-                            },
-                        );
-                    }
+                } else {
+                    crate::effect::cloud::arrow_hit(level, ents, env, cx, target, &a.item, owner);
+                }
+                // A piercing arrow keeps what it killed (`piercedAndKilledEntities`); a player's
+                // arrow fires `KILLED_BY_ARROW` with that list on every hit, else with what it
+                // hit if that died.
+                let dead = ents.mob(target).map_or_else(
+                    || {
+                        ents.player(target)
+                            .is_some_and(|p| p.survival.is_dead_or_dying())
+                    },
+                    |m| !m.is_alive(),
+                );
+                let victim = ents
+                    .store
+                    .get(target)
+                    .map(|e| (target, e.kind().name(), e.pos()));
+                if dead
+                    && a.pierce_level > 0
+                    && let Some(v) = victim
+                {
+                    a.pierced_killed.push(v);
+                }
+                let victims = if a.pierce_level > 0 {
+                    Some(a.pierced_killed.clone())
+                } else {
+                    victim.filter(|_| dead).map(|v| vec![v])
+                };
+                if let Some(player) = a.owner.filter(|&o| ents.player(o).is_some())
+                    && let Some(victims) = victims
+                {
+                    use crate::advancements::{predicate::EntityView, trigger, view};
+                    view::fire(
+                        ents,
+                        player,
+                        trigger::TriggerKind::KILLED_BY_ARROW,
+                        |ents| {
+                            let mut types: Vec<&str> = victims.iter().map(|v| v.1).collect();
+                            types.sort_unstable();
+                            types.dedup();
+                            let views = victims
+                                .iter()
+                                .map(|&(id, kind, pos)| {
+                                    view::snapshot(ents, id)
+                                        .map_or_else(|| EntityView::new(kind, pos), |v| *v)
+                                })
+                                .collect();
+                            trigger::Event::KilledByArrow(
+                                views,
+                                i32::try_from(types.len()).unwrap_or(i32::MAX),
+                                a.weapon.clone(),
+                            )
+                        },
+                    );
                 }
                 if let Some(owner) = a.owner
                     && let Some(m) = ents.mob_mut(owner)
@@ -649,7 +689,9 @@ pub fn tick_arrow(
             a.crit = false;
             a.pierce_level = 0;
             a.crossbow_sound = false;
+            // `resetPiercedEntities`.
             a.pierced.clear();
+            a.pierced_killed.clear();
         } else if flies_on {
             pos = to;
         }
