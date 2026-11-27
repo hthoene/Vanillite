@@ -290,6 +290,7 @@ impl NetState {
         configuration: ConfigurationData,
         listen: bool,
         enforces_secure_chat: bool,
+        tap: Arc<vanillite_protocol::tap::PacketTap>,
     ) -> Result<NetState, StartError> {
         let p = &config.properties;
         let ip: std::net::IpAddr = if p.server_ip.is_empty() {
@@ -333,6 +334,7 @@ impl NetState {
             } else {
                 std::collections::BTreeMap::new()
             },
+            tap,
             ..NetConfig::default()
         };
         let status = StatusInfo {

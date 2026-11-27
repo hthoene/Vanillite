@@ -609,7 +609,19 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
         } else {
             Vec::new()
         };
-        let id = spawn::add_mob_with(level, mob, at, y_rot, extra);
+        let id = spawn::add_mob_with(
+            level,
+            mob,
+            at,
+            y_rot,
+            extra,
+            crate::mob::fam::SpawnReason::Spawner,
+        );
+        if !level.entities.store.contains(id) {
+            // `tryAddFreshEntityWithPassengers` failed (a plugin cancelled the spawn).
+            delay(level, holder);
+            return;
+        }
         // `Entity.load` turned head and body to the loaded yaw (0 without `Rotation`); the
         // random yaw of `snapTo` turns the entity only.
         if let Some(m) = level.entities.mob_mut(id) {

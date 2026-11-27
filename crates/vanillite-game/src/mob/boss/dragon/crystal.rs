@@ -119,7 +119,9 @@ pub fn spawn_crystal(
         x_rot: 0.0,
         y_head_rot: y_rot,
     };
-    ents.spawn_special(new, SpecialData::EndCrystal(Box::new(crystal)))
+    let id = ents.spawn_special(new, SpecialData::EndCrystal(Box::new(crystal)));
+    ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
+    id
 }
 
 /// Adds a dragon fireball at `start` flying along `direction` (`new DragonFireball(level, mob,
@@ -141,7 +143,7 @@ pub fn spawn_fireball(
     new.velocity = direction.normalize() * 0.1;
     new.rot = Rotation::default();
     let owner_uuid = ents.store.get(owner).map(|e| e.uuid());
-    ents.spawn_special(
+    let id = ents.spawn_special(
         new,
         SpecialData::DragonFireball(Box::new(Fireball {
             owner: Some(owner),
@@ -150,7 +152,9 @@ pub fn spawn_fireball(
             left_owner: false,
             tick_count: 0,
         })),
-    )
+    );
+    ents.launched(id, Some(owner));
+    id
 }
 
 /// Adds an area effect cloud at `pos`.
@@ -340,6 +344,12 @@ pub fn tick_fireball(t: &mut SpecialTick<'_, '_>) {
             }
         }
     }
+    // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored, the fireball flies on.
+    let hit_event = |what| crate::mob::missile::hit_event(t.level, t.ents, id, owner, what);
+    let best = best.filter(|&(e, _, _)| hit_event(crate::mob::missile::HitWhat::Entity(e)));
+    let block_hit = block_hit.filter(|&(block, at)| {
+        best.is_some() || hit_event(crate::mob::missile::HitWhat::Block(block, at))
+    });
     let hit = best
         .map(|(e, _, at)| (Some(e), at))
         .or(block_hit.map(|(_, at)| (None, at)));

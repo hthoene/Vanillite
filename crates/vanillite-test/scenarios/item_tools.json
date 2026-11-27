@@ -30,7 +30,7 @@
       "op": "set",
       "pos": [
         7,
-        -60,
+        -61,
         4
       ],
       "block": "minecraft:rooted_dirt"
@@ -182,7 +182,7 @@
       "entity": "steve",
       "pos": [
         7,
-        -60,
+        -61,
         4
       ],
       "item": "minecraft:iron_hoe",

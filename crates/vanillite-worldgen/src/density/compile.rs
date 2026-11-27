@@ -75,7 +75,9 @@ impl<'a> DensityCompiler<'a> {
     }
 
     /// The finished program.
-    pub fn finish(self) -> Program {
+    pub fn finish(mut self) -> Program {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.program.id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.program
     }
 
@@ -139,6 +141,7 @@ impl<'a> DensityCompiler<'a> {
             return index;
         }
         let index = self.lower(function);
+        self.program.set_range(index, function.range());
         self.compiled.insert(function.clone(), index);
         index
     }

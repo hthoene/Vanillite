@@ -321,12 +321,15 @@ pub fn level_event(cx: &mut crate::mob::MobContext, event: i32, pos: BlockPos, d
 
 /// `Mob.convertTo(type, ConversionParams.single(mob, keepEquipment, preserveCanPickUpLoot))`:
 /// replaces the ticking mob by a new mob of `kind` at the same place with its equipment,
-/// effects, age, name and flags. The old mob is removed; returns the new one.
+/// effects, age, name and flags. The old mob is removed; returns the new one. `reason` is the
+/// plugins' `vanillite_abi::transform_reason`; `None` when a plugin cancelled the conversion
+/// (the old mob stays).
 pub fn convert_to(
     t: &mut Tick<'_, '_>,
     kind: Kind,
     keep_equipment: bool,
     preserve_loot: bool,
+    reason: u32,
     after: impl FnOnce(&mut MobData),
 ) -> Option<EntityId> {
     if t.mob_ref().removed {
@@ -375,8 +378,18 @@ pub fn convert_to(
         ..rot
     };
     let uuid = crate::mob::new_uuid();
+    if !t.ents.transforming(t.id, kind.type_id(), uuid, reason) {
+        return None;
+    }
     let vehicle = t.ents.vehicle_of(t.id);
     let id = crate::mob::spawn(t.ents, t.level.network_ids(), uuid, pos, rot, new);
+    let old_uuid = t.core().uuid();
+    if !t
+        .ents
+        .spawned(id, vanillite_abi::spawn_reason::CONVERSION, old_uuid)
+    {
+        return None;
+    }
     if let Some(mut e) = t.ents.store.get_mut(id) {
         e.set_velocity(velocity);
         e.set_flags(flags, true);
@@ -398,8 +411,13 @@ pub fn spawn_extras(
     id: EntityId,
     pos: Vec3,
     extra: Vec<super::ExtraMob>,
+    reason: super::SpawnReason,
 ) {
     use super::Relation;
+    if extra.is_empty() {
+        return;
+    }
+    let parent = ents.store.get(id).map_or(0, |e| e.uuid());
     let mut spawned = Vec::with_capacity(extra.len());
     for e in extra {
         if let Relation::Existing(vehicle) = e.relation {
@@ -422,6 +440,12 @@ pub fn spawn_extras(
             }
             Relation::Beside | Relation::Existing(_) => {}
         }
+        let reason = if matches!(e.relation, Relation::Beside) {
+            reason
+        } else {
+            super::SpawnReason::Jockey
+        };
+        ents.spawned(other, reason.abi(), parent);
     }
 }
 
@@ -430,8 +454,9 @@ pub fn drop_item(env: &mut Env<'_>, pos: Vec3, stack: crate::item::ItemStack) {
     if stack.is_empty() {
         return;
     }
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(crate::survival::Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,

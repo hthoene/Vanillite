@@ -111,6 +111,60 @@ struct Column {
     x1: i32,
 }
 
+/// The Y values of one row of a volume in `addToVolume`: the lattice cell, the position inside
+/// it the corner gradients are multiplied with, and the smoothstep. They are the same in every
+/// column, so each row computes them once per call.
+#[derive(Clone, Copy, Default)]
+struct Row {
+    known: bool,
+    floor: i32,
+    relative: f32,
+    alpha: f32,
+}
+
+/// The rows of a volume, computed when a column first needs them.
+struct Rows {
+    short: [Row; Self::SHORT],
+    long: Vec<Row>,
+}
+
+impl Rows {
+    /// Volumes up to this height keep their rows on the stack.
+    const SHORT: usize = 64;
+
+    #[inline(always)]
+    fn new(size_y: usize) -> Self {
+        Self {
+            short: [Row::default(); Self::SHORT],
+            long: if size_y > Self::SHORT {
+                vec![Row::default(); size_y]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    /// Row `index`, from `compute` at its first use.
+    #[inline(always)]
+    fn get(&mut self, index: usize, compute: impl FnOnce() -> (i32, f32, f32)) -> Row {
+        let row = if self.long.is_empty() {
+            &mut self.short[index]
+        } else {
+            &mut self.long[index]
+        };
+        if !row.known {
+            let (floor, relative, alpha) = compute();
+            *row = Row {
+                known: true,
+                floor,
+                relative,
+                alpha,
+            };
+        }
+        *row
+    }
+}
+
 /// The points of a volume `add_to_volume` computes: all, or those of a mask.
 trait Points: Copy {
     /// Whether any point of the column starting at `start` (`len` points) is needed.
@@ -294,6 +348,7 @@ impl PerlinNoise {
         points: impl Points,
     ) {
         let n = &self.base;
+        let mut rows = Rows::new(volume.size_y as usize);
         for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
             let mut cell = CellColumn::default();
             let mut last_floor_y = i32::MIN;
@@ -301,15 +356,17 @@ impl PerlinNoise {
                 if !points.has(first + index_y as usize) {
                     continue;
                 }
-                let y = wrap(f64::from(volume.block_y(index_y)) * y_scale) + n.offset_y;
-                let floor_y = floor(y);
-                let ry = (y - f64::from(floor_y)) as f32;
-                let alpha_y = smoothstep(ry);
-                if last_floor_y != floor_y {
-                    cell = CellColumn::new(n, c, floor_y);
-                    last_floor_y = floor_y;
+                let row = rows.get(index_y as usize, || {
+                    let y = wrap(f64::from(volume.block_y(index_y)) * y_scale) + n.offset_y;
+                    let floor_y = floor(y);
+                    let ry = (y - f64::from(floor_y)) as f32;
+                    (floor_y, ry, smoothstep(ry))
+                });
+                if last_floor_y != row.floor {
+                    cell = CellColumn::new(n, c, row.floor);
+                    last_floor_y = row.floor;
                 }
-                *value += amplitude * cell.lerp(c.x.alpha, alpha_y, c.z.alpha, ry);
+                *value += amplitude * cell.lerp(c.x.alpha, row.alpha, c.z.alpha, row.relative);
             }
         });
     }
@@ -414,6 +471,7 @@ impl SmearedPerlinNoise {
         points: impl Points,
     ) {
         let n = &self.perlin.base;
+        let mut rows = Rows::new(volume.size_y as usize);
         for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
             let mut cell = CellColumn::default();
             let mut last_floor_y = i32::MIN;
@@ -421,17 +479,19 @@ impl SmearedPerlinNoise {
                 if !points.has(first + index_y as usize) {
                     continue;
                 }
-                let original_y = f64::from(volume.block_y(index_y)) * y_scale;
-                let y = wrap(original_y) + n.offset_y;
-                let floor_y = floor(y);
-                let ry = y - f64::from(floor_y);
-                let alpha_y = smoothstep(ry as f32);
-                if last_floor_y != floor_y {
-                    cell = CellColumn::new(n, c, floor_y);
-                    last_floor_y = floor_y;
+                let row = rows.get(index_y as usize, || {
+                    let original_y = f64::from(volume.block_y(index_y)) * y_scale;
+                    let y = wrap(original_y) + n.offset_y;
+                    let floor_y = floor(y);
+                    let ry = y - f64::from(floor_y);
+                    let fudged_ry = (ry - self.compute_fudge_y(original_y, ry)) as f32;
+                    (floor_y, fudged_ry, smoothstep(ry as f32))
+                });
+                if last_floor_y != row.floor {
+                    cell = CellColumn::new(n, c, row.floor);
+                    last_floor_y = row.floor;
                 }
-                let fudged_ry = (ry - self.compute_fudge_y(original_y, ry)) as f32;
-                *value += amplitude * cell.lerp(c.x.alpha, alpha_y, c.z.alpha, fudged_ry);
+                *value += amplitude * cell.lerp(c.x.alpha, row.alpha, c.z.alpha, row.relative);
             }
         });
     }

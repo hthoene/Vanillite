@@ -228,7 +228,23 @@ impl OpenFile {
             WorldFormat::Anvil => {
                 RegionFile::open(path, create)?.map(|f| OpenFile::Anvil(Box::new(f)))
             }
-            WorldFormat::Vanillite => VwrFile::open(path, create)?.map(OpenFile::Own),
+            WorldFormat::Vanillite => match VwrFile::open(path, create) {
+                // A damaged own-format file (#167): it is kept aside for recovery and a new
+                // one takes the writes, so the region's chunks are saved again.
+                Err(e) if create && e.kind() == io::ErrorKind::InvalidData => {
+                    let millis = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis());
+                    let aside = crate::files::with_suffix(path, &format!(".damaged-{millis}"));
+                    std::fs::rename(path, &aside)?;
+                    log::error!(
+                        "{e}; the file is kept as {} and a new one is started",
+                        aside.display()
+                    );
+                    VwrFile::open(path, true)?.map(OpenFile::Own)
+                }
+                result => result?.map(OpenFile::Own),
+            },
         })
     }
 
@@ -322,6 +338,9 @@ struct PendingWrite {
     seq: u64,
     /// `None` deletes.
     record: Option<Record>,
+    /// The last attempt failed (disk full, read-only): the write stays queued, out of the
+    /// backlog, and is tried again by the next commit or a later put of the key.
+    failed: bool,
     /// Ops answered once this key is written.
     waiters: Vec<(Arc<Batch>, usize)>,
 }
@@ -351,7 +370,7 @@ struct FileSlot {
 
 impl FileSlot {
     fn has_work(&self) -> bool {
-        !self.reads.is_empty() || !self.writes.is_empty()
+        !self.reads.is_empty() || self.writes.values().any(|w| !w.failed)
     }
 
     fn best_priority(&self) -> Priority {
@@ -363,7 +382,7 @@ impl FileSlot {
     }
 
     fn idle(&self) -> bool {
-        !self.busy && !self.has_work() && self.queued.is_none()
+        !self.busy && self.reads.is_empty() && self.writes.is_empty() && self.queued.is_none()
     }
 }
 
@@ -646,9 +665,12 @@ impl StoreInner {
         match file.writes.get_mut(&slot_index) {
             Some(write) => {
                 self.counters.coalesced.fetch_add(1, Ordering::Relaxed);
-                self.backlog.fetch_sub(write.len(), Ordering::Relaxed);
+                if !write.failed {
+                    self.backlog.fetch_sub(write.len(), Ordering::Relaxed);
+                }
                 write.seq = seq;
                 write.record = record;
+                write.failed = false;
                 write.waiters.push((Arc::clone(batch), index));
             }
             None => {
@@ -657,6 +679,7 @@ impl StoreInner {
                     PendingWrite {
                         seq,
                         record,
+                        failed: false,
                         waiters: vec![(Arc::clone(batch), index)],
                     },
                 );
@@ -805,10 +828,27 @@ impl StoreInner {
         file.busy = false;
         file.missing = region.is_none() && open_error.is_none();
         file.region = region;
+        let mut failed: Option<(usize, io::Error)> = None;
         for (slot, seq, result) in written {
             if !file.writes.get(&slot).is_some_and(|w| w.seq == seq) {
                 // A newer put of the key arrived meanwhile; it is written next.
                 file.dirty |= result.is_ok();
+                continue;
+            }
+            if let Err(e) = &result {
+                // Kept (#167): the record is the only copy of the chunk once it unloads.
+                let write = file.writes.get_mut(&slot).expect("checked above");
+                if !write.failed {
+                    write.failed = true;
+                    self.backlog.fetch_sub(write.len(), Ordering::Relaxed);
+                }
+                for (batch, index) in write.waiters.drain(..) {
+                    let error = io::Error::new(e.kind(), e.to_string());
+                    answers.push((batch, index, StoreResult::Failed(error)));
+                }
+                let first =
+                    failed.get_or_insert_with(|| (0, io::Error::new(e.kind(), e.to_string())));
+                first.0 += 1;
                 continue;
             }
             let Some(write) = file.writes.remove(&slot) else {
@@ -861,6 +901,12 @@ impl StoreInner {
         }
         drop(guard);
         shard.idle.notify_all();
+        if let Some((count, e)) = failed {
+            log::error!(
+                "Couldn't write {count} records: {e}; they stay in memory and are written again \
+                 with the next save"
+            );
+        }
         for (batch, index, result) in answers {
             batch.to.post(batch.token, index, result);
         }
@@ -951,13 +997,25 @@ impl StoreInner {
         let mut first_error = None;
         // Files whose commit failed in this round: they stay dirty for the next round.
         let mut failed: Vec<FileKey> = Vec::new();
+        // Writes that failed before are tried once more in this round.
+        for shard in &self.shards {
+            let mut state = lock(&shard.state);
+            for file in state.files.values_mut() {
+                for write in file.writes.values_mut() {
+                    if write.failed && write.seq <= upto {
+                        write.failed = false;
+                        self.backlog.fetch_add(write.len(), Ordering::Relaxed);
+                    }
+                }
+            }
+        }
         for shard in &self.shards {
             loop {
                 let mut state = lock(&shard.state);
                 let pending = state.files.iter().find_map(|(&fk, f)| {
                     f.writes
                         .values()
-                        .any(|w| w.seq <= upto)
+                        .any(|w| w.seq <= upto && !w.failed)
                         .then_some((fk, f.busy))
                 });
                 if let Some((fk, busy)) = pending {
@@ -1024,6 +1082,24 @@ impl StoreInner {
                     self.pool.push(priority, Work::File(Arc::clone(self), fk));
                 }
             }
+        }
+        let unwritten: usize = self
+            .shards
+            .iter()
+            .map(|shard| {
+                lock(&shard.state)
+                    .files
+                    .values()
+                    .map(|f| f.writes.values().filter(|w| w.failed).count())
+                    .sum::<usize>()
+            })
+            .sum();
+        if unwritten > 0 && first_error.is_none() {
+            first_error = Some(io::Error::other(format!(
+                "{unwritten} records of {} could not be written; they stay in memory and are \
+                 written again with the next save",
+                self.dir.display()
+            )));
         }
         first_error.map_or(Ok(()), Err)
     }
@@ -1184,6 +1260,212 @@ mod tests {
                 .unwrap()
                 .unwrap(),
             Some(record(pos, 199))
+        );
+        pool.shutdown();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A write that fails (disk full, read-only, here a file where the folder must be) is
+    /// answered as failed but kept: reads get it, it stays out of the backlog, and a later
+    /// commit writes it once the disk takes it again (#167).
+    #[test]
+    fn failed_writes_are_kept_and_retried() {
+        for format in [WorldFormat::Anvil, WorldFormat::Vanillite] {
+            let dir = temp_dir(&format!("store-failed-{}", format.name()));
+            std::fs::write(dir.join("region"), b"in the way").unwrap();
+            let pool = IoPool::new(2).unwrap();
+            let store =
+                RegionStore::new(dir.clone(), format, StoreSettings::default(), pool.clone());
+            let pos = ChunkPos::new(-40, 17);
+            let (to, inbox) = CompletionTarget::channel();
+            store.submit(
+                Token(1),
+                vec![StoreOp::Put {
+                    key: key(pos),
+                    meta: RecordMeta::default(),
+                    bytes: record(pos, 1),
+                }],
+                Priority::Background,
+                to,
+            );
+            match inbox.recv().unwrap() {
+                Completion::Op {
+                    result: StoreResult::Failed(_),
+                    ..
+                } => {}
+                other => panic!("{format:?}: {other:?}"),
+            }
+            assert_eq!(store.backlog(), 0);
+            assert_eq!(
+                blocking::get(&store, &[key(pos)]).pop().unwrap().unwrap(),
+                Some(record(pos, 1))
+            );
+            assert!(blocking::commit(&store).is_err());
+            // The disk takes writes again: the next commit writes the kept record.
+            std::fs::remove_file(dir.join("region")).unwrap();
+            blocking::commit(&store).unwrap();
+            let reopened =
+                RegionStore::new(dir.clone(), format, StoreSettings::default(), pool.clone());
+            assert_eq!(
+                blocking::get(&reopened, &[key(pos)])
+                    .pop()
+                    .unwrap()
+                    .unwrap(),
+                Some(record(pos, 1))
+            );
+            pool.shutdown();
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    /// Writes that fail on the disk itself (run under a file size limit, `ulimit -f 512` with
+    /// `SIGXFSZ` ignored, and `VANILLITE_FSIZE_LIMITED` set; skipped otherwise): region files
+    /// cannot grow, writes fail midway, every record stays readable from memory, and a new
+    /// store finds the last version that was written of every chunk undamaged (#167).
+    #[test]
+    fn writes_failing_on_the_disk_damage_nothing() {
+        if std::env::var_os("VANILLITE_FSIZE_LIMITED").is_none() {
+            return;
+        }
+        for format in [WorldFormat::Anvil, WorldFormat::Vanillite] {
+            let dir = temp_dir(&format!("store-fsize-{}", format.name()));
+            let pool = IoPool::new(2).unwrap();
+            let store =
+                RegionStore::new(dir.clone(), format, StoreSettings::default(), pool.clone());
+            let mut latest: FxHashMap<ChunkPos, u8> = FxHashMap::default();
+            let mut written: FxHashMap<ChunkPos, u8> = FxHashMap::default();
+            let mut failures = 0;
+            for i in 0..600 {
+                let pos = ChunkPos::new(i % 24, (i / 24) % 8);
+                let version = (i / 24) as u8;
+                let result = blocking::put(&store, vec![(key(pos), record(pos, version))]).pop();
+                latest.insert(pos, version);
+                match result.unwrap() {
+                    Ok(()) => {
+                        written.insert(pos, version);
+                    }
+                    Err(e) => {
+                        assert_eq!(e.kind(), io::ErrorKind::FileTooLarge, "{format:?}: {e}");
+                        failures += 1;
+                    }
+                }
+                if i % 16 == 15 {
+                    let _ = blocking::commit(&store);
+                }
+            }
+            assert!(failures > 0, "{format:?}: no write failed");
+            for (&pos, &version) in &latest {
+                assert_eq!(
+                    blocking::get(&store, &[key(pos)]).pop().unwrap().unwrap(),
+                    Some(record(pos, version)),
+                    "{format:?} {pos:?} from memory"
+                );
+            }
+            assert!(blocking::commit(&store).is_err());
+            let reopened =
+                RegionStore::new(dir.clone(), format, StoreSettings::default(), pool.clone());
+            for (&pos, &version) in &written {
+                assert_eq!(
+                    blocking::get(&reopened, &[key(pos)])
+                        .pop()
+                        .unwrap()
+                        .unwrap(),
+                    Some(record(pos, version)),
+                    "{format:?} {pos:?} on disk"
+                );
+            }
+            pool.shutdown();
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    /// A process killed while it saves (`VANILLITE_KILL_TEST=<dir>`; skipped otherwise): with
+    /// `VANILLITE_KILL_MODE=write` it saves and commits until it is killed (`kill -9`), with
+    /// `check` every chunk in the files must be one complete version (#167).
+    #[test]
+    fn killed_while_saving() {
+        let Some(root) = std::env::var_os("VANILLITE_KILL_TEST").map(PathBuf::from) else {
+            return;
+        };
+        let write = std::env::var("VANILLITE_KILL_MODE").as_deref() == Ok("write");
+        for format in [WorldFormat::Anvil, WorldFormat::Vanillite] {
+            let dir = root.join(format.name());
+            let pool = IoPool::new(2).unwrap();
+            let store =
+                RegionStore::new(dir.clone(), format, StoreSettings::default(), pool.clone());
+            let positions: Vec<ChunkPos> = (0..256)
+                .map(|i| ChunkPos::new(i % 40 - 20, i / 40 - 3))
+                .collect();
+            if write {
+                std::thread::spawn(move || {
+                    for version in (0..200u8).cycle() {
+                        let ops = positions
+                            .iter()
+                            .map(|&pos| (key(pos), record(pos, version)))
+                            .collect();
+                        let _ = blocking::put(&store, ops);
+                        if version % 3 == 0 {
+                            let _ = blocking::commit(&store);
+                        }
+                    }
+                });
+                continue;
+            }
+            let mut found = 0;
+            for (pos, got) in positions.iter().zip(blocking::get(
+                &store,
+                &positions.iter().map(|&p| key(p)).collect::<Vec<_>>(),
+            )) {
+                let Some(bytes) = got.unwrap() else {
+                    continue;
+                };
+                found += 1;
+                let version = bytes.len() - 3000 - (pos.x as usize & 7) * 1000;
+                assert_eq!(bytes, record(*pos, version as u8), "{format:?} {pos:?}");
+            }
+            assert!(found > 0, "{format:?}: nothing was saved");
+            pool.shutdown();
+        }
+        if write {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    }
+
+    /// A damaged own-format file is kept aside when it is written to; a new one takes the
+    /// writes (#167).
+    #[test]
+    fn damaged_own_files_are_kept_aside() {
+        let dir = temp_dir("store-damaged-vwr");
+        std::fs::create_dir_all(dir.join("region")).unwrap();
+        let path = dir.join("region").join("r.0.0.vwr");
+        std::fs::write(&path, vec![7u8; 100_000]).unwrap();
+        let pool = IoPool::new(1).unwrap();
+        let store = RegionStore::new(
+            dir.clone(),
+            WorldFormat::Vanillite,
+            StoreSettings::default(),
+            pool.clone(),
+        );
+        let pos = ChunkPos::new(2, 3);
+        assert!(blocking::get(&store, &[key(pos)]).pop().unwrap().is_err());
+        blocking::put(&store, vec![(key(pos), record(pos, 1))])
+            .pop()
+            .unwrap()
+            .unwrap();
+        blocking::commit(&store).unwrap();
+        let kept: Vec<_> = std::fs::read_dir(dir.join("region"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with("r.0.0.vwr.damaged-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(
+            std::fs::read(dir.join("region").join(&kept[0])).unwrap(),
+            vec![7u8; 100_000]
+        );
+        assert_eq!(
+            blocking::get(&store, &[key(pos)]).pop().unwrap().unwrap(),
+            Some(record(pos, 1))
         );
         pool.shutdown();
         std::fs::remove_dir_all(dir).unwrap();

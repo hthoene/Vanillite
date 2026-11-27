@@ -13,6 +13,9 @@ use crate::types::{
     Particle, PlayerInfo, ServerStats, SetMode, Sound, Text, Uuid, Vec3, Weather, World,
 };
 
+mod v16;
+pub use v16::{RayHit, WorldBorder};
+
 /// Thread-safe access to the server. Cheap to copy; usable from any thread after `load`.
 #[derive(Clone, Copy, Debug)]
 pub struct Server {
@@ -48,6 +51,10 @@ impl Server {
 
     fn api(&self) -> &'static abi::HostApi {
         self.host.api
+    }
+
+    pub(crate) fn host(&self) -> Host {
+        self.host
     }
 
     /// The plugin's data folder (`plugins/<id>/`).
@@ -417,6 +424,7 @@ impl Server {
             run,
             drop: Some(drop),
             user,
+            retired: None,
         };
         let mut id = 0;
         // SAFETY: valid host function and spec. On failure the host has called `drop`.
@@ -1117,6 +1125,8 @@ fn collect_with(f: impl FnOnce(*const abi::ByteSink) -> Status) -> Result<Vec<u8
 #[derive(Debug)]
 pub struct Ctx<'a> {
     raw: *mut abi::Context,
+    /// The call is an entity task's retired callback ([`Server::schedule_entity`]).
+    retiring: bool,
     _call: PhantomData<&'a mut ()>,
 }
 
@@ -1124,6 +1134,7 @@ impl Ctx<'_> {
     pub(crate) fn new(raw: *mut abi::Context) -> Self {
         Ctx {
             raw,
+            retiring: false,
             _call: PhantomData,
         }
     }

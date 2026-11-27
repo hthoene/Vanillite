@@ -769,6 +769,18 @@ pub fn create_portal(
     axis: HorizontalAxis,
     logical_height: i32,
 ) -> Option<FoundRectangle> {
+    create_portal_by(level, origin, axis, logical_height, 0)
+}
+
+/// [`create_portal`] for the travel of `entity` (0 for none), which plugins may cancel
+/// (`PORTAL_CREATE`, Bukkit's `PortalCreateEvent`): then nothing is built and `None` returned.
+pub fn create_portal_by(
+    level: &mut Level,
+    origin: BlockPos,
+    axis: HorizontalAxis,
+    logical_height: i32,
+    entity: u128,
+) -> Option<FoundRectangle> {
     let direction = axis.positive();
     let [dx, _, dz] = direction.normal();
     let min_y = level.min_y();
@@ -822,19 +834,37 @@ pub fn create_portal(
         }
     }
     let obsidian = ids::OBSIDIAN.default_state();
-    let corner = match full.or(partial) {
-        Some((_, pos)) => pos,
+    let found = full.or(partial).map(|(_, pos)| pos);
+    let corner = match found {
+        Some(pos) => pos,
         None => {
             let min_start = (min_y + 1).max(70);
             let max_start = max_placeable - 9;
             if max_start < min_start {
                 return None;
             }
-            let start = level.border.clamp_to_bounds(
+            level.border.clamp_to_bounds(
                 f64::from(origin.x - dx),
                 f64::from(origin.y.clamp(min_start, max_start)),
                 f64::from(origin.z - dz),
-            );
+            )
+        }
+    };
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::PORTAL_CREATE) {
+        let mut ev = crate::hooks::Event {
+            pos: corner,
+            entity,
+            ..crate::hooks::Event::new(vanillite_abi::event::PORTAL_CREATE)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return None;
+        }
+    }
+    let corner = match found {
+        Some(pos) => pos,
+        None => {
+            let start = corner;
             let [sx, _, sz] = clockwise(direction).normal();
             for side in -1..2 {
                 for width in 0..2 {

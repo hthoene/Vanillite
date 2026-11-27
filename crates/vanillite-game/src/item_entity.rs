@@ -2,6 +2,7 @@
 //! pickup.
 
 use vanillite_base::math::floor;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::{BlockState, flags as block_flags};
 
@@ -34,11 +35,21 @@ pub struct ItemData {
     pub health: i16,
     /// `remainingFireTicks`.
     pub fire_ticks: i32,
+    /// The 48-bit state of the item's own random (`Entity.random`, not saved: a loaded item
+    /// gets a fresh one).
+    pub random: i64,
 }
 
 impl ItemData {
     /// A new item entity's data.
-    pub fn new(stack: ItemStack, pickup_delay: i16, thrower: Option<u128>) -> ItemData {
+    /// `random` is the state of its own random ([`crate::mob::new_item_entity`],
+    /// [`loaded_random`]).
+    pub fn new(
+        stack: ItemStack,
+        pickup_delay: i16,
+        thrower: Option<u128>,
+        random: i64,
+    ) -> ItemData {
         ItemData {
             stack,
             age: 0,
@@ -48,7 +59,16 @@ impl ItemData {
             tick_count: 0,
             health: 5,
             fire_ticks: 0,
+            random,
         }
+    }
+
+    /// `random.nextFloat()` of the item's own random.
+    pub fn next_float(&mut self) -> f32 {
+        let mut random = LegacyRandom::from_state(self.random);
+        let value = random.next_float();
+        self.random = random.state();
+        value
     }
 
     /// `isMergable`.
@@ -59,6 +79,16 @@ impl ItemData {
             && self.age < lifetime
             && self.stack.count < item::max_stack_size(&self.stack)
     }
+}
+
+/// The random state of an item entity that `EntityType.create` makes (loading, `/summon`):
+/// its random takes `seed`, then the constructor draws `bobOffs` and the yaw (which the saved
+/// rotation replaces).
+pub fn loaded_random(seed: i64) -> i64 {
+    let mut random = LegacyRandom::new(seed);
+    let _bob = random.next_float();
+    let _y_rot = random.next_float();
+    random.state()
 }
 
 /// What the fire handling of an item entity reads of the world.
@@ -133,15 +163,9 @@ pub fn base_tick_fire(data: &mut ItemData, aabb: Aabb, world: &FireWorld<'_>, bu
 
 /// `applyEffectsFromBlocks` of an item in the box `aabb`, after it moved: fire ignites and
 /// hurts it (`BaseFireBlock.entityInside`), lava ignites and hurts it (`lavaIgnite`,
-/// `lavaHurt`), water and rain put it out. `random_float` is the item's own random (the pitch
-/// of the burn sound).
-pub fn inside_blocks_fire(
-    data: &mut ItemData,
-    aabb: Aabb,
-    world: &FireWorld<'_>,
-    random_float: &mut dyn FnMut() -> f32,
-    burn: &mut Burn,
-) {
+/// `lavaHurt`), water and rain put it out. The pitch of the burn sound comes from the item's
+/// own random.
+pub fn inside_blocks_fire(data: &mut ItemData, aabb: Aabb, world: &FireWorld<'_>, burn: &mut Burn) {
     let inside = crate::survival::blocks::inside_blocks(world.blocks, world.facts, aabb);
     if inside.fire.is_none() && inside.lava_blocks == 0 && data.fire_ticks == 0 {
         return;
@@ -166,7 +190,7 @@ pub fn inside_blocks_fire(
         hurt(data, world.types, world.types.lava, 4.0, burn);
         // `shouldPlayLavaHurtSound`: every tenth tick, and when the item is destroyed.
         if burn.hurts > before && (data.health <= 0 || data.tick_count.is_multiple_of(10)) {
-            burn.lava_sound = Some(2.0 + random_float() * 0.4);
+            burn.lava_sound = Some(2.0 + data.next_float() * 0.4);
         }
     }
     if data.fire_ticks > 0 {
@@ -459,7 +483,6 @@ pub fn tick(
     data: &mut ItemData,
     input: TickInput,
     block: &dyn Fn(BlockPos) -> BlockState,
-    random_float: &mut dyn FnMut() -> f32,
     scratch: &mut Vec<Aabb>,
 ) -> Ticked {
     let mut out = Ticked {
@@ -537,13 +560,9 @@ pub fn tick(
     );
     let no_physics = collides(&body.inflate(-1.0e-7, -1.0e-7, -1.0e-7), block, scratch);
     if no_physics {
-        v = move_towards_closest_space(
-            old,
-            (body.min_y + body.max_y) / 2.0,
-            v,
-            block,
-            random_float,
-        );
+        v = move_towards_closest_space(old, (body.min_y + body.max_y) / 2.0, v, block, &mut || {
+            data.next_float()
+        });
     }
     let horizontal = v.x * v.x + v.z * v.z;
     let skip_move = input.on_ground

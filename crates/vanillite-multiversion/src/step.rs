@@ -39,6 +39,33 @@ pub(crate) const V26_1: i32 = 775;
 /// 26.2 (online mode, session id, team colours).
 pub(crate) const V26_2: i32 = 776;
 
+/// Teleport id of the teleports a step makes up for rotations (`player_rotation` before 1.21.2,
+/// relative ones before 1.21.9). Vanilla counts its ids up from 0, so this one is never the
+/// server's; the client's acceptance of it is not passed on.
+const SYNTHETIC_TELEPORT: i32 = -0x564c;
+
+/// The id of the newest version's item `name` in the version of protocol `protocol`, through
+/// every step's item table.
+fn newest_item_to(protocol: i32, name: &str) -> Option<i32> {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    let id = vanillite_data::registry::ITEM.id(&format!("minecraft:{name}"))?;
+    let mut id = crate::generated::v26_2::ITEM.older(i32::from(id))?;
+    for t in crate::STEPS.iter().rev().filter(|t| t.protocol >= protocol) {
+        id = t.older("minecraft:item", id)?;
+    }
+    Some(id)
+}
+
+/// The newest version's id of entry `id` of static registry `registry` in the numbering of the
+/// version of protocol `protocol`.
+pub(crate) fn to_newest(registry: &str, protocol: i32, id: i32) -> Option<u16> {
+    let mut id = id;
+    for t in crate::STEPS.iter().filter(|t| t.protocol >= protocol) {
+        id = t.newer(registry, id)?;
+    }
+    u16::try_from(crate::generated::v26_2::TABLES.newer(registry, id)?).ok()
+}
+
 /// Opens both halves of a step for one connection.
 pub(crate) fn open(t: &'static Tables) -> (Box<dyn ClientboundStep>, Box<dyn ServerboundStep>) {
     let shared = Arc::new(Mutex::new(Registries::default()));
@@ -290,6 +317,7 @@ impl Cx<'_, '_> {
                     depth: 0,
                 };
                 self.book.update_recipes(&items, r, out)?;
+                self.regs.cutter.recipes = std::mem::take(&mut self.book.cutter);
             }
             Cb::RecipeBookAdd if self.at(V1_21_2) => {
                 write_varint(out, self.old_id(Cb::UpdateRecipes)?);
@@ -333,6 +361,44 @@ impl Cx<'_, '_> {
                 let slot = i16::try_from(slot).map_err(|_| Error::Invalid("slot"))?;
                 out.extend_from_slice(&slot.to_be_bytes());
                 self.items().stack(r, out)?;
+            }
+            Cb::TeleportEntity if self.at(V1_21_2) => {
+                return self.teleport_entity(r, out).map(Some);
+            }
+            Cb::PlayerRotation if self.at(V1_21_2) => {
+                // No such packet before 1.21.2: a teleport by zero blocks with the rotation.
+                write_varint(out, self.old_id(Cb::PlayerPosition)?);
+                out.extend_from_slice(&[0; 24]);
+                io::bytes(r, out, 8)?;
+                out.push(7);
+                write_varint(out, SYNTHETIC_TELEPORT);
+            }
+            Cb::PlayerRotation if self.at(V1_21_9) => {
+                let rot = r.take(8)?;
+                let relative = [r.u8()? != 0, r.u8()? != 0];
+                if relative == [false, false] {
+                    write_varint(out, self.old_id(Cb::PlayerRotation)?);
+                    out.extend_from_slice(rot);
+                    return Ok(Some(true));
+                }
+                // Relative rotations (1.21.9): a teleport by zero blocks and zero velocity.
+                write_varint(out, self.old_id(Cb::PlayerPosition)?);
+                write_varint(out, SYNTHETIC_TELEPORT);
+                out.extend_from_slice(&[0; 48]);
+                out.extend_from_slice(rot);
+                let flags =
+                    0b1110_0111 | (i32::from(relative[0]) << 3) | (i32::from(relative[1]) << 4);
+                out.extend_from_slice(&flags.to_be_bytes());
+            }
+            Cb::Cooldown if self.at(V1_21_2) => {
+                // Cooldown groups (1.21.2) → items: the default group is the item's name.
+                let group = r.string(io::MAX_STRING)?;
+                let Some(item) = newest_item_to(self.t.protocol, group) else {
+                    return Ok(Some(false));
+                };
+                write_varint(out, self.old_id(Cb::Cooldown)?);
+                write_varint(out, item);
+                io::varint(r, out)?;
             }
             Cb::EntityPositionSync if self.old() < V1_21_2 => {
                 write_varint(out, self.old_id(Cb::TeleportEntity)?);
@@ -482,22 +548,6 @@ impl Cx<'_, '_> {
                     out.extend_from_slice(r.take_rest());
                 }
             }
-            Cb::TeleportEntity => {
-                io::varint(r, out)?;
-                if self.at(V1_21_2) {
-                    let pmr = r.take(48)?;
-                    let rot = [r.f32()?, r.f32()?];
-                    let relatives = r.i32()?;
-                    if relatives & 7 != 0 {
-                        // Relative positions need the entity's position, which no step keeps.
-                        return Ok(Some(false));
-                    }
-                    out.extend_from_slice(pmr.get(..24).ok_or(Error::UnexpectedEnd)?);
-                    out.push(angle(rot[0]));
-                    out.push(angle(rot[1]));
-                }
-                out.extend_from_slice(r.take_rest());
-            }
             Cb::PlayerPosition if self.at(V1_21_2) => {
                 // Teleport id, position, movement, rotation, relative flags → position,
                 // rotation, flags byte (movement deltas did not exist), teleport id.
@@ -508,14 +558,6 @@ impl Cx<'_, '_> {
                 let relatives = r.i32()?;
                 out.push(u8::try_from(relatives & 0x1f).unwrap_or(0));
                 write_varint(out, teleport);
-            }
-            Cb::PlayerRotation if self.at(V1_21_9) => {
-                // 1.21.9 added relative flags; absolute rotations only.
-                let rot = r.take(8)?;
-                if r.u8()? != 0 || r.u8()? != 0 {
-                    return Ok(Some(false));
-                }
-                out.extend_from_slice(rot);
             }
             Cb::SetEntityData => {
                 let entity = io::varint(r, out)?;
@@ -538,31 +580,56 @@ impl Cx<'_, '_> {
                 }
             }
             Cb::ContainerSetContent => {
+                let cutter = self.cutter_open(r)?;
                 self.container_id(r, out)?;
                 io::varint(r, out)?;
                 let n = io::len(r, 1024, 1)?;
                 io::write_len(out, n);
-                for _ in 0..n {
+                for i in 0..n {
+                    let at = out.len();
                     self.items().stack(r, out)?;
+                    if cutter && i == 0 {
+                        self.regs
+                            .cutter
+                            .set_input(out.get(at..).unwrap_or_default());
+                    }
                 }
                 self.items().stack(r, out)?;
             }
             Cb::ContainerSetSlot => {
+                let cutter = self.cutter_open(r)?;
                 self.container_id(r, out)?;
                 io::varint(r, out)?;
+                let slot = r.clone().take(2)?;
                 io::bytes(r, out, 2)?;
+                let at = out.len();
                 self.items().stack(r, out)?;
+                if cutter && slot == [0, 0] {
+                    self.regs
+                        .cutter
+                        .set_input(out.get(at..).unwrap_or_default());
+                }
             }
             Cb::ContainerClose
             | Cb::ContainerSetData
             | Cb::HorseScreenOpen
             | Cb::MountScreenOpen => {
+                if kind == Cb::ContainerClose && self.at(V1_21_2) {
+                    self.regs.cutter.container = None;
+                }
                 self.container_id(r, out)?;
                 out.extend_from_slice(r.take_rest());
             }
             Cb::OpenScreen => {
-                io::varint(r, out)?;
+                let container = io::varint(r, out)?;
                 let menu = r.varint()?;
+                if self.at(V1_21_2) {
+                    let newest = to_newest("minecraft:menu", self.next(), menu);
+                    let cutter = newest.and_then(|m| vanillite_data::registry::MENU.name(m));
+                    self.regs.cutter.container =
+                        (cutter == Some("minecraft:stonecutter")).then_some(container);
+                    self.regs.cutter.input = None;
+                }
                 let Some(menu) = t.older("minecraft:menu", menu) else {
                     return Ok(Some(false));
                 };
@@ -587,7 +654,6 @@ impl Cx<'_, '_> {
                 let slot = r.varint()?;
                 out.push(u8::try_from(slot).map_err(|_| Error::Invalid("slot"))?);
             }
-            Cb::Cooldown if self.at(V1_21_2) => return Ok(Some(false)),
             Cb::UpdateAttributes => {
                 io::varint(r, out)?;
                 let n = io::len(r, 1024, 10)?;
@@ -702,11 +768,21 @@ impl Cx<'_, '_> {
             Cb::PlayerInfoUpdate => self.player_info(r, out)?,
             Cb::PlayerChat => return self.player_chat(r, out).map(Some),
             Cb::DisguisedChat => {
-                io::nbt(r, out)?;
+                io::component(r, out, self.at(V1_21_5))?;
                 if !self.chat_type(r, out)? {
                     return Ok(Some(false));
                 }
+                self.chat_names(r, out)?;
+            }
+            Cb::SystemChat | Cb::SetTitleText | Cb::SetSubtitleText | Cb::SetActionBarText
+                if self.at(V1_21_5) =>
+            {
+                io::component(r, out, true)?;
                 out.extend_from_slice(r.take_rest());
+            }
+            Cb::TabList if self.at(V1_21_5) => {
+                io::component(r, out, true)?;
+                io::component(r, out, true)?;
             }
             Cb::SetPlayerTeam => self.team(r, out)?,
             Cb::ChangeDifficulty if self.at(V1_21_6) => {
@@ -808,6 +884,15 @@ impl Cx<'_, '_> {
     }
 
     /// Container ids: an unsigned (or, for slots, signed) byte before 1.21.2, a VarInt since.
+    /// Whether the packet's container (next in `r`) is the open stonecutter of a client before
+    /// 1.21.2.
+    fn cutter_open(&self, r: &Reader<'_>) -> Result<bool> {
+        if !self.at(V1_21_2) || self.regs.cutter.container.is_none() {
+            return Ok(false);
+        }
+        Ok(self.regs.cutter.container == Some(r.clone().varint()?))
+    }
+
     fn container_id(&self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
         if self.at(V1_21_2) {
             let id = r.varint()?;
@@ -1410,6 +1495,62 @@ impl Cx<'_, '_> {
         Ok(true)
     }
 
+    /// `teleport_entity` for a client before 1.21.2 (absolute position and angles, no relative
+    /// flags): relative moves of all three axes become a `move_entity_pos(_rot)` when they are
+    /// short enough, and only other relative teleports are left out.
+    fn teleport_entity(&self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
+        let entity = r.varint()?;
+        let pos = [r.f64()?, r.f64()?, r.f64()?];
+        r.skip(24)?;
+        let rot = [r.f32()?, r.f32()?];
+        let relatives = r.i32()?;
+        let on_ground = r.u8()?;
+        if relatives & 7 == 0 {
+            write_varint(out, self.old_id(Cb::TeleportEntity)?);
+            write_varint(out, entity);
+            for c in pos {
+                out.extend_from_slice(&c.to_be_bytes());
+            }
+            out.push(angle(rot[0]));
+            out.push(angle(rot[1]));
+            out.push(on_ground);
+            return Ok(true);
+        }
+        let mut delta = [0i16; 3];
+        for (d, c) in delta.iter_mut().zip(pos) {
+            let scaled = (c * 4096.0).round();
+            if relatives & 7 != 7 || !(-32768.0..=32767.0).contains(&scaled) {
+                return Ok(false);
+            }
+            #[allow(clippy::as_conversions)] // In range, checked above.
+            let v = scaled as i16;
+            *d = v;
+        }
+        let rotation = match relatives & 0x18 {
+            0 => true,
+            0x18 if rot == [0.0, 0.0] => false,
+            _ => return Ok(false),
+        };
+        write_varint(
+            out,
+            self.old_id(if rotation {
+                Cb::MoveEntityPosRot
+            } else {
+                Cb::MoveEntityPos
+            })?,
+        );
+        write_varint(out, entity);
+        for d in delta {
+            out.extend_from_slice(&d.to_be_bytes());
+        }
+        if rotation {
+            out.push(angle(rot[0]));
+            out.push(angle(rot[1]));
+        }
+        out.push(on_ground);
+        Ok(true)
+    }
+
     /// `player_chat`: 1.21.5 added the global index in front; the chat type follows the
     /// synchronised registry.
     fn player_chat(&self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<bool> {
@@ -1434,7 +1575,7 @@ impl Cx<'_, '_> {
             }
         }
         if io::boolean(r, out)? {
-            io::nbt(r, out)?;
+            io::component(r, out, self.at(V1_21_5))?;
         }
         // Filter mask: type, and a bit set for partially filtered.
         if io::varint(r, out)? == 2 {
@@ -1445,8 +1586,22 @@ impl Cx<'_, '_> {
         if !self.chat_type(r, out)? {
             return Ok(false);
         }
-        out.extend_from_slice(r.take_rest());
+        self.chat_names(r, out)?;
         Ok(true)
+    }
+
+    /// The sender name and optional target name of a chat type binding; their hover and click
+    /// events change shape in 1.21.5.
+    fn chat_names(&self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        if !self.at(V1_21_5) {
+            out.extend_from_slice(r.take_rest());
+            return Ok(());
+        }
+        io::component(r, out, true)?;
+        if io::boolean(r, out)? {
+            io::component(r, out, true)?;
+        }
+        Ok(())
     }
 
     /// `set_player_team`: parameters changed in 1.21.5 (visibility and collision as enums
@@ -1772,6 +1927,9 @@ impl Serverbound {
                 }
             }
             Sb::AcceptTeleportation => {
+                if r.clone().varint()? == SYNTHETIC_TELEPORT {
+                    return Ok(Some(false));
+                }
                 out.extend_from_slice(r.take_rest());
                 // 1.21.4: the client reports when it can play; older ones can once teleported.
                 if self.at(V1_21_4) {
@@ -1867,7 +2025,21 @@ impl Serverbound {
                 write_varint(out, id);
             }
             Sb::ContainerClose if self.at(V1_21_2) => {
+                self.regs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .cutter
+                    .container = None;
                 write_varint(out, i32::from(r.u8()?));
+            }
+            Sb::ContainerButtonClick if self.at(V1_21_2) => {
+                // Container id and button as bytes before 1.21.2; a stonecutter's button is the
+                // client's recipe index.
+                let container = i32::from(r.u8()?);
+                let button = i32::from(r.u8()?);
+                let regs = self.regs.lock().unwrap_or_else(PoisonError::into_inner);
+                write_varint(out, container);
+                write_varint(out, regs.cutter.server_index(container, button));
             }
             Sb::SetCreativeModeSlot => {
                 io::bytes(r, out, 2)?;
@@ -1908,6 +2080,7 @@ impl Serverbound {
             }
             Sb::PlayerAction
             | Sb::SetJigsawBlock
+            | Sb::SetStructureBlock
             | Sb::CookieResponse
             | Sb::CustomClickAction
             | Sb::SeenAdvancements => {
@@ -1922,6 +2095,7 @@ impl Serverbound {
     /// `container_click`: container id (a byte before 1.21.2), state, slot, button, click type,
     /// changed slots and carried item (full stacks before 1.21.5, hashed stacks from then on).
     fn container_click(&mut self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        let container = r.clone().u8().map(i32::from)?;
         if self.at(V1_21_2) {
             write_varint(out, i32::from(r.u8()?));
         } else if self.old() >= V1_21_2 {
@@ -1948,11 +2122,30 @@ impl Serverbound {
         };
         let n = io::len(r, 128, 3)?;
         io::write_len(out, n);
+        let mut input = None;
         for _ in 0..n {
+            let slot = r.clone().take(2)?;
             io::bytes(r, out, 2)?;
+            if slot == [0, 0] && self.old() < V1_21_2 {
+                let mut peek = r.clone();
+                input = Some(match peek.varint()? {
+                    count if count > 0 => Some(peek.varint()?),
+                    _ => None,
+                });
+            }
             stack(r, out)?;
         }
-        stack(r, out)
+        stack(r, out)?;
+        drop(regs);
+        if let Some(item) = input
+            && self.at(V1_21_2)
+        {
+            let mut regs = self.regs.lock().unwrap_or_else(PoisonError::into_inner);
+            if regs.cutter.container == Some(container) {
+                regs.cutter.input = item;
+            }
+        }
+        Ok(())
     }
 }
 

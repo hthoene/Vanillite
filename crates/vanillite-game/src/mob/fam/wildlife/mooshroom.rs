@@ -219,12 +219,21 @@ fn shear(ix: &mut Interact<'_, '_>) {
     } else {
         "minecraft:red_mushroom"
     };
+    let uuid = crate::mob::new_uuid();
+    if !ix.ents.transforming(
+        ix.target,
+        Kind::Cow.type_id(),
+        uuid,
+        vanillite_abi::transform_reason::SHEARED,
+    ) {
+        return;
+    }
+    let parent = e.uuid();
     if let Some(m) = ix.ents.mob_mut(ix.target) {
         m.removed = true;
     }
     ix.cx.discarded.push(ix.target);
-    let uuid = crate::mob::new_uuid();
-    crate::mob::spawn(
+    let id = crate::mob::spawn(
         ix.ents,
         ix.level.network_ids(),
         uuid,
@@ -235,6 +244,8 @@ fn shear(ix: &mut Interact<'_, '_>) {
         },
         cow,
     );
+    ix.ents
+        .spawned(id, vanillite_abi::spawn_reason::CONVERSION, parent);
     ix.cx.send_particles(
         crate::level::particles::simple("minecraft:explosion"),
         pos + Vec3::new(0.0, height * 0.5, 0.0),
@@ -244,9 +255,10 @@ fn shear(ix: &mut Interact<'_, '_>) {
     );
     // `shearing/mooshroom`: five mushrooms of its colour, one item entity each.
     for _ in 0..5 {
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         let stack: ItemStack = crate::mob::equipment::stack(mushroom);
         ix.env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: pos + Vec3::new(0.0, height, 0.0),
             velocity,

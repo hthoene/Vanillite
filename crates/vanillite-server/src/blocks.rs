@@ -627,7 +627,7 @@ pub struct ItemScratch {
 }
 
 /// `ItemEntity.tick` of one item entity: movement, fire and lava, merging with its
-/// neighbours, despawning. `random_float` is the item's own random. Returns what fire and
+/// neighbours, despawning. Draws from the item's own random. Returns what fire and
 /// lava did to it: unless that [`is_none`](item_entity::Burn::is_none), the caller passes it
 /// to [`item_entity::burn_effects`] (game events, sound, a destroyed item's removal).
 #[allow(clippy::too_many_arguments)]
@@ -635,7 +635,6 @@ pub fn tick_item(
     entities: &mut Entities,
     chunks: &Chunks,
     id: EntityId,
-    random_float: &mut dyn FnMut() -> f32,
     min_y: i32,
     settings: ItemSettings,
     scratch: &mut ItemScratch,
@@ -670,7 +669,7 @@ pub fn tick_item(
             return burn;
         }
     }
-    let ticked = item_entity::tick(data, input, &block, random_float, &mut scratch.boxes);
+    let ticked = item_entity::tick(data, input, &block, &mut scratch.boxes);
     if ticked.discard {
         entities.despawn(id);
         return item_entity::Burn::default();
@@ -687,7 +686,7 @@ pub fn tick_item(
         p.y + 0.25,
         p.z + 0.125,
     );
-    item_entity::inside_blocks_fire(data, aabb, fire, random_float, &mut burn);
+    item_entity::inside_blocks_fire(data, aabb, fire, &mut burn);
     let on_fire = data.fire_ticks > 0;
     if let Some(mut e) = store.get_mut(id) {
         e.set_pos(ticked.pos);

@@ -184,11 +184,9 @@ impl ProtoChunk {
         let mut non_air = Vec::with_capacity(self.sections.len());
         for section in &self.sections {
             let blocks = section.blocks();
-            match blocks.single() {
-                Some(state) => states.resize(states.len() + 4096, state),
-                None => states.extend((0..4096).map(|i| blocks.get(i))),
-            }
-            let start = states.len() - 4096;
+            let start = states.len();
+            states.resize(start + 4096, 0);
+            blocks.copy_to(&mut states[start..]);
             let air = BlockState::AIR.0;
             non_air.push(states[start..].iter().filter(|&&s| s != air).count() as u16);
         }
@@ -360,6 +358,128 @@ impl ProtoChunk {
         ))
     }
 
+    /// Appends the states of the column at world `x`, `z` from `min_y` to `max_y` (inclusive,
+    /// bottom up) to `out`; air outside the height.
+    pub fn column_states(&self, x: i32, z: i32, min_y: i32, max_y: i32, out: &mut Vec<BlockState>) {
+        let Some(dense) = &self.dense else {
+            out.extend((min_y..=max_y).map(|y| self.block(x, y, z)));
+            return;
+        };
+        let (bottom, top) = (self.min_y, self.max_y());
+        let (from, to) = (min_y.max(bottom), max_y.min(top));
+        out.extend((min_y..from.min(max_y + 1)).map(|_| BlockState::AIR));
+        if from <= to {
+            let column = (((z & 15) as usize) << 4) | (x & 15) as usize;
+            let start = (((from - bottom) as usize) << 8) | column;
+            let count = (to - from + 1) as usize;
+            out.extend(
+                dense.states[start..]
+                    .iter()
+                    .step_by(256)
+                    .take(count)
+                    .map(|&state| BlockState(state)),
+            );
+        }
+        out.extend((to.max(min_y - 1) + 1..=max_y).map(|_| BlockState::AIR));
+    }
+
+    /// Writes a whole column of a chunk that is still empty, while the terrain is built in the
+    /// dense buffer: `states` are the blocks at world `x`, `z` from `min_y` up. Sets the two
+    /// world generation heightmaps of the column from its highest matching blocks, as the
+    /// block-by-block updates of an empty column do. Returns `false` (nothing done) if the
+    /// chunk is not in that state or the column does not fit.
+    pub(crate) fn write_empty_column(
+        &mut self,
+        x: i32,
+        z: i32,
+        min_y: i32,
+        states: &[BlockState],
+    ) -> bool {
+        let Some(dense) = &mut self.dense else {
+            return false;
+        };
+        let column = (((z & 15) as usize) << 4) | (x & 15) as usize;
+        let bottom = min_y - self.min_y;
+        if self.terrain_done
+            || bottom < 0
+            || (bottom as usize + states.len()) << 8 > dense.states.len()
+            || self.heightmaps[HeightmapKind::WorldSurfaceWg.id() as usize][column] != self.min_y
+            || self.heightmaps[HeightmapKind::OceanFloorWg.id() as usize][column] != self.min_y
+        {
+            return false;
+        }
+        let air = BlockState::AIR;
+        let start = ((bottom as usize) << 8) | column;
+        // The column must still be air (then the counts below are right).
+        if dense.states[start..]
+            .iter()
+            .step_by(256)
+            .take(states.len())
+            .any(|&state| state != air.0)
+        {
+            return false;
+        }
+        let (mut surface, mut ocean_floor) = (None, None);
+        for (row, &state) in states.iter().enumerate().rev() {
+            if state == air {
+                continue;
+            }
+            let y = bottom as usize + row;
+            dense.states[(y << 8) | column] = state.0;
+            dense.non_air[y >> 4] += 1;
+            if ocean_floor.is_none() {
+                let flags = facts::block_flags(state.0);
+                surface = surface.or(HeightmapKind::WorldSurfaceWg.matches(flags).then_some(y));
+                ocean_floor = HeightmapKind::OceanFloorWg.matches(flags).then_some(y);
+            }
+        }
+        for (kind, top) in [
+            (HeightmapKind::WorldSurfaceWg, surface),
+            (HeightmapKind::OceanFloorWg, ocean_floor),
+        ] {
+            if let Some(y) = top {
+                self.heightmaps[kind.id() as usize][column] = self.min_y + y as i32 + 1;
+            }
+        }
+        true
+    }
+
+    /// Replaces `old`, the block at a position inside the height, by `state` if that cannot
+    /// change a heightmap or a block count: while the terrain is built in the dense buffer and
+    /// both are non-air blocks matching the same world generation heightmaps (the heightmaps
+    /// already cover `old`). Returns whether it did; otherwise use [`Self::set_block`].
+    #[inline]
+    pub(crate) fn replace_solid(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        old: BlockState,
+        state: BlockState,
+    ) -> bool {
+        const HEIGHTMAPS: u8 = facts::AIR | facts::BLOCKS_MOTION | facts::FLUID;
+        let (old_flags, flags) = (facts::block_flags(old.0), facts::block_flags(state.0));
+        let Some(dense) = &mut self.dense else {
+            return false;
+        };
+        if self.terrain_done
+            || old_flags & (facts::AIR | facts::FLUID) != 0
+            || (old_flags ^ flags) & HEIGHTMAPS != 0
+            || y < self.min_y
+        {
+            return false;
+        }
+        let index =
+            (((y - self.min_y) as usize) << 8) | (((z & 15) as usize) << 4) | (x & 15) as usize;
+        match dense.states.get_mut(index) {
+            Some(slot) if *slot == old.0 => {
+                *slot = state.0;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// `getBlockState(pos)` with Vanilla's `VOID_AIR` outside the build height.
     #[inline]
     pub fn block_or_void(&self, x: i32, y: i32, z: i32) -> BlockState {
@@ -372,6 +492,7 @@ impl ProtoChunk {
     /// `ProtoChunk.setBlockState(pos, state)` before `INITIALIZE_LIGHT`: sets the block and
     /// updates the heightmaps of the current status. Returns the old state (`VOID_AIR` outside
     /// the build height).
+    #[inline]
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, state: BlockState) -> BlockState {
         if self.is_outside(y) {
             return void_air();
@@ -511,13 +632,28 @@ impl ProtoChunk {
         self.update_kind(map.kind(), x, y, z, state);
     }
 
+    #[inline]
     fn update_kind(&mut self, kind: HeightmapKind, x: usize, y: i32, z: usize, state: BlockState) {
+        // Below the top block of the column nothing changes: the common case.
+        if y <= self.heightmaps[kind.id() as usize][x + z * 16] - 2 {
+            return;
+        }
+        self.update_kind_at_top(kind, x, y, z, state);
+    }
+
+    /// [`Self::update_kind`] at or above the column's top block.
+    #[inline(never)]
+    fn update_kind_at_top(
+        &mut self,
+        kind: HeightmapKind,
+        x: usize,
+        y: i32,
+        z: usize,
+        state: BlockState,
+    ) {
         let index = kind.id() as usize;
         let column = x + z * 16;
         let first_available = self.heightmaps[index][column];
-        if y <= first_available - 2 {
-            return;
-        }
         if kind.matches(facts::block_flags(state.0)) {
             if y >= first_available {
                 self.heightmaps[index][column] = y + 1;

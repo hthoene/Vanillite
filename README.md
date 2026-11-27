@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hthoene/Vanillite/actions/workflows/ci.yml"><img src="https://github.com/hthoene/Vanillite/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
-  <a href="https://github.com/hthoene/Vanillite/releases"><img src="https://img.shields.io/github/v/release/hthoene/Vanillite?include_prereleases&label=release" alt="Release"></a>
+  <a href="https://github.com/hthoene/vanillite/actions/workflows/ci.yml"><img src="https://github.com/hthoene/vanillite/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
+  <a href="https://github.com/hthoene/vanillite/releases"><img src="https://img.shields.io/github/v/release/hthoene/vanillite?include_prereleases&label=release" alt="Release"></a>
   <a href="https://hub.docker.com/r/thoenehannes/vanillite"><img src="https://img.shields.io/docker/v/thoenehannes/vanillite/beta?label=docker" alt="Docker"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/Minecraft-26.3-62b47a" alt="Minecraft 26.3">
@@ -25,7 +25,7 @@ plugins over a stable C ABI. Vanillite always targets the newest Minecraft relea
 through the built-in Bedrock frontend.
 
 > **Beta.** Vanillite `0.1.0-beta.1` is the first public release. Back up your worlds and
-> report problems in the [issues](https://github.com/hthoene/Vanillite/issues).
+> report problems in the [issues](https://github.com/hthoene/vanillite/issues).
 
 ## Highlights
 
@@ -75,7 +75,7 @@ Vanilla data) into `cache/` and creates `eula.txt`: accept the
 ### Release archive
 
 Download the archive for your system from the
-[releases](https://github.com/hthoene/Vanillite/releases) (Linux x86_64 and aarch64, Windows
+[releases](https://github.com/hthoene/vanillite/releases) (Linux x86_64 and aarch64, Windows
 x86_64, macOS aarch64 and x86_64), unpack it into its own folder and start it there:
 
 ```sh
@@ -230,10 +230,12 @@ Vanillite.
   XUID.
 - **Older Java clients** (`multiversion.versions`): 1.20.5 to 26.2 by default, translated to
   26.3 and back; clients of the server's own version pay nothing.
-- **vanillite-proxy**: a Velocity-compatible proxy (modern forwarding, server switches without
-  reconnect, fallback when a server goes down) in front of Vanillite and Paper servers, with
-  the Bedrock frontend built in. Build it with `cargo build --release -p vanillite-proxy`; it
-  reads `proxy.toml` from its folder. On the server, set `proxy.velocity-secret`.
+- **vanillite-proxy**: a Velocity-compatible proxy (modern, BungeeCord or no forwarding, server
+  switches without reconnect, fallback when a server goes down, the BungeeCord plugin channel,
+  `/server`, `/glist`, `/send`, `/alert`, `/proxy reload`, a console) in front of Vanillite,
+  Paper and Spigot servers, with the Bedrock frontend built in. Build it with
+  `cargo build --release -p vanillite-proxy`; it reads `proxy.toml` from its folder. On the
+  server, set `proxy.velocity-secret`. It has no plugin API yet.
 
 ## Status and known limitations
 
@@ -252,7 +254,7 @@ The Rust toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml); ru
 it on the first build.
 
 ```sh
-git clone https://github.com/hthoene/Vanillite.git && cd Vanillite
+git clone https://github.com/hthoene/vanillite.git && cd Vanillite
 cargo build --release -p vanillite          # target/release/vanillite
 cargo xtask dev                              # build and run a dev server in ./run
 ```

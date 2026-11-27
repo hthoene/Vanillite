@@ -174,6 +174,12 @@ impl PlayerText<'_> {
     pub fn set_cancelled(&mut self, cancelled: bool) {
         self.raw.header.cancelled = u32::from(cancelled);
     }
+
+    /// Replaces the text: for chat what the players see (the message stays signed, the new
+    /// text is its unsigned content), for commands the command line that runs. Since ABI 1.6.
+    pub fn set_text(&mut self, text: impl Into<Text>) {
+        set_text(self.raw.text_out, &text.into());
+    }
 }
 
 /// All players of a world that moved in one tick (batched: one call per world and tick).
@@ -240,6 +246,18 @@ impl EntityDamage<'_> {
     }
 
     /// The damage.
+    /// The entity responsible (the shooter of a projectile). Since ABI 1.6.
+    pub fn attacker(&self) -> Option<Uuid> {
+        let u = Uuid::from_abi(self.raw.attacker);
+        (u.0 != 0).then_some(u)
+    }
+
+    /// The entity that hit directly (the projectile). Since ABI 1.6.
+    pub fn direct(&self) -> Option<Uuid> {
+        let u = Uuid::from_abi(self.raw.direct);
+        (u.0 != 0).then_some(u)
+    }
+
     pub fn amount(&self) -> f32 {
         self.raw.amount
     }
@@ -306,7 +324,7 @@ fn killer(u: abi::Uuid) -> Option<Uuid> {
 }
 
 /// Writes a replacement text through the host's text output.
-fn set_text(out: *const abi::TextOut, text: &Text) {
+pub(crate) fn set_text(out: *const abi::TextOut, text: &Text) {
     // SAFETY: the host passes a valid output record for the handler call.
     if let Some(out) = unsafe { out.as_ref() } {
         let (s, format) = text.parts();
@@ -572,10 +590,20 @@ impl Interact<'_> {
         unsafe { str(self.raw.item) }
     }
 
+    /// What the player does ([`abi::interact`]). Since ABI 1.6 also left clicks and
+    /// physical interactions.
+    pub fn action(&self) -> u32 {
+        self.raw.action
+    }
+
     /// The block used, its clicked face (0 down, 1 up, 2 north, 3 south, 4 west, 5 east) and
-    /// its state; `None` for a use in the air.
+    /// its state; `None` for a use or swing in the air.
     pub fn block(&self) -> Option<(BlockPos, u32, &str)> {
-        (self.raw.action == abi::interact::USE_ON_BLOCK).then(|| {
+        let in_air = matches!(
+            self.raw.action,
+            abi::interact::USE_ITEM | abi::interact::LEFT_CLICK_AIR
+        );
+        (!in_air).then(|| {
             (
                 BlockPos::from_abi(self.raw.pos),
                 self.raw.face,

@@ -414,13 +414,12 @@ fn pop_resource_from_face(level: &mut Level, pos: BlockPos, face: Direction, sta
     } else {
         f64::from(sz) * 0.1
     };
-    crate::block::drops::spawn_item(
+    crate::block::drops::spawn_item_with_motion(
         level,
         Vec3::new(x, y, z),
         stack,
         Vec3::new(dx, dy, dz),
         10,
-        None,
     );
 }
 
@@ -434,7 +433,7 @@ fn bone_meal(ctx: &mut PlayContext<'_>, click: Click) -> Used {
     };
     let pos = click.pos;
     let relative = pos.relative(click.face);
-    let grown = if crate::block::bonemeal::grow_crop(level, pos, &mut stack) {
+    let grown = if crate::block::bonemeal::fertilize(level, pos, &mut stack, ctx.actor.uuid) {
         Some(pos)
     } else if crate::block::is_face_sturdy(level.block(pos), click.face)
         && crate::block::bonemeal::grow_water_plant_from(
@@ -543,11 +542,27 @@ fn shears(ctx: &mut PlayContext<'_>, click: Click) -> Used {
 /// `FireChargeItem.useOn`: lights a campfire or candle, or places fire on the clicked face.
 fn fire_charge(ctx: &mut PlayContext<'_>, click: Click) -> Used {
     let player = ctx.actor.entity;
+    let uuid = ctx.actor.uuid;
     let forward = crate::block::place::horizontal_direction_of(ctx.actor.y_rot);
     let lightable = super::can_light(ctx.level.block(click.pos));
     let Some(level) = ctx.level.level_mut() else {
         return Used::Pass;
     };
+    // Bukkit's `BlockIgniteEvent` (`FIREBALL`): a cancelled use does nothing.
+    let target = if lightable {
+        click.pos
+    } else {
+        click.pos.relative(click.face)
+    };
+    if !crate::block::hook_events::may_ignite(
+        level,
+        target,
+        vanillite_abi::ignite_cause::FIREBALL,
+        uuid,
+        uuid,
+    ) {
+        return Used::Fail;
+    }
     let used = if lightable {
         let state = level.block(click.pos);
         play_fire_charge_sound(level, click.pos);
@@ -1487,7 +1502,10 @@ fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos
     let source = m.kind.sound_source() as u8;
     let uuid = crate::mob::new_uuid();
     let (ents, network_ids, _) = level.entity_parts();
-    crate::mob::spawn(ents, network_ids, uuid, p, rot, m);
+    let id = crate::mob::spawn(ents, network_ids, uuid, p, rot, m);
+    if !ents.spawned(id, vanillite_abi::spawn_reason::BUCKET, 0) {
+        return;
+    }
     if let Some(sound) = sound {
         let id = vanillite_data::registry::SOUND_EVENT.id(sound).unwrap_or(0);
         level.play_sound(None, p.x, p.y, p.z, id, source, volume, pitch);

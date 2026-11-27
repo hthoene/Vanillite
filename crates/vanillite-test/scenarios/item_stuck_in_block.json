@@ -1,0 +1,18 @@
+{
+  "description": "Item entities inside blocks are pushed out (Entity.moveTowardsClosestSpace) with a speed from their own random: one in the grass block rises, one in stone walled in on three sides leaves to the west, one in a solid stone cube keeps rising through it.",
+  "tier": "fast",
+  "region": [[0, -62, 0], [15, -57, 15]],
+  "ticks": 30,
+  "setup": [
+    {"op": "set", "pos": [6, -60, 6], "block": "minecraft:stone"},
+    {"op": "set", "pos": [6, -60, 5], "block": "minecraft:stone"},
+    {"op": "set", "pos": [6, -60, 7], "block": "minecraft:stone"},
+    {"op": "set", "pos": [7, -60, 6], "block": "minecraft:stone"},
+    {"op": "fill", "from": [10, -61, 10], "to": [12, -58, 12], "block": "minecraft:stone"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:item 2.5 -61.6 2.5 {Item:{id:\"minecraft:dirt\",count:1}}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:item 6.4 -59.9 6.5 {Item:{id:\"minecraft:stick\",count:2}}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:item 11.5 -60.5 11.5 {Item:{id:\"minecraft:apple\",count:3}}"}
+  ]
+}

@@ -863,8 +863,13 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
             cancel_admiring(t);
             drop_inventory(t);
         }
-        if let Some(z) = convert_to(t, Kind::ZombifiedPiglin, true, true)
-            && let Some(m) = t.ents.mob_mut(z)
+        if let Some(z) = convert_to(
+            t,
+            Kind::ZombifiedPiglin,
+            true,
+            true,
+            vanillite_abi::transform_reason::PIGLIN_ZOMBIFIED,
+        ) && let Some(m) = t.ents.mob_mut(z)
         {
             crate::effect::living::add_to_mob(
                 m,
@@ -1291,8 +1296,9 @@ fn throw_items(t: &mut Tick<'_, '_>, items: Vec<ItemStack>, target: Vec3) {
         let d = Vec3::new(aim.x - p.x, aim.y - p.y, aim.z - p.z).normalize();
         let v = f64::from(0.3_f32);
         let velocity = Vec3::new(d.x * v, d.y * v, d.z * v);
-        let (uuid, y_rot, _) = crate::mob::new_item_entity();
+        let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
         t.env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: start,
             velocity,

@@ -4,6 +4,7 @@
 
 use std::sync::OnceLock;
 
+use vanillite_abi::event::{BLOCK_FADE, BLOCK_FORM};
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_chunk::HeightmapKind;
@@ -11,6 +12,7 @@ use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, ids};
 use vanillite_worldgen::behaviour::{PosExt, StateExt, with_properties_of};
 use vanillite_worldgen::biome::{BiomeManager, BiomeRegistry};
 
+use super::hook_events as he;
 use super::{drops, fluid, is_liquid};
 use crate::level::{Level, update};
 
@@ -59,7 +61,7 @@ pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
     );
     let below = top.below();
     if should_freeze(level, top, below) {
-        level.set_block_and_update(below, ids::ICE.default_state());
+        he::set_block_and_update(level, BLOCK_FORM, below, ids::ICE.default_state());
     }
     if !level.is_raining() {
         return;
@@ -77,10 +79,10 @@ pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
                 let grown = state
                     .with("layers", &(layers + 1).to_string())
                     .unwrap_or(state);
-                level.set_block_and_update(top, grown);
+                he::set_block_and_update(level, BLOCK_FORM, top, grown);
             }
         } else {
-            level.set_block_and_update(top, ids::SNOW.default_state());
+            he::set_block_and_update(level, BLOCK_FORM, top, ids::SNOW.default_state());
         }
     }
     let precipitation = biome_precipitation(level, top, below);
@@ -185,8 +187,17 @@ pub(super) fn ice_random_tick(level: &mut Level, state: BlockState, pos: BlockPo
     }
 }
 
-/// `IceBlock.melt`: water, or nothing where water evaporates.
-fn melt(level: &mut Level, state: BlockState, pos: BlockPos) {
+/// `IceBlock.melt`: water, or nothing where water evaporates. Plugins may cancel it
+/// (`BLOCK_FADE`); `false` then.
+fn melt(level: &mut Level, state: BlockState, pos: BlockPos) -> bool {
+    let melted = if level.settings.water_evaporates {
+        BlockState::AIR
+    } else {
+        ids::WATER.default_state()
+    };
+    if !he::allows(level, BLOCK_FADE, pos, melted) {
+        return false;
+    }
     if level.settings.water_evaporates {
         level.remove_block(pos, false);
     } else {
@@ -198,6 +209,7 @@ fn melt(level: &mut Level, state: BlockState, pos: BlockPos) {
             crate::level::game_event::GameEventContext::with_state(None, state),
         );
     }
+    true
 }
 
 /// `Mth.nextInt(random, min, max)` on the level random.
@@ -253,8 +265,7 @@ fn slightly_melt(level: &mut Level, state: BlockState, pos: BlockPos) -> bool {
         level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
         false
     } else {
-        melt(level, state, pos);
-        true
+        melt(level, state, pos)
     }
 }
 
@@ -287,7 +298,7 @@ fn fewer_frosted_neighbours(level: &Level, pos: BlockPos, block: BlockId, limit:
 
 /// `SnowLayerBlock.randomTick`: melts next to bright block light.
 pub(super) fn snow_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
-    if level.light(pos).1 > 11 {
+    if level.light(pos).1 > 11 && he::allows(level, BLOCK_FADE, pos, BlockState::AIR) {
         drops::drop_resources(level, pos, state, None);
         level.remove_block(pos, false);
     }
@@ -473,7 +484,7 @@ pub(super) fn copper_random_tick(level: &mut Level, state: BlockState, pos: Bloc
     let modifier = if own.age == 0 { 0.75 } else { 1.0 };
     if level.random().next_float() < chance * chance * modifier {
         let weathered = with_properties_of(next, state);
-        level.set_block_and_update(pos, weathered);
+        he::set_block_and_update(level, BLOCK_FORM, pos, weathered);
     }
 }
 

@@ -118,8 +118,9 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
         if !alive {
             if d.pickup == 1 {
                 // `spawnAtLocation(getPickupItem(), 0.1)`.
-                let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+                let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
                 t.env.out.push(crate::survival::Effect::DropItem {
+                    random: item_random,
                     uuid,
                     pos: Vec3::new(pos.x, pos.y + 0.1, pos.z),
                     velocity,
@@ -214,6 +215,14 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
             } else {
                 None
             };
+            // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored, the trident flies on.
+            let hit_event =
+                |what| crate::mob::missile::hit_event(t.level, t.ents, id, d.owner, what);
+            let entity_hit = entity_hit
+                .filter(|&(target, _)| hit_event(crate::mob::missile::HitWhat::Entity(target)));
+            let block_hit = block_hit.filter(|&(hit_pos, at)| {
+                entity_hit.is_some() || hit_event(crate::mob::missile::HitWhat::Block(hit_pos, at))
+            });
             if let Some((target, hit)) = entity_hit {
                 pos = hit;
                 hit_entity(t, &mut d, target, pos);

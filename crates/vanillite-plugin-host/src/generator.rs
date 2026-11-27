@@ -211,3 +211,94 @@ impl Drop for PluginGenerator {
         });
     }
 }
+
+/// A chunk populator of a plugin ([`abi::ChunkPopulatorProvider`]): runs on generated chunks
+/// after a stage of the built-in generation. Thread-safe by the provider's contract.
+pub struct PluginPopulator {
+    plugin: Arc<Plugin>,
+    table: abi::ChunkPopulatorProvider,
+}
+
+// SAFETY: populators are thread-safe by contract (they run on generation threads).
+unsafe impl Send for PluginPopulator {}
+// SAFETY: as above.
+unsafe impl Sync for PluginPopulator {}
+
+impl std::fmt::Debug for PluginPopulator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginPopulator")
+            .field("plugin", &self.plugin.id())
+            .field("stage", &self.table.stage)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PluginHost {
+    /// The chunk populators in registration order (call once at startup).
+    pub fn chunk_populators(&self) -> Vec<PluginPopulator> {
+        self.inner
+            .populators
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(|&(local, table)| {
+                Some(PluginPopulator {
+                    plugin: self.inner.plugin(local)?,
+                    table,
+                })
+            })
+            .collect()
+    }
+}
+
+impl PluginPopulator {
+    /// The stage it runs after ([`abi::gen_stage`]).
+    pub fn stage(&self) -> u32 {
+        self.table.stage
+    }
+
+    /// The plugin's id.
+    pub fn plugin(&self) -> &str {
+        self.plugin.id()
+    }
+
+    /// Populates chunks: `chunks` holds per chunk its position and its block state ids
+    /// (`((y - min_y) * 16 + z) * 16 + x`), changed in place. Returns `false` when the plugin
+    /// failed or is disabled (the chunks keep what it wrote before).
+    pub fn populate(&self, world: &WorldInfo, chunks: &mut [(ChunkPos, Vec<u32>)]) -> bool {
+        if chunks.is_empty() {
+            return true;
+        }
+        let info = abi::WorldInfo {
+            size: abi::size_of::<abi::WorldInfo>(),
+            dimension: abi::Str::new(&world.dimension),
+            min_y: world.min_y,
+            height: world.height,
+            seed: world.seed,
+        };
+        let records: Vec<abi::GenChunk> = chunks
+            .iter_mut()
+            .map(|(pos, blocks)| abi::GenChunk {
+                x: pos.x,
+                z: pos.z,
+                blocks: blocks.as_mut_ptr(),
+                len: blocks.len(),
+            })
+            .collect();
+        let table = &self.table;
+        let s = self.plugin.call("a chunk populator", || {
+            // SAFETY: the provider's function and user data live as long as its library; the
+            // records and arrays are valid for the call.
+            unsafe {
+                (table.populate)(
+                    table.user,
+                    &info,
+                    records.as_ptr(),
+                    records.len(),
+                    size_of::<abi::GenChunk>(),
+                )
+            }
+        });
+        s == status::OK
+    }
+}

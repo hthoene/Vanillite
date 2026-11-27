@@ -7,7 +7,7 @@
   "exported_at": "2026-11-24T00:00:00+00:00",
   "name": "Vanillite",
   "author": "hthoene@users.noreply.github.com",
-  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". https://github.com/hthoene/Vanillite",
+  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". https://github.com/hthoene/vanillite",
   "features": [
     "eula"
   ],

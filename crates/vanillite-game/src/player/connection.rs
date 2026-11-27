@@ -1,17 +1,16 @@
 //! A player's connection as the world sees it, and the play packet handlers of milestone 1
 //! (Vanilla's `ServerGamePacketListenerImpl`).
 
-use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vanillite_base::Vec3;
-use vanillite_protocol::InboundReceiver;
 use vanillite_protocol::chat::{
     ArgumentSignature, ChatSessionData, LastSeenUpdate, MessageSignature,
 };
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
+use vanillite_protocol::{Inbound, InboundReceiver};
 
 use crate::block::technical;
 use vanillite_protocol::packets::play::serverbound::{
@@ -247,6 +246,8 @@ pub struct Connection {
     /// Clientbound packets.
     pub sink: Arc<dyn PacketSink>,
     inbound: InboundReceiver,
+    /// The packets taken from `inbound` for this tick (kept for its capacity).
+    taken: Vec<Inbound>,
     /// Movement validation and teleports.
     pub movement: Movement,
     /// Chunk view and sending.
@@ -320,6 +321,7 @@ impl Connection {
         Connection {
             sink,
             inbound,
+            taken: Vec::new(),
             movement: Movement::new(pos),
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
@@ -343,20 +345,22 @@ impl Connection {
         play: &mut PlayContext<'_>,
         budget: usize,
     ) -> Handled {
-        for _ in 0..budget {
-            let packet = match self.inbound.try_recv() {
-                Ok(inbound) => inbound.packet,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Handled::Disconnected,
-            };
+        let mut taken = std::mem::take(&mut self.taken);
+        taken.clear();
+        let disconnected = self.inbound.take(budget, &mut taken).is_err();
+        for inbound in taken.drain(..) {
             play.actor.pos = state.body.pos;
             play.actor.y_rot = state.body.y_rot;
             play.actor.x_rot = state.body.x_rot;
             play.actor.on_ground = state.body.on_ground;
             play.actor.sneaking = state.shift_key_down;
-            if let Err(Kick(reason)) = self.handle(packet, state, ctx, chat, play) {
+            if let Err(Kick(reason)) = self.handle(inbound.packet, state, ctx, chat, play) {
                 return Handled::Kick(reason);
             }
+        }
+        self.taken = taken;
+        if disconnected {
+            return Handled::Disconnected;
         }
         if self.sink.is_closed() {
             Handled::Disconnected
@@ -409,6 +413,70 @@ impl Connection {
     }
 
     fn handle_packet(
+        &mut self,
+        packet: ServerboundPlay,
+        state: &mut PlayerState,
+        ctx: MoveContext<'_>,
+        chat: ChatContext<'_>,
+        play: &mut PlayContext<'_>,
+    ) -> Result<(), Kick> {
+        // Bukkit's `PlayerMoveEvent`: where the player was before a movement packet.
+        let move_before = matches!(
+            packet,
+            ServerboundPlay::MovePlayerPos(_)
+                | ServerboundPlay::MovePlayerPosRot(_)
+                | ServerboundPlay::MovePlayerRot(_)
+                | ServerboundPlay::MovePlayerStatusOnly(_)
+        )
+        .then(|| (state.body, self.movement.moves.len()));
+        self.handle_packet_inner(packet, state, ctx, chat, play)?;
+        if let Some((before, moves)) = move_before {
+            self.player_move(before, moves, &mut state.body, play);
+        }
+        Ok(())
+    }
+
+    /// Bukkit's `PlayerMoveEvent` after a movement packet that moved or turned the player
+    /// (not while a teleport waits for its confirmation, nor for passengers): cancelled, the
+    /// player goes back to where it was (the move counts for nothing); a changed destination
+    /// teleports it there.
+    fn player_move(
+        &mut self,
+        before: super::movement::Body,
+        moves: usize,
+        body: &mut super::movement::Body,
+        play: &PlayContext<'_>,
+    ) {
+        use vanillite_abi::event;
+        if !play.hooks.wants(event::PLAYER_MOVE)
+            || self.movement.passenger
+            || self.movement.awaiting_teleport()
+            || (body.pos == before.pos && body.y_rot == before.y_rot && body.x_rot == before.x_rot)
+        {
+            return;
+        }
+        let from = crate::hooks::Place::looking(before.pos, before.y_rot, before.x_rot);
+        let to = crate::hooks::Place::looking(body.pos, body.y_rot, body.x_rot);
+        let Some(ev) = super::player_event(play.hooks, event::PLAYER_MOVE, play.actor.uuid, |e| {
+            e.from = from;
+            e.to = to;
+        }) else {
+            return;
+        };
+        let sink = self.sink.as_ref();
+        if ev.cancelled {
+            self.movement.moves.truncate(moves);
+            self.movement
+                .teleport(body, before.pos, before.y_rot, before.x_rot, sink);
+        } else if ev.to != to
+            && ev.to.world.is_none()
+            && let Some((pos, y_rot, x_rot)) = super::movement::checked_place(&ev.to)
+        {
+            self.movement.teleport(body, pos, y_rot, x_rot, sink);
+        }
+    }
+
+    fn handle_packet_inner(
         &mut self,
         packet: ServerboundPlay,
         state: &mut PlayerState,
@@ -545,6 +613,14 @@ impl Connection {
             }
             ServerboundPlay::PlayerInput(p) => {
                 if self.movement.has_client_loaded() {
+                    if p.0.shift != state.shift_key_down {
+                        super::player_event(
+                            play.hooks,
+                            vanillite_abi::event::PLAYER_TOGGLE_SNEAK,
+                            play.actor.uuid,
+                            |e| e.flags = u32::from(p.0.shift),
+                        );
+                    }
                     state.shift_key_down = p.0.shift;
                     self.vehicle.input = p.0;
                 }
@@ -595,8 +671,18 @@ impl Connection {
             ServerboundPlay::PlayerCommand(p) => {
                 if self.movement.has_client_loaded() {
                     match p.action {
-                        PlayerAction::StartSprinting => state.sprinting = true,
-                        PlayerAction::StopSprinting => state.sprinting = false,
+                        PlayerAction::StartSprinting | PlayerAction::StopSprinting => {
+                            let sprinting = p.action == PlayerAction::StartSprinting;
+                            if sprinting != state.sprinting {
+                                super::player_event(
+                                    play.hooks,
+                                    vanillite_abi::event::PLAYER_TOGGLE_SPRINT,
+                                    play.actor.uuid,
+                                    |e| e.flags = u32::from(sprinting),
+                                );
+                            }
+                            state.sprinting = sprinting;
+                        }
                         // Riding jumps' end comes later.
                         PlayerAction::StartRidingJump => {
                             self.vehicle.jump = Some(p.data);
@@ -684,13 +770,45 @@ impl Connection {
                 }
             }
             ServerboundPlay::Punch(_) => {
-                play.swings.push(Hand::MainHand);
+                // Bukkit's `PlayerInteractEvent` `LEFT_CLICK_AIR`: cancelled, nobody sees the
+                // swing.
+                let swing = !play.hooks.wants(vanillite_abi::event::PLAYER_INTERACT)
+                    || play.hooks.player_interact(
+                        play.actor.uuid,
+                        vanillite_abi::interact::LEFT_CLICK_AIR,
+                        vanillite_abi::hand::MAIN,
+                        crate::item::item_id(play.inventory.selected_item()).name(),
+                        None,
+                    );
+                if swing {
+                    play.swings.push(Hand::MainHand);
+                }
                 if self.entity_actions.len() < 16 {
                     self.entity_actions.push(EntityAction::Punch);
                 }
             }
             ServerboundPlay::SetCarriedItem(p) => match usize::try_from(p.slot) {
-                Ok(slot) if slot < crate::inventory::HOTBAR => play.inventory.selected = slot,
+                Ok(slot) if slot < crate::inventory::HOTBAR => {
+                    // Bukkit's `PlayerItemHeldEvent`: cancelled, the client goes back.
+                    let old = play.inventory.selected;
+                    let cancelled = super::player_event(
+                        play.hooks,
+                        vanillite_abi::event::PLAYER_ITEM_HELD,
+                        play.actor.uuid,
+                        |e| {
+                            e.value = i64::try_from(slot).unwrap_or(0);
+                            e.extra = i64::try_from(old).unwrap_or(0);
+                        },
+                    )
+                    .is_some_and(|e| e.cancelled);
+                    if cancelled {
+                        sink.send(&SetHeldSlot {
+                            slot: i32::try_from(old).unwrap_or(0),
+                        });
+                    } else {
+                        play.inventory.selected = slot;
+                    }
+                }
                 _ => log::warn!("{} tried to set an invalid carried item", chat.name),
             },
             ServerboundPlay::SetCreativeModeSlot(p) => {
@@ -800,8 +918,22 @@ impl Connection {
             }
             // `handlePlayerAbilities`.
             ServerboundPlay::PlayerAbilities(p) => {
-                state.flying = p.is_flying()
+                let flying = p.is_flying()
                     && crate::survival::player::Abilities::of(play.actor.game_mode).mayfly;
+                // Bukkit's `PlayerToggleFlightEvent`: cancelled, the client is corrected.
+                let cancelled = flying != state.flying
+                    && super::player_event(
+                        play.hooks,
+                        vanillite_abi::event::PLAYER_TOGGLE_FLIGHT,
+                        play.actor.uuid,
+                        |e| e.flags = u32::from(flying),
+                    )
+                    .is_some_and(|e| e.cancelled);
+                if cancelled {
+                    super::join::send_abilities(sink, play.actor.game_mode, state.flying);
+                } else {
+                    state.flying = flying;
+                }
             }
             ServerboundPlay::ChangeDifficulty(p) => {
                 self.admin(AdminRequest::ChangeDifficulty(p.difficulty));
@@ -839,6 +971,18 @@ impl Connection {
                 ))));
             }
             // Payloads of other namespaces may be plugin messages; Vanilla ignores them.
+            // Bukkit's `PlayerResourcePackStatusEvent` (the network task answered the status).
+            ServerboundPlay::ResourcePack(p) => {
+                super::player_event(
+                    play.hooks,
+                    vanillite_abi::event::PLAYER_RESOURCE_PACK,
+                    play.actor.uuid,
+                    |e| {
+                        e.key = p.id.to_string();
+                        e.cause = resource_pack_status(p.action);
+                    },
+                );
+            }
             ServerboundPlay::CustomPayload(p) if p.channel.namespace() != "minecraft" => {
                 self.admin(AdminRequest::PluginMessage {
                     channel: p.channel.as_str().to_owned(),
@@ -846,14 +990,13 @@ impl Connection {
                 });
             }
             // Keep-alives and ping requests are answered by the network task; cookies, custom
-            // payloads, pongs and resource packs come later.
+            // payloads and pongs come later.
             ServerboundPlay::CookieResponse(_)
             | ServerboundPlay::CustomClickAction(_)
             | ServerboundPlay::CustomPayload(_)
             | ServerboundPlay::KeepAlive(_)
             | ServerboundPlay::PingRequest(_)
             | ServerboundPlay::Pong(_)
-            | ServerboundPlay::ResourcePack(_)
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
@@ -899,7 +1042,19 @@ impl Connection {
         let spectator = play.actor.game_mode == vanillite_config::GameMode::Spectator;
         match p.action {
             DigAction::SwapItemWithOffhand => {
-                if !spectator {
+                // Bukkit's `PlayerSwapHandItemsEvent`: cancelled, the hands stay.
+                if !spectator
+                    && !super::player_event(
+                        play.hooks,
+                        vanillite_abi::event::PLAYER_SWAP_HANDS,
+                        play.actor.uuid,
+                        |e| {
+                            e.item = crate::hooks::item_snbt(play.inventory.selected_item());
+                            e.other_item = crate::hooks::item_snbt(&play.inventory.offhand);
+                        },
+                    )
+                    .is_some_and(|e| e.cancelled)
+                {
                     play.inventory.swap_hands();
                 }
             }
@@ -948,8 +1103,10 @@ impl Connection {
             inventory,
             drops,
             xp,
+            hooks,
             ..
         } = play;
+        let hooks = *hooks;
         let Some(level) = level.level_mut() else {
             return;
         };
@@ -974,9 +1131,15 @@ impl Connection {
                 log::debug!("A player clicked invalid slot index {}", p.slot);
                 return;
             }
+            // Plugins may cancel the click: nothing changes, the client is corrected.
+            if !view.click_events(hooks, actor.uuid, p.slot, p.button, p.input) {
+                crate::menu::send_all(view, sink);
+                return;
+            }
             let full_resync = p.state_id != view.menu.state.state_id();
             view.menu.state.suppress_remote = true;
             crate::menu::click(view, p.slot, p.button, p.input, ctx, drops);
+            view.craft_prepare_event(hooks, actor.uuid);
             view.flush_result_updates(sink);
             crate::menu::receive_predictions(&mut view.menu.state, &p.changed, &p.carried);
             view.menu.state.suppress_remote = false;
@@ -1059,9 +1222,12 @@ impl Connection {
                 creative,
                 play.drops,
             );
+            play.inventory
+                .craft_prepare_event(play.hooks, play.actor.uuid);
             play.inventory.flush_result_updates(sink);
             ghost
         } else {
+            let hooks = play.hooks;
             let PlayContext {
                 level,
                 inventory,
@@ -1121,6 +1287,7 @@ impl Connection {
                         creative,
                         drops,
                     );
+                    view.craft_prepare_event(hooks, actor.uuid);
                     view.flush_result_updates(sink);
                     ghost
                 },
@@ -1336,6 +1503,14 @@ impl Connection {
             log::debug!("A player clicked invalid slot index {}", p.slot);
             return;
         }
+        // Plugins may cancel the click: nothing changes, the client is corrected.
+        if !play
+            .inventory
+            .click_events(play.hooks, play.actor.uuid, p.slot, p.button, p.input)
+        {
+            play.inventory.send_all(sink);
+            return;
+        }
         let full_resync = p.state_id != play.inventory.state_id();
         let ctx = ClickContext {
             infinite: play.actor.game_mode == vanillite_config::GameMode::Creative,
@@ -1346,6 +1521,8 @@ impl Connection {
         super::play::flush_equips(play);
         let sounds = std::mem::take(&mut play.inventory.menu.sounds);
         play_bundle_sounds(play, sounds);
+        play.inventory
+            .craft_prepare_event(play.hooks, play.actor.uuid);
         play.inventory.flush_result_updates(sink);
         play.inventory.receive_predictions(&p.changed, &p.carried);
         play.inventory.menu.suppress_remote = false;
@@ -1489,6 +1666,22 @@ impl Connection {
 }
 
 /// `multiplayer.disconnect.chat_validation_failed`.
+/// A resource pack status as plugins number it (`vanillite_abi::resource_pack_status`).
+fn resource_pack_status(action: vanillite_protocol::packets::common::ResourcePackAction) -> u32 {
+    use vanillite_abi::resource_pack_status as status;
+    use vanillite_protocol::packets::common::ResourcePackAction as A;
+    match action {
+        A::SuccessfullyLoaded => status::SUCCESSFULLY_LOADED,
+        A::Declined => status::DECLINED,
+        A::FailedDownload => status::FAILED_DOWNLOAD,
+        A::Accepted => status::ACCEPTED,
+        A::Downloaded => status::DOWNLOADED,
+        A::InvalidUrl => status::INVALID_URL,
+        A::FailedReload => status::FAILED_RELOAD,
+        A::Discarded => status::DISCARDED,
+    }
+}
+
 fn chat_validation_failed() -> Kick {
     Kick(Box::new(Component::translatable(
         "multiplayer.disconnect.chat_validation_failed",

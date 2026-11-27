@@ -6,6 +6,7 @@
 //! - [`frame`]: length prefix, compression and encryption for both directions.
 //! - [`packets`]: packet structs per state, defined with `#[derive(Packet)]`; [`sets`]: the
 //!   per-state decoders that dispatch on packet ids.
+//! - [`tap`]: the packet tap, where listeners observe, cancel and rewrite packets.
 //! - [`text`]: text components; [`client`]: a test client over any `Read + Write`.
 
 // Lets `#[derive(Packet)]` refer to this crate by name from inside it.
@@ -26,6 +27,7 @@ pub mod packets;
 pub mod recipe_display;
 pub mod sets;
 pub mod shared;
+pub mod tap;
 pub mod text;
 pub mod types;
 
