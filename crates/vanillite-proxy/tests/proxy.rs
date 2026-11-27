@@ -1,6 +1,6 @@
 //! The proxy in front of two in-process Vanillite servers with modern forwarding: a player
-//! joins the first server, switches to the second with `/server` without reconnecting, and is
-//! sent back to the first when the second stops. Both servers are Vanillite, so the proxy
+//! joins the first server, switches to the second with `/server` without reconnecting, is moved
+//! by the console's `send`, and is sent back to the first when the second stops. Both servers are Vanillite, so the proxy
 //! relays them over the trusted pass-through link.
 
 #![allow(
@@ -170,6 +170,15 @@ fn join_switch_and_fallback() {
         })
         .unwrap();
     reconfigure(&mut client, "the switch to b");
+    assert_eq!(login_max_players(&mut client), 22);
+    assert!(proxy.console("glist").contains("[b] (1): Alice"));
+
+    // The console moves players: one by name, then everybody.
+    assert_eq!(proxy.console("send alice a"), "Sending 1 players to a.");
+    reconfigure(&mut client, "the send to a");
+    assert_eq!(login_max_players(&mut client), 11);
+    assert_eq!(proxy.console("send all b"), "Sending 1 players to b.");
+    reconfigure(&mut client, "the send to b");
     assert_eq!(login_max_players(&mut client), 22);
 
     // The second server stops: the proxy falls back to the first.
