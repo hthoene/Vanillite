@@ -14,6 +14,7 @@ vanillite-base.workspace = true
 vanillite-chunk.workspace = true
 vanillite-command.workspace = true
 vanillite-data.workspace = true
+vanillite-nbt.workspace = true
 libloading.workspace = true
 log.workspace = true
 sha2.workspace = true

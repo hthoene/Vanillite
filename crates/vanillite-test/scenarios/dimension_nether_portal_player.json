@@ -1,0 +1,16 @@
+{
+  "description": "Across dimensions in Vanilla's order: a survival player stands in an overworld nether portal; once its client counts as loaded it waits the portal delay and travels to the Nether, where the exit portal is created on the flat netherrack.",
+  "dimensions": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-6, 0, -6], [6, 10, 8]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[0, -61, 6], [3, -55, 10]]}],
+  "ticks": 90,
+  "setup": [
+    {"op": "fill", "from": [0, -60, 8], "to": [3, -56, 8], "block": "minecraft:obsidian"},
+    {"op": "fill", "from": [1, -59, 8], "to": [2, -57, 8], "block": "minecraft:nether_portal[axis=x]"}
+  ],
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [1.5, -59.0, 8.5], "rot": [0, 0]}
+  ]
+}

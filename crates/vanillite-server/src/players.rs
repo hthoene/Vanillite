@@ -3,6 +3,7 @@
 //! `vanillite_game::player`.
 
 use std::sync::{Arc, Mutex};
+use vanillite_game::entities::PERSISTENT_DATA;
 
 use vanillite_base::BlockPos;
 use vanillite_base::hash::FxHashSet;
@@ -388,13 +389,15 @@ impl WorldPlayers {
     }
 
     /// `placeNewPlayer`: spawns the player and sends the join sequence. The player is already
-    /// in the global player list.
+    /// in the global player list. `fresh_spawn` is where a new player lands.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn join(
         &mut self,
         entities: &mut Entities,
         global: &Global,
         world: crate::world::WorldId,
         arrival: Arrival,
+        fresh_spawn: Option<Vec3>,
         weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
         state: &join::LevelPackets,
     ) {
@@ -415,7 +418,11 @@ impl WorldPlayers {
                 (saved.rotation[0], saved.rotation[1]),
                 saved.on_ground,
             ),
-            None => (self.level.spawn.0, (self.level.spawn.1, 0.0), true),
+            None => (
+                fresh_spawn.unwrap_or(self.level.spawn.0),
+                (self.level.spawn.1, 0.0),
+                true,
+            ),
         };
         let center = chunk_of(pos);
         let view_distance = effective_view_distance(&arrival.client, self.view_distance);
@@ -464,6 +471,10 @@ impl WorldPlayers {
             .and_then(|v| i32::try_from(v).ok())
             .and_then(game_mode_by_id);
         let tags = saved.map(load_tags).unwrap_or_default();
+        let persistent = saved.and_then(|d| match d.get(PERSISTENT_DATA) {
+            Some(Tag::Compound(c)) => Some(c.clone()),
+            _ => None,
+        });
         let motion = saved.map_or(Vec3::ZERO, load_motion);
         let icon = saved
             .and_then(|d| d.get("locator_bar_icon"))
@@ -510,6 +521,7 @@ impl WorldPlayers {
             data,
         );
         entities.set_tags(id, tags);
+        entities.set_persistent_data(id, persistent);
         let Some(mut entity) = entities.store.get_mut(id) else {
             return;
         };
@@ -695,6 +707,12 @@ impl WorldPlayers {
                 global,
                 &level.chunks,
             );
+            actor.respawn_here = player
+                .survival
+                .respawn
+                .as_ref()
+                .filter(|r| r.dimension == dimension_name)
+                .map(|r| r.pos);
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let aabb = entity.aabb();
@@ -838,6 +856,20 @@ impl WorldPlayers {
             }
         }
         level.entities.players = players;
+        // The bed and anchor clicks, then `STOP_SLEEPING`.
+        {
+            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension_name);
+            vanillite_game::survival::sleep::run_block_uses(level, &hooks);
+            let leaving: Vec<EntityId> = level
+                .entities
+                .players
+                .iter_mut()
+                .filter_map(|(id, p)| std::mem::take(&mut p.connection.leave_bed).then_some(id))
+                .collect();
+            for id in leaving {
+                vanillite_game::survival::sleep::stop_sleep_in_bed(level, id, false, true, &hooks);
+            }
+        }
         let entities = &mut level.entities;
         // Hand swings go to the players that see the swinging one (`sendToTrackingPlayers`).
         for (id, hand) in swings {
@@ -1231,6 +1263,9 @@ impl WorldPlayers {
         id: EntityId,
         reason: Option<Box<Component>>,
     ) {
+        // `ServerPlayer.disconnect`: out of bed before the player is saved.
+        let hooks = crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+        vanillite_game::survival::sleep::stop_sleep_in_bed(level, id, true, false, &hooks);
         let entities = &mut level.entities;
         let Some(entity) = entities.store.get(id) else {
             return;
@@ -1389,6 +1424,9 @@ impl WorldPlayers {
                 Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
             );
         }
+        if let Some(data) = entities.persistent_data(id) {
+            live.insert(PERSISTENT_DATA, data.clone());
+        }
         player.inventory.save(&mut live);
         player.survival.save(&mut live);
         live.insert(
@@ -1405,9 +1443,8 @@ impl WorldPlayers {
         if let Some(previous) = player.previous_game_mode {
             live.insert("previousPlayerGameType", Tag::Int(game_mode_id(previous)));
         }
-        // Players do not sleep, glide, freeze or keep explosion impulses here yet: those
-        // keys carry the state of a player that does none of it.
-        live.insert("SleepTimer", Tag::Short(0));
+        // Players do not glide, freeze or keep explosion impulses here yet: those keys carry
+        // the state of a player that does none of it.
         live.insert(
             "FallFlying",
             Tag::Byte(i8::from(flags.contains(EntityFlags::FALL_FLYING))),
@@ -1485,8 +1522,9 @@ impl WorldPlayers {
 
 /// The keys of a player data file that only exist for some live states: dropped before the
 /// live state is written, so a stale value never stays.
-const LIVE_KEYS: [&str; 15] = [
+const LIVE_KEYS: [&str; 16] = [
     "Tags",
+    PERSISTENT_DATA,
     "previousPlayerGameType",
     "LastDeathLocation",
     "active_effects",
@@ -1664,6 +1702,7 @@ fn actor_of(
             .has_dig_speed()
             .then(|| effects.dig_speed_amplification()),
         mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
+        respawn_here: None,
     }
 }
 

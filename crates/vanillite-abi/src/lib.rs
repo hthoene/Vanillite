@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 2;
+pub const ABI_MINOR: u16 = 4;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -174,6 +174,9 @@ abi! {
         ) -> Status;
         /// Destroys a generator instance.
         pub type GeneratorDestroyFn = unsafe extern "C" fn(instance: *mut c_void);
+        /// Replaces a text (copied by the receiver before it returns; `format` from
+        /// [`text_format`]). Since ABI 1.4.
+        pub type TextSetFn = unsafe extern "C" fn(state: *mut c_void, text: Str, format: u32);
     }
     consts {
         /// Result codes ([`Status`]).
@@ -243,6 +246,36 @@ abi! {
             BLOCK_BREAK = 7,
             /// A player is about to place a block ([`BlockEvent`]); cancellable.
             BLOCK_PLACE = 8,
+            /// A player is about to fall asleep in a bed ([`BlockEvent`]: the bed's head);
+            /// cancellable. Since ABI 1.3.
+            PLAYER_BED_ENTER = 9,
+            /// A player left its bed ([`BlockEvent`]: the bed's head). Since ABI 1.3.
+            PLAYER_BED_LEAVE = 10,
+            /// A bed or respawn anchor is about to become a player's respawn point
+            /// ([`BlockEvent`]); cancellable. Since ABI 1.3.
+            PLAYER_SPAWN_CHANGE = 11,
+            /// A player logs in, after the server's own checks (bans, whitelist, player limit)
+            /// and before it joins a world ([`LoginEvent`]); runs on the global owner.
+            /// Cancelled means refused: handlers may refuse with a message or let a refused
+            /// player in. Since ABI 1.4.
+            PLAYER_LOGIN = 12,
+            /// A player died ([`PlayerDeathEvent`]): the death message and whether it keeps its
+            /// inventory can be changed. Since ABI 1.4.
+            PLAYER_DEATH = 13,
+            /// A mob died ([`EntityDeathEvent`]). Since ABI 1.4.
+            ENTITY_DEATH = 14,
+            /// A player respawned, after death or the end credits ([`PlayerWorldEvent`]).
+            /// Since ABI 1.4.
+            PLAYER_RESPAWN = 15,
+            /// A player arrived in another world through a portal or a teleport
+            /// ([`PlayerWorldEvent`]). Since ABI 1.4.
+            PLAYER_CHANGE_WORLD = 16,
+            /// A player's game mode is about to change by `/gamemode` or the forced default
+            /// game mode ([`GameModeEvent`]); cancellable. Since ABI 1.4.
+            PLAYER_GAME_MODE_CHANGE = 17,
+            /// A player uses its item on a block or in the air ([`InteractEvent`]);
+            /// cancellable: nothing happens and the client is corrected. Since ABI 1.4.
+            PLAYER_INTERACT = 18,
         }
         /// Event priorities: handlers run from the lowest to the highest value, then monitors.
         pub mod priority: i32 {
@@ -331,6 +364,77 @@ abi! {
             NO_BLOCK = u32::MAX,
             /// The most blocks one `blocks_get` or `blocks_set` call covers. Since ABI 1.2.
             MAX_BOX_VOLUME = 1 << 24,
+        }
+        /// Why a login was refused ([`LoginEvent::reason`]). Since ABI 1.4.
+        pub mod login_reason: u32 {
+            /// Not refused.
+            ALLOWED = 0,
+            /// The player or its address is banned.
+            BANNED = 1,
+            /// The whitelist is on and the player is not on it.
+            NOT_WHITELISTED = 2,
+            /// The server is full.
+            FULL = 3,
+            /// Refused by a plugin.
+            PLUGIN = 4,
+        }
+        /// What a player does with its item ([`InteractEvent::action`]). Since ABI 1.4.
+        pub mod interact: u32 {
+            /// Uses the item on a block (right click on a block).
+            USE_ON_BLOCK = 0,
+            /// Uses the item in the air (right click).
+            USE_ITEM = 1,
+        }
+        /// Hands ([`InteractEvent::hand`]). Since ABI 1.4.
+        pub mod hand: u32 {
+            /// The main hand.
+            MAIN = 0,
+            /// The off hand.
+            OFF = 1,
+        }
+        /// Game modes ([`GameModeEvent`]). Since ABI 1.4.
+        pub mod game_mode: u32 {
+            /// Survival.
+            SURVIVAL = 0,
+            /// Creative.
+            CREATIVE = 1,
+            /// Adventure.
+            ADVENTURE = 2,
+            /// Spectator.
+            SPECTATOR = 3,
+        }
+        /// Value types of persistent data, the NBT tag ids they are stored as. Numbers and
+        /// arrays are little-endian, strings UTF-8. Since ABI 1.4.
+        pub mod data_type: u32 {
+            /// One byte (`i8`).
+            BYTE = 1,
+            /// `i16`.
+            SHORT = 2,
+            /// `i32`.
+            INT = 3,
+            /// `i64`.
+            LONG = 4,
+            /// `f32`.
+            FLOAT = 5,
+            /// `f64`.
+            DOUBLE = 6,
+            /// Bytes.
+            BYTE_ARRAY = 7,
+            /// A UTF-8 string.
+            STRING = 8,
+            /// `i32` values.
+            INT_ARRAY = 11,
+            /// `i64` values.
+            LONG_ARRAY = 12,
+        }
+        /// Limits of persistent data. Since ABI 1.4.
+        pub mod data_limits: u32 {
+            /// The longest value in bytes.
+            MAX_VALUE = 1 << 16,
+            /// The most keys of one entity.
+            MAX_KEYS = 256,
+            /// The longest key in bytes.
+            MAX_KEY = 256,
         }
         /// How `block_set_id` and `blocks_set` change blocks. Since ABI 1.2.
         pub mod set_mode: u32 {
@@ -506,7 +610,8 @@ abi! {
             /// The damage after armour-independent scaling; handlers may change it.
             pub amount: f32,
         }
-        /// [`event::BLOCK_BREAK`] and [`event::BLOCK_PLACE`].
+        /// [`event::BLOCK_BREAK`], [`event::BLOCK_PLACE`], [`event::PLAYER_BED_ENTER`],
+        /// [`event::PLAYER_BED_LEAVE`] and [`event::PLAYER_SPAWN_CHANGE`].
         pub struct BlockEvent {
             /// Header.
             pub header: EventHeader,
@@ -518,6 +623,131 @@ abi! {
             pub pos: BlockPos,
             /// The block state broken, or the one to be placed, e.g. `minecraft:oak_log[axis=y]`.
             pub state: Str,
+        }
+        /// Where a handler writes a replacement text. Since ABI 1.4.
+        pub struct TextOut {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// Passed to `set`.
+            pub state: *mut c_void,
+            /// Replaces the text; the last call wins.
+            pub set: TextSetFn,
+        }
+        /// [`event::PLAYER_LOGIN`]. Since ABI 1.4.
+        pub struct LoginEvent {
+            /// Header; `cancelled` is non-zero while the login is refused.
+            pub header: EventHeader,
+            /// The player.
+            pub player: Uuid,
+            /// Its name.
+            pub name: Str,
+            /// Its IP address.
+            pub address: Str,
+            /// Why the server refused it, one of [`login_reason`] (`ALLOWED` when not).
+            pub reason: u32,
+            /// The refusal message as a JSON text component; empty when not refused.
+            pub message: Str,
+            /// Replaces the refusal message.
+            pub message_out: *const TextOut,
+        }
+        /// [`event::PLAYER_DEATH`]. Since ABI 1.4.
+        pub struct PlayerDeathEvent {
+            /// Header (not cancellable).
+            pub header: EventHeader,
+            /// The world.
+            pub world: u32,
+            /// The player.
+            pub player: Uuid,
+            /// The damage type that killed it, e.g. `minecraft:fall`.
+            pub damage_type: Str,
+            /// The entity responsible ([`Uuid::NIL`] for none).
+            pub killer: Uuid,
+            /// The death message as a JSON text component; empty when none is shown.
+            pub message: Str,
+            /// Replaces the death message; an empty text shows none.
+            pub message_out: *const TextOut,
+            /// Non-zero when the player keeps its inventory and experience; handlers may
+            /// change it.
+            pub keep_inventory: u32,
+        }
+        /// [`event::ENTITY_DEATH`]. Since ABI 1.4.
+        pub struct EntityDeathEvent {
+            /// Header (not cancellable).
+            pub header: EventHeader,
+            /// The world.
+            pub world: u32,
+            /// The entity.
+            pub entity: Uuid,
+            /// Its type, e.g. `minecraft:zombie`.
+            pub entity_type: Str,
+            /// The damage type that killed it.
+            pub damage_type: Str,
+            /// The entity responsible ([`Uuid::NIL`] for none).
+            pub killer: Uuid,
+        }
+        /// [`event::PLAYER_RESPAWN`] and [`event::PLAYER_CHANGE_WORLD`]. Since ABI 1.4.
+        pub struct PlayerWorldEvent {
+            /// Header (not cancellable).
+            pub header: EventHeader,
+            /// The player.
+            pub player: Uuid,
+            /// The world it came from.
+            pub from: u32,
+            /// The world it is in now.
+            pub world: u32,
+            /// Its position there.
+            pub pos: Vec3,
+        }
+        /// [`event::PLAYER_GAME_MODE_CHANGE`]. Since ABI 1.4.
+        pub struct GameModeEvent {
+            /// Header.
+            pub header: EventHeader,
+            /// The player's world.
+            pub world: u32,
+            /// The player.
+            pub player: Uuid,
+            /// Its game mode, one of [`game_mode`].
+            pub from: u32,
+            /// The new game mode.
+            pub to: u32,
+        }
+        /// [`event::PLAYER_INTERACT`]. Since ABI 1.4.
+        pub struct InteractEvent {
+            /// Header.
+            pub header: EventHeader,
+            /// The world.
+            pub world: u32,
+            /// The player.
+            pub player: Uuid,
+            /// One of [`interact`].
+            pub action: u32,
+            /// One of [`hand`].
+            pub hand: u32,
+            /// The item in that hand, e.g. `minecraft:flint_and_steel` (`minecraft:air` for none).
+            pub item: Str,
+            /// The block used (`USE_ON_BLOCK`).
+            pub pos: BlockPos,
+            /// The clicked face (`USE_ON_BLOCK`): 0 down, 1 up, 2 north, 3 south, 4 west, 5 east.
+            pub face: u32,
+            /// The block state used (`USE_ON_BLOCK`; empty otherwise).
+            pub state: Str,
+        }
+        /// A title for `player_send_title`. Since ABI 1.4.
+        pub struct TitleSpec {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// The title; empty for none.
+            pub title: Str,
+            /// The subtitle; empty for none.
+            pub subtitle: Str,
+            /// Format of both, from [`text_format`].
+            pub format: u32,
+            /// Ticks to fade in.
+            pub fade_in: i32,
+            /// Ticks to stay.
+            pub stay: i32,
+            /// Ticks to fade out.
+            pub fade_out: i32,
         }
         /// Where a task runs.
         pub struct Owner {
@@ -538,7 +768,8 @@ abi! {
             pub owner: Owner,
             /// Ticks before the first run (0 = the owner's next turn).
             pub delay: u64,
-            /// Ticks between runs; 0 runs it once. Ignored for background tasks.
+            /// Ticks between runs; 0 runs it once. Background tasks repeat on a background
+            /// thread for plugins built against ABI 1.4 or later (before, it is ignored).
             pub period: u64,
             /// The task.
             pub run: TaskFn,
@@ -803,6 +1034,35 @@ abi! {
                 u32,
                 *mut usize,
             ) -> Status,
+            /// Shows a text above a player's hotbar (format from [`text_format`]). Since ABI 1.4.
+            pub player_send_action_bar: unsafe extern "C" fn(PluginId, Uuid, Str, u32) -> Status,
+            /// Shows a title and subtitle to a player. Since ABI 1.4.
+            pub player_send_title: unsafe extern "C" fn(PluginId, Uuid, *const TitleSpec) -> Status,
+            /// Reads a persistent data value of an entity of the owned world (players too):
+            /// writes its type (from [`data_type`]) and its bytes to `sink`.
+            /// [`status::NOT_FOUND`] when the entity is not there or has no such key. Keys are
+            /// `namespace:path`; without a namespace the plugin's id is used. The values are
+            /// saved with the entity in its NBT (`BukkitValues`). Since ABI 1.4.
+            pub entity_data_get: unsafe extern "C" fn(
+                *mut Context,
+                u32,
+                Uuid,
+                Str,
+                *mut u32,
+                *const ByteSink,
+            ) -> Status,
+            /// Sets a persistent data value of an entity of the owned world (type from
+            /// [`data_type`], at most [`data_limits::MAX_VALUE`] bytes, at most
+            /// [`data_limits::MAX_KEYS`] keys per entity). Since ABI 1.4.
+            pub entity_data_set:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, Str, u32, Bytes) -> Status,
+            /// Removes a persistent data value of an entity of the owned world; OK when it
+            /// had none. Since ABI 1.4.
+            pub entity_data_remove: unsafe extern "C" fn(*mut Context, u32, Uuid, Str) -> Status,
+            /// The persistent data keys of an entity of the owned world, one per line, to
+            /// `sink`. Since ABI 1.4.
+            pub entity_data_keys:
+                unsafe extern "C" fn(*mut Context, u32, Uuid, *const ByteSink) -> Status,
         }
     }
 }

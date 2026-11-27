@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use vanillite_abi::{self as abi, Status, status};
 
 pub use commands::{Arg, ArgValue, SUGGEST_PREFIX, Sender};
+pub use events::{InteractTarget, LoginOutcome, NewText, PlayerDeath};
 pub use generator::PluginGeneratorProvider;
 pub use loader::{Manifest, Threading};
 
@@ -43,6 +44,17 @@ pub enum Text<'a> {
     Plain(&'a str),
     /// A JSON text component.
     Json(&'a str),
+}
+
+/// A title for a player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Title<'a> {
+    /// The title; `None` for none.
+    pub title: Option<Text<'a>>,
+    /// The subtitle; `None` for none.
+    pub subtitle: Option<Text<'a>>,
+    /// Ticks to fade in, stay and fade out.
+    pub times: [i32; 3],
 }
 
 /// Server-wide services for plugins, callable from any thread.
@@ -77,6 +89,14 @@ pub trait ServerAccess: Send + Sync {
     fn spawn_background(&self, job: Box<dyn FnOnce() + Send>);
     /// Saves and stops the server (a provider failed).
     fn shutdown(&self, reason: &str);
+    /// Shows a text above a player's hotbar; `false` when offline.
+    fn send_action_bar(&self, _player: u128, _text: Text<'_>) -> bool {
+        false
+    }
+    /// Shows a title to a player; `false` when offline.
+    fn send_title(&self, _player: u128, _title: &Title<'_>) -> bool {
+        false
+    }
 }
 
 /// One world, borrowed by its owner for the duration of a plugin call.
@@ -117,6 +137,19 @@ pub trait WorldAccess {
         states: &[u32],
         mode: SetMode,
     ) -> Result<usize, Status>;
+
+    /// The persistent data (`BukkitValues`) of an entity of this world (players too), for
+    /// reading; [`vanillite_abi::status::NOT_FOUND`] when the entity is not here.
+    fn entity_data(&self, _entity: u128) -> Result<Option<&vanillite_nbt::Compound>, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The persistent data of an entity of this world, for changing (created when missing,
+    /// dropped by the server when left empty); [`vanillite_abi::status::NOT_FOUND`] when the
+    /// entity is not here.
+    fn entity_data_mut(&mut self, _entity: u128) -> Result<&mut vanillite_nbt::Compound, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
 }
 
 /// How plugin block changes update the world ([`vanillite_abi::set_mode`]).
@@ -559,7 +592,7 @@ impl PluginHost {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         for plugin in plugins {
-            let mut ctx = api::CallCtx::new(None);
+            let mut ctx = api::CallCtx::new(None, &plugin);
             let result = plugin.call("enable", || {
                 // SAFETY: validated entry; the context lives for the call.
                 unsafe { (plugin.info.enable)(ctx.as_raw()) }
@@ -589,7 +622,7 @@ impl PluginHost {
             if !plugin.enabled.load(Ordering::Acquire) {
                 continue;
             }
-            let mut ctx = api::CallCtx::new(None);
+            let mut ctx = api::CallCtx::new(None, plugin);
             log::info!("Disabling plugin {}", plugin.id());
             plugin.call("disable", || {
                 // SAFETY: validated entry; the context lives for the call.
@@ -647,7 +680,7 @@ impl PluginHost {
             old.call("save_state", || unsafe { save(&sink) });
         }
         if old.enabled.load(Ordering::Acquire) {
-            let mut ctx = api::CallCtx::new(None);
+            let mut ctx = api::CallCtx::new(None, &old);
             // SAFETY: validated entry; the context lives for the call.
             old.call("disable", || unsafe { (old.info.disable)(ctx.as_raw()) });
         }
@@ -698,7 +731,7 @@ impl PluginHost {
                 restore(abi::Bytes::new(&state))
             });
         }
-        let mut ctx = api::CallCtx::new(None);
+        let mut ctx = api::CallCtx::new(None, &new);
         // SAFETY: validated entry; the context lives for the call.
         let enabled = new.call("enable", || unsafe { (new.info.enable)(ctx.as_raw()) });
         if enabled != status::OK {

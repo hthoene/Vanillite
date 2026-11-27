@@ -115,7 +115,8 @@ fn wire_vec(v: Vec3) -> types::Vec3 {
     }
 }
 
-fn pose_id(pose: Pose) -> i32 {
+/// `Pose.id()`.
+pub fn pose_id(pose: Pose) -> i32 {
     // `Pose` is `repr(u8)` in protocol order.
     #[allow(clippy::as_conversions)]
     let id = pose as u8;
@@ -291,6 +292,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
         effect_data(&mut out, &player.survival.effects, all);
+        DataWriter::new(&mut out, all).optional_block_pos(14, player.survival.sleeping_pos);
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
             item(

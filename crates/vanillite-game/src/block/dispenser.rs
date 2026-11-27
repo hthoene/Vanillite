@@ -448,19 +448,7 @@ fn execute(
                 *success = false;
                 return stack;
             }
-            // `RespawnAnchorBlock.charge`.
-            let charged = state.set_int("charges", charge + 1);
-            level.set_block_and_update(target, charged);
-            let context = GameEventContext::with_state(None, charged);
-            level.game_event_block(events().block_change, target, context);
-            level.play_block_sound(
-                None,
-                target,
-                sound_id("block.respawn_anchor.charge"),
-                SOUND_BLOCKS,
-                1.0,
-                1.0,
-            );
+            crate::block::bed::charge_anchor(level, None, target, state);
             stack.shrink(1);
             stack
         }

@@ -7,7 +7,10 @@ use vanillite_abi::{self as abi, Status, status};
 
 use crate::Plugin;
 use crate::command::{self, Command};
-use crate::events::{BlockChange, EntityDamage, PlayerJoin, PlayerText, PlayersMoved};
+use crate::events::{
+    BlockChange, EntityDamage, EntityDeath, GameModeChange, Interact, Login, PlayerDeath,
+    PlayerJoin, PlayerText, PlayerWorld, PlayersMoved,
+};
 use crate::ffi::{Host, guard, str, with_plugin};
 use crate::generator::{self, ChunkGeneratorProvider};
 use crate::server::{Ctx, Server};
@@ -218,6 +221,178 @@ impl<P: Plugin> Registrar<P> {
                 // SAFETY: the host passes a `BlockEvent` for this kind.
                 let raw = unsafe { &mut *e.cast::<abi::BlockEvent>() };
                 f(p, ctx, &mut BlockChange { raw });
+            }),
+        )
+    }
+
+    /// A player is about to fall asleep in a bed (the position is the bed's head);
+    /// cancellable. Since ABI 1.3.
+    pub fn on_bed_enter(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_block(abi::event::PLAYER_BED_ENTER, priority, f)
+    }
+
+    /// A player left its bed (the position is the bed's head). Since ABI 1.3.
+    pub fn on_bed_leave(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_block(abi::event::PLAYER_BED_LEAVE, priority, f)
+    }
+
+    /// A bed or respawn anchor is about to become a player's respawn point; cancellable.
+    /// Since ABI 1.3.
+    pub fn on_spawn_change(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_block(abi::event::PLAYER_SPAWN_CHANGE, priority, f)
+    }
+
+    fn on_player_block(
+        &mut self,
+        kind: u32,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            kind,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `BlockEvent` for this kind.
+                let raw = unsafe { &mut *e.cast::<abi::BlockEvent>() };
+                f(p, ctx, &mut BlockChange { raw });
+            }),
+        )
+    }
+
+    /// A player logs in, after the server's checks (bans, whitelist, player limit) and
+    /// before it joins a world: refuse it or let a refused player in. No world access.
+    /// Since ABI 1.4.
+    pub fn on_login(
+        &mut self,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut Login<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            abi::event::PLAYER_LOGIN,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `LoginEvent` for this kind.
+                let raw = unsafe { &mut *e.cast::<abi::LoginEvent>() };
+                f(p, ctx, &mut Login { raw });
+            }),
+        )
+    }
+
+    /// A player died: change its death message or let it keep its inventory. No world
+    /// access (the world is in the middle of its tick). Since ABI 1.4.
+    pub fn on_death(
+        &mut self,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut PlayerDeath<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            abi::event::PLAYER_DEATH,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `PlayerDeathEvent` for this kind.
+                let raw = unsafe { &mut *e.cast::<abi::PlayerDeathEvent>() };
+                f(p, ctx, &mut PlayerDeath { raw });
+            }),
+        )
+    }
+
+    /// A mob died. No world access (the world is in the middle of its tick). Since ABI 1.4.
+    pub fn on_entity_death(
+        &mut self,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &EntityDeath<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            abi::event::ENTITY_DEATH,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes an `EntityDeathEvent` for this kind.
+                let raw = unsafe { &*e.cast::<abi::EntityDeathEvent>() };
+                f(p, ctx, &EntityDeath { raw });
+            }),
+        )
+    }
+
+    /// A player respawned (after death or the end credits). The context owns its new world.
+    /// Since ABI 1.4.
+    pub fn on_respawn(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &PlayerWorld<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_world(abi::event::PLAYER_RESPAWN, priority, f)
+    }
+
+    /// A player arrived in another world (portal or teleport). The context owns the new
+    /// world. Since ABI 1.4.
+    pub fn on_change_world(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &PlayerWorld<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_world(abi::event::PLAYER_CHANGE_WORLD, priority, f)
+    }
+
+    fn on_player_world(
+        &mut self,
+        kind: u32,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &PlayerWorld<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            kind,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `PlayerWorldEvent` for this kind.
+                let raw = unsafe { &*e.cast::<abi::PlayerWorldEvent>() };
+                f(p, ctx, &PlayerWorld { raw });
+            }),
+        )
+    }
+
+    /// A player's game mode is about to change; cancellable. No world access. Since ABI 1.4.
+    pub fn on_game_mode_change(
+        &mut self,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameModeChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            abi::event::PLAYER_GAME_MODE_CHANGE,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `GameModeEvent` for this kind.
+                let raw = unsafe { &mut *e.cast::<abi::GameModeEvent>() };
+                f(p, ctx, &mut GameModeChange { raw });
+            }),
+        )
+    }
+
+    /// A player uses its item on a block or in the air; cancellable. No world access (the
+    /// player's world is busy with its packets). Since ABI 1.4.
+    pub fn on_interact(
+        &mut self,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut Interact<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            abi::event::PLAYER_INTERACT,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes an `InteractEvent` for this kind.
+                let raw = unsafe { &mut *e.cast::<abi::InteractEvent>() };
+                f(p, ctx, &mut Interact { raw });
             }),
         )
     }

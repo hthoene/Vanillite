@@ -39,6 +39,17 @@
 //! Random ticks: the level random is reseeded with the world seed after the setup, and the LCG
 //! of random tick positions (`Level.randValue`) starts at the seed's low 32 bits.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
+//! - `dimensions`: `true` runs the scenario with all three dimensions on the server, ticked
+//!   one after another in Vanilla's order (`performance.tick.parallel-dimensions = false`): the
+//!   Nether and the End are flat too (bedrock, then netherrack or end stone up to y 3), players
+//!   load chunks like on a normal server (view and simulation distance 2), and every chunk
+//!   ticket loads its chunks at once, like Vanilla's synchronous loads of a teleport. Then
+//!   `dimension` is the dimension of the region (default the overworld), `views` are more
+//!   regions whose entities the frames hold (`[{"dimension": ..., "region": [min, max]}]`,
+//!   their chunks forced like the region's), entities outside the overworld have their
+//!   `dim` in their detail, and a block op works in its `dimension` (default the overworld).
+//!   Scenario entities start in the overworld; the level random of every dimension starts
+//!   from the world seed.
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
 //!   `unforce` (`"chunks": [[x, z], ...]`: adds or removes forced tickets like `/forceload`,
@@ -110,7 +121,8 @@
 //!   face's centre), sneaking if `sneak`, with its food level set to `food` first
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
-//!   the players' food and hands to the frames.
+//!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
@@ -167,6 +179,27 @@ pub struct WorldSpec {
     pub level_rng: bool,
     /// Whether frames hold the players' food and hands.
     pub player_state: bool,
+    /// Runs with all three dimensions in Vanilla's order (`"dimensions": true`).
+    pub dimensions: bool,
+    /// The dimension of the region.
+    pub dimension: String,
+    /// More regions whose entities the frames hold (with `dimensions`).
+    pub views: Vec<View>,
+    /// Whether frames hold the players' sleep state, pose and respawn point.
+    pub sleep_state: bool,
+}
+
+/// The overworld's dimension id.
+pub const OVERWORLD: &str = "minecraft:overworld";
+
+/// A region of another dimension whose entities the frames hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct View {
+    pub dimension: String,
+    pub min: BlockPos,
+    pub max: BlockPos,
+    /// Chunks forced before the setup: the view's chunks and one chunk around them.
+    pub forced: Vec<ChunkPos>,
 }
 
 /// What an operation does.
@@ -324,6 +357,8 @@ pub struct Op {
     pub command: Option<String>,
     /// The player's click of a `use` or `attack` action.
     pub player_use: Option<PlayerUse>,
+    /// The dimension of a block op (`None`: the overworld).
+    pub dimension: Option<String>,
 }
 
 /// A `use` action (`ServerPlayerGameMode.useItemOn` with the stack put into the hand) or an
@@ -446,11 +481,42 @@ impl Scenario {
             .unwrap_or_default();
         let region = v.get("region").ok_or("region is missing")?;
         let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
-        let mut forced = Vec::new();
-        for x in (min.x >> 4) - 1..=(max.x >> 4) + 1 {
-            for z in (min.z >> 4) - 1..=(max.z >> 4) + 1 {
-                forced.push(ChunkPos::new(x, z));
-            }
+        let forced = forced_around(min, max);
+        let dimensions = v
+            .get("dimensions")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let dimension = v
+            .get("dimension")
+            .and_then(Value::as_str)
+            .unwrap_or(OVERWORLD)
+            .to_owned();
+        let views = v
+            .get("views")
+            .and_then(Value::as_array)
+            .map(|views| {
+                views
+                    .iter()
+                    .map(|view| {
+                        let region = view.get("region").ok_or("a view needs a region")?;
+                        let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
+                        Ok(View {
+                            dimension: view
+                                .get("dimension")
+                                .and_then(Value::as_str)
+                                .ok_or("a view needs a dimension")?
+                                .to_owned(),
+                            min,
+                            max,
+                            forced: forced_around(min, max),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if !dimensions && (dimension != OVERWORLD || !views.is_empty()) {
+            return Err("a region in another dimension and views need \"dimensions\"".to_owned());
         }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
@@ -505,6 +571,13 @@ impl Scenario {
                     .get("player_state")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                dimensions,
+                dimension,
+                views,
+                sleep_state: v
+                    .get("sleep_state")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             min,
             max,
@@ -528,6 +601,17 @@ impl Scenario {
                 .unwrap_or(0),
         })
     }
+}
+
+/// The chunks of a region and one chunk around them.
+fn forced_around(min: BlockPos, max: BlockPos) -> Vec<ChunkPos> {
+    let mut forced = Vec::new();
+    for x in (min.x >> 4) - 1..=(max.x >> 4) + 1 {
+        for z in (min.z >> 4) - 1..=(max.z >> 4) + 1 {
+            forced.push(ChunkPos::new(x, z));
+        }
+    }
+    forced
 }
 
 fn pos(v: Option<&Value>) -> Result<BlockPos, String> {
@@ -829,6 +913,10 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .and_then(Value::as_str)
             .ok_or("an op needs a block")?
             .to_owned(),
+        dimension: v
+            .get("dimension")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         ..Op::default()
     })
 }

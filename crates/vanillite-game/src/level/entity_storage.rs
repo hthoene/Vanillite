@@ -23,6 +23,7 @@ use vanillite_world::entity::{EntityFlags, EntityId, NewEntity, Rotation};
 
 use super::Level;
 use super::block_entity::{read_block_state, write_block_state};
+use crate::entities::PERSISTENT_DATA;
 use crate::entities::{FallingBlockData, PrimedTntData};
 use crate::item_entity::ItemData;
 
@@ -120,10 +121,28 @@ impl Level {
         self.load_with_passengers(nbt, &mut loaded, false).is_some()
     }
 
+    /// `teleportCrossDimension` into this level of an entity saved in another one, without its
+    /// passengers: `EntityType.create` (a new entity: its random takes the next entity seed)
+    /// and `restoreFrom` the stored data. Returns the new entity.
+    pub fn load_travelled_entity(&mut self, nbt: Compound) -> Option<EntityId> {
+        let uuid = uuid_of(&nbt, "UUID")?;
+        self.next_entity_seed = Some(crate::mob::new_entity_seed());
+        let loaded = self.load_entity(nbt);
+        self.next_entity_seed = None;
+        if !loaded {
+            return None;
+        }
+        let columns = self.entities.store.columns();
+        let row = columns.uuid.iter().rposition(|&u| u == uuid)?;
+        columns.id.get(row).copied()
+    }
+
     /// `EntityType.create` of a stored entity: `None` for kinds the game does not model,
     /// `Some(None)` for data that makes no entity (leash knots, empty items).
     fn create_entity(&mut self, nbt: Compound) -> Option<Option<EntityId>> {
-        let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
+        let seed = self.next_entity_seed.take().unwrap_or_else(|| {
+            uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time()
+        });
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
             let id = crate::mob::spawn(
@@ -385,10 +404,15 @@ impl Level {
                 .collect(),
             _ => Vec::new(),
         };
+        let persistent = match nbt.get(PERSISTENT_DATA) {
+            Some(Tag::Compound(c)) => Some(c.clone()),
+            _ => None,
+        };
         let Some(vehicle) = self.create_entity(nbt)? else {
             return Some(None);
         };
         self.entities.set_tags(vehicle, tags);
+        self.entities.set_persistent_data(vehicle, persistent);
         loaded.push(vehicle);
         for tag in passengers {
             let Tag::Compound(c) = tag else {
@@ -548,6 +572,12 @@ impl Level {
                 "Tags",
                 List(tags.iter().map(|t| Tag::String(t.clone())).collect()),
             );
+        }
+        match self.entities.persistent_data(id) {
+            Some(data) => nbt.insert(PERSISTENT_DATA, data.clone()),
+            None => {
+                nbt.remove(PERSISTENT_DATA);
+            }
         }
         Some(nbt)
     }

@@ -174,6 +174,7 @@ pub struct DamageTypes {
     pub falling_block: DamageKind,
     pub falling_anvil: DamageKind,
     pub falling_stalactite: DamageKind,
+    pub bad_respawn_point: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -281,6 +282,7 @@ impl DamageTypes {
             falling_block: find("minecraft:falling_block"),
             falling_anvil: find("minecraft:falling_anvil"),
             falling_stalactite: find("minecraft:falling_stalactite"),
+            bad_respawn_point: find("minecraft:bad_respawn_point"),
             types,
         }
     }

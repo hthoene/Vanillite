@@ -72,6 +72,9 @@ pub struct PrimedTntData {
     pub explosion_power: f32,
 }
 
+/// The key of the plugins' persistent data in an entity's NBT (Paper's `BukkitValues`).
+pub const PERSISTENT_DATA: &str = "BukkitValues";
+
 /// All entities of a world. Kinds without own data yet only live in the core store.
 #[derive(Debug, Default)]
 pub struct Entities {
@@ -93,6 +96,9 @@ pub struct Entities {
     pub primed_tnts: Dense<PrimedTntData>,
     /// Entity tags (`Entity.tags`) of the entities that have any.
     tags: std::collections::HashMap<EntityId, Vec<String>>,
+    /// Plugins' persistent data (`BukkitValues`, as Paper saves it) of the entities that have
+    /// any.
+    persistent: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
     /// Area effect cloud kind data.
     pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
@@ -486,6 +492,31 @@ impl Entities {
         }
     }
 
+    /// The plugins' persistent data of an entity (`BukkitValues`), if it has any.
+    pub fn persistent_data(&self, id: EntityId) -> Option<&vanillite_nbt::Compound> {
+        self.persistent.get(&id).filter(|d| !d.is_empty())
+    }
+
+    /// The plugins' persistent data of a live entity, for changing (created empty).
+    pub fn persistent_data_mut(&mut self, id: EntityId) -> Option<&mut vanillite_nbt::Compound> {
+        if !self.store.contains(id) {
+            return None;
+        }
+        Some(self.persistent.entry(id).or_default())
+    }
+
+    /// Replaces the plugins' persistent data of an entity (loading, travelling).
+    pub fn set_persistent_data(&mut self, id: EntityId, data: Option<vanillite_nbt::Compound>) {
+        match data.filter(|d| !d.is_empty()) {
+            Some(data) if self.store.contains(id) => {
+                self.persistent.insert(id, data);
+            }
+            _ => {
+                self.persistent.remove(&id);
+            }
+        }
+    }
+
     /// `addTag`: false when the entity has it or already has 1024 tags.
     pub fn add_tag(&mut self, id: EntityId, tag: &str) -> bool {
         if !self.store.contains(id) {
@@ -622,6 +653,7 @@ impl Entities {
             self.portals.remove(&id);
         }
         self.tags.remove(&id);
+        self.persistent.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
             if removed.kind == ids::ENDER_DRAGON {
@@ -648,6 +680,7 @@ impl Entities {
         self.unlink(id);
         let removed = self.store.despawn(id)?;
         self.tags.remove(&id);
+        self.persistent.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
         }

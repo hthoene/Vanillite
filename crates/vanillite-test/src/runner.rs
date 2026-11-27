@@ -26,24 +26,40 @@ pub fn record(
 ) -> Result<Trace, String> {
     let mut world = factory(&scenario.world, execution);
     for op in &scenario.setup {
-        apply(world.as_mut(), op, false)?;
+        apply_in(world.as_mut(), scenario, op, false)?;
     }
     world.add_entities(&scenario.entities, scenario.entity_seed)?;
     let mut trace = Trace::new(scenario.min, scenario.max);
-    observe(world.as_mut(), &mut trace, 0, scenario.world.observe_light);
+    observe(world.as_mut(), scenario, &mut trace, 0)?;
     for tick in 1..=scenario.ticks {
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
-            apply(world.as_mut(), op, true)?;
+            apply_in(world.as_mut(), scenario, op, true)?;
         }
         world.step();
-        observe(
-            world.as_mut(),
-            &mut trace,
-            tick,
-            scenario.world.observe_light,
-        );
+        observe(world.as_mut(), scenario, &mut trace, tick)?;
     }
     Ok(trace)
+}
+
+/// [`apply`] in the op's dimension (default the overworld); the region's dimension stays
+/// selected.
+fn apply_in(
+    world: &mut dyn ScenarioWorld,
+    scenario: &Scenario,
+    op: &crate::scenario::Op,
+    action: bool,
+) -> Result<(), String> {
+    let dimension = op
+        .dimension
+        .as_deref()
+        .unwrap_or(crate::scenario::OVERWORLD);
+    if dimension == scenario.world.dimension {
+        return apply(world, op, action);
+    }
+    world.select_dimension(dimension)?;
+    let applied = apply(world, op, action);
+    world.select_dimension(&scenario.world.dimension)?;
+    applied
 }
 
 fn apply(
@@ -106,7 +122,13 @@ fn apply(
     Ok(())
 }
 
-fn observe(world: &mut dyn ScenarioWorld, trace: &mut Trace, tick: u32, light: bool) {
+fn observe(
+    world: &mut dyn ScenarioWorld,
+    scenario: &Scenario,
+    trace: &mut Trace,
+    tick: u32,
+) -> Result<(), String> {
+    let light = scenario.world.observe_light;
     let volume: usize = trace.size().iter().product();
     let mut frame = Frame {
         tick,
@@ -129,7 +151,15 @@ fn observe(world: &mut dyn ScenarioWorld, trace: &mut Trace, tick: u32, light: b
         world.light(trace.min, trace.max, &mut frame.light);
     }
     frame.level_rng = world.level_rng();
+    for view in &scenario.world.views {
+        world.select_dimension(&view.dimension)?;
+        world.entities(view.min, view.max, &mut frame.entities);
+    }
+    if !scenario.world.views.is_empty() {
+        world.select_dimension(&scenario.world.dimension)?;
+    }
     trace.frames.push(frame);
+    Ok(())
 }
 
 /// Path of the Vanilla golden of a scenario (repository or bulk tier).

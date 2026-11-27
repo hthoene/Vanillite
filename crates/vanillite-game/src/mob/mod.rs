@@ -939,6 +939,7 @@ impl WorldAction {
                         wind_sound: Some(b.sound),
                         resistance: crate::level::explosion::BlockResistance::WindCharge,
                         fire: false,
+                        bad_respawn_point: false,
                     },
                 );
             }

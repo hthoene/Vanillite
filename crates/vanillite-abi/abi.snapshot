@@ -1,4 +1,4 @@
-abi 1.2
+abi 1.4
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -17,6 +17,7 @@ type PermissionFn = unsafeextern"C"fn(user:*mutc_void,player:Uuid,node:Str,out:*
 type GeneratorCreateFn = unsafeextern"C"fn(user:*mutc_void,world:*constWorldInfo,instance:*mut*mutc_void,)->Status
 type GeneratorRunFn = unsafeextern"C"fn(instance:*mutc_void,chunks:*constGenChunk,count:usize,stride:usize,)->Status
 type GeneratorDestroyFn = unsafeextern"C"fn(instance:*mutc_void)
+type TextSetFn = unsafeextern"C"fn(state:*mutc_void,text:Str,format:u32)
 const status::OK: Status = 0
 const status::ERROR: Status = 1
 const status::UNSUPPORTED: Status = 2
@@ -43,6 +44,16 @@ const event::PLAYERS_MOVED: u32 = 5
 const event::ENTITY_DAMAGE: u32 = 6
 const event::BLOCK_BREAK: u32 = 7
 const event::BLOCK_PLACE: u32 = 8
+const event::PLAYER_BED_ENTER: u32 = 9
+const event::PLAYER_BED_LEAVE: u32 = 10
+const event::PLAYER_SPAWN_CHANGE: u32 = 11
+const event::PLAYER_LOGIN: u32 = 12
+const event::PLAYER_DEATH: u32 = 13
+const event::ENTITY_DEATH: u32 = 14
+const event::PLAYER_RESPAWN: u32 = 15
+const event::PLAYER_CHANGE_WORLD: u32 = 16
+const event::PLAYER_GAME_MODE_CHANGE: u32 = 17
+const event::PLAYER_INTERACT: u32 = 18
 const priority::LOWEST: i32 = -200
 const priority::LOW: i32 = -100
 const priority::NORMAL: i32 = 0
@@ -76,6 +87,32 @@ const limits::ROOT: u32 = 4294967295
 const limits::NO_WORLD: u32 = 4294967295
 const limits::NO_BLOCK: u32 = 4294967295
 const limits::MAX_BOX_VOLUME: u32 = 16777216
+const login_reason::ALLOWED: u32 = 0
+const login_reason::BANNED: u32 = 1
+const login_reason::NOT_WHITELISTED: u32 = 2
+const login_reason::FULL: u32 = 3
+const login_reason::PLUGIN: u32 = 4
+const interact::USE_ON_BLOCK: u32 = 0
+const interact::USE_ITEM: u32 = 1
+const hand::MAIN: u32 = 0
+const hand::OFF: u32 = 1
+const game_mode::SURVIVAL: u32 = 0
+const game_mode::CREATIVE: u32 = 1
+const game_mode::ADVENTURE: u32 = 2
+const game_mode::SPECTATOR: u32 = 3
+const data_type::BYTE: u32 = 1
+const data_type::SHORT: u32 = 2
+const data_type::INT: u32 = 3
+const data_type::LONG: u32 = 4
+const data_type::FLOAT: u32 = 5
+const data_type::DOUBLE: u32 = 6
+const data_type::BYTE_ARRAY: u32 = 7
+const data_type::STRING: u32 = 8
+const data_type::INT_ARRAY: u32 = 11
+const data_type::LONG_ARRAY: u32 = 12
+const data_limits::MAX_VALUE: u32 = 65536
+const data_limits::MAX_KEYS: u32 = 256
+const data_limits::MAX_KEY: u32 = 256
 const set_mode::UPDATE: u32 = 0
 const set_mode::NO_PHYSICS: u32 = 1
 struct Str size=16 align=8
@@ -156,6 +193,64 @@ struct BlockEvent size=64 align=8
   player: Uuid @16
   pos: BlockPos @32
   state: Str @48
+struct TextOut size=24 align=8
+  size: u32 @0
+  state: *mutc_void @8
+  set: TextSetFn @16
+struct LoginEvent size=96 align=8
+  header: EventHeader @0
+  player: Uuid @16
+  name: Str @32
+  address: Str @48
+  reason: u32 @64
+  message: Str @72
+  message_out: *constTextOut @88
+struct PlayerDeathEvent size=96 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  damage_type: Str @32
+  killer: Uuid @48
+  message: Str @64
+  message_out: *constTextOut @80
+  keep_inventory: u32 @88
+struct EntityDeathEvent size=80 align=8
+  header: EventHeader @0
+  world: u32 @12
+  entity: Uuid @16
+  entity_type: Str @32
+  damage_type: Str @48
+  killer: Uuid @64
+struct PlayerWorldEvent size=64 align=8
+  header: EventHeader @0
+  player: Uuid @16
+  from: u32 @32
+  world: u32 @36
+  pos: Vec3 @40
+struct GameModeEvent size=40 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  from: u32 @32
+  to: u32 @36
+struct InteractEvent size=88 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  action: u32 @32
+  hand: u32 @36
+  item: Str @40
+  pos: BlockPos @56
+  face: u32 @68
+  state: Str @72
+struct TitleSpec size=56 align=8
+  size: u32 @0
+  title: Str @8
+  subtitle: Str @24
+  format: u32 @40
+  fade_in: i32 @44
+  stay: i32 @48
+  fade_out: i32 @52
 struct Owner size=40 align=8
   kind: u32 @0
   world: u32 @4
@@ -242,7 +337,7 @@ struct ChunkGeneratorProvider size=40 align=8
   create: GeneratorCreateFn @16
   generate: GeneratorRunFn @24
   destroy: GeneratorDestroyFn @32
-struct HostApi size=280 align=8
+struct HostApi size=328 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -280,3 +375,9 @@ struct HostApi size=280 align=8
   block_set_id: unsafeextern"C"fn(*mutContext,u32,BlockPos,u32,u32)->Status @256
   blocks_get: unsafeextern"C"fn(*mutContext,u32,*constBlockBox,*mutu32,usize)->Status @264
   blocks_set: unsafeextern"C"fn(*mutContext,u32,*constBlockBox,*constu32,usize,u32,*mutusize,)->Status @272
+  player_send_action_bar: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @280
+  player_send_title: unsafeextern"C"fn(PluginId,Uuid,*constTitleSpec)->Status @288
+  entity_data_get: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*mutu32,*constByteSink,)->Status @296
+  entity_data_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,u32,Bytes)->Status @304
+  entity_data_remove: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @312
+  entity_data_keys: unsafeextern"C"fn(*mutContext,u32,Uuid,*constByteSink)->Status @320

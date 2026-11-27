@@ -726,30 +726,6 @@ impl WorldSurvival {
     }
 }
 
-/// `ServerPlayer.findRespawnAndUseSpawnBlock` for a respawn position without a bed or anchor:
-/// a forced one where the block and the one above are free (`isPossibleToRespawnInThis`).
-pub(crate) fn forced_respawn(
-    chunks: &Chunks,
-    respawn: &player::RespawnConfig,
-) -> Option<(Vec3, f32, f32)> {
-    let free = |pos: BlockPos| {
-        let state = chunks.block(pos).map_or(BlockState::AIR, BlockState);
-        !vanillite_game::block::is_solid(state) && !vanillite_game::block::is_liquid(state)
-    };
-    let pos = respawn.pos;
-    (respawn.forced && free(pos) && free(pos.offset(0, 1, 0))).then(|| {
-        (
-            Vec3::new(
-                f64::from(pos.x) + 0.5,
-                f64::from(pos.y) + 0.1,
-                f64::from(pos.z) + 0.5,
-            ),
-            respawn.yaw,
-            respawn.pitch,
-        )
-    })
-}
-
 /// Effects of a command, delivered by looking at all players of the world.
 /// `random` is the level random.
 fn deliver_simple(

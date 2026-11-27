@@ -62,6 +62,15 @@ enum Kind {
     Pregen,
     /// `save-all flush` after bots flew through new terrain.
     Save,
+    /// Small container: a CPU quota in percent of one core and a memory limit in MiB; idle
+    /// RSS, then one bot through the steps with the movement checks on.
+    Weak {
+        cpu_percent: u32,
+        memory_mib: u32,
+        steps: &'static [Step],
+        settle: u64,
+        hold: u64,
+    },
 }
 
 struct Scenario {
@@ -195,6 +204,23 @@ const SCENARIOS: &[Scenario] = &[
         servers: &["vanillite", "paper"],
         headline: ("chunks generated per second", "chunks/s", Better::Higher),
         kind: Kind::Pregen,
+    },
+    Scenario {
+        name: "weak",
+        title: "Weak hardware: 1 core, 1 GiB",
+        what: "Vanillite in a cgroup with a CPU quota of one core and a memory limit of \
+               1 GiB, like a small Pterodactyl server: idle RSS, then one player walks \
+               (sprint speed) and flies (10 blocks/s) straight through new terrain with the \
+               movement checks on. Rubber-banding: server teleports of the bot.",
+        servers: &["vanillite"],
+        headline: ("MSPT max with one moving player", "ms", Better::Lower),
+        kind: Kind::Weak {
+            cpu_percent: 100,
+            memory_mib: 1024,
+            steps: &[(1, "straight:sprint", None), (1, "straight:10", None)],
+            settle: 5,
+            hold: 60,
+        },
     },
     Scenario {
         name: "proxy",
@@ -561,7 +587,83 @@ fn run_one(ctx: &mut Ctx, scenario: &Scenario, server: &str) -> Result<Value> {
         Kind::Built { setup, cycle } => built(ctx, server, target, *setup, *cycle),
         Kind::Pregen => pregen(ctx, target),
         Kind::Save => save(ctx, server, target),
+        Kind::Weak {
+            cpu_percent,
+            memory_mib,
+            steps,
+            settle,
+            hold,
+        } => weak(
+            ctx,
+            server,
+            target,
+            (*cpu_percent, *memory_mib),
+            steps,
+            *settle,
+            *hold,
+        ),
     }
+}
+
+/// [`Kind::Weak`]: the limits apply from the start; `reset` drops them again.
+fn weak(
+    ctx: &mut Ctx,
+    server: &str,
+    target: Target,
+    (cpu_percent, memory_mib): (u32, u32),
+    steps: &[Step],
+    settle: u64,
+    hold: u64,
+) -> Result<Value> {
+    bench_cmd(&ctx.host, &["reset", target.name()])?;
+    bench_cmd(
+        &ctx.host,
+        &[
+            "limit",
+            target.name(),
+            &cpu_percent.to_string(),
+            &memory_mib.to_string(),
+        ],
+    )?;
+    let result = (|| {
+        let started = bench_json(&ctx.host, &["start", target.name()])?;
+        if let Some(v) = started["version"].as_str() {
+            ctx.versions.insert(server.to_owned(), v.to_owned());
+        }
+        std::thread::sleep(Duration::from_secs(15));
+        let idle = bench_json(&ctx.host, &["idle", target.name(), "30"])?;
+        let mut o = options(steps, settle, hold);
+        o.join_rate = 1.0;
+        let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+        let measured = loadtest::ramp(&o, &mut session);
+        session.close();
+        let measured = measured?;
+        let max_mspt = measured
+            .iter()
+            .filter_map(|s| s["mspt"]["max"].as_f64())
+            .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))));
+        let teleports: u64 = measured
+            .iter()
+            .filter_map(|s| s["bots"]["teleports"].as_u64())
+            .sum();
+        let mut result = json!({
+            "cpu_quota_percent": cpu_percent,
+            "memory_limit_mib": memory_mib,
+            "start_s": started["ready_s"],
+            "idle_rss_mib": idle["rss_mib"],
+            "idle_cpu_percent": idle["cpu_percent"],
+            "max_mspt": round(max_mspt),
+            "teleports": teleports,
+            "steps": measured.iter().map(compact_step).collect::<Vec<_>>(),
+        });
+        if measured.len() < o.steps.len() {
+            result["status"] = json!("failed");
+            result["note"] = json!("the bot did not stay online");
+        }
+        Ok(result)
+    })();
+    let _ = bench_cmd(&ctx.host, &["reset", target.name()]);
+    result
 }
 
 /// Fresh world, then start; records the version. With a proxy target the backend is
@@ -985,6 +1087,7 @@ fn headline(scenario: &Scenario, r: &Value) -> Value {
     match scenario.name {
         "startup" => r["idle_rss_mib"].clone(),
         "save" => r["save_s"].clone(),
+        "weak" => r["max_mspt"].clone(),
         "pregen" => r["chunks_per_s"].clone(),
         "proxy" => step(500).map_or(Value::Null, |s| s["cpu_percent"].clone()),
         "flight" => step(100).map_or(Value::Null, |s| s["near_missing_percent"].clone()),
@@ -1427,6 +1530,26 @@ fn metrics_of(name: &str) -> Vec<Metric> {
             Better::Lower,
             |r| r["flight_mspt_p95"].clone(),
         )],
+        "weak" => vec![
+            m("idle_rss_mib", "idle RSS", "MiB", Better::Lower, |r| {
+                r["idle_rss_mib"].clone()
+            }),
+            m(
+                "player_rss_mib",
+                "RSS with one player",
+                "MiB",
+                Better::Lower,
+                |r| {
+                    r["steps"]
+                        .as_array()
+                        .and_then(|s| s.last())
+                        .map_or(Value::Null, |s| s["rss_mib"].clone())
+                },
+            ),
+            m("teleports", "server teleports", "", Better::Lower, |r| {
+                r["teleports"].clone()
+            }),
+        ],
         "redstone" | "mobs" | "items" | "hoppers" | "tnt" | "fluids" | "light" => vec![
             m("mspt_p95", "MSPT p95", "ms", Better::Lower, |r| {
                 r["mspt"]["p95"].clone()
@@ -1967,6 +2090,52 @@ fn details(name: &str, sc: &Value) -> String {
                             .as_str()
                             .map_or("–".to_owned(), |m| format!("`{m}`")),
                     ]
+                })
+                .collect(),
+        ),
+        "weak" => table(
+            &[
+                "Server",
+                "Limits",
+                "Start s",
+                "Idle RSS MiB",
+                "Movement",
+                "MSPT p50",
+                "MSPT p99",
+                "MSPT max",
+                "RSS MiB",
+                "Teleports",
+            ],
+            servers
+                .iter()
+                .flat_map(|id| {
+                    let r = &sc["results"][*id];
+                    let head = vec![
+                        format!("{}{}", display(id), status(r)),
+                        format!(
+                            "{} % CPU, {} MiB",
+                            num(&r["cpu_quota_percent"]),
+                            num(&r["memory_limit_mib"])
+                        ),
+                        num(&r["start_s"]),
+                        num(&r["idle_rss_mib"]),
+                    ];
+                    let steps = r["steps"].as_array().cloned().unwrap_or_default();
+                    steps
+                        .iter()
+                        .map(|st| {
+                            let mut row = head.clone();
+                            row.extend([
+                                st["movement"].as_str().unwrap_or("–").to_owned(),
+                                num(&st["mspt"]["p50"]),
+                                num(&st["mspt"]["p99"]),
+                                num(&st["mspt"]["max"]),
+                                num(&st["rss_mib"]),
+                                num(&st["teleports"]),
+                            ]);
+                            row
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .collect(),
         ),
