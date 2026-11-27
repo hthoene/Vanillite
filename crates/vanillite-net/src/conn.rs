@@ -170,6 +170,8 @@ async fn injected_ready(injected: Option<&Injected>) {
 /// A connection the client drops this soon after joining logs the last packets it was sent:
 /// the client most likely failed on one of them.
 const EARLY_DROP: Duration = Duration::from_secs(10);
+/// Packets named when a client closes the connection later (one log line at info).
+const LAST_PACKETS_ON_CLOSE: usize = 24;
 
 impl Conn {
     pub(crate) fn tcp(
@@ -302,6 +304,15 @@ impl Conn {
                 self.addr,
                 at.elapsed().as_secs_f32(),
                 self.out.sent_log().dump()
+            ),
+            // A client that leaves closes the connection the same way as one that failed on
+            // a packet ("Network Protocol Error"), so every close in play names the packets
+            // the client got last; a failing one is among them (#243).
+            Some((at, name)) if matches!(end, End::Closed(_)) => log::info!(
+                "{name} ({}) dropped {:.0}s after joining: {why}; last packets sent: {}",
+                self.addr,
+                at.elapsed().as_secs_f32(),
+                self.out.sent_log().dump_last(LAST_PACKETS_ON_CLOSE)
             ),
             _ if log::log_enabled!(log::Level::Debug) && !matches!(end, End::Closed(None)) => {
                 log::debug!(
