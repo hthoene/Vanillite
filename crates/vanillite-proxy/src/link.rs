@@ -133,10 +133,15 @@ impl Tx {
     pub(crate) fn body(&mut self, body: &[u8]) -> vanillite_protocol::Result<()> {
         match self.adapter.as_mut() {
             None => self.encoder.body(body, &mut self.out),
-            Some(adapter) => match adapter.translate(body)? {
-                Some(t) => self.encoder.body(t, &mut self.out),
-                None => Ok(()),
-            },
+            Some(adapter) => {
+                if let Some(t) = adapter.translate(body)? {
+                    self.encoder.body(t, &mut self.out)?;
+                }
+                while let Some(t) = adapter.pending() {
+                    self.encoder.body(t, &mut self.out)?;
+                }
+                Ok(())
+            }
         }
     }
 

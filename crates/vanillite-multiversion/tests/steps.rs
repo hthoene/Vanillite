@@ -546,3 +546,332 @@ fn player_entity_data() {
         assert_eq!(got, want, "player entity data for {dir}");
     }
 }
+
+/// Every older version, newest first.
+const ALL: [&str; 11] = [
+    "26.2", "26.1.2", "1.21.11", "1.21.10", "1.21.8", "1.21.6", "1.21.5", "1.21.4", "1.21.3",
+    "1.21.1", "1.20.6",
+];
+
+/// `minecraft:slot_display` id of `name` in a version (26.1 added three types).
+fn slot(protocol: i32, name: &str) -> Vec<u8> {
+    let new = [
+        "empty",
+        "any_fuel",
+        "with_any_potion",
+        "only_with_component",
+        "item",
+        "item_stack",
+        "tag",
+        "dyed",
+        "smithing_trim",
+        "with_remainder",
+        "composite",
+    ];
+    let old = [
+        "empty",
+        "any_fuel",
+        "item",
+        "item_stack",
+        "tag",
+        "smithing_trim",
+        "with_remainder",
+        "composite",
+    ];
+    let list: &[&str] = if protocol >= 775 { &new } else { &old };
+    varint(list.iter().position(|n| *n == name).unwrap() as i32)
+}
+
+/// An item stack of `count` without components: a template from 26.1 on, a stack before.
+fn stack(protocol: i32, item: i32, count: i32) -> Vec<u8> {
+    if protocol >= 775 {
+        [varint(item), varint(count), vec![0, 0]].concat()
+    } else {
+        [varint(count), varint(item), vec![0, 0]].concat()
+    }
+}
+
+/// The server's recipe book: one shaped recipe (display 7) of planks (a tag as a direct item
+/// list) over a stick, made at a crafting table, giving four sticks.
+fn new_book_display(ids: &Ids) -> Vec<u8> {
+    let item = |n: &str| varint(ids.new_id("minecraft:item", n));
+    [
+        varint(1),
+        varint(1),
+        varint(2),
+        varint(2),
+        varint(6),
+        varint(2),
+        item("oak_planks"),
+        varint(4),
+        item("stick"),
+        varint(5),
+        item("stick"),
+        varint(4),
+        vec![0, 0],
+        varint(4),
+        item("crafting_table"),
+    ]
+    .concat()
+}
+
+fn new_book(ids: &Ids) -> Vec<u8> {
+    let category = varint(ids.new_id("minecraft:recipe_book_category", "crafting_misc"));
+    [
+        varint(1),
+        varint(7),
+        new_book_display(ids),
+        varint(0),
+        category,
+        vec![0, 3, 1],
+    ]
+    .concat()
+}
+
+/// Recipe book entries reach every older version: from 1.21.2 on as displays with the older
+/// item ids and slot display types (tags as item lists), before as full recipes named after
+/// the display and unlocked with `recipe`; ghost recipes and recipe placement name them.
+#[test]
+fn recipe_book_down_every_step() {
+    for dir in ALL {
+        let ids = Ids::load(dir);
+        let p = ids.protocol;
+        let (mut s, mut c) = ids.halves();
+        let item = |n: &str| ids.old_id("minecraft:item", n);
+        let got = cb(&mut c, &ids.new_cb("recipe_book_add", &new_book(&ids)));
+        if p >= 768 {
+            let display = [
+                varint(1),
+                varint(1),
+                varint(2),
+                varint(2),
+                slot(p, "composite"),
+                varint(1),
+                slot(p, "item"),
+                varint(item("oak_planks")),
+                slot(p, "item"),
+                varint(item("stick")),
+                slot(p, "item_stack"),
+                stack(p, item("stick"), 4),
+                slot(p, "item"),
+                varint(item("crafting_table")),
+            ]
+            .concat();
+            let category = ids.old_id("minecraft:recipe_book_category", "crafting_misc");
+            let want = [
+                varint(1),
+                varint(7),
+                display.clone(),
+                varint(0),
+                varint(category),
+                vec![0, 3, 1],
+            ]
+            .concat();
+            assert_eq!(got, Some(ids.old_cb("recipe_book_add", &want)), "{dir}");
+            assert_eq!(c.pending(), None, "{dir}");
+            let ghost = cb(
+                &mut c,
+                &ids.new_cb(
+                    "place_ghost_recipe",
+                    &[varint(1), new_book_display(&ids)].concat(),
+                ),
+            );
+            assert_eq!(
+                ghost,
+                Some(ids.old_cb("place_ghost_recipe", &[varint(1), display].concat())),
+                "{dir}"
+            );
+            continue;
+        }
+        let one = |i: i32| [varint(1), varint(1), varint(i), vec![0, 0]].concat();
+        let mut recipes = varint(1);
+        write_str(&mut recipes, "vanillite:book/7");
+        recipes.extend(varint(0));
+        write_str(&mut recipes, "");
+        recipes.extend([varint(3), varint(1), varint(2)].concat());
+        recipes.extend(one(item("oak_planks")));
+        recipes.extend(one(item("stick")));
+        recipes.extend([varint(4), varint(item("stick")), vec![0, 0, 1]].concat());
+        assert_eq!(got, Some(ids.old_cb("update_recipes", &recipes)), "{dir}");
+        let mut unlock = varint(0);
+        unlock.extend([0; 8]);
+        for _ in 0..2 {
+            unlock.extend(varint(1));
+            write_str(&mut unlock, "vanillite:book/7");
+        }
+        assert_eq!(
+            c.pending().map(<[u8]>::to_vec),
+            Some(ids.old_cb("recipe", &unlock)),
+            "{dir}"
+        );
+        assert_eq!(c.pending(), None, "{dir}");
+        let ghost = cb(
+            &mut c,
+            &ids.new_cb(
+                "place_ghost_recipe",
+                &[varint(1), new_book_display(&ids)].concat(),
+            ),
+        );
+        let mut want = vec![1];
+        write_str(&mut want, "vanillite:book/7");
+        assert_eq!(
+            ghost,
+            Some(ids.old_cb("place_ghost_recipe", &want)),
+            "{dir}"
+        );
+        let mut place = vec![1];
+        write_str(&mut place, "vanillite:book/7");
+        place.push(1);
+        assert_eq!(
+            sb(&mut s, &ids.old_sb("place_recipe", &place)),
+            Some(ids.new_sb("place_recipe", &[1, 7, 1])),
+            "{dir}"
+        );
+    }
+}
+
+/// Stonecutter recipes and recipe item sets reach every older version.
+#[test]
+fn stonecutter_recipes_down_every_step() {
+    for dir in ALL {
+        let ids = Ids::load(dir);
+        let p = ids.protocol;
+        let (_, mut c) = ids.halves();
+        let new = |n: &str| varint(ids.new_id("minecraft:item", n));
+        let old = |n: &str| ids.old_id("minecraft:item", n);
+        let mut fields = varint(1);
+        write_str(&mut fields, "minecraft:furnace_input");
+        fields.extend([varint(1), new("stone")].concat());
+        fields.extend([varint(1), varint(2), new("stone")].concat());
+        fields.extend([varint(5), new("stone_slab"), varint(2), vec![0, 0]].concat());
+        let got = cb(&mut c, &ids.new_cb("update_recipes", &fields));
+        let want = if p >= 768 {
+            let mut w = varint(1);
+            write_str(&mut w, "minecraft:furnace_input");
+            w.extend([varint(1), varint(old("stone"))].concat());
+            w.extend([varint(1), varint(2), varint(old("stone"))].concat());
+            w.extend([slot(p, "item_stack"), stack(p, old("stone_slab"), 2)].concat());
+            w
+        } else {
+            let mut w = varint(1);
+            write_str(&mut w, "vanillite:stonecutter/0");
+            w.extend(varint(19));
+            write_str(&mut w, "");
+            w.extend([varint(1), varint(1), varint(old("stone")), vec![0, 0]].concat());
+            w.extend([varint(2), varint(old("stone_slab")), vec![0, 0]].concat());
+            w
+        };
+        assert_eq!(got, Some(ids.old_cb("update_recipes", &want)), "{dir}");
+    }
+}
+
+/// Advancements reach every older version: the position back in the display, the icon a
+/// stack before 26.1, no screen flag before 1.21.5.
+#[test]
+fn advancements_down_every_step() {
+    let title = [8u8, 0, 1, b'a'];
+    for dir in ALL {
+        let ids = Ids::load(dir);
+        let p = ids.protocol;
+        let (_, mut c) = ids.halves();
+        let pos = [1.0f32.to_be_bytes(), 2.0f32.to_be_bytes()].concat();
+        let mut new = vec![1];
+        new.extend(varint(1));
+        write_str(&mut new, "minecraft:story/root");
+        new.extend([0, 1]);
+        new.extend([title, title].concat());
+        new.extend(stack(775, ids.new_id("minecraft:item", "stick"), 1));
+        new.extend(varint(0));
+        new.extend(2i32.to_be_bytes());
+        new.extend([varint(0), vec![0]].concat());
+        new.extend(&pos);
+        new.extend([varint(0), varint(0), vec![1]].concat());
+        let got = cb(&mut c, &ids.new_cb("update_advancements", &new));
+        let mut want = vec![1];
+        want.extend(varint(1));
+        write_str(&mut want, "minecraft:story/root");
+        want.extend([0, 1]);
+        want.extend([title, title].concat());
+        want.extend(stack(p, ids.old_id("minecraft:item", "stick"), 1));
+        want.extend(varint(0));
+        want.extend(2i32.to_be_bytes());
+        want.extend(&pos);
+        want.extend([varint(0), vec![0]].concat());
+        want.extend([varint(0), varint(0)].concat());
+        if p >= 770 {
+            want.push(1);
+        }
+        assert_eq!(got, Some(ids.old_cb("update_advancements", &want)), "{dir}");
+    }
+}
+
+/// Shulker box contents and written books reach every older version (stack templates from
+/// 26.1 on, stacks before).
+#[test]
+fn container_and_book_items_down_every_step() {
+    let mut book = Vec::new();
+    write_str(&mut book, "t");
+    book.push(0);
+    write_str(&mut book, "a");
+    book.extend([0, 1, 8, 0, 1, b'p', 0, 1]);
+    for dir in ALL {
+        let ids = Ids::load(dir);
+        let p = ids.protocol;
+        let (_, mut c) = ids.halves();
+        let component = |new: bool, name: &str| {
+            varint(if new {
+                ids.new_id("minecraft:data_component_type", name)
+            } else {
+                ids.old_id("minecraft:data_component_type", name)
+            })
+        };
+        let item = |new: bool, name: &str| {
+            if new {
+                ids.new_id("minecraft:item", name)
+            } else {
+                ids.old_id("minecraft:item", name)
+            }
+        };
+        let slot = |new: bool, stack: Vec<u8>| {
+            let fields = [vec![0, 0], 36i16.to_be_bytes().to_vec(), stack].concat();
+            if new {
+                ids.new_cb("container_set_slot", &fields)
+            } else {
+                ids.old_cb("container_set_slot", &fields)
+            }
+        };
+        let shulker = |new: bool| {
+            let pr = if new { 777 } else { p };
+            [
+                varint(1),
+                varint(item(new, "shulker_box")),
+                vec![1, 0],
+                component(new, "container"),
+                vec![1],
+                if pr >= 775 { vec![1] } else { vec![] },
+                stack(pr, item(new, "stick"), 1),
+            ]
+            .concat()
+        };
+        assert_eq!(
+            cb(&mut c, &slot(true, shulker(true))),
+            Some(slot(false, shulker(false))),
+            "container for {dir}"
+        );
+        let written = |new: bool| {
+            [
+                varint(1),
+                varint(item(new, "written_book")),
+                vec![1, 0],
+                component(new, "written_book_content"),
+                book.clone(),
+            ]
+            .concat()
+        };
+        assert_eq!(
+            cb(&mut c, &slot(true, written(true))),
+            Some(slot(false, written(false))),
+            "written book for {dir}"
+        );
+    }
+}

@@ -174,14 +174,26 @@ pub(crate) async fn tcp_writer(
                                 log::debug!("multiversion: untranslatable packet: {e}");
                             }
                         }
+                        while let Some(t) = a.pending() {
+                            if encoder.body(t, &mut buf).is_err() {
+                                open = false;
+                            }
+                        }
                     }
                     body.len()
                 }
                 Out::Shared(p) if adapter.is_some() => {
-                    if let Some(t) = adapter.as_mut().and_then(|a| a.translate_shared(&p))
-                        && encoder.body(t, &mut buf).is_err()
-                    {
-                        open = false;
+                    if let Some(a) = adapter.as_mut() {
+                        if let Some(t) = a.translate_shared(&p)
+                            && encoder.body(t, &mut buf).is_err()
+                        {
+                            open = false;
+                        }
+                        while let Some(t) = a.pending() {
+                            if encoder.body(t, &mut buf).is_err() {
+                                open = false;
+                            }
+                        }
                     }
                     p.body().len()
                 }
@@ -198,6 +210,9 @@ pub(crate) async fn tcp_writer(
                                 Ok(Some(t)) => encoder.body(t, &mut buf)?,
                                 Ok(None) => {}
                                 Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                            }
+                            while let Some(t) = a.pending() {
+                                encoder.body(t, &mut buf)?;
                             }
                         }
                         Ok(true)
@@ -278,17 +293,23 @@ pub(crate) async fn virtual_writer(
     let mut adapter: Option<Box<ClientboundHalf>> = None;
     while let Some(msg) = rx.recv().await {
         record(&sent, sent.now_ms(), &msg);
+        let mut more = Vec::new();
         let (body, queued_len) = match msg {
             Out::Batch(frames, threshold) => {
                 queued.fetch_sub(frames.len(), Ordering::Relaxed);
                 let mut bodies = Vec::new();
                 if for_each_body(&frames, threshold, |body| {
                     match adapter.as_mut() {
-                        Some(a) => match a.translate(body) {
-                            Ok(Some(t)) => bodies.push(t.to_vec()),
-                            Ok(None) => {}
-                            Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
-                        },
+                        Some(a) => {
+                            match a.translate(body) {
+                                Ok(Some(t)) => bodies.push(t.to_vec()),
+                                Ok(None) => {}
+                                Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                            }
+                            while let Some(t) = a.pending() {
+                                bodies.push(t.to_vec());
+                            }
+                        }
                         None => bodies.push(body.to_vec()),
                     }
                     Ok(true)
@@ -307,11 +328,17 @@ pub(crate) async fn virtual_writer(
             Out::Body(b) => match adapter.as_mut() {
                 Some(a) => {
                     let n = b.len();
-                    let t = a.translate(&b).unwrap_or_else(|e| {
-                        log::debug!("multiversion: untranslatable packet: {e}");
-                        None
-                    });
-                    (t.map(<[u8]>::to_vec), n)
+                    let t = a
+                        .translate(&b)
+                        .unwrap_or_else(|e| {
+                            log::debug!("multiversion: untranslatable packet: {e}");
+                            None
+                        })
+                        .map(<[u8]>::to_vec);
+                    while let Some(t) = a.pending() {
+                        more.push(t.to_vec());
+                    }
+                    (t, n)
                 }
                 None => {
                     let n = b.len();
@@ -319,7 +346,13 @@ pub(crate) async fn virtual_writer(
                 }
             },
             Out::Shared(p) => match adapter.as_mut() {
-                Some(a) => (a.translate_shared(&p).map(<[u8]>::to_vec), p.body().len()),
+                Some(a) => {
+                    let t = a.translate_shared(&p).map(<[u8]>::to_vec);
+                    while let Some(t) = a.pending() {
+                        more.push(t.to_vec());
+                    }
+                    (t, p.body().len())
+                }
                 None => (Some(p.body().to_vec()), p.body().len()),
             },
             Out::Adapter(a) => {
@@ -334,6 +367,11 @@ pub(crate) async fn virtual_writer(
             && tx.send(body).await.is_err()
         {
             break;
+        }
+        for body in more {
+            if tx.send(body).await.is_err() {
+                return;
+            }
         }
     }
 }

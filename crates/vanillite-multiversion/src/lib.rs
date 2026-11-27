@@ -31,6 +31,7 @@ pub mod generated;
 mod io;
 mod items;
 mod portable;
+mod recipe;
 mod step;
 pub mod table;
 mod v26_2;
