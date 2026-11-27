@@ -598,8 +598,9 @@ pub fn player_touch(
     else {
         return;
     };
+    // Only mobs react: the players of a crowd are skipped without a look at their boxes.
     let mut cubes = Vec::new();
-    ents.store.for_each_in(&area, false, |id| {
+    ents.store.for_each_non_player_in(&area, |id| {
         if ents
             .mob(id)
             .is_some_and(|m| matches!(m.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube))
