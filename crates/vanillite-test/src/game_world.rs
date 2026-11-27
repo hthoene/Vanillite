@@ -2508,7 +2508,7 @@ impl ScenarioWorld for GameWorld {
             .id(&op.potion)
             .ok_or_else(|| format!("unknown potion {}", op.potion))?;
         let mut stack = vanillite_game::item::ItemStack::new(item, 1);
-        stack.patch_mut().set(
+        stack.set_component(
             vanillite_protocol::components::ids::POTION_CONTENTS,
             PotionContents::of(potion).encode(),
         );

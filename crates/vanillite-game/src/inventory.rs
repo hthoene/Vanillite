@@ -714,7 +714,10 @@ impl MenuSlots for PlayerInventory {
 
     fn may_place(&self, slot: usize, stack: &ItemStack) -> bool {
         match armor_slot(slot) {
-            Some(eq) => item::equipment_slot(stack) == eq,
+            // `ArmorSlot.mayPlace`: `isEquippableInSlot` for the player.
+            Some(eq) => item::equippable(stack).is_some_and(|e| {
+                e.slot == eq && e.can_be_equipped_by(vanillite_data::entity::ids::PLAYER.0)
+            }),
             None => slot != 0,
         }
     }

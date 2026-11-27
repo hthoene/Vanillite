@@ -18,23 +18,13 @@ use crate::survival::player::Env;
 
 /// Whether the stack has the `glider` component (elytras).
 pub fn is_glider(stack: &ItemStack) -> bool {
-    if stack.is_empty() {
-        return false;
-    }
-    let Some(id) = vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:glider") else {
-        return false;
-    };
-    match stack.patch() {
-        Some(p) if p.get(id).is_some() => true,
-        Some(p) if p.is_removed(id) => false,
-        _ => item::item_id(stack).name() == "minecraft:elytra",
-    }
+    item::has_glider(stack)
 }
 
 /// `canGlideUsing(stack, slot)`: a glider worn in its slot that the next damage does not break.
 pub fn can_glide_using(stack: &ItemStack, slot: EquipmentSlot) -> bool {
     is_glider(stack)
-        && item::equipment_slot(stack) == slot
+        && item::equippable_slot(stack) == Some(slot)
         && !(item::is_damageable(stack) && item::damage(stack) >= item::max_damage(stack) - 1)
 }
 
@@ -272,12 +262,8 @@ pub fn update_player_pose(entity: &mut EntityMut<'_>, spin_attack: bool) {
 
 /// The equipment slot a right click puts the stack in (`equippable` with `swappable`).
 pub fn swappable_slot(stack: &ItemStack) -> Option<EquipmentSlot> {
-    if stack.is_empty() {
-        return None;
-    }
-    let info = item::item_id(stack).info();
-    let slot = EquipmentSlot::from_ordinal(info.equip_slot)?;
-    (slot.is_armor() && info.equip_swappable).then_some(slot)
+    let e = item::equippable(stack)?;
+    (e.slot.is_armor() && e.swappable).then_some(e.slot)
 }
 
 /// `Equippable.swapWithEquipmentSlot`: the held item and the worn one change places (a stack

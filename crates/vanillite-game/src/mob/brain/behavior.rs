@@ -1381,7 +1381,7 @@ pub fn swing_for_attack(t: &mut Tick<'_, '_>) {
         } else {
             SWING_WHACK
         };
-        (kind, i32::from(info.attack_animation_ticks))
+        (kind, crate::item::attack_animation_ticks(held))
     };
     send_swing(t, Hand::MainHand, kind, ticks);
 }

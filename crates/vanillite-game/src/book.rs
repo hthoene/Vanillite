@@ -39,9 +39,7 @@ pub fn update_pages(stack: &mut ItemStack, pages: &[String]) {
     for page in pages {
         write_filterable_string(&mut out, page);
     }
-    stack
-        .patch_mut()
-        .set(ids::WRITABLE_BOOK_CONTENT, out.into_boxed_slice());
+    stack.set_component(ids::WRITABLE_BOOK_CONTENT, out.into_boxed_slice());
 }
 
 /// `signBook`: the writable book becomes a written book by `author` with the pages as plain
@@ -192,9 +190,7 @@ pub fn resolve_for_item(
         content.pages = pages;
     }
     content.resolved = true;
-    stack
-        .patch_mut()
-        .set(ids::WRITTEN_BOOK_CONTENT, content.encode());
+    stack.set_component(ids::WRITTEN_BOOK_CONTENT, content.encode());
     ok
 }
 

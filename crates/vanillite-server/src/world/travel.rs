@@ -702,32 +702,11 @@ impl ServerWorld {
             .as_ref()
             .and_then(|r| ctx.global.dimensions.world(&r.dimension))
             .unwrap_or(OVERWORLD);
-        // `remove(KILLED)` → `triggerOnDeathMobEffects`: a dead player's Wind Charged bursts.
-        let wind = !keep_all
-            && player
-                .survival
-                .effects
-                .has(vanillite_game::effect::MobEffect::WIND_CHARGED);
-        if wind && let Some(e) = self.level.entities.store.get(id) {
-            let (pos, height) = (e.pos(), e.dims().height);
-            let (center, radius) = vanillite_game::experience_orb::with_entity_random(|r| {
-                vanillite_game::effect::living::wind_burst(pos, height, r)
-            });
-            self.level.explode_with(
-                Some(id),
-                None,
-                center,
-                radius,
-                vanillite_game::level::explosion::BlockInteraction::TriggerBlock,
-                vanillite_game::level::explosion::ExplosionStyle {
-                    damages_entities: false,
-                    knockback: vanillite_game::effect::living::WIND_CHARGED_KNOCKBACK,
-                    wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
-                    resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
-                    fire: false,
-                    bad_respawn_point: false,
-                },
-            );
+        // `removePlayerImmediately(KILLED)` → `triggerOnDeathMobEffects` of a player that
+        // respawns before `tickDeath` removed it.
+        if !keep_all && !player.survival.removed {
+            let cramming = ctx.global.level.rules().get(Rule::MAX_ENTITY_CRAMMING);
+            vanillite_game::effect::living::player_death_effects(&mut self.level, id, cramming);
         }
         // `Player.remove(KILLED)`: the open menu closes; the carried stack and the crafting grid
         // of the dead player drop (also with keepInventory).

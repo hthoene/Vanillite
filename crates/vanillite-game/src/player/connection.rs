@@ -866,7 +866,9 @@ impl Connection {
                     play.inventory.close(infinite, play.drops);
                 }
             }
-            ServerboundPlay::PickItemFromBlock(p) => self.pick_item_from_block(p.pos, play),
+            ServerboundPlay::PickItemFromBlock(p) => {
+                self.pick_item_from_block(p.pos, p.include_data, play);
+            }
             ServerboundPlay::PickItemFromEntity(p) => {
                 if self.entity_actions.len() < 16 {
                     self.entity_actions.push(EntityAction::PickItem {
@@ -1616,6 +1618,7 @@ impl Connection {
     fn pick_item_from_block(
         &mut self,
         pos: vanillite_protocol::types::BlockPos,
+        include_data: bool,
         play: &mut PlayContext<'_>,
     ) {
         let pos = BlockPos::new(pos.x, pos.y, pos.z);
@@ -1627,8 +1630,14 @@ impl Connection {
         if item == u16::MAX || item == 0 {
             return;
         }
-        let stack = crate::item::ItemStack::new(item, 1);
         let infinite = play.actor.game_mode == vanillite_config::GameMode::Creative;
+        // `includeData` only for players with infinite materials.
+        let stack = match play.level.level() {
+            Some(level) => {
+                crate::level::block_entity::pick_stack(level, pos, item, infinite && include_data)
+            }
+            None => crate::item::ItemStack::new(item, 1),
+        };
         play.inventory.pick_item(stack, infinite);
         let slot = i32::try_from(play.inventory.selected).unwrap_or(0);
         self.sink.send(&SetHeldSlot { slot });

@@ -262,7 +262,7 @@ fn creative_components(
         }
         _ => return None,
     };
-    stack.patch_mut().set(component, v.into_boxed_slice());
+    stack.set_component(component, v.into_boxed_slice());
     Some(())
 }
 
@@ -820,7 +820,7 @@ mod tests {
         let potion_id = |n: &str| vanillite_data::registry::POTION.id(n).unwrap();
         let with = |item: &str, component: u16, value: Vec<u8>| {
             let mut s = ItemStack::new(java(item), 1);
-            s.patch_mut().set(component, value.into_boxed_slice());
+            s.set_component(component, value.into_boxed_slice());
             s
         };
         // potion_contents: present, the potion id, no colour, no effects, no name.

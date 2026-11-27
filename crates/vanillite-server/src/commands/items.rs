@@ -298,15 +298,11 @@ impl ItemInput {
                     // The hover text shows the decoded value, as Vanilla encodes the patch.
                     let shown = components_nbt::to_nbt(type_id, &bytes, &InstalledRegistries)
                         .unwrap_or_else(|_| value.clone());
-                    stack.patch_mut().set(type_id, bytes.into());
+                    stack.set_component(type_id, bytes.into());
                     nbt.insert(component.clone(), shown);
                 }
                 None => {
-                    let patch = stack.patch_mut();
-                    patch.unset(type_id);
-                    if let Err(i) = patch.removed.binary_search(&type_id) {
-                        patch.removed.insert(i, type_id);
-                    }
+                    stack.remove_component(type_id);
                     nbt.insert(format!("!{component}"), Compound::new());
                 }
             }
@@ -978,8 +974,7 @@ pub(crate) fn slot_set(
             e,
             EquipmentSlot::Head | EquipmentSlot::MainHand | EquipmentSlot::OffHand
         );
-        let fits =
-            || EquipmentSlot::from_ordinal(item::item_id(&stack).info().equip_slot) == Some(e);
+        let fits = || item::equippable_slot(&stack) == Some(e);
         if !any && !stack.is_empty() && !fits() {
             return false;
         }
@@ -1479,7 +1474,7 @@ pub(crate) fn enchant(
                 write_varint(&mut bytes, i32::try_from(e).unwrap_or(0));
                 write_varint(&mut bytes, l);
             }
-            stack.patch_mut().set(component, bytes.into());
+            stack.set_component(component, bytes.into());
         }
         if let Some(id) = target.entity {
             sync_inventory(entities, id);

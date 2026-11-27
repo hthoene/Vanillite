@@ -1314,6 +1314,12 @@ fn spawn_offspring(
             child.can_pick_up_loot = m.random.next_float() < 0.55 * special;
         }
     }
+    // `Fox.onOffspringSpawnedFromEgg`: the fox trusts the player.
+    if child.kind == Kind::Fox
+        && let Some(uuid) = ents.store.get(player).map(|e| e.uuid())
+    {
+        super::fam::companion::fox::add_trusted(&mut child, uuid);
+    }
     let stack = held(ents, player, hand);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
         child.custom_name = Some(name.into());
@@ -1389,21 +1395,10 @@ fn equip_on_target(
     hand: Hand,
     stack: &ItemStack,
 ) -> Interaction {
-    use crate::predicate::EntityTags;
-    let id = item::item_id(stack);
-    let name = id.name();
-    let allowed = if name == "minecraft:saddle" {
-        "minecraft:can_equip_saddle"
-    } else if name.ends_with("_harness") {
-        "minecraft:can_equip_harness"
-    } else if name.ends_with("_nautilus_armor") {
-        "minecraft:can_wear_nautilus_armor"
-    } else {
+    let Some(equippable) = item::equippable(stack).filter(|e| e.equip_on_interact) else {
         return Interaction::Pass;
     };
-    let Some(slot) = item::EquipmentSlot::from_ordinal(id.info().equip_slot) else {
-        return Interaction::Pass;
-    };
+    let slot = equippable.slot;
     let Some(m) = ents.mob(target) else {
         return Interaction::Pass;
     };
@@ -1413,8 +1408,7 @@ fn equip_on_target(
         && can_use_slot(m, slot)
         && m.equipment.get(slot).is_empty()
         && m.is_alive()
-        && crate::player::play::game_data()
-            .is_some_and(|d| d.entity_in_tag(kind.type_id(), allowed));
+        && equippable.can_be_equipped_by(kind.type_id().0);
     if !fits {
         return Interaction::Pass;
     }
@@ -1448,7 +1442,7 @@ fn equip_on_target(
                     "minecraft:item.nautilus_saddle_equip"
                 }
             }
-            _ => id.info().equip_sound,
+            _ => &equippable.equip_sound,
         };
         let seed = m.random.next_long();
         let source = kind.sound_source();

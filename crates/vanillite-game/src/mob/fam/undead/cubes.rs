@@ -681,6 +681,7 @@ fn deal_damage(t: &mut Tick<'_, '_>, target: EntityId) {
         let r = &mut t.mob().random;
         let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
         sound(t, "minecraft:entity.slime.attack", 1.0, pitch);
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &source);
     }
 }
 
@@ -1073,7 +1074,7 @@ fn bucket(ix: &mut Interact<'_, '_>, pos: Vec3) -> Interaction {
     {
         let mut bytes = Vec::new();
         body.encode_template(&mut bytes);
-        stack.patch_mut().set(id, bytes.into());
+        stack.set_component(id, bytes.into());
     }
     data.insert("age", m.age);
     data.insert("age_locked", m.age_locked);

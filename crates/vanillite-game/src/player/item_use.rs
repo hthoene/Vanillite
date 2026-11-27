@@ -113,15 +113,14 @@ pub fn use_item(
     let creative = game_mode == GameMode::Creative;
     let name = item::item_id(&stack).name();
     let used = if name.ends_with("_boat") || name.ends_with("_raft") {
-        let reach = if creative { 5.0 } else { 4.5 };
         if crate::vehicle::use_boat_item(
             level,
             ents,
+            env,
             network_ids,
             player,
             &mut stack,
             creative,
-            reach,
         ) {
             award_used(ents, player, item);
         }

@@ -151,9 +151,7 @@ pub fn add_layer(stack: &mut ItemStack, pattern: u32, color: i32) {
         i32::try_from(pattern).unwrap_or(0).saturating_add(1),
     );
     write_varint(&mut out, color);
-    stack
-        .patch_mut()
-        .set(components::BANNER_PATTERNS, out.into_boxed_slice());
+    stack.set_component(components::BANNER_PATTERNS, out.into_boxed_slice());
 }
 
 impl ContainerView<'_> {

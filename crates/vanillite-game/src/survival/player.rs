@@ -1432,7 +1432,7 @@ fn hurt_armor(
         // `canBeHurtBy` the source (`damage_resistant`, e.g. netherite against fire).
         if stack.is_empty()
             || !crate::item::is_damageable(stack)
-            || !crate::item::item_id(stack).info().equip_damage_on_hurt
+            || !crate::item::equippable(stack).is_some_and(|e| e.damage_on_hurt)
             || !crate::item::can_be_hurt_by(stack, env.types, source.kind)
         {
             continue;
@@ -2149,6 +2149,14 @@ pub fn base_tick_after_portal(
         s.death_time += 1;
         if s.death_time >= 20 && !s.removed {
             s.removed = true;
+            // `remove(KILLED)` → `triggerOnDeathMobEffects`.
+            if !s.effects.is_empty() {
+                let cramming = env
+                    .rules
+                    .get(crate::survival::rules::Rule::MAX_ENTITY_CRAMMING);
+                s.world_actions
+                    .push(crate::mob::WorldAction::PlayerDeathEffects(id, cramming));
+            }
             env.out.push(Effect::Tracking {
                 entity: id,
                 with_self: true,
@@ -2633,6 +2641,10 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     crate::survival::inside::finish(&mut path, pos, pos);
     let mut honey = Vec::new();
     let mut bubbles = Vec::new();
+    // `Player.onInsideBlock`: `enter_block` for every block the box is inside on its way.
+    let enter_block = crate::advancements::trigger::TriggerKind::ENTER_BLOCK;
+    let listens = player.advancements.listens(enter_block);
+    let mut entered = Vec::new();
     let inside = blocks::inside_blocks(
         env.blocks,
         env.facts,
@@ -2640,6 +2652,9 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         player.survival.fall_distance > 2.5,
         &path,
         |cell| {
+            if listens && cell.in_block {
+                entered.push(cell.state);
+            }
             if cell.state.block() == vanillite_data::block::ids::HONEY_BLOCK {
                 honey.push((cell.pos, cell.state));
             } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
@@ -2666,6 +2681,11 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
                 crate::advancements::tracking::reset_fall_distance(player);
             }
         }
+    }
+    for state in entered {
+        player
+            .advancements
+            .trigger(crate::advancements::trigger::Event::EnterBlock(state));
     }
     path.clear();
     player.connection.movement.path = path;

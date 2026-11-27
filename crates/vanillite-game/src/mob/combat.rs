@@ -248,14 +248,8 @@ fn with_blocking_facts(ents: &Entities, mut source: DamageSource) -> DamageSourc
         .mob(direct)
         .is_some_and(|m| matches!(m.kind, Kind::Hoglin | Kind::Zoglin | Kind::Ravager));
     if let Some(weapon) = weapon {
-        source.disable_shield_seconds = if weapon.is_empty() {
-            0.0
-        } else {
-            crate::item::item_id(weapon)
-                .info()
-                .weapon
-                .map_or(0.0, |w| w.disable_blocking_for_seconds)
-        };
+        source.disable_shield_seconds =
+            crate::item::weapon(weapon).map_or(0.0, |w| w.disable_blocking_for_seconds);
     }
     source
 }
@@ -1553,7 +1547,11 @@ pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
         .equipment
         .get(crate::item::EquipmentSlot::MainHand)
         .clone();
-    let source = entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
+    // `weapon.getDamageSource(this)`: the weapon's `damage_type`, else `mob_attack`.
+    let kind = crate::item::damage_type(&weapon)
+        .and_then(|n| t.env.types.kind(n))
+        .unwrap_or(t.env.types.mob_attack);
+    let source = entity_source(t.ents, kind, t.id, t.id);
     let combat = super::attack::combat_data();
     let tags: &dyn EntityTags = &*combat;
     // `EnchantmentHelper.modifyDamage` of the weapon.

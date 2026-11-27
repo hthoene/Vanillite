@@ -433,19 +433,20 @@ pub fn player_attack(
     let base = player_attribute(ents, attacker, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
     #[allow(clippy::cast_possible_truncation)]
     let mut base_damage = spin.as_ref().map_or(base as f32, |s| s.0);
-    // `getItemDamageSource`: a smash attack is `mace` damage.
+    // `ItemStack.getDamageSource`: the stack's `damage_type`, else `getItemDamageSource` (a
+    // smash attack is `mace` damage), else `player_attack`.
     let smash = can_smash_attack(ents, attacker, &weapon);
-    let kind = if smash {
+    let kind = if let Some(kind) = item::damage_type(&weapon).and_then(|t| env.types.kind(t)) {
+        kind
+    } else if smash {
         env.types.named("minecraft:mace")
     } else {
         env.types.player_attack
     };
     let mut source = entity_source(ents, kind, attacker, attacker);
     source.cause_is_mob = false;
-    source.disable_shield_seconds = item::item_id(&weapon)
-        .info()
-        .weapon
-        .map_or(0.0, |w| w.disable_blocking_for_seconds);
+    source.disable_shield_seconds =
+        item::weapon(&weapon).map_or(0.0, |w| w.disable_blocking_for_seconds);
     let scale = attack_strength_scale(ents, attacker, 0.5);
     let enchanted = {
         let ecx = damage_context(ents, env.types, tags, target, &source);
@@ -1105,8 +1106,8 @@ fn sweep_attack(
 
 /// `EnchantmentHelper.doPostAttackEffectsWithItemSource`: the post attack effects of the
 /// victim's equipment (Thorns hurts the attacker), then those of the attacker's `weapon`
-/// (Fire Aspect sets the victim on fire, Bane of Arthropods slows arthropods). Mobs carry no
-/// enchanted equipment yet, so only players' items count.
+/// (Fire Aspect sets the victim on fire, Bane of Arthropods slows arthropods). The victim's
+/// gear counts for players and mobs alike.
 #[allow(clippy::too_many_arguments)]
 pub fn post_attack(
     level: &Level,
@@ -1177,6 +1178,24 @@ pub fn post_attack(
             );
         }
     }
+}
+
+/// `EnchantmentHelper.doPostAttackEffects(level, victim, source)`: [`post_attack`] with the
+/// weapon of the source's living cause (`DamageSource.getWeaponItem`, its main hand).
+pub fn post_attack_effects(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    victim: EntityId,
+    source: &DamageSource,
+) {
+    let weapon = source.cause.and_then(|c| {
+        ents.mob(c)
+            .map(|m| m.equipment.get(EquipmentSlot::MainHand).clone())
+            .or_else(|| ents.player(c).map(|p| p.inventory.selected_item().clone()))
+    });
+    post_attack(level, ents, env, cx, victim, source, weapon.as_ref());
 }
 
 /// The entity a post attack effect affects (`TargetedConditionalEffect.affected`).
@@ -1501,6 +1520,10 @@ pub(crate) fn hurt_equipment(
     slot: EquipmentSlot,
     amount: i32,
 ) {
+    if ents.mob(owner).is_some() {
+        hurt_mob_equipment(ents, env, owner, slot, amount);
+        return;
+    }
     let Some(p) = ents.player(owner) else {
         return;
     };
@@ -1514,6 +1537,72 @@ pub(crate) fn hurt_equipment(
         EquipmentSlot::Body | EquipmentSlot::Saddle => return,
     };
     hurt_inventory_item(ents, env, owner, index, amount);
+}
+
+/// `ItemStack.hurtAndBreak(amount, mob, slot)` of a mob's equipment: Unbreaking from the
+/// level random, then `onEquippedItemBroken` (the slot's break entity event) when it breaks.
+fn hurt_mob_equipment(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    owner: EntityId,
+    slot: EquipmentSlot,
+    amount: i32,
+) {
+    let Some(m) = ents.mob(owner) else {
+        return;
+    };
+    let stack = m.equipment.get(slot).clone();
+    if amount <= 0 || stack.is_empty() || !item::is_damageable(&stack) {
+        return;
+    }
+    let data = crate::player::play::game_data();
+    let unbreaking = data
+        .as_ref()
+        .map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
+    let armor = data.is_some_and(|d| d.item_in_tag(stack.item, "minecraft:enchantable/armor"));
+    #[allow(clippy::cast_precision_loss)]
+    let level = unbreaking.max(0) as f32;
+    let removed_chance = if armor {
+        2.0 * level / (5.0 * level + 5.0)
+    } else {
+        level / (level + 1.0)
+    };
+    let mut damage = 0;
+    for _ in 0..amount {
+        if unbreaking <= 0 || env.random.next_float() >= removed_chance {
+            damage += 1;
+        }
+    }
+    if damage == 0 {
+        return;
+    }
+    let d = item::damage(&stack).saturating_add(damage);
+    let broken = d >= item::max_damage(&stack);
+    let Some(m) = ents.mob_mut(owner) else {
+        return;
+    };
+    if broken {
+        m.equipment.set(slot, ItemStack::EMPTY);
+    } else {
+        let mut s = stack;
+        item::set_damage(&mut s, d);
+        m.equipment.set(slot, s);
+    }
+    ents.equipment_updates.push(owner);
+    if broken {
+        // `LivingEntity.entityEventForEquipmentBreak`.
+        let event = match slot {
+            EquipmentSlot::MainHand => 47,
+            EquipmentSlot::OffHand => 48,
+            EquipmentSlot::Head => 49,
+            EquipmentSlot::Chest => 50,
+            EquipmentSlot::Feet => 51,
+            EquipmentSlot::Legs => 52,
+            EquipmentSlot::Body => 65,
+            EquipmentSlot::Saddle => 68,
+        };
+        crate::mob::animal::entity_event(ents, env, owner, event);
+    }
 }
 
 /// `ItemStack.hurtAndBreak(amount, player, ..)` of the stack at `index` of a player's
@@ -1680,7 +1769,7 @@ pub fn weapon_used_stat(
 ) {
     let living = ents.mob(target).is_some() || ents.player(target).is_some();
     if living
-        && item::item_id(weapon).info().weapon.is_some()
+        && item::weapon(weapon).is_some()
         && let Some(p) = ents.player_mut(attacker)
     {
         p.stats.award(
@@ -1699,7 +1788,7 @@ fn hurt_weapon(ents: &mut Entities, env: &mut Env<'_>, attacker: EntityId, weapo
         .and_then(|p| p.survival.spin_attack.as_ref())
         .map(|s| s.index)
     {
-        if let Some(w) = item::item_id(weapon).info().weapon {
+        if let Some(w) = item::weapon(weapon) {
             let amount = i32::try_from(w.item_damage_per_attack).unwrap_or(i32::MAX);
             hurt_inventory_item(ents, env, attacker, index, amount);
         }
@@ -1716,7 +1805,7 @@ pub(crate) fn hurt_weapon_in(
     weapon: &ItemStack,
     slot: EquipmentSlot,
 ) {
-    let Some(w) = item::item_id(weapon).info().weapon else {
+    let Some(w) = item::weapon(weapon) else {
         return;
     };
     let amount = i32::try_from(w.item_damage_per_attack).unwrap_or(i32::MAX);
@@ -1725,6 +1814,14 @@ pub(crate) fn hurt_weapon_in(
 
 /// The equipment of a player for armour and protection (`getArmorSlots` plus the hands).
 pub fn equipment(ents: &Entities, player: EntityId) -> Vec<(EquipmentSlot, ItemStack)> {
+    if let Some(m) = ents.mob(player) {
+        // A mob's equipment in `EquipmentSlot` order.
+        return (0..8)
+            .filter_map(EquipmentSlot::from_ordinal)
+            .map(|s| (s, m.equipment.get(s).clone()))
+            .filter(|(_, s)| !s.is_empty())
+            .collect();
+    }
     let Some(p) = ents.player(player) else {
         return Vec::new();
     };

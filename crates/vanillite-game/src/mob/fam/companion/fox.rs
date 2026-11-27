@@ -434,6 +434,17 @@ pub fn breed_offspring(
     set_target_goals(child);
 }
 
+/// `addTrustedEntity`: the first free trusted slot, else the second.
+pub fn add_trusted(m: &mut MobData, uuid: u128) {
+    let s = st_mut(m);
+    if s.trusted[0].is_none() {
+        s.trusted[0] = Some(uuid);
+    } else {
+        s.trusted[1] = Some(uuid);
+    }
+    set_target_goals(m);
+}
+
 /// The fox's synched data.
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     let s = st(m);

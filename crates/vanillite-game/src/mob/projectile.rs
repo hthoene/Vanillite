@@ -304,7 +304,7 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
             {
                 let mut contents = crate::effect::potion::PotionContents::of_stack(&item);
                 contents.custom_effects.push(e);
-                item.patch_mut().set(
+                item.set_component(
                     vanillite_protocol::components::ids::POTION_CONTENTS,
                     contents.encode(),
                 );
@@ -405,7 +405,7 @@ pub(crate) fn mob_arrow(effect: Option<crate::effect::EffectInstance>) -> crate:
             custom_effects: vec![e],
             ..PotionContents::default()
         };
-        item.patch_mut().set(
+        item.set_component(
             vanillite_protocol::components::ids::POTION_CONTENTS,
             contents.encode(),
         );

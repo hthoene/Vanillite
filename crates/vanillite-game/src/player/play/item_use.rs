@@ -109,9 +109,8 @@ pub(super) fn use_on(
 ) -> Option<Used> {
     let stack = held(ctx, click.hand);
     let id = item::item_id(&stack);
-    let info = id.info();
-    let kind = if !info.block_transformer.is_empty() {
-        UseOn::Transform(info.block_transformer)
+    let kind = if let Some(transformer) = item::block_transformer(&stack) {
+        UseOn::Transform(transformer)
     } else if id == items::BONE_MEAL {
         UseOn::BoneMeal
     } else if id == items::HONEYCOMB {
@@ -727,9 +726,7 @@ pub(super) fn debug_stick(
         };
         selected.retain(|(b, _)| *b != block.name());
         selected.push((block.name().to_owned(), property.name.to_owned()));
-        stack
-            .patch_mut()
-            .set(ids::DEBUG_STICK_STATE, encode_debug_stick_state(&selected));
+        stack.set_component(ids::DEBUG_STICK_STATE, encode_debug_stick_state(&selected));
         set_held(ctx, hand, stack);
         let value = state.value(property.name).unwrap_or_default();
         message(
@@ -1328,7 +1325,9 @@ pub(super) fn use_item(
         let (pos, face, hit) = pov_hit(ctx, y_rot, x_rot, true)?;
         return Some(UseAir::PlaceOnWater(pos.relative(Direction::Up), face, hit));
     }
-    if id.info().equip_swappable && stack.component(ids::CONSUMABLE).is_none() {
+    if item::equippable(&stack).is_some_and(|e| e.swappable)
+        && stack.component(ids::CONSUMABLE).is_none()
+    {
         return Some(UseAir::Done(swap_with_equipment_slot(ctx, hand)));
     }
     None
@@ -1634,6 +1633,12 @@ fn glass_bottle(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32) -
 /// the hand.
 fn swap_with_equipment_slot(ctx: &mut PlayContext<'_>, hand: Hand) -> Used {
     let in_hand = held(ctx, hand);
+    // `canBeEquippedBy(player)`.
+    if !item::equippable(&in_hand)
+        .is_some_and(|e| e.can_be_equipped_by(vanillite_data::entity::ids::PLAYER.0))
+    {
+        return Used::Pass;
+    }
     let slot = item::equipment_slot(&in_hand);
     let index = match slot {
         EquipmentSlot::Feet => 36,
@@ -1701,15 +1706,14 @@ fn on_equip_item(ctx: &mut PlayContext<'_>, slot: EquipmentSlot, old: &ItemStack
     let Some(level) = ctx.level.level_mut() else {
         return;
     };
-    let info = item::item_id(new).info();
-    // `equip_slot` 255: no `equippable` component.
-    let equippable = !new.is_empty() && info.equip_slot != u8::MAX;
-    if equippable && info.equip_slot == slot.ordinal() {
+    let equippable = item::equippable(new);
+    if let Some(e) = equippable.as_ref().filter(|e| e.slot == slot) {
         let id = vanillite_data::registry::SOUND_EVENT
-            .id(info.equip_sound)
+            .id(&e.equip_sound)
             .unwrap_or(0);
         level.play_sound(None, at.x, at.y, at.z, id, SOUND_PLAYERS, 1.0, 1.0);
     }
+    let equippable = equippable.is_some();
     // `Player.doesEmitEquipEvent`: armour slots only, which these all are.
     let event = if equippable {
         events().equip

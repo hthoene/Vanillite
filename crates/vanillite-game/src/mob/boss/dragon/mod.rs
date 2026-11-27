@@ -623,6 +623,7 @@ fn knock_back(t: &mut Tick<'_, '_>, area: Aabb) {
         if !sitting && !recently {
             let source = combat::entity_source(t.ents, t.env.types.mob_attack, me, me);
             combat::hurt(t.level, t.ents, t.env, t.cx, id, source, 5.0);
+            crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, id, &source);
             if !t.exists() {
                 return;
             }
@@ -645,6 +646,7 @@ fn hurt_touching(t: &mut Tick<'_, '_>, area: Aabb) {
         }
         let source = combat::entity_source(t.ents, t.env.types.mob_attack, me, me);
         combat::hurt(t.level, t.ents, t.env, t.cx, id, source, 10.0);
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, id, &source);
         if !t.exists() {
             return;
         }

@@ -730,9 +730,7 @@ fn destroy_minecart(
     discard(cx, id);
     let mut stack = ItemStack::new(drop.0, 1);
     if let Some(n) = name {
-        stack
-            .patch_mut()
-            .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
+        stack.set_component(vanillite_protocol::components::ids::CUSTOM_NAME, n);
     }
     let entity_drops = env.rules.bool(Rule::ENTITY_DROPS);
     if let Some((table, seed)) = loot.filter(|_| !items.is_empty()) {

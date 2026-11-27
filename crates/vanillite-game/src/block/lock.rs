@@ -77,8 +77,8 @@ pub fn can_open(level: &Level, pos: BlockPos, main_hand: &ItemStack) -> bool {
 }
 
 /// `LockCode.unlocksWith`: `ItemPredicate.test` of the stored predicate. Exact components
-/// are compared with the stack's components (defaults included); of the sub-predicates
-/// (`predicates`) `custom_data` is evaluated, the others never match.
+/// are compared with the stack's components (defaults included); the sub-predicates
+/// (`predicates`) are those of the advancement item predicates.
 pub fn unlocks_with(lock: &Tag, stack: &ItemStack) -> bool {
     let Tag::Compound(p) = lock else {
         return false;
@@ -99,7 +99,7 @@ pub fn unlocks_with(lock: &Tag, stack: &ItemStack) -> bool {
         return false;
     }
     if let Some(Tag::Compound(c)) = p.get("predicates")
-        && !c.iter().all(|(k, v)| sub_predicate_matches(stack, k, v))
+        && !sub_predicates_match(stack, c)
     {
         return false;
     }
@@ -137,24 +137,66 @@ fn count_matches(bounds: &Tag, count: i32) -> bool {
     }
 }
 
-/// `DataComponentPredicates`: `custom_data` (`NbtUtils.compareNbt`, SNBT or a compound).
-fn sub_predicate_matches(stack: &ItemStack, key: &str, expected: &Tag) -> bool {
-    if qualify(key) != "minecraft:custom_data" {
-        return false;
+/// A lock's predicate in NBT as the JSON its codec reads (bytes 0 and 1 as booleans).
+fn nbt_to_json(tag: &Tag) -> serde_json::Value {
+    use serde_json::Value;
+    match tag {
+        Tag::Byte(b @ (0 | 1)) => Value::Bool(*b == 1),
+        Tag::Byte(b) => Value::from(*b),
+        Tag::Short(v) => Value::from(*v),
+        Tag::Int(v) => Value::from(*v),
+        Tag::Long(v) => Value::from(*v),
+        Tag::Float(v) => Value::from(f64::from(*v)),
+        Tag::Double(v) => Value::from(*v),
+        Tag::String(s) => Value::String(s.clone()),
+        Tag::List(l) => Value::Array(l.0.iter().map(nbt_to_json).collect()),
+        Tag::Compound(c) => Value::Object(
+            c.iter()
+                .map(|(k, v)| (k.to_string(), nbt_to_json(v)))
+                .collect(),
+        ),
+        Tag::ByteArray(a) => Value::Array(a.iter().map(|v| Value::from(*v)).collect()),
+        Tag::IntArray(a) => Value::Array(a.iter().map(|v| Value::from(*v)).collect()),
+        Tag::LongArray(a) => Value::Array(a.iter().map(|v| Value::from(*v)).collect()),
     }
-    let expected = match expected {
-        Tag::String(s) => match vanillite_nbt::snbt::parse_compound(s) {
-            Ok(c) => Tag::Compound(c),
-            Err(_) => return false,
-        },
-        other => other.clone(),
-    };
-    let custom_data = vanillite_protocol::components_nbt::type_by_name("minecraft:custom_data");
-    let actual = custom_data
-        .and_then(|t| Some((t, crate::item_nbt::effective_component(stack, t)?)))
-        .and_then(|(t, v)| crate::item_nbt::component_to_nbt(t, &v))
-        .unwrap_or_else(|| Tag::Compound(vanillite_nbt::Compound::new()));
-    crate::item_nbt::compare_nbt(&expected, &actual)
+}
+
+/// The world as a lock's item predicate sees it: tags of the loaded data packs only.
+struct LockWorld;
+
+impl crate::advancements::predicate::World for LockWorld {
+    fn dimension(&self) -> &str {
+        ""
+    }
+    fn block(&self, _: BlockPos) -> Option<vanillite_data::block::BlockState> {
+        None
+    }
+    fn biome(&self, _: BlockPos) -> Option<String> {
+        None
+    }
+    fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
+        let Some(data) = crate::player::play::game_data() else {
+            return false;
+        };
+        if registry == "minecraft:item" {
+            return vanillite_data::registry::ITEM
+                .id(id)
+                .is_some_and(|item| data.item_in_tag(item, tag));
+        }
+        let entry = data.holder_set(registry, id);
+        data.registry_tags
+            .get(registry)
+            .and_then(|t| t.get(tag))
+            .is_some_and(|ids| entry.iter().any(|e| ids.contains(e)))
+    }
+}
+
+/// `DataComponentPredicates` (`predicates`): every sub-predicate the advancement item
+/// predicates know (`custom_data`, `enchantments`, `damage`, `potion_contents`, …).
+fn sub_predicates_match(stack: &ItemStack, predicates: &vanillite_nbt::Compound) -> bool {
+    let json = serde_json::json!({ "predicates": nbt_to_json(&Tag::Compound(predicates.clone())) });
+    crate::advancements::predicate::ItemPredicate::parse(&json)
+        .is_ok_and(|p| p.is_supported() && p.test(stack, &LockWorld))
 }
 
 /// `DataComponentExactPredicate`: the stack's value of `key` (its default included) equals
@@ -208,7 +250,7 @@ mod tests {
             .expect("type");
         let data = vanillite_nbt::snbt::parse_compound("{key:1b,other:2}").expect("data");
         let wire = crate::item_nbt::component_from_nbt(t, &Tag::Compound(data)).expect("wire");
-        keyed.patch_mut().set(t, wire);
+        keyed.set_component(t, wire);
         assert!(unlocks_with(&lock, &keyed));
     }
 }

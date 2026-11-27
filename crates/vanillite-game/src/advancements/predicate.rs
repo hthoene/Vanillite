@@ -62,6 +62,10 @@ pub trait World {
     fn can_see_sky(&self, _pos: BlockPos) -> bool {
         false
     }
+    /// `BlockEntity.saveWithFullMetadata` of the block entity at a loaded `pos`.
+    fn block_entity_nbt(&self, _pos: BlockPos) -> Option<vanillite_nbt::Compound> {
+        None
+    }
     /// The progress of the player whose triggers run (`getAdvancements`), for the
     /// `advancements` of its player predicate.
     fn progress(&self) -> Option<&super::PlayerAdvancements> {
@@ -135,6 +139,24 @@ pub struct EntityView<'a> {
     pub components: Vec<(&'static str, String)>,
     /// `LightningBolt.getBlocksSetOnFire` of a lightning bolt.
     pub lightning_fires: Option<i32>,
+    /// `getKnownMovement().scale(20)`: blocks per second.
+    pub movement: Vec3,
+    /// `fallDistance`.
+    pub fall_distance: f64,
+    /// `tickCount`.
+    pub tick_count: i32,
+    /// `isSheared` of a sheep.
+    pub sheared: Option<bool>,
+    /// `getSize` of a slime, magma cube or sulfur cube.
+    pub cube_size: Option<i32>,
+    /// `hasRaid` and `isCaptain` of a raider.
+    pub raider: Option<(bool, bool)>,
+    /// `isOpenWaterFishing` of a fishing hook.
+    pub open_water: Option<bool>,
+    /// `Mob.getTarget` (without its own vehicle, passengers or target).
+    pub target: Option<Box<EntityView<'a>>>,
+    /// The player's inventory slots 0-35 (`inventory.*`, `hotbar.*`), where known.
+    pub inventory: Option<Cow<'a, [ItemStack]>>,
 }
 
 impl<'a> EntityView<'a> {
@@ -160,6 +182,15 @@ impl<'a> EntityView<'a> {
             passengers: Vec::new(),
             components: Vec::new(),
             lightning_fires: None,
+            movement: Vec3::ZERO,
+            fall_distance: 0.0,
+            tick_count: 0,
+            sheared: None,
+            cube_size: None,
+            raider: None,
+            open_water: None,
+            target: None,
+            inventory: None,
         }
     }
 }
@@ -540,7 +571,7 @@ impl ItemPredicate {
     }
 
     /// Whether every part is evaluated.
-    fn is_supported(&self) -> bool {
+    pub fn is_supported(&self) -> bool {
         self.exact.iter().all(|(_, v)| v.is_some())
             && !self.predicates.contains(&SubPredicate::Unsupported)
     }
@@ -861,7 +892,9 @@ impl StateMatcher {
 pub struct BlockPredicate {
     blocks: Option<IdSet>,
     state: Option<StateMatcher>,
-    /// Block entity data is not evaluated: the predicate never matches.
+    /// `nbt`: compared with the block entity's full data (`NbtPredicate.matches`).
+    nbt: Option<vanillite_nbt::Compound>,
+    /// Block entity components are not evaluated: the predicate never matches.
     supported: bool,
 }
 
@@ -873,17 +906,28 @@ impl BlockPredicate {
                 .and_then(Value::as_object)
                 .is_some_and(|m| !m.is_empty())
         };
+        let nbt = match o.get("nbt") {
+            None => None,
+            Some(Value::String(s)) => Some(
+                vanillite_nbt::snbt::parse_compound(s)
+                    .map_err(|e| format!("bad nbt {s}: {e:?}"))?,
+            ),
+            Some(other) => return Err(format!("bad nbt {other}")),
+        };
         Ok(BlockPredicate {
             blocks: o.get("blocks").map(IdSet::parse).transpose()?,
             state: o.get("state").map(StateMatcher::parse).transpose()?,
-            supported: !o.contains_key("nbt")
-                && !non_empty("components")
-                && !non_empty("predicates"),
+            nbt,
+            supported: !non_empty("components") && !non_empty("predicates"),
         })
     }
 
-    /// `matchesState`.
+    /// `matchesState` (a predicate with `nbt` needs the block entity: [`Self::matches`]).
     pub fn matches_state(&self, state: BlockState, world: &dyn World) -> bool {
+        self.supported && self.nbt.is_none() && self.matches_state_only(state, world)
+    }
+
+    fn matches_state_only(&self, state: BlockState, world: &dyn World) -> bool {
         self.supported
             && self
                 .blocks
@@ -894,9 +938,14 @@ impl BlockPredicate {
 
     /// `matches(level, pos)`: the block must be loaded.
     pub fn matches(&self, world: &dyn World, pos: BlockPos) -> bool {
-        world
-            .block(pos)
-            .is_some_and(|state| self.matches_state(state, world))
+        world.block(pos).is_some_and(|state| {
+            self.matches_state_only(state, world)
+                && self.nbt.as_ref().is_none_or(|nbt| {
+                    world
+                        .block_entity_nbt(pos)
+                        .is_some_and(|actual| crate::item_nbt::compare_compounds(nbt, &actual))
+                })
+        })
     }
 }
 
@@ -1122,7 +1171,64 @@ enum EntityPart {
     Components(Vec<(String, String)>),
     /// `type_specific/lightning`: blocks set on fire (`entity_struck` is not evaluated).
     Lightning(Bounds),
+    /// `movement`: x, y, z, speed, horizontal speed, vertical speed, fall distance.
+    Movement([Bounds; 7]),
+    /// `periodic_tick`.
+    PeriodicTick(i32),
+    /// `movement_affected_by`: the location of the block below that affects movement.
+    MovementAffectedBy(LocationPredicate),
+    /// `targeted_entity`.
+    TargetedEntity(Box<EntityPredicate>),
+    /// `type_specific/sheep`.
+    Sheep(Option<bool>),
+    /// `type_specific/slime` (`cube_mob`).
+    CubeMob(Bounds),
+    /// `type_specific/raider`: `has_raid`, `is_captain`.
+    Raider(bool, bool),
+    /// `type_specific/fishing_hook`.
+    FishingHook(Option<bool>),
+    /// `slots`: slot ranges with their item predicate.
+    Slots(Vec<(Vec<SlotRef>, ItemPredicate)>),
     Unsupported,
+}
+
+/// A slot of `SlotRange`s an entity has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SlotRef {
+    /// Index into [`EntityView::equipment`].
+    Equipment(usize),
+    /// Player inventory index.
+    Inventory(usize),
+}
+
+/// `SlotRanges`: the slots of a slot range name.
+fn slot_range(name: &str) -> Option<Vec<SlotRef>> {
+    let eq = |i: usize| vec![SlotRef::Equipment(i)];
+    let inv = |r: std::ops::Range<usize>| r.map(SlotRef::Inventory).collect::<Vec<_>>();
+    Some(match name {
+        "weapon" | "weapon.mainhand" => eq(5),
+        "weapon.offhand" => eq(6),
+        "weapon.*" => vec![SlotRef::Equipment(5), SlotRef::Equipment(6)],
+        "armor.head" => eq(0),
+        "armor.chest" => eq(1),
+        "armor.legs" => eq(2),
+        "armor.feet" => eq(3),
+        "armor.body" => eq(4),
+        "armor.*" => (0..4).map(SlotRef::Equipment).collect(),
+        "hotbar.*" => inv(0..9),
+        "inventory.*" => inv(9..36),
+        "container.*" => inv(0..36),
+        _ => {
+            let (prefix, n) = name.rsplit_once('.')?;
+            let n: usize = n.parse().ok()?;
+            match prefix {
+                "hotbar" if n < 9 => vec![SlotRef::Inventory(n)],
+                "inventory" if n < 27 => vec![SlotRef::Inventory(n + 9)],
+                "container" if n < 36 => vec![SlotRef::Inventory(n)],
+                _ => return None,
+            }
+        }
+    })
 }
 
 /// `EntityPredicate`: all parts must match.
@@ -1305,6 +1411,64 @@ impl EntityPredicate {
                         EntityPart::Unsupported
                     }
                 }
+                "minecraft:movement" => {
+                    let o = object(value)?;
+                    let mut b = [Bounds::default(); 7];
+                    for (slot, key) in b.iter_mut().zip([
+                        "x",
+                        "y",
+                        "z",
+                        "speed",
+                        "horizontal_speed",
+                        "vertical_speed",
+                        "fall_distance",
+                    ]) {
+                        *slot = Bounds::field(o, key)?;
+                    }
+                    EntityPart::Movement(b)
+                }
+                "minecraft:periodic_tick" => EntityPart::PeriodicTick(
+                    value
+                        .as_i64()
+                        .and_then(|n| i32::try_from(n).ok())
+                        .filter(|&n| n > 0)
+                        .ok_or("periodic_tick must be a positive int")?,
+                ),
+                "minecraft:movement_affected_by" => {
+                    EntityPart::MovementAffectedBy(LocationPredicate::parse(value)?)
+                }
+                "minecraft:targeted_entity" => {
+                    EntityPart::TargetedEntity(Box::new(EntityPredicate::parse(value)?))
+                }
+                "minecraft:type_specific/sheep" => {
+                    EntityPart::Sheep(object(value)?.get("sheared").and_then(Value::as_bool))
+                }
+                "minecraft:type_specific/slime" | "minecraft:type_specific/cube_mob" => {
+                    EntityPart::CubeMob(Bounds::field(object(value)?, "size")?)
+                }
+                "minecraft:type_specific/raider" => {
+                    let o = object(value)?;
+                    let flag = |k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
+                    EntityPart::Raider(flag("has_raid"), flag("is_captain"))
+                }
+                "minecraft:type_specific/fishing_hook" => EntityPart::FishingHook(
+                    object(value)?.get("in_open_water").and_then(Value::as_bool),
+                ),
+                "minecraft:slots" => {
+                    let mut out = Vec::new();
+                    let mut known = true;
+                    for (range, p) in object(value)? {
+                        match slot_range(range) {
+                            Some(slots) => out.push((slots, ItemPredicate::parse(p)?)),
+                            None => known = false,
+                        }
+                    }
+                    if known {
+                        EntityPart::Slots(out)
+                    } else {
+                        EntityPart::Unsupported
+                    }
+                }
                 "minecraft:type_specific/lightning" => {
                     let o = object(value)?;
                     if o.contains_key("entity_struck") {
@@ -1325,7 +1489,11 @@ impl EntityPredicate {
             EntityPart::Unsupported => false,
             EntityPart::Location(l) | EntityPart::SteppingOn(l) => l.is_supported(),
             EntityPart::Equipment(slots) => slots.iter().all(|(_, p)| p.is_supported()),
-            EntityPart::Vehicle(p) | EntityPart::Passenger(p) => p.is_supported(),
+            EntityPart::Vehicle(p) | EntityPart::Passenger(p) | EntityPart::TargetedEntity(p) => {
+                p.is_supported()
+            }
+            EntityPart::MovementAffectedBy(l) => l.is_supported(),
+            EntityPart::Slots(slots) => slots.iter().all(|(_, p)| p.is_supported()),
             EntityPart::Player(p) => p
                 .looking_at
                 .as_ref()
@@ -1487,6 +1655,57 @@ impl EntityPredicate {
             EntityPart::Lightning(fires) => e
                 .lightning_fires
                 .is_some_and(|n| fires.matches(f64::from(n))),
+            EntityPart::Movement([x, y, z, speed, horizontal, vertical, fall]) => {
+                let m = e.movement;
+                x.matches(m.x)
+                    && y.matches(m.y)
+                    && z.matches(m.z)
+                    && speed.matches_sqr(m.x * m.x + m.y * m.y + m.z * m.z)
+                    && horizontal.matches_sqr(m.x * m.x + m.z * m.z)
+                    && vertical.matches(m.y.abs())
+                    && fall.matches(e.fall_distance)
+            }
+            EntityPart::PeriodicTick(n) => e.tick_count % n == 0,
+            EntityPart::MovementAffectedBy(l) => {
+                // `getBlockPosBelowThatAffectsMyMovement`: 0.500001 below the feet.
+                let below = crate::player::play::block_pos_of(Vec3::new(
+                    e.pos.x,
+                    e.pos.y - 0.500_001,
+                    e.pos.z,
+                ));
+                l.matches(
+                    world,
+                    Vec3::new(
+                        f64::from(below.x) + 0.5,
+                        f64::from(below.y) + 0.5,
+                        f64::from(below.z) + 0.5,
+                    ),
+                )
+            }
+            EntityPart::TargetedEntity(p) => e
+                .target
+                .as_ref()
+                .is_some_and(|t| p.matches(t, world, origin)),
+            EntityPart::Sheep(sheared) => e
+                .sheared
+                .is_some_and(|s| sheared.is_none_or(|want| want == s)),
+            EntityPart::CubeMob(size) => e.cube_size.is_some_and(|s| size.matches(f64::from(s))),
+            EntityPart::Raider(has_raid, captain) => e
+                .raider
+                .is_some_and(|(r, c)| r == *has_raid && c == *captain),
+            EntityPart::FishingHook(open) => {
+                open.is_none_or(|want| e.open_water.is_some_and(|o| o == want))
+            }
+            EntityPart::Slots(slots) => slots.iter().all(|(refs, p)| {
+                refs.iter().any(|r| match r {
+                    SlotRef::Equipment(i) => e.equipment.get(*i).is_some_and(|s| p.test(s, world)),
+                    SlotRef::Inventory(i) => e
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.get(*i))
+                        .is_some_and(|s| p.test(s, world)),
+                })
+            }),
             EntityPart::Unsupported => false,
         })
     }
