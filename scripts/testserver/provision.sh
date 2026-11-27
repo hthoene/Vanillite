@@ -1481,8 +1481,8 @@ case "${1:-status}" in
         fi
         if [ -s "$state/current" ]; then
             dir=$(cat "$state/current")
-            n=$(wc -l < "$dir/steps.txt" 2> /dev/null || echo 0)
-            d=$(wc -l < "$dir/done.txt" 2> /dev/null || echo 0)
+            n=$(cat "$dir/steps.txt" 2> /dev/null | wc -l)
+            d=$(cat "$dir/done.txt" 2> /dev/null | wc -l)
             echo "current run: ${dir##*/}, $d of $n steps done$( [ "$d" -lt "$n" ] && echo ", next: $(sed -n "$((d + 1))p" "$dir/steps.txt")")"
         else
             echo "current run: none"
