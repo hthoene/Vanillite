@@ -151,7 +151,8 @@ impl EntityDamage<'_> {
     }
 }
 
-/// A player is about to break or place a block; cancellable.
+/// A player and a block: breaking or placing it, entering or leaving a bed, a new respawn
+/// point; cancellable except leaving a bed.
 #[derive(Debug)]
 pub struct BlockChange<'a> {
     pub(crate) raw: &'a mut abi::BlockEvent,
@@ -173,7 +174,7 @@ impl BlockChange<'_> {
         BlockPos::from_abi(self.raw.pos)
     }
 
-    /// The state broken or to be placed, e.g. `minecraft:oak_log[axis=y]`.
+    /// The state broken or to be placed (the bed or anchor), e.g. `minecraft:oak_log[axis=y]`.
     pub fn state(&self) -> &str {
         // SAFETY: the host's strings are valid for the call.
         unsafe { str(self.raw.state) }

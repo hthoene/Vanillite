@@ -203,6 +203,13 @@ pub struct Survival {
     pub last_death: Option<(String, BlockPos)>,
     /// `respawn` (`ServerPlayer.RespawnConfig`): where the player respawns.
     pub respawn: Option<RespawnConfig>,
+    /// `SLEEPING_POS_ID`: the bed the player sleeps in.
+    pub sleeping_pos: Option<BlockPos>,
+    /// `sleepCounter` (`SleepTimer`): ticks asleep up to 100, then 100..110 after waking.
+    pub sleep_timer: i32,
+    /// Something woke the player (`stopSleeping` from damage or death); the sleep pass of the
+    /// world tick gets it out of bed.
+    pub wake: bool,
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
@@ -308,6 +315,9 @@ impl Default for Survival {
             score: 0,
             last_death: None,
             respawn: None,
+            sleeping_pos: None,
+            sleep_timer: 0,
+            wake: false,
             combat: CombatTracker::default(),
             tick_count: 0,
             shoulders: super::shoulder::Shoulders::default(),
@@ -554,6 +564,12 @@ impl Survival {
         if let Some(Tag::Compound(respawn)) = data.get("respawn") {
             s.respawn = RespawnConfig::load(respawn);
         }
+        // `readAdditionalSaveData`: a player saved asleep wakes at once (`stopSleeping` with
+        // its bed's chunk not loaded yet), which resets the timer.
+        s.sleep_timer = int(data, "SleepTimer").unwrap_or(0);
+        if matches!(data.get("sleeping_pos"), Some(Tag::IntArray(p)) if p.len() == 3) {
+            s.sleep_timer = 0;
+        }
         s.shoulders = super::shoulder::Shoulders::load(data);
         s
     }
@@ -611,6 +627,14 @@ impl Survival {
         out.remove("respawn");
         if let Some(respawn) = &self.respawn {
             out.insert("respawn", Tag::Compound(respawn.save()));
+        }
+        out.insert(
+            "SleepTimer",
+            Tag::Short(i16::try_from(self.sleep_timer).unwrap_or(0)),
+        );
+        out.remove("sleeping_pos");
+        if let Some(p) = self.sleeping_pos {
+            out.insert("sleeping_pos", Tag::IntArray(vec![p.x, p.y, p.z]));
         }
         self.shoulders.save(out);
     }
@@ -847,7 +871,10 @@ pub fn hurt_with(
     if damage == 0.0 {
         return false;
     }
-    // `LivingEntity.hurtServer`.
+    // `LivingEntity.hurtServer`: a hit wakes a sleeper.
+    if player.survival.sleeping_pos.is_some() {
+        player.survival.wake = true;
+    }
     if damage < 0.0 {
         damage = 0.0;
     }
@@ -1388,6 +1415,10 @@ pub fn die(
     entity.set_pose(Pose::Dying);
     entity.set_dims(crate::player::dimensions(Pose::Dying));
     let s = &mut player.survival;
+    // `die`: a sleeper leaves its bed.
+    if s.sleeping_pos.is_some() {
+        s.wake = true;
+    }
     s.fire_ticks = s.fire_ticks.min(0);
     entity.set_flags(EntityFlags::ON_FIRE, false);
     let alive = s.health > 0.0;
@@ -1701,7 +1732,7 @@ pub fn do_tick_end(
             hurt(entity, player, env, source, 1.0);
         }
     }
-    // `ServerPlayer.doTick`'s time statistics; players never sleep yet.
+    // `ServerPlayer.doTick`'s time statistics.
     let stats = &mut player.stats;
     stats.award(custom::PLAY_TIME, 1);
     stats.award(custom::TOTAL_WORLD_TIME, 1);
@@ -1712,7 +1743,9 @@ pub fn do_tick_end(
     if entity.as_ref().flags().contains(EntityFlags::CROUCHING) {
         stats.award(custom::CROUCH_TIME, 1);
     }
-    stats.award(custom::TIME_SINCE_REST, 1);
+    if player.survival.sleeping_pos.is_none() {
+        stats.award(custom::TIME_SINCE_REST, 1);
+    }
     let sink = std::sync::Arc::clone(&player.connection.sink);
     // `Player.tick`: the turtle helmet outside water, then the item cool-downs.
     if !player.survival.fluids.eye_in_water {
@@ -2532,7 +2565,9 @@ fn simulate_move(
     let crouching = entity.as_ref().flags().contains(EntityFlags::CROUCHING);
     if moved_vertically && vertical || horizontal {
         let mut v = entity.as_ref().velocity();
-        // `restituteMovementAfterCollisions` without bounciness (Java's signed zeros).
+        // `restituteMovementAfterCollisions` (Java's signed zeros): players bounce on the
+        // blocks below them (beds, slime) unless they sneak.
+        let current = v;
         if x_collision {
             v.x = -v.x * 0.0;
         }
@@ -2540,7 +2575,38 @@ fn simulate_move(
             v.z = -v.z * 0.0;
         }
         if vertical {
-            v.y = -v.y * 0.0;
+            let gravity = player_gravity(entity, player);
+            let below = entity.as_ref().pos();
+            let effect_state = env.blocks.block_state(BlockPos::new(
+                vanillite_base::math::floor(below.x),
+                vanillite_base::math::floor(below.y - 0.2),
+                vanillite_base::math::floor(below.z),
+            ));
+            let restitution = match effect_state {
+                Some(state)
+                    if delta.y < 0.0
+                        && -current.y > gravity
+                        && !crouching
+                        && !crate::block::block_tags().suppresses_bounce.contains(state) =>
+                {
+                    bounce_restitution(state)
+                }
+                _ => 0.0,
+            };
+            v.y = if restitution > 0.0 {
+                let portion = movement.y / current.y;
+                let drag = 1.0 + portion * (f64::from(0.98_f32) - 1.0);
+                (portion * gravity - current.y) * drag * restitution
+            } else {
+                -current.y * 0.0
+            };
+            if restitution > 0.0 {
+                player.survival.game_events.push((
+                    crate::level::game_event::events().bounce,
+                    below,
+                    None,
+                ));
+            }
         }
         entity.set_velocity(v);
     }
@@ -2569,6 +2635,21 @@ fn simulate_move(
     };
     let v = entity.as_ref().velocity();
     entity.set_velocity(v.multiply(f64::from(factor), 1.0, f64::from(factor)));
+}
+
+/// `Block.getBounceRestitution` of the block a living entity lands on.
+fn bounce_restitution(state: vanillite_data::block::BlockState) -> f64 {
+    use vanillite_data::block::ids;
+    let block = state.block();
+    if block == ids::SLIME_BLOCK {
+        1.0
+    } else if block == ids::SHELF_MUSHROOM
+        || (block.info().kind == vanillite_data::block::BlockKind::BedBlock)
+    {
+        f64::from(0.75_f32)
+    } else {
+        0.0
+    }
 }
 
 /// `Math.abs(a - b) < 1.0E-5F` as `Mth.equal`.

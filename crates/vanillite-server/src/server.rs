@@ -333,6 +333,7 @@ impl ServerBuilder {
         if let Some(packs) = packs.as_deref() {
             vanillite_worldgen::behaviour::init(packs);
         }
+        let spawn_known = prepared.spawn_known;
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
         let mut behaviours = vanillite_game::block::Behaviours::vanilla();
@@ -671,6 +672,9 @@ impl ServerBuilder {
             );
             world.restore_tickets(saved_tickets);
             worlds.push(world);
+        }
+        if !spawn_known {
+            initial_spawn(&mut worlds, &global, world_gen.flat_spawn_height());
         }
         prepare_levels(&mut worlds);
         let (worlds, routes) = if parallel {
@@ -1852,6 +1856,37 @@ fn open_tick_log() -> Option<io::BufWriter<File>> {
             );
             None
         }
+    }
+}
+
+/// `MinecraftServer.setInitialSpawn` of a new world: the generator's origin chunk (the noise
+/// spawn search), then the first chunk with a respawn column in a spiral of 11 × 11 chunks
+/// around it. `flat_height` is the flat generator's layer height (`getSpawnHeight`).
+fn initial_spawn(worlds: &mut [ServerWorld], global: &Global, flat_height: Option<i32>) {
+    let Some(world) = worlds.first_mut() else {
+        return;
+    };
+    let spawn = world.search_initial_spawn(flat_height);
+    log::info!(
+        "Spawn of the new world: {}, {}, {}",
+        spawn.x,
+        spawn.y,
+        spawn.z
+    );
+    global.level.set_spawn(vanillite_storage::level_dat::Spawn {
+        dimension: "minecraft:overworld".to_owned(),
+        pos: [spawn.x, spawn.y, spawn.z],
+        yaw: 0.0,
+        pitch: 0.0,
+    });
+    let at = vanillite_base::Vec3::new(
+        f64::from(spawn.x) + 0.5,
+        f64::from(spawn.y),
+        f64::from(spawn.z) + 0.5,
+    );
+    global.systems.set_spawn(at);
+    for world in worlds.iter_mut() {
+        world.players.level.spawn = (at, 0.0);
     }
 }
 

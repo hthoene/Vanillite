@@ -174,6 +174,46 @@ pub fn start_riding(
     true
 }
 
+/// `stopRiding` from block code without the survival environment (a player lying down in a
+/// bed): `passenger` gets off where it is and the players near the vehicle see it.
+pub fn stop_riding_in_level(level: &mut crate::level::Level, passenger: EntityId) {
+    let Some(vehicle) = level.entities.riding.remove(passenger) else {
+        return;
+    };
+    if let Some(mut e) = level.entities.store.get_mut(passenger) {
+        e.set_flags(EntityFlags::PASSENGER, false);
+    }
+    if let Some(p) = level.entities.player_mut(passenger) {
+        p.connection.movement.passenger = false;
+    }
+    let Some(v) = level.entities.store.get(vehicle) else {
+        return;
+    };
+    let at = v.pos();
+    let packet = SetPassengers {
+        vehicle: v.network_id().0,
+        passengers: VarIntList(
+            level
+                .entities
+                .riding
+                .passengers_of(vehicle)
+                .iter()
+                .filter_map(|&p| level.entities.store.get(p).map(|e| e.network_id().0))
+                .collect(),
+        ),
+    };
+    let event = crate::level::game_event::events().entity_dismount;
+    level.game_event(
+        event,
+        at,
+        crate::level::game_event::GameEventContext::of(Some(passenger)),
+    );
+    level
+        .output()
+        .nearby_packets
+        .push((at, 64.0, vanillite_protocol::SharedPacket::of(&packet)));
+}
+
 /// `stopRiding`: `passenger` gets off and is placed at the dismount location. Returns the
 /// old vehicle.
 pub fn stop_riding(

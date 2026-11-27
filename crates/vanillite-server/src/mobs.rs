@@ -1167,6 +1167,7 @@ impl WorldMobs {
                             resistance:
                                 vanillite_game::level::explosion::BlockResistance::WindCharge,
                             fire: false,
+                            bad_respawn_point: false,
                         },
                     );
                 }
@@ -1212,6 +1213,8 @@ impl WorldMobs {
         for hurt in hurts {
             // `damageSources().explosion(source, indirect)`.
             let mut source = match (hurt.source, hurt.indirect) {
+                // `badRespawnPointExplosion(center)`.
+                _ if hurt.bad_respawn_point => DamageSource::of(env.types.bad_respawn_point),
                 (Some(direct), Some(cause)) => {
                     combat::entity_source(&ents, env.types.player_explosion, cause, direct)
                 }

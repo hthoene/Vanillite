@@ -110,7 +110,8 @@
 //!   face's centre), sneaking if `sneak`, with its food level set to `food` first
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
-//!   the players' food and hands to the frames.
+//!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
@@ -167,6 +168,8 @@ pub struct WorldSpec {
     pub level_rng: bool,
     /// Whether frames hold the players' food and hands.
     pub player_state: bool,
+    /// Whether frames hold the players' sleep state, pose and respawn point.
+    pub sleep_state: bool,
 }
 
 /// What an operation does.
@@ -503,6 +506,10 @@ impl Scenario {
                 level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
                 player_state: v
                     .get("player_state")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                sleep_state: v
+                    .get("sleep_state")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             },

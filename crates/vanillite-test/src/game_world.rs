@@ -533,6 +533,7 @@ impl GameWorld {
         self.with_env(|level, ents, env, cx| {
             for hurt in hurts {
                 let mut source = match (hurt.source, hurt.indirect) {
+                    _ if hurt.bad_respawn_point => DamageSource::of(env.types.bad_respawn_point),
                     (Some(direct), Some(cause)) => {
                         combat::entity_source(ents, env.types.player_explosion, cause, direct)
                     }
@@ -613,6 +614,12 @@ impl GameWorld {
         if players.is_empty() {
             return;
         }
+        // `Player.tick`'s sleep part.
+        vanillite_game::survival::sleep::update_sleeping_player_list(&mut self.level);
+        vanillite_game::survival::sleep::tick_players(
+            &mut self.level,
+            &vanillite_game::hooks::NoHooks,
+        );
         self.with_env(|level, ents, env, cx| {
             for &id in &players {
                 let Entities { store, players, .. } = &mut *ents;
@@ -829,6 +836,18 @@ impl GameWorld {
                         hand(p.inventory.selected_item()),
                         hand(&p.inventory.offhand)
                     ]),
+                );
+            }
+            if self.spec.sleep_state {
+                let s = &p.survival;
+                d.insert(
+                    "sleep".into(),
+                    json!({
+                        "pos": s.sleeping_pos.map(|b| json!([b.x, b.y, b.z])),
+                        "timer": s.sleep_timer,
+                        "pose": vanillite_game::player::encode::pose_id(core.pose[row]),
+                        "spawn": s.respawn.as_ref().map(|r| json!([r.pos.x, r.pos.y, r.pos.z, r.forced])),
+                    }),
                 );
             }
         }
@@ -1240,6 +1259,7 @@ fn apply_rules(
                 | "mob_drops"
                 | "tnt_explodes"
                 | "tnt_explosion_drop_decay"
+                | "players_sleeping_percentage"
         );
         let rule = Rule::by_name(name)
             .filter(|_| supported)
@@ -1364,6 +1384,11 @@ impl ScenarioWorld for GameWorld {
     /// ticks, the chunk source (post-processing, random ticks), block events, entities, block
     /// entities, entity management (pending entity loads).
     fn step(&mut self) {
+        // `ServerLevel.tick`: the night skip (time and weather stand still in scenarios).
+        vanillite_game::survival::sleep::skip_night(
+            &mut self.level,
+            &vanillite_game::hooks::NoHooks,
+        );
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();
@@ -1672,6 +1697,12 @@ impl ScenarioWorld for GameWorld {
                 eyes_in_water: false,
                 dig_speed: None,
                 mining_fatigue: None,
+                respawn_here: player
+                    .survival
+                    .respawn
+                    .as_ref()
+                    .filter(|r| r.dimension == "minecraft:overworld")
+                    .map(|r| r.pos),
             };
             let mut effects = vanillite_server::LevelEffects::default();
             let spectators = vanillite_base::hash::FxHashSet::default();
@@ -1766,6 +1797,11 @@ impl ScenarioWorld for GameWorld {
         })();
         self.level.entities.players = players;
         result?;
+        vanillite_game::survival::sleep::run_block_uses(
+            &mut self.level,
+            &vanillite_game::hooks::NoHooks,
+        );
+        self.explosion_hurts();
         self.apply_actions();
         self.finish_removals();
         self.spawn_drops();

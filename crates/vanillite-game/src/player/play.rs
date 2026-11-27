@@ -177,6 +177,8 @@ pub struct Actor {
     pub dig_speed: Option<i32>,
     /// The amplifier of Mining Fatigue, if active.
     pub mining_fatigue: Option<i32>,
+    /// The player's respawn position if it is in this world.
+    pub respawn_here: Option<BlockPos>,
 }
 
 impl Actor {
@@ -371,7 +373,6 @@ fn has_use_action(state: BlockState) -> bool {
             | BlockKind::CraftingTableBlock
             | BlockKind::CrafterBlock
             | BlockKind::AnvilBlock
-            | BlockKind::BedBlock
             | BlockKind::NoteBlock
             | BlockKind::RepeaterBlock
             | BlockKind::ComparatorBlock
@@ -1005,6 +1006,9 @@ impl Digging {
                         can_eat: ctx.actor.creative()
                             || ctx.food.as_deref().is_some_and(|f| f.needs_food()),
                         game_master: ctx.actor.creative() && ctx.actor.permission_level >= 2,
+                        main_hand: hand == Hand::MainHand,
+                        off_hand_item: ctx.inventory.offhand.item,
+                        respawn_here: ctx.actor.respawn_here,
                     };
                     let mut held = match hand {
                         Hand::MainHand => ctx.inventory.selected_item().clone(),

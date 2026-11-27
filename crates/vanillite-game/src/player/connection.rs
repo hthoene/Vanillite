@@ -242,6 +242,8 @@ pub struct Connection {
     /// Attacks and interactions with entities since the last tick (`attack`, `interact`), in
     /// packet order; the world resolves them with the entities.
     pub entity_actions: Vec<EntityAction>,
+    /// `STOP_SLEEPING` (leave bed) arrived; the world wakes the player after its packets.
+    pub leave_bed: bool,
     /// `ServerPlayer.camera`: the entity a spectator watches through (`None`: itself).
     pub camera: Option<vanillite_world::entity::EntityId>,
     /// Vehicle input: the last `player_input`, `paddle_boat` and `move_vehicle`.
@@ -308,6 +310,7 @@ impl Connection {
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
             entity_actions: Vec::new(),
+            leave_bed: false,
             camera: None,
             vehicle: VehicleInput::default(),
             play: Digging::new(),
@@ -573,7 +576,7 @@ impl Connection {
                     match p.action {
                         PlayerAction::StartSprinting => state.sprinting = true,
                         PlayerAction::StopSprinting => state.sprinting = false,
-                        // Sleeping, vehicles, inventories and elytra come later.
+                        // Riding jumps' end and elytra come later.
                         PlayerAction::StartRidingJump => {
                             self.vehicle.jump = Some(p.data);
                         }
@@ -582,9 +585,9 @@ impl Connection {
                                 self.entity_actions.push(EntityAction::OpenVehicleInventory);
                             }
                         }
-                        PlayerAction::StopSleeping
-                        | PlayerAction::StopRidingJump
-                        | PlayerAction::StartFallFlying => {}
+                        // `if (player.isSleeping()) player.stopSleepInBed(false, true)`.
+                        PlayerAction::StopSleeping => self.leave_bed = true,
+                        PlayerAction::StopRidingJump | PlayerAction::StartFallFlying => {}
                     }
                 }
             }

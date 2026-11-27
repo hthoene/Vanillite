@@ -222,6 +222,52 @@ impl<P: Plugin> Registrar<P> {
         )
     }
 
+    /// A player is about to fall asleep in a bed (the position is the bed's head);
+    /// cancellable. Since ABI 1.3.
+    pub fn on_bed_enter(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_block(abi::event::PLAYER_BED_ENTER, priority, f)
+    }
+
+    /// A player left its bed (the position is the bed's head). Since ABI 1.3.
+    pub fn on_bed_leave(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_block(abi::event::PLAYER_BED_LEAVE, priority, f)
+    }
+
+    /// A bed or respawn anchor is about to become a player's respawn point; cancellable.
+    /// Since ABI 1.3.
+    pub fn on_spawn_change(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_player_block(abi::event::PLAYER_SPAWN_CHANGE, priority, f)
+    }
+
+    fn on_player_block(
+        &mut self,
+        kind: u32,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut BlockChange<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            kind,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `BlockEvent` for this kind.
+                let raw = unsafe { &mut *e.cast::<abi::BlockEvent>() };
+                f(p, ctx, &mut BlockChange { raw });
+            }),
+        )
+    }
+
     /// Adds a command tree to the server's command tree. Its commands keep their place in the
     /// tree for the life of the server; a development reload replaces their callbacks.
     pub fn command(&mut self, command: Command<P>) -> &mut Self {

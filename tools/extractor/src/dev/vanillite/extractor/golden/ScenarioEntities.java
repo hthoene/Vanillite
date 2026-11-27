@@ -50,6 +50,12 @@ final class ScenarioEntities {
   private final Map<String, Entity> byName = new LinkedHashMap<>();
   /** Frames hold the players' food and hands ({@code "player_state": true}). */
   boolean playerState;
+
+  /**
+   * Frames hold the players' sleeping position, sleep timer, pose id and respawn point ({@code
+   * "sleep_state": true}).
+   */
+  boolean sleepState;
   private final List<ServerPlayer> players = new ArrayList<>();
 
   ScenarioEntities(ParityServer server, ServerLevel level) {
@@ -357,6 +363,30 @@ final class ScenarioEntities {
           .append(',')
           .append(hand(player.getOffhandItem()))
           .append(']');
+    }
+    if (sleepState && e instanceof ServerPlayer sp) {
+      BlockPos bed = sp.getSleepingPos().orElse(null);
+      ServerPlayer.RespawnConfig spawn = sp.getRespawnConfig();
+      sb.append(",\"sleep\":{\"pos\":")
+          .append(bed == null ? "null" : "[" + bed.getX() + "," + bed.getY() + "," + bed.getZ() + "]")
+          .append(",\"pose\":")
+          .append(sp.getPose().id())
+          .append(",\"spawn\":");
+      if (spawn == null) {
+        sb.append("null");
+      } else {
+        BlockPos at = spawn.respawnData().pos();
+        sb.append('[')
+            .append(at.getX())
+            .append(',')
+            .append(at.getY())
+            .append(',')
+            .append(at.getZ())
+            .append(',')
+            .append(spawn.forced())
+            .append(']');
+      }
+      sb.append(",\"timer\":").append(sp.getSleepTimer()).append('}');
     }
     if (e instanceof AbstractMinecart cart) {
       sb.append(",\"rot\":[")
