@@ -1393,7 +1393,20 @@ impl Level {
         if block::beehive::is_beehive(state.block()) {
             block::beehive::neighbour_changed_shape(self, pos, state, neighbour_pos);
         }
-        shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state)
+        let new = shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state);
+        // `PotentSulfurBlock.validBlockState`: a block that becomes a periodic geyser starts a
+        // new countdown.
+        if state.block() == vanillite_data::block::ids::POTENT_SULFUR
+            && !matches!(
+                state.value("potent_sulfur_state"),
+                Some("erupting" | "dormant")
+            )
+            && new.value("potent_sulfur_state") == Some("dormant")
+            && let Some(BlockEntity::PotentSulfur { countdown }) = self.block_entity_mut(pos)
+        {
+            *countdown = -1;
+        }
+        new
     }
 
     /// `state.canSurvive(level, pos)`.

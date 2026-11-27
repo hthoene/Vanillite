@@ -1,0 +1,3 @@
+tick = 5003
+cause = "the hatched ghastling (baby happy ghast) matches in block, position and rotation, but its brain AI draws differently from its first tick (own random, then no fly path where Vanilla strolls); no other scenario covers baby happy ghasts"
+owner = "architect #126"

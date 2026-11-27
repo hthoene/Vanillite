@@ -467,6 +467,14 @@ pub struct Environment {
     pub creaking_active: bool,
     /// `EnvironmentAttributes.TURTLE_EGG_HATCH_CHANCE` (the `day` timeline in the overworld).
     pub turtle_egg_hatch_chance: f32,
+    /// `EnvironmentAttributes.SUN_ANGLE` in degrees (the `day` timeline in the overworld, 0
+    /// elsewhere).
+    pub sun_angle: f32,
+    /// `EnvironmentAttributes.EYEBLOSSOM_OPEN`: `None` where no timeline sets it (eyeblossoms
+    /// keep their state).
+    pub eyeblossom_open: Option<bool>,
+    /// `EnvironmentAttributes.NETHER_PORTAL_SPAWNS_PIGLINS` (the overworld's dimension type).
+    pub nether_portal_spawns_piglins: bool,
 }
 
 impl Default for Environment {
@@ -489,6 +497,9 @@ impl Default for Environment {
             bees_stay_in_hive: false,
             creaking_active: false,
             turtle_egg_hatch_chance: 0.002,
+            sun_angle: 0.0,
+            eyeblossom_open: None,
+            nether_portal_spawns_piglins: false,
         }
     }
 }
@@ -520,6 +531,9 @@ impl Environment {
             monster_light_test: (0, 7),
             ambient_light: 0.0,
             turtle_egg_hatch_chance: turtle_egg_hatch_chance(day),
+            sun_angle: day_sun_angle(day),
+            eyeblossom_open: Some((12600..23401).contains(&day.rem_euclid(24000))),
+            nether_portal_spawns_piglins: true,
             ..Environment::default()
         }
     }
@@ -538,6 +552,64 @@ pub fn turtle_egg_hatch_chance(ticks: i64) -> f32 {
     } else {
         0.002
     }
+}
+
+/// The `day` timeline's `visual/sun_angle` track at `ticks` of the day: 0 at noon (6000),
+/// growing to 360 over the day along the track's cubic Bézier ease.
+pub fn day_sun_angle(ticks: i64) -> f32 {
+    let t = ticks.rem_euclid(24000);
+    // The segments wrap around the single key time 6000.
+    let (from, to) = if t < 6000 {
+        (-18000, 6000)
+    } else {
+        (6000, 30000)
+    };
+    if t <= from {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let alpha = (t - from) as f32 / (to - from) as f32;
+    let eased = cubic_bezier(0.362, 0.241, 0.638, 0.759, alpha);
+    0.0 + eased * 360.0
+}
+
+/// `EasingType.CubicBezier.apply(x)`: Newton–Raphson, then bisection.
+pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
+    let curve = |v1: f32, v2: f32| (3.0 * v1 - 3.0 * v2 + 1.0, -6.0 * v1 + 3.0 * v2, 3.0 * v1);
+    let sample = |(a, b, c): (f32, f32, f32), t: f32| ((a * t + b) * t + c) * t;
+    let gradient = |(a, b, c): (f32, f32, f32), t: f32| (3.0 * a * t + 2.0 * b) * t + c;
+    let (xc, yc) = (curve(x1, x2), curve(y1, y2));
+    let mut t = x;
+    let mut solved = false;
+    for _ in 0..4 {
+        let error = sample(xc, t) - x;
+        if error.abs() < 1.0e-5 {
+            solved = true;
+            break;
+        }
+        let g = gradient(xc, t);
+        if g < 1.0e-5 {
+            break;
+        }
+        t -= (error / g).clamp(-0.25, 0.25);
+    }
+    if !solved {
+        // `solveTBisect`.
+        let (mut t0, mut t1) = (0.0f32, 1.0f32);
+        while t0 < t1 {
+            let error = sample(xc, t) - x;
+            if error.abs() < 1.0e-5 {
+                break;
+            }
+            if error < 0.0 {
+                t0 = t;
+            } else {
+                t1 = t;
+            }
+            t = (t1 + t0) / 2.0;
+        }
+    }
+    sample(yc, t)
 }
 
 /// The overworld's sky light factor at `ticks` of the day (the `day` timeline's

@@ -1,0 +1,95 @@
+{
+  "description": "Chests, barrels and ender chests count their viewers again 5 ticks after the first one opens and every 5 ticks while any remain (ContainerOpenersCounter.recheckOpeners, the scheduled block ticks): a player that keeps its barrel and then its ender chest open keeps them open across the rechecks.",
+  "tier": "fast",
+  "world": {
+    "seed": 515,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -59,
+      7
+    ]
+  ],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "a",
+      "type": "minecraft:player",
+      "pos": [
+        3.5,
+        -60.0,
+        4.5
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:barrel[facing=up,open=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        2
+      ],
+      "block": "minecraft:chest[facing=south,type=single,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:ender_chest[facing=south,waterlogged=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "a",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 12,
+      "op": "use",
+      "entity": "a",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "item": "minecraft:air"
+    }
+  ]
+}
