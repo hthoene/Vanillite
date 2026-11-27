@@ -327,11 +327,13 @@ impl ProtoChunk {
     }
 
     /// `isOutsideBuildHeight(y)`.
+    #[inline]
     pub fn is_outside(&self, y: i32) -> bool {
-        y < self.min_y || y > self.max_y()
+        y.wrapping_sub(self.min_y) as u32 >= (self.sections.len() << 4) as u32
     }
 
     /// `getSectionIndex(y)`.
+    #[inline]
     pub fn section_index(&self, y: i32) -> usize {
         ((y >> 4) - (self.min_y >> 4)) as usize
     }
@@ -754,6 +756,40 @@ impl ProtoChunk {
         &mut self.fluid_ticks
     }
 
+    /// The block at world `x`, `z` and `y` inside section `section` (`y` within the build
+    /// height), for bulk writers that look the section up once per row.
+    #[inline]
+    pub(crate) fn section_block(&self, section: usize, x: i32, y: i32, z: i32) -> BlockState {
+        if let Some(dense) = &self.dense {
+            return BlockState(dense.states[dense.index(x, (y - self.min_y) as usize, z)]);
+        }
+        BlockState(self.sections[section].block((x & 15) as u32, (y & 15) as u32, (z & 15) as u32))
+    }
+
+    /// [`Self::set_block_in_section`] with the section index of `y` already known.
+    #[inline]
+    pub(crate) fn set_section_block(
+        &mut self,
+        section: usize,
+        x: i32,
+        y: i32,
+        z: i32,
+        state: BlockState,
+    ) {
+        let old = if let Some(dense) = &mut self.dense {
+            let at = dense.index(x, (y - self.min_y) as usize, z);
+            dense.set(section, at, state.0)
+        } else {
+            self.sections[section].set_block(
+                (x & 15) as u32,
+                (y & 15) as u32,
+                (z & 15) as u32,
+                state.0,
+            )
+        };
+        self.note_unmapped_change(old, state.0);
+    }
+
     /// Sets a block in its section only, as `BulkSectionAccess` writes (no heightmap updates).
     #[inline]
     pub fn set_block_in_section(
@@ -799,6 +835,28 @@ impl ProtoChunk {
         let qy = quart_y.clamp(min_quart, max_quart);
         let section = self.section_index(qy << 2);
         self.sections[section].biome((quart_x & 3) as u32, (qy & 3) as u32, (quart_z & 3) as u32)
+    }
+
+    /// The biome of the eight quarts `quart_x..=quart_x + 1`, `quart_y..=quart_y + 1`,
+    /// `quart_z..=quart_z + 1` of this chunk (Y clamped like [`Self::noise_biome`]; X and Z
+    /// must not leave the chunk) if they all hold the same one.
+    pub fn uniform_noise_biome(&self, quart_x: i32, quart_y: i32, quart_z: i32) -> Option<BiomeId> {
+        let min_quart = self.min_y >> 2;
+        let max_quart = min_quart + (self.height() >> 2) - 1;
+        let (x, z) = ((quart_x & 3) as u32, (quart_z & 3) as u32);
+        let mut first = None;
+        for qy in [quart_y, quart_y + 1] {
+            let qy = qy.clamp(min_quart, max_quart);
+            let biomes = self.sections[self.section_index(qy << 2)].biomes();
+            let y = (qy & 3) as u32;
+            for (dx, dz) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                let biome = biomes.get_at(x + dx, y, z + dz);
+                if *first.get_or_insert(biome) != biome {
+                    return None;
+                }
+            }
+        }
+        first
     }
 
     /// Sets the noise biome at quart coordinates inside the chunk.

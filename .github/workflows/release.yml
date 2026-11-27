@@ -44,9 +44,10 @@ jobs:
       matrix:
         include:
           # Linux: static musl binaries (mimalloc), cross-compiled with cargo-zigbuild like the
-          # Docker image, so they run on any distribution.
-          - { os: linux, arch: x86_64, runner: ubuntu-latest, target: x86_64-unknown-linux-musl, zig: true }
-          - { os: linux, arch: aarch64, runner: ubuntu-latest, target: aarch64-unknown-linux-musl, zig: true }
+          # Docker image, so they run on any distribution; plus vanillite-gnu (glibc 2.28),
+          # which loads plugins (crates/vanillite/src/runtime.rs).
+          - { os: linux, arch: x86_64, runner: ubuntu-latest, target: x86_64-unknown-linux-musl, gnu: x86_64-unknown-linux-gnu, zig: true }
+          - { os: linux, arch: aarch64, runner: ubuntu-latest, target: aarch64-unknown-linux-musl, gnu: aarch64-unknown-linux-gnu, zig: true }
           - { os: windows, arch: x86_64, runner: windows-latest, target: x86_64-pc-windows-msvc }
           - { os: macos, arch: aarch64, runner: macos-latest, target: aarch64-apple-darwin }
           - { os: macos, arch: x86_64, runner: macos-latest, target: x86_64-apple-darwin }
@@ -58,12 +59,13 @@ jobs:
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
       # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
       CFLAGS_x86_64_unknown_linux_musl: -mevex512
+      CFLAGS_x86_64_unknown_linux_gnu: -mevex512
     steps:
       # Scripts and text files keep LF line ends on Windows (package.sh converts the texts).
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml), then the target for it.
-      - run: rustup toolchain install --profile minimal && rustup target add ${{ matrix.target }}
+      - run: rustup toolchain install --profile minimal && rustup target add ${{ matrix.target }} ${{ matrix.gnu }}
       # The Vanilla data the build extracts from Mojang's server jars (#213), one entry per
       # pinned version and pipeline: restored instead of extracted again; a missing entry is
       # extracted by the build and saved with the new key.
@@ -98,6 +100,12 @@ jobs:
             mkdir -p target/extra
             cp target/v3/${{ matrix.target }}/release/vanillite target/extra/vanillite-x86-64-v3
           fi
+          # Linux: the glibc build that loads plugins.
+          if [[ -n "${{ matrix.gnu }}" ]]; then
+            cargo zigbuild --release --locked -p vanillite --features mimalloc --target ${{ matrix.gnu }}.2.28
+            mkdir -p target/extra
+            cp target/${{ matrix.gnu }}/release/vanillite target/extra/vanillite-gnu
+          fi
       - name: Package
         run: |
           exe=vanillite
@@ -113,6 +121,7 @@ jobs:
           exe=vanillite
           [[ "${{ matrix.os }}" == windows ]] && exe=vanillite.exe
           "target/${{ matrix.target }}/release/$exe" --version
+          if [[ -x target/extra/vanillite-gnu ]]; then target/extra/vanillite-gnu --version; fi
       - uses: actions/upload-artifact@v4
         with:
           name: vanillite-${{ matrix.os }}-${{ matrix.arch }}
@@ -145,7 +154,7 @@ jobs:
               echo "**Vanillite $VERSION for Minecraft Java Edition $MC.**"
             fi
             echo
-            echo "Download the archive for your system, unpack it and start \`vanillite\` (\`vanillite.exe\` on Windows); the README.txt inside explains the first start. Docker: \`docker pull thoenehannes/vanillite:${VERSION}-mc${MC}\`. Checksums: SHA256SUMS."
+            echo "Download the archive for your system, unpack it and start \`vanillite\` (\`vanillite.exe\` on Windows); the README.txt inside explains the first start. Docker: \`docker pull thoenehannes/vanillite:${VERSION}-mc${MC}\`. Checksums: SHA256SUMS. The Windows binary is signed after publishing; if the Windows zip was downloaded in the first hours after the release, its \`vanillite.exe\` may still be unsigned."
             # The version's section of CHANGELOG.md, without its heading.
             changes="$(awk -v v="## $VERSION" '$0 == v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md)"
             if [[ -n "${changes//[[:space:]]/}" ]]; then

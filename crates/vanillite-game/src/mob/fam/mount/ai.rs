@@ -419,6 +419,10 @@ pub fn copper_golem_brain(m: &mut MobData) {
             Spec::animal_panic(1.5),
             Spec::look_at_target_sink(45, 90),
             Spec::move_to_target_sink(),
+            Spec::of(crate::mob::brain::behavior::Behavior::InteractWithDoor {
+                last_node: None,
+                cooldown: 0,
+            }),
             Spec::count_down(M::GazeCooldownTicks),
             Spec::count_down(M::TransportItemsCooldownTicks),
         ],
@@ -493,7 +497,7 @@ pub fn breeze_brain(m: &mut MobData) {
             (
                 0,
                 Spec::of(B::StopAttackingIfTargetInvalid {
-                    stop_when: Some(|t, id| !sensing::is_attackable(t, id)),
+                    stop_when: Some(|t, id| !super::breeze::was_attackable_last_100(t, id)),
                     on_erased: None,
                     tired: true,
                 }),
@@ -884,17 +888,15 @@ pub fn behavior_start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
                 brain::brain(t).set_with_expiry(M::BreezeJumpInhaling, MemValue::Unit, 10);
             }
             set_pose(t, Pose::Inhaling);
-            let pos = t.pos();
-            let seed = crate::survival::sound_seed();
-            crate::survival::play_sound(
+            crate::survival::play_entity_sound(
                 t.env.out,
+                t.ents,
                 None,
-                pos,
+                t.id,
                 "minecraft:entity.breeze.charge",
                 vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
                 1.0,
                 1.0,
-                seed,
             );
             if let Some(target) = brain_ref(t).pos(M::BreezeJumpTarget) {
                 look_at_eyes(
@@ -1078,17 +1080,16 @@ fn throw_to(t: &mut Tick<'_, '_>, target: Vec3) {
             3.75, 4.0,
         ];
         let i = usize::try_from(t.env.random.next_int_bounded(16)).unwrap_or(0);
-        let pos = t.pos();
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
+        let pitch = PITCHES.get(i).copied().unwrap_or(1.0);
+        crate::survival::play_entity_sound(
             t.env.out,
+            t.ents,
             None,
-            pos,
+            id,
             "minecraft:entity.allay.item_thrown",
             vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
             1.0,
-            PITCHES[i],
-            seed,
+            pitch,
         );
     }
 }
@@ -1634,6 +1635,7 @@ mod tests {
                 random: &mut random,
                 out: &mut out,
                 hooks: &hooks,
+                hook_world: crate::hooks::HookWorld::NONE,
             };
             let mut cx = crate::mob::MobContext {
                 path_budget: u64::MAX,

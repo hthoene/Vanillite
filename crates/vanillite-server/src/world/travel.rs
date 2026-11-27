@@ -259,7 +259,7 @@ impl ServerWorld {
             },
             ..vanillite_game::hooks::Event::new(vanillite_abi::event::ENTITY_PORTAL)
         };
-        hooks.event(&mut ev);
+        hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
         if ev.cancelled {
             return None;
         }
@@ -1286,28 +1286,6 @@ impl ServerWorld {
                 &self.survival.join_weather(),
             );
             data.connection.movement.restart_client_load_timer();
-            // `PlayerList.respawn`: the deplete sound of a respawn anchor at the respawn
-            // position (not after the credits).
-            if keep_all == Some(false)
-                && let Some(r) = data.survival.respawn.as_ref()
-                && r.dimension == self.dimension
-                && self.level.block(r.pos).block() == vanillite_data::block::ids::RESPAWN_ANCHOR
-            {
-                use vanillite_base::random::RandomSource;
-                let seed = self.level.random().next_long();
-                sink.send(&vanillite_protocol::packets::play::clientbound::Sound::at(
-                    vanillite_protocol::packets::play::clientbound::SoundEvent(i32::from(
-                        vanillite_game::block::sound_id("block.respawn_anchor.deplete"),
-                    )),
-                    vanillite_protocol::packets::play::clientbound::SoundSource::Blocks,
-                    f64::from(r.pos.x),
-                    f64::from(r.pos.y),
-                    f64::from(r.pos.z),
-                    1.0,
-                    1.0,
-                    seed,
-                ));
-            }
         } else {
             // `ServerPlayer.teleport` to another dimension; `triggerDimensionChangeTriggers`
             // forgets the Nether entry outside the Nether.
@@ -1851,7 +1829,7 @@ impl ServerWorld {
             to: vanillite_game::hooks::Place::at(to),
             ..vanillite_game::hooks::Event::new(vanillite_abi::event::ENTITY_PORTAL)
         };
-        hooks.event(&mut ev);
+        hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
         let new = ev.to.vec();
         if ev.cancelled {
             GatewayExit::Cancelled

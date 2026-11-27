@@ -342,6 +342,10 @@ impl PlayLevel for WorldLevel<'_> {
         Some(self.level)
     }
 
+    fn hook_world(&self) -> vanillite_game::hooks::HookWorld<'_> {
+        vanillite_game::hooks::HookWorld::of(self.level)
+    }
+
     fn level(&self) -> Option<&Level> {
         Some(self.level)
     }

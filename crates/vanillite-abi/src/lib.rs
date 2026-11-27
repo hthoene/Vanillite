@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 11;
+pub const ABI_MINOR: u16 = 12;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -387,7 +387,10 @@ abi! {
             /// An explosion is about to happen ([`GameEvent`]: `entity` its source or
             /// [`Uuid::NIL`] for a block (`pos`, `state`: a bed or respawn anchor), `to` its
             /// centre, `amount` its radius (changeable), `flags` from [`explode_flag`]
-            /// (changeable)); cancellable. Since ABI 1.6.
+            /// (changeable)); cancellable. Since ABI 1.6. `text` names the blocks (not air) it
+            /// would blow up as `x,y,z;x,y,z`, and `text_out` in the same form replaces that
+            /// list: only the blocks named there are destroyed (servers before 0.1.0-beta.3 leave
+            /// `text` empty and ignore `text_out`).
             ENTITY_EXPLODE = 43,
             /// A projectile is launched ([`GameEvent`]: `entity` the projectile,
             /// `entity_type`, `other` its shooter); cancellable: it is removed. Since ABI 1.6.
@@ -468,7 +471,9 @@ abi! {
             /// ABI 1.6.
             STRUCTURE_GROW = 70,
             /// A piston extends (`cause` 1) or retracts (0) ([`GameEvent`]: `pos`, `state`,
-            /// `value` its facing as `Direction` index); cancellable. Since ABI 1.6.
+            /// `value` its facing as `Direction` index); cancellable. Since ABI 1.6. `text`
+            /// names the blocks it moves, then those it breaks, as `x,y,z;x,y,z` (empty when it
+            /// moves none; servers before 0.1.0-beta.3 leave it empty).
             BLOCK_PISTON = 71,
             /// A player changes a sign's text ([`GameEvent`]: `player`, `pos`, `flags` 1 for
             /// the front side, `text` the lines as a JSON array of strings, `text_out`
@@ -839,6 +844,9 @@ abi! {
             AIR = 15,
             /// Ticks it still burns.
             FIRE_TICKS = 16,
+            /// Ignored by the night skip: counts as sleeping while another player sleeps
+            /// (Bukkit's `setSleepingIgnored`; not saved). Since ABI 1.12.
+            SLEEPING_IGNORED = 17,
         }
         /// Flags of `entity_effect_add`. Since ABI 1.5.
         pub mod effect_flag: u32 {
@@ -1238,6 +1246,9 @@ abi! {
             SNEAKING = 20,
             /// Sprinting (read only).
             SPRINTING = 21,
+            /// The entity's network id in packets (`Entity.getId`, Bukkit's `getEntityId`;
+            /// read only). Since ABI 1.12.
+            NETWORK_ID = 22,
         }
         /// Attribute modifier operations (`entity_attribute_modifier`), as `/attribute`.
         /// Since ABI 1.6.
@@ -2413,7 +2424,11 @@ abi! {
             pub cancel_task: unsafe extern "C" fn(PluginId, u64) -> Status,
             /// Subscribes to an event kind with a priority (`load` only).
             pub subscribe: unsafe extern "C" fn(PluginId, u32, i32, EventFn, *mut c_void) -> Status,
-            /// Adds a command tree (`load` only).
+            /// Adds a command tree. Since ABI 1.12 also after `load` (Bukkit plugins register
+            /// commands when they are enabled): the server adds the trees registered during a
+            /// tick at its next tick and sends every player its command tree again. A top-level
+            /// name that already exists is skipped; trees cannot be removed (hide them with a
+            /// node permission the plugin's permission provider denies).
             pub register_command: unsafe extern "C" fn(PluginId, *const CommandSpec) -> Status,
             /// Becomes the permission provider (`load` only; one per server).
             pub set_permission_provider: unsafe extern "C" fn(PluginId, PermissionFn, *mut c_void) -> Status,

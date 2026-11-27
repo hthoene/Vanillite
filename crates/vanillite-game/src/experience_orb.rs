@@ -44,6 +44,10 @@ pub struct ExperienceOrbData {
     pub following: Option<EntityId>,
     /// `tickCount`.
     pub tick_count: u32,
+    /// `remainingFireTicks`: lava and fire set orbs burning.
+    pub fire_ticks: i32,
+    /// The state of the orb's own random (`Entity.random`).
+    pub random_state: i64,
     /// `fallDistance`.
     pub fall_distance: f64,
 }
@@ -58,6 +62,8 @@ impl ExperienceOrbData {
             health: DEFAULT_HEALTH,
             following: None,
             tick_count: 0,
+            fire_ticks: 0,
+            random_state: 0,
             fall_distance: 0.0,
         }
     }
@@ -185,13 +191,13 @@ pub(crate) fn spawn(
     value: i32,
 ) -> EntityId {
     // The orb's own random (seeded from the entity seed stream): the yaw, then the motion.
-    let (y_rot, mut motion) = {
+    let (y_rot, mut motion, random_state) = {
         let mut r = LegacyRandom::new(crate::mob::new_entity_seed());
         let y_rot = r.next_float() * 360.0;
         let x = (r.next_double() * 0.2 - 0.1) * 2.0;
         let y = r.next_double() * 0.2 * 2.0;
         let z = (r.next_double() * 0.2 - 0.1) * 2.0;
-        (y_rot, Vec3::new(x, y, z))
+        (y_rot, Vec3::new(x, y, z), r.state())
     };
     let length_sqr = direction.length_sqr();
     let mut at = pos;
@@ -220,7 +226,9 @@ pub(crate) fn spawn(
         x_rot: 0.0,
         y_head_rot: y_rot,
     };
-    let id = entities.spawn_experience_orb(new, ExperienceOrbData::new(value));
+    let mut data = ExperienceOrbData::new(value);
+    data.random_state = random_state;
+    let id = entities.spawn_experience_orb(new, data);
     entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
     id
 }
@@ -249,6 +257,22 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     if pos.y < f64::from(level.min_y()) - 64.0 {
         level.entities.despawn(id);
         return;
+    }
+    // `baseTick`: a burning orb takes one fire damage every second outside lava.
+    if data.fire_ticks > 0 {
+        let in_lava =
+            crate::survival::blocks::fluid_contact(&level.view(), facts(), aabb, pos).in_lava();
+        if data.fire_ticks % 20 == 0 && !in_lava {
+            data.health -= 1;
+            if data.health <= 0 {
+                level.entities.despawn(id);
+                return;
+            }
+        }
+        data.fire_ticks -= 1;
+    }
+    if let Some(mut e) = level.entities.store.get_mut(id) {
+        e.set_flags(EntityFlags::ON_FIRE, data.fire_ticks > 0);
     }
     // `baseTick`: `updateFluidInteraction` (water resets the fall distance, flowing water and
     // lava push the orb), then `ExperienceOrb.tick` swims up with its eyes in water.
@@ -282,10 +306,12 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     }
     let feet = BlockPos::new(floor(pos.x), floor(pos.y), floor(pos.z));
     if crate::block::fluid::is_lava(level.fluid(feet)) {
-        let r = level.random();
+        // `this.random`: the orb's own random.
+        let mut r = LegacyRandom::from_state(data.random_state);
         let x = (r.next_float() - r.next_float()) * 0.2;
-        let y = 0.2_f32;
         let z = (r.next_float() - r.next_float()) * 0.2;
+        data.random_state = r.state();
+        let y = 0.2_f32;
         v = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
     }
     if let Some(d) = level.entities.experience_orb_mut(id) {
@@ -300,15 +326,17 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     if following.is_none() && colliding {
         let next = aabb.offset(v.x, v.y, v.z);
         if collides(level, &next) {
-            v = ORB_RANDOM.with_borrow_mut(|r| {
-                crate::item_entity::move_towards_closest_space(
-                    pos,
-                    (aabb.min_y + aabb.max_y) / 2.0,
-                    v,
-                    level,
-                    &mut || r.next_float(),
-                )
-            });
+            let mut r = LegacyRandom::from_state(data.random_state);
+            v = crate::item_entity::move_towards_closest_space(
+                pos,
+                (aabb.min_y + aabb.max_y) / 2.0,
+                v,
+                level,
+                &mut || r.next_float(),
+            );
+            if let Some(d) = level.entities.experience_orb_mut(id) {
+                d.random_state = r.state();
+            }
             needs_sync = true;
         }
     }
@@ -370,6 +398,10 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     // cacti, plates and tripwire after the move is stored).
     let dims = level.entities.store.get(id).map(|e| e.dims());
     let mut cacti = 0;
+    // The `InsideBlockEffectType`s of the walk: fire damage, lava, extinguishing.
+    let mut fire: Option<f32> = None;
+    let mut lava = false;
+    let mut extinguish = false;
     let mut reacting = Vec::new();
     let mut bubbles = [None; 4];
     if let Some(dims) = dims {
@@ -377,12 +409,34 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         let view = level.view();
         let walker = crate::survival::inside::Walker {
             blocks: &view,
-            facts: None,
+            facts: Some(facts()),
             dims,
             fast_fall: false,
         };
         let mut count = 0;
         walker.walk(&way, |cell| {
+            let block = cell.state.block();
+            if cell.in_fluid {
+                let fluid = cell.state.fluid_state();
+                if facts().is_lava(fluid) {
+                    lava = true;
+                } else if facts().is_water(fluid) {
+                    extinguish = true;
+                }
+            }
+            if cell.in_block {
+                use vanillite_data::block::ids;
+                if block == ids::LAVA_CAULDRON {
+                    lava = true;
+                } else if block == ids::WATER_CAULDRON
+                    || block == ids::POWDER_SNOW_CAULDRON
+                    || block == ids::POWDER_SNOW
+                {
+                    extinguish = true;
+                } else if let Some(damage) = facts().fire_damage(cell.state) {
+                    fire = Some(fire.map_or(damage, |d: f32| d.max(damage)));
+                }
+            }
             if cell.in_block {
                 if cell.state.block() == vanillite_data::block::ids::CACTUS {
                     cacti += 1;
@@ -409,6 +463,9 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         } else {
             fall_distance = 0.0;
         }
+    }
+    if !burn_effects(level, id, new_pos, fire, lava, extinguish) {
+        return;
     }
     // `getAirDrag()` (0.98F) times the block friction, in float.
     let mut friction: f32 = 0.98;
@@ -477,6 +534,115 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     if expired {
         level.entities.despawn(id);
     }
+}
+
+/// `ExperienceOrb.getSoundSource`: `SoundSource.AMBIENT`.
+const SOUND_AMBIENT: u8 = 8;
+
+use crate::survival::blocks::fluid_facts as facts;
+
+/// The fire part of `applyEffectsFromBlocks` (`insideEffectCollector.applyAndClear`, then
+/// rain): fire blocks ignite the orb and hurt it (`BaseFireBlock.fireIgnite`), lava ignites it
+/// for 15 s and hurts it by 4 (`lavaHurt`, with its burn sound from the orb's random), water
+/// and powder snow put it out (`clearFire`). Whether the orb is still there.
+fn burn_effects(
+    level: &mut Level,
+    id: EntityId,
+    pos: Vec3,
+    fire: Option<f32>,
+    lava: bool,
+    extinguish: bool,
+) -> bool {
+    let Some(d) = level.entities.experience_orb(id).copied() else {
+        return false;
+    };
+    if fire.is_none() && !lava && d.fire_ticks == 0 {
+        return true;
+    }
+    let mut d = d;
+    let previous = d.fire_ticks;
+    let was_on_fire = previous > 0;
+    let mut removed = false;
+    // `ExperienceOrb.hurtServer`: nothing once the orb is gone (`isRemoved`).
+    let mut hurt = |d: &mut ExperienceOrbData, damage: f32| {
+        if removed {
+            return false;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        let health = (d.health as f32 - damage) as i32;
+        d.health = health;
+        removed = health <= 0;
+        true
+    };
+    if let Some(damage) = fire {
+        if d.fire_ticks < 0 {
+            d.fire_ticks += 1;
+        }
+        if d.fire_ticks >= 0 {
+            d.fire_ticks = d.fire_ticks.max(160);
+        }
+        hurt(&mut d, damage);
+    }
+    let mut burn_pitch = None;
+    if lava {
+        d.fire_ticks = d.fire_ticks.max(300);
+        if hurt(&mut d, 4.0) {
+            let mut r = LegacyRandom::from_state(d.random_state);
+            burn_pitch = Some(2.0 + r.next_float() * 0.4);
+            d.random_state = r.state();
+        }
+    }
+    if extinguish {
+        d.fire_ticks = d.fire_ticks.min(0);
+    }
+    if let Some(pitch) = burn_pitch {
+        level.play_sound(
+            None,
+            pos.x,
+            pos.y,
+            pos.z,
+            crate::block::sound_id("minecraft:entity.generic.burn"),
+            SOUND_AMBIENT,
+            0.4,
+            pitch,
+        );
+    }
+    if removed {
+        level.entities.despawn(id);
+        return false;
+    }
+    if d.fire_ticks > 0 {
+        // `isInRain`.
+        let feet = BlockPos::new(floor(pos.x), floor(pos.y), floor(pos.z));
+        let top = BlockPos::new(feet.x, floor(pos.y + 0.5), feet.z);
+        if level.is_raining_at(feet) || level.is_raining_at(top) {
+            d.fire_ticks = d.fire_ticks.min(0);
+        }
+    }
+    if was_on_fire && d.fire_ticks <= 0 {
+        // `playEntityOnFireExtinguishedSound`.
+        let mut r = LegacyRandom::from_state(d.random_state);
+        let pitch = 1.6 + (r.next_float() - r.next_float()) * 0.4;
+        d.random_state = r.state();
+        level.play_sound(
+            None,
+            pos.x,
+            pos.y,
+            pos.z,
+            crate::block::sound_id("minecraft:entity.generic.extinguish_fire"),
+            SOUND_AMBIENT,
+            0.7,
+            pitch,
+        );
+    }
+    // Not burning and not ignited this tick: `-getFireImmuneTicks()`.
+    if d.fire_ticks <= 0 && d.fire_ticks <= previous {
+        d.fire_ticks = 0;
+    }
+    if let Some(slot) = level.entities.experience_orb_mut(id) {
+        *slot = d;
+    }
+    true
 }
 
 /// `isInWater()` (`wasTouchingWater`): water reaches into the box shrunk by 0.001.

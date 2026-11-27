@@ -36,7 +36,7 @@ pub(super) struct GradientNoise {
     /// Per index `i`: `perms[i]`, `perms[i + 1]` and the gradient indices of both (`& 15`), one
     /// byte each from the lowest. Perlin noise always reads the permutations of `i` and
     /// `i + 1` together, so one entry answers both (see [`Pair`]).
-    pairs: [u32; 256],
+    pub pairs: [u32; 256],
     pub offset_x: f64,
     pub offset_y: f64,
     pub offset_z: f64,
@@ -112,12 +112,6 @@ impl Pair {
     pub fn second_grad(self) -> &'static [f32; 3] {
         &GRADIENT[((self.0 >> 24) & 15) as usize]
     }
-}
-
-/// `Gradient.dot(x, y, z)` of a gradient.
-#[inline(always)]
-pub(super) fn dot(g: &[f32; 3], x: f32, y: f32, z: f32) -> f32 {
-    g[0] * x + g[1] * y + g[2] * z
 }
 
 /// `Gradient.dotXz(x, z)`.

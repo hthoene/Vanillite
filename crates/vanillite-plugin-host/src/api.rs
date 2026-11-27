@@ -621,17 +621,28 @@ unsafe extern "C" fn player_has_permission(
 
 /// The permission provider's answer, or the default (operators have every node).
 pub(crate) fn has_permission(inner: &Inner, player: u128, node: &str, operator: bool) -> bool {
+    provider_answer(inner, player, node)
+        .unwrap_or_else(|| default_permission(inner, node, operator))
+}
+
+/// The provider's explicit answer, else a registered default; `None` when nobody decides.
+pub(crate) fn permission_answer(
+    inner: &Inner,
+    player: u128,
+    node: &str,
+    operator: bool,
+) -> Option<bool> {
+    provider_answer(inner, player, node).or_else(|| registered_default(inner, node, operator))
+}
+
+/// What the permission provider answers, if it decides the node.
+fn provider_answer(inner: &Inner, player: u128, node: &str) -> Option<bool> {
     let provider = inner
         .permission
         .read()
         .unwrap_or_else(PoisonError::into_inner);
-    let fallback = || default_permission(inner, node, operator);
-    let Some(provider) = provider.as_ref() else {
-        return fallback();
-    };
-    let Some(plugin) = inner.plugin(provider.plugin) else {
-        return fallback();
-    };
+    let provider = provider.as_ref()?;
+    let plugin = inner.plugin(provider.plugin)?;
     let mut answer = abi::permission::UNDEFINED;
     let s = plugin.call("permission check", || {
         // SAFETY: the provider's function and user data are valid for the life of its library.
@@ -645,9 +656,9 @@ pub(crate) fn has_permission(inner: &Inner, player: u128, node: &str, operator: 
         }
     });
     match (s, answer) {
-        (status::OK, abi::permission::ALLOW) => true,
-        (status::OK, abi::permission::DENY) => false,
-        _ => fallback(),
+        (status::OK, abi::permission::ALLOW) => Some(true),
+        (status::OK, abi::permission::DENY) => Some(false),
+        _ => None,
     }
 }
 
@@ -657,16 +668,21 @@ pub(crate) fn has_permission(inner: &Inner, player: u128, node: &str, operator: 
 const DEFAULT_TRUE: [&str; 2] = ["bukkit.command.plugins", "bukkit.command.version"];
 
 fn default_permission(inner: &Inner, node: &str, operator: bool) -> bool {
+    registered_default(inner, node, operator)
+        .unwrap_or_else(|| DEFAULT_TRUE.contains(&node) || operator)
+}
+
+/// The default a plugin registered for a node.
+fn registered_default(inner: &Inner, node: &str, operator: bool) -> Option<bool> {
     let defaults = inner
         .permission_defaults
         .read()
         .unwrap_or_else(PoisonError::into_inner);
-    match defaults.get(node).copied() {
-        Some(abi::permission_default::TRUE) => true,
-        Some(abi::permission_default::FALSE) => false,
-        Some(abi::permission_default::NOT_OP) => !operator,
-        None if DEFAULT_TRUE.contains(&node) => true,
-        _ => operator,
+    match defaults.get(node).copied()? {
+        abi::permission_default::TRUE => Some(true),
+        abi::permission_default::FALSE => Some(false),
+        abi::permission_default::NOT_OP => Some(!operator),
+        _ => Some(operator),
     }
 }
 
@@ -802,7 +818,8 @@ unsafe extern "C" fn subscribe(
 
 unsafe extern "C" fn register_command(id: abi::PluginId, spec: *const abi::CommandSpec) -> Status {
     with(id, |inner, plugin| {
-        if !inner.may_register(plugin) {
+        // Since ABI 1.12 also after `load`: the server adds the tree in its next tick.
+        if !inner.may_register(plugin) && !inner.is_running() {
             return status::WRONG_PHASE;
         }
         // SAFETY: the plugin passes a valid spec or null.

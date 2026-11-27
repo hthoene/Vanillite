@@ -516,9 +516,16 @@ fn head_y_offset(t: &Tick<'_, '_>) -> f32 {
 fn update_fight(t: &mut Tick<'_, '_>) {
     let m = t.mob_ref();
     let progress = m.health / m.max_health();
+    let name = m
+        .custom_name
+        .is_some()
+        .then(|| crate::mob::combat::mob_name(m));
     let uuid = t.core().uuid();
-    t.cx.dragon_events
-        .push(DragonEvent::Update { uuid, progress });
+    t.cx.dragon_events.push(DragonEvent::Update {
+        uuid,
+        progress,
+        name,
+    });
 }
 
 /// `checkCrystals`: heals from the nearest crystal and looks for one every 10 ticks or so.
@@ -767,6 +774,10 @@ pub fn kill(ents: &mut Entities, cx: &mut MobContext, id: EntityId) -> bool {
         return false;
     };
     let progress = m.health / m.max_health();
+    let name = m
+        .custom_name
+        .is_some()
+        .then(|| crate::mob::combat::mob_name(m));
     let Some(in_fight) = m.boss.dragon().map(|s| s.in_fight) else {
         return false;
     };
@@ -779,8 +790,11 @@ pub fn kill(ents: &mut Entities, cx: &mut MobContext, id: EntityId) -> bool {
             context: crate::level::game_event::GameEventContext::of(Some(id)),
         }));
     if in_fight {
-        cx.dragon_events
-            .push(DragonEvent::Update { uuid, progress });
+        cx.dragon_events.push(DragonEvent::Update {
+            uuid,
+            progress,
+            name,
+        });
         cx.dragon_events.push(DragonEvent::Killed { uuid });
     }
     true
@@ -799,8 +813,21 @@ pub fn filter_hurt(
     amount: f32,
 ) -> Result<f32, bool> {
     let _ = (level, cx);
-    let is_arrow_or_charge = source.direct.is_some_and(|d| ents.arrow(d).is_some());
+    let is_arrow_or_charge = source
+        .direct
+        .is_some_and(|d| crate::mob::projectile::is_arrow_or_wind_charge(ents, d));
     let cause_is_player = source.cause.is_some_and(|c| ents.player(c).is_some());
+    let sitting = ents
+        .mob(target)
+        .and_then(|m| m.boss.dragon())
+        .is_some_and(|s| phase::on_hurt(s.phase, true, 1.0) == 0.0);
+    if is_arrow_or_charge
+        && sitting
+        && let Some(a) = source.direct.and_then(|d| ents.arrow_mut(d))
+    {
+        // `AbstractDragonSittingPhase.onHurt`: `getDirectEntity().igniteForSeconds(1)`.
+        a.fire = a.fire.max(20);
+    }
     let m = ents.mob_mut(target).ok_or(false)?;
     let health = m.health;
     let s = m.boss.dragon_mut().ok_or(false)?;
@@ -911,6 +938,14 @@ pub fn ignores_knockback(ents: &Entities, id: EntityId) -> bool {
     ents.mob(id)
         .and_then(|m| m.boss.dragon())
         .is_some_and(|s| s.phase.is_sitting())
+}
+
+/// The seeds the eight `EnderDragonPart`s take from the entity seed stream: the dragon's
+/// constructor creates them right after the dragon took its own.
+pub fn part_seeds() {
+    for _ in 0..PARTS.len() {
+        crate::mob::new_entity_seed();
+    }
 }
 
 /// The part a network id names (`dragon id + 1 ..= + 8`), if `target` is a dragon.

@@ -384,6 +384,11 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 o.push(u8::from(b.paddles.1))
             });
         }
+        if all || b.bubble_time != 0 {
+            item(&mut out, 13, serializer::INT, |o| {
+                write_varint(o, b.bubble_time)
+            });
+        }
     }
     if let Some(m) = entities.minecart(entity.id()) {
         minecart_data(&mut out, m, all);

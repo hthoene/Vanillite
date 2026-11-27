@@ -1,0 +1,49 @@
+{
+  "description": "A horse tied to a no-AI happy ghast 11 blocks away, and a no-AI happy ghast tied to a fence knot 13 blocks away: the leashed happy ghast's snap and elastic distances (16 and 10) and the four-point leash between a quad holder and a horse (SHARED_QUAD_ATTACHMENT_POINTS, wrench scaled by 0.25); the ghast shows IS_LEASH_HOLDER (notifyLeashHolder).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      -16,
+      -61,
+      -16
+    ],
+    [
+      31,
+      -45,
+      31
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        16,
+        -60,
+        24
+      ],
+      "block": "minecraft:oak_fence"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:happy_ghast 2.5 -59 8.5 {UUID:[I;1,2,3,4],NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:horse 13.5 -60 8.5 {leash:{UUID:[I;1,2,3,4]}}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:happy_ghast 2.5 -59 24.5 {NoAI:1b,leash:[I;16,-60,24]}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

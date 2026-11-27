@@ -702,6 +702,7 @@ impl Digging {
                 // the block as it is and corrects the client.
                 if ctx.hooks.wants(vanillite_abi::event::PLAYER_INTERACT)
                     && !ctx.hooks.player_interact(
+                        ctx.level.hook_world(),
                         ctx.actor.uuid,
                         vanillite_abi::interact::LEFT_CLICK_BLOCK,
                         hand_index(Hand::MainHand),
@@ -832,7 +833,10 @@ impl Digging {
         if block_action_restricted(ctx, pos) {
             return false;
         }
-        if !ctx.hooks.block_break(ctx.actor.uuid, pos, state) {
+        if !ctx
+            .hooks
+            .block_break(ctx.level.hook_world(), ctx.actor.uuid, pos, state)
+        {
             block_update(sink, ctx.level, pos);
             return false;
         }
@@ -1126,6 +1130,7 @@ impl Digging {
                 // `mayInteract` refuses: Vanilla answers with the build limit message.
                 build_limit_message(sink, true, max_y);
             } else if !ctx.hooks.player_interact(
+                ctx.level.hook_world(),
                 ctx.actor.uuid,
                 vanillite_abi::interact::USE_ON_BLOCK,
                 hand_index(p.hand),
@@ -1682,7 +1687,7 @@ impl Digging {
                 state: Some(ctx.level.block(target)),
                 ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_IGNITE)
             };
-            ctx.hooks.event(&mut ev);
+            ctx.hooks.event(ctx.level.hook_world(), &mut ev);
             if ev.cancelled {
                 return false;
             }
@@ -1806,7 +1811,10 @@ impl Digging {
         if !ctx.level.is_unobstructed(state, target) {
             return false;
         }
-        if !ctx.hooks.block_place(ctx.actor.uuid, target, state) {
+        if !ctx
+            .hooks
+            .block_place(ctx.level.hook_world(), ctx.actor.uuid, target, state)
+        {
             return false;
         }
         if !ctx.level.set_block(target, state, update::ALL_IMMEDIATE) {
@@ -2029,6 +2037,7 @@ impl Digging {
             return false;
         }
         if !ctx.hooks.player_interact(
+            ctx.level.hook_world(),
             ctx.actor.uuid,
             vanillite_abi::interact::USE_ITEM,
             hand_index(hand),

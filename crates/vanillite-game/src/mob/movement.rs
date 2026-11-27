@@ -8,7 +8,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_protocol::SharedPacket;
-use vanillite_protocol::packets::play::clientbound::{Animate, BlockDestruction, SoundSource};
+use vanillite_protocol::packets::play::clientbound::{BlockDestruction, SoundSource};
 
 use super::common::MoveToBlock;
 use super::goals::{Goal, flag, reduced};
@@ -264,7 +264,7 @@ fn has_controlling_passenger(t: &Tick<'_, '_>) -> bool {
 }
 
 /// `DoorBlock.isWoodenDoor`: a door that opens by hand.
-fn is_wooden_door(state: BlockState) -> bool {
+pub(crate) fn is_wooden_door(state: BlockState) -> bool {
     state.block().name().ends_with("_door")
         && crate::block::redstone::BlockSet::of(state.block()).can_open_by_hand
 }
@@ -786,16 +786,7 @@ pub fn break_progress(break_time: i32, total: i32) -> i32 {
 
 /// `swingForAttack` when not swinging: the arm swing animation.
 fn swing(t: &mut Tick<'_, '_>) {
-    let id = t.id;
-    let network_id = t.core().network_id().0;
-    t.env.out.push(Effect::Tracking {
-        entity: id,
-        with_self: false,
-        packet: SharedPacket::of(&Animate {
-            entity_id: network_id,
-            action: 0,
-        }),
-    });
+    crate::mob::brain::behavior::swing_for_attack(t);
 }
 
 /// `level.playSound(null, pos, sound, source, volume, pitch)` at a block.

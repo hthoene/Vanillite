@@ -349,21 +349,17 @@ pub fn can_mate(m: &MobData) -> bool {
 pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let food = crate::mob::animal::is_food(crate::mob::Kind::Sniffer, ix.stack.item);
     let r = crate::mob::animal::animal_interact_pub(ix);
-    if r.consumes()
-        && food
-        && let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos())
-    {
+    if r.consumes() && food && ix.ents.store.get(ix.target).is_some() {
         let pitch = 0.8 + ix.env.random.next_float() * 0.4;
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
+        crate::survival::play_entity_sound(
             ix.env.out,
+            ix.ents,
             None,
-            pos,
+            ix.target,
             "minecraft:entity.sniffer.eat",
             vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
             1.0,
             pitch,
-            seed,
         );
     }
     r

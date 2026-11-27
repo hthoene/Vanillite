@@ -26,7 +26,7 @@ pub fn register_goals(m: &mut MobData) {
     tg.add(2, raider::hurt_by(Ignore::Raiders, true));
     tg.add(3, target_players(true));
     // Baby villagers are spared.
-    tg.add(4, target_mobs(true, common::villager));
+    tg.add(4, target_mobs(true, common::adult_villager));
     tg.add(4, target_mobs(true, common::iron_golem));
 }
 
@@ -122,6 +122,52 @@ fn roar(t: &mut Tick<'_, '_>) {
     }
     let id = t.id;
     living::entity_event(t, id, 69);
+}
+
+/// `Ravager.blockedByItem`: a defender blocked its bite with a shield. Unless it is roaring,
+/// it is stunned for 40 ticks (and the defender pushed off) or throws the defender back.
+pub fn blocked_by_item(t: &mut Tick<'_, '_>, defender: EntityId) {
+    if st(t.mob_ref()).roar_tick != 0 {
+        return;
+    }
+    if t.mob().random.next_double() < 0.5 {
+        st_mut(t.mob()).stunned_tick = 40;
+        sound(t, "minecraft:entity.ravager.stunned", 1.0, 1.0);
+        let id = t.id;
+        living::entity_event(t, id, 39);
+        // `defender.push(this)`.
+        let Some(dp) = t.ents.store.get(defender).map(|e| e.pos()) else {
+            return;
+        };
+        let p = t.pos();
+        let (mut xa, mut za) = (p.x - dp.x, p.z - dp.z);
+        let mut dd = xa.abs().max(za.abs());
+        if dd >= f64::from(0.01_f32) {
+            dd = dd.sqrt();
+            xa /= dd;
+            za /= dd;
+            let pow = (1.0 / dd).min(1.0);
+            xa = xa * pow * f64::from(0.05_f32);
+            za = za * pow * f64::from(0.05_f32);
+            if let Some(mut e) = t.ents.store.get_mut(defender) {
+                let v = e.as_ref().velocity();
+                e.set_velocity(Vec3::new(v.x - xa, v.y, v.z - za));
+                e.set_flags(EntityFlags::HAS_IMPULSE, true);
+            }
+            if t.ents.riding.passengers_of(id).is_empty() {
+                let v = t.velocity();
+                t.set_velocity(Vec3::new(v.x + xa, v.y, v.z + za));
+                t.core_mut().set_flags(EntityFlags::HAS_IMPULSE, true);
+            }
+        }
+    } else {
+        let from = t.pos();
+        strong_knockback(t, defender, from);
+    }
+    // `defender.syncVelocity = true`.
+    if let Some(mut e) = t.ents.store.get_mut(defender) {
+        e.set_flags(EntityFlags::HURT_MARKED, true);
+    }
 }
 
 /// `strongKnockback`: a push away of four blocks per block of distance.

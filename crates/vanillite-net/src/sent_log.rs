@@ -126,14 +126,19 @@ impl SentLog {
 
     /// The recorded packets, oldest first: age, state, name and size.
     pub(crate) fn dump(&self) -> String {
-        self.dump_at(self.now_ms())
+        self.dump_at(self.now_ms(), SLOTS)
     }
 
-    /// [`SentLog::dump`] with ages relative to `now` (milliseconds since the start).
-    fn dump_at(&self, now: u64) -> String {
+    /// The last `count` recorded packets, like [`SentLog::dump`].
+    pub(crate) fn dump_last(&self, count: usize) -> String {
+        self.dump_at(self.now_ms(), count)
+    }
+
+    /// The last `count` entries with ages relative to `now` (milliseconds since the start).
+    fn dump_at(&self, now: u64, count: usize) -> String {
         let next = self.next.load(Ordering::Relaxed);
         let mut out = String::new();
-        for k in 0..SLOTS {
+        for k in SLOTS.saturating_sub(count)..SLOTS {
             let index = next.wrapping_add(k) & SLOT_MASK;
             let Some(packed) = self.slots.get(index).map(|s| s.load(Ordering::Relaxed)) else {
                 continue;
@@ -195,7 +200,7 @@ mod tests {
             log.body(0, &[i, 0, 0]);
         }
         // Ages relative to a fixed time: the clock may advance during the test.
-        let dump = log.dump_at(0);
+        let dump = log.dump_at(0, SLOTS);
         assert_eq!(dump.matches(", ").count(), SLOTS - 1);
         assert!(dump.starts_with("-0ms "), "{dump}");
         assert!(dump.ends_with(&format!("{} 3B", ids::play::clientbound::NAMES[99])));

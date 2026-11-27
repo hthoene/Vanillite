@@ -219,16 +219,28 @@ impl<'a> WorldGenRegion<'a> {
         &mut self.random
     }
 
+    #[inline]
     fn index(&self, chunk_x: i32, chunk_z: i32) -> usize {
-        let dx = chunk_x - self.center.x;
-        let dz = chunk_z - self.center.z;
-        assert!(
-            dx.abs() <= self.radius && dz.abs() <= self.radius,
+        let side = (2 * self.radius + 1) as u32;
+        let column = chunk_x
+            .wrapping_sub(self.center.x)
+            .wrapping_add(self.radius) as u32;
+        let row = chunk_z
+            .wrapping_sub(self.center.z)
+            .wrapping_add(self.radius) as u32;
+        if column >= side || row >= side {
+            self.unavailable(chunk_x, chunk_z);
+        }
+        (row * side + column) as usize
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn unavailable(&self, chunk_x: i32, chunk_z: i32) -> ! {
+        panic!(
             "requested chunk [{chunk_x}, {chunk_z}] unavailable while generating {:?}",
             self.center
         );
-        let side = 2 * self.radius + 1;
-        ((dz + self.radius) * side + dx + self.radius) as usize
     }
 
     /// `hasChunk(x, z)`.
@@ -309,6 +321,30 @@ impl<'a> WorldGenRegion<'a> {
 
     /// `getBiome(pos)` through the region's `BiomeManager`.
     pub fn biome(&self, pos: BlockPos) -> BiomeId {
+        // The zoom picks one of the eight quarts around `pos`: when they all hold the same
+        // biome (everywhere but near biome borders), that is the answer without its hashing.
+        let (qx, qy, qz) = (
+            pos.x.wrapping_sub(2) >> 2,
+            pos.y.wrapping_sub(2) >> 2,
+            pos.z.wrapping_sub(2) >> 2,
+        );
+        if self.has_chunk(qx >> 2, qz >> 2) && self.has_chunk((qx + 1) >> 2, (qz + 1) >> 2) {
+            if qx & 3 != 3 && qz & 3 != 3 {
+                // All eight in one chunk.
+                if let Some(biome) =
+                    self.chunks[self.index(qx >> 2, qz >> 2)].uniform_noise_biome(qx, qy, qz)
+                {
+                    return biome;
+                }
+            } else {
+                let first = self.noise_biome(qx, qy, qz);
+                if (1..8).all(|i| {
+                    self.noise_biome(qx + (i >> 2), qy + ((i >> 1) & 1), qz + (i & 1)) == first
+                }) {
+                    return first;
+                }
+            }
+        }
         self.biome_manager
             .get_biome(pos.x, pos.y, pos.z, &mut |qx, qy, qz| {
                 self.noise_biome(qx, qy, qz)

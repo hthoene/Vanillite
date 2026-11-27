@@ -671,6 +671,10 @@ fn summon_one(
             // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
             return Err(failed());
         }
+        // `Entity.load` of the given data: its `UUID` replaces the constructor's.
+        if matches!(nbt.get("UUID"), Some(Tag::IntArray(i)) if i.len() == 4) {
+            env.level.entities.store.set_uuid(id, uuid);
+        }
         // The given tags on top of what the mob has (like `data merge`).
         let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
         // `Entity.load` of the given tags: without `Health` the mob has its full health.
@@ -752,13 +756,19 @@ fn summon_one(
             ]),
         );
         full.insert("UUID", vanillite_game::mob::nbt::uuid_tag(uuid));
-        if !env.level.load_entity(full) {
+        // An arrow's own random starts from the seed its constructor took.
+        let seed = fresh_seed.filter(|_| vanillite_game::mob::projectile::is_arrow_kind(kind));
+        if !env.level.load_entity_seeded(full, seed) {
             return Err(failed());
         }
         let entities = &mut env.level.entities;
         let id = *entities.store.columns().id.last().ok_or_else(failed)?;
         if entities.store.get(id).is_none_or(|e| e.uuid() != uuid) {
             return Err(failed());
+        }
+        // The orb's own random: the seed its constructor took.
+        if let (Some(seed), Some(orb)) = (fresh_seed, entities.experience_orb_mut(id)) {
+            orb.random_state = vanillite_base::random::LegacyRandom::new(seed).state();
         }
         if !entities.spawned(id, reason, 0) {
             return Err(failed());

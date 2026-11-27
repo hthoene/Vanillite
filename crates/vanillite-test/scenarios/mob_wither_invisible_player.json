@@ -1,0 +1,56 @@
+{
+  "description": "A wither ignores an invisible player 8 blocks away (getVisibilityPercent: 0.7 times the armour cover, at least 0.1, of the 20 and 40 block ranges of its target goal and head scan).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        180,
+        0
+      ]
+    },
+    {
+      "name": "wither",
+      "type": "minecraft:wither",
+      "pos": [
+        8.5,
+        -60.0,
+        4.5
+      ],
+      "seed": 31,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "steve",
+      "effect": "minecraft:invisibility",
+      "duration": 600
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

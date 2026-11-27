@@ -532,19 +532,15 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
 
 /// `level.playSound(player, this, sound, NEUTRAL, 2, 1)`.
 fn sound_for_player(ix: &mut Interact<'_, '_>, sound: &str) {
-    let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) else {
-        return;
-    };
-    let seed = crate::survival::sound_seed();
-    crate::survival::play_sound(
+    crate::survival::play_entity_sound(
         ix.env.out,
+        ix.ents,
         Some(ix.player),
-        pos,
+        ix.target,
         sound,
         vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
         2.0,
         1.0,
-        seed,
     );
 }
 

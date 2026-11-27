@@ -271,7 +271,7 @@ fn move_allowed(
         item: crate::hooks::item_snbt(&stack.with_count(1)),
         ..crate::hooks::Event::new(vanillite_abi::event::INVENTORY_MOVE_ITEM)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
     !ev.cancelled
 }
 

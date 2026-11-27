@@ -97,7 +97,7 @@ pub fn block_drop_event(
         value: i64::from(experience),
         ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_DROP)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
     if ev.cancelled {
         return None;
     }

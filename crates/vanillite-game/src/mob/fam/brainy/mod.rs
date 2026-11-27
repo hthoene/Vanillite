@@ -146,6 +146,17 @@ pub fn sound_at(
     crate::survival::play_sound(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
 
+/// `level.playSound(null, mob, sound, source, volume, pitch)`: a sound that follows the mob.
+pub fn entity_sound_at(
+    t: &mut Tick<'_, '_>,
+    sound: &str,
+    source: vanillite_protocol::packets::play::clientbound::SoundSource,
+    volume: f32,
+    pitch: f32,
+) {
+    crate::survival::play_entity_sound(t.env.out, t.ents, None, t.id, sound, source, volume, pitch);
+}
+
 /// `getVoicePitch`.
 pub fn voice_pitch(m: &mut MobData) -> f32 {
     use vanillite_base::random::RandomSource;
@@ -493,11 +504,10 @@ impl FamilyHooks for Hooks {
     fn experience_reward(m: &mut MobData) -> i32 {
         use vanillite_base::random::RandomSource;
         match m.kind {
-            // `xpReward` with the equipment bonus of `Mob.getBaseExperienceReward`.
-            Kind::Piglin | Kind::PiglinBrute => {
-                let base = if m.kind == Kind::Piglin { 5 } else { 20 };
-                base + equipment_xp(m)
-            }
+            // `Piglin.getBaseExperienceReward`: only `xpReward`; the brute has the equipment bonus
+            // of `Mob.getBaseExperienceReward`.
+            Kind::Piglin => 5,
+            Kind::PiglinBrute => crate::mob::fam::undead::zombies::equipment_experience(m, 20),
             Kind::Hoglin => {
                 if m.baby {
                     3
@@ -932,18 +942,6 @@ fn animal_group_baby(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         m.age = -24000;
         m.baby = true;
     }
-}
-
-/// The experience bonus of the equipment (`Mob.getBaseExperienceReward`): 1–3 per item.
-fn equipment_xp(m: &mut MobData) -> i32 {
-    use vanillite_base::random::RandomSource;
-    let mut xp = 0;
-    for slot in crate::mob::equipment::SLOTS {
-        if !m.equipment.get(slot).is_empty() && m.equipment.drop_chance(slot) <= 1.0 {
-            xp += 1 + m.random.next_int_bounded(3);
-        }
-    }
-    xp
 }
 
 /// `AgeableMob`/`Animal` NBT: `Age`, `ForcedAge`, `InLove`, `LoveCause`.

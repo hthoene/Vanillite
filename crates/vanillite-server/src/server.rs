@@ -318,18 +318,18 @@ impl ServerBuilder {
         let config = Config::load(&dir)?;
         log::info!("Using profile {}", config.profile);
         if !crate::eula::check(&dir).map_err(|e| StartError::io(&dir, e))? {
-            return Err(StartError::Eula);
+            return Err(StartError::Eula(crate::eula::file(&dir)));
         }
 
         // Plugins load first: they register commands, events and slot providers.
         let plugins = crate::plugins::load(&dir, &config);
         let parallel = config.server.tick.parallel_dimensions;
-        // One core stays with the tick threads: dimensions without players sleep between their
-        // ticks, so they do not take a core each (Vanilla: cores minus the server thread).
-        let budget = Arc::new(Budget::new(Limits::detect(
-            config.server.budget.cpu,
-            config.server.budget.memory,
-        )));
+        // One worker per core at a lower OS priority: the tick threads take a core whenever they
+        // need one, generation gets every core they leave.
+        let budget = Arc::new(Budget::new(
+            Limits::detect(config.server.budget.cpu, config.server.budget.memory),
+            config.server.threads.compute_nice,
+        ));
         if let Some(release) = self.memory_release {
             budget.set_memory_release(release);
         }
@@ -589,7 +589,7 @@ impl ServerBuilder {
                 config.properties.enforce_whitelist,
             ),
             handle: std::sync::OnceLock::new(),
-            commands,
+            commands: std::sync::RwLock::new(Arc::new(commands)),
             online_mode: config.properties.online_mode,
             dimensions: dimensions.clone(),
             level,
@@ -607,6 +607,7 @@ impl ServerBuilder {
             templates,
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
+            diagnostics: crate::diagnostics::Diagnostics::new(),
             force_game_mode: config.properties.force_gamemode,
             language: prepared.language,
             broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
@@ -1203,6 +1204,16 @@ impl Server {
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
                 self.accept_joins();
+                if self.global.diagnostics.profiler.is_active() {
+                    // A profile ends while paused too; the paused ticks run no world.
+                    let spent = Duration::from_nanos(clock.now().saturating_sub(started));
+                    self.profile_tick(crate::profiler::ServerLaps {
+                        before: spent,
+                        worlds: Duration::ZERO,
+                        after: Duration::ZERO,
+                        total: spent,
+                    });
+                }
                 self.heartbeat.leave();
                 self.budget.leave_tick(clock.now().saturating_sub(started));
                 self.watch.progress.store(clock.now(), Ordering::Relaxed);
@@ -1212,20 +1223,33 @@ impl Server {
 
         self.tick_count += 1;
         self.global.tick_rate().tick();
+        // `/vanillite profile`: the laps are taken only while a profile runs.
+        let profiling = self.global.diagnostics.profiler.is_active();
         self.global_pre_phase();
         self.tick_clocks();
         // After the clocks: a join sends its login on the player's world, so no broadcast of
         // this thread (the time sync) may run between the player list entry and that.
         self.accept_joins();
+        let before_worlds = profiling.then(|| clock.now());
         self.tick_worlds();
+        let after_worlds = profiling.then(|| clock.now());
         self.global_post_phase();
 
         let elapsed_nanos = clock.now().saturating_sub(started);
+        if let (Some(before), Some(after)) = (before_worlds, after_worlds) {
+            let nanos = Duration::from_nanos;
+            self.profile_tick(crate::profiler::ServerLaps {
+                before: nanos(before.saturating_sub(started)),
+                worlds: nanos(after.saturating_sub(before)),
+                after: nanos(started.saturating_add(elapsed_nanos).saturating_sub(after)),
+                total: nanos(elapsed_nanos),
+            });
+        }
         self.global
             .tick_times
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record(self.tick_count, elapsed_nanos);
+            .record_tick(self.tick_count, started, elapsed_nanos);
         let elapsed = elapsed_nanos as f64;
         self.average_tick_nanos = self.average_tick_nanos * 0.8 + elapsed * 0.2;
         if let Some(log) = &mut self.tick_log {
@@ -1286,6 +1310,28 @@ impl Server {
             }
         }
         self.global.plugins.run_global_tasks(self.tick_count);
+        self.add_late_plugin_commands();
+    }
+
+    /// Commands plugins registered after the start (Bukkit plugins in `onEnable`), collected
+    /// over the tick: a new tree with them appended, sent to every player again.
+    fn add_late_plugin_commands(&self) {
+        let current = self.global.commands();
+        let Some(next) = self
+            .global
+            .plugins
+            .add_late_commands(&current, vanillite_game::commands::CommandId::Plugin)
+        else {
+            return;
+        };
+        *self
+            .global
+            .commands
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
+        for player in self.global.players.snapshot() {
+            crate::commands::permissions_changed(&self.global, player.uuid.0);
+        }
     }
 
     /// `tickChildren`'s clocks and the game time sync every second (by default).
@@ -1475,6 +1521,8 @@ impl Server {
             inbox: Arc::clone(&arrival.inbox),
             ip,
             allows_listing: arrival.client.allows_listing,
+            details: arrival.details.clone(),
+            bedrock: arrival.virtual_connection && !arrival.memory_connection,
         });
         let global = Arc::clone(&self.global);
         self.run_in_world(
@@ -1691,8 +1739,9 @@ impl Server {
         }
     }
 
-    /// A console command: `vanillite reload config` here, everything else through the command
-    /// tree on the overworld.
+    /// A console command: `vanillite plugins` and `vanillite plugin reload <id>` here,
+    /// everything else (also `vanillite reload config`) through the command tree on the
+    /// overworld.
     fn run_console_command(&mut self, line: &str) {
         let command = line.trim().trim_start_matches('/');
         if let Some(id) = command.strip_prefix("vanillite plugin reload ") {
@@ -1707,10 +1756,6 @@ impl Server {
             log::info!("Plugins ({}): {}", plugins.len(), plugins.join(", "));
             return;
         }
-        if command == "vanillite reload config" {
-            self.reload_config();
-            return;
-        }
         let global = Arc::clone(&self.global);
         let line = line.to_owned();
         self.run_in_world(
@@ -1721,23 +1766,31 @@ impl Server {
         );
     }
 
-    /// Reloads `vanillite.toml` and swaps the rules at this tick boundary. `server.properties`
-    /// is read at startup only, like Vanilla.
-    fn reload_config(&mut self) {
+    /// Reloads `vanillite.toml` and swaps the rules at this tick boundary (`/vanillite reload
+    /// config`); `server.properties` is read at startup only, like Vanilla. Returns the keys
+    /// that take effect now and those that need a restart, or the error that kept the old
+    /// values.
+    pub(crate) fn reload_config_report(&mut self) -> Result<ReloadReport, String> {
         let mut new = match Config::load(&self.dir) {
             Ok(config) => config,
             Err(e) => {
                 log::error!("Reloading {VANILLITE_FILE} failed, keeping the old values: {e}");
-                return;
+                return Err(e.to_string());
             }
         };
         new.properties = self.config.properties.clone();
-        warn_restart_needed(&self.config.server, &new.server);
+        let mut report = ReloadReport::default();
+        changed_rules(&self.config.server, &new.server, None, &mut report);
         for dimension in self.global.dimensions.names() {
-            warn_restart_needed(
+            changed_rules(
                 &self.config.world_rules(dimension),
                 &new.world_rules(dimension),
+                Some(dimension),
+                &mut report,
             );
+        }
+        for key in &report.restart {
+            log::warn!("{key} changed; the new value takes effect after a restart");
         }
         self.watch.configure(
             new.server.watchdog.early_warning_after.get(),
@@ -1751,6 +1804,74 @@ impl Server {
         }
         self.config = new;
         log::info!("Reloaded {VANILLITE_FILE}");
+        Ok(report)
+    }
+
+    /// The CPU and memory limits the server runs under.
+    pub(crate) fn limits(&self) -> &crate::budget::Limits {
+        self.budget.limits()
+    }
+
+    /// Runs `each` on every loaded world between its ticks (on its thread), then `then` with
+    /// the results in world order once every world ran it. Worlds that unload first never
+    /// answer; `then` does not run then.
+    pub(crate) fn gather_worlds<T: Send + 'static>(
+        &mut self,
+        each: impl Fn(&mut ServerWorld) -> T + Send + Sync + 'static,
+        then: impl FnOnce(Vec<T>) + Send + 'static,
+    ) {
+        type Pending<T, F> = (Vec<Option<T>>, usize, Option<F>);
+        let worlds = self.loaded_worlds();
+        if worlds.is_empty() {
+            then(Vec::new());
+            return;
+        }
+        let each = Arc::new(each);
+        let state: Arc<Mutex<Pending<T, _>>> = Arc::new(Mutex::new((
+            std::iter::repeat_with(|| None).take(worlds.len()).collect(),
+            worlds.len(),
+            Some(then),
+        )));
+        for (index, id) in worlds.into_iter().enumerate() {
+            let each = Arc::clone(&each);
+            let state = Arc::clone(&state);
+            self.run_in_world(
+                id,
+                Box::new(move |w: &mut ServerWorld| {
+                    let result = each(w);
+                    let mut s = state.lock().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(slot) = s.0.get_mut(index) {
+                        *slot = Some(result);
+                    }
+                    s.1 = s.1.saturating_sub(1);
+                    if s.1 == 0
+                        && let Some(then) = s.2.take()
+                    {
+                        let results = std::mem::take(&mut s.0).into_iter().flatten().collect();
+                        drop(s);
+                        then(results);
+                    }
+                }),
+            );
+        }
+    }
+
+    /// A server tick of a running profile ended: its laps go to the profile; a finished
+    /// profile collects the worlds' parts and reports.
+    fn profile_tick(&mut self, laps: crate::profiler::ServerLaps) {
+        let Some(finished) = self.global.diagnostics.profiler.server_tick(laps) else {
+            return;
+        };
+        let global = Arc::clone(&self.global);
+        let dir = self.dir.join("profiles");
+        self.gather_worlds(
+            |w| w.take_profile(),
+            move |worlds| {
+                let worlds: Vec<_> = worlds.into_iter().flatten().collect();
+                crate::commands::profile_finished(&global, &dir, &finished, &worlds);
+                global.diagnostics.profiler.collected();
+            },
+        );
     }
 
     /// Ticks until the next autosave (Vanilla's `computeNextAutosaveInterval`).
@@ -2221,13 +2342,32 @@ impl Server {
     }
 }
 
-fn warn_restart_needed<R: RuleSet>(old: &R, new: &R) {
-    for info in R::RULES.iter().filter(|r| r.restart) {
-        if old.get(info.key) != new.get(info.key) {
-            log::warn!(
-                "{} changed; the new value takes effect after a restart",
-                info.key
-            );
+/// What a config reload changed (`/vanillite reload config`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ReloadReport {
+    /// Keys that take effect now (`world/key` for a world's rules).
+    pub(crate) applied: Vec<String>,
+    /// Keys that take effect after a restart.
+    pub(crate) restart: Vec<String>,
+}
+
+/// Adds the rules that differ between `old` and `new` to `report`.
+fn changed_rules<R: RuleSet>(old: &R, new: &R, world: Option<&str>, report: &mut ReloadReport) {
+    for info in R::RULES {
+        if old.get(info.key) == new.get(info.key) {
+            continue;
+        }
+        let key = match world {
+            Some(w) => format!("{w}/{}", info.key),
+            None => info.key.to_owned(),
+        };
+        let list = if info.restart {
+            &mut report.restart
+        } else {
+            &mut report.applied
+        };
+        if !list.contains(&key) {
+            list.push(key);
         }
     }
 }
@@ -2243,8 +2383,8 @@ pub enum StartError {
     WorldInUse(PathBuf),
     /// A slot was filled twice.
     Slot(SlotError),
-    /// The EULA is not accepted in `eula.txt`.
-    Eula,
+    /// The EULA is not accepted in `eula.txt` (its full path).
+    Eula(PathBuf),
 }
 
 impl StartError {
@@ -2264,9 +2404,16 @@ impl fmt::Display for StartError {
                 path.display()
             ),
             StartError::Slot(e) => e.fmt(f),
-            StartError::Eula => f.write_str(
-                "you need to agree to the EULA in order to run the server; go to eula.txt for \
-                 more info (or set VANILLITE_EULA=true)",
+            // The first sentences are Vanilla's: panels such as Pterodactyl detect them.
+            StartError::Eula(file) => write!(
+                f,
+                "You need to agree to the EULA in order to run the server. Go to eula.txt for \
+                 more info.\n\
+                 \x20 Read the Minecraft EULA: https://aka.ms/MinecraftEULA\n\
+                 \x20 To accept it, open {} and change eula=false to eula=true,\n\
+                 \x20 or set the environment variable VANILLITE_EULA=true. Then start the server \
+                 again.",
+                file.display()
             ),
         }
     }
@@ -2508,6 +2655,7 @@ impl Server {
                 vanillite_game::player::chat::ChatInbox::default(),
             )),
             transferred: false,
+            details: None,
         };
         self.place_new_player(arrival, "127.0.0.1".to_owned());
         tx
@@ -2517,3 +2665,7 @@ impl Server {
 #[cfg(test)]
 #[path = "server/extra_worlds_tests.rs"]
 mod extra_worlds_tests;
+
+#[cfg(test)]
+#[path = "server/vanillite_cmd_tests.rs"]
+mod vanillite_cmd_tests;

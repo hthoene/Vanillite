@@ -436,8 +436,10 @@ fn can_land_on_shoulder(t: &Tick<'_, '_>) -> bool {
     let Some(p) = t.ents.player(owner) else {
         return false;
     };
-    let can_be_sat_on =
-        p.game_mode != vanillite_config::GameMode::Spectator && !p.survival.fluids.in_water();
+    let can_be_sat_on = p.game_mode != vanillite_config::GameMode::Spectator
+        && !p.survival.flying
+        && !p.survival.fluids.in_water()
+        && !p.survival.in_powder_snow;
     !m.order_to_sit && can_be_sat_on && m.tick_count > 100
 }
 
@@ -458,7 +460,7 @@ fn set_on_shoulder(t: &mut Tick<'_, '_>, owner: EntityId) -> bool {
     let Some(p) = t.ents.player_mut(owner) else {
         return false;
     };
-    if riding || !on_ground || p.survival.fluids.in_water() {
+    if riding || !on_ground || p.survival.fluids.in_water() || p.survival.in_powder_snow {
         return false;
     }
     if !p.survival.shoulders.put(tag, game_time) {

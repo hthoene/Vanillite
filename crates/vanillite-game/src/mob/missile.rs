@@ -507,19 +507,16 @@ pub fn reverse(
     rot: Rotation,
     random: &mut impl vanillite_base::random::RandomSource,
 ) -> (Vec3, Rotation) {
-    if let Some(e) = ents.store.get(deflector) {
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
-            env.out,
-            None,
-            e.pos(),
-            "minecraft:entity.breeze.deflect",
-            vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
-            1.0,
-            1.0,
-            seed,
-        );
-    }
+    crate::survival::play_entity_sound(
+        env.out,
+        ents,
+        None,
+        deflector,
+        "minecraft:entity.breeze.deflect",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+        1.0,
+        1.0,
+    );
     let turn = 170.0 + random.next_float() * 20.0;
     (
         velocity * -0.5,
@@ -570,7 +567,7 @@ pub fn hit_event(
             ev.to = crate::hooks::Place::at(at);
         }
     }
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::split(level, ents), &mut ev);
     !ev.cancelled
 }
 

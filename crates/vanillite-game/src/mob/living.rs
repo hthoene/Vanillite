@@ -82,6 +82,8 @@ pub fn tick(t: &mut Tick<'_, '_>) {
         super::Kind::Shulker => false,
         super::Kind::Camel | super::Kind::CamelHusk => super::fam::mount::camel::turns_body(t),
         super::Kind::Armadillo => !super::fam::brainy::armadillo::is_scared(t.mob_ref()),
+        // `CreakingBodyRotationControl`: only while it can move.
+        super::Kind::Creaking => super::fam::mount::creaking::can_move(t.mob_ref()),
         _ => true,
     };
     if t.mob_ref().kind == super::Kind::ArmorStand {
@@ -202,6 +204,10 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             } else if t.mob_ref().air < 300 && t.mob_ref().effects.refills_air() {
                 let m = t.mob();
                 m.air = (m.air + 4).min(300);
+            }
+            if t.exists() {
+                let id = t.id;
+                crate::riding::dismount_underwater(t.ents, t.env, id);
             }
         } else if t.mob_ref().air < 300 {
             let m = t.mob();
@@ -709,6 +715,10 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         if !t.exists() || t.mob_ref().removed {
             return;
         }
+    } else if t.mob_ref().kind == super::Kind::Enderman {
+        // `EnderMan.aiStep`: `updatePersistentAnger(level, true)` (20 to 39 seconds).
+        t.mob().jumping = false;
+        super::common::update_persistent_anger(t, true, (400, 780));
     }
     // `Monster.updateNoActionTime` (`Raider`: always).
     let kind = t.mob_ref().kind;
@@ -743,11 +753,20 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     let decor = t.mob_ref().kind.family() == super::Family::Decor;
     // `isEffectiveAi`: armor stands move with physics, mannequins unless immovable; neither
     // has a `serverAiStep`.
+    // A mob its player rider steers (`getControllingPassenger` is a player) is the client's
+    // authority: no `serverAiStep` (`isEffectiveAi`) and no movement of its own on the server.
+    let rider = t
+        .ents
+        .riding
+        .passengers_of(t.id)
+        .first()
+        .copied()
+        .filter(|&p| crate::riding::controls(t.ents, p, t.id));
     let effective_ai = if decor {
         let no_gravity = t.core().flags().contains(EntityFlags::NO_GRAVITY);
         crate::decoration::stand::moves(t.mob_ref(), no_gravity)
     } else {
-        !t.mob_ref().no_ai
+        !t.mob_ref().no_ai && rider.is_none()
     };
     // `isImmobile`: dead or held by the kind (a stunned ravager).
     if t.mob_ref().is_dead_or_dying() || super::fam::is_immobile(t.mob_ref()) {
@@ -798,15 +817,15 @@ fn ai_step(t: &mut Tick<'_, '_>) {
             m.fall_distance = 0.0;
         }
     }
-    // A mob its rider steers moves on the rider's client (`isControlledByLocalInstance`).
-    let steered = t
-        .ents
-        .riding
-        .passengers_of(t.id)
-        .first()
-        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id));
     t.cx.movements.clear();
-    if effective_ai && !steered {
+    if let Some(rider) = rider {
+        // `travelRidden`: `tickRidden`, then (`canSimulateMovement` is false on the server) no
+        // motion; the rider's client moves it.
+        if t.mob_ref().is_alive() {
+            tick_ridden(t, rider);
+            t.set_velocity(Vec3::ZERO);
+        }
+    } else if effective_ai {
         let m = t.mob_ref();
         let input = Vec3::new(f64::from(m.xxa), f64::from(m.yya), f64::from(m.zza));
         travel(t, input);
@@ -837,7 +856,15 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     }
     if t.mob_ref().kind.burns_in_daylight() && t.mob_ref().is_alive() && is_sun_burn_tick(t) {
         // `burnUndead`: a helmet takes the sun (and wears), else `igniteForSeconds(8)`.
-        let head = crate::item::EquipmentSlot::Head;
+        // `sunProtectionSlot`: the body armour of zombie horses and zombie nautiluses.
+        let head = if matches!(
+            t.mob_ref().kind,
+            super::Kind::ZombieHorse | super::Kind::ZombieNautilus
+        ) {
+            crate::item::EquipmentSlot::Body
+        } else {
+            crate::item::EquipmentSlot::Head
+        };
         let helmet = t.mob_ref().equipment.get(head).clone();
         if helmet.is_empty() {
             let m = t.mob();
@@ -848,7 +875,10 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         }
     }
     // `Mob.aiStep`'s looting.
-    if t.mob_ref().kind.family() == super::Family::Classic {
+    if t.mob_ref().kind == super::Kind::Skeleton {
+        // `AbstractSkeleton`'s pickup rules and `onEquipItem` reassessment.
+        super::fam::undead::skeletons::pick_up_items(t);
+    } else if t.mob_ref().kind.family() == super::Family::Classic {
         let rules = super::equipment::PickupRules::default();
         super::equipment::pick_up_items(t, &rules, None, (1.0, 0.0, 1.0));
     } else {
@@ -858,6 +888,36 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         return;
     }
     kinds::ai_step(t);
+}
+
+/// `tickRidden` of a mob its player `rider` steers: it turns to the rider's view
+/// (`getRiddenRotation`: the rider's yaw, half its pitch).
+fn tick_ridden(t: &mut Tick<'_, '_>, rider: EntityId) {
+    use super::Kind;
+    let Some(r) = t.ents.store.get(rider).map(|e| e.rot()) else {
+        return;
+    };
+    let kind = t.mob_ref().kind;
+    let mut rot = t.core().rot();
+    let y_rot = match kind {
+        // `AbstractNautilus` and `HappyGhast`: a part of the way each tick.
+        Kind::Nautilus | Kind::ZombieNautilus | Kind::HappyGhast => {
+            let turn = if kind == Kind::HappyGhast { 0.08 } else { 0.5 };
+            rot.y_rot + vanillite_base::math::wrap_degrees_f(r.y_rot - rot.y_rot) * turn
+        }
+        // `Camel.getRiddenRotation`: its own while it refuses to move.
+        Kind::Camel | Kind::CamelHusk
+            if super::fam::mount::camel::refuse_to_move(t.mob_ref(), t.env.game_time) =>
+        {
+            return;
+        }
+        _ => r.y_rot,
+    };
+    rot.y_rot = y_rot;
+    rot.x_rot = r.x_rot * 0.5;
+    rot.y_head_rot = y_rot;
+    t.core_mut().set_rot(rot);
+    t.mob().y_body_rot = y_rot;
 }
 
 /// `hurtAndBreak(amount, mob, slot)` of a mob's equipment (without Unbreaking).
@@ -1137,7 +1197,14 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
         return;
     }
     let mut movement = t.velocity();
-    if (t.mob_ref().horizontal_collision || t.mob_ref().jumping) && climbable {
+    // `onClimbable() || wasInPowderSnow && PowderSnowBlock.canEntityWalkOnPowderSnow(this)`.
+    let snow_climb = t.mob_ref().was_in_powder_snow && {
+        let m = t.mob_ref();
+        crate::effect::entity_in_tag(m.kind.type_id(), "minecraft:powder_snow_walkable_mobs")
+            || m.equipment.get(crate::item::EquipmentSlot::Feet).item
+                == vanillite_data::item::ids::LEATHER_BOOTS.0
+    };
+    if (t.mob_ref().horizontal_collision || t.mob_ref().jumping) && (climbable || snow_climb) {
         movement.y = 0.2;
     }
     let mut y = movement.y;
@@ -1799,7 +1866,7 @@ fn play_sound_event(
         return;
     }
     let pos = t.pos();
-    let source = t.mob_ref().kind.sound_source();
+    let source = t.mob_ref().sound_source();
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound_event(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
@@ -2301,6 +2368,8 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     }
     let fire_immune = t.core().kind().info().fire_immune;
     let previous_fire = t.mob_ref().fire_ticks;
+    // `wasOnFire = isOnFire()`.
+    let was_on_fire = !fire_immune && previous_fire > 0;
     // The collected effects, step by step (`StepBasedCollector.applyAndClear`).
     for step in inside.steps() {
         if step.freeze {
@@ -2320,11 +2389,13 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         if let Some(damage) = step.fire
             && !fire_immune
         {
+            // `BaseFireBlock.fireIgnite`.
             let m = t.mob();
             if m.fire_ticks < 0 {
                 m.fire_ticks += 1;
-            } else if m.fire_ticks == 0 {
-                m.fire_ticks = 160;
+            }
+            if m.fire_ticks >= 0 {
+                m.fire_ticks = m.fire_ticks.max(160);
             }
             let source = DamageSource::of(t.env.types.in_fire);
             hurt_self(t, source, damage);
@@ -2378,12 +2449,12 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         // `clearFire`.
         m.fire_ticks = 0;
     }
-    // Not burning and not ignited this tick: `-getFireImmuneTicks()`.
-    if m.fire_ticks <= 0 && m.fire_ticks <= previous_fire {
-        m.fire_ticks = -1;
+    // Not burning and not ignited this tick: `-getFireImmuneTicks()`, 0 for mobs.
+    if !(m.fire_ticks > 0 && !fire_immune) && m.fire_ticks <= previous_fire {
+        m.fire_ticks = 0;
     }
-    // `playEntityOnFireExtinguishedSound` (the fire half is not simulated for mobs yet).
-    if was_freezing && m.ticks_frozen <= 0 {
+    // `playEntityOnFireExtinguishedSound`: the fire went out or the freezing ended.
+    if (was_on_fire && m.fire_ticks <= 0) || (was_freezing && m.ticks_frozen <= 0) {
         let r = &mut m.random;
         let pitch = 1.6 + (r.next_float() - r.next_float()) * 0.4;
         kinds::play_sound(t, "minecraft:entity.generic.extinguish_fire", 0.7, pitch);
@@ -2896,7 +2967,9 @@ fn is_sun_burn_tick(t: &mut Tick<'_, '_>) -> bool {
     let rounded = BlockPos::containing(p.x, t.eye_y(), p.z);
     let rain = (t.env.raining_at)(t.block_pos())
         || (t.env.raining_at)(BlockPos::containing(p.x, t.aabb().max_y, p.z));
-    let wet = t.mob_ref().fluids.in_water() || rain;
+    // `isInNonBurnableBlock`: water, rain or powder snow (this tick or the last).
+    let m = t.mob_ref();
+    let wet = m.fluids.in_water() || rain || m.in_powder_snow || m.was_in_powder_snow;
     // The roll is only drawn in bright light.
     br > 0.5
         && t.mob().random.next_float() * 30.0 < (br - 0.4) * 2.0

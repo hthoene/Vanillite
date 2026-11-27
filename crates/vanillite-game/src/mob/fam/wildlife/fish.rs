@@ -166,10 +166,17 @@ pub(super) fn surface_water_rules(level: &Level, pos: BlockPos) -> bool {
             == vanillite_data::block::ids::WATER
 }
 
-/// `TropicalFish.checkTropicalFishSpawnRules` (the biomes of
-/// `#allows_tropical_fish_spawns_at_any_height` are not known here: surface rules apply).
+/// `TropicalFish.checkTropicalFishSpawnRules`: water below and above, and either a biome of
+/// `#allows_tropical_fish_spawns_at_any_height` (lush caves) or the surface rules.
 pub(super) fn tropical_rules(level: &Level, pos: BlockPos) -> bool {
-    surface_water_rules(level, pos)
+    is_water(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
+        && level.block(BlockPos::new(pos.x, pos.y + 1, pos.z)).block()
+            == vanillite_data::block::ids::WATER
+        && (crate::mob::fam::undead::zombies::biome_is(
+            level,
+            pos,
+            "minecraft:allows_tropical_fish_spawns_at_any_height",
+        ) || surface_water_rules(level, pos))
 }
 
 /// `AbstractFish.aiStep` before `super.aiStep()`: a fish on land flops.
@@ -632,12 +639,20 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Pass;
     };
     let bucket = bucket_stack(m);
-    crate::mob::combat::mob_sound(
-        ix.ents,
-        ix.env,
-        ix.target,
-        "minecraft:item.bucket.fill_fish",
-    );
+    // `pickupEntity.playSound(getPickupSound(), 1.0F, 1.0F)`: no voice pitch, no draws.
+    let source = m.sound_source();
+    if let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) {
+        crate::survival::play_sound(
+            ix.env.out,
+            None,
+            pos,
+            "minecraft:item.bucket.fill_fish",
+            source,
+            1.0,
+            1.0,
+            crate::survival::sound_seed(),
+        );
+    }
     crate::mob::animal::filled_bucket(ix.ents, ix.player, &bucket);
     fill_held(ix.ents, ix.env, ix.player, ix.hand, bucket);
     crate::mob::tame::drop_leash(ix.ents, ix.env, ix.target, true);

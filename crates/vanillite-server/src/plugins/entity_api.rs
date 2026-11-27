@@ -6,6 +6,7 @@
 //! take their flags through their entity data as `/data merge` does, and a change the entity
 //! does not keep is refused rather than faked.
 
+use super::ReadWorld;
 use vanillite_abi::{self as abi, attribute_op, entity_prop, event, player_prop, status};
 use vanillite_data::entity::ATTRIBUTES;
 use vanillite_game::effect::Operation;
@@ -92,11 +93,15 @@ fn portal_cooldown(entities: &Entities, id: EntityId) -> i32 {
     }
 }
 
-pub(super) fn entity_get(w: &PluginWorld<'_>, entity: u128, prop: u32) -> Result<f64> {
+pub(super) fn entity_get(w: &impl ReadWorld, entity: u128, prop: u32) -> Result<f64> {
     use entity_prop as p;
-    let entities = w.0.entities();
+    let entities = w.entities()?;
     let id = any_entity(entities, entity)?;
-    let flags = entities.store.get(id).ok_or(status::NOT_FOUND)?.flags();
+    let entity_ref = entities.store.get(id).ok_or(status::NOT_FOUND)?;
+    if prop == p::NETWORK_ID {
+        return Ok(f64::from(entity_ref.network_id().0));
+    }
+    let flags = entity_ref.flags();
     match prop {
         p::ON_GROUND => return Ok(flag(flags.contains(EntityFlags::ON_GROUND))),
         p::SNEAKING => return Ok(flag(flags.contains(EntityFlags::CROUCHING))),
@@ -169,7 +174,7 @@ pub(super) fn entity_set(
     let id = any_entity(w.0.entities(), entity)?;
     if matches!(
         prop,
-        p::MAX_HEALTH | p::ON_GROUND | p::SNEAKING | p::SPRINTING
+        p::MAX_HEALTH | p::ON_GROUND | p::SNEAKING | p::SPRINTING | p::NETWORK_ID
     ) {
         return Err(status::INVALID_ARGUMENT);
     }
@@ -382,8 +387,8 @@ fn name_of(entities: &Entities, id: EntityId) -> Option<&[u8]> {
 }
 
 /// `getCustomName` as JSON.
-pub(super) fn entity_name(w: &PluginWorld<'_>, entity: u128) -> Result<Option<String>> {
-    let entities = w.0.entities();
+pub(super) fn entity_name(w: &impl ReadWorld, entity: u128) -> Result<Option<String>> {
+    let entities = w.entities()?;
     let id = any_entity(entities, entity)?;
     Ok(name_of(entities, id)
         .and_then(vanillite_game::mob::nbt::component_tag)
@@ -420,8 +425,8 @@ pub(super) fn set_entity_name(
     Ok(())
 }
 
-pub(super) fn passengers(w: &PluginWorld<'_>, entity: u128) -> Result<Vec<u128>> {
-    let entities = w.0.entities();
+pub(super) fn passengers(w: &impl ReadWorld, entity: u128) -> Result<Vec<u128>> {
+    let entities = w.entities()?;
     let id = any_entity(entities, entity)?;
     Ok(entities
         .riding
@@ -431,8 +436,8 @@ pub(super) fn passengers(w: &PluginWorld<'_>, entity: u128) -> Result<Vec<u128>>
         .collect())
 }
 
-pub(super) fn vehicle(w: &PluginWorld<'_>, entity: u128) -> Result<Option<u128>> {
-    let entities = w.0.entities();
+pub(super) fn vehicle(w: &impl ReadWorld, entity: u128) -> Result<Option<u128>> {
+    let entities = w.entities()?;
     let id = any_entity(entities, entity)?;
     Ok(entities
         .vehicle_of(id)

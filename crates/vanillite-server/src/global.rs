@@ -28,8 +28,8 @@ pub struct Global {
     pub access: Access,
     /// A handle to the server for work on other worlds and `/stop`; set once the server runs.
     pub handle: OnceLock<ServerHandle>,
-    /// The command tree.
-    pub(crate) commands: crate::commands::CommandDispatcher,
+    /// The command tree; replaced (append-only) when plugins add commands after the start.
+    pub(crate) commands: std::sync::RwLock<Arc<crate::commands::CommandDispatcher>>,
     /// `online-mode`.
     pub(crate) online_mode: bool,
     /// The dimensions; a world's index here is its [`WorldId`].
@@ -56,8 +56,10 @@ pub struct Global {
     pub(crate) templates: Arc<vanillite_worldgen::template::StructureTemplateManager>,
     /// `/tick`'s state; the server loop reads it once per tick.
     pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
-    /// The durations of the last ticks (`/tick query`).
+    /// The durations of the last ticks (`/tick query`, `/vanillite tps`).
     pub(crate) tick_times: std::sync::Mutex<crate::tick_rate::TickTimes>,
+    /// Uptime, CPU samples and the profiler of `/vanillite`.
+    pub(crate) diagnostics: crate::diagnostics::Diagnostics,
     /// Vanilla's English translations, for texts of the console and RCON.
     pub(crate) language: std::collections::HashMap<String, String>,
     /// `broadcast-console-to-ops`.
@@ -82,6 +84,16 @@ pub struct Global {
 }
 
 impl Global {
+    /// The current command tree.
+    pub(crate) fn commands(&self) -> Arc<crate::commands::CommandDispatcher> {
+        Arc::clone(
+            &self
+                .commands
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// The current game data (loot tables, recipes, tags), replaced by `/reload`.
     pub(crate) fn game(&self) -> Arc<vanillite_game::player::play::GameData> {
         vanillite_game::player::play::game_data().unwrap_or_else(|| Arc::clone(&self.game_at_start))
@@ -114,6 +126,12 @@ impl Global {
     /// `Component.getString` in English, as the console and RCON show texts.
     pub(crate) fn english(&self, text: &vanillite_protocol::text::Component) -> String {
         text.to_string_in(&|key| self.language.get(key).cloned())
+    }
+
+    /// [`Self::english`] with colours as `§` codes, for the server console (the logger shows
+    /// them as terminal colours or strips them).
+    pub(crate) fn console_text(&self, text: &vanillite_protocol::text::Component) -> String {
+        text.to_legacy_in(&|key| self.language.get(key).cloned())
     }
 
     /// Asks the server to stop after the current tick (`/stop`).

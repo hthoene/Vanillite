@@ -9,7 +9,7 @@ use vanillite_base::{BlockPos, ChunkPos, Vec3};
 
 use vanillite_chunk::{HeightmapKind, ProtoChunk};
 use vanillite_data::block::{BlockState, flags, ids};
-use vanillite_data::entity::EntityTypeId;
+use vanillite_data::entity::{EntityTypeId, ids as entity_ids};
 use vanillite_world::entity::{EntityId, Rotation};
 
 use super::fam::{ExtraMob, GroupData, Relation, SpawnContext, SpawnReason};
@@ -1327,6 +1327,12 @@ fn add_mob_with_code(
     let mut spawned = Vec::with_capacity(extra.len());
     for e in extra {
         if let Relation::Existing(vehicle) = e.relation {
+            // `Zombie.finalizeSpawn`: `chicken.setChickenJockey(true)` before riding it.
+            if let Some(c) = level.entities.mob_mut(vehicle)
+                && c.kind == Kind::Chicken
+            {
+                super::fam::classic::chicken_mut(c).jockey = true;
+            }
             level.entities.riding.add(id, vehicle, false);
             spawned.push(vehicle);
             continue;
@@ -1565,6 +1571,23 @@ pub fn check_spawn_obstruction(level: &Level, env: &Environment, mob: &MobData, 
     }
 }
 
+/// `EntityType.immuneTo`: the block tag of the type's builder (`isBlockDangerous` is false
+/// for those blocks).
+fn immune_to(type_id: EntityTypeId, state: BlockState) -> bool {
+    use vanillite_data::entity::ids as e;
+    let tags = super::fam::wildlife::block_tags();
+    let tag = match type_id {
+        t if t == e::FOX => &tags.fox_immune_to,
+        t if t == e::POLAR_BEAR => &tags.polar_bear_immune_to,
+        t if t == e::SNOW_GOLEM => &tags.snow_golem_immune_to,
+        t if t == e::STRAY => &tags.stray_immune_to,
+        t if t == e::WITHER => &tags.wither_immune_to,
+        t if t == e::WITHER_SKELETON => &tags.wither_skeleton_immune_to,
+        _ => return false,
+    };
+    tag.contains(state)
+}
+
 /// `isValidEmptySpawnBlock` with an empty fluid state.
 fn valid_empty_spawn_block_ignoring_fluid(state: BlockState, type_id: EntityTypeId) -> bool {
     let name = state.block().name();
@@ -1582,7 +1605,7 @@ fn valid_empty_spawn_block_ignoring_fluid(state: BlockState, type_id: EntityType
         || state.block() == ids::SWEET_BERRY_BUSH
         || state.block() == ids::CACTUS
         || state.block() == ids::POWDER_SNOW;
-    !dangerous
+    !dangerous || immune_to(type_id, state)
 }
 
 /// `isValidPositionForMob`.
@@ -1695,19 +1718,41 @@ pub fn is_valid_spawn(_level: &Level, state: BlockState, type_id: EntityTypeId) 
     valid_spawn_floor(state, type_id)
 }
 
-/// `BlockState.isValidSpawn` for a mob: a sturdy top face that is not too bright, except
-/// the blocks that never let mobs spawn on them.
+/// `BlockState.isValidSpawn` for a mob: a sturdy top face that is not too bright, except the
+/// blocks with their own rule in `Blocks` (`never`, `always`, `ocelotOrParrot`, ice for polar
+/// bears, magma for fire immune mobs).
 pub fn valid_spawn_floor(state: BlockState, type_id: EntityTypeId) -> bool {
     let name = state.block().name();
-    if name.ends_with("glass")
-        || name.ends_with("glass_pane")
-        || name.ends_with("leaves")
-        || name == "minecraft:barrier"
-        || name == "minecraft:bedrock"
-        || name.ends_with("ice")
-        || name == "minecraft:spawner"
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    // `Blocks::never`.
+    if matches!(
+        name,
+        "bedrock"
+            | "glass"
+            | "tinted_glass"
+            | "moving_piston"
+            | "barrier"
+            | "chorus_flower"
+            | "scaffolding"
+    ) || name.ends_with("_stained_glass")
+        || name.ends_with("trapdoor")
+        || name.ends_with("copper_grate")
     {
         return false;
+    }
+    // `Blocks::always`.
+    if matches!(
+        name,
+        "soul_sand" | "carved_pumpkin" | "jack_o_lantern" | "redstone_lamp" | "mud"
+    ) {
+        return true;
+    }
+    // `Blocks::ocelotOrParrot` (every leaves block).
+    if name.ends_with("leaves") {
+        return type_id == entity_ids::OCELOT || type_id == entity_ids::PARROT;
+    }
+    if name == "ice" || name == "frosted_ice" {
+        return type_id == entity_ids::POLAR_BEAR;
     }
     if state.block() == ids::MAGMA_BLOCK {
         return type_id.info().fire_immune;
@@ -1740,7 +1785,7 @@ pub fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool
         || state.block() == ids::SWEET_BERRY_BUSH
         || state.block() == ids::CACTUS
         || state.block() == ids::POWDER_SNOW;
-    !dangerous
+    !dangerous || immune_to(type_id, state)
 }
 
 /// The spawn rules (`SpawnPlacements.checkSpawnRules`) of a kind.
@@ -2158,6 +2203,9 @@ pub fn summon_seeded(
     seed: Option<i64>,
 ) -> EntityId {
     let seed = seed.unwrap_or_else(crate::mob::new_entity_seed);
+    if kind == Kind::EnderDragon {
+        crate::mob::boss::dragon::part_seeds();
+    }
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let env = Environment::default();
@@ -2446,7 +2494,7 @@ mod tests {
     /// next value after 60 rounds.
     /// (#217: `checkSpawnObstruction` tests entities that block building, pack members no
     /// longer spawn inside each other.)
-    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (82, 4_572_461_501_885_315_024, 619_422_097);
+    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (85, 13_380_462_405_938_920_257, 1_076_452_858);
 
     /// Packs wander up to 20 blocks from their start, across the 32-block tiles of this test:
     /// the mobs land in several tiles, only in ticking chunks, and the tiles together respect

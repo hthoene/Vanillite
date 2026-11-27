@@ -272,6 +272,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             out.insert("IsBaby", m.baby);
             out.insert("CanBreakDoors", m.can_break_doors);
             super::fam::undead::zombies::save_conversion(m, &mut out);
+            super::fam::undead::zombies::save_attributes(m, &mut out);
         }
         Kind::Creeper => {
             let c = super::fam::classic::creeper(m);
@@ -395,7 +396,11 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     let kind = m.kind;
     // `LivingEntity.readAdditionalSaveData`: the attributes and effects first, their values
     // and modifiers (Health Boost) set the maximum health.
-    entity_nbt::load_attributes(m, tag.get("attributes"));
+    if super::fam::undead::zombies::is_zombie(kind) {
+        super::fam::undead::zombies::load_attributes(m, tag);
+    } else {
+        entity_nbt::load_attributes(m, tag.get("attributes"));
+    }
     m.effects.load(tag.get("active_effects"));
     if !m.effects.is_empty() {
         let dirty = m.effects.modifiers.take_dirty();
@@ -407,7 +412,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     if let Some(h) = health {
         m.health = h.clamp(0.0, m.max_health());
     }
-    m.fire_ticks = int(tag, "Fire").unwrap_or(-1);
+    m.fire_ticks = int(tag, "Fire").unwrap_or(0);
     m.air = int(tag, "Air").unwrap_or(300);
     m.ticks_frozen = int(tag, "TicksFrozen").unwrap_or(0);
     m.fall_distance = double(tag, "fall_distance")
@@ -450,13 +455,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     m.tame = m.owner.is_some();
     m.order_to_sit = boolean(tag, "Sitting");
     m.in_sitting_pose = m.order_to_sit;
-    m.pending_leash = match tag.get("leash") {
-        Some(Tag::Compound(c)) => uuid_of(c).map(super::LeashRef::Entity),
-        Some(Tag::IntArray(v)) if v.len() == 3 => Some(super::LeashRef::Knot(
-            vanillite_base::BlockPos::new(v[0], v[1], v[2]),
-        )),
-        _ => None,
-    };
+    m.pending_leash = leash_ref(tag);
     match kind {
         Kind::Zombie => {
             super::fam::undead::set_baby(m, boolean(tag, "IsBaby"));
@@ -512,9 +511,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
                 .get("carriedBlockState")
                 .and_then(crate::level::block_entity::read_state_codec)
                 .filter(|s| !s.is_air());
-            if let Some(e) = super::fam::classic::try_enderman_mut(m) {
-                e.carried = carried;
-            }
+            super::fam::classic::enderman_mut(m).carried = carried;
         }
         Kind::Spider => {}
         _ => super::fam::load(m, tag),
@@ -568,6 +565,10 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)>
             health: int(tag, "Health").unwrap_or(5),
             following: None,
             tick_count: 0,
+            fire_ticks: 0,
+            // A summon replaces it with the seed its constructor took.
+            random_state: vanillite_base::random::LegacyRandom::new(crate::mob::new_unique_seed())
+                .state(),
             fall_distance: double(tag, "fall_distance").unwrap_or(0.0),
         },
     ))
@@ -660,7 +661,15 @@ pub fn save_arrow(
     let mut out = Compound::new();
     save_entity(core, &mut out);
     out.insert("fall_distance", 0.0_f64);
-    out.insert("Fire", if a.fire { 2000_i16 } else { -1_i16 });
+    #[allow(clippy::cast_possible_truncation)]
+    out.insert(
+        "Fire",
+        if a.fire > 0 {
+            a.fire.min(i32::from(i16::MAX)) as i16
+        } else {
+            -1_i16
+        },
+    );
     out.insert("Air", 300_i16);
     #[allow(clippy::cast_possible_truncation)]
     {
@@ -699,8 +708,12 @@ fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
     }
 }
 
-/// An arrow from entity NBT (its owner is not resolved).
-pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
+/// An arrow from entity NBT (its owner is not resolved). Its own random starts from `seed`,
+/// the seed its constructor already took, or else from the next entity seed.
+pub fn load_arrow(
+    tag: &Compound,
+    seed: Option<i64>,
+) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
     let kind = type_of(tag)?;
     if !super::projectile::is_arrow_kind(kind) {
         return None;
@@ -735,9 +748,11 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             last_state: None,
             tick_count: 0,
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
-            random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
+            random_state: LegacyRandom::new(seed.unwrap_or_else(crate::mob::new_entity_seed))
+                .state(),
             knockback: 0.0,
-            fire: int(tag, "Fire").is_some_and(|f| f > 0),
+            fire: int(tag, "Fire").unwrap_or(0).max(0),
+            touching_water: false,
             item,
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),
@@ -790,12 +805,24 @@ pub fn save_boat(
     out
 }
 
+/// The `leash` of entity NBT: a holder UUID or a knot position.
+fn leash_ref(tag: &Compound) -> Option<super::LeashRef> {
+    match tag.get("leash") {
+        Some(Tag::Compound(c)) => uuid_of(c).map(super::LeashRef::Entity),
+        Some(Tag::IntArray(v)) if v.len() == 3 => Some(super::LeashRef::Knot(
+            vanillite_base::BlockPos::new(v[0], v[1], v[2]),
+        )),
+        _ => None,
+    }
+}
+
 /// A boat from entity NBT.
-pub fn load_boat(tag: &Compound) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
+pub fn load_boat(tag: &Compound, seed: i64) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
     let kind = crate::vehicle::BoatKind::of(type_of(tag)?)?;
     let e = load_entity(tag)?;
-    let mut b = crate::vehicle::BoatData::new(kind);
+    let mut b = crate::vehicle::BoatData::new(kind, seed);
     b.custom_name = tag.get("CustomName").and_then(tag_component);
+    b.pending_leash = leash_ref(tag);
     if kind.chest {
         b.loot_table = load_chest_vehicle(tag, &mut b.items);
     }

@@ -5,7 +5,8 @@
 //! group key must be unique across both sets. Performance knobs live under `performance.*`.
 
 use crate::rule::{
-    AntiXrayMode, DisabledOr, RedstoneImplementation, StorageLayout, VanillaOr, WorldFormat,
+    AntiXrayMode, DisabledOr, PluginRuntime, RedstoneImplementation, StorageLayout, VanillaOr,
+    WorldFormat,
 };
 use crate::rules;
 
@@ -25,14 +26,21 @@ rules! {
         /// Thread counts.
         threads: ThreadRules = "performance.threads" {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
-            /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
+            /// tick phases). 0 = the cores the server may use (`performance.budget.cpu`, the
+            /// cgroup CPU quota and the CPU affinity): the workers run at a lower OS priority
+            /// (`compute-nice`), so the tick threads still get a core whenever they need one.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
+            /// Nice value of the compute workers (Linux; the tick threads stay at 0). Higher
+            /// values leave the CPU to the tick threads sooner: 10 gives a tick thread sharing a
+            /// core with a worker about 90 % of it. 0 = the same priority as the tick threads.
+            compute_nice: u8 = "compute-nice", Setting, range = [0, 19], restart = true,
+                vanilla = 10;
             /// I/O threads of the network (connections, encryption, compression of outgoing
             /// packets). 0 = 2, or 1 with less than two cores, so the tick keeps the only core.
             network: u16 = "network", Setting, range = [0, 64], restart = true, vanilla = 0;
             /// Threads that share a parallel phase of a world's tick (in crowds: the entity
-            /// packets, the delivery of sounds and particles, the advancement checks), the tick
-            /// thread included. 0 = the compute workers plus the tick thread; 1 = the tick
+            /// packets, the delivery of sounds and particles, the advancement checks; the tiles
+            /// of `region-threading`), the tick thread included. 0 = the compute workers plus the tick thread; 1 = the tick
             /// thread alone. The result is the same with any number, only the speed differs.
             tick_phases: u16 = "tick-phases", Setting, range = [0, 1024], restart = true,
                 vanilla = 0;
@@ -313,6 +321,25 @@ rules! {
             /// Pinned SHA-256 hashes of plugin libraries, `id=hex,id=hex`. A plugin whose
             /// library has another hash is refused.
             pins: String = "pins", Security, restart = true, vanilla = String::new();
+            /// Which build loads the plugins. The Linux release archives and the Docker image
+            /// run a static build, which cannot load libraries, and ship `vanillite-gnu` (built
+            /// from the same commit against glibc) next to it: `"auto"` starts `vanillite-gnu`
+            /// in its place when `plugins/` holds plugins (packages or Paper/Spigot jars),
+            /// `"gnu"` always, `"static"` never (plugins are then not loaded). Other builds load
+            /// plugins themselves and ignore this.
+            runtime: PluginRuntime = "runtime", Setting, restart = true,
+                vanilla = PluginRuntime::Auto;
+        }
+        /// Paper and Spigot plugins (`plugins/*.jar` with a `plugin.yml` or
+        /// `paper-plugin.yml`). They run on the Bukkit layer (vanillite-bukkit), a native plugin
+        /// that hosts a Java virtual machine; without such jars nothing of it exists.
+        bukkit: BukkitRules = "plugins.bukkit" {
+            /// When `plugins/` holds Paper or Spigot plugins and the layer is not installed,
+            /// download the layer release made for this Vanillite version into
+            /// `plugins/bukkit/` and, without a Java 25 runtime, Eclipse Temurin into
+            /// `plugins/bukkit/runtime/` (both checked by SHA-256). Off (offline servers): the
+            /// log says what to download and where to put it.
+            auto_setup: bool = "auto-setup", Setting, restart = true, vanilla = true;
         }
         /// Bedrock Edition players (`vanillite-bedrock`): a RakNet listener on UDP that
         /// translates Bedrock clients into virtual connections. The address is `server-ip`.

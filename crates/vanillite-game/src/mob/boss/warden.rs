@@ -189,8 +189,8 @@ fn is_digging_or_emerging(ents: &Entities, id: EntityId) -> bool {
         .is_some_and(|e| matches!(e.pose(), Pose::Digging | Pose::Emerging))
 }
 
-/// `canTargetEntity(entity)`: a living entity that is not creative or spectating, not a
-/// warden, alive.
+/// `canTargetEntity(entity)`: a living entity that is not creative or spectating, not an
+/// armour stand or a warden, alive.
 pub fn can_target_entity(ents: &Entities, entity: Option<EntityId>) -> bool {
     let Some(entity) = entity else {
         return false;
@@ -202,7 +202,7 @@ pub fn can_target_entity(ents: &Entities, entity: Option<EntityId>) -> bool {
     !crate::mob::entity_nbt::is_invulnerable(ents, entity)
         && ents
             .mob(entity)
-            .is_some_and(|m| m.is_alive() && m.kind != Kind::Warden)
+            .is_some_and(|m| m.is_alive() && !matches!(m.kind, Kind::Warden | Kind::ArmorStand))
 }
 
 /// `getTarget()`: the attack target memory.
@@ -253,7 +253,7 @@ fn play_sound(
         return;
     }
     let seed = crate::survival::sound_seed();
-    let source = m.kind.sound_source();
+    let source = m.sound_source();
     crate::survival::play_sound(env.out, None, pos, sound, source, volume, pitch, seed);
 }
 

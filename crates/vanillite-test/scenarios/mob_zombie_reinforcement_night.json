@@ -1,0 +1,70 @@
+{
+  "description": "On Hard at night a zombie (loaded with spawn_reinforcements 1.0) hurt by a pig calls reinforcements on the open surface: Zombie.hurtServer checks the spawn rules with the real level (sky darkened); leaves and closed top trapdoors on two sides are no valid spawn floor (Blocks isValidSpawn).",
+  "tier": "fast",
+  "time": 18000,
+  "difficulty": "hard",
+  "region": [
+    [
+      -8,
+      -61,
+      -8
+    ],
+    [
+      55,
+      -50,
+      55
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        -16,
+        -61,
+        -16
+      ],
+      "to": [
+        64,
+        -61,
+        -1
+      ],
+      "block": "minecraft:oak_leaves[persistent=true]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -16,
+        -61,
+        49
+      ],
+      "to": [
+        64,
+        -61,
+        64
+      ],
+      "block": "minecraft:oak_trapdoor[half=top,open=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:zombie 24.5 -60 24.5 {UUID:[I;1,2,3,20],NoAI:1b,attributes:[{id:\"minecraft:spawn_reinforcements\",base:1.0d}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:pig 26.5 -60 24.5 {UUID:[I;1,2,3,21],NoAI:1b}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "damage @e[type=minecraft:zombie,limit=1] 1 minecraft:mob_attack by @e[type=minecraft:pig,limit=1]"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "true",
+    "spawn_mobs": "true"
+  }
+}

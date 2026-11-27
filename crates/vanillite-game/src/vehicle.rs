@@ -4,6 +4,7 @@
 //! those moves (see [`crate::riding`]).
 
 use vanillite_base::math::{ceil, floor};
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityFlags, EntityId, NetworkIds, NewEntity, Rotation};
@@ -69,8 +70,10 @@ pub enum Status {
     UnderWater,
     UnderFlowingWater,
     OnLand,
-    #[default]
     InAir,
+    /// Not computed yet (`null` before the first tick).
+    #[default]
+    Unset,
 }
 
 /// The kind data of a boat.
@@ -99,15 +102,25 @@ pub struct BoatData {
     /// `LootTable` and `LootTableSeed` of a chest boat until the loot is rolled
     /// ([`crate::block::chest_loot::unpack_entity`]).
     pub loot_table: Option<(String, i64)>,
+    /// `paddlePositions`: the paddle angles for the paddle sounds.
+    pub paddle_positions: [f32; 2],
+    /// The boat's own random (`Entity.random`).
+    pub random: LegacyRandom,
+    /// `DATA_ID_BUBBLE_TIME`, `isAboveBubbleColumn` and `bubbleColumnDirectionIsDown`.
+    pub bubble_time: i32,
+    pub above_bubble_column: bool,
+    pub bubble_column_down: bool,
+    /// A leash read from NBT until its holder is found (`delayedLeashInfo`).
+    pub pending_leash: Option<crate::mob::LeashRef>,
 }
 
 impl BoatData {
-    /// A new boat.
-    pub fn new(kind: BoatKind) -> BoatData {
+    /// A new boat with its random seeded with `seed`.
+    pub fn new(kind: BoatKind, seed: i64) -> BoatData {
         BoatData {
             kind,
-            status: Status::InAir,
-            old_status: Status::InAir,
+            status: Status::Unset,
+            old_status: Status::Unset,
             out_of_control_ticks: 0.0,
             delta_rotation: 0.0,
             water_level: 0.0,
@@ -126,6 +139,12 @@ impl BoatData {
                 Vec::new()
             },
             loot_table: None,
+            paddle_positions: [0.0; 2],
+            random: LegacyRandom::new(seed),
+            bubble_time: 0,
+            above_bubble_column: false,
+            bubble_column_down: false,
+            pending_leash: None,
         }
     }
 }
@@ -375,6 +394,8 @@ pub fn tick_boat(
     if eject {
         crate::riding::eject_passengers(ents, env, id);
     }
+    // `super.tick()`: the end of `Entity.baseTick` (`Leashable.tickLeash`).
+    crate::mob::tame::tick_boat_leash(level, ents, env, id);
     if controlled {
         // The rider's client moves the boat.
         if let Some(mut e) = ents.store.get_mut(id) {
@@ -433,8 +454,200 @@ pub fn tick_boat(
                 .push(crate::mob::WorldAction::EntityInside(pos, id));
         });
     }
+    // `applyEffectsFromBlocks()` twice (the second time along the whole way of the tick
+    // again): the bubble columns, then `tickBubbleColumn`.
+    for _ in 0..2 {
+        bubble_columns(level, ents, env, id);
+    }
+    tick_bubble_column(ents, env, id);
+    paddle_sounds(level, ents, env, id);
     // Living entities pushed against a boat no player steers get in; the others are pushed.
     board_nearby(ents, env, id, !controlled);
+}
+
+/// `AbstractBoat.tick`'s paddle sounds: each paddle in use plays `getPaddleSound` (water or
+/// land) once per stroke beside the boat, then moves on by π/8.
+fn paddle_sounds(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    use std::f32::consts::PI;
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    // Boats keep no `Silent` flag.
+    let (pos, rot, aabb) = (e.pos(), e.rot(), e.aabb());
+    let Some(b) = ents.boat_mut(id) else {
+        return;
+    };
+    let paddles = [b.paddles.0, b.paddles.1];
+    for (i, &on) in paddles.iter().enumerate() {
+        if !on {
+            b.paddle_positions[i] = 0.0;
+            continue;
+        }
+        let p = b.paddle_positions[i];
+        if p % (PI * 2.0) <= PI / 4.0 && (p + PI / 8.0) % (PI * 2.0) >= PI / 4.0 {
+            // `getPaddleSound` asks `getStatus()` where the boat is now.
+            let sound = match status(level, &aabb, b) {
+                Status::InWater | Status::UnderWater | Status::UnderFlowingWater => {
+                    Some("minecraft:entity.boat.paddle_water")
+                }
+                Status::OnLand => Some("minecraft:entity.boat.paddle_land"),
+                Status::InAir | Status::Unset => None,
+            };
+            if let Some(sound) = sound {
+                let view = crate::effect::living::view_vector(rot.x_rot, rot.y_rot);
+                let (dx, dz) = if i == 1 {
+                    (-view.z, view.x)
+                } else {
+                    (view.z, -view.x)
+                };
+                let pitch = 0.8 + 0.4 * b.random.next_float();
+                crate::survival::play_sound(
+                    env.out,
+                    None,
+                    Vec3::new(pos.x + dx, pos.y, pos.z + dz),
+                    sound,
+                    vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+                    1.0,
+                    pitch,
+                    crate::survival::sound_seed(),
+                );
+            }
+        }
+        b.paddle_positions[i] = p + PI / 8.0;
+    }
+}
+
+/// `BubbleColumnBlock.entityInside` (precise only) of the columns on the boat's way this tick:
+/// `AbstractBoat.onAboveBubbleColumn` at the top of a column, `onInsideBubbleColumn` below.
+fn bubble_columns(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    let way = [crate::survival::inside::Movement::plain(
+        e.old_pos(),
+        e.pos(),
+    )];
+    let view = level.view();
+    let walker = crate::survival::inside::Walker {
+        blocks: &view,
+        facts: None,
+        dims: e.dims(),
+        fast_fall: false,
+    };
+    let mut columns: Vec<(BlockPos, bool)> = Vec::new();
+    walker.walk(&way, |cell| {
+        if cell.in_block
+            && cell.precise
+            && cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
+        {
+            columns.push((cell.pos, cell.state.value("drag") == Some("true")));
+        }
+        true
+    });
+    for (pos, down) in columns {
+        let above = level.block(BlockPos::new(pos.x, pos.y + 1, pos.z));
+        let nothing_above = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+        let controlled = player_controlled(ents, id);
+        let Some(b) = ents.boat_mut(id) else {
+            return;
+        };
+        if nothing_above {
+            b.above_bubble_column = true;
+            b.bubble_column_down = down;
+            let started = b.bubble_time == 0;
+            if started {
+                b.bubble_time = 60;
+            }
+            // `onAboveBubbleColumn`: the splash sound and particle are the client's, but their
+            // pitch and offsets come from the boat's own random.
+            let under = matches!(b.status, Status::UnderWater | Status::UnderFlowingWater);
+            let splash = !under && b.random.next_int_bounded(100) == 0;
+            if splash {
+                for _ in 0..3 {
+                    b.random.next_float();
+                }
+            }
+            if started && let Some(mut e) = ents.store.get_mut(id) {
+                e.mark_data_dirty();
+            }
+            if splash {
+                let rider = ents.riding.passengers_of(id).first().copied();
+                if let Some(p) = ents.store.get(id).map(|e| e.pos()) {
+                    crate::survival::game_event(
+                        env.out,
+                        crate::level::game_event::events().splash,
+                        p,
+                        rider.filter(|_| controlled),
+                    );
+                }
+            }
+        } else {
+            b.fall_distance = 0.0;
+            if !controlled && let Some(mut e) = ents.store.get_mut(id) {
+                let v = e.as_ref().velocity();
+                let yd = if down {
+                    (v.y - 0.03).max(-0.3)
+                } else {
+                    (v.y + 0.06).min(0.7)
+                };
+                e.set_velocity(Vec3::new(v.x, yd, v.z));
+            }
+        }
+    }
+}
+
+/// `AbstractBoat.tickBubbleColumn` on the server: 60 ticks above a column, then a downward
+/// one throws the passengers off and sinks it (event 71), an upward one tosses it (72).
+fn tick_bubble_column(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    let Some(b) = ents.boat_mut(id) else {
+        return;
+    };
+    let before = b.bubble_time;
+    if !b.above_bubble_column {
+        b.bubble_time = 0;
+    }
+    let mut fire = None;
+    if b.bubble_time > 0 {
+        b.bubble_time -= 1;
+        let diff = 60 - b.bubble_time - 1;
+        if diff > 0 && b.bubble_time == 0 {
+            fire = Some(b.bubble_column_down);
+        }
+        b.above_bubble_column = false;
+    }
+    let changed = b.bubble_time != before;
+    if let Some(down) = fire {
+        if down {
+            crate::riding::eject_passengers(ents, env, id);
+        }
+        if let Some(e) = ents.store.get(id) {
+            let network_id = e.network_id().0;
+            env.out.push(Effect::Tracking {
+                entity: id,
+                with_self: false,
+                packet: vanillite_protocol::SharedPacket::of(
+                    &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                        entity_id: network_id,
+                        event: if down { 71 } else { 72 },
+                    },
+                ),
+            });
+        }
+        // `handleBubbleColumnEffect` (`canSimulateMovement`: no player steers it).
+        if !player_controlled(ents, id)
+            && let Some(mut e) = ents.store.get_mut(id)
+        {
+            let v = e.as_ref().velocity();
+            e.set_velocity(if down {
+                Vec3::new(v.x, v.y - 0.7, v.z)
+            } else {
+                Vec3::new(v.x, 0.6, v.z)
+            });
+        }
+    }
+    if changed && let Some(mut e) = ents.store.get_mut(id) {
+        e.mark_data_dirty();
+    }
 }
 
 /// The pushable entities next to the boat: mobs board it when there is room (and
@@ -555,10 +768,11 @@ fn float_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entit
             inv_friction = 0.9;
         }
         Status::UnderWater => {
-            buoyancy = 0.01;
+            // `0.01F`.
+            buoyancy = f64::from(0.01_f32);
             inv_friction = 0.45;
         }
-        Status::InAir => inv_friction = 0.9,
+        Status::InAir | Status::Unset => inv_friction = 0.9,
         Status::OnLand => inv_friction = b.land_friction,
     }
     let f = f64::from(inv_friction);
@@ -582,10 +796,12 @@ fn move_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entity
     let pos = e.pos();
     let movement = physics::collide(&level.view(), aabb, delta, 0.0, on_ground, &mut cx.boxes);
     let mut v = delta;
-    if movement.x != delta.x {
+    // `Mth.equal`: a difference below 1e-5 is no collision.
+    let eps = f64::from(1.0e-5_f32);
+    if (movement.x - delta.x).abs() >= eps {
         v.x = 0.0;
     }
-    if movement.z != delta.z {
+    if (movement.z - delta.z).abs() >= eps {
         v.z = 0.0;
     }
     let landed = delta.y != movement.y && delta.y < 0.0;
@@ -634,6 +850,7 @@ pub fn hurt_boat(
     }
     let pos = ents.store.get(id).map(|e| e.pos());
     crate::minecart::damage_game_event(ents, cx, id, source.cause);
+    let by_player = source.direct.filter(|&d| ents.player(d).is_some());
     let Some(b) = ents.boat_mut(id) else {
         return false;
     };
@@ -641,6 +858,10 @@ pub fn hurt_boat(
     b.hurt_time = 10;
     b.damage += amount * 10.0;
     let destroy = !creative && b.damage > 40.0;
+    // `AbstractChestBoat.destroy` → `chestVehicleDestroyed`: a player breaking it angers
+    // piglins.
+    let anger =
+        destroy && b.kind.chest && env.rules.bool(Rule::ENTITY_DROPS) && by_player.is_some();
     let drop = b.kind.drop_item();
     let name = b.custom_name.clone();
     let items = if destroy {
@@ -683,6 +904,9 @@ pub fn hurt_boat(
                     entity_drops,
                 },
             )));
+        if anger && let Some(p) = by_player {
+            cx.actions.push(crate::mob::WorldAction::PiglinAnger(p));
+        }
         return true;
     }
     // `kill` → `remove(KILLED)`: a chest boat drops its contents first.
@@ -715,6 +939,9 @@ pub fn hurt_boat(
             // `chestVehicleDestroyed` drops the (now empty) contents once more.
             crate::minecart::drop_contents(env, pos, &vec![ItemStack::EMPTY; items.len()]);
         }
+    }
+    if anger && let Some(p) = by_player {
+        cx.actions.push(crate::mob::WorldAction::PiglinAnger(p));
     }
     true
 }
@@ -810,11 +1037,11 @@ pub fn use_boat_item(
     if !physics::no_collision(&level.view(), &boat_box, &mut scratch) {
         return false;
     }
-    let mut data = BoatData::new(kind);
+    let mut data = BoatData::new(kind, crate::mob::new_entity_seed());
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
-    let uuid = crate::mob::new_entity_uuid();
+    let uuid = crate::mob::new_uuid();
     let id = spawn_boat(ents, network_ids, uuid, hit, rot.y_rot, data);
     if !ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0) {
         return false;
@@ -847,7 +1074,7 @@ mod tests {
 
     #[test]
     fn two_passengers_sit_front_and_back() {
-        let b = BoatData::new(BoatKind::of(ids::OAK_BOAT).expect("boat"));
+        let b = BoatData::new(BoatKind::of(ids::OAK_BOAT).expect("boat"), 0);
         let front = passenger_offset(&b, 0.0, 2, 0, false);
         let back = passenger_offset(&b, 0.0, 2, 1, false);
         assert!((front.z - 0.2).abs() < 1e-6 && (back.z + 0.6).abs() < 1e-6);

@@ -760,6 +760,17 @@ pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
             return false;
         }
     }
+    // `AbstractIllager.canAttack`: never a baby villager.
+    if matches!(
+        me.kind,
+        Kind::Pillager | Kind::Vindicator | Kind::Evoker | Kind::Illusioner
+    ) && t
+        .ents
+        .mob(target)
+        .is_some_and(|o| o.kind == Kind::Villager && o.baby)
+    {
+        return false;
+    }
     // `Mob.canAttack`: never a ghast.
     if t.ents.mob(target).is_some_and(|o| o.kind == Kind::Ghast) {
         return false;
@@ -843,7 +854,7 @@ pub(crate) fn nearest_player(
 
 /// `TemptGoal.canUse`: the nearest player (not a spectator) within the tempt range holding a
 /// tempting item in either hand.
-fn tempting_player(t: &mut Tick<'_, '_>, items: TemptItems) -> Option<EntityId> {
+pub(crate) fn tempting_player(t: &mut Tick<'_, '_>, items: TemptItems) -> Option<EntityId> {
     // `minecraft:tempt_range` defaults to 10.
     let range = 10.0;
     let p = t.pos();
@@ -915,9 +926,12 @@ pub(super) fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
         return false;
     };
     let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
-    attack_bounding_box(t)
-        .inflate(reach, 0.0, reach)
-        .intersects(&o.aabb)
+    let mut b = attack_bounding_box(t).inflate(reach, 0.0, reach);
+    // `Ravager.getAttackBoundingBox`.
+    if t.mob_ref().kind == Kind::Ravager {
+        b = b.inflate(-0.05, 0.0, -0.05);
+    }
+    b.intersects(&o.aabb)
 }
 
 /// `Mob.getAttackBoundingBox`: a rider reaches as far as its mount does sideways.
@@ -1044,7 +1058,7 @@ pub(crate) fn target_event(
         cause: reason,
         ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TARGET)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     !ev.cancelled
 }
 
@@ -1099,7 +1113,7 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if !panics {
                 return false;
             }
-            match default_random_pos(t, 5, 4) {
+            match super::animal::panic_pos(t) {
                 Some(p) => {
                     *pos = p;
                     true
@@ -1212,8 +1226,15 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             }
             false
         }
-        Goal::RestrictSun => t.cx.env.is_bright_outside(),
-        Goal::Bow { .. } => t.mob_ref().target.is_some(),
+        // `RestrictSunGoal.canUse`: not with a helmet (ground navigation: every user walks).
+        Goal::RestrictSun => {
+            t.cx.env.is_bright_outside()
+                && t.mob_ref()
+                    .equipment
+                    .get(crate::item::EquipmentSlot::Head)
+                    .is_empty()
+        }
+        Goal::Bow { .. } => t.mob_ref().target.is_some() && holds_bow(t.mob_ref()),
         Goal::EatBlock { .. } => {
             let chance = if t.mob_ref().baby { 50 } else { 1000 };
             if random_int(t, g.adjusted(chance)) != 0 {
@@ -1411,7 +1432,9 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         }
         Goal::Swell => can_use(t, g),
         Goal::Leap { .. } => !t.on_ground(),
-        Goal::Bow { .. } => t.mob_ref().target.is_some() || !t.nav_ref().is_done(),
+        Goal::Bow { .. } => {
+            (t.mob_ref().target.is_some() || !t.nav_ref().is_done()) && holds_bow(t.mob_ref())
+        }
         Goal::EatBlock { tick } => *tick > 0,
         Goal::FollowParent { parent, .. } => {
             if t.mob_ref().age >= 0 {
@@ -1471,6 +1494,13 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         }
         Goal::Guardian(g) => super::boss::guardian::goal_can_continue(t, g),
     }
+}
+
+/// `RangedBowAttackGoal.isHoldingBow`: a bow in either hand.
+fn holds_bow(m: &super::MobData) -> bool {
+    let bow = vanillite_data::item::ids::BOW.0;
+    let off = m.equipment.get(crate::item::EquipmentSlot::OffHand);
+    m.equipment.holds(bow) || (!off.is_empty() && off.item == bow)
 }
 
 /// `TargetGoal.canContinueToUse`.
@@ -1877,7 +1907,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 if kinds::is_stared_at_by(t, target) {
                     if dist < 16.0 {
                         let id = t.id;
-                        kinds::teleport_randomly(t.level, t.ents, t.env, id);
+                        kinds::teleport_randomly(t.level, t.ents, t.env, t.cx, id);
                     }
                     *teleport_time = 0;
                 } else if dist > 256.0 {

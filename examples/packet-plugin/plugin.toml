@@ -2,6 +2,8 @@
 id = "packets"
 name = "Packets"
 version = "0.1.0"
+authors = ["Hannes Thöne"]
+website = "https://vanillite.org"
 # Plugin API (ABI) version the plugin needs: packet listeners came with 1.7, feeding packets
 # in with 1.8.
 api = "1.8"

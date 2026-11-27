@@ -380,7 +380,7 @@ fn burn_event(
         value: i64::from(burn_time),
         ..crate::hooks::Event::new(vanillite_abi::event::FURNACE_BURN)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
     if ev.cancelled {
         return None;
     }
@@ -403,7 +403,7 @@ fn smelt_event(
         item: crate::hooks::item_snbt(result),
         ..crate::hooks::Event::new(vanillite_abi::event::FURNACE_SMELT)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
     if ev.cancelled {
         return None;
     }

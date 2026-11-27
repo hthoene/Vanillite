@@ -216,6 +216,9 @@ pub struct Survival {
     pub sleeping_pos: Option<BlockPos>,
     /// `sleepCounter` (`SleepTimer`): ticks asleep up to 100, then 100..110 after waking.
     pub sleep_timer: i32,
+    /// A plugin's `Player.setSleepingIgnored` (Bukkit's `fauxSleeping`): counts as sleeping
+    /// for the night skip while someone really sleeps. Not saved.
+    pub sleeping_ignored: bool,
     /// Something woke the player (`stopSleeping` from damage or death); the sleep pass of the
     /// world tick gets it out of bed.
     pub wake: bool,
@@ -279,6 +282,9 @@ pub struct Survival {
     pub using_item: Option<crate::player::using::UsingItem>,
     /// `recentKineticEnemies`: the entities the spear in use hit, with the game time.
     pub stabbed: Vec<(vanillite_world::entity::EntityId, i64)>,
+    /// A hit blocked by the item in use whose attacker reacts itself
+    /// ([`DamageSource::own_blocked_by_item`]): whether it was fully blocked.
+    pub blocked_by_item: Option<bool>,
     /// The player's own random (`Entity.random`).
     pub random: LegacyRandom,
     /// `cooldowns`.
@@ -368,6 +374,7 @@ impl Default for Survival {
             respawn: None,
             sleeping_pos: None,
             sleep_timer: 0,
+            sleeping_ignored: false,
             wake: false,
             combat: CombatTracker::default(),
             tick_count: 0,
@@ -399,6 +406,7 @@ impl Default for Survival {
             last_hurt_by_names: (None, None),
             using_item: None,
             stabbed: Vec::new(),
+            blocked_by_item: None,
             random: LegacyRandom::new(crate::mob::new_unique_seed()),
             cooldowns: crate::player::cooldowns::ItemCooldowns::default(),
             carried_maps: Vec::new(),
@@ -500,6 +508,8 @@ pub struct Env<'a> {
     pub out: &'a mut Vec<Effect>,
     /// Plugin hooks (damage).
     pub hooks: &'a dyn crate::hooks::GameHooks,
+    /// What plugins may read during these hooks.
+    pub hook_world: crate::hooks::HookWorld<'a>,
     /// `Player.getDisplayName` by name and UUID: the name in its team's format.
     pub display_name: &'a dyn Fn(&str, u128) -> Component,
     /// `Entity.getTeam` by score holder (a player's name, another entity's UUID string): its
@@ -846,7 +856,7 @@ fn check_totem(
     };
     if !env
         .hooks
-        .entity_resurrect(entity.as_ref().uuid(), "minecraft:player")
+        .entity_resurrect(env.hook_world, entity.as_ref().uuid(), "minecraft:player")
     {
         return false;
     }
@@ -1055,6 +1065,7 @@ pub fn hurt_with(
     let uuid = entity.as_ref().uuid();
     let (attacker, direct) = attackers;
     match env.hooks.entity_damage(
+        env.hook_world,
         uuid,
         "minecraft:player",
         &types.get(kind).id,
@@ -1253,7 +1264,8 @@ pub fn hurt_with(
     if let Some(v) = damage_stat(blocked_amount) {
         player.stats.award(custom::DAMAGE_BLOCKED_BY_SHIELD, v);
     }
-    true
+    // `success = !blocked || damage > 0`: a fully blocked hit did not hurt.
+    !blocked || damage > 0.0
 }
 
 /// `Player.playSound`: heard by everyone near except the player itself (its client plays it).
@@ -1342,8 +1354,10 @@ fn actually_hurt(
             names,
         };
         let alive = s.health > 0.0;
-        s.combat
+        let change = s
+            .combat
             .record_damage(entry, s.tick_count, alive, source.cause.is_some());
+        combat_packets(env, entity.as_ref().id(), change);
         let health = s.health - remaining;
         set_health(entity, s, health);
         if let Some(v) = damage_stat(remaining) {
@@ -1598,7 +1612,9 @@ fn apply_item_blocking(
     // `blockUsingItem`: only a living entity that hit directly (no projectile).
     let melee = source.direct.is_some() && source.direct == source.cause;
     if blocked > 0.0 && !env.types.is(source.kind, tag::IS_PROJECTILE) && melee {
-        if blocked < damage
+        if source.own_blocked_by_item {
+            player.survival.blocked_by_item = Some(blocked >= damage);
+        } else if blocked < damage
             && let Some(at) = source.position
         {
             // `blockedByItem`: a hit that was not fully blocked pushes the defender back.
@@ -1676,6 +1692,24 @@ pub fn kill_credit(s: &Survival) -> Option<vanillite_world::entity::EntityId> {
 
 /// `ServerPlayer.die`; `killer` is the UUID of the source's causing entity (the kill credit)
 /// for the plugins' death event, when the caller resolved it.
+/// `ServerPlayer.onLeaveCombat` and `onEnterCombat`: `player_combat_end` and
+/// `player_combat_enter` to the player itself.
+fn combat_packets(env: &mut Env<'_>, player: EntityId, change: combat::CombatChange) {
+    use vanillite_protocol::packets::play::clientbound::{PlayerCombatEnd, PlayerCombatEnter};
+    if let Some(duration) = change.left {
+        env.out.push(Effect::To {
+            player,
+            packet: SharedPacket::of(&PlayerCombatEnd { duration }),
+        });
+    }
+    if change.entered {
+        env.out.push(Effect::To {
+            player,
+            packet: SharedPacket::of(&PlayerCombatEnter),
+        });
+    }
+}
+
 pub fn die(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
@@ -1767,7 +1801,7 @@ pub fn die(
                 to: crate::hooks::Place::at(pos),
                 ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
             };
-            env.hooks.event(&mut ev);
+            env.hooks.event(env.hook_world, &mut ev);
             if let Some(new) = crate::hooks::drops_out(&ev) {
                 drops = new;
             }
@@ -1815,7 +1849,16 @@ pub fn die(
     s.ticks_frozen = 0;
     entity.set_flags(EntityFlags::ON_FIRE, false);
     let alive = s.health > 0.0;
-    s.combat.recheck_status(s.tick_count, alive);
+    let left = s.combat.recheck_status(s.tick_count, alive);
+    combat_packets(
+        env,
+        id,
+        combat::CombatChange {
+            left,
+            entered: false,
+        },
+    );
+    let s = &mut player.survival;
     s.last_death = Some((env.dimension.to_owned(), block_pos(entity.as_ref().pos())));
     player.stats.award(custom::DEATHS, 1);
     player.stats.reset(custom::TIME_SINCE_DEATH);
@@ -2101,8 +2144,19 @@ pub fn base_tick_after_portal(
         {
             s.last_hurt_by_mob = None;
         }
-        let alive = s.health > 0.0;
-        s.combat.recheck_status(s.tick_count, alive);
+        // `LivingEntity.tick`: every 20 ticks.
+        if s.tick_count.wrapping_rem(20) == 0 {
+            let alive = s.health > 0.0;
+            let left = s.combat.recheck_status(s.tick_count, alive);
+            combat_packets(
+                env,
+                id,
+                combat::CombatChange {
+                    left,
+                    entered: false,
+                },
+            );
+        }
     }
     // `tickEffects`, with the effect packets, flags and attributes.
     crate::effect::living::tick_player(entity, player, env);
@@ -2194,7 +2248,8 @@ pub fn do_tick_end(
     crate::elytra::update_player_pose(entity, player.survival.spin_attack.is_some());
     player.survival.last_box = Some(entity.as_ref().aabb());
     // `Player.aiStep`: `handleShoulderEntities`.
-    super::shoulder::handle(entity, player, env, false);
+    let sleeping = player.survival.sleeping_pos.is_some();
+    super::shoulder::handle(entity, player, env, sleeping);
     // `FoodData.tick`.
     let s = &mut player.survival;
     let action = s.food.tick(

@@ -146,9 +146,21 @@ pub struct ExplosionHurt {
     pub wind: bool,
     /// `badRespawnPointExplosion` instead of `explosion`.
     pub bad_respawn_point: bool,
+    /// The dragon part hit (`EnderDragonPart.hurtServer`), when `target` is a dragon hit
+    /// through one of its parts.
+    pub part: Option<usize>,
 }
 
 impl ExplosionHurt {
+    /// `EnderDragonPart.hurtServer`: a hit through a part lands on that part of the dragon.
+    pub fn aim(&self, ents: &mut crate::entities::Entities) {
+        if let Some(i) = self.part
+            && let Some(s) = ents.mob_mut(self.target).and_then(|m| m.boss.dragon_mut())
+        {
+            s.hit_part = Some(i);
+        }
+    }
+
     /// `shouldAffectBlocklikeEntities`.
     pub fn affects_blocklike(&self, mob_griefing: bool) -> bool {
         if mob_griefing {
@@ -223,17 +235,37 @@ impl Level {
         // The blocks of an earlier explosion nobody applied the damage of.
         self.finish_explosion();
         let (mut radius, mut interaction, mut style) = (radius, interaction, style);
+        let mut planned = None;
         if let Some(hooks) = self.hooks_for(vanillite_abi::event::ENTITY_EXPLODE) {
-            let Some((r, i, fire)) =
-                self.explode_event(&*hooks, source, center, radius, interaction, &style, block)
-            else {
+            // Bukkit's `EntityExplodeEvent` names the blocks: they are known before the event.
+            let mut targets = self.exploded_positions(center, radius, style.resistance);
+            let Some((r, i, fire, kept)) = self.explode_event(
+                &*hooks,
+                source,
+                center,
+                radius,
+                interaction,
+                &style,
+                block,
+                &targets,
+            ) else {
                 return 0;
             };
+            if r.to_bits() != radius.to_bits() {
+                targets = self.exploded_positions(center, r, style.resistance);
+            }
+            if let Some(kept) = kept {
+                targets.retain(|p| kept.contains(p) || self.block(*p).is_air());
+            }
             (radius, interaction, style.fire) = (r, i, fire);
+            planned = Some(targets);
         }
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
-        let targets = self.exploded_positions(center, radius, style.resistance);
+        let targets = match planned {
+            Some(targets) => targets,
+            None => self.exploded_positions(center, radius, style.resistance),
+        };
         let destroys = matches!(
             interaction,
             BlockInteraction::Destroy | BlockInteraction::DestroyWithDecay
@@ -266,7 +298,8 @@ impl Level {
     }
 
     /// The plugins' explosion event (`vanillite_abi::event::ENTITY_EXPLODE`): `None` when a
-    /// plugin cancelled it, else the radius, block interaction and fire it may have changed.
+    /// plugin cancelled it, else the radius, block interaction and fire it may have changed,
+    /// and the blocks it left to blow up when it changed the list (`targets` without air).
     #[allow(clippy::too_many_arguments)]
     fn explode_event(
         &self,
@@ -277,7 +310,8 @@ impl Level {
         interaction: BlockInteraction,
         style: &ExplosionStyle,
         block: Option<(BlockPos, BlockState)>,
-    ) -> Option<(f32, BlockInteraction, bool)> {
+        targets: &[BlockPos],
+    ) -> Option<(f32, BlockInteraction, bool, Option<FxHashSet<BlockPos>>)> {
         use vanillite_abi::explode_flag;
         let destroys = matches!(
             interaction,
@@ -301,12 +335,19 @@ impl Level {
             to: crate::hooks::Place::at(center),
             amount: f64::from(radius),
             flags,
+            text: crate::hooks::positions_text(
+                targets.iter().filter(|p| !self.block(**p).is_air()),
+            ),
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_EXPLODE)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(self), &mut ev);
         if ev.cancelled {
             return None;
         }
+        let kept = ev
+            .text_out
+            .as_ref()
+            .map(|t| crate::hooks::parse_positions(t.as_str()).collect());
         #[allow(clippy::cast_possible_truncation)]
         let radius = if ev.amount.is_finite() {
             ev.amount.clamp(0.0, crate::hooks::MAX_EXPLOSION_RADIUS) as f32
@@ -319,7 +360,12 @@ impl Level {
             (false, true) => BlockInteraction::Destroy,
             _ => interaction,
         };
-        Some((radius, interaction, ev.flags & explode_flag::FIRE != 0))
+        Some((
+            radius,
+            interaction,
+            ev.flags & explode_flag::FIRE != 0,
+            kept,
+        ))
     }
 
     /// The block phase of the last explosion (`interactWithBlocks`, `createFire`), once the
@@ -541,6 +587,24 @@ impl Level {
                 found.push(id);
             }
         });
+        // `Level.getEntities` adds the dragon parts in the area last (`dragonParts()`).
+        let mut parts = Vec::new();
+        if style.damages_entities {
+            let ents = &self.entities;
+            ents.store
+                .for_each_in(&area.inflate(12.0, 12.0, 12.0), false, |id| {
+                    if Some(id) != source
+                        && let Some(s) = ents.mob(id).and_then(|m| m.boss.dragon())
+                    {
+                        for (i, p) in s.parts.iter().enumerate() {
+                            let bb = s.part_box(i);
+                            if bb.intersects(&area) {
+                                parts.push((id, i, *p, bb));
+                            }
+                        }
+                    }
+                });
+        }
         for id in found {
             let Some(entity) = self.entities.store.get(id) else {
                 continue;
@@ -600,6 +664,23 @@ impl Level {
                     continue;
                 }
             }
+            if kind == entity_ids::EXPERIENCE_ORB && style.damages_entities {
+                // `ExperienceOrb.hurtServer`: the damage wears its health (5) down.
+                let double_radius = f64::from(double_radius);
+                let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
+                #[allow(clippy::cast_possible_truncation)]
+                let amount = ((pow * pow + pow) / 2.0 * 7.0 * double_radius + 1.0) as f32;
+                let destroyed = self.entities.experience_orb_mut(id).is_some_and(|d| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                    let health = (d.health as f32 - amount) as i32;
+                    d.health = health;
+                    health <= 0
+                });
+                if destroyed {
+                    self.entities.despawn(id);
+                    continue;
+                }
+            }
             let player = self.entities.player(id);
             let mob = self.entities.mob(id);
             let eye = match mob {
@@ -637,6 +718,7 @@ impl Level {
                     blocklike: destroys && !wind,
                     wind,
                     bad_respawn_point: style.bad_respawn_point,
+                    part: None,
                 });
             }
             if decor || crate::decoration::is_decor_kind(kind) {
@@ -685,6 +767,26 @@ impl Level {
                 entity.set_velocity(velocity);
                 entity.set_flags(EntityFlags::HAS_IMPULSE, true);
             }
+        }
+        for (dragon, i, at, bb) in parts {
+            let dist = at.distance_to_sqr(center).sqrt() / f64::from(double_radius);
+            if dist > 1.0 {
+                continue;
+            }
+            let pow = (1.0 - dist) * f64::from(self.seen_percent(center, bb));
+            #[allow(clippy::cast_possible_truncation)]
+            let amount = ((pow * pow + pow) / 2.0 * 7.0 * f64::from(double_radius) + 1.0) as f32;
+            self.output.explosion_hurts.push(ExplosionHurt {
+                target: dragon,
+                amount,
+                source,
+                indirect,
+                center,
+                blocklike: destroys && !wind,
+                wind,
+                bad_respawn_point: style.bad_respawn_point,
+                part: Some(i),
+            });
         }
         hit_players
     }

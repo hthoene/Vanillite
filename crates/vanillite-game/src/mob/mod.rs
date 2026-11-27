@@ -34,6 +34,7 @@ pub mod randompos;
 pub mod spawn;
 pub mod structures;
 pub mod tame;
+pub mod teleport;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
@@ -310,7 +311,7 @@ impl MobData {
             removed: false,
             no_action_time: 0,
             fall_distance: 0.0,
-            fire_ticks: -1,
+            fire_ticks: 0,
             air: 300,
             ticks_frozen: 0,
             in_powder_snow: false,
@@ -415,6 +416,10 @@ impl MobData {
             Kind::Rabbit => {
                 let _ = mob.random.next_int_bounded(40);
             }
+            // `Guardian`: `clientSideTailAnimation = random.nextFloat()`.
+            Kind::Guardian | Kind::ElderGuardian => {
+                let _ = mob.random.next_float();
+            }
             _ => {}
         }
         kinds::register_goals(&mut mob);
@@ -446,6 +451,14 @@ impl MobData {
         }
         let r = f64::from(self.restrict_radius);
         self.restrict_center.dist_sqr(pos) < r * r
+    }
+
+    /// `getSoundSource`: the kind's, but `HOSTILE` for the killer bunny (`Rabbit`).
+    pub fn sound_source(&self) -> vanillite_protocol::packets::play::clientbound::SoundSource {
+        if self.kind == Kind::Rabbit && self.variant == fam::companion::rabbit::EVIL {
+            return vanillite_protocol::packets::play::clientbound::SoundSource::Hostile;
+        }
+        self.kind.sound_source()
     }
 
     /// `isAlive`.
@@ -506,6 +519,8 @@ pub struct Environment {
     pub creaking_active: bool,
     /// `EnvironmentAttributes.TURTLE_EGG_HATCH_CHANCE` (the `day` timeline in the overworld).
     pub turtle_egg_hatch_chance: f32,
+    /// `EnvironmentAttributes.CAT_WAKING_UP_GIFT_CHANCE` (the `day` timeline in the overworld).
+    pub cat_waking_up_gift_chance: f32,
     /// `EnvironmentAttributes.SUN_ANGLE` in degrees (the `day` timeline in the overworld, 0
     /// elsewhere).
     pub sun_angle: f32,
@@ -536,6 +551,7 @@ impl Default for Environment {
             bees_stay_in_hive: false,
             creaking_active: false,
             turtle_egg_hatch_chance: 0.002,
+            cat_waking_up_gift_chance: 0.0,
             sun_angle: 0.0,
             eyeblossom_open: None,
             nether_portal_spawns_piglins: false,
@@ -570,6 +586,12 @@ impl Environment {
             monster_light_test: (0, 7),
             ambient_light: 0.0,
             turtle_egg_hatch_chance: turtle_egg_hatch_chance(day),
+            // Constant ease: 0.7 from 23667 to 362, 0 in between.
+            cat_waking_up_gift_chance: if (362..23667).contains(&day.rem_euclid(24000)) {
+                0.0
+            } else {
+                0.7
+            },
             sun_angle: day_sun_angle(day),
             eyeblossom_open: Some((12600..23401).contains(&day.rem_euclid(24000))),
             nether_portal_spawns_piglins: true,
@@ -580,6 +602,11 @@ impl Environment {
     /// `Level.isBrightOutside`.
     pub fn is_bright_outside(&self) -> bool {
         self.has_sky_light && self.sky_darken < 4
+    }
+
+    /// `Level.isDarkOutside`: false without a sky like `isBrightOutside`.
+    pub fn is_dark_outside(&self) -> bool {
+        self.has_sky_light && self.sky_darken >= 4
     }
 }
 
@@ -865,6 +892,9 @@ pub enum WorldAction {
     TrampleFarmland(BlockPos, EntityId),
     /// `destroyBlock(pos, drop, breaker)` (ravagers in crops).
     DestroyBlockBy(BlockPos, bool, EntityId),
+    /// `PiglinAi.angerNearbyPiglins(player, true)` of a chest vehicle the player opened or
+    /// broke: queued like the block containers' ([`crate::level::LevelOutput::piglin_anger`]).
+    PiglinAnger(EntityId),
     /// Frost Walker's `replace_disk` around a player's position.
     FrostWalker {
         pos: Vec3,
@@ -907,6 +937,9 @@ impl WorldAction {
             }
             WorldAction::DestroyBlockBy(pos, drop, id) => {
                 level.destroy_block(pos, drop, Some(id));
+            }
+            WorldAction::PiglinAnger(player) => {
+                level.output().piglin_anger.push((player, true));
             }
             WorldAction::FrostWalker {
                 pos,
@@ -1126,6 +1159,14 @@ pub fn is_lava(state: BlockState) -> bool {
 
 /// `getEyeHeight` of a mob: the type's eye height, scaled for babies.
 pub fn eye_height(mob: &MobData) -> f64 {
+    if let Some(eye) = fam::undead::zombies::baby_eye_height(mob) {
+        return f64::from(eye);
+    }
+    if mob.baby
+        && let Some((_, _, eye)) = kinds::baby_dimensions(mob.kind)
+    {
+        return f64::from(eye);
+    }
     let info = mob.kind.type_id().info();
     let scale = fam::size_scale(mob).unwrap_or(if mob.baby { 0.5 } else { 1.0 });
     f64::from(info.eye_height * scale)
@@ -1653,5 +1694,5 @@ mod size_tests {
         );
     }
 
-    const LIMIT: usize = 1792;
+    const LIMIT: usize = 1808;
 }

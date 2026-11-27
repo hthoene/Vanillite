@@ -1,0 +1,167 @@
+{
+  "description": "Boats over bubble columns: AbstractBoat.onAboveBubbleColumn starts the 60 tick bubble time; then the downward column (magma) throws the pig that got in off and sinks the boat (event 71), the upward one (soul sand) tosses its boat up (event 72).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -45,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -57,
+        14
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -61,
+        8
+      ],
+      "to": [
+        5,
+        -61,
+        8
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        8
+      ],
+      "to": [
+        5,
+        -57,
+        8
+      ],
+      "block": "minecraft:bubble_column[drag=true]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -61,
+        8
+      ],
+      "to": [
+        10,
+        -61,
+        8
+      ],
+      "block": "minecraft:soul_sand"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        8
+      ],
+      "to": [
+        10,
+        -57,
+        8
+      ],
+      "block": "minecraft:bubble_column[drag=false]"
+    }
+  ],
+  "entities": [],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:oak_boat 5.5 -56.5 8.5 {UUID:[I;1,2,3,1]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:birch_boat 10.5 -56.5 8.5 {UUID:[I;1,2,3,2]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:pig 5.9 -56.4 8.5 {UUID:[I;1,2,3,3],NoAI:1b}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

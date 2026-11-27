@@ -1,0 +1,119 @@
+{
+  "description": "A player looks at a creaking through a glass wall: Creaking.checkCanMove uses isLookingAtMe with seeThroughTransparentBlocks (ClipContext.Block.VISUAL), so the glass does not hide it and it activates and freezes.",
+  "tier": "fast",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        8
+      ],
+      "to": [
+        14,
+        -55,
+        8
+      ],
+      "block": "minecraft:glass"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        180,
+        0
+      ]
+    },
+    {
+      "name": "creaking",
+      "type": "minecraft:creaking",
+      "pos": [
+        8.5,
+        -60.0,
+        4.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -921,7 +921,7 @@ fn ents_is_player(e: &vanillite_world::entity::EntityMut<'_>) -> bool {
 }
 
 /// The `knockback_resistance` attribute of a living entity.
-fn knockback_resistance(ents: &Entities, id: EntityId) -> f64 {
+pub(crate) fn knockback_resistance(ents: &Entities, id: EntityId) -> f64 {
     if let Some(m) = ents.mob(id) {
         return m.attrs.knockback_resistance;
     }
@@ -1313,7 +1313,7 @@ fn run_entity_effect(
             };
             let source = ents.mob(target).map_or(
                 vanillite_protocol::packets::play::clientbound::SoundSource::Players,
-                |m| m.kind.sound_source(),
+                |m| m.sound_source(),
             );
             crate::survival::play_sound(
                 env.out,

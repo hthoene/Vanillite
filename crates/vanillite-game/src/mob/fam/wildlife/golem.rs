@@ -199,12 +199,14 @@ pub(crate) fn snow_shear(
     target: EntityId,
     source: SoundSource,
 ) {
-    sound_at(
+    crate::survival::play_entity_sound(
+        env.out,
         ents,
-        env,
+        None,
         target,
         "minecraft:entity.snow_golem.shear",
         source,
+        1.0,
         1.0,
     );
     let eye = ents.mob(target).map_or(1.7, crate::mob::eye_height);
@@ -697,6 +699,10 @@ fn give_flower(t: &mut Tick<'_, '_>, id: EntityId) {
         .set_guaranteed_drop(crate::item::EquipmentSlot::Saddle);
     if let Some(mut e) = t.ents.store.get_mut(id) {
         e.mark_data_dirty();
+    }
+    // `detectEquipmentUpdates`.
+    if let Some(e) = crate::mob::equipment::tracking_update(t.ents, id) {
+        t.env.out.push(e);
     }
 }
 

@@ -3,21 +3,23 @@
 mod cpu;
 mod health;
 mod logger;
+mod runtime;
+mod terminal;
 
-use std::io::BufRead as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vanillite_server::ServerBuilder;
+use vanillite_server::{ServerBuilder, StartError};
 
-// musl's allocator is slow with many threads; the static (Docker) build uses mimalloc.
-#[cfg(target_env = "musl")]
+// musl's allocator is slow with many threads; the static (Docker) build uses mimalloc, and so
+// does its glibc build for plugins (vanillite-gnu, feature `mimalloc`).
+#[cfg(any(target_env = "musl", feature = "mimalloc"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Returns freed memory of the allocator to the system.
 fn release_memory() {
-    #[cfg(target_env = "musl")]
+    #[cfg(any(target_env = "musl", feature = "mimalloc"))]
     {
         // Part of the mimalloc library the global allocator links.
         unsafe extern "C" {
@@ -26,7 +28,7 @@ fn release_memory() {
         // SAFETY: `mi_collect` may be called from any thread at any time.
         unsafe { mi_collect(true) };
     }
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
     // SAFETY: `malloc_trim` may be called from any thread at any time.
     unsafe {
         libc::malloc_trim(0);
@@ -65,6 +67,8 @@ Options of health:
 
 Environment:
   VANILLITE_LOG=<level>   error, warn, info (default), debug or trace
+  VANILLITE_COLOR=<mode>  auto (default), always or never: console colours
+                          (NO_COLOR also turns them off)
   VANILLITE_<KEY>=<value> Overrides a key of vanillite.toml or server.properties
                           (e.g. VANILLITE_SERVER_PORT, VANILLITE_MOTD)";
 
@@ -78,7 +82,7 @@ fn main() -> ExitCode {
         Some("export") => export(args),
         Some("upgrade-world") => upgrade_world(args),
         Some("version" | "--version" | "-V") => {
-            println!("{}", version());
+            println!("{}\n{}", version(), about());
             ExitCode::SUCCESS
         }
         Some("help" | "--help" | "-h") => {
@@ -103,8 +107,11 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             }
         }
     }
+    // The plugin runtime first: with plugins, the static build gives way to `vanillite-gnu`.
+    let runtime = runtime::dispatch(&dir, &version());
     let baseline = cpu::dispatch();
     logger::init();
+    runtime.log();
     match baseline {
         Some(why) => log::info!("CPU build: {} ({why})", cpu::level()),
         None => log::info!("CPU build: {}", cpu::level()),
@@ -114,14 +121,22 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
     let server_thread = std::thread::Builder::new()
         .name("Server thread".to_owned())
         .spawn(move || {
-            let mut builder = ServerBuilder::new(dir);
-            builder.version(version());
-            builder.memory_release(release_memory);
-            let server = match builder.start() {
-                Ok(server) => server,
-                Err(e) => {
-                    log::error!("Failed to start the server: {e}");
-                    return false;
+            let server = loop {
+                let mut builder = ServerBuilder::new(dir.clone());
+                builder.version(version());
+                builder.memory_release(release_memory);
+                match builder.start() {
+                    Ok(server) => break server,
+                    Err(e @ StartError::Eula(_)) => {
+                        log::error!("{e}");
+                        if !terminal::accept_eula(&dir) {
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to start the server: {e}");
+                        return false;
+                    }
                 }
             };
             let handle = server.handle();
@@ -129,21 +144,27 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             if let Err(e) = ctrlc::set_handler(move || signal_handle.stop()) {
                 log::warn!("Cannot handle Ctrl-C and SIGTERM: {e}");
             }
-            spawn_console(handle);
+            terminal::spawn_console(handle);
             server.run();
             true
         });
-    match server_thread.map(|thread| thread.join()) {
-        Ok(Ok(true)) => ExitCode::SUCCESS,
-        Ok(Ok(false)) => ExitCode::FAILURE,
+    let started = match server_thread.map(|thread| thread.join()) {
+        Ok(Ok(started)) => started,
         Ok(Err(_)) => {
             log::error!("The server thread crashed");
-            ExitCode::FAILURE
+            false
         }
         Err(e) => {
             log::error!("Cannot start the server thread: {e}");
-            ExitCode::FAILURE
+            false
         }
+    };
+    terminal::finish();
+    if started {
+        ExitCode::SUCCESS
+    } else {
+        terminal::hold_window();
+        ExitCode::FAILURE
     }
 }
 
@@ -154,6 +175,16 @@ fn version() -> String {
         env!("CARGO_PKG_VERSION"),
         vanillite_data::version::VERSION_ID,
         env!("VANILLITE_COMMIT")
+    )
+}
+
+/// The author, website and licence line of `vanillite --version`.
+fn about() -> String {
+    format!(
+        "by {}, {}, licensed under {}",
+        env!("CARGO_PKG_AUTHORS"),
+        env!("CARGO_PKG_HOMEPAGE"),
+        env!("CARGO_PKG_LICENSE")
     )
 }
 
@@ -244,23 +275,5 @@ fn export(mut args: impl Iterator<Item = String>) -> ExitCode {
             log::error!("Export failed: {e}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// Reads console commands from stdin. The thread ends with stdin (e.g. in Docker without a
-/// terminal); the server keeps running.
-fn spawn_console(handle: vanillite_server::ServerHandle) {
-    let spawned = std::thread::Builder::new()
-        .name("Server console handler".to_owned())
-        .spawn(move || {
-            for line in std::io::stdin().lock().lines() {
-                match line {
-                    Ok(line) => handle.console(line),
-                    Err(_) => return,
-                }
-            }
-        });
-    if let Err(e) = spawned {
-        log::warn!("Cannot start the console reader: {e}");
     }
 }

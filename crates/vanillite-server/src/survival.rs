@@ -443,6 +443,7 @@ impl WorldSurvival {
             random,
             out: &mut self.effects,
             hooks,
+            hook_world: vanillite_game::hooks::HookWorld::NONE,
             display_name,
             entity_team,
         }
@@ -775,13 +776,15 @@ impl WorldSurvival {
             let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = Env {
                 hooks: &hooks,
+                hook_world: vanillite_game::hooks::HookWorld::NONE,
                 display_name: &names,
                 entity_team: &teams,
                 types: &state.damage_types,
                 facts: &state.block_facts,
                 blocks: &blocks,
                 rules: &rules,
-                difficulty: state.difficulty(),
+                // The level's own (the server's, kept in sync every tick).
+                difficulty: level.settings.difficulty,
                 game_time: state.game_time(),
                 min_y: level.min_y(),
                 dimension,
@@ -865,6 +868,7 @@ impl WorldSurvival {
         let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = Env {
             hooks: &hooks,
+            hook_world: vanillite_game::hooks::HookWorld::NONE,
             display_name: &names,
             entity_team: &teams,
             types: &level.damage_types,

@@ -38,6 +38,7 @@ mod system_cmd;
 pub(crate) mod teams;
 mod text;
 mod tracker;
+mod vanillite_cmd;
 mod world_cmd;
 
 use std::collections::HashMap;
@@ -67,6 +68,7 @@ pub(crate) use select::{find_uuid, local as local_target};
 pub(crate) use sound::{send_post_effects, sound_source};
 pub(crate) use source::{CommandSource, SourceKind};
 pub(crate) use survival::{Weather, clock_changed, on_game_rule_changed, set_weather};
+pub(crate) use vanillite_cmd::profile_finished;
 pub(crate) use world_cmd::sprint_finished;
 
 use crate::global::Global;
@@ -397,7 +399,7 @@ pub(crate) fn player_source(
 
 /// The tree packet for a source (`Commands.sendCommands`).
 pub(crate) fn tree_packet(global: &Global, source: &CommandSource) -> Commands {
-    Commands(global.commands.to_tree(source))
+    Commands(global.commands().to_tree(source))
 }
 
 /// Sends a joining player its permission level and command tree.
@@ -500,8 +502,9 @@ pub(crate) fn run_player_command(
     let source = player_source(entities, global, id, world)?;
     let uuid = source.uuid()?;
     let name = source.text_name().to_owned();
-    let parse = global.commands.parse(command, &source);
-    let signable = parse.signable_arguments(&global.commands);
+    let commands = global.commands();
+    let parse = commands.parse(command, &source);
+    let signable = parse.signable_arguments(&commands);
     let signed_arguments = {
         let player = entities.player_mut(id)?;
         let sink = Arc::clone(&player.connection.sink);
@@ -550,7 +553,7 @@ pub(crate) fn run_player_command(
         world,
         others: Vec::new(),
     };
-    match parse.finish(&global.commands) {
+    match parse.finish(&commands) {
         Ok(parsed) => {
             let line = engine::Line {
                 parsed: Arc::new(parsed),
@@ -625,7 +628,7 @@ pub fn run_command_on_level(
     let world = WorldId(0);
     let source = CommandSource::new(arc, SourceKind::Console, 4, world, pos, (0.0, 0.0), None);
     let parsed = global
-        .commands
+        .commands()
         .parse_command(line.trim().trim_start_matches('/'), &source)
         .map_err(|e| error_message(&e).plain())?;
     let mut env = Env {
@@ -738,7 +741,7 @@ impl vanillite_game::block::technical::command_block::CommandRunner for BlockCom
                 })
                 .collect(),
         };
-        match global.commands.parse_command(command, &source) {
+        match global.commands().parse_command(command, &source) {
             Ok(parsed) => run_line(
                 &mut env,
                 engine::Line {
@@ -759,6 +762,18 @@ impl vanillite_game::block::technical::command_block::CommandRunner for BlockCom
 }
 
 /// A command of the console or RCON with the owner permission level.
+/// A command whose feedback goes to `buffer`, also when it arrives after the command
+/// (`/vanillite` answers between the ticks).
+#[cfg(test)]
+pub(crate) fn run_collected(
+    world: &mut ServerWorld,
+    global: &Global,
+    line: &str,
+    buffer: &Arc<std::sync::Mutex<String>>,
+) {
+    run_server_command(world, global, line, SourceKind::Rcon(Arc::clone(buffer)));
+}
+
 fn run_server_command(world: &mut ServerWorld, global: &Global, line: &str, kind: SourceKind) {
     let command = line.trim().trim_start_matches('/');
     if command.is_empty() {
@@ -783,7 +798,7 @@ fn run_server_command(world: &mut ServerWorld, global: &Global, line: &str, kind
         world: id,
         others: Vec::new(),
     };
-    match global.commands.parse_command(command, &source) {
+    match global.commands().parse_command(command, &source) {
         Ok(parsed) => {
             let line = engine::Line {
                 parsed: Arc::new(parsed),
@@ -834,9 +849,9 @@ pub(crate) fn answer_suggestions(entities: &mut Entities, global: &Global, world
         let Some(source) = player_source(entities, global, id, world) else {
             continue;
         };
-        let max = global.commands.limits().max_suggestions;
+        let max = global.commands().limits().max_suggestions;
         let packet = global
-            .commands
+            .commands()
             .suggest(&line, &source)
             .to_packet(request, &line, max);
         if let SourceKind::Player { sink, .. } = &source.kind {

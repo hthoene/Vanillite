@@ -1,0 +1,86 @@
+{
+  "description": "A zombie villager finishes curing (ConversionTime): ZombieVillager.finishConversion drops the preserved (picked-up) equipment and only Curse of Binding items go into the villager's inventory.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:zombie_villager 7.5 -60 7.5 {UUID:[I;1,2,3,10],NoAI:1b,ConversionTime:3,equipment:{mainhand:{id:\"minecraft:stick\",count:1},head:{id:\"minecraft:leather_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:binding_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:2.0f,feet:2.0f,head:2.0f}}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

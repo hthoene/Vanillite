@@ -523,6 +523,100 @@ pub enum WaypointOp {
     StyleSet,
 }
 
+/// The subcommands of Vanillite's own `vanillite` (`vl`) command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VanilliteOp {
+    /// `vanillite`: the subcommands the source may use.
+    Help,
+    /// `vanillite version`.
+    Version,
+    /// `vanillite status`.
+    Status,
+    /// `vanillite tps`, `tps`.
+    Tps,
+    /// `vanillite mspt`, `mspt`.
+    Mspt,
+    /// `vanillite profile [<seconds>]`.
+    Profile,
+    /// `vanillite chunks [<world>]`.
+    Chunks,
+    /// `vanillite entities [<world> [<type>]]`.
+    Entities,
+    /// `vanillite memory`.
+    Memory,
+    /// `vanillite reload config`.
+    ReloadConfig,
+    /// `vanillite debug <player>`.
+    Debug,
+}
+
+impl VanilliteOp {
+    /// The subcommands with their permission nodes and default permission levels, in help
+    /// order.
+    pub const SUBCOMMANDS: [(VanilliteOp, &'static str, &'static str, u8); 10] = [
+        (
+            VanilliteOp::Version,
+            "version",
+            "vanillite.command.version",
+            level::ALL,
+        ),
+        (
+            VanilliteOp::Tps,
+            "tps",
+            "vanillite.command.tps",
+            level::GAMEMASTERS,
+        ),
+        (
+            VanilliteOp::Mspt,
+            "mspt",
+            "vanillite.command.mspt",
+            level::GAMEMASTERS,
+        ),
+        (
+            VanilliteOp::Status,
+            "status",
+            "vanillite.command.status",
+            level::ADMINS,
+        ),
+        (
+            VanilliteOp::Memory,
+            "memory",
+            "vanillite.command.memory",
+            level::ADMINS,
+        ),
+        (
+            VanilliteOp::Chunks,
+            "chunks",
+            "vanillite.command.chunks",
+            level::ADMINS,
+        ),
+        (
+            VanilliteOp::Entities,
+            "entities",
+            "vanillite.command.entities",
+            level::ADMINS,
+        ),
+        (
+            VanilliteOp::Profile,
+            "profile",
+            "vanillite.command.profile",
+            level::OWNERS,
+        ),
+        (
+            VanilliteOp::ReloadConfig,
+            "reload",
+            "vanillite.command.reload",
+            level::OWNERS,
+        ),
+        (
+            VanilliteOp::Debug,
+            "debug",
+            "vanillite.command.debug",
+            level::OWNERS,
+        ),
+    ];
+}
+
 /// The subcommands of `fetchprofile`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FetchProfileOp {
@@ -896,6 +990,8 @@ pub enum CommandId {
     Plugins,
     /// `version|ver|about [<plugin>]` (Bukkit's).
     BukkitVersion,
+    /// Vanillite's own `vanillite ...` (`vl`), also `tps` and `mspt`.
+    Vanillite(VanilliteOp),
     /// `spectate [<target> [<player>]]`.
     Spectate,
     /// `stopwatch ...`.
@@ -979,9 +1075,11 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     register_vanilla(d, "version");
 }
 
-/// Registers the commands of a server: Vanilla's and Paper's `plugins` (`pl`). With `bukkit`
-/// (rule `commands.bukkit-commands`) `version`, `ver` and `about` are Bukkit's and Vanilla's
-/// `version` is `minecraft:version`, as on Paper.
+/// Registers the commands of a server: Vanilla's, Paper's `plugins` (`pl`) and Vanillite's
+/// `vanillite` (`vl`, also as `vanillite:vanillite`, `vanillite:vl`, `vanillite:tps` and
+/// `vanillite:mspt`). With `bukkit` (rule `commands.bukkit-commands`) `version`, `ver` and
+/// `about` are Bukkit's and Vanilla's `version` is `minecraft:version`, as on Paper, and `tps`
+/// and `mspt` are there without a namespace.
 pub fn register_server(d: &mut Dispatcher<CommandId>, bukkit: bool) {
     register_vanilla(
         d,
@@ -995,6 +1093,7 @@ pub fn register_server(d: &mut Dispatcher<CommandId>, bukkit: bool) {
     if bukkit {
         system::register_bukkit_version(d);
     }
+    system::register_vanillite(d, bukkit);
 }
 
 fn register_vanilla(d: &mut Dispatcher<CommandId>, version: &str) {

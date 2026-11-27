@@ -139,6 +139,10 @@ pub(crate) struct WorldMobs {
     /// World changes entity ticks queued and that were applied after their tick, since the
     /// world started.
     deferred_actions: u64,
+    /// A `/vanillite profile` runs this tick (set by the world).
+    pub(crate) profiling: bool,
+    /// The entity times of the running or last profile.
+    entity_profile: Option<crate::profiler::EntityProfile>,
 }
 
 /// What the item entities' tick needs from the world.
@@ -174,7 +178,14 @@ impl WorldMobs {
             raids_data: None,
             traders: None,
             trader_data: None,
+            profiling: false,
+            entity_profile: None,
         }
+    }
+
+    /// Takes the entity times of the last profile.
+    pub(crate) fn take_entity_profile(&mut self) -> Option<crate::profiler::EntityProfile> {
+        self.entity_profile.take()
     }
 
     /// Loads the dimension's raids from their saved data (`Raids.TYPE`).
@@ -573,7 +584,8 @@ impl WorldMobs {
             }
             None => spawn::tick(level, &table, &mut self.spawner, &input, persistent),
         }
-        if dimension == "minecraft:overworld" {
+        // `tickChunks`: the custom spawners only run with `doMobSpawning`.
+        if dimension == "minecraft:overworld" && rules.bool(Rule::SPAWN_MOBS) {
             self.custom_spawners(
                 level,
                 &table,
@@ -583,6 +595,7 @@ impl WorldMobs {
                 env,
                 &players,
                 roll_siege,
+                input.thunder.clock_time,
             );
         }
     }
@@ -599,6 +612,7 @@ impl WorldMobs {
         env: Environment,
         players: &[(EntityId, Vec3)],
         roll_siege: bool,
+        clock_time: i64,
     ) {
         level.flush_poi_changes();
         use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
@@ -628,8 +642,11 @@ impl WorldMobs {
                 Some((e.pos(), p.game_mode == GameMode::Spectator))
             })
             .collect();
+        // `CAN_PILLAGER_PATROL_SPAWN`: the biome's value ANDed with the `early_game` timeline
+        // of the overworld clock (false for the first 120000 ticks).
+        let early_game = clock_time < 120_000;
         let can_patrol = |level: &Level, pos: BlockPos| {
-            table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
+            !early_game && table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
         };
         let input = PatrolInput {
             enabled: spawn_enemies && rules.bool(Rule::SPAWN_PATROLS),
@@ -795,6 +812,12 @@ impl WorldMobs {
         let mut cursor = level.entities.store.tick_cursor();
         let mut tnt_left = self.settings.max_tnt_per_tick;
         let mut ents = std::mem::take(&mut level.entities);
+        // `/vanillite profile`: the time of each entity by type and chunk.
+        let mut profile = if self.profiling {
+            Some(self.entity_profile.take().unwrap_or_default())
+        } else {
+            None
+        };
         while let Some(id) = ents.store.next_to_tick(&mut cursor) {
             let Some(mut entity) = ents.store.get_mut(id) else {
                 continue;
@@ -802,6 +825,9 @@ impl WorldMobs {
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
+            if let Some(profile) = &mut profile {
+                profile.next(kind, BlockPos::containing(pos.x, pos.y, pos.z).chunk());
+            }
             if kind == ids::LIGHTNING_BOLT {
                 let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
                 if !level.chunks.in_entity_ticking_range(chunk) {
@@ -1025,6 +1051,10 @@ impl WorldMobs {
                 ents.despawn(d);
             }
         }
+        if let Some(profile) = &mut profile {
+            profile.finish();
+        }
+        self.entity_profile = profile;
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
         riding::ride_tick(&mut ents);
@@ -1248,6 +1278,7 @@ impl WorldMobs {
             );
         }
         for hurt in hurts {
+            hurt.aim(&mut ents);
             // `damageSources().explosion(source, indirect)`.
             let mut source = match (hurt.source, hurt.indirect) {
                 // `badRespawnPointExplosion(center)`.
@@ -1658,6 +1689,7 @@ fn environment(
             bees_stay_in_hive: false,
             creaking_active: false,
             turtle_egg_hatch_chance: 0.002,
+            cat_waking_up_gift_chance: 0.0,
             sun_angle: 0.0,
             eyeblossom_open: None,
             nether_portal_spawns_piglins: false,
@@ -1718,7 +1750,7 @@ fn player_entity_event(
             target_pos.z + at.z,
         ));
     }
-    hooks.event(&mut ev);
+    hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
     ev.cancelled
 }
 

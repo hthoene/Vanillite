@@ -202,6 +202,12 @@ containers cannot run an engine); `--push` pushes `docker.hthoene.de/vanillite/v
 the tags `dev` and the short commit hash (needs `PRIVATE_DOCKER_REPO_KEY`). Plain
 `docker build .` builds the binary inside the image instead.
 
+Plugins: the static binaries cannot load libraries, so the image and the Linux release archives
+also ship `vanillite-gnu` (zigbuild `<arch>-unknown-linux-gnu.2.28`, feature `mimalloc`: the same allocator), and the
+image the glibc files it and a Java runtime load (from `debian:bookworm-slim`, copied without
+running anything). The static binary starts it in its place only when `plugins/` holds plugins
+(`crates/vanillite/src/runtime.rs`, `plugins.runtime`).
+
 Linux x86_64 (image and release archive) ships two builds: `vanillite` for every x86-64 CPU and
 `vanillite-x86-64-v3` (AVX2/BMI2/FMA, bit-identical, fewer instructions). The baseline binary
 starts the v3 build in its place when the CPU supports it (`crates/vanillite/src/cpu.rs`) and the
@@ -211,7 +217,8 @@ sets `MIMALLOC_ARENA_EAGER_COMMIT=0` and `MIMALLOC_PURGE_DELAY=0` for lower RSS 
 Host tools for the cross build:
 
 ```sh
-rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+    x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 cargo install --locked cargo-zigbuild
 mkdir -p ~/.local/zig && curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz \
     | tar -xJ -C ~/.local/zig --strip-components=1   # then put ~/.local/zig on PATH
@@ -367,7 +374,7 @@ To release: set the workspace version (and the `version` of every internal crate
 `v<version>+mc<minecraft>` on that commit. The tag starts two workflows:
 
 - `.github/workflows/release.yml` builds the release profile for Linux (static musl, x86_64 and
-  aarch64, cargo-zigbuild), Windows (x86_64, static C runtime) and macOS (aarch64 and x86_64),
+  aarch64, cargo-zigbuild, plus `vanillite-gnu` for plugins), Windows (x86_64, static C runtime) and macOS (aarch64 and x86_64),
   packs each binary with LICENSE, NOTICE and a README.txt (`scripts/release/package.sh`,
   template `scripts/release/README.txt`) and creates the GitHub release with SHA256SUMS and
   generated notes. A manual run (`gh workflow run release.yml --ref <branch>`) is a dry run: the
@@ -380,6 +387,37 @@ To release: set the workspace version (and the `version` of every internal crate
 
 The binaries hold everything but Mojang's data: the first start downloads the pinned server jar
 into `cache/` (internet access needed once, no Java).
+
+### Signing the Windows build
+
+The release workflow publishes `vanillite.exe` unsigned. The signing certificate (Certum, cloud
+certificate in SimplySign) never leaves the owner's account, so the owner signs each release on
+their Windows PC after the workflow has published it, with `scripts/release/sign-windows.ps1`.
+For the tag it downloads the Windows zip archives and SHA256SUMS (and checks them), signs
+`vanillite.exe` with signtool (SHA-256 file digest, RFC 3161 timestamp from
+`http://time.certum.pl`), verifies it with `signtool verify /pa`, packs the archive again with
+the same layout, updates SHA256SUMS and replaces both on the release (`gh release upload
+--clobber`). Archives already signed are skipped, so it can run again; `-DryRun` does everything
+but the upload. Linux and macOS archives and the Docker images are not touched.
+
+Once per PC: install SimplySign Desktop, the GitHub CLI (`winget install GitHub.cli`, then `gh
+auth login`) and the Windows SDK signing tools (`winget install Microsoft.WindowsSDK.10.0.26100`,
+or "Windows SDK Signing Tools for Desktop Apps" in the Visual Studio Installer). Per release:
+
+1. Wait until the release workflow of the tag has finished.
+2. Start SimplySign Desktop and log in (token code from the SimplySign mobile app).
+3. In PowerShell in a checkout of the repository (current `main`):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\release\sign-windows.ps1 -Tag 'v0.1.0-beta.1+mc26.3' -CertificateSubject '<name in the certificate>' -DryRun
+   powershell -ExecutionPolicy Bypass -File scripts\release\sign-windows.ps1 -Tag 'v0.1.0-beta.1+mc26.3' -CertificateSubject '<name in the certificate>'
+   ```
+
+   `-Thumbprint <sha1>` selects the certificate instead of `-CertificateSubject` when several
+   match. Every failed prerequisite (gh missing or logged out, signtool not found, SimplySign
+   Desktop not running, certificate not in the store) stops the script with the fix.
+4. Check the release: the Windows zip and SHA256SUMS are new, and `vanillite.exe` shows a valid
+   signature under Properties > Digital Signatures.
 
 ## CI
 

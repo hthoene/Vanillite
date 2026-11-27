@@ -34,10 +34,14 @@ pub struct FightView {
 }
 
 /// What the dragon and the crystals tell the fight (handled right after their tick).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DragonEvent {
-    /// `updateDragon`: the bar's progress, the dragon was seen.
-    Update { uuid: u128, progress: f32 },
+    /// `updateDragon`: the bar's progress (and the custom name), the dragon was seen.
+    Update {
+        uuid: u128,
+        progress: f32,
+        name: Option<vanillite_protocol::text::Component>,
+    },
     /// `setDragonKilled`.
     Killed { uuid: u128 },
     /// `onCrystalDestroyed`.
@@ -488,6 +492,7 @@ impl DragonFight {
     fn create_new_dragon(&mut self, level: &mut Level, _env: &mut Env<'_>) -> Option<EntityId> {
         let yaw = level.random().next_float() * 360.0;
         let seed = crate::mob::new_entity_seed();
+        super::part_seeds();
         let uuid = crate::mob::new_uuid();
         let mob = super::new_dragon(seed, self.origin);
         let pos = Vec3::new(
@@ -538,10 +543,17 @@ impl DragonFight {
         event: DragonEvent,
     ) {
         match event {
-            DragonEvent::Update { uuid, progress } => {
+            DragonEvent::Update {
+                uuid,
+                progress,
+                name,
+            } => {
                 if Some(uuid) == self.dragon_uuid {
                     self.bar.set_progress(progress, env.out);
                     self.ticks_since_dragon_seen = 0;
+                    if let Some(name) = name {
+                        self.bar.set_name(name, env.out);
+                    }
                 }
             }
             DragonEvent::Killed { uuid } => self.set_dragon_killed(level, uuid, env),

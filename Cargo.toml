@@ -10,6 +10,7 @@ rust-version = "1.99"
 license = "Apache-2.0"
 authors = ["Hannes Thöne"]
 repository = "https://github.com/hthoene/vanillite"
+homepage = "https://vanillite.org"
 
 [workspace.dependencies]
 # Internal crates.
@@ -55,6 +56,7 @@ toml = "1"
 # External crates: storage (vanillite-storage).
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
+tar = { version = "0.4", default-features = false }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 twox-hash = { version = "2", default-features = false, features = ["xxhash3_64"] }

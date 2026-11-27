@@ -58,7 +58,7 @@ fn zombie_not_piglin(t: &Tick<'_, '_>, id: EntityId) -> bool {
     t.ents.mob(id).is_some_and(|m| {
         matches!(
             m.kind,
-            Kind::Zombie | Kind::Husk | Kind::Drowned | Kind::ZombieVillager | Kind::Giant
+            Kind::Zombie | Kind::Husk | Kind::Drowned | Kind::ZombieVillager
         )
     })
 }

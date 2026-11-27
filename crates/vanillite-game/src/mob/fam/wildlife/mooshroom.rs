@@ -204,12 +204,14 @@ pub(crate) fn shear(
     target: vanillite_world::entity::EntityId,
     source: SoundSource,
 ) {
-    sound_at(
+    crate::survival::play_entity_sound(
+        env.out,
         ents,
-        env,
+        None,
         target,
         "minecraft:entity.mooshroom.shear",
         source,
+        1.0,
         1.0,
     );
     let (Some(m), Some(e)) = (ents.mob(target), ents.store.get(target)) else {
