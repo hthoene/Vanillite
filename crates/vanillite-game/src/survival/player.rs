@@ -1354,8 +1354,10 @@ fn actually_hurt(
             names,
         };
         let alive = s.health > 0.0;
-        s.combat
+        let change = s
+            .combat
             .record_damage(entry, s.tick_count, alive, source.cause.is_some());
+        combat_packets(env, entity.as_ref().id(), change);
         let health = s.health - remaining;
         set_health(entity, s, health);
         if let Some(v) = damage_stat(remaining) {
@@ -1690,6 +1692,24 @@ pub fn kill_credit(s: &Survival) -> Option<vanillite_world::entity::EntityId> {
 
 /// `ServerPlayer.die`; `killer` is the UUID of the source's causing entity (the kill credit)
 /// for the plugins' death event, when the caller resolved it.
+/// `ServerPlayer.onLeaveCombat` and `onEnterCombat`: `player_combat_end` and
+/// `player_combat_enter` to the player itself.
+fn combat_packets(env: &mut Env<'_>, player: EntityId, change: combat::CombatChange) {
+    use vanillite_protocol::packets::play::clientbound::{PlayerCombatEnd, PlayerCombatEnter};
+    if let Some(duration) = change.left {
+        env.out.push(Effect::To {
+            player,
+            packet: SharedPacket::of(&PlayerCombatEnd { duration }),
+        });
+    }
+    if change.entered {
+        env.out.push(Effect::To {
+            player,
+            packet: SharedPacket::of(&PlayerCombatEnter),
+        });
+    }
+}
+
 pub fn die(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
@@ -1829,7 +1849,16 @@ pub fn die(
     s.ticks_frozen = 0;
     entity.set_flags(EntityFlags::ON_FIRE, false);
     let alive = s.health > 0.0;
-    s.combat.recheck_status(s.tick_count, alive);
+    let left = s.combat.recheck_status(s.tick_count, alive);
+    combat_packets(
+        env,
+        id,
+        combat::CombatChange {
+            left,
+            entered: false,
+        },
+    );
+    let s = &mut player.survival;
     s.last_death = Some((env.dimension.to_owned(), block_pos(entity.as_ref().pos())));
     player.stats.award(custom::DEATHS, 1);
     player.stats.reset(custom::TIME_SINCE_DEATH);
@@ -2115,8 +2144,19 @@ pub fn base_tick_after_portal(
         {
             s.last_hurt_by_mob = None;
         }
-        let alive = s.health > 0.0;
-        s.combat.recheck_status(s.tick_count, alive);
+        // `LivingEntity.tick`: every 20 ticks.
+        if s.tick_count.wrapping_rem(20) == 0 {
+            let alive = s.health > 0.0;
+            let left = s.combat.recheck_status(s.tick_count, alive);
+            combat_packets(
+                env,
+                id,
+                combat::CombatChange {
+                    left,
+                    entered: false,
+                },
+            );
+        }
     }
     // `tickEffects`, with the effect packets, flags and attributes.
     crate::effect::living::tick_player(entity, player, env);

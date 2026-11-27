@@ -347,7 +347,16 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Success;
     }
     if in_tag("minecraft:axes") && g.next_weathering_tick == WAXED {
-        crate::mob::combat::mob_sound(ix.ents, ix.env, ix.target, "minecraft:item.axe.scrape");
+        crate::survival::play_entity_sound(
+            ix.env.out,
+            ix.ents,
+            None,
+            ix.target,
+            "minecraft:item.axe.scrape",
+            SoundSource::Neutral,
+            1.0,
+            1.0,
+        );
         level_event(ix, 3004, block);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
             golem_mut(m).next_weathering_tick = UNSET;
@@ -356,7 +365,16 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Success;
     }
     if in_tag("minecraft:axes") && g.weather != Weather::Unaffected {
-        crate::mob::combat::mob_sound(ix.ents, ix.env, ix.target, "minecraft:item.axe.scrape");
+        crate::survival::play_entity_sound(
+            ix.env.out,
+            ix.ents,
+            None,
+            ix.target,
+            "minecraft:item.axe.scrape",
+            SoundSource::Neutral,
+            1.0,
+            1.0,
+        );
         level_event(ix, 3005, block);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
             let gm = golem_mut(m);
@@ -379,12 +397,14 @@ pub(crate) fn shear(
     target: EntityId,
     source: SoundSource,
 ) {
-    crate::mob::animal::sound_at(
+    crate::survival::play_entity_sound(
+        env.out,
         ents,
-        env,
+        None,
         target,
         "minecraft:entity.copper_golem.shear",
         source,
+        1.0,
         1.0,
     );
     let antenna = ents

@@ -532,6 +532,7 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
                     state = waterlogged;
                 }
                 if level.set_block_and_update(block_pos, state) {
+                    landed_packets(level, id, block_pos);
                     level.entities.despawn(id);
                     removed = true;
                     on_land(level, block_pos, state, current);
@@ -813,4 +814,40 @@ fn collide_axis(
         }
     }
     delta
+}
+
+/// `FallingBlockEntity.tick` after placing the block: `block_update` and
+/// `add_transient_block` of the new state to the players tracking the entity, so the client
+/// shows the block before the entity disappears.
+fn landed_packets(level: &mut Level, id: EntityId, pos: BlockPos) {
+    use vanillite_protocol::packets::play::clientbound::{AddTransientBlock, BlockUpdate};
+    let Some(at) = level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let state = i32::from(level.block(pos).0);
+    let wire = vanillite_protocol::types::BlockPos {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+    };
+    let range = f64::from(tracking_range());
+    let out = level.output();
+    out.nearby_packets.push((
+        at,
+        range,
+        vanillite_protocol::SharedPacket::of(&BlockUpdate { pos: wire, state }),
+    ));
+    out.nearby_packets.push((
+        at,
+        range,
+        vanillite_protocol::SharedPacket::of(&AddTransientBlock { pos: wire, state }),
+    ));
+}
+
+/// The tracking range of falling blocks in blocks (`clientTrackingRange(10)`).
+fn tracking_range() -> u32 {
+    entity_ids::FALLING_BLOCK
+        .info()
+        .tracking_range
+        .saturating_mul(16)
 }

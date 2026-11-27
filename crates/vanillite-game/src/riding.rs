@@ -1126,3 +1126,113 @@ pub fn riding_jump(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, str
         crate::mob::fam::rider_jump(ents, env, vehicle, strength);
     }
 }
+
+/// `getMoveSimulationType() == SERVER_AND_CLIENT` (items, falling blocks, TNT, experience
+/// orbs, projectiles) or `!type.hasUpdateInterval()` (area effect clouds, cushions, end
+/// crystals, item frames, leash knots): kinds whose teleports go to every tracking player.
+pub fn teleport_reaches_trackers(kind: vanillite_data::entity::EntityTypeId) -> bool {
+    use vanillite_data::entity::ids as e;
+    kind.info().update_interval == i32::MAX
+        || [
+            e::ITEM,
+            e::FALLING_BLOCK,
+            e::TNT,
+            e::EXPERIENCE_ORB,
+            e::ARROW,
+            e::SPECTRAL_ARROW,
+            e::TRIDENT,
+            e::SNOWBALL,
+            e::EGG,
+            e::ENDER_PEARL,
+            e::EXPERIENCE_BOTTLE,
+            e::SPLASH_POTION,
+            e::LINGERING_POTION,
+            e::FIREBALL,
+            e::SMALL_FIREBALL,
+            e::DRAGON_FIREBALL,
+            e::WITHER_SKULL,
+            e::WIND_CHARGE,
+            e::BREEZE_WIND_CHARGE,
+            e::SHULKER_BULLET,
+            e::LLAMA_SPIT,
+            e::FIREWORK_ROCKET,
+            e::FISHING_BOBBER,
+        ]
+        .contains(&kind)
+}
+
+/// `Entity.sendTeleportTransitionToPlayers` after a same-level teleport of a non-player entity
+/// (already at its new place): `teleport_entity` to every player riding it (the controlling
+/// one gets the transition as given, the others the new absolute place), and to the players
+/// near its old position when [`teleport_reaches_trackers`]. `on_ground` is the state before
+/// the teleport.
+pub fn send_teleport_transition(
+    level: &mut Level,
+    id: EntityId,
+    transition: vanillite_protocol::packets::play::clientbound::PositionMoveRotation,
+    relatives: i32,
+    old_pos: Vec3,
+    on_ground: bool,
+) {
+    use vanillite_protocol::packets::play::clientbound::{PositionMoveRotation, TeleportEntity};
+    let ents = &level.entities;
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    let kind = e.kind();
+    let rot = e.rot();
+    let entity_id = e.network_id().0;
+    let absolute = TeleportEntity {
+        entity_id,
+        change: PositionMoveRotation {
+            position: wire_vec(e.pos()),
+            delta: wire_vec(e.velocity()),
+            y_rot: rot.y_rot,
+            x_rot: rot.x_rot,
+        },
+        relatives: 0,
+        on_ground,
+    };
+    // `getIndirectPassengersStream`: depth first.
+    let mut stack: Vec<EntityId> = ents
+        .riding
+        .passengers_of(id)
+        .iter()
+        .rev()
+        .copied()
+        .collect();
+    while let Some(p) = stack.pop() {
+        stack.extend(ents.riding.passengers_of(p).iter().rev().copied());
+        let Some(player) = ents.player(p) else {
+            continue;
+        };
+        if controls(ents, p, id) {
+            player.connection.sink.send(&TeleportEntity {
+                entity_id,
+                change: transition,
+                relatives,
+                on_ground,
+            });
+        } else {
+            player.connection.sink.send(&absolute);
+        }
+    }
+    if teleport_reaches_trackers(kind) {
+        // Riding players are near: they get it a second time (Vanilla skips them), which
+        // leaves them at the same place.
+        let range = f64::from(kind.info().tracking_range.saturating_mul(16));
+        level
+            .output()
+            .nearby_packets
+            .push((old_pos, range, SharedPacket::of(&absolute)));
+    }
+}
+
+/// A position for the wire.
+pub fn wire_vec(v: Vec3) -> vanillite_protocol::types::Vec3 {
+    vanillite_protocol::types::Vec3 {
+        x: v.x,
+        y: v.y,
+        z: v.z,
+    }
+}

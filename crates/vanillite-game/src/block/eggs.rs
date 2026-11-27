@@ -109,8 +109,13 @@ fn dried_ghast_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     {
         return;
     }
-    let sound = sound_id("entity.ghastling.spawn");
-    level.play_sound(None, at.x, at.y, at.z, sound, SOUND_BLOCKS, 1.0, 1.0);
+    level.play_entity_sound(
+        id,
+        "minecraft:entity.ghastling.spawn",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Blocks,
+        1.0,
+        1.0,
+    );
 }
 
 /// `Direction.getYRot(direction)`.

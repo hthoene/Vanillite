@@ -93,39 +93,63 @@ pub struct CombatTracker {
     taking_damage: bool,
 }
 
+/// What [`CombatTracker::record_damage`] changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CombatChange {
+    /// The combat duration when the owner left combat first.
+    pub left: Option<i32>,
+    /// The owner entered combat.
+    pub entered: bool,
+}
+
 /// The `chat.square_brackets` link of `INTENTIONAL_GAME_DESIGN` death messages.
 const INTENTIONAL_GAME_DESIGN_URL: &str = "https://bugs.mojang.com/browse/MCPE-28723";
 
 impl CombatTracker {
-    /// `recordDamage`. `entered_combat` is set when the source is a living entity.
+    /// `recordDamage`: combat starts when the source is a living entity. Returns what changed
+    /// (`onLeaveCombat` of the recheck, then `onEnterCombat`).
     pub fn record_damage(
         &mut self,
         entry: CombatEntry,
         tick_count: i32,
         alive: bool,
         source_is_living: bool,
-    ) {
-        self.recheck_status(tick_count, alive);
+    ) -> CombatChange {
+        let left = self.recheck_status(tick_count, alive);
         self.entries.push(entry);
         self.last_damage_time = tick_count;
         self.taking_damage = true;
-        if !self.in_combat && alive && source_is_living {
+        let entered = !self.in_combat && alive && source_is_living;
+        if entered {
             self.in_combat = true;
             self.combat_start_time = tick_count;
             self.combat_end_time = tick_count;
         }
+        CombatChange { left, entered }
     }
 
     /// `recheckStatus`: forgets the entries 100 ticks after the last damage (300 in combat) or
-    /// after death.
-    pub fn recheck_status(&mut self, tick_count: i32, alive: bool) {
+    /// after death. Returns the combat duration when the owner left combat (`onLeaveCombat`).
+    pub fn recheck_status(&mut self, tick_count: i32, alive: bool) -> Option<i32> {
         let reset = if self.in_combat { 300 } else { 100 };
         if self.taking_damage && (!alive || tick_count.wrapping_sub(self.last_damage_time) > reset)
         {
+            let was_in_combat = self.in_combat;
             self.taking_damage = false;
             self.in_combat = false;
             self.combat_end_time = tick_count;
             self.entries.clear();
+            return was_in_combat.then(|| self.combat_duration(tick_count));
+        }
+        None
+    }
+
+    /// `getCombatDuration`.
+    pub fn combat_duration(&self, tick_count: i32) -> i32 {
+        if self.in_combat {
+            tick_count.wrapping_sub(self.combat_start_time)
+        } else {
+            self.combat_end_time.wrapping_sub(self.combat_start_time)
         }
     }
 
