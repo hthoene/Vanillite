@@ -25,6 +25,7 @@ use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     ChangeDifficulty, ClockUpdate, GameEvent, RemoveEntities, SetTime,
 };
+use vanillite_protocol::tap::BatchMark;
 use vanillite_protocol::text::Component;
 use vanillite_protocol::types::VarIntList;
 use vanillite_world::chunks::Chunks;
@@ -172,7 +173,10 @@ impl Outgoing {
         }
         let frames = std::mem::take(batch);
         if let Some(player) = entities.players.get(row) {
-            player.connection.sink.send_batch(frames, self.threshold);
+            player
+                .connection
+                .sink
+                .send_batch(frames, self.threshold, BatchMark::UNKNOWN);
         }
         self.rows.retain(|&r| r != row);
     }
@@ -185,7 +189,10 @@ impl Outgoing {
             };
             let frames = std::mem::take(batch);
             if let Some(player) = entities.players.get(row) {
-                player.connection.sink.send_batch(frames, self.threshold);
+                player
+                    .connection
+                    .sink
+                    .send_batch(frames, self.threshold, BatchMark::UNKNOWN);
             }
         }
     }

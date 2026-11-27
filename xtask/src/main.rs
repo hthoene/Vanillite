@@ -146,6 +146,8 @@ pub const USAGE: &str = "usage:
                        [--join-rate <per s>] [--chat <s>]
                        [--view-distance <n>] [--release] [--no-deploy] [--no-gate]
                        [--limits 4c8g|1c1g] [--rule <key>=<value>]...
+                       [--fresh-players] [--binary <file>]
+                       [--plugin <dir> [--plugin-set <toml line>]...]...
       Scaling benchmark: tools/loadbot bots (here) against vanillite@30901 (deployed from this
       checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the test
       server and only running during the run. Steps default to 50,100,250,500,1000,2000,5000,
@@ -168,6 +170,13 @@ pub const USAGE: &str = "usage:
       the last 5 runs on the same hardware and limits (--no-gate skips the check). --rule sets a rule of vanillite.toml for
       the Vanillite instance of this run (e.g. performance.region-threading.enabled=true);
       such runs are experiments: no regression check, not kept as a baseline.
+      --binary deploys that server binary instead of building one (before/after comparisons).
+      --plugin installs a plugin folder on vanillite@30901 for the run and removes it
+      afterwards: plugin.toml, the library it names (from the folder, or built from the
+      folder's crate, e.g. examples/packet-bench) and config.toml with each --plugin-set line set (e.g. --plugin-set 'mode = \"receiver\"').
+      Runs with --plugin or --binary are not kept in the results history. --fresh-players
+      deletes the players vanillite@30901 saved, so the bots start at the spawn and not where
+      an earlier run (e.g. a bench spread scenario) left them.
   cargo xtask loadtest report <run.json>...
       Writes report.md and chart.svg for earlier runs next to the first file.
   cargo xtask bench all|<scenario>... [--servers <server,...>] [--publish] [--no-deploy]

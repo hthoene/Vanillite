@@ -12,6 +12,9 @@
 //!   replacement is again one shared buffer.
 //! - **Serverbound, cancelling**: `signs.read-only` cancels the clients' sign edits before the
 //!   game sees them. This listener works on the raw packet by name and needs no packet types.
+//! - **Feeding a packet in**: `/punch` makes the player who runs it swing their arm. The
+//!   serverbound `punch` packet is fed into the player's connection as if the client sent it:
+//!   it passes the packet listeners, validation and rate limits like the client's own.
 //!
 //! The typed packets come from the SDK's `packets` feature (the packet types of
 //! `vanillite-protocol`, for the Minecraft version the plugin is built for).
@@ -28,6 +31,7 @@ use vanillite_plugin::prelude::*;
 use vanillite_plugin::protocol::packets::play::clientbound::{
     SetPlayerTeam, SystemChat, TeamAction, TeamParameters,
 };
+use vanillite_plugin::protocol::packets::play::serverbound::Punch;
 use vanillite_plugin::protocol::text::Component;
 use vanillite_plugin::{Invocation, Sender};
 
@@ -123,6 +127,19 @@ impl Plugin for Packets {
                     },
                 )),
         );
+
+        // Fed in as if the client sent it: the world handles it like a real arm swing.
+        registrar.command(Command::literal("punch").executes(
+            |_: &mut Packets, ctx, invocation| {
+                let Sender::Player(player) = invocation.sender() else {
+                    return Err("Only a player can punch".into());
+                };
+                ctx.server()
+                    .receive(player, &Punch)
+                    .map_err(|e| Text::from(format!("Cannot punch: {e}")))?;
+                Ok(1)
+            },
+        ));
 
         Ok(Packets {
             hidden,

@@ -832,7 +832,7 @@ struct PacketEvent size=80 align=8
   player: Uuid @40
   body: Bytes @56
   out: *constPacketOut @72
-struct HostApi size=1256 align=8
+struct HostApi size=1264 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -992,3 +992,4 @@ struct HostApi size=1256 align=8
   world_count: unsafeextern"C"fn(PluginId,*mutu32)->Status @1232
   world_info: unsafeextern"C"fn(PluginId,u32,*mutWorldDetails,*mutStrBuf)->Status @1240
   player_move: unsafeextern"C"fn(PluginId,Uuid,*constLocation)->Status @1248
+  packet_receive: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @1256

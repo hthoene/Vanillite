@@ -1328,7 +1328,7 @@ abi! {
             /// An earlier listener replaced the body.
             REPLACED = 2,
         }
-        /// Flags of `packet_send`. Since ABI 1.7.
+        /// Flags of `packet_send` and `packet_receive`. Since ABI 1.7.
         pub mod packet_send: u32 {
             /// The packet passes no packet listener.
             SKIP_LISTENERS = 1,
@@ -2761,6 +2761,14 @@ abi! {
             /// (between the ticks of its world; to another world like `/tp`, with the
             /// teleport event). Since ABI 1.8.
             pub player_move: unsafe extern "C" fn(PluginId, Uuid, *const Location) -> Status,
+            /// Feeds a serverbound play packet body (`id` + fields, the server's protocol
+            /// version) into a player's connection as if the client sent it: it passes the
+            /// packet listeners (unless [`packet_send::SKIP_LISTENERS`]), the validating
+            /// decoder and the player's rate limits, and is handled in order with the
+            /// client's packets. Fails with [`status::INVALID_ARGUMENT`] for a body that does
+            /// not decode, [`status::NOT_FOUND`] for a player who is offline and
+            /// [`status::ERROR`] while too many fed packets wait. Since ABI 1.8.
+            pub packet_receive: unsafe extern "C" fn(PluginId, Uuid, Bytes, u32) -> Status,
         }
     }
 }

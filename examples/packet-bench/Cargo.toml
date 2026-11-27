@@ -1,0 +1,19 @@
+[package]
+name = "vanillite-packet-bench"
+description = "Measurement plugin for load tests: packet listeners on the hottest clientbound packets, per receiver or per broadcast."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vanillite-plugin.workspace = true
+
+[lints]
+workspace = true

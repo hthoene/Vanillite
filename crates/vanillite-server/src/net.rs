@@ -498,7 +498,11 @@ pub(crate) fn arrival(
     default_mode: vanillite_config::GameMode,
     force_game_mode: bool,
 ) -> (Arrival, Arc<dyn PacketSink>) {
-    let sink: Arc<dyn PacketSink> = Arc::new(NetSink::new(joined.outbound, joined.latency));
+    let sink: Arc<dyn PacketSink> = Arc::new(NetSink::new(
+        joined.outbound,
+        joined.latency,
+        joined.injector,
+    ));
     let saved_mode = saved.as_ref().and_then(|s| match s.game_mode {
         0 => Some(vanillite_config::GameMode::Survival),
         1 => Some(vanillite_config::GameMode::Creative),

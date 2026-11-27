@@ -28,14 +28,14 @@ use vanillite_game::player::{
 use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_nbt::{List, Tag};
-use vanillite_net::{Latency, Outbound};
+use vanillite_net::{Injector, Latency, Outbound};
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
 };
 use vanillite_protocol::packets::play::serverbound::Hand;
-use vanillite_protocol::tap::{PacketTap, Verdict};
+use vanillite_protocol::tap::{BatchMark, PacketTap, Stage, Verdict, packet_id};
 use vanillite_protocol::text::Component;
 use vanillite_protocol::{Direction, SharedPacket, State};
 use vanillite_storage::player_data::{self, JsonFile, PlayerDataStore};
@@ -134,6 +134,10 @@ impl FanOut {
         // Packet listeners: the broadcast stage runs here, once per encoded packet; the
         // viewers' writers run the stage per receiver on their batches.
         let tapped = tap.active(Direction::Clientbound);
+        // Whether a writer has to look into the batches for packet types with a listener per
+        // receiver: only if this tick's packets hold one (#169).
+        let receivers = tapped && tap.listens(Stage::Receiver);
+        let mut mark = tap.batch_mark();
 
         // Encode once into runs.
         self.arena.clear();
@@ -159,6 +163,13 @@ impl FanOut {
                 } else {
                     packet
                 };
+                if receivers
+                    && mark != BatchMark::UNKNOWN
+                    && packet_id(packet.body())
+                        .is_none_or(|id| tap.wants_at(Stage::Receiver, State::Play, id))
+                {
+                    mark = BatchMark::UNKNOWN;
+                }
                 let before = self.arena.len();
                 if encode_frame(packet.body(), threshold, &mut self.codec, &mut self.arena).is_err()
                 {
@@ -286,7 +297,7 @@ impl FanOut {
                     let batch = std::mem::take(&mut batches[i]);
                     sizes[i] = batch.len();
                     if !batch.is_empty() {
-                        sink.send_batch(batch, threshold);
+                        sink.send_batch(batch, threshold, mark);
                     }
                 }
             }
@@ -310,11 +321,16 @@ impl FanOut {
 pub(crate) struct NetSink {
     out: Outbound,
     latency: Latency,
+    injector: Injector,
 }
 
 impl NetSink {
-    pub(crate) fn new(out: Outbound, latency: Latency) -> NetSink {
-        NetSink { out, latency }
+    pub(crate) fn new(out: Outbound, latency: Latency, injector: Injector) -> NetSink {
+        NetSink {
+            out,
+            latency,
+            injector,
+        }
     }
 }
 
@@ -327,12 +343,16 @@ impl PacketSink for NetSink {
         self.out.send_shared(packet)
     }
 
-    fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
-        self.out.send_batch(frames, threshold)
+    fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>, mark: BatchMark) -> bool {
+        self.out.send_batch(frames, threshold, mark)
     }
 
     fn send_untapped(&self, body: Vec<u8>) -> bool {
         self.out.send_untapped(body)
+    }
+
+    fn inject(&self, body: Vec<u8>, skip_listeners: bool) -> bool {
+        self.injector.inject(body, skip_listeners)
     }
 
     fn frame_threshold(&self) -> Option<usize> {

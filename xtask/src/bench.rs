@@ -747,6 +747,9 @@ fn options(steps: &[Step], settle: u64, hold: u64) -> Options {
         limits: loadtest::LIMITS.to_owned(),
         deploy: false,
         gate: false,
+        binary: None,
+        plugins: Vec::new(),
+        fresh_players: false,
         rules: Vec::new(),
     }
 }
