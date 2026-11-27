@@ -108,13 +108,26 @@ off, on; the table has the median of the three windows per setting (MSPT from th
 | 1 000 | off | 1 013 ms | 1 465 ms | 2 227 ms | 3 244 MiB |
 | 1 000 | on | 427 ms | 585 ms | 1 364 ms | 3 197 MiB |
 
-A crowd in one place gains nothing, as designed: 1 014 bots walking around the spawn (same
-server and method, 45 s windows) tick at p50 46 ms / p95 89 ms with the rule off and p50 42 ms /
-p95 82 ms with it on, which is within the noise between windows.
+A crowd in one place gains nothing, as designed: 2 000 bots walking around the spawn (same
+server and method, 45 s windows, median of three per setting, host under load) tick at p50
+151 ms / p95 280 ms with the rule off and p50 150 ms / p95 347 ms with it on, with 378 ms of
+server CPU per tick both times.
 
 Where the tick goes with 200 spread players (phase timers, rule off): natural spawning 52 %,
 random ticks 21 %, entities 16 %. With the rule on, spawning takes about a quarter of its
 serial time on 4 cores and the entity tick becomes the largest part.
+
+## Cost with the rule off
+
+None: off, the world ticks through the serial code it had before the mode, and the shared
+spawn logic compiles to the same work for the world round. Checked by instruction counts
+(callgrind, `release` profile) of the same seeded runs on the commit before the mode and with
+it: eight parity scenarios through the server tick 20 177.6 M to 20 173.7 M instructions
+(-0.02 %), 60 serial spawn rounds with one player 23.31 M to 23.07 M (-1.0 %). Two things
+keep it that way: the tracked chunk read (`Chunks::note_read`, only while a synchronous
+load's `unknown` ticket exists) stays out of line so block reads do not pay for it, and the
+world round draws from the level's random in place (`Round::with_level_random` swaps it out
+only around `finalizeSpawn`).
 
 ## Sharing the level between threads
 
