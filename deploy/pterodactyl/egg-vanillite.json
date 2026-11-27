@@ -7,13 +7,13 @@
   "exported_at": "2026-11-24T00:00:00+00:00",
   "name": "Vanillite",
   "author": "hthoene@users.noreply.github.com",
-  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". https://github.com/hthoene/vanillite",
+  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". The image (Startup page) picks the Minecraft version; \"Latest Minecraft\" follows new versions on the next restart, other new versions appear after re-importing this egg. https://github.com/hthoene/vanillite",
   "features": [
     "eula"
   ],
   "docker_images": {
-    "Beta - Minecraft 26.3": "thoenehannes/vanillite:mc26.3-beta",
-    "Beta - newest Minecraft version": "thoenehannes/vanillite:beta"
+    "Minecraft 26.3 - Beta": "thoenehannes/vanillite:mc26.3-beta",
+    "Latest Minecraft - Beta": "thoenehannes/vanillite:beta"
   },
   "file_denylist": [],
   "startup": "env VANILLITE_SERVER_PORT={{SERVER_PORT}} VANILLITE_BEDROCK__PORT=${VANILLITE_BEDROCK__PORT:-{{SERVER_PORT}}} /vanillite run --dir /home/container",
