@@ -1,3 +1,3 @@
-tick = 15
-cause = "the dragon's boss bar reaches the client at tick 20 instead of 15 (the dragon fight's player scan); the level random differs from tick 16 (#195, client view #196)"
+tick = 20
+cause = "the level random differs from tick 20, when the dragon fight's first player scan with the player in the End creates the dragon (#195, client view #196)"
 owner = "world-developer #195"

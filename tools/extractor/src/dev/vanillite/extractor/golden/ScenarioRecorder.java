@@ -45,6 +45,7 @@ import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
+import net.minecraft.world.level.dimension.end.EnderDragonFight;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.level.entity.PersistentEntitySectionManager;
 import net.minecraft.world.level.gamerules.GameRules;
@@ -135,6 +136,23 @@ public final class ScenarioRecorder {
       l.getRandom().setSeed(seed);
       if (randValue) {
         field.setInt(l, (int) seed);
+      }
+    }
+  }
+
+  /**
+   * The dragon fight's player scan counter is as after the first tick of a new fight (which
+   * scans at once): the warm-up ticks (as many as the chunks need to load) moved it, so the scan
+   * every 20 ticks (and with a player in the End the dragon it creates from the level random)
+   * came at a wall-time-dependent tick. Vanillite's scenario world settles its chunks in one
+   * step, so its fight scans at scenario tick 20 too.
+   */
+  private static void freshDragonFights(ParityServer server) throws Exception {
+    Field scan = EnderDragonFight.class.getDeclaredField("ticksSinceLastPlayerScan");
+    scan.setAccessible(true);
+    for (ServerLevel l : server.getAllLevels()) {
+      if (l.getDragonFight() != null) {
+        scan.setInt(l.getDragonFight(), 0);
       }
     }
   }
@@ -352,6 +370,9 @@ public final class ScenarioRecorder {
       // The warm-up takes as many ticks as the chunks need to load: the scenario starts at game
       // time 0 instead, like Vanillite's new level (camels count their pose time from it).
       server.getWorldData().overworldData().setGameTime(0);
+      if (dimensions) {
+        freshDragonFights(server);
+      }
       Area area = new Area(min, max);
 
       // The setup may draw from the level random (blocks that schedule a random delay when
