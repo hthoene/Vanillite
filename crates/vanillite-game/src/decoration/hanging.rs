@@ -207,7 +207,7 @@ fn pop_box(data: &DecorData) -> Option<Aabb> {
 /// `hasLevelCollision(box)` against blocks.
 fn level_collision(level: &Level, aabb: &Aabb) -> bool {
     let mut scratch = Vec::new();
-    !crate::mob::physics::no_collision(level, aabb, &mut scratch)
+    !crate::mob::physics::no_collision(&level.view(), aabb, &mut scratch)
 }
 
 /// `isSolid() || DiodeBlock.isDiode(state)`.

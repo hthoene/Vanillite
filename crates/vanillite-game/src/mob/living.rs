@@ -1152,7 +1152,7 @@ fn travel_in_fluid(t: &mut Tick<'_, '_>, input: Vec3) {
         let probe = t
             .aabb()
             .offset(v.x, v.y + f64::from(0.6_f32) - t.pos().y + old_y, v.z);
-        if physics::no_collision(t.level, &probe, &mut t.cx.boxes)
+        if physics::no_collision(&t.level.view(), &probe, &mut t.cx.boxes)
             && !physics::contains_any_liquid(t.level, &probe)
         {
             t.set_velocity(Vec3::new(v.x, f64::from(0.3_f32), v.z));
@@ -1192,7 +1192,7 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let aabb = t.aabb();
     let on_lava = t.mob_ref().nav.stands_on_lava;
     let movement = physics::collide_for(
-        t.level,
+        &t.level.view(),
         aabb,
         delta,
         step,

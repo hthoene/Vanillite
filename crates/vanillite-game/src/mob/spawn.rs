@@ -1001,7 +1001,7 @@ fn valid_position_for_type(
         f64::from(pos.z) + 0.5,
     ));
     let mut scratch = Vec::new();
-    physics::no_collision(level, &aabb, &mut scratch)
+    physics::no_collision(&level.view(), &aabb, &mut scratch)
 }
 
 /// `Mob.checkSpawnRules` of a fresh mob: pathfinder mobs need a walk target value of at
@@ -1504,7 +1504,7 @@ pub fn spawn_for_chunk_generation(
                             SpawnReason::ChunkGeneration,
                         )
                     });
-                    if physics::no_collision(level, &aabb, &mut scratch) && rules {
+                    if physics::no_collision(&level.view(), &aabb, &mut scratch) && rules {
                         let kind = Kind::of(entry.type_id);
                         let y_rot = random.next_float() * 360.0;
                         if let Some(kind) = kind {

@@ -656,7 +656,7 @@ pub fn move_vehicle(
     let was_on_ground = v.flags().contains(EntityFlags::ON_GROUND);
     let on_lava = ents.mob(vehicle).is_some_and(|m| m.nav.stands_on_lava);
     let moved = physics::collide_for(
-        level,
+        &level.view(),
         old_box,
         delta,
         step,
@@ -669,7 +669,7 @@ pub fn move_vehicle(
         err.y = 0.0;
     }
     let wrong = err.length_sqr() > 0.0625;
-    if wrong && physics::no_collision(level, &old_box, &mut cx.boxes) {
+    if wrong && physics::no_collision(&level.view(), &old_box, &mut cx.boxes) {
         send_back(ents);
         return;
     }

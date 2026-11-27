@@ -358,7 +358,7 @@ pub fn tick_arrow(
         let falls = a.last_state != Some(state) && {
             let probe =
                 Aabb::new(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z).inflate(0.06, 0.06, 0.06);
-            physics::no_collision(level, &probe, &mut cx.boxes)
+            physics::no_collision(&level.view(), &probe, &mut cx.boxes)
         };
         if falls {
             a.in_ground = false;

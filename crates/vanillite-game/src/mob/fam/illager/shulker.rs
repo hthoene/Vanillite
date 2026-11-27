@@ -130,7 +130,7 @@ fn can_stay_at(
         f64::from(pos.z) + 0.5,
     );
     let open = progress_aabb(face, 1.0, at).inflate(-1.0e-6, -1.0e-6, -1.0e-6);
-    physics::no_collision(level, &open, scratch)
+    physics::no_collision(&level.view(), &open, scratch)
 }
 
 /// `findAttachableSurface`.
@@ -414,7 +414,7 @@ pub fn teleport_somewhere(
             f64::from(target.z) + 1.0,
         )
         .inflate(-1.0e-6, -1.0e-6, -1.0e-6);
-        if !physics::no_collision(level, &unit, &mut scratch) {
+        if !physics::no_collision(&level.view(), &unit, &mut scratch) {
             continue;
         }
         let Some(face) = find_attachable(level, &mut scratch, target, old) else {

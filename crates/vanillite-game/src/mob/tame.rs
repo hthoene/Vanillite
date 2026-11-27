@@ -202,7 +202,7 @@ fn can_teleport_to(t: &mut Tick<'_, '_>, pos: BlockPos) -> bool {
         y + f64::from(dims.height),
         z + half,
     );
-    super::physics::no_collision(t.level, &b, &mut t.cx.boxes)
+    super::physics::no_collision(&t.level.view(), &b, &mut t.cx.boxes)
 }
 
 /// The owner's `lastHurtByMob` (`by_owner = true`) or `lastHurtMob` with its time stamp, while

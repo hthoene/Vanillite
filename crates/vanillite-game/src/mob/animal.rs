@@ -1071,7 +1071,7 @@ fn spawn_y_offset(
         area = area.expand_towards(0.0, -1.0, 0.0);
     }
     let mut boxes = Vec::new();
-    super::physics::block_boxes(level, &area, &mut boxes);
+    super::physics::block_boxes(&level.view(), &area, &mut boxes);
     let info = kind.type_id().info();
     let half = f64::from(info.width) / 2.0;
     let (x, y, z) = (

@@ -128,7 +128,7 @@ fn can_reach(t: &mut Tick<'_, '_>, travel: Vec3) -> bool {
     );
     let mut boxes = std::mem::take(&mut t.cx.boxes);
     boxes.clear();
-    physics::block_boxes(t.level, &swept, &mut boxes);
+    physics::block_boxes(&t.level.view(), &swept, &mut boxes);
     let half = Vec3::new(
         (aabb.max_x - aabb.min_x) / 2.0,
         (aabb.max_y - aabb.min_y) / 2.0,

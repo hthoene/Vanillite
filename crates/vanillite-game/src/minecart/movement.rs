@@ -565,7 +565,7 @@ fn collide(c: &mut Cart<'_, '_>, aabb: Aabb, delta: Vec3) -> Vec3 {
     let mut boxes = std::mem::take(&mut c.cx.boxes);
     boxes.clear();
     let area = aabb.expand_towards(delta.x, delta.y, delta.z);
-    physics::block_boxes(c.level, &area, &mut boxes);
+    physics::block_boxes(&c.level.view(), &area, &mut boxes);
     physics::border_boxes(&c.level.border, &aabb, &area, &mut boxes);
     let size = (area.max_x - area.min_x + area.max_y - area.min_y + area.max_z - area.min_z) / 3.0;
     if size >= 1.0e-7 {

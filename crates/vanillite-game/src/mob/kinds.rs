@@ -1298,7 +1298,7 @@ fn teleport_to(
     let dest = Vec3::new(to.x, f64::from(pos.y), to.z);
     let aabb = dims.bounding_box(dest);
     let mut scratch = Vec::new();
-    if !physics::no_collision(level, &aabb, &mut scratch)
+    if !physics::no_collision(&level.view(), &aabb, &mut scratch)
         || physics::contains_any_liquid(level, &aabb)
     {
         return false;

@@ -2468,7 +2468,7 @@ pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> boo
                     && t.level.is_loaded(p)
                     && stand_on(t, p)
                     && crate::mob::physics::no_collision(
-                        t.level,
+                        &t.level.view(),
                         &dims.bounding_box(t.pos()),
                         &mut scratch,
                     )
