@@ -740,7 +740,10 @@ write_if_changed /usr/local/bin/vanillite-bench 755 <<'EOF'
 # Targets: vanillite (vanillite@30901), paper, vanilla, pumpkin (30900), velocity and
 # vanillite-proxy (30900, in front of 30901).
 #   props <target>                 write the shared benchmark settings into server.properties
-#   reset <target>                 stop it and delete its world (fresh world with the shared seed)
+#   reset <target>                 stop it, delete its world (fresh world with the shared seed) and
+#                                  drop its hardware limits
+#   limit <target> <cpu %> <MiB>   hardware limits for its next start (cgroup CPUQuota, MemoryMax),
+#                                  like a small container; `reset` drops them
 #   start <target> [<profile>]     start it (Vanillite: rule profile) and wait for a status ping;
 #                                  prints {"ready_s", "version", "protocol"}
 #   stop <target>                  clean stop (saves); prints {"stop_s"}
@@ -898,6 +901,10 @@ case $cmd in
         ;;
     reset)
         systemctl stop "$(unit_of "$target")" 2> /dev/null || true
+        if [ -e "/run/systemd/system/$(unit_of "$target").d/bench-limit.conf" ]; then
+            rm -f "/run/systemd/system/$(unit_of "$target").d/bench-limit.conf"
+            systemctl daemon-reload
+        fi
         "$0" props "$target"
         rm -rf "$(dir_of "$target")"/world* "$(dir_of "$target")/tick.log"
         ;;
@@ -957,6 +964,12 @@ print(json.dumps({"version": v.get("name"), "protocol": v.get("protocol")}))
         done
         echo "$unit did not answer a status ping within 300 s" >&2
         exit 1
+        ;;
+    limit)
+        dropin=/run/systemd/system/$(unit_of "$target").d/bench-limit.conf
+        install -d "$(dirname "$dropin")"
+        printf '[Service]\nCPUQuota=%s%%\nMemoryMax=%sM\nMemorySwapMax=0\n' "${2:?cpu %}" "${3:?MiB}" > "$dropin"
+        systemctl daemon-reload
         ;;
     stop)
         t0=$(now)
