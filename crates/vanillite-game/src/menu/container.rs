@@ -243,6 +243,9 @@ pub struct ContainerMenu {
     /// A furnace result was quick-moved: the following `onTake` counts nothing
     /// (`FurnaceResultSlot.removeCount` is spent).
     pub(super) quick_crafted: bool,
+    /// Opened by a plugin (`menu_open`): its container slots are the menu's own (`local`)
+    /// and its events carry `vanillite_abi::menu_flag::PLUGIN`.
+    pub plugin: bool,
 }
 
 /// Where a menu slot is stored.
@@ -1173,6 +1176,7 @@ pub fn open(
         crafter_grid: Vec::new(),
         may_build: true,
         merchant: super::merchant::MerchantMenu::default(),
+        plugin: false,
     };
     // The menu's constructor counts the viewer (`container.startOpen`).
     for pos in menu.viewed().into_iter().flatten() {
