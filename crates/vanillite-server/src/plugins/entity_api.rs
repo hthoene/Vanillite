@@ -97,7 +97,11 @@ pub(super) fn entity_get(w: &impl ReadWorld, entity: u128, prop: u32) -> Result<
     use entity_prop as p;
     let entities = w.entities()?;
     let id = any_entity(entities, entity)?;
-    let flags = entities.store.get(id).ok_or(status::NOT_FOUND)?.flags();
+    let entity_ref = entities.store.get(id).ok_or(status::NOT_FOUND)?;
+    if prop == p::NETWORK_ID {
+        return Ok(f64::from(entity_ref.network_id().0));
+    }
+    let flags = entity_ref.flags();
     match prop {
         p::ON_GROUND => return Ok(flag(flags.contains(EntityFlags::ON_GROUND))),
         p::SNEAKING => return Ok(flag(flags.contains(EntityFlags::CROUCHING))),
@@ -170,7 +174,7 @@ pub(super) fn entity_set(
     let id = any_entity(w.0.entities(), entity)?;
     if matches!(
         prop,
-        p::MAX_HEALTH | p::ON_GROUND | p::SNEAKING | p::SPRINTING
+        p::MAX_HEALTH | p::ON_GROUND | p::SNEAKING | p::SPRINTING | p::NETWORK_ID
     ) {
         return Err(status::INVALID_ARGUMENT);
     }

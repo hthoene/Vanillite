@@ -1246,6 +1246,9 @@ abi! {
             SNEAKING = 20,
             /// Sprinting (read only).
             SPRINTING = 21,
+            /// The entity's network id in packets (`Entity.getId`, Bukkit's `getEntityId`;
+            /// read only). Since ABI 1.12.
+            NETWORK_ID = 22,
         }
         /// Attribute modifier operations (`entity_attribute_modifier`), as `/attribute`.
         /// Since ABI 1.6.

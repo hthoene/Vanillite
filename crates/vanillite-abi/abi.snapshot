@@ -401,6 +401,7 @@ const entity_prop::TICKS_LIVED: u32 = 18
 const entity_prop::PORTAL_COOLDOWN: u32 = 19
 const entity_prop::SNEAKING: u32 = 20
 const entity_prop::SPRINTING: u32 = 21
+const entity_prop::NETWORK_ID: u32 = 22
 const attribute_op::ADD_VALUE: u32 = 0
 const attribute_op::ADD_MULTIPLIED_BASE: u32 = 1
 const attribute_op::ADD_MULTIPLIED_TOTAL: u32 = 2
