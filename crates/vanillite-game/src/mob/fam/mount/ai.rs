@@ -1166,7 +1166,7 @@ fn charge_tick(t: &mut Tick<'_, '_>, velocity: Vec3, b: &mut Behavior, now: i64)
     let factor = (speed * t.mob_ref().attrs.movement_speed as f32).clamp(0.2, 2.0) + boost;
     let power = f64::from(factor * 2.0);
     let v = t.velocity();
-    crate::mob::combat::knock_living(t.ents, t.env, victim, power * 0.5, -v.x, -v.z);
+    crate::mob::combat::knock_living(t.ents, t.env, victim, power * 0.5, -v.x, -v.z, None);
     let _ = now;
     charge_stop(t);
 }

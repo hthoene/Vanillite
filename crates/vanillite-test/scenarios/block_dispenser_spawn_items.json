@@ -1,5 +1,5 @@
 {
-  "description": "Powered dispensers spawn the mobs of spawn eggs (SpawnEggItemBehavior: DISPENSER spawn in front, moved down unless facing up) and of mob buckets (the filled bucket behaviour: water or nothing, then MobBucketItem.spawn with the bucket's components and bucket_entity_data), leaving empty buckets (#183). Gold blocks mark each mob with its item's data; the sulfur cube is outside the observed region (its swallowed-block archetypes are not simulated yet).",
+  "description": "Powered dispensers spawn the mobs of spawn eggs (SpawnEggItemBehavior: DISPENSER spawn in front, moved down unless facing up) and of mob buckets (the filled bucket behaviour: water or nothing, then MobBucketItem.spawn with the bucket's components and bucket_entity_data), leaving empty buckets (#183). Gold blocks mark each mob with its item's data; the sulfur cube from its bucket holds dirt and is observed too (#204).",
   "rules": {
     "spawn_monsters": "false"
   },
@@ -12,7 +12,7 @@
     [
       15,
       -55,
-      12
+      16
     ]
   ],
   "ticks": 10,

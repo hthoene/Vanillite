@@ -284,7 +284,8 @@ pub fn player_attack(
         .mob(target)
         .is_some_and(|m| m.kind == super::Kind::EnderDragon);
     let kb = if part { 0.0 } else { kb };
-    extra_knockback(ents, env, attacker, target, kb, y_rot, old_movement);
+    let by = Some((attacker, total, true));
+    extra_knockback(ents, env, attacker, target, kb, y_rot, old_movement, by);
     if sweep {
         sweep_attack(
             level,
@@ -559,6 +560,7 @@ fn knockback_resistance(ents: &Entities, id: EntityId) -> f64 {
 
 /// `causeExtraKnockback`: knocks the target back in the attacker's facing and slows the
 /// attacker; a hit player gets its new motion at once.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extra_knockback(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -567,6 +569,7 @@ pub(crate) fn extra_knockback(
     amount: f32,
     y_rot: f32,
     old_movement: Option<Vec3>,
+    by: Option<(EntityId, f32, bool)>,
 ) {
     if amount > 0.0 {
         let rad = f64::from(y_rot * super::DEG_TO_RAD);
@@ -579,7 +582,7 @@ pub(crate) fn extra_knockback(
             .mob(target)
             .is_some_and(|m| m.kind == super::Kind::EnderDragon)
         {
-            combat::knock_living(ents, env, target, f64::from(amount), sin, -cos);
+            combat::knock_living(ents, env, target, f64::from(amount), sin, -cos, by);
         }
         if let Some(mut e) = ents.store.get_mut(attacker) {
             let v = e.as_ref().velocity();
@@ -678,6 +681,7 @@ fn sweep_attack(
                 0.4,
                 f64::from(vanillite_base::math::sin(rad)),
                 -f64::from(vanillite_base::math::cos(rad)),
+                Some((attacker, damage, false)),
             );
             post_attack(level, ents, env, cx, id, source, Some(&weapon));
         }

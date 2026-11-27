@@ -1,0 +1,115 @@
+{
+  "description": "Player NBT and item predicates in commands (#204): nbt= selectors see the player's SelectedItem, Inventory with components, abilities, OnGround and fall_distance (NbtPredicate.getEntityTagToCompare); execute if items and clear take item predicates with component tests (=, ~ with count, damage, custom_data and enchantments, presence, ! and |). Each passing check sets a gold block.",
+  "region": [
+    [
+      0,
+      -56,
+      0
+    ],
+    [
+      15,
+      -56,
+      0
+    ]
+  ],
+  "ticks": 8,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "seed": 2
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "item replace entity @e weapon.mainhand with minecraft:diamond_sword[minecraft:damage=5,minecraft:custom_data={a:1b}]"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "item replace entity @e container.1 with minecraft:dirt[minecraft:custom_data={b:2b}] 3"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "item replace entity @e container.2 with minecraft:dirt 2"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if entity @e[nbt={SelectedItem:{id:\"minecraft:diamond_sword\"}}] run setblock 0 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if entity @e[nbt={Inventory:[{id:\"minecraft:diamond_sword\",components:{\"minecraft:custom_data\":{a:1b}}}]}] run setblock 1 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if entity @e[nbt={abilities:{mayfly:0b},OnGround:1b,fall_distance:0.0d}] run setblock 2 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if items entity @e weapon.mainhand minecraft:diamond_sword[minecraft:damage=5] run setblock 3 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if items entity @e weapon.mainhand *[minecraft:damage~{damage:{min:3},durability:{min:1000}}] run setblock 4 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if items entity @e weapon.mainhand *[minecraft:custom_data~{a:1b}] run setblock 5 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if items entity @e weapon.mainhand *[minecraft:max_damage,count=1,!minecraft:food] run setblock 6 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if items entity @e weapon.mainhand *[minecraft:damage=4|minecraft:custom_data~{a:1b}] run setblock 7 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute if items entity @e container.* minecraft:dirt[minecraft:count~{min:3}] run setblock 8 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "execute as @e run clear @s minecraft:dirt[minecraft:custom_data={b:2b}]"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "execute unless items entity @e container.* minecraft:dirt[minecraft:custom_data~{b:2b}] if items entity @e container.* minecraft:dirt[!minecraft:custom_data] run setblock 9 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "execute if items entity @e weapon.mainhand *[minecraft:enchantments~[{levels:{min:1}}]] run setblock 10 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "enchant @e minecraft:sharpness 2"
+    },
+    {
+      "tick": 6,
+      "op": "command",
+      "command": "execute if items entity @e weapon.mainhand *[minecraft:enchantments~[{enchantments:\"minecraft:sharpness\",levels:{min:2}}]] run setblock 11 -56 0 minecraft:gold_block"
+    }
+  ]
+}

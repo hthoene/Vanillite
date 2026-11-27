@@ -840,7 +840,7 @@ fn json_to_nbt(v: &serde_json::Value) -> Tag {
 }
 
 /// The wire value of an item type's default component, if it has one.
-fn default_component(item: u16, type_id: u16) -> Option<Box<[u8]>> {
+pub(crate) fn default_component(item: u16, type_id: u16) -> Option<Box<[u8]>> {
     let name = vanillite_data::registry::ITEM.name(item)?;
     let component = conv::type_name(type_id)?;
     let line = item_lines().get(name)?;

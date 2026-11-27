@@ -943,7 +943,7 @@ fn test(
             let accepted = super::items::accepted_items_of(args, "item_predicate", env)?;
             stacks
                 .iter()
-                .filter(|s| !s.is_empty() && accepted.as_ref().is_none_or(|a| a.contains(&s.item)))
+                .filter(|s| accepted.matches(s))
                 .map(|s| s.count)
                 .sum()
         }

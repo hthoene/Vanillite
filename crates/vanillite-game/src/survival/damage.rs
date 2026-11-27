@@ -71,9 +71,10 @@ pub mod tag {
     pub const BURNS_ARMOR_STANDS: u32 = 1 << 21;
     pub const CAN_BREAK_ARMOR_STAND: u32 = 1 << 22;
     pub const ALWAYS_KILLS_ARMOR_STANDS: u32 = 1 << 23;
+    pub const SULFUR_CUBE_WITH_BLOCK_IMMUNE_TO: u32 = 1 << 24;
 
     /// Tag names and their bits.
-    pub const NAMES: [(&str, u32); 24] = [
+    pub const NAMES: [(&str, u32); 25] = [
         ("minecraft:is_fall", IS_FALL),
         ("minecraft:is_fire", IS_FIRE),
         ("minecraft:is_drowning", IS_DROWNING),
@@ -109,6 +110,10 @@ pub mod tag {
         (
             "minecraft:always_kills_armor_stands",
             ALWAYS_KILLS_ARMOR_STANDS,
+        ),
+        (
+            "minecraft:sulfur_cube_with_block_immune_to",
+            SULFUR_CUBE_WITH_BLOCK_IMMUNE_TO,
         ),
     ];
 }
