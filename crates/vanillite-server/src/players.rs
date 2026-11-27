@@ -2,6 +2,7 @@
 //! network layer hands over connections; the handlers themselves live in
 //! `vanillite_game::player`.
 
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use vanillite_game::entities::PERSISTENT_DATA;
 
@@ -32,7 +33,7 @@ use vanillite_net::{Injector, Latency, Outbound};
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
-    BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
+    BlockChangedAck, Disconnect, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
 };
 use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_protocol::tap::{BatchMark, PacketTap, Stage, Verdict, packet_id};
@@ -322,6 +323,11 @@ pub(crate) struct NetSink {
     out: Outbound,
     latency: Latency,
     injector: Injector,
+    /// The play `login` packet is queued. The player is in the player list before its world
+    /// sends `login` (the world may run on another thread), so broadcasts and plugins can reach
+    /// the connection first: those packets are dropped, like Vanilla, which lists a player only
+    /// after `login`. The client would fail on them without a level (#199).
+    playing: AtomicBool,
 }
 
 impl NetSink {
@@ -330,25 +336,56 @@ impl NetSink {
             out,
             latency,
             injector,
+            playing: AtomicBool::new(false),
         }
     }
+
+    /// Whether a packet may go out now.
+    fn passes(&self, body: &[u8]) -> bool {
+        passes_gate(self.playing.load(AtomicOrdering::Acquire), body)
+    }
+}
+
+/// Whether a packet body may go to a client: all once `login` is queued, before it only
+/// `disconnect`.
+fn passes_gate(playing: bool, body: &[u8]) -> bool {
+    playing || packet_id(body) == Some(<Disconnect as vanillite_protocol::Packet>::ID)
 }
 
 impl PacketSink for NetSink {
     fn send_body(&self, body: Vec<u8>) -> bool {
+        if !self.passes(&body) {
+            return !self.out.is_closed();
+        }
         self.out.send_body(body)
     }
 
     fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool {
+        if !self.playing.load(AtomicOrdering::Acquire) {
+            return !self.out.is_closed();
+        }
         self.out.send_shared(packet)
     }
 
     fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>, mark: BatchMark) -> bool {
+        if !self.playing.load(AtomicOrdering::Acquire) {
+            return !self.out.is_closed();
+        }
         self.out.send_batch(frames, threshold, mark)
     }
 
     fn send_untapped(&self, body: Vec<u8>) -> bool {
+        if !self.passes(&body) {
+            return !self.out.is_closed();
+        }
         self.out.send_untapped(body)
+    }
+
+    fn send_login(&self, body: Vec<u8>) -> bool {
+        // Queued before the flag flips: whoever sees `playing` queues behind `login`.
+        let open = self.out.send_body(body);
+        self.playing.store(true, AtomicOrdering::Release);
+        open
     }
 
     fn inject(&self, body: Vec<u8>, skip_listeners: bool) -> bool {
@@ -2050,5 +2087,31 @@ fn touch_orb(
                 1.0,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use vanillite_protocol::frame::encode_body;
+    use vanillite_protocol::packets::play::clientbound::Disconnect;
+    use vanillite_protocol::text::Component;
+
+    /// #199: before `login` a client has no level; a broadcast `set_time` that reached it there
+    /// ended in "Network Protocol Error". Only a kick passes the gate before `login`.
+    #[test]
+    fn only_disconnect_reaches_a_client_before_login() {
+        let kick = encode_body(&Disconnect {
+            reason: Component::text("bye"),
+        });
+        let chat = encode_body(
+            &vanillite_protocol::packets::play::clientbound::SystemChat {
+                content: Component::text("hi"),
+                overlay: false,
+            },
+        );
+        assert!(super::passes_gate(false, &kick));
+        assert!(!super::passes_gate(false, &chat));
+        assert!(super::passes_gate(true, &chat));
+        assert!(super::passes_gate(true, &kick));
     }
 }
