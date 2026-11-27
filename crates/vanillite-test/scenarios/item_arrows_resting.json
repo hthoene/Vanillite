@@ -1,0 +1,18 @@
+{
+  "description": "Projectiles come to rest and stay still (#198): an arrow falls onto the floor, one sticks in a wall, a spectral arrow and a trident land, and an arrow on a block that is removed at tick 60 falls (shouldFall) and lands again; all of them rest for the remaining ticks.",
+  "tier": "fast",
+  "region": [[0, -62, 0], [19, -54, 5]],
+  "ticks": 140,
+  "setup": [
+    {"op": "fill", "from": [8, -60, 1], "to": [8, -58, 3], "block": "minecraft:stone"},
+    {"op": "set", "pos": [17, -58, 2], "block": "minecraft:stone"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 2.5 -57.5 2.5 {Motion:[0.0,-0.5,0.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 5.5 -59.0 2.5 {Motion:[1.0,0.1,0.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:spectral_arrow 11.5 -57.5 2.5 {Motion:[0.0,-0.5,0.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:trident 14.5 -57.5 2.5 {Motion:[0.0,-0.5,0.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 17.5 -55.5 2.5 {Motion:[0.0,-0.5,0.0]}"},
+    {"tick": 60, "op": "command", "command": "setblock 17 -58 2 minecraft:air"}
+  ]
+}

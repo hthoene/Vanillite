@@ -30,6 +30,11 @@ import java.security.ProtectionDomain;
  *       reseeds the new entity's random from the scenario's entity seed stream (the subclass
  *       constructors run after it and see the seeded random). Vanillite seeds new entities from
  *       the same stream.
+ *   <li>{@code EntityType.create(ValueInput, Level, EntitySpawnRequest)} calls {@link
+ *       ParityHooks#loading} first and {@link ParityHooks#loaded} before it returns: an entity
+ *       loaded from storage is seeded from its UUID and the game time, as in Vanillite.
+ *   <li>{@code EntityStorage.loadEntities} first asks {@link ParityHooks#deferEntityLoad}: while
+ *       the recorder settles the chunk system it runs the loads in a fixed order.
  *   <li>the {@code ShufflingList} constructors take their random from {@link
  *       ParityHooks#shuffleRandom()}: in a scenario every shuffled behaviour list starts from the
  *       same seed, as in Vanillite's scenario world.
@@ -59,6 +64,8 @@ public final class ParityAgent {
               return switch (name) {
                 case "net/minecraft/world/level/levelgen/RandomSupport" -> uniqueSeed(bytes);
                 case "net/minecraft/world/entity/Entity" -> entityCreated(bytes);
+                case "net/minecraft/world/entity/EntityType" -> entityLoading(bytes);
+                case "net/minecraft/world/level/chunk/storage/EntityStorage" -> deferLoad(bytes);
                 case "net/minecraft/world/entity/ai/behavior/ShufflingList" -> shuffleRandom(bytes);
                 case "net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos",
                     "net/minecraft/world/entity/ai/behavior/InsideBrownianWalk" ->
@@ -145,6 +152,99 @@ public final class ParityAgent {
                     b.with(e);
                   }
                 }));
+    return cf.transformClass(model, t);
+  }
+
+  /**
+   * {@code EntityType.create(ValueInput, Level, EntitySpawnRequest)}: {@code
+   * ParityHooks.loading(input, level, request)} first, {@code ParityHooks.loaded()} before
+   * returning.
+   */
+  private static byte[] entityLoading(byte[] bytes) {
+    ClassFile cf = ClassFile.of();
+    ClassModel model = cf.parse(bytes);
+    ClassDesc request = ClassDesc.of("net.minecraft.world.entity.EntitySpawnRequest");
+    MethodTypeDesc loading =
+        MethodTypeDesc.of(
+            ConstantDescs.CD_void,
+            ConstantDescs.CD_Object,
+            ConstantDescs.CD_Object,
+            ConstantDescs.CD_Object);
+    ClassTransform t =
+        ClassTransform.transformingMethods(
+            (MethodModel m) ->
+                m.methodName().equalsString("create")
+                    && m.flags().has(java.lang.reflect.AccessFlag.STATIC)
+                    && m.methodTypeSymbol().parameterCount() == 3
+                    && m.methodTypeSymbol().parameterType(2).equals(request),
+            MethodTransform.transformingCode(
+                CodeTransform.ofStateful(
+                    () ->
+                        new CodeTransform() {
+                          private boolean started;
+
+                          @Override
+                          public void accept(
+                              java.lang.classfile.CodeBuilder b,
+                              java.lang.classfile.CodeElement e) {
+                            if (!started) {
+                              started = true;
+                              b.aload(0);
+                              b.aload(1);
+                              b.aload(2);
+                              b.invokestatic(HOOKS, "loading", loading);
+                            }
+                            if (e instanceof ReturnInstruction) {
+                              b.invokestatic(
+                                  HOOKS, "loaded", MethodTypeDesc.of(ConstantDescs.CD_void));
+                            }
+                            b.with(e);
+                          }
+                        })));
+    return cf.transformClass(model, t);
+  }
+
+  /**
+   * {@code EntityStorage.loadEntities(pos)}: returns {@code ParityHooks.deferEntityLoad(this,
+   * pos)} when that is not {@code null}, otherwise runs as before.
+   */
+  private static byte[] deferLoad(byte[] bytes) {
+    ClassFile cf = ClassFile.of();
+    ClassModel model = cf.parse(bytes);
+    ClassDesc future = ClassDesc.of("java.util.concurrent.CompletableFuture");
+    MethodTypeDesc defer =
+        MethodTypeDesc.of(future, ConstantDescs.CD_Object, ConstantDescs.CD_Object);
+    ClassTransform t =
+        ClassTransform.transformingMethods(
+            (MethodModel m) ->
+                m.methodName().equalsString("loadEntities")
+                    && !m.flags().has(java.lang.reflect.AccessFlag.SYNTHETIC)
+                    && !m.flags().has(java.lang.reflect.AccessFlag.BRIDGE),
+            MethodTransform.transformingCode(
+                CodeTransform.ofStateful(
+                    () ->
+                        new CodeTransform() {
+                          private boolean started;
+
+                          @Override
+                          public void accept(
+                              java.lang.classfile.CodeBuilder b,
+                              java.lang.classfile.CodeElement e) {
+                            if (!started) {
+                              started = true;
+                              java.lang.classfile.Label run = b.newLabel();
+                              b.aload(0);
+                              b.aload(1);
+                              b.invokestatic(HOOKS, "deferEntityLoad", defer);
+                              b.dup();
+                              b.ifnull(run);
+                              b.areturn();
+                              b.labelBinding(run);
+                              b.pop();
+                            }
+                            b.with(e);
+                          }
+                        })));
     return cf.transformClass(model, t);
   }
 

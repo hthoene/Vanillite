@@ -243,7 +243,11 @@ fn find_transform(level: &Level, name: &str, pos: BlockPos, face: Direction) -> 
                     return None;
                 };
             let copper_chest = is_copper_chest(state);
-            let door = block.info().kind == BlockKind::DoorBlock;
+            // `instanceof DoorBlock`: the weathering copper doors are doors too.
+            let door = matches!(
+                block.info().kind,
+                BlockKind::DoorBlock | BlockKind::WeatheringCopperDoorBlock
+            );
             Some(Transform {
                 particle,
                 update_from_neighbors: !(copper_chest || door),
@@ -1307,6 +1311,11 @@ pub(super) fn use_item(
     if id == items::GLASS_BOTTLE {
         return Some(UseAir::Done(glass_bottle(ctx, hand, y_rot, x_rot)));
     }
+    if let Some(kind) = crate::mob::animal::spawn_egg_kind(&stack) {
+        return Some(UseAir::Done(spawn_egg_in_liquid(
+            ctx, hand, y_rot, x_rot, kind,
+        )));
+    }
     if id == items::LILY_PAD || id == items::FROGSPAWN {
         let (pos, face, hit) = pov_hit(ctx, y_rot, x_rot, true)?;
         return Some(UseAir::PlaceOnWater(pos.relative(Direction::Up), face, hit));
@@ -1338,8 +1347,59 @@ fn bucket_content(id: vanillite_data::item::ItemId) -> Option<Content> {
         _ if id == items::TROPICAL_FISH_BUCKET => Content::Mob(Kind::TropicalFish),
         _ if id == items::AXOLOTL_BUCKET => Content::Mob(Kind::Axolotl),
         _ if id == items::TADPOLE_BUCKET => Content::Mob(Kind::Tadpole),
+        _ if id == items::SULFUR_CUBE_BUCKET => Content::Mob(Kind::SulfurCube),
         _ => return None,
     })
+}
+
+/// `SpawnEggItem.use`: looking at a water or lava source (`SOURCE_ONLY`), the egg's mob
+/// spawns inside it without moving down.
+fn spawn_egg_in_liquid(
+    ctx: &mut PlayContext<'_>,
+    hand: Hand,
+    y_rot: f32,
+    x_rot: f32,
+    kind: crate::mob::Kind,
+) -> Used {
+    let Some((pos, face, _)) = pov_hit(ctx, y_rot, x_rot, true) else {
+        return Used::Pass;
+    };
+    let state = ctx.level.block(pos);
+    if !state.is(blocks::WATER) && !state.is(blocks::LAVA) {
+        return Used::Pass;
+    }
+    let stack = held(ctx, hand);
+    // `level.mayInteract` and `player.mayUseItemAt(pos, face, stack)`.
+    let may_build = ctx.actor.game_mode != vanillite_config::GameMode::Adventure
+        || can_place_on(ctx, &stack, pos.relative(face.opposite()));
+    if (ctx.spawn_protected)(pos) || !may_build {
+        return Used::Fail;
+    }
+    let player = ctx.actor.entity;
+    let Some(level) = ctx.level.level_mut() else {
+        return Used::Pass;
+    };
+    let reason = crate::mob::fam::SpawnReason::SpawnItemUse;
+    if crate::mob::animal::spawn_from_item(level, kind, &stack, pos, reason, false, false).is_none()
+    {
+        return Used::Fail;
+    }
+    level.game_event_at(player, events().entity_place, pos);
+    if !ctx.actor.creative() {
+        let mut left = stack.clone();
+        left.shrink(1);
+        set_held(ctx, hand, left);
+    }
+    used_stat(ctx, stack.item);
+    Used::Success
+}
+
+/// The mob of a mob bucket item.
+pub(crate) fn mob_bucket_kind(id: vanillite_data::item::ItemId) -> Option<crate::mob::Kind> {
+    match bucket_content(id)? {
+        Content::Mob(kind) => Some(kind),
+        _ => None,
+    }
 }
 
 /// `BucketItem.use` (and `MobBucketItem`).
@@ -1363,8 +1423,9 @@ fn bucket(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32, content
     let clicked = level.block(pos);
     let fluid = match content {
         Content::Lava => Some(blocks::LAVA),
+        // `MobBucketItem` of `Fluids.EMPTY`: nothing is placed.
+        Content::Mob(crate::mob::Kind::SulfurCube) | Content::Empty => None,
         Content::Water | Content::Mob(_) => Some(blocks::WATER),
-        Content::Empty => None,
     };
     let place_pos =
         if fluid == Some(blocks::WATER) && crate::block::dispenser::is_liquid_container(clicked) {
@@ -1372,26 +1433,35 @@ fn bucket(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32, content
         } else {
             relative
         };
-    let emptied = fluid.is_some_and(|fluid| {
-        crate::block::dispenser::empty_bucket_contents_by(
-            level,
-            player,
-            fluid,
-            place_pos,
-            Some((pos, face)),
-            sneaking,
-            match content {
-                Content::Mob(kind) => Some(mob_bucket_sound(kind)),
-                _ => None,
-            },
-        )
-    });
+    let emptied = if let Content::Mob(kind) = content
+        && fluid.is_none()
+    {
+        // `MobBucketItem.emptyContents` without a fluid: only the empty sound.
+        let sound = sound_id(mob_bucket_sound(kind));
+        level.play_block_sound(player, place_pos, sound, SOUND_NEUTRAL, 1.0, 1.0);
+        true
+    } else {
+        fluid.is_some_and(|fluid| {
+            crate::block::dispenser::empty_bucket_contents_by(
+                level,
+                player,
+                fluid,
+                place_pos,
+                Some((pos, face)),
+                sneaking,
+                match content {
+                    Content::Mob(kind) => Some(mob_bucket_sound(kind)),
+                    _ => None,
+                },
+            )
+        })
+    };
     if emptied {
         if let Content::Mob(kind) = content {
             release_mob(level, kind, &stack, place_pos);
             level.game_event_at(player, events().entity_place, place_pos);
         }
-        if content != Content::Empty {
+        if fluid.is_some() {
             ctx.trigger(Event::PlacedBlock(place_pos, stack.clone()));
         }
         used_stat(ctx, stack.item);
@@ -1443,74 +1513,32 @@ fn pickup_sound(state: BlockState) -> &'static str {
 }
 
 /// `MobBucketItem.emptySound`.
-fn mob_bucket_sound(kind: crate::mob::Kind) -> &'static str {
+pub(crate) fn mob_bucket_sound(kind: crate::mob::Kind) -> &'static str {
     match kind {
         crate::mob::Kind::Axolotl => "item.bucket.empty_axolotl",
         crate::mob::Kind::Tadpole => "item.bucket.empty_tadpole",
+        crate::mob::Kind::SulfurCube => "item.bucket.empty_sulfur_cube",
         _ => "item.bucket.empty_fish",
     }
 }
 
 /// `MobBucketItem.spawn`: the mob of the bucket, with the bucket's data, marked as from a
 /// bucket, plays its ambient sound.
-fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos: BlockPos) {
-    use vanillite_base::random::RandomSource;
-    let seed = crate::mob::new_entity_seed();
-    let mut m = crate::mob::MobData::new(kind, seed);
-    // `EntityType.create(..., tryMoveDown = true, movedUp = false)`.
-    let y_off = crate::mob::animal::spawn_y_offset(level, pos, false, kind);
-    let yaw = vanillite_base::math::wrap_degrees_f(level.random().next_float() * 360.0);
-    let difficulty = level.settings.difficulty;
-    let mut spawn =
-        crate::mob::fam::SpawnContext::simple(difficulty, crate::mob::fam::SpawnReason::Bucket);
-    spawn.pos = pos;
-    {
-        let (_, _, random) = level.entity_parts();
-        let mut random = random.clone();
-        crate::mob::kinds::finalize_spawn(&mut m, &mut spawn, &mut random);
-        *level.entity_parts().2 = random;
-    }
-    // `createDefaultStackConfig`: the custom name (the other components after the spawn).
-    if let Some(name) = stack.component(ids::CUSTOM_NAME) {
-        m.custom_name = Some(name.into());
-        m.persistent = true;
-    }
-    crate::mob::fam::load_from_bucket(&mut m, stack);
-    let p = Vec3::new(
-        f64::from(pos.x) + 0.5,
-        f64::from(pos.y) + y_off,
-        f64::from(pos.z) + 0.5,
+pub(crate) fn release_mob(
+    level: &mut Level,
+    kind: crate::mob::Kind,
+    stack: &ItemStack,
+    pos: BlockPos,
+) {
+    crate::mob::animal::spawn_from_item(
+        level,
+        kind,
+        stack,
+        pos,
+        crate::mob::fam::SpawnReason::Bucket,
+        true,
+        false,
     );
-    let rot = vanillite_world::entity::Rotation {
-        y_rot: yaw,
-        x_rot: 0.0,
-        y_head_rot: yaw,
-    };
-    m.y_body_rot = yaw;
-    // `mob.playAmbientSound()`.
-    let sound = (!m.silent)
-        .then(|| crate::mob::kinds::ambient_sound(&mut m))
-        .flatten();
-    let volume = crate::mob::fam::mob_sound_volume(&m);
-    let pitch = {
-        let a = m.random.next_float();
-        let b = m.random.next_float();
-        (a - b) * 0.2 + if m.baby { 1.5 } else { 1.0 }
-    };
-    #[allow(clippy::as_conversions)]
-    let source = m.kind.sound_source() as u8;
-    let uuid = crate::mob::new_uuid();
-    let (ents, network_ids, _) = level.entity_parts();
-    let id = crate::mob::spawn(ents, network_ids, uuid, p, rot, m);
-    // `createDefaultStackConfig`: the variants of the bucket and its `entity_data`.
-    crate::mob::item_components::apply_spawn_item(ents, id, stack);
-    if !ents.spawned(id, vanillite_abi::spawn_reason::BUCKET, 0) {
-        return;
-    }
-    if let Some(sound) = sound {
-        let id = vanillite_data::registry::SOUND_EVENT.id(sound).unwrap_or(0);
-        level.play_sound(None, p.x, p.y, p.z, id, source, volume, pitch);
-    }
 }
 
 /// `BottleItem.use`: dragon's breath from a dragon's cloud around the player, else water.

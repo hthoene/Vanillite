@@ -260,6 +260,27 @@ fn use_item_on(
 ) -> ItemInteraction {
     use vanillite_data::item::ids as items;
     let id = crate::item::item_id(stack);
+    // `shouldTryToChainAnotherHangingSign`: a hanging sign item used on the underside of a
+    // ceiling hanging sign or on a plank end of a wall hanging sign places the next sign.
+    let hanging_item = id
+        .block()
+        .is_some_and(|b| b.info().kind == BlockKind::CeilingHangingSignBlock);
+    let axis = |d: Direction| match d {
+        Direction::East | Direction::West => 0,
+        Direction::Down | Direction::Up => 1,
+        Direction::North | Direction::South => 2,
+    };
+    let chains = match state.block().info().kind {
+        BlockKind::CeilingHangingSignBlock => context.face == Direction::Down,
+        BlockKind::WallHangingSignBlock => {
+            let facing = state.direction("facing").unwrap_or(Direction::North);
+            axis(context.face) != axis(facing)
+        }
+        _ => false,
+    };
+    if hanging_item && chains {
+        return ItemInteraction::Pass;
+    }
     let dye = dye_color(stack);
     let applicator = dye.is_some()
         || id == items::GLOW_INK_SAC

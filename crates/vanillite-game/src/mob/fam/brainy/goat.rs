@@ -76,7 +76,7 @@ pub fn long_jump_specs(jumper: Jumper) -> (Spec, Spec) {
     )
 }
 
-fn brain_spec() -> BrainSpec {
+pub(super) fn brain_spec() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,

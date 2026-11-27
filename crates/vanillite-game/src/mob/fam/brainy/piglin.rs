@@ -175,7 +175,7 @@ fn idle_movement() -> Spec {
     ])
 }
 
-fn piglin_brain() -> BrainSpec {
+pub(super) fn piglin_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -345,7 +345,7 @@ fn piglin_brain() -> BrainSpec {
     }
 }
 
-fn brute_brain() -> BrainSpec {
+pub(super) fn brute_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -958,6 +958,53 @@ fn set_anger_target(t: &mut Tick<'_, '_>, target: EntityId) {
     }
     if t.ents.player(target).is_some() && t.env.rules.bool(Rule::UNIVERSAL_ANGER) {
         brain::brain(t).set_with_expiry(M::UniversalAnger, MemValue::Bool(true), 600);
+    }
+}
+
+/// `PiglinAi.angerNearbyPiglins`: the idle piglins within 16 blocks of the player (that see
+/// it, with `only_if_seen`) get angry at it, or with `universal_anger` at the nearest
+/// targetable player they see. Runs outside any mob's tick.
+pub fn anger_nearby_piglins(
+    level: &crate::level::Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut crate::mob::MobContext,
+    player: EntityId,
+    only_if_seen: bool,
+) {
+    let Some(area) = ents
+        .store
+        .get(player)
+        .map(|e| e.aabb().inflate(16.0, 16.0, 16.0))
+    else {
+        return;
+    };
+    let mut piglins = Vec::new();
+    ents.store.for_each_in(&area, false, |id| {
+        if ents.mob(id).is_some_and(|m| m.kind == Kind::Piglin) {
+            piglins.push(id);
+        }
+    });
+    let universal = env.rules.bool(Rule::UNIVERSAL_ANGER);
+    for id in piglins {
+        let mut t = Tick {
+            level,
+            ents: &mut *ents,
+            env: &mut *env,
+            cx: &mut *cx,
+            id,
+        };
+        if t.mob_ref().brain.is_none() || !brain_ref(&t).is_active(Activity::Idle) {
+            continue;
+        }
+        if only_if_seen && !sensing::visible_contains(&mut t, player) {
+            continue;
+        }
+        if universal {
+            set_anger_to_nearest_player_or(&mut t, player);
+        } else {
+            set_anger_target(&mut t, player);
+        }
     }
 }
 

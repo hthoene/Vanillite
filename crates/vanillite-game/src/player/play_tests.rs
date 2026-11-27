@@ -113,6 +113,7 @@ fn actor(game_mode: GameMode) -> Actor {
         dig_speed: None,
         mining_fatigue: None,
         respawn_here: None,
+        leads_mobs: false,
     }
 }
 

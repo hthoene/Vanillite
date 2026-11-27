@@ -161,10 +161,11 @@ pub enum Behaviour {
     /// `DefaultDispenseItemBehavior`: the item drops.
     Default,
     /// An entity kind that is not simulated yet: projectiles, fireworks, fire and wind
-    /// charges, boats, armour stands, spawn eggs and mob buckets. Falls back to
-    /// [`Behaviour::Default`].
+    /// charges, boats and armour stands. Falls back to [`Behaviour::Default`].
     Entity,
-    /// Water and lava buckets (`DispensibleContainerItem`).
+    /// `SpawnEggItemBehavior`.
+    SpawnEgg,
+    /// Water, lava and mob buckets (`DispensibleContainerItem`).
     FilledBucket,
     /// The powder snow bucket (`SolidBucketItem`).
     PowderSnowBucket,
@@ -219,7 +220,7 @@ pub fn behaviour_of(stack: &ItemStack) -> Behaviour {
         Behaviour::Equipment
     } else if name.ends_with("_spawn_egg") {
         // `SpawnEggItemBehavior` (spawn eggs carry `entity_data`).
-        Behaviour::Entity
+        Behaviour::SpawnEgg
     } else {
         // `#minecraft:sulfur_cube_swallowable` items find no sulfur cube and drop.
         Behaviour::Default
@@ -257,7 +258,6 @@ fn registered(id: ItemId) -> Option<Behaviour> {
         return Some(B::Minecart);
     }
     let name = id.name();
-    // Mob buckets (`MobBucketItem`) place water, then spawn their mob.
     let shot = [
         items::ARROW,
         items::TIPPED_ARROW,
@@ -276,11 +276,10 @@ fn registered(id: ItemId) -> Option<Behaviour> {
     let spawns_entity = projectiles.contains(&id)
         || id == items::ARMOR_STAND
         || name.ends_with("_boat")
-        || name.ends_with("_raft")
-        || mob_buckets.contains(&id);
+        || name.ends_with("_raft");
     Some(if spawns_entity {
         B::Entity
-    } else if id == items::WATER_BUCKET || id == items::LAVA_BUCKET {
+    } else if id == items::WATER_BUCKET || id == items::LAVA_BUCKET || mob_buckets.contains(&id) {
         B::FilledBucket
     } else if id == items::POWDER_SNOW_BUCKET {
         B::PowderSnowBucket
@@ -404,13 +403,52 @@ fn execute(
                 dispense(level, source, stack, B::Default)
             }
         }
+        B::SpawnEgg => {
+            let Some(kind) = crate::mob::animal::spawn_egg_kind(&stack) else {
+                return stack;
+            };
+            let spawned = crate::mob::animal::spawn_from_item(
+                level,
+                kind,
+                &stack,
+                target,
+                crate::mob::fam::SpawnReason::Dispenser,
+                source.facing != Direction::Up,
+                false,
+            );
+            if spawned.is_some() {
+                stack.shrink(1);
+                level.game_event_at(None, events().entity_place, source.pos);
+            }
+            stack
+        }
         B::FilledBucket => {
-            let fluid = if item::item_id(&stack) == items::LAVA_BUCKET {
+            let id = item::item_id(&stack);
+            let fluid = if id == items::LAVA_BUCKET {
                 ids::LAVA
             } else {
                 ids::WATER
             };
-            if empty_bucket_contents(level, fluid, target) {
+            let mob = crate::player::play::item_use::mob_bucket_kind(id);
+            let emptied = match mob {
+                // `MobBucketItem.emptyContents` of `Fluids.EMPTY`: only the empty sound.
+                Some(kind @ crate::mob::Kind::SulfurCube) => {
+                    let sound = crate::player::play::item_use::mob_bucket_sound(kind);
+                    play_empty_sound(level, None, fluid, target, Some(sound));
+                    true
+                }
+                Some(kind) => {
+                    let sound = crate::player::play::item_use::mob_bucket_sound(kind);
+                    empty_bucket_contents_by(level, None, fluid, target, None, false, Some(sound))
+                }
+                None => empty_bucket_contents(level, fluid, target),
+            };
+            if emptied {
+                // `MobBucketItem.checkExtraContent`.
+                if let Some(kind) = mob {
+                    crate::player::play::item_use::release_mob(level, kind, &stack, target);
+                    level.game_event_at(None, events().entity_place, target);
+                }
                 consume_with_remainder(level, source, stack, ItemStack::new(items::BUCKET.0, 1))
             } else {
                 dispense(level, source, stack, B::Default)
@@ -1054,9 +1092,33 @@ fn place_shulker_box(level: &mut Level, source: Source, stack: &mut ItemStack) -
     true
 }
 
+/// `Entity.blocksBuilding` of a live entity that is no spectator: living entities (not marker
+/// armor stands), minecarts, boats, end crystals, falling blocks and primed TNT.
+pub fn blocks_building(level: &Level, id: vanillite_world::entity::EntityId) -> bool {
+    let ents = &level.entities;
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    if kind == entity_ids::PLAYER {
+        return ents
+            .player(id)
+            .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
+    }
+    if kind == entity_ids::ARMOR_STAND {
+        return !ents
+            .mob(id)
+            .is_some_and(crate::decoration::stand::is_marker);
+    }
+    super::plate::is_living(kind)
+        || super::rail::is_minecart(kind)
+        || ents.boat(id).is_some()
+        || kind == entity_ids::END_CRYSTAL
+        || kind == entity_ids::FALLING_BLOCK
+        || kind == entity_ids::TNT
+}
+
 /// `Level.isUnobstructed(state, pos, CollisionContext.empty())`: no entity that blocks
-/// building (players that are no spectators, primed TNT, falling blocks) in the block's
-/// collision shape.
+/// building ([`blocks_building`]) in the block's collision shape.
 fn is_unobstructed(level: &Level, state: BlockState, pos: BlockPos) -> bool {
     let (dx, dy, dz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     for b in state.collision_shape() {
@@ -1070,18 +1132,7 @@ fn is_unobstructed(level: &Level, state: BlockState, pos: BlockPos) -> bool {
         );
         let mut blocked = false;
         level.entities.store.for_each_in(&shape, false, |id| {
-            let Some(entity) = level.entities.store.get(id) else {
-                return;
-            };
-            let kind = entity.kind();
-            if kind == entity_ids::PLAYER {
-                blocked |= level
-                    .entities
-                    .player(id)
-                    .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
-            } else if kind == entity_ids::TNT || kind == entity_ids::FALLING_BLOCK {
-                blocked = true;
-            }
+            blocked |= blocks_building(level, id);
         });
         if blocked {
             return false;

@@ -57,11 +57,15 @@ pub fn brushable_on_place(
     level.schedule_block_tick(pos, state.block(), 2);
 }
 
-/// `BrushableBlock.tick`: falls without dropping an item.
+/// `BrushableBlock.tick`: falls and breaks where it lands (`disableDrop`: the entity is
+/// removed instead of placing the block; it still drops its item when it times out).
 pub fn brushable_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     super::brushable::check_reset(level, pos);
     if is_free(level.block(pos.below())) && pos.y >= level.min_y() {
-        fall(level, pos, state, false);
+        let id = fall(level, pos, state, true);
+        if let Some(d) = level.entities.falling_block_mut(id) {
+            d.cancel_drop = true;
+        }
     }
 }
 
@@ -431,9 +435,17 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
         // `Block.updateEntityMovementAfterFallOn`.
         velocity.y = 0.0;
     }
-    // `applyEffectsFromBlocks`: `stepOn` of the block below (redstone ore lights up).
+    // `applyEffectsFromBlocks`: `stepOn` of the block below (redstone ore lights up), then
+    // `entityInside` of the plates, tripwire and kin on the way.
     if on_ground && super::contact::has_step_on(level.block(on_pos).block()) {
         super::contact::step_on(level, on_pos, id);
+    }
+    if let Some(dims) = level.entities.store.get(id).map(|e| e.dims()) {
+        let way = [crate::survival::inside::Movement::plain(
+            new_pos - moved,
+            new_pos,
+        )];
+        super::plate::entity_inside_along(level, id, dims, &way);
     }
     let Some(data) = level.entities.falling_block(id).copied() else {
         return;
@@ -461,7 +473,7 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
         } else if data.cancel_drop {
             level.entities.despawn(id);
             removed = true;
-            on_broken_after_fall(level, block, block_pos);
+            on_broken_after_fall(level, data.state, block_pos, new_pos, id);
         } else {
             let may_replace = can_be_replaced_by_falling(current);
             let would_continue =
@@ -479,11 +491,11 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
                 if level.set_block_and_update(block_pos, state) {
                     on_land(level, block_pos, state, current);
                 } else if data.drop_item && level.settings.entity_drops {
-                    on_broken_after_fall(level, block, block_pos);
+                    on_broken_after_fall(level, data.state, block_pos, new_pos, id);
                     drops::spawn_block_item(level, new_pos, block);
                 }
             } else if data.drop_item && level.settings.entity_drops {
-                on_broken_after_fall(level, block, block_pos);
+                on_broken_after_fall(level, data.state, block_pos, new_pos, id);
                 drops::spawn_block_item(level, new_pos, block);
             }
         }
@@ -530,10 +542,42 @@ fn on_land(level: &mut Level, pos: BlockPos, state: BlockState, replaced: BlockS
     }
 }
 
-/// `Fallable.onBrokenAfterFall`.
-fn on_broken_after_fall(level: &mut Level, block: BlockId, pos: BlockPos) {
-    if class_of(block.default_state()) == Class::Anvil {
-        level.level_event(None, ANVIL_BROKEN, pos, 0);
+/// `Fallable.onBrokenAfterFall` of the block `state` that fell as `entity` (at `entity_pos`):
+/// anvils and stalactites sound, suspicious sand and gravel break.
+fn on_broken_after_fall(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    entity_pos: Vec3,
+    entity: EntityId,
+) {
+    match class_of(state) {
+        Class::Anvil => level.level_event(None, ANVIL_BROKEN, pos, 0),
+        Class::Speleothem => {
+            // `getStalactiteLandingSound`.
+            let event = if state.is(ids::SULFUR_SPIKE) {
+                1052
+            } else {
+                1045
+            };
+            level.level_event(None, event, pos, 0);
+        }
+        Class::Brushable => {
+            // The centre of the entity's box (0.98 high).
+            let centre = Vec3::new(
+                entity_pos.x,
+                entity_pos.y + f64::from(0.98_f32) / 2.0,
+                entity_pos.z,
+            );
+            let at = BlockPos::containing(centre.x, centre.y, centre.z);
+            level.level_event(None, 2001, at, i32::from(state.0));
+            level.game_event(
+                crate::level::game_event::events().block_destroy,
+                centre,
+                crate::level::game_event::GameEventContext::of(Some(entity)),
+            );
+        }
+        _ => {}
     }
 }
 

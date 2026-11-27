@@ -359,6 +359,11 @@ pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_it
     if ents.leashes.remove(&mob).is_none() {
         return;
     }
+    // `Mob.onLeashRemoved`: `clearHome`.
+    if let Some(m) = ents.mob_mut(mob) {
+        m.restrict_center = BlockPos::ZERO;
+        m.restrict_radius = -1;
+    }
     link_packet(ents, env, mob, None);
     if drop_item
         && let Some(pos) = ents.store.get(mob).map(|e| e.pos())
@@ -566,7 +571,8 @@ pub fn knot_at(
     id
 }
 
-/// `LeadItem.useOn` on a fence: the player's leashed mobs within 7 blocks get tied to it.
+/// `LeadItem.useOn` on a fence and `FenceBlock.useWithoutItem` (`LeadItem.bindPlayerMobs`): the
+/// player's leashed mobs around the fence get tied to its knot.
 pub fn use_lead_on_fence(
     level: &Level,
     ents: &mut Entities,
@@ -577,18 +583,30 @@ pub fn use_lead_on_fence(
     if !is_knot_block(level.block(pos)) {
         return false;
     }
+    bind_player_mobs(ents, env, level.network_ids(), player, pos)
+}
+
+/// `LeadItem.bindPlayerMobs`: whether any mob got tied (`SUCCESS_SERVER`, else `PASS`).
+pub fn bind_player_mobs(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    network_ids: &NetworkIds,
+    player: EntityId,
+    pos: BlockPos,
+) -> bool {
     let center = Vec3::new(
         f64::from(pos.x) + 0.5,
         f64::from(pos.y) + 0.5,
         f64::from(pos.z) + 0.5,
     );
+    // `Leashable.leashableInArea`: a 32 block cube around the block centre.
     let area = Aabb::new(
-        center.x - 7.0,
-        center.y - 7.0,
-        center.z - 7.0,
-        center.x + 7.0,
-        center.y + 7.0,
-        center.z + 7.0,
+        center.x - 16.0,
+        center.y - 16.0,
+        center.z - 16.0,
+        center.x + 16.0,
+        center.y + 16.0,
+        center.z + 16.0,
     );
     let mut mine = Vec::new();
     ents.store.for_each_in(&area, false, |id| {
@@ -599,9 +617,38 @@ pub fn use_lead_on_fence(
     if mine.is_empty() {
         return false;
     }
+    // `canHaveALeashAttachedTo(knot)`: the knot's box centre within `leashSnapDistance`.
+    let knot_center = Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y) + 0.625,
+        f64::from(pos.z) + 0.5,
+    );
+    mine.retain(|&m| {
+        let Some(e) = ents.store.get(m) else {
+            return false;
+        };
+        let snap = if e.kind() == vanillite_data::entity::ids::GHAST
+            || e.kind() == vanillite_data::entity::ids::HAPPY_GHAST
+        {
+            16.0
+        } else {
+            12.0
+        };
+        let b = e.aabb();
+        let c = Vec3::new(
+            (b.min_x + b.max_x) / 2.0,
+            (b.min_y + b.max_y) / 2.0,
+            (b.min_z + b.max_z) / 2.0,
+        );
+        c.distance_to_sqr(knot_center).sqrt() <= snap && ents.mob(m).is_none_or(can_be_leashed)
+    });
+    // Without a mob to tie, Vanilla discards the knot it just created.
+    if mine.is_empty() {
+        return false;
+    }
     let uuid = crate::mob::new_entity_uuid();
     let knots = ents.knots.len();
-    let knot = knot_at(ents, level.network_ids(), pos, uuid);
+    let knot = knot_at(ents, network_ids, pos, uuid);
     if ents.knots.len() > knots && !ents.spawned(knot, vanillite_abi::spawn_reason::DEFAULT, 0) {
         return false;
     }
@@ -609,6 +656,12 @@ pub fn use_lead_on_fence(
         set_leashed_to(ents, env, m, knot);
     }
     entity_sound(ents, env, knot, "minecraft:item.lead.tied");
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().block_attach,
+        center,
+        Some(player),
+    );
     true
 }
 
@@ -728,7 +781,12 @@ pub fn tick_leash(t: &mut Tick<'_, '_>) {
     let y_rot = me.rot().y_rot;
     let velocity = me.velocity();
     let distance = mpos.distance_to_sqr(hpos).sqrt();
-    // `PathfinderMob.whenLeashedTo`: home at the holder.
+    // `PathfinderMob.whenLeashedTo`: home at the holder, `leashElasticDistance - 1` around it.
+    {
+        let m = t.mob();
+        m.restrict_center = BlockPos::containing(hpos.x, hpos.y, hpos.z);
+        m.restrict_radius = 5;
+    }
     if distance > 12.0 {
         let seed = crate::survival::sound_seed();
         play_sound(

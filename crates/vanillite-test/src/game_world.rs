@@ -406,6 +406,7 @@ impl GameWorld {
             )
         };
         let mut players = std::mem::take(&mut self.level.entities.players);
+        let mut bind_fence = None;
         let result = (|| {
             let player = players.get_mut(row).ok_or("no player data")?;
             if let Some(food) = click.food {
@@ -432,14 +433,22 @@ impl GameWorld {
                 game_mode: player.game_mode,
                 permission_level: 0,
                 eyes_in_water: false,
-                dig_speed: None,
-                mining_fatigue: None,
+                dig_speed: player
+                    .survival
+                    .effects
+                    .has_dig_speed()
+                    .then(|| player.survival.effects.dig_speed_amplification()),
+                mining_fatigue: player
+                    .survival
+                    .effects
+                    .amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
                 respawn_here: player
                     .survival
                     .respawn
                     .as_ref()
                     .filter(|r| r.dimension == "minecraft:overworld")
                     .map(|r| r.pos),
+                leads_mobs: self.level.entities.leashes.values().any(|&h| h == id),
             };
             let mut effects = vanillite_server::LevelEffects::default();
             let spectators = vanillite_base::hash::FxHashSet::default();
@@ -529,6 +538,7 @@ impl GameWorld {
                     .connection
                     .play
                     .use_item_on(&mut ctx, &packet, &NoSink);
+                bind_fence = player.connection.play.bind_fence.take();
             }
             Ok::<bool, String>(false)
         })();
@@ -539,6 +549,13 @@ impl GameWorld {
             &vanillite_game::hooks::NoHooks,
         );
         self.explosion_hurts();
+        // `EntityAction::BindToFence`: the fence ties the player's leashed mobs.
+        if let Some(fence) = bind_fence {
+            let network_ids = Arc::clone(&self.network_ids);
+            self.with_env(|_, ents, env, _| {
+                vanillite_game::mob::tame::bind_player_mobs(ents, env, &network_ids, id, fence);
+            });
+        }
         // The entity side of `useItemOn` (`EntityAction::UseItemOn`): spawn eggs, leads,
         // minecarts and rockets.
         let hand = if click.offhand {
@@ -554,6 +571,7 @@ impl GameWorld {
             }
         });
         if !click.attack
+            && !click.air
             && held.is_some_and(|s| vanillite_game::player::item_use::uses_entities_on_block(&s))
         {
             let [hx, hy, hz] = click.hit.unwrap_or(match face {
@@ -615,13 +633,9 @@ impl GameWorld {
             d => return Err(format!("unknown difficulty `{d}`")),
         };
         level.settings.difficulty = difficulty;
-        // The world starts at day time 0 unless the scenario sets one; time advances only with
-        // `advance_time` (see `step`).
-        let env = Environment {
-            sea_level: sea_level(spec),
-            day_time: spec.time.unwrap_or(0),
-            ..Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0)
-        };
+        // The world starts at day time 0 unless the scenario sets one; time advances with
+        // `advance_time` (off by default).
+        let env = day_environment(sea_level(spec), spec.time.unwrap_or(0), 0.0, 0.0);
         // What spawner blocks and creaking hearts read when the block entities tick.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
@@ -734,6 +748,22 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        // `PiglinAi.angerNearbyPiglins` of the block uses and breaks before.
+        let anger = std::mem::take(&mut self.level.output().piglin_anger);
+        if !anger.is_empty() {
+            self.with_env(|level, ents, env, cx| {
+                for (player, only_if_seen) in anger {
+                    vanillite_game::mob::fam::brainy::piglin::anger_nearby_piglins(
+                        level,
+                        ents,
+                        env,
+                        cx,
+                        player,
+                        only_if_seen,
+                    );
+                }
+            });
+        }
         // What block entities (beehives) read of the world after the entities.
         self.level.spawner_env.env = self.env;
         self.level.entities.day_time = self.env.day_time;
@@ -807,6 +837,7 @@ impl GameWorld {
                             facts,
                             types,
                             raining_at: &raining,
+                            reacts: &|s| level.has_entity_inside(s),
                         },
                     )
                 };
@@ -1709,6 +1740,15 @@ fn path_type_name(t: mob::path::PathType) -> String {
     out
 }
 
+/// The overworld's environment at `day` ticks of the day with the given weather levels.
+fn day_environment(sea_level: i32, day: i64, rain: f32, thunder: f32) -> Environment {
+    Environment {
+        sea_level,
+        day_time: day,
+        ..Environment::overworld(day, rain, thunder)
+    }
+}
+
 /// The recorder's default game rules (`ScenarioRecorder.DEFAULT_RULES`: no random ticks, no
 /// mobs, no time or weather) with the scenario's rules on top.
 /// A new level of `spec` over the chunks in `store`.
@@ -1969,24 +2009,27 @@ impl ScenarioWorld for GameWorld {
     /// ticks, the chunk source (post-processing, random ticks), block events, entities, block
     /// entities, entity management (pending entity loads).
     fn step(&mut self) {
-        // `ServerClockManager.tick` before the levels tick: with `advance_time` the day clock
-        // moves on, and the environment the level reads follows it.
+        // `MinecraftServer.tickChildren`: the clocks advance before the levels tick.
         if self.rules.bool(Rule::ADVANCE_TIME) {
-            let day = self.env.day_time + 1;
-            let weather = self.level.weather();
-            self.env = Environment {
-                sea_level: sea_level(&self.spec),
-                day_time: day,
-                ..Environment::overworld(day, weather.rain(), weather.thunder())
-            };
-            self.level.spawner_env.env = self.env;
-            self.level.entities.day_time = day;
+            self.clock_time += 1;
         }
-        // `ServerLevel.tick`: the night skip (weather stands still in scenarios).
+        // `ServerLevel.tick`: the night skip (the weather stands still in scenarios).
         vanillite_game::survival::sleep::skip_night(
             &mut self.level,
             &vanillite_game::hooks::NoHooks,
         );
+        // `updateSkyBrightness`: what this tick's block ticks read of the sky.
+        if self.env.day_time != self.clock_time {
+            let weather = self.level.weather();
+            self.env = day_environment(
+                sea_level(&self.spec),
+                self.clock_time,
+                weather.rain(),
+                weather.thunder(),
+            );
+            self.level.spawner_env.env = self.env;
+            self.level.entities.day_time = self.env.day_time;
+        }
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();

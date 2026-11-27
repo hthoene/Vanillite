@@ -78,6 +78,56 @@ impl Level {
         self.pending_entity_loads = pending;
     }
 
+    /// `postLoadProtoChunk` of a chunk that became full: the entities generation added (kept
+    /// in the chunk's stored tags as `entities`, like Vanilla's proto chunks) join its stored
+    /// entities and load with them. Generated entities have no UUID yet and get one here.
+    /// Chunks saved full with generation entities still in their tags (earlier builds) are
+    /// healed the same way when they load.
+    pub(super) fn take_generation_entities(&mut self, chunk: ChunkPos) {
+        /// The root key of the list in network NBT: list tag, name length, name.
+        const KEY: &[u8] = b"\x09\x00\x08entities";
+        let Some(bytes) = self.chunks.chunk(chunk).and_then(|c| c.extra.clone()) else {
+            return;
+        };
+        if !bytes.windows(KEY.len()).any(|w| w == KEY) {
+            return;
+        }
+        let Ok(Some(Tag::Compound(mut tags))) =
+            vanillite_nbt::read::read_network(&mut &bytes[..], &mut Budget::file())
+        else {
+            return;
+        };
+        let Some(Tag::List(List(list))) = tags.remove("entities") else {
+            return;
+        };
+        let mut rest = Vec::new();
+        if vanillite_nbt::write::write_network_compound(&tags, &mut rest).is_err() {
+            return;
+        }
+        self.chunks.set_stored_extra(chunk, Some(rest.into()));
+        let loaded = self.chunks.entities_loaded(chunk);
+        let mut stored = self.chunks.stored_entities(chunk).to_vec();
+        for tag in list {
+            let Tag::Compound(mut nbt) = tag else {
+                continue;
+            };
+            if uuid_of(&nbt, "UUID").is_none() {
+                nbt.insert("UUID", crate::mob::nbt::uuid_tag(crate::mob::new_uuid()));
+            }
+            if loaded {
+                self.load_entity(nbt);
+                continue;
+            }
+            let mut out = Vec::new();
+            if vanillite_nbt::write::write_network_compound(&nbt, &mut out).is_ok() {
+                stored.push(out.into());
+            }
+        }
+        if !loaded {
+            self.chunks.set_stored_entities(chunk, stored);
+        }
+    }
+
     /// Creates the stored entities of a chunk that became live (`addEntityWithoutEvent` in
     /// stored order).
     pub(super) fn load_entities(&mut self, chunk: ChunkPos) {
@@ -107,11 +157,10 @@ impl Level {
         }
     }
 
-    /// `EntityType.loadEntityRecursive`: creates a live entity of a modelled kind; `false` for
-    /// kinds the game does not model.
-    /// Whether the entities of a chunk are in the world (`areEntitiesLoaded`).
+    /// Whether the entities of a chunk are in the world (`areEntitiesLoaded`): its stored
+    /// entities were loaded, whether it has any or not.
     pub fn entities_loaded(&self, chunk: ChunkPos) -> bool {
-        self.entity_chunks.contains(&chunk)
+        self.chunks.entities_loaded(chunk)
     }
 
     /// `EntityType.loadEntityRecursive` + `addFreshEntityWithPassengers` of stored entity data

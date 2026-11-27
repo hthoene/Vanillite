@@ -98,10 +98,6 @@ pub fn tick(t: &mut Tick<'_, '_>) {
             m.health = max;
         }
     }
-    super::tame::tick_leash(t);
-    if !t.exists() {
-        return;
-    }
     kinds::after_tick(t);
 }
 
@@ -136,6 +132,11 @@ fn base_tick(t: &mut Tick<'_, '_>) {
     }
     let on_fire = t.mob_ref().fire_ticks > 0;
     t.core_mut().set_flags(EntityFlags::ON_FIRE, on_fire);
+    if !t.exists() {
+        return;
+    }
+    // The end of `Entity.baseTick`: `Leashable.tickLeash`.
+    super::tame::tick_leash(t);
     if !t.exists() {
         return;
     }
@@ -1815,17 +1816,22 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     let mut bubble_count = 0;
     let dims = t.core().dims();
     let fast_fall = t.mob_ref().fall_distance > 2.5;
-    let (id, actions) = (t.id, &mut t.cx.actions);
+    let (id, actions, level) = (t.id, &mut t.cx.actions, t.level);
+    // `Spider.makeStuckInBlock`: spiders and cave spiders pass cobwebs.
+    let spider = matches!(kind, super::Kind::Spider | super::Kind::CaveSpider);
     let inside = inside_blocks(t.env.blocks, t.env.facts, dims, fast_fall, &path, |cell| {
         // `entityInside` of the blocks that slow, carry or react to the mob, in the
         // order it meets them.
         let (pos, block) = (cell.pos, cell.state.block());
-        if block == ids::BIG_DRIPLEAF {
-            // `BigDripleafBlock.entityInside`.
+        if level.has_entity_inside(cell.state) {
+            // The blocks with a behaviour of their own: pressure plates, tripwire, buttons,
+            // detector rails, big dripleaves, lily pads.
             actions.push(super::WorldAction::EntityInside(pos, id));
         }
         if block == ids::COBWEB {
-            stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
+            if !spider {
+                stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
+            }
         } else if block == ids::SWEET_BERRY_BUSH {
             if !matches!(kind, super::Kind::Fox | super::Kind::Bee) {
                 stuck = Some(Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32)));

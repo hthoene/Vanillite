@@ -93,7 +93,9 @@
 //!   A copper golem takes the oxidation `weather_state` (`CopperGolem.setWeatherState`).
 //! - `entity_seed`: every entity created while the scenario runs (arrows, drops, orbs, babies,
 //!   spawned mobs) seeds its random with the next `nextLong()` of a legacy random seeded with
-//!   it, in creation order (default: the world seed). The Java recorder enforces this in
+//!   it, in creation order (default: the world seed). An entity loaded from storage (a
+//!   reloaded chunk's entities) takes the low 64 bits of its UUID xor the game time instead,
+//!   independent of the order the loads complete in. The Java recorder enforces this in
 //!   Vanilla with its agent (`ParityAgent.java`).
 //!
 //! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line
@@ -225,8 +227,9 @@ pub struct WorldSpec {
     pub region: (BlockPos, BlockPos),
     /// Chunks forced before the setup: the region's chunks and one chunk around them.
     pub forced: Vec<ChunkPos>,
-    /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
-    /// Block-only scenarios run without it, which is much faster.
+    /// Whether the world computes light: with entities (mobs see it), random ticks (crops,
+    /// grass and saplings check it) or `"light": true`. Other block-only scenarios run
+    /// without it, which is much faster.
     pub light: bool,
     /// Whether frames observe light (`"light": true`).
     pub observe_light: bool,
@@ -645,7 +648,7 @@ impl Scenario {
                 ("minecraft:grass_block".to_owned(), 1),
             ],
         };
-        let rules = v
+        let rules: BTreeMap<String, String> = v
             .get("rules")
             .and_then(Value::as_object)
             .map(|r| {
@@ -657,6 +660,9 @@ impl Scenario {
                     .collect()
             })
             .unwrap_or_default();
+        let random_ticks = rules
+            .get("random_tick_speed")
+            .is_some_and(|speed| speed != "0");
         let region = v.get("region").ok_or("region is missing")?;
         let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
         let forced = forced_around(min, max);
@@ -747,6 +753,7 @@ impl Scenario {
                 region: (pos(region.get(0))?, pos(region.get(1))?),
                 forced,
                 light: v.get("entities").is_some()
+                    || random_ticks
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 difficulty: v

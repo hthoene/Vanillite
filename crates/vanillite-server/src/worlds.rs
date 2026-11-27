@@ -310,7 +310,6 @@ impl WorldFactory {
         let survival = crate::survival::WorldSurvival::new(
             dimension,
             &global.level,
-            &players.level,
             bounds,
             player_range,
             climate,
