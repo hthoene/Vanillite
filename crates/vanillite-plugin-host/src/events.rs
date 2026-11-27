@@ -6,7 +6,7 @@
 use std::ffi::c_void;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use vanillite_abi::{self as abi, Status, status};
 
@@ -14,7 +14,7 @@ use crate::api::CallCtx;
 use crate::{Inner, PluginHost, SendPtr, Subscriber, WorldAccess};
 
 /// Highest event kind of this ABI version.
-const MAX_KIND: u32 = abi::event::PLAYER_INTERACT;
+const MAX_KIND: u32 = abi::event::PLAYER_ADVANCEMENT_DONE;
 
 /// Event kinds the subscription mask can hold.
 const MASK_BITS: u32 = 256;
@@ -23,8 +23,11 @@ const MASK_BITS: u32 = 256;
 pub(crate) struct Events {
     /// Bit `kind` is set when the kind has subscribers.
     mask: [AtomicU64; (MASK_BITS / 64) as usize],
-    /// Subscribers by kind, sorted by priority, then load order.
-    lists: RwLock<Vec<Vec<Subscriber>>>,
+    /// Subscribers by kind, sorted by priority, then load order. A dispatch takes its list
+    /// out of the lock, so handlers may subscribe, unsubscribe and fire events.
+    lists: RwLock<Vec<Arc<[Subscriber]>>>,
+    /// Names of the plugin event kinds, from [`abi::limits::FIRST_CUSTOM_EVENT`] on.
+    custom: RwLock<Vec<String>>,
 }
 
 impl Events {
@@ -41,25 +44,73 @@ impl Events {
         }
     }
 
+    /// The kind of a plugin event name, registered on first use; `None` when all are taken.
+    pub(crate) fn custom_kind(&self, name: &str) -> Option<u32> {
+        let mut custom = self.custom.write().unwrap_or_else(PoisonError::into_inner);
+        let index = match custom.iter().position(|n| n == name) {
+            Some(index) => index,
+            None => {
+                let room =
+                    (abi::limits::LAST_CUSTOM_EVENT - abi::limits::FIRST_CUSTOM_EVENT + 1) as usize;
+                if custom.len() >= room {
+                    return None;
+                }
+                custom.push(name.to_owned());
+                custom.len() - 1
+            }
+        };
+        u32::try_from(index)
+            .ok()
+            .map(|i| abi::limits::FIRST_CUSTOM_EVENT + i)
+    }
+
+    /// The kind of an already registered plugin event name.
+    fn custom_kind_of(&self, name: &str) -> Option<u32> {
+        let index = self
+            .custom
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .position(|n| n == name)?;
+        u32::try_from(index)
+            .ok()
+            .map(|i| abi::limits::FIRST_CUSTOM_EVENT + i)
+    }
+
+    /// The name of a registered plugin event kind.
+    pub(crate) fn custom_name(&self, kind: u32) -> Option<String> {
+        let index = kind.checked_sub(abi::limits::FIRST_CUSTOM_EVENT)?;
+        self.custom
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(usize::try_from(index).ok()?)
+            .cloned()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn add(
         &self,
         plugin: u32,
         kind: u32,
         priority: i32,
+        flags: u32,
         callback: abi::EventFn,
         user: *mut c_void,
     ) -> Status {
-        if !(1..=MAX_KIND.min(MASK_BITS - 1)).contains(&kind) {
+        let known = (1..=MAX_KIND).contains(&kind)
+            || (kind < MASK_BITS && self.custom_name(kind).is_some());
+        if !known || flags & !abi::subscribe_flag::IGNORE_CANCELLED != 0 {
             return status::UNSUPPORTED;
         }
         let mut lists = self.lists.write().unwrap_or_else(PoisonError::into_inner);
         let index = usize::try_from(kind).unwrap_or(0);
         if lists.len() <= index {
-            lists.resize_with(index + 1, Vec::new);
+            lists.resize_with(index + 1, || Arc::from([]));
         }
-        let Some(list) = lists.get_mut(index) else {
+        let Some(slot) = lists.get_mut(index) else {
             return status::ERROR;
         };
+        let mut list = slot.to_vec();
         // After every subscriber with a lower or equal priority, and among equal priorities
         // after earlier plugins.
         let at = list
@@ -71,22 +122,37 @@ impl Events {
             Subscriber {
                 plugin,
                 priority,
+                flags,
                 callback,
                 user: SendPtr(user),
             },
         );
+        *slot = list.into();
         self.set_mask(index);
         status::OK
     }
 
     /// Removes a plugin's subscriptions (failed load, development reload).
     pub(crate) fn remove_plugin(&self, _inner: &Inner, plugin: u32) {
+        self.remove(plugin, None);
+    }
+
+    /// Removes a plugin's subscriptions of one kind, or of all (`None`).
+    pub(crate) fn remove(&self, plugin: u32, only: Option<u32>) {
         let mut lists = self.lists.write().unwrap_or_else(PoisonError::into_inner);
         for m in &self.mask {
             m.store(0, Ordering::Relaxed);
         }
         for (kind, list) in lists.iter_mut().enumerate() {
-            list.retain(|s| s.plugin != plugin);
+            if only.is_none_or(|k| usize::try_from(k).ok() == Some(kind))
+                && list.iter().any(|s| s.plugin == plugin)
+            {
+                *list = list
+                    .iter()
+                    .filter(|s| s.plugin != plugin)
+                    .cloned()
+                    .collect();
+            }
             if !list.is_empty() {
                 self.set_mask(kind);
             }
@@ -100,24 +166,44 @@ impl Inner {
     fn dispatch(
         &self,
         kind: u32,
-        mut world: Option<&mut dyn WorldAccess>,
+        world: Option<&mut dyn WorldAccess>,
         header: *mut abi::EventHeader,
     ) {
-        let lists = self
+        self.dispatch_except(kind, world, header, None);
+    }
+
+    /// [`Inner::dispatch`] without the handlers of one plugin (the one firing a plugin
+    /// event: it is in a call already, and plugins are never re-entered).
+    fn dispatch_except(
+        &self,
+        kind: u32,
+        mut world: Option<&mut dyn WorldAccess>,
+        header: *mut abi::EventHeader,
+        except: Option<u32>,
+    ) {
+        let list = self
             .events
             .lists
             .read()
-            .unwrap_or_else(PoisonError::into_inner);
-        let Some(list) = lists.get(usize::try_from(kind).unwrap_or(usize::MAX)) else {
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(usize::try_from(kind).unwrap_or(usize::MAX))
+            .cloned();
+        let Some(list) = list else {
             return;
         };
-        for subscriber in list {
+        for subscriber in list.iter() {
+            if Some(subscriber.plugin) == except {
+                continue;
+            }
             let Some(plugin) = self.plugin(subscriber.plugin) else {
                 continue;
             };
             let monitor = subscriber.priority >= abi::priority::MONITOR;
             // SAFETY: `header` points to the live record of this dispatch.
             let cancelled = unsafe { (*header).cancelled };
+            if cancelled != 0 && subscriber.flags & abi::subscribe_flag::IGNORE_CANCELLED != 0 {
+                continue;
+            }
             let mut ctx = CallCtx::new(crate::api::reborrow(&mut world), &plugin);
             plugin.call("an event handler", || {
                 // SAFETY: the plugin's handler and user data live as long as its library; the
@@ -156,12 +242,20 @@ macro_rules! fire {
 }
 
 impl PluginHost {
-    /// A player joined; `world` is its world, borrowed by its owner.
-    pub fn player_join(&self, world: &mut dyn WorldAccess, player: u128, name: &str) {
+    /// A player joined; `world` is its world, borrowed by its owner, and `message` the join
+    /// message as JSON. Returns the message a plugin put in its place.
+    pub fn player_join(
+        &self,
+        world: &mut dyn WorldAccess,
+        player: u128,
+        name: &str,
+        message: &str,
+    ) -> Option<NewText> {
         if !self.wants(abi::event::PLAYER_JOIN) {
-            return;
+            return None;
         }
         let id = world.id();
+        let slot = TextSlot::new();
         fire!(
             self,
             abi::event::PLAYER_JOIN,
@@ -170,15 +264,26 @@ impl PluginHost {
                 player: abi::Uuid::from_u128(player),
                 name: abi::Str::new(name),
                 world: id,
+                message: abi::Str::new(message),
+                message_out: &slot.record,
             }
         );
+        slot.take()
     }
 
-    /// A player left.
-    pub fn player_leave(&self, world: u32, player: u128, name: &str) {
+    /// A player left; `message` is the leave message as JSON. Returns the message a plugin
+    /// put in its place.
+    pub fn player_leave(
+        &self,
+        world: u32,
+        player: u128,
+        name: &str,
+        message: &str,
+    ) -> Option<NewText> {
         if !self.wants(abi::event::PLAYER_LEAVE) {
-            return;
+            return None;
         }
+        let slot = TextSlot::new();
         fire!(
             self,
             abi::event::PLAYER_LEAVE,
@@ -187,6 +292,56 @@ impl PluginHost {
                 player: abi::Uuid::from_u128(player),
                 name: abi::Str::new(name),
                 world,
+                message: abi::Str::new(message),
+                message_out: &slot.record,
+            }
+        );
+        slot.take()
+    }
+
+    /// Whether a plugin registered a plugin message channel (check before copying a payload).
+    pub fn wants_channel(&self, channel: &str) -> bool {
+        self.wants(abi::event::PLAYER_PLUGIN_MESSAGE)
+            && self
+                .inner
+                .channels
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .any(|(_, c)| c == channel)
+    }
+
+    /// A player sent a plugin message on a registered channel.
+    pub fn plugin_message(&self, world: u32, player: u128, channel: &str, data: &[u8]) {
+        if !self.wants_channel(channel) {
+            return;
+        }
+        fire!(
+            self,
+            abi::event::PLAYER_PLUGIN_MESSAGE,
+            None,
+            PluginMessageEvent {
+                world,
+                player: abi::Uuid::from_u128(player),
+                channel: abi::Str::new(channel),
+                data: abi::Bytes::new(data),
+            }
+        );
+    }
+
+    /// A player completed an advancement.
+    pub fn advancement_done(&self, world: u32, player: u128, advancement: &str) {
+        if !self.wants(abi::event::PLAYER_ADVANCEMENT_DONE) {
+            return;
+        }
+        fire!(
+            self,
+            abi::event::PLAYER_ADVANCEMENT_DONE,
+            None,
+            AdvancementEvent {
+                world,
+                player: abi::Uuid::from_u128(player),
+                advancement: abi::Str::new(advancement),
             }
         );
     }
@@ -616,5 +771,74 @@ impl PluginHost {
             }
         );
         event.header.cancelled == 0
+    }
+}
+
+impl Inner {
+    /// Fires a plugin event of a registered kind; returns whether it ended cancelled.
+    pub(crate) fn fire_custom(
+        &self,
+        kind: u32,
+        source: (u32, &str),
+        data: &[u8],
+        world: Option<&mut dyn WorldAccess>,
+        cancelled: bool,
+    ) -> Result<bool, Status> {
+        let name = self
+            .events
+            .custom_name(kind)
+            .ok_or(status::INVALID_ARGUMENT)?;
+        if !self.events.wants(kind) {
+            return Ok(false);
+        }
+        let mut event = abi::CustomEvent {
+            header: abi::EventHeader {
+                cancelled: u32::from(cancelled),
+                ..header::<abi::CustomEvent>(kind)
+            },
+            name: abi::Str::new(&name),
+            source: abi::Str::new(source.1),
+            data: abi::Bytes::new(data),
+        };
+        let except = (source.0 != u32::MAX).then_some(source.0);
+        self.dispatch_except(kind, world, std::ptr::from_mut(&mut event).cast(), except);
+        Ok(event.header.cancelled != 0)
+    }
+}
+
+impl PluginHost {
+    /// Fires a plugin event by name to the plugins' handlers (`source` names the firing
+    /// side, e.g. a bridge to other plugin APIs); returns whether it ended cancelled, `None`
+    /// when no plugin registered the name.
+    pub fn fire_event(
+        &self,
+        name: &str,
+        source: &str,
+        data: &[u8],
+        cancelled: bool,
+    ) -> Option<bool> {
+        let kind = self.inner.events.custom_kind_of(name)?;
+        self.inner
+            .fire_custom(kind, (u32::MAX, source), data, None, cancelled)
+            .ok()
+    }
+
+    /// The newest service table offered under a name, with its version (for bridges to other
+    /// plugin APIs).
+    pub fn service(&self, name: &str) -> Option<(u32, *const std::ffi::c_void)> {
+        self.inner
+            .services
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .rev()
+            .find(|s| {
+                s.name == name
+                    && self
+                        .inner
+                        .plugin(s.plugin)
+                        .is_some_and(|p| p.enabled.load(std::sync::atomic::Ordering::Acquire))
+            })
+            .map(|s| (s.version, s.table.0.cast_const()))
     }
 }

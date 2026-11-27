@@ -358,6 +358,9 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
         let Some(a) = set.get(index) else {
             continue;
         };
+        global
+            .plugins
+            .advancement_done(u32::from(env.world.0), uuid, &a.id);
         let rewards = &a.rewards;
         crate::commands::add_experience(env.level, id, rewards.experience, false);
         give_loot(env, id, &rewards.loot);

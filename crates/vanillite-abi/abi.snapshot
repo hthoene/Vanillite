@@ -1,4 +1,4 @@
-abi 1.4
+abi 1.5
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -54,6 +54,9 @@ const event::PLAYER_RESPAWN: u32 = 15
 const event::PLAYER_CHANGE_WORLD: u32 = 16
 const event::PLAYER_GAME_MODE_CHANGE: u32 = 17
 const event::PLAYER_INTERACT: u32 = 18
+const event::PLAYER_PLUGIN_MESSAGE: u32 = 19
+const event::PLAYER_ADVANCEMENT_DONE: u32 = 20
+const subscribe_flag::IGNORE_CANCELLED: u32 = 1
 const priority::LOWEST: i32 = -200
 const priority::LOW: i32 = -100
 const priority::NORMAL: i32 = 0
@@ -78,8 +81,22 @@ const arg::GREEDY_STRING: u32 = 7
 const arg::PLAYER: u32 = 8
 const arg::PLAYERS: u32 = 9
 const arg::BLOCK_POS: u32 = 10
+const arg::ENTITY: u32 = 11
+const arg::ENTITIES: u32 = 12
+const arg::VEC3: u32 = 13
+const arg::ROTATION: u32 = 14
+const arg::IDENTIFIER: u32 = 15
+const arg::BLOCK_STATE: u32 = 16
+const arg::ITEM_STACK: u32 = 17
+const arg::COMPONENT: u32 = 18
+const arg::NBT_COMPOUND: u32 = 19
+const arg::GAME_MODE: u32 = 20
+const arg::TIME: u32 = 21
+const arg::UUID: u32 = 22
 const sender::CONSOLE: u32 = 0
 const sender::PLAYER: u32 = 1
+const sender::COMMAND_BLOCK: u32 = 2
+const sender::ENTITY: u32 = 3
 const permission::DENY: u32 = 0
 const permission::ALLOW: u32 = 1
 const permission::UNDEFINED: u32 = 2
@@ -87,6 +104,11 @@ const limits::ROOT: u32 = 4294967295
 const limits::NO_WORLD: u32 = 4294967295
 const limits::NO_BLOCK: u32 = 4294967295
 const limits::MAX_BOX_VOLUME: u32 = 16777216
+const limits::FIRST_CUSTOM_EVENT: u32 = 192
+const limits::LAST_CUSTOM_EVENT: u32 = 255
+const limits::MAX_PLUGIN_MESSAGE: u32 = 32767
+const limits::MAX_CHANNELS: u32 = 128
+const limits::MAX_SNBT: u32 = 2097152
 const login_reason::ALLOWED: u32 = 0
 const login_reason::BANNED: u32 = 1
 const login_reason::NOT_WHITELISTED: u32 = 2
@@ -113,6 +135,70 @@ const data_type::LONG_ARRAY: u32 = 12
 const data_limits::MAX_VALUE: u32 = 65536
 const data_limits::MAX_KEYS: u32 = 256
 const data_limits::MAX_KEY: u32 = 256
+const sound_source::MASTER: u32 = 0
+const sound_source::MUSIC: u32 = 1
+const sound_source::RECORD: u32 = 2
+const sound_source::WEATHER: u32 = 3
+const sound_source::BLOCK: u32 = 4
+const sound_source::HOSTILE: u32 = 5
+const sound_source::NEUTRAL: u32 = 6
+const sound_source::PLAYER: u32 = 7
+const sound_source::AMBIENT: u32 = 8
+const sound_source::VOICE: u32 = 9
+const sound_source::UI: u32 = 10
+const sound_source::ANY: u32 = 4294967295
+const player_prop::HEALTH: u32 = 1
+const player_prop::MAX_HEALTH: u32 = 2
+const player_prop::FOOD: u32 = 3
+const player_prop::SATURATION: u32 = 4
+const player_prop::EXHAUSTION: u32 = 5
+const player_prop::XP_LEVEL: u32 = 6
+const player_prop::XP_PROGRESS: u32 = 7
+const player_prop::XP_TOTAL: u32 = 8
+const player_prop::GAME_MODE: u32 = 9
+const player_prop::FLYING: u32 = 10
+const player_prop::MAY_FLY: u32 = 11
+const player_prop::FLY_SPEED: u32 = 12
+const player_prop::WALK_SPEED: u32 = 13
+const player_prop::SELECTED_SLOT: u32 = 14
+const player_prop::AIR: u32 = 15
+const player_prop::FIRE_TICKS: u32 = 16
+const effect_flag::AMBIENT: u32 = 1
+const effect_flag::HIDE_PARTICLES: u32 = 2
+const effect_flag::HIDE_ICON: u32 = 4
+const display_slot::LIST: u32 = 0
+const display_slot::SIDEBAR: u32 = 1
+const display_slot::BELOW_NAME: u32 = 2
+const display_slot::SIDEBAR_TEAM_BLACK: u32 = 3
+const bossbar_prop::VALUE: u32 = 0
+const bossbar_prop::MAX: u32 = 1
+const bossbar_prop::COLOR: u32 = 2
+const bossbar_prop::STYLE: u32 = 3
+const bossbar_prop::VISIBLE: u32 = 4
+const bossbar_color::PINK: u32 = 0
+const bossbar_color::BLUE: u32 = 1
+const bossbar_color::RED: u32 = 2
+const bossbar_color::GREEN: u32 = 3
+const bossbar_color::YELLOW: u32 = 4
+const bossbar_color::PURPLE: u32 = 5
+const bossbar_color::WHITE: u32 = 6
+const bossbar_style::PROGRESS: u32 = 0
+const bossbar_style::NOTCHED_6: u32 = 1
+const bossbar_style::NOTCHED_10: u32 = 2
+const bossbar_style::NOTCHED_12: u32 = 3
+const bossbar_style::NOTCHED_20: u32 = 4
+const access_list::OPERATOR: u32 = 0
+const access_list::WHITELIST: u32 = 1
+const access_list::BAN: u32 = 2
+const access_list::IP_BAN: u32 = 3
+const access_list::WHITELIST_ON: u32 = 4
+const permission_default::FALSE: u32 = 0
+const permission_default::TRUE: u32 = 1
+const permission_default::OP: u32 = 2
+const permission_default::NOT_OP: u32 = 3
+const weather::CLEAR: u32 = 0
+const weather::RAIN: u32 = 1
+const weather::THUNDER: u32 = 2
 const set_mode::UPDATE: u32 = 0
 const set_mode::NO_PHYSICS: u32 = 1
 struct Str size=16 align=8
@@ -160,11 +246,13 @@ struct EventHeader size=12 align=4
   size: u32 @0
   kind: u32 @4
   cancelled: u32 @8
-struct PlayerEvent size=56 align=8
+struct PlayerEvent size=80 align=8
   header: EventHeader @0
   player: Uuid @16
   name: Str @32
   world: u32 @48
+  message: Str @56
+  message_out: *constTextOut @72
 struct PlayerTextEvent size=64 align=8
   header: EventHeader @0
   player: Uuid @16
@@ -251,6 +339,57 @@ struct TitleSpec size=56 align=8
   fade_in: i32 @44
   stay: i32 @48
   fade_out: i32 @52
+struct PluginMessageEvent size=64 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  channel: Str @32
+  data: Bytes @48
+struct AdvancementEvent size=48 align=8
+  header: EventHeader @0
+  world: u32 @12
+  player: Uuid @16
+  advancement: Str @32
+struct CustomEvent size=64 align=8
+  header: EventHeader @0
+  name: Str @16
+  source: Str @32
+  data: Bytes @48
+struct SoundSpec size=72 align=8
+  size: u32 @0
+  sound: Str @8
+  source: u32 @24
+  pos: Vec3 @32
+  volume: f32 @56
+  pitch: f32 @60
+  seed: i64 @64
+struct ParticleSpec size=88 align=8
+  size: u32 @0
+  particle: Str @8
+  pos: Vec3 @24
+  delta: Vec3 @48
+  speed: f32 @72
+  count: i32 @76
+  force: u32 @80
+struct PlayerInfo size=20 align=4
+  size: u32 @0
+  world: u32 @4
+  game_mode: u32 @8
+  op_level: u32 @12
+  ping: i32 @16
+struct ServerStats size=48 align=8
+  size: u32 @0
+  tick: u64 @8
+  mspt: f64 @16
+  tps: f64 @24
+  tick_rate: f64 @32
+  online: u32 @40
+  max_players: u32 @44
+struct Location size=40 align=8
+  world: u32 @0
+  pos: Vec3 @8
+  yaw: f32 @32
+  pitch: f32 @36
 struct Owner size=40 align=8
   kind: u32 @0
   world: u32 @4
@@ -290,7 +429,7 @@ struct Sender size=56 align=8
   player: Uuid @8
   world: u32 @24
   pos: Vec3 @32
-struct CommandArg size=88 align=8
+struct CommandArg size=112 align=8
   name: Str @0
   kind: u32 @16
   int: i64 @24
@@ -299,6 +438,7 @@ struct CommandArg size=88 align=8
   pos: BlockPos @56
   players: *constUuid @72
   player_count: usize @80
+  vec: Vec3 @88
 struct CommandInvocation size=104 align=8
   size: u32 @0
   command: u32 @4
@@ -337,7 +477,7 @@ struct ChunkGeneratorProvider size=40 align=8
   create: GeneratorCreateFn @16
   generate: GeneratorRunFn @24
   destroy: GeneratorDestroyFn @32
-struct HostApi size=328 align=8
+struct HostApi size=856 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -381,3 +521,69 @@ struct HostApi size=328 align=8
   entity_data_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,u32,Bytes)->Status @304
   entity_data_remove: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @312
   entity_data_keys: unsafeextern"C"fn(*mutContext,u32,Uuid,*constByteSink)->Status @320
+  subscribe_flags: unsafeextern"C"fn(PluginId,u32,i32,u32,EventFn,*mutc_void)->Status @328
+  unsubscribe: unsafeextern"C"fn(PluginId,u32)->Status @336
+  event_register: unsafeextern"C"fn(PluginId,Str,*mutu32)->Status @344
+  event_fire: unsafeextern"C"fn(PluginId,*mutContext,u32,Bytes,*mutu32)->Status @352
+  service_register: unsafeextern"C"fn(PluginId,Str,u32,*constc_void)->Status @360
+  service_unregister: unsafeextern"C"fn(PluginId,Str)->Status @368
+  service_get: unsafeextern"C"fn(PluginId,Str,*mutu32,*mut*constc_void)->Status @376
+  plugin_list: unsafeextern"C"fn(PluginId,*constByteSink)->Status @384
+  config_set: unsafeextern"C"fn(PluginId,Str,Str)->Status @392
+  config_save: unsafeextern"C"fn(PluginId)->Status @400
+  config_toml: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @408
+  permission_register: unsafeextern"C"fn(PluginId,Str,u32)->Status @416
+  player_info: unsafeextern"C"fn(PluginId,Uuid,*mutPlayerInfo)->Status @424
+  player_address: unsafeextern"C"fn(PluginId,Uuid,*mutStrBuf)->Status @432
+  player_play_sound: unsafeextern"C"fn(PluginId,Uuid,*constSoundSpec)->Status @440
+  player_stop_sound: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @448
+  player_spawn_particle: unsafeextern"C"fn(PluginId,Uuid,*constParticleSpec)->Status @456
+  player_transfer: unsafeextern"C"fn(PluginId,Uuid,Str,u32)->Status @464
+  register_channel: unsafeextern"C"fn(PluginId,Str)->Status @472
+  player_send_plugin_message: unsafeextern"C"fn(PluginId,Uuid,Str,Bytes)->Status @480
+  objective_add: unsafeextern"C"fn(PluginId,Str,Str,Str,u32)->Status @488
+  objective_remove: unsafeextern"C"fn(PluginId,Str)->Status @496
+  objective_display: unsafeextern"C"fn(PluginId,u32,Str)->Status @504
+  score_get: unsafeextern"C"fn(PluginId,Str,Str,*muti32)->Status @512
+  score_set: unsafeextern"C"fn(PluginId,Str,Str,i32)->Status @520
+  score_reset: unsafeextern"C"fn(PluginId,Str,Str)->Status @528
+  team_add: unsafeextern"C"fn(PluginId,Str)->Status @536
+  team_remove: unsafeextern"C"fn(PluginId,Str)->Status @544
+  team_join: unsafeextern"C"fn(PluginId,Str,Str)->Status @552
+  team_leave: unsafeextern"C"fn(PluginId,Str)->Status @560
+  team_modify: unsafeextern"C"fn(PluginId,Str,Str,Str)->Status @568
+  team_of: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @576
+  bossbar_create: unsafeextern"C"fn(PluginId,Str,Str,u32)->Status @584
+  bossbar_remove: unsafeextern"C"fn(PluginId,Str)->Status @592
+  bossbar_set: unsafeextern"C"fn(PluginId,Str,u32,i64)->Status @600
+  bossbar_set_name: unsafeextern"C"fn(PluginId,Str,Str,u32)->Status @608
+  bossbar_player: unsafeextern"C"fn(PluginId,Str,Uuid,u32)->Status @616
+  server_stats: unsafeextern"C"fn(PluginId,*mutServerStats)->Status @624
+  server_set_motd: unsafeextern"C"fn(PluginId,Str,u32)->Status @632
+  access_set: unsafeextern"C"fn(PluginId,u32,Uuid,Str,u32,Str)->Status @640
+  access_get: unsafeextern"C"fn(PluginId,u32,Uuid,Str,*mutu32)->Status @648
+  world_time: unsafeextern"C"fn(PluginId,u32,*muti64)->Status @656
+  world_set_time: unsafeextern"C"fn(PluginId,u32,i64)->Status @664
+  world_set_weather: unsafeextern"C"fn(PluginId,u32,i32)->Status @672
+  game_rule_get: unsafeextern"C"fn(PluginId,Str,*mutStrBuf)->Status @680
+  game_rule_set: unsafeextern"C"fn(PluginId,Str,Str)->Status @688
+  player_get: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,*mutf64)->Status @696
+  player_set: unsafeextern"C"fn(*mutContext,u32,Uuid,u32,f64)->Status @704
+  entity_location: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutLocation)->Status @712
+  entity_type: unsafeextern"C"fn(*mutContext,u32,Uuid,*mutStrBuf)->Status @720
+  entity_teleport: unsafeextern"C"fn(*mutContext,u32,Uuid,*constLocation)->Status @728
+  entity_set_velocity: unsafeextern"C"fn(*mutContext,u32,Uuid,Vec3)->Status @736
+  entity_spawn: unsafeextern"C"fn(*mutContext,u32,Str,Vec3,Str,*mutUuid)->Status @744
+  entity_remove: unsafeextern"C"fn(*mutContext,u32,Uuid)->Status @752
+  entities_near: unsafeextern"C"fn(*mutContext,u32,Vec3,f64,Str,*mutUuid,usize,*mutusize,)->Status @760
+  entity_nbt: unsafeextern"C"fn(*mutContext,u32,Uuid,*constByteSink)->Status @768
+  entity_nbt_merge: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @776
+  entity_effect_add: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,i32,i32,u32)->Status @784
+  entity_effect_remove: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @792
+  player_give: unsafeextern"C"fn(*mutContext,u32,Uuid,Str)->Status @800
+  entity_item_get: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*constByteSink)->Status @808
+  entity_item_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,Str)->Status @816
+  block_entity_nbt: unsafeextern"C"fn(*mutContext,u32,BlockPos,*constByteSink)->Status @824
+  block_entity_merge: unsafeextern"C"fn(*mutContext,u32,BlockPos,Str)->Status @832
+  advancement_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,Str,u32)->Status @840
+  advancement_done: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*mutu32)->Status @848

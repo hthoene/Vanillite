@@ -577,11 +577,14 @@ impl WorldPlayers {
         for (_, packet) in bars {
             sink.send_shared(&packet);
         }
-        global.players.broadcast_system(
-            join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
-            false,
-            None,
-        );
+        // With join listeners the message goes out after them (they may change it).
+        if !global.plugins.wants(vanillite_abi::event::PLAYER_JOIN) {
+            global.players.broadcast_system(
+                join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
+                false,
+                None,
+            );
+        }
         let connection = &mut player.connection;
         connection
             .movement
@@ -1301,18 +1304,21 @@ impl WorldPlayers {
         entities.despawn(id);
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
-        global.players.broadcast_system(
-            join::left_message(crate::scoreboard::display_name(global, &name, uuid)),
-            false,
-            Some(Uuid(uuid)),
-        );
-        self.left.push(uuid);
+        let message = join::left_message(crate::scoreboard::display_name(global, &name, uuid));
         let world = crate::server::DIMENSIONS
             .iter()
             .position(|d| *d == self.level.dimension.as_str())
             .and_then(|i| u32::try_from(i).ok())
             .unwrap_or(0);
-        global.plugins.player_leave(world, uuid, &name);
+        let message = crate::plugins::player_message(global, message, |json| {
+            global.plugins.player_leave(world, uuid, &name, json)
+        });
+        if let Some(message) = message {
+            global
+                .players
+                .broadcast_system(message, false, Some(Uuid(uuid)));
+        }
+        self.left.push(uuid);
     }
 
     /// `saveEnderPearls` and the removal of a leaving player's ender pearls: those of this

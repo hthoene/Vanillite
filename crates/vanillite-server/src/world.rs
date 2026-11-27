@@ -461,7 +461,22 @@ impl ServerWorld {
         let pearls = self.players.take_saved_pearls(uuid, saved_pearls.as_ref());
         self.load_pearls(global, pearls);
         let plugins = global.plugins.clone();
-        plugins.player_join(&mut crate::plugins::PluginWorld(self), uuid, &name);
+        if plugins.wants(vanillite_abi::event::PLAYER_JOIN) {
+            let message = vanillite_game::player::join::joined_message(
+                crate::scoreboard::display_name(global, &name, uuid),
+            );
+            let message = crate::plugins::player_message(global, message, |json| {
+                plugins.player_join(
+                    &mut crate::plugins::PluginWorld(self, global),
+                    uuid,
+                    &name,
+                    json,
+                )
+            });
+            if let Some(message) = message {
+                global.players.broadcast_system(message, false, None);
+            }
+        }
     }
 
     /// The UUIDs and positions of this world's players.
@@ -565,9 +580,9 @@ impl ServerWorld {
                     (*from != to).then_some((uuid, *from, to))
                 })
                 .collect();
-            plugins.players_moved(&mut crate::plugins::PluginWorld(self), &moves);
+            plugins.players_moved(&mut crate::plugins::PluginWorld(self, ctx.global), &moves);
         }
-        plugins.run_world_tasks(&mut crate::plugins::PluginWorld(self), ctx.tick);
+        plugins.run_world_tasks(&mut crate::plugins::PluginWorld(self, ctx.global), ctx.tick);
         self.survival.moves(
             &mut self.level.entities,
             &self.level.chunks,

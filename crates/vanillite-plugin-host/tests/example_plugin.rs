@@ -2,7 +2,10 @@
 //! the C ABI: validation and `load`, its command in a Brigadier tree with suggestions, the join
 //! event with persistent data and the action bar, login, interaction and death events, a
 //! periodic background task, the `chunk-generator` slot and a development reload that keeps its
-//! state.
+//! state. ABI 1.5: the join message, scoreboard, boss bar, sound, particles and MOTD, player
+//! properties, effects, items and entity spawning from tasks, `Vec3` arguments, plugin
+//! messages, advancements, plugin events with `ignore_cancelled`, services, permission
+//! defaults and saving the config.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,8 +20,9 @@ use vanillite_command::Dispatcher;
 use vanillite_data::block::BlockId;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_plugin_host::{
-    Arg, ArgValue, BlockBox, InteractTarget, NewText, PluginHost, Sender, ServerAccess, SetMode,
-    Settings, Text, WorldAccess, loader,
+    Arg, ArgValue, BlockBox, BossBarOp, InteractTarget, Location, NewText, Particles, PluginHost,
+    ScoreReply, ScoreboardOp, Sender, ServerAccess, SetMode, Settings, Sound, Text, WorldAccess,
+    loader,
 };
 
 const PLAYER: u128 = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
@@ -28,9 +32,59 @@ struct FakeServer {
     messages: Mutex<Vec<(u128, String)>>,
     action_bars: Mutex<Vec<String>>,
     online_calls: AtomicUsize,
+    /// Everything else the plugin did, as debug text.
+    calls: Mutex<Vec<String>>,
+}
+
+impl FakeServer {
+    fn record(&self, call: String) {
+        self.calls.lock().unwrap().push(call);
+    }
+
+    fn called(&self, prefix: &str) -> Vec<String> {
+        let calls = self.calls.lock().unwrap();
+        calls
+            .iter()
+            .filter(|c| c.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
 }
 
 impl ServerAccess for FakeServer {
+    fn play_sound(&self, _: u128, sound: &Sound<'_>) -> bool {
+        self.record(format!("sound {}", sound.sound));
+        true
+    }
+    fn spawn_particle(&self, _: u128, particles: &Particles<'_>) -> Result<(), i32> {
+        self.record(format!(
+            "particle {} {}",
+            particles.particle, particles.count
+        ));
+        Ok(())
+    }
+    fn send_plugin_message(&self, _: u128, channel: &str, data: &[u8]) -> bool {
+        self.record(format!(
+            "message {channel} {}",
+            String::from_utf8_lossy(data)
+        ));
+        true
+    }
+    fn scoreboard(&self, op: ScoreboardOp<'_>) -> Result<ScoreReply, i32> {
+        self.record(format!("scoreboard {op:?}"));
+        match op {
+            ScoreboardOp::GetScore { .. } => Err(vanillite_abi::status::NOT_FOUND),
+            _ => Ok(ScoreReply::Done),
+        }
+    }
+    fn boss_bar(&self, op: BossBarOp<'_>) -> Result<(), i32> {
+        self.record(format!("bossbar {op:?}"));
+        Ok(())
+    }
+    fn set_motd(&self, motd: Text<'_>) -> bool {
+        self.record(format!("motd {motd:?}"));
+        true
+    }
     fn online_players(&self) -> Vec<u128> {
         self.online_calls.fetch_add(1, Ordering::Relaxed);
         vec![PLAYER]
@@ -88,10 +142,11 @@ impl ServerAccess for FakeServer {
     }
 }
 
-/// A world holding the player's persistent data.
+/// A world holding the player's persistent data, recording what plugins change.
 #[derive(Default)]
 struct FakeWorld {
     data: Compound,
+    changes: Vec<String>,
 }
 
 impl WorldAccess for FakeWorld {
@@ -104,8 +159,47 @@ impl WorldAccess for FakeWorld {
     fn set_block(&mut self, _: [i32; 3], _: &str) -> Result<(), i32> {
         Ok(())
     }
-    fn player_position(&self, _: u128) -> Option<[f64; 3]> {
-        None
+    fn player_position(&self, player: u128) -> Option<[f64; 3]> {
+        (player == PLAYER).then_some([1.0, 64.0, 2.0])
+    }
+    fn entity_location(&self, entity: u128) -> Result<Location, i32> {
+        if entity != PLAYER {
+            return Err(vanillite_abi::status::NOT_FOUND);
+        }
+        Ok(Location {
+            world: 0,
+            pos: [1.0, 64.0, 2.0],
+            yaw: 0.0,
+            pitch: 0.0,
+        })
+    }
+    fn player_set(&mut self, _: u128, prop: u32, value: f64) -> Result<(), i32> {
+        self.changes.push(format!("prop {prop} {value}"));
+        Ok(())
+    }
+    fn add_effect(
+        &mut self,
+        _: u128,
+        effect: &str,
+        duration: i32,
+        _: i32,
+        _: u32,
+    ) -> Result<(), i32> {
+        self.changes.push(format!("effect {effect} {duration}"));
+        Ok(())
+    }
+    fn give_item(&mut self, _: u128, item: &Compound) -> Result<(), i32> {
+        self.changes.push(format!(
+            "give {}",
+            vanillite_nbt::snbt::to_string(&Tag::Compound(item.clone()))
+        ));
+        Ok(())
+    }
+    fn spawn_entity(&mut self, kind: &str, pos: [f64; 3], nbt: &Compound) -> Result<u128, i32> {
+        let glowing = nbt.get("Glowing").is_some();
+        self.changes
+            .push(format!("spawn {kind} {pos:?} glowing={glowing}"));
+        Ok(42)
     }
     fn has_entity(&self, entity: u128) -> bool {
         entity == PLAYER
@@ -236,9 +330,47 @@ fn example_plugin_runs_through_the_abi() {
     let (name_command, provider) = (name_node.command.unwrap(), name_node.suggests.unwrap());
 
     host.enable_all();
+    // Enabling creates the objective (shown in the player list), the boss bar and the MOTD.
+    assert_eq!(
+        server.called("scoreboard"),
+        [
+            "scoreboard GetScore { objective: \"hello_joins\", holder: \"#check\" }",
+            "scoreboard AddObjective { name: \"hello_joins\", criteria: \"dummy\", display: Json(\"{\\\"text\\\":\\\"Joins\\\",\\\"color\\\":\\\"gold\\\"}\") }",
+            "scoreboard Display { slot: 0, objective: Some(\"hello_joins\") }",
+        ]
+    );
+    assert_eq!(
+        server.called("bossbar").len(),
+        2,
+        "{:?}",
+        server.called("bossbar")
+    );
+    assert!(server.called("bossbar")[0].contains("hello:welcome"));
+    assert_eq!(
+        server.called("motd"),
+        ["motd Plain(\"A Vanillite server with Hello\")"]
+    );
     let mut overworld = FakeWorld::default();
-    host.player_join(&mut overworld, PLAYER, "Alex");
+    let joined = host.player_join(&mut overworld, PLAYER, "Alex", "\"Alex joined the game\"");
+    assert!(
+        matches!(&joined, Some(NewText::Json(m)) if m.contains("Alex joined the fun")),
+        "{joined:?}"
+    );
+    assert!(
+        server
+            .called("scoreboard SetScore")
+            .first()
+            .is_some_and(|c| c.contains("value: 1")),
+        "{:?}",
+        server.called("scoreboard")
+    );
+    assert!(server.called("bossbar Player").len() == 1);
+    assert_eq!(
+        server.called("sound"),
+        ["sound minecraft:entity.player.levelup"]
+    );
     let sender = Sender {
+        kind: vanillite_abi::sender::CONSOLE,
         player: Some(PLAYER),
         world: Some(0),
         pos: [0.0; 3],
@@ -271,7 +403,7 @@ fn example_plugin_runs_through_the_abi() {
     assert!(messages[2].contains("Hello, Steve!"), "{messages:?}");
 
     // Persistent data: the join counter under the plugin's namespace, and the action bar.
-    host.player_join(&mut overworld, PLAYER, "Alex");
+    host.player_join(&mut overworld, PLAYER, "Alex", "");
     assert_eq!(overworld.data.get("hello:joins"), Some(&Tag::Int(2)));
     assert_eq!(
         *server.action_bars.lock().unwrap(),
@@ -321,6 +453,84 @@ fn example_plugin_runs_through_the_abi() {
         "{death:?}"
     );
 
+    // `/hello treat` and `/hello pig <pos>` change the world from tasks on its owner.
+    let treat = dispatcher.child(hello, "treat").unwrap();
+    let treat = dispatcher.node(treat).unwrap().command.unwrap();
+    assert_eq!(
+        host.execute_command(treat, &sender, "hello treat", &[], None),
+        Some(1)
+    );
+    let pig = dispatcher.child(hello, "pig").unwrap();
+    let pos = dispatcher.child(pig, "pos").unwrap();
+    let pig = dispatcher.node(pos).unwrap().command.unwrap();
+    let at = [Arg {
+        name: "pos".into(),
+        value: ArgValue::Vec3([3.5, 65.0, 4.5]),
+    }];
+    assert_eq!(
+        host.execute_command(pig, &sender, "hello pig 3.5 65 4.5", &at, None),
+        Some(1)
+    );
+    host.run_world_tasks(&mut overworld, 0);
+    let food = vanillite_abi::player_prop::FOOD;
+    let saturation = vanillite_abi::player_prop::SATURATION;
+    assert_eq!(
+        overworld.changes,
+        [
+            format!("prop {food} 20"),
+            format!("prop {saturation} 5"),
+            "effect minecraft:speed 200".to_owned(),
+            "give {id:\"minecraft:cookie\",count:1}".to_owned(),
+            "spawn minecraft:pig [3.5, 65.0, 4.5] glowing=true".to_owned(),
+        ]
+    );
+    assert_eq!(server.called("particle"), ["particle minecraft:heart 5"]);
+
+    // Plugin messages on the registered channel are answered; others do not reach it.
+    host.plugin_message(0, PLAYER, "hello:ping", b"abc");
+    host.plugin_message(0, PLAYER, "other:ping", b"abc");
+    assert_eq!(server.called("message"), ["message hello:pong abc"]);
+
+    // Advancements and another plugin's event (skipped while cancelled).
+    host.advancement_done(0, PLAYER, "minecraft:story/root");
+    assert_eq!(
+        host.fire_event("economy:payment", "economy", b"5 coins", false),
+        Some(false)
+    );
+    assert_eq!(
+        host.fire_event("economy:payment", "economy", b"6 coins", true),
+        Some(true)
+    );
+    assert_eq!(
+        host.fire_event("nobody:listens", "economy", b"", false),
+        None
+    );
+    assert_eq!(
+        server.action_bars.lock().unwrap()[3..],
+        ["Well done: minecraft:story/root", "Payment: 5 coins"]
+    );
+
+    // The service other plugins call: two greetings so far.
+    #[repr(C)]
+    struct GreeterApi {
+        size: u32,
+        greetings: extern "C" fn() -> u64,
+    }
+    let (version, table) = host
+        .service("hello:greeter")
+        .expect("the example offers it");
+    assert_eq!(version, 1);
+    // SAFETY: the example documents this layout; its library stays loaded.
+    let greeter = unsafe { &*table.cast::<GreeterApi>() };
+    assert!(greeter.size as usize >= size_of::<GreeterApi>());
+    assert_eq!((greeter.greetings)(), 2);
+
+    // Permission defaults without a provider.
+    assert!(!host.has_permission(PLAYER, "hello.pad", false));
+    assert!(host.has_permission(PLAYER, "hello.pad", true));
+    assert!(host.has_permission(PLAYER, "hello.treat", false));
+    assert!(!host.has_permission(PLAYER, "other.node", false));
+
     // The periodic background task runs every 6000 ticks.
     let before = server.online_calls.load(Ordering::Relaxed);
     host.run_global_tasks(5999);
@@ -359,5 +569,8 @@ fn example_plugin_runs_through_the_abi() {
         Some(3)
     );
     host.disable_all();
+    // `disable` saved the greeting count into the config.
+    let saved = std::fs::read_to_string(package.join("config.toml")).unwrap();
+    assert!(saved.contains("greetings = 3"), "{saved}");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -5,7 +5,7 @@ use vanillite_abi as abi;
 use crate::ffi::str;
 use crate::types::{BlockPos, GameMode, Hand, Text, Uuid, Vec3, World};
 
-/// A player joined (after the join message) or left.
+/// A player joined or left. With join handlers the join message goes out after them.
 #[derive(Debug)]
 pub struct PlayerJoin<'a> {
     pub(crate) raw: &'a abi::PlayerEvent,
@@ -30,6 +30,115 @@ impl PlayerJoin<'_> {
     pub fn world(&self) -> World {
         World(self.raw.world)
     }
+
+    /// The join or leave message as a JSON text component. Since ABI 1.5.
+    pub fn message(&self) -> &str {
+        // SAFETY: the host's strings are valid for the call.
+        unsafe { str(self.raw.message) }
+    }
+
+    /// Replaces the join or leave message; an empty text shows none. Since ABI 1.5.
+    pub fn set_message(&self, message: impl Into<Text>) {
+        set_text(self.raw.message_out, &message.into());
+    }
+}
+
+/// A plugin message a player sent on a registered channel. Since ABI 1.5.
+#[derive(Debug)]
+pub struct PluginMessage<'a> {
+    pub(crate) raw: &'a abi::PluginMessageEvent,
+}
+
+impl PluginMessage<'_> {
+    /// The player.
+    pub fn player(&self) -> Uuid {
+        Uuid::from_abi(self.raw.player)
+    }
+
+    /// Its world.
+    pub fn world(&self) -> World {
+        World(self.raw.world)
+    }
+
+    /// The channel.
+    pub fn channel(&self) -> &str {
+        // SAFETY: the host's strings are valid for the call.
+        unsafe { str(self.raw.channel) }
+    }
+
+    /// The payload.
+    pub fn data(&self) -> &[u8] {
+        bytes(self.raw.data)
+    }
+}
+
+/// A player completed an advancement. Since ABI 1.5.
+#[derive(Debug)]
+pub struct AdvancementDone<'a> {
+    pub(crate) raw: &'a abi::AdvancementEvent,
+}
+
+impl AdvancementDone<'_> {
+    /// The player.
+    pub fn player(&self) -> Uuid {
+        Uuid::from_abi(self.raw.player)
+    }
+
+    /// Its world.
+    pub fn world(&self) -> World {
+        World(self.raw.world)
+    }
+
+    /// The advancement, e.g. `minecraft:story/mine_stone`.
+    pub fn advancement(&self) -> &str {
+        // SAFETY: the host's strings are valid for the call.
+        unsafe { str(self.raw.advancement) }
+    }
+}
+
+/// A plugin event ([`Server::fire_event`](crate::Server::fire_event)); cancellable. Since
+/// ABI 1.5.
+#[derive(Debug)]
+pub struct CustomEvent<'a> {
+    pub(crate) raw: &'a mut abi::CustomEvent,
+}
+
+impl CustomEvent<'_> {
+    /// The event's name.
+    pub fn name(&self) -> &str {
+        // SAFETY: the host's strings are valid for the call.
+        unsafe { str(self.raw.name) }
+    }
+
+    /// The id of the plugin that fired it.
+    pub fn source(&self) -> &str {
+        // SAFETY: the host's strings are valid for the call.
+        unsafe { str(self.raw.source) }
+    }
+
+    /// The payload.
+    pub fn data(&self) -> &[u8] {
+        bytes(self.raw.data)
+    }
+
+    /// Whether a handler cancelled it.
+    pub fn is_cancelled(&self) -> bool {
+        self.raw.header.cancelled != 0
+    }
+
+    /// Cancels it or takes the cancellation back.
+    pub fn set_cancelled(&mut self, cancelled: bool) {
+        self.raw.header.cancelled = u32::from(cancelled);
+    }
+}
+
+/// Bytes of a host record, valid for the handler call.
+fn bytes<'a>(b: abi::Bytes) -> &'a [u8] {
+    if b.len == 0 || b.ptr.is_null() {
+        return &[];
+    }
+    // SAFETY: the host's bytes are valid for the call.
+    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }
 }
 
 /// A chat message or a command line of a player; cancellable.

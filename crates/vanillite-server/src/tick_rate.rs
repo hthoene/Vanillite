@@ -220,6 +220,11 @@ impl TickTimes {
         self.ticks = tick;
     }
 
+    /// The number of the last recorded tick.
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
     /// The samples (`getTickTimesNanos`).
     pub fn samples(&self) -> &[u64; 100] {
         &self.samples

@@ -571,34 +571,60 @@ pub(crate) fn execute(
     }
 }
 
-/// The arguments of a plugin command: selectors resolved to players, coordinates to block
-/// positions; argument types plugins cannot declare are left out.
+/// The arguments of a plugin command: selectors resolved to players or entities,
+/// coordinates to positions, rotations to angles; the argument types plugins get as text
+/// keep the typed input. Argument types plugins cannot declare are left out.
 pub(crate) fn plugin_args(
     env: Option<&Env<'_>>,
     source: &CommandSource,
     args: &vanillite_command::Args,
+    input: &str,
 ) -> Result<Vec<vanillite_plugin_host::Arg>, CommandError> {
-    use vanillite_command::ArgValue as V;
+    use vanillite_abi::arg;
+    use vanillite_command::{ArgValue as V, ArgumentType as T, NodeKind};
     use vanillite_plugin_host::{Arg, ArgValue};
     let mut out = Vec::new();
     for a in args.iter() {
-        let value = match &a.value {
-            V::Bool(b) => ArgValue::Bool(*b),
-            V::Int(v) => ArgValue::Integer(i64::from(*v)),
-            V::Long(v) => ArgValue::Long(*v),
-            V::Float(v) => ArgValue::Float(f64::from(*v)),
-            V::Double(v) => ArgValue::Double(*v),
-            V::String(s) => ArgValue::Text(s.clone()),
-            V::Entity(selector) => match env {
-                Some(env) => ArgValue::Players(
-                    targets(env, source, selector, true)?
+        let ty = match source.global.commands.node(a.node).map(|n| &n.kind) {
+            Some(NodeKind::Argument { ty, .. }) => Some(ty),
+            _ => None,
+        };
+        let raw = |kind: u32| {
+            let text = input.get(a.range.start..a.range.end).unwrap_or_default();
+            ArgValue::Raw(kind, text.to_owned())
+        };
+        let value = match (&a.value, ty) {
+            (V::Bool(b), _) => ArgValue::Bool(*b),
+            (V::Int(v), _) => ArgValue::Integer(i64::from(*v)),
+            (V::Long(v), _) => ArgValue::Long(*v),
+            (V::Float(v), _) => ArgValue::Float(f64::from(*v)),
+            (V::Double(v), _) => ArgValue::Double(*v),
+            (V::String(s), _) => ArgValue::Text(s.clone()),
+            (V::Entity(selector), ty) => match env {
+                Some(env) => {
+                    let found = targets(env, source, selector, true)?
                         .into_iter()
                         .map(|t| t.uuid)
-                        .collect(),
-                ),
+                        .collect();
+                    match ty {
+                        Some(T::Entity {
+                            players_only: false,
+                            ..
+                        }) => ArgValue::Entities(found),
+                        _ => ArgValue::Players(found),
+                    }
+                }
                 None => continue,
             },
-            V::Coordinates(coordinates) => {
+            (V::Coordinates(c), Some(T::Rotation)) => {
+                let (yaw, pitch) = exec::resolve_rotation(source, c);
+                ArgValue::Rotation([f64::from(yaw), f64::from(pitch)])
+            }
+            (V::Coordinates(c), Some(T::Vec3 { .. })) => {
+                let pos = exec::resolve_position(source, c);
+                ArgValue::Vec3([pos.x, pos.y, pos.z])
+            }
+            (V::Coordinates(coordinates), _) => {
                 let pos = exec::resolve_position(source, coordinates);
                 ArgValue::Pos([
                     vanillite_base::math::floor(pos.x),
@@ -606,6 +632,24 @@ pub(crate) fn plugin_args(
                     vanillite_base::math::floor(pos.z),
                 ])
             }
+            (V::Identifier(id), _) => ArgValue::Raw(arg::IDENTIFIER, id.clone()),
+            (V::Uuid(_), _) => raw(arg::UUID),
+            (V::Compound(_), _) => raw(arg::NBT_COMPOUND),
+            (V::GameMode(mode), _) => {
+                use vanillite_abi::game_mode as g;
+                use vanillite_command::values::GameMode as M;
+                let mode = match mode {
+                    M::Survival => g::SURVIVAL,
+                    M::Creative => g::CREATIVE,
+                    M::Adventure => g::ADVENTURE,
+                    M::Spectator => g::SPECTATOR,
+                };
+                ArgValue::Int(arg::GAME_MODE, i64::from(mode))
+            }
+            (V::Time(ticks), _) => ArgValue::Int(arg::TIME, i64::from(*ticks)),
+            (_, Some(T::BlockState)) => raw(arg::BLOCK_STATE),
+            (_, Some(T::ItemStack)) => raw(arg::ITEM_STACK),
+            (_, Some(T::Component)) => raw(arg::COMPONENT),
             _ => continue,
         };
         out.push(Arg {
@@ -623,7 +667,7 @@ fn plugin_command(
     parsed: &Parsed<CommandId>,
     command: u32,
 ) -> Result<i32, CommandError> {
-    let args = plugin_args(Some(env), source, &parsed.args)?;
+    let args = plugin_args(Some(env), source, &parsed.args, &parsed.input)?;
     env.global
         .plugins
         .execute_command(command, &source.plugin_sender(), &parsed.input, &args, None)

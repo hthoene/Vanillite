@@ -1080,7 +1080,7 @@ impl ServerWorld {
             let plugins = global.plugins.clone();
             plugins.player_world(
                 respawned,
-                &mut crate::plugins::PluginWorld(self),
+                &mut crate::plugins::PluginWorld(self, global),
                 uuid,
                 from,
                 [body.pos.x, body.pos.y, body.pos.z],

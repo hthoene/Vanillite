@@ -517,6 +517,7 @@ impl ServerBuilder {
             broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
             broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
+            motd: std::sync::Mutex::new(None),
             this: this.clone(),
         });
         global
@@ -1468,6 +1469,15 @@ impl Server {
         let properties = &self.config.properties;
         if let Some(net) = self.net.as_mut() {
             net.set_online(online);
+            let motd = self
+                .global
+                .motd
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(motd) = motd {
+                net.set_motd(motd);
+            }
             // `rebuildServerStatus` every 5 seconds; the Query names every second.
             let (sample_due, query_due) = (
                 self.tick_count.is_multiple_of(100),

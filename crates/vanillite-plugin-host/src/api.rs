@@ -13,7 +13,10 @@ use vanillite_abi::{self as abi, Status, status};
 
 use vanillite_nbt::Tag;
 
-use crate::{BlockBox, Inner, Plugin, SetMode, Text, Title, WorldAccess};
+use crate::{
+    AccessOp, BlockBox, BossBarOp, Inner, Location, Particles, Plugin, ScoreReply, ScoreboardOp,
+    SetMode, Sound, Text, Title, WorldAccess,
+};
 
 /// The table every plugin gets in `load`.
 pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
@@ -60,6 +63,72 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     entity_data_set,
     entity_data_remove,
     entity_data_keys,
+    subscribe_flags,
+    unsubscribe,
+    event_register,
+    event_fire,
+    service_register,
+    service_unregister,
+    service_get,
+    plugin_list,
+    config_set,
+    config_save,
+    config_toml,
+    permission_register,
+    player_info,
+    player_address,
+    player_play_sound,
+    player_stop_sound,
+    player_spawn_particle,
+    player_transfer,
+    register_channel,
+    player_send_plugin_message,
+    objective_add,
+    objective_remove,
+    objective_display,
+    score_get,
+    score_set,
+    score_reset,
+    team_add,
+    team_remove,
+    team_join,
+    team_leave,
+    team_modify,
+    team_of,
+    bossbar_create,
+    bossbar_remove,
+    bossbar_set,
+    bossbar_set_name,
+    bossbar_player,
+    server_stats,
+    server_set_motd,
+    access_set,
+    access_get,
+    world_time,
+    world_set_time,
+    world_set_weather,
+    game_rule_get,
+    game_rule_set,
+    player_get,
+    player_set,
+    entity_location,
+    entity_type,
+    entity_teleport,
+    entity_set_velocity,
+    entity_spawn,
+    entity_remove,
+    entities_near,
+    entity_nbt,
+    entity_nbt_merge,
+    entity_effect_add,
+    entity_effect_remove,
+    player_give,
+    entity_item_get,
+    entity_item_set,
+    block_entity_nbt,
+    block_entity_merge,
+    advancement_set,
+    advancement_done,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -492,11 +561,12 @@ pub(crate) fn has_permission(inner: &Inner, player: u128, node: &str, operator: 
         .permission
         .read()
         .unwrap_or_else(PoisonError::into_inner);
+    let fallback = || default_permission(inner, node, operator);
     let Some(provider) = provider.as_ref() else {
-        return operator;
+        return fallback();
     };
     let Some(plugin) = inner.plugin(provider.plugin) else {
-        return operator;
+        return fallback();
     };
     let mut answer = abi::permission::UNDEFINED;
     let s = plugin.call("permission check", || {
@@ -513,6 +583,20 @@ pub(crate) fn has_permission(inner: &Inner, player: u128, node: &str, operator: 
     match (s, answer) {
         (status::OK, abi::permission::ALLOW) => true,
         (status::OK, abi::permission::DENY) => false,
+        _ => fallback(),
+    }
+}
+
+/// Who has a node without a provider's answer: its registered default, else operators.
+fn default_permission(inner: &Inner, node: &str, operator: bool) -> bool {
+    let defaults = inner
+        .permission_defaults
+        .read()
+        .unwrap_or_else(PoisonError::into_inner);
+    match defaults.get(node).copied() {
+        Some(abi::permission_default::TRUE) => true,
+        Some(abi::permission_default::FALSE) => false,
+        Some(abi::permission_default::NOT_OP) => !operator,
         _ => operator,
     }
 }
@@ -624,7 +708,7 @@ unsafe extern "C" fn subscribe(
         }
         inner
             .events
-            .add(plugin.local, kind, priority, callback, user)
+            .add(plugin.local, kind, priority, 0, callback, user)
     })
 }
 
@@ -1147,5 +1231,1273 @@ unsafe extern "C" fn entity_data_keys(
             Err(s) => return s,
         };
         write_sink(sink, keys.as_bytes())
+    })
+}
+
+// ---- ABI 1.5 ----
+
+/// Borrowed bytes as a slice; `None` for a null pointer with a length.
+///
+/// # Safety
+///
+/// `b` must point to `b.len` readable bytes that outlive `'a`.
+unsafe fn bytes<'a>(b: abi::Bytes) -> Option<&'a [u8]> {
+    if b.len == 0 {
+        return Some(&[]);
+    }
+    if b.ptr.is_null() {
+        return None;
+    }
+    // SAFETY: guaranteed by the caller.
+    Some(unsafe { std::slice::from_raw_parts(b.ptr, b.len) })
+}
+
+/// A plugin string, `INVALID_ARGUMENT` for bad UTF-8.
+fn arg<'a>(s: abi::Str) -> Result<&'a str, Status> {
+    // SAFETY: the plugin's string is valid for the call.
+    unsafe { str_checked(s) }.ok_or(status::INVALID_ARGUMENT)
+}
+
+/// A plugin string, `None` when empty.
+fn opt_arg<'a>(s: abi::Str) -> Result<Option<&'a str>, Status> {
+    arg(s).map(|s| (!s.is_empty()).then_some(s))
+}
+
+/// A text with its format, `INVALID_ARGUMENT` for bad UTF-8 or an unknown format.
+fn text_arg<'a>(s: abi::Str, format: u32) -> Result<Text<'a>, Status> {
+    text(s, format).ok_or(status::INVALID_ARGUMENT)
+}
+
+/// Turns a `Result` into a status.
+fn done(r: Result<(), Status>) -> Status {
+    r.err().unwrap_or(status::OK)
+}
+
+/// Parses an SNBT compound of a plugin (empty text: an empty compound).
+fn snbt(s: abi::Str) -> Result<vanillite_nbt::Compound, Status> {
+    let text = arg(s)?;
+    if text.len() > abi::limits::MAX_SNBT as usize {
+        return Err(status::INVALID_ARGUMENT);
+    }
+    if text.trim().is_empty() {
+        return Ok(vanillite_nbt::Compound::new());
+    }
+    vanillite_nbt::snbt::parse_compound(text).map_err(|_| status::INVALID_ARGUMENT)
+}
+
+/// Writes a compound as SNBT to a plugin's sink.
+fn write_snbt(sink: *const abi::ByteSink, c: vanillite_nbt::Compound) -> Status {
+    write_sink(
+        sink,
+        vanillite_nbt::snbt::to_string(&Tag::Compound(c)).as_bytes(),
+    )
+}
+
+/// A full resource location of a plugin's key (its id as default namespace).
+fn key_arg(plugin: &Plugin, key: abi::Str) -> Result<String, Status> {
+    data_key(plugin, key).ok_or(status::INVALID_ARGUMENT)
+}
+
+unsafe extern "C" fn subscribe_flags(
+    id: abi::PluginId,
+    kind: u32,
+    priority: i32,
+    flags: u32,
+    callback: abi::EventFn,
+    user: *mut c_void,
+) -> Status {
+    with(id, |inner, plugin| {
+        if !inner.may_register(plugin) {
+            return status::WRONG_PHASE;
+        }
+        inner
+            .events
+            .add(plugin.local, kind, priority, flags, callback, user)
+    })
+}
+
+unsafe extern "C" fn unsubscribe(id: abi::PluginId, kind: u32) -> Status {
+    with(id, |inner, plugin| {
+        inner.events.remove(plugin.local, Some(kind));
+        status::OK
+    })
+}
+
+unsafe extern "C" fn event_register(id: abi::PluginId, name: abi::Str, out: *mut u32) -> Status {
+    with(id, |inner, _| {
+        let name = match arg(name) {
+            Ok(n) if !n.is_empty() && n.len() <= 256 => n,
+            _ => return status::INVALID_ARGUMENT,
+        };
+        match inner.events.custom_kind(name) {
+            Some(kind) => write(out, kind),
+            None => status::UNSUPPORTED,
+        }
+    })
+}
+
+unsafe extern "C" fn event_fire(
+    id: abi::PluginId,
+    raw: *mut abi::Context,
+    kind: u32,
+    data: abi::Bytes,
+    cancelled: *mut u32,
+) -> Status {
+    with(id, |inner, plugin| {
+        // SAFETY: the plugin passes bytes valid for the call.
+        let Some(data) = (unsafe { bytes(data) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        // SAFETY: the plugin passes the context of its running callback, or null.
+        let world = unsafe { ctx(raw) }.and_then(|c| reborrow(&mut c.world));
+        match inner.fire_custom(kind, (plugin.local, plugin.id()), data, world, false) {
+            Ok(_) if cancelled.is_null() => status::OK,
+            Ok(c) => write(cancelled, u32::from(c)),
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn service_register(
+    id: abi::PluginId,
+    name: abi::Str,
+    version: u32,
+    table: *const c_void,
+) -> Status {
+    with(id, |inner, plugin| {
+        let name = match arg(name) {
+            Ok(n) if !n.is_empty() && n.len() <= 256 => n,
+            _ => return status::INVALID_ARGUMENT,
+        };
+        if table.is_null() {
+            return status::INVALID_ARGUMENT;
+        }
+        let mut services = inner
+            .services
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        services.retain(|s| !(s.plugin == plugin.local && s.name == name));
+        services.push(crate::Service {
+            plugin: plugin.local,
+            name: name.to_owned(),
+            version,
+            table: crate::SendPtr(table.cast_mut()),
+        });
+        status::OK
+    })
+}
+
+unsafe extern "C" fn service_unregister(id: abi::PluginId, name: abi::Str) -> Status {
+    with(id, |inner, plugin| {
+        let Ok(name) = arg(name) else {
+            return status::INVALID_ARGUMENT;
+        };
+        inner
+            .services
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|s| !(s.plugin == plugin.local && s.name == name));
+        status::OK
+    })
+}
+
+unsafe extern "C" fn service_get(
+    id: abi::PluginId,
+    name: abi::Str,
+    version: *mut u32,
+    table: *mut *const c_void,
+) -> Status {
+    with(id, |inner, _| {
+        let Ok(name) = arg(name) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let services = inner
+            .services
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(service) = services.iter().rev().find(|s| {
+            s.name == name
+                && inner
+                    .plugin(s.plugin)
+                    .is_some_and(|p| p.enabled.load(std::sync::atomic::Ordering::Acquire))
+        }) else {
+            return status::NOT_FOUND;
+        };
+        if !version.is_null() {
+            write(version, service.version);
+        }
+        write(table, service.table.0.cast_const())
+    })
+}
+
+unsafe extern "C" fn plugin_list(id: abi::PluginId, sink: *const abi::ByteSink) -> Status {
+    with(id, |inner, _| {
+        let list = inner
+            .plugins
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|p| p.enabled.load(std::sync::atomic::Ordering::Acquire))
+            .map(|p| format!("{} {}", p.id(), p.manifest.version))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write_sink(sink, list.as_bytes())
+    })
+}
+
+unsafe extern "C" fn config_set(id: abi::PluginId, key: abi::Str, value: abi::Str) -> Status {
+    with(id, |_, plugin| {
+        let (Ok(key), Ok(value)) = (arg(key), arg(value)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        // A TOML value parses as the value of a one-key document.
+        let Ok(mut doc) = format!("v = {value}").parse::<toml::Table>() else {
+            return status::INVALID_ARGUMENT;
+        };
+        let Some(value) = doc.remove("v") else {
+            return status::INVALID_ARGUMENT;
+        };
+        let mut config = plugin.config.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(table) = config.as_mut() else {
+            return status::WRONG_PHASE;
+        };
+        let parts: Vec<&str> = key.split('.').collect();
+        let Some((last, path)) = parts.split_last() else {
+            return status::INVALID_ARGUMENT;
+        };
+        if parts.iter().any(|p| p.is_empty()) {
+            return status::INVALID_ARGUMENT;
+        }
+        let mut at = table;
+        for part in path {
+            let entry = at
+                .entry((*part).to_owned())
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            let toml::Value::Table(next) = entry else {
+                return status::INVALID_ARGUMENT;
+            };
+            at = next;
+        }
+        at.insert((*last).to_owned(), value);
+        status::OK
+    })
+}
+
+unsafe extern "C" fn config_save(id: abi::PluginId) -> Status {
+    with(id, |_, plugin| {
+        let text = {
+            let config = plugin.config.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(table) = config.as_ref() else {
+                return status::WRONG_PHASE;
+            };
+            match toml::to_string_pretty(table) {
+                Ok(text) => text,
+                Err(_) => return status::ERROR,
+            }
+        };
+        let path = plugin.data_dir.join("config.toml");
+        match std::fs::write(&path, text) {
+            Ok(()) => status::OK,
+            Err(e) => {
+                log::error!("[{}] Cannot write {}: {e}", plugin.id(), path.display());
+                status::ERROR
+            }
+        }
+    })
+}
+
+unsafe extern "C" fn config_toml(
+    id: abi::PluginId,
+    key: abi::Str,
+    out: *mut abi::StrBuf,
+) -> Status {
+    config_value(id, key, |v| match v {
+        toml::Value::Table(t) => match toml::to_string(t) {
+            Ok(text) => write_str(out, &text),
+            Err(_) => status::ERROR,
+        },
+        v => write_str(out, &v.to_string()),
+    })
+}
+
+unsafe extern "C" fn permission_register(
+    id: abi::PluginId,
+    node: abi::Str,
+    default: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let node = match arg(node) {
+            Ok(n) if !n.is_empty() && n.len() <= 256 => n,
+            _ => return status::INVALID_ARGUMENT,
+        };
+        if default > abi::permission_default::NOT_OP {
+            return status::INVALID_ARGUMENT;
+        }
+        inner
+            .permission_defaults
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(node.to_owned(), default);
+        status::OK
+    })
+}
+
+unsafe extern "C" fn player_info(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    out: *mut abi::PlayerInfo,
+) -> Status {
+    with(id, |inner, _| {
+        let Some(info) = server!(inner).player_info(player.to_u128()) else {
+            return status::NOT_FOUND;
+        };
+        write(
+            out,
+            abi::PlayerInfo {
+                size: abi::size_of::<abi::PlayerInfo>(),
+                world: info.world,
+                game_mode: info.game_mode,
+                op_level: info.op_level,
+                ping: info.ping,
+            },
+        )
+    })
+}
+
+unsafe extern "C" fn player_address(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    out: *mut abi::StrBuf,
+) -> Status {
+    with(id, |inner, _| {
+        match server!(inner).player_info(player.to_u128()) {
+            Some(info) => write_str(out, &info.address),
+            None => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn player_play_sound(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    spec: *const abi::SoundSpec,
+) -> Status {
+    with(id, |inner, _| {
+        // SAFETY: the plugin passes a valid record or null.
+        let Some(spec) = (unsafe { spec.as_ref() }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let Ok(sound) = arg(spec.sound) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if spec.source > abi::sound_source::UI {
+            return status::INVALID_ARGUMENT;
+        }
+        let sound = Sound {
+            sound,
+            source: spec.source,
+            pos: [spec.pos.x, spec.pos.y, spec.pos.z],
+            volume: spec.volume,
+            pitch: spec.pitch,
+            seed: spec.seed,
+        };
+        if server!(inner).play_sound(player.to_u128(), &sound) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn player_stop_sound(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    sound: abi::Str,
+    source: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let Ok(sound) = opt_arg(sound) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let source = match source {
+            abi::sound_source::ANY => None,
+            s if s <= abi::sound_source::UI => Some(s),
+            _ => return status::INVALID_ARGUMENT,
+        };
+        if server!(inner).stop_sound(player.to_u128(), sound, source) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn player_spawn_particle(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    spec: *const abi::ParticleSpec,
+) -> Status {
+    with(id, |inner, _| {
+        // SAFETY: the plugin passes a valid record or null.
+        let Some(spec) = (unsafe { spec.as_ref() }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let Ok(text) = arg(spec.particle) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let (particle, options) = match text.find('{') {
+            Some(at) => {
+                let Ok(options) = vanillite_nbt::snbt::parse_compound(&text[at..]) else {
+                    return status::INVALID_ARGUMENT;
+                };
+                (text[..at].trim(), options)
+            }
+            None => (text.trim(), vanillite_nbt::Compound::new()),
+        };
+        let particles = Particles {
+            particle,
+            options,
+            pos: [spec.pos.x, spec.pos.y, spec.pos.z],
+            delta: [spec.delta.x, spec.delta.y, spec.delta.z],
+            speed: spec.speed,
+            count: spec.count,
+            force: spec.force != 0,
+        };
+        done(server!(inner).spawn_particle(player.to_u128(), &particles))
+    })
+}
+
+unsafe extern "C" fn player_transfer(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    host: abi::Str,
+    port: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let (Ok(host), Ok(port)) = (arg(host), u16::try_from(port)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if host.is_empty() || host.len() > 255 {
+            return status::INVALID_ARGUMENT;
+        }
+        if server!(inner).transfer(player.to_u128(), host, port) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+/// Whether a channel name is a resource location.
+fn valid_channel(channel: &str) -> bool {
+    channel.len() <= 256
+        && channel.split_once(':').is_some_and(|(ns, path)| {
+            !ns.is_empty()
+                && !path.is_empty()
+                && ns.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'.')
+                })
+                && path.bytes().all(|b| {
+                    b.is_ascii_lowercase()
+                        || b.is_ascii_digit()
+                        || matches!(b, b'_' | b'-' | b'.' | b'/')
+                })
+        })
+}
+
+unsafe extern "C" fn register_channel(id: abi::PluginId, channel: abi::Str) -> Status {
+    with(id, |inner, plugin| {
+        if !inner.may_register(plugin) {
+            return status::WRONG_PHASE;
+        }
+        let channel = match arg(channel) {
+            Ok(c) if valid_channel(c) => c,
+            _ => return status::INVALID_ARGUMENT,
+        };
+        let mut channels = inner
+            .channels
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mine = channels.iter().filter(|(p, _)| *p == plugin.local).count();
+        if mine >= abi::limits::MAX_CHANNELS as usize {
+            return status::INVALID_ARGUMENT;
+        }
+        if !channels
+            .iter()
+            .any(|(p, c)| *p == plugin.local && c == channel)
+        {
+            channels.push((plugin.local, channel.to_owned()));
+        }
+        status::OK
+    })
+}
+
+unsafe extern "C" fn player_send_plugin_message(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    channel: abi::Str,
+    data: abi::Bytes,
+) -> Status {
+    with(id, |inner, _| {
+        let channel = match arg(channel) {
+            Ok(c) if valid_channel(c) => c,
+            _ => return status::INVALID_ARGUMENT,
+        };
+        // SAFETY: the plugin passes bytes valid for the call.
+        let Some(data) = (unsafe { bytes(data) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if data.len() > 1 << 20 {
+            return status::INVALID_ARGUMENT;
+        }
+        if server!(inner).send_plugin_message(player.to_u128(), channel, data) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+/// Runs a scoreboard operation.
+fn scoreboard(
+    id: abi::PluginId,
+    op: impl FnOnce() -> Result<ScoreboardOp<'static>, Status>,
+) -> Result<ScoreReply, Status> {
+    let mut reply = Err(status::ERROR);
+    let s = with(id, |inner, _| {
+        let op = match op() {
+            Ok(op) => op,
+            Err(s) => return s,
+        };
+        reply = server!(inner).scoreboard(op);
+        match &reply {
+            Ok(_) => status::OK,
+            Err(s) => *s,
+        }
+    });
+    if s == status::OK { reply } else { Err(s) }
+}
+
+/// A non-empty name of a plugin (objective, holder, team, entity type).
+fn name_arg<'a>(s: abi::Str) -> Result<&'a str, Status> {
+    match arg(s) {
+        Ok(n) if !n.is_empty() && n.len() <= 32767 => Ok(n),
+        _ => Err(status::INVALID_ARGUMENT),
+    }
+}
+
+unsafe extern "C" fn objective_add(
+    id: abi::PluginId,
+    name: abi::Str,
+    criteria: abi::Str,
+    display: abi::Str,
+    format: u32,
+) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::AddObjective {
+                name: name_arg(name)?,
+                criteria: name_arg(criteria)?,
+                display: text_arg(display, format)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn objective_remove(id: abi::PluginId, name: abi::Str) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::RemoveObjective {
+                name: name_arg(name)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn objective_display(id: abi::PluginId, slot: u32, name: abi::Str) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::Display {
+                slot,
+                objective: opt_arg(name)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn score_get(
+    id: abi::PluginId,
+    objective: abi::Str,
+    holder: abi::Str,
+    out: *mut i32,
+) -> Status {
+    match scoreboard(id, || {
+        Ok(ScoreboardOp::GetScore {
+            objective: name_arg(objective)?,
+            holder: name_arg(holder)?,
+        })
+    }) {
+        Ok(ScoreReply::Score(v)) => write(out, v),
+        Ok(_) => status::NOT_FOUND,
+        Err(s) => s,
+    }
+}
+
+unsafe extern "C" fn score_set(
+    id: abi::PluginId,
+    objective: abi::Str,
+    holder: abi::Str,
+    value: i32,
+) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::SetScore {
+                objective: name_arg(objective)?,
+                holder: name_arg(holder)?,
+                value,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn score_reset(
+    id: abi::PluginId,
+    objective: abi::Str,
+    holder: abi::Str,
+) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::ResetScore {
+                objective: opt_arg(objective)?,
+                holder: name_arg(holder)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn team_add(id: abi::PluginId, name: abi::Str) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::AddTeam {
+                name: name_arg(name)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn team_remove(id: abi::PluginId, name: abi::Str) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::RemoveTeam {
+                name: name_arg(name)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn team_join(id: abi::PluginId, team: abi::Str, holder: abi::Str) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::JoinTeam {
+                team: name_arg(team)?,
+                holder: name_arg(holder)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn team_leave(id: abi::PluginId, holder: abi::Str) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::LeaveTeam {
+                holder: name_arg(holder)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn team_modify(
+    id: abi::PluginId,
+    team: abi::Str,
+    option: abi::Str,
+    value: abi::Str,
+) -> Status {
+    done(
+        scoreboard(id, || {
+            Ok(ScoreboardOp::ModifyTeam {
+                team: name_arg(team)?,
+                option: name_arg(option)?,
+                value: arg(value)?,
+            })
+        })
+        .map(drop),
+    )
+}
+
+unsafe extern "C" fn team_of(id: abi::PluginId, holder: abi::Str, out: *mut abi::StrBuf) -> Status {
+    match scoreboard(id, || {
+        Ok(ScoreboardOp::TeamOf {
+            holder: name_arg(holder)?,
+        })
+    }) {
+        Ok(ScoreReply::Team(team)) => write_str(out, &team),
+        Ok(_) => status::NOT_FOUND,
+        Err(s) => s,
+    }
+}
+
+/// Runs a boss bar operation with the plugin's full key.
+fn boss_bar(
+    id: abi::PluginId,
+    key: abi::Str,
+    op: impl FnOnce(&str) -> Result<BossBarOp<'_>, Status>,
+) -> Status {
+    with(id, |inner, plugin| {
+        let key = match key_arg(plugin, key) {
+            Ok(key) => key,
+            Err(s) => return s,
+        };
+        match op(&key) {
+            Ok(op) => done(server!(inner).boss_bar(op)),
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn bossbar_create(
+    id: abi::PluginId,
+    key: abi::Str,
+    name: abi::Str,
+    format: u32,
+) -> Status {
+    boss_bar(id, key, |key| {
+        Ok(BossBarOp::Create {
+            key,
+            name: text_arg(name, format)?,
+        })
+    })
+}
+
+unsafe extern "C" fn bossbar_remove(id: abi::PluginId, key: abi::Str) -> Status {
+    boss_bar(id, key, |key| Ok(BossBarOp::Remove { key }))
+}
+
+unsafe extern "C" fn bossbar_set(
+    id: abi::PluginId,
+    key: abi::Str,
+    prop: u32,
+    value: i64,
+) -> Status {
+    boss_bar(id, key, |key| Ok(BossBarOp::Set { key, prop, value }))
+}
+
+unsafe extern "C" fn bossbar_set_name(
+    id: abi::PluginId,
+    key: abi::Str,
+    name: abi::Str,
+    format: u32,
+) -> Status {
+    boss_bar(id, key, |key| {
+        Ok(BossBarOp::SetName {
+            key,
+            name: text_arg(name, format)?,
+        })
+    })
+}
+
+unsafe extern "C" fn bossbar_player(
+    id: abi::PluginId,
+    key: abi::Str,
+    player: abi::Uuid,
+    show: u32,
+) -> Status {
+    boss_bar(id, key, |key| {
+        Ok(BossBarOp::Player {
+            key,
+            player: player.to_u128(),
+            show: show != 0,
+        })
+    })
+}
+
+unsafe extern "C" fn server_stats(id: abi::PluginId, out: *mut abi::ServerStats) -> Status {
+    with(id, |inner, _| {
+        let Some(stats) = server!(inner).stats() else {
+            return status::UNSUPPORTED;
+        };
+        write(
+            out,
+            abi::ServerStats {
+                size: abi::size_of::<abi::ServerStats>(),
+                tick: stats.tick,
+                mspt: stats.mspt,
+                tps: stats.tps,
+                tick_rate: stats.tick_rate,
+                online: stats.online,
+                max_players: stats.max_players,
+            },
+        )
+    })
+}
+
+unsafe extern "C" fn server_set_motd(id: abi::PluginId, motd: abi::Str, format: u32) -> Status {
+    with(id, |inner, _| match text_arg(motd, format) {
+        Ok(motd) if server!(inner).set_motd(motd) => status::OK,
+        Ok(_) => status::UNSUPPORTED,
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn access_set(
+    id: abi::PluginId,
+    list: u32,
+    player: abi::Uuid,
+    name: abi::Str,
+    add: u32,
+    reason: abi::Str,
+) -> Status {
+    with(id, |inner, _| {
+        let (Ok(name), Ok(reason)) = (arg(name), arg(reason)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let op = AccessOp {
+            list,
+            player: player.to_u128(),
+            name,
+            change: Some((add != 0, reason)),
+        };
+        done(server!(inner).access(op).map(drop))
+    })
+}
+
+unsafe extern "C" fn access_get(
+    id: abi::PluginId,
+    list: u32,
+    player: abi::Uuid,
+    name: abi::Str,
+    out: *mut u32,
+) -> Status {
+    with(id, |inner, _| {
+        let Ok(name) = arg(name) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let op = AccessOp {
+            list,
+            player: player.to_u128(),
+            name,
+            change: None,
+        };
+        match server!(inner).access(op) {
+            Ok(on) => write(out, u32::from(on)),
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn world_time(id: abi::PluginId, world: u32, out: *mut i64) -> Status {
+    with(id, |inner, _| match server!(inner).world_time(world) {
+        Some(time) => write(out, time),
+        None => status::NOT_FOUND,
+    })
+}
+
+unsafe extern "C" fn world_set_time(id: abi::PluginId, world: u32, time: i64) -> Status {
+    with(id, |inner, _| {
+        done(server!(inner).set_world_time(world, time))
+    })
+}
+
+unsafe extern "C" fn world_set_weather(id: abi::PluginId, kind: u32, duration: i32) -> Status {
+    with(id, |inner, _| {
+        if kind > abi::weather::THUNDER || duration < -1 {
+            return status::INVALID_ARGUMENT;
+        }
+        done(server!(inner).set_weather(0, kind, duration))
+    })
+}
+
+unsafe extern "C" fn game_rule_get(
+    id: abi::PluginId,
+    name: abi::Str,
+    out: *mut abi::StrBuf,
+) -> Status {
+    with(id, |inner, _| {
+        let Ok(name) = arg(name) else {
+            return status::INVALID_ARGUMENT;
+        };
+        match server!(inner).game_rule(name) {
+            Some(value) => write_str(out, &value),
+            None => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn game_rule_set(id: abi::PluginId, name: abi::Str, value: abi::Str) -> Status {
+    with(id, |inner, _| {
+        let (Ok(name), Ok(value)) = (arg(name), arg(value)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        done(server!(inner).set_game_rule(name, value))
+    })
+}
+
+/// Runs `f` on the owned world of a context call.
+fn on_world(
+    raw: *mut abi::Context,
+    world: u32,
+    f: impl FnOnce(&mut dyn WorldAccess) -> Status,
+) -> Status {
+    guard(|| match owned(raw, world) {
+        Ok(w) => f(w),
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn player_get(
+    raw: *mut abi::Context,
+    world: u32,
+    player: abi::Uuid,
+    prop: u32,
+    out: *mut f64,
+) -> Status {
+    on_world(raw, world, |w| match w.player_get(player.to_u128(), prop) {
+        Ok(v) => write(out, v),
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn player_set(
+    raw: *mut abi::Context,
+    world: u32,
+    player: abi::Uuid,
+    prop: u32,
+    value: f64,
+) -> Status {
+    on_world(raw, world, |w| {
+        if !value.is_finite() {
+            return status::INVALID_ARGUMENT;
+        }
+        done(w.player_set(player.to_u128(), prop, value))
+    })
+}
+
+fn to_abi_location(l: Location) -> abi::Location {
+    abi::Location {
+        world: l.world,
+        pos: abi::Vec3 {
+            x: l.pos[0],
+            y: l.pos[1],
+            z: l.pos[2],
+        },
+        yaw: l.yaw,
+        pitch: l.pitch,
+    }
+}
+
+unsafe extern "C" fn entity_location(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    out: *mut abi::Location,
+) -> Status {
+    on_world(raw, world, |w| match w.entity_location(entity.to_u128()) {
+        Ok(l) => write(out, to_abi_location(l)),
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn entity_type(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    out: *mut abi::StrBuf,
+) -> Status {
+    on_world(raw, world, |w| match w.entity_type(entity.to_u128()) {
+        Ok(t) => write_str(out, &t),
+        Err(s) => s,
+    })
+}
+
+/// Whether a position is finite and inside the world's coordinate limits.
+fn valid_pos(p: [f64; 3]) -> bool {
+    p.iter().all(|v| v.is_finite() && v.abs() < 3.0e7)
+}
+
+unsafe extern "C" fn entity_teleport(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    to: *const abi::Location,
+) -> Status {
+    on_world(raw, world, |w| {
+        // SAFETY: the plugin passes a valid record or null.
+        let Some(to) = (unsafe { to.as_ref() }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let pos = [to.pos.x, to.pos.y, to.pos.z];
+        if !valid_pos(pos) || !to.yaw.is_finite() || !to.pitch.is_finite() {
+            return status::INVALID_ARGUMENT;
+        }
+        done(w.teleport(
+            entity.to_u128(),
+            Location {
+                world: to.world,
+                pos,
+                yaw: to.yaw,
+                pitch: to.pitch,
+            },
+        ))
+    })
+}
+
+unsafe extern "C" fn entity_set_velocity(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    v: abi::Vec3,
+) -> Status {
+    on_world(raw, world, |w| {
+        let v = [v.x, v.y, v.z];
+        if v.iter().any(|c| !c.is_finite() || c.abs() > 10.0) {
+            return status::INVALID_ARGUMENT;
+        }
+        done(w.set_velocity(entity.to_u128(), v))
+    })
+}
+
+unsafe extern "C" fn entity_spawn(
+    raw: *mut abi::Context,
+    world: u32,
+    kind: abi::Str,
+    pos: abi::Vec3,
+    nbt: abi::Str,
+    out: *mut abi::Uuid,
+) -> Status {
+    on_world(raw, world, |w| {
+        let (Ok(kind), Ok(nbt)) = (name_arg(kind), snbt(nbt)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let pos = [pos.x, pos.y, pos.z];
+        if !valid_pos(pos) {
+            return status::INVALID_ARGUMENT;
+        }
+        match w.spawn_entity(kind, pos, &nbt) {
+            Ok(_) if out.is_null() => status::OK,
+            Ok(uuid) => write(out, abi::Uuid::from_u128(uuid)),
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn entity_remove(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+) -> Status {
+    on_world(raw, world, |w| done(w.remove_entity(entity.to_u128())))
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn entities_near(
+    raw: *mut abi::Context,
+    world: u32,
+    center: abi::Vec3,
+    radius: f64,
+    kind: abi::Str,
+    out: *mut abi::Uuid,
+    cap: usize,
+    count: *mut usize,
+) -> Status {
+    on_world(raw, world, |w| {
+        let Ok(kind) = opt_arg(kind) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let center = [center.x, center.y, center.z];
+        if !valid_pos(center) || !radius.is_finite() || !(0.0..=1024.0).contains(&radius) {
+            return status::INVALID_ARGUMENT;
+        }
+        if cap > 0 && out.is_null() {
+            return status::INVALID_ARGUMENT;
+        }
+        let found = w.entities_near(center, radius, kind);
+        for (i, uuid) in found.iter().take(cap).enumerate() {
+            // SAFETY: the plugin passes `cap` writable entries.
+            unsafe { out.add(i).write(abi::Uuid::from_u128(*uuid)) };
+        }
+        write(count, found.len())
+    })
+}
+
+unsafe extern "C" fn entity_nbt(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    sink: *const abi::ByteSink,
+) -> Status {
+    on_world(raw, world, |w| match w.entity_nbt(entity.to_u128()) {
+        Ok(c) => write_snbt(sink, c),
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn entity_nbt_merge(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    nbt: abi::Str,
+) -> Status {
+    on_world(raw, world, |w| match snbt(nbt) {
+        Ok(nbt) => done(w.merge_entity_nbt(entity.to_u128(), &nbt)),
+        Err(s) => s,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn entity_effect_add(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    effect: abi::Str,
+    duration: i32,
+    amplifier: i32,
+    flags: u32,
+) -> Status {
+    on_world(raw, world, |w| {
+        let Ok(effect) = name_arg(effect) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if duration < -1 || !(0..=255).contains(&amplifier) || flags > 7 {
+            return status::INVALID_ARGUMENT;
+        }
+        done(w.add_effect(entity.to_u128(), effect, duration, amplifier, flags))
+    })
+}
+
+unsafe extern "C" fn entity_effect_remove(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    effect: abi::Str,
+) -> Status {
+    on_world(raw, world, |w| match opt_arg(effect) {
+        Ok(effect) => done(w.remove_effect(entity.to_u128(), effect)),
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn player_give(
+    raw: *mut abi::Context,
+    world: u32,
+    player: abi::Uuid,
+    item: abi::Str,
+) -> Status {
+    on_world(raw, world, |w| match snbt(item) {
+        Ok(item) if !item.is_empty() => done(w.give_item(player.to_u128(), &item)),
+        Ok(_) => status::INVALID_ARGUMENT,
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn entity_item_get(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    slot: abi::Str,
+    sink: *const abi::ByteSink,
+) -> Status {
+    on_world(raw, world, |w| {
+        let Ok(slot) = name_arg(slot) else {
+            return status::INVALID_ARGUMENT;
+        };
+        match w.item(entity.to_u128(), slot) {
+            Ok(item) => write_snbt(sink, item),
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn entity_item_set(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    slot: abi::Str,
+    item: abi::Str,
+) -> Status {
+    on_world(raw, world, |w| {
+        let (Ok(slot), Ok(item)) = (name_arg(slot), snbt(item)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        done(w.set_item(entity.to_u128(), slot, &item))
+    })
+}
+
+fn block_pos(p: abi::BlockPos) -> [i32; 3] {
+    [p.x, p.y, p.z]
+}
+
+unsafe extern "C" fn block_entity_nbt(
+    raw: *mut abi::Context,
+    world: u32,
+    pos: abi::BlockPos,
+    sink: *const abi::ByteSink,
+) -> Status {
+    on_world(raw, world, |w| match w.block_entity_nbt(block_pos(pos)) {
+        Ok(c) => write_snbt(sink, c),
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn block_entity_merge(
+    raw: *mut abi::Context,
+    world: u32,
+    pos: abi::BlockPos,
+    nbt: abi::Str,
+) -> Status {
+    on_world(raw, world, |w| match snbt(nbt) {
+        Ok(nbt) => done(w.merge_block_entity_nbt(block_pos(pos), &nbt)),
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn advancement_set(
+    raw: *mut abi::Context,
+    world: u32,
+    player: abi::Uuid,
+    advancement: abi::Str,
+    criterion: abi::Str,
+    grant: u32,
+) -> Status {
+    on_world(raw, world, |w| {
+        let (Ok(advancement), Ok(criterion)) = (name_arg(advancement), opt_arg(criterion)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        done(w.set_advancement(player.to_u128(), advancement, criterion, grant != 0))
+    })
+}
+
+unsafe extern "C" fn advancement_done(
+    raw: *mut abi::Context,
+    world: u32,
+    player: abi::Uuid,
+    advancement: abi::Str,
+    out: *mut u32,
+) -> Status {
+    on_world(raw, world, |w| {
+        let Ok(advancement) = name_arg(advancement) else {
+            return status::INVALID_ARGUMENT;
+        };
+        match w.advancement_done(player.to_u128(), advancement) {
+            Ok(done) => write(out, u32::from(done)),
+            Err(s) => s,
+        }
     })
 }
