@@ -14,7 +14,7 @@
 //! Code that only reads blocks and models a Vanilla read without tickets takes a
 //! [`LevelView`] (or `&dyn` [`Blocks`]), never `&Level`.
 
-use vanillite_base::BlockPos;
+use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_data::block::BlockState;
 use vanillite_data::fluid::FluidState;
 use vanillite_world::chunks::ChunkView;
@@ -92,6 +92,21 @@ impl Blocks for LevelView<'_> {
         self.block(pos)
     }
 
+    fn states_in(&self, min: BlockPos, max: BlockPos, out: &mut [BlockState]) {
+        let mut slots = out.iter_mut();
+        let mut y = min.y;
+        self.chunks.blocks_in(min, max, |state| {
+            if let Some(slot) = slots.next() {
+                *slot = match state {
+                    Some(state) => BlockState(state),
+                    None if y >= self.min_y && y <= self.max_y => BlockState::AIR,
+                    None => block::VOID_AIR,
+                };
+            }
+            y = if y == max.y { min.y } else { y + 1 };
+        });
+    }
+
     #[inline]
     fn border(&self) -> Option<&WorldBorder> {
         Some(self.border)
@@ -99,6 +114,14 @@ impl Blocks for LevelView<'_> {
 
     fn moving_piston_boxes(&self, pos: BlockPos, out: &mut Vec<[f64; 6]>) {
         crate::block::piston::collision_boxes_at(self.block_entities, pos, out);
+    }
+
+    #[inline]
+    fn plain_collision(&self, x: i32, y: i32, z: i32) -> bool {
+        // Outside full chunks and the build height every read is (void) air.
+        self.chunks
+            .section_summary(ChunkPos::new(x, z), y)
+            .is_none_or(|summary| summary.special_collision == 0)
     }
 }
 

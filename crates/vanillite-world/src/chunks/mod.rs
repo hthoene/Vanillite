@@ -62,7 +62,7 @@ use vanillite_chunk::slots::{
     ChunkCodec, ChunkGenerator, ChunkStore, Completion, CompletionTarget, DimensionId, LightEngine,
     Neighbours, Priority, RecordKey, RecordMeta, StoreOp, StoreResult, Token, WorldInfo,
 };
-use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk};
+use vanillite_chunk::{BlockStateId, ChunkStatus, ProtoChunk, SectionSummary};
 
 pub use levels::{
     BLOCK_TICKING_LEVEL, ENTITY_TICKING_LEVEL, FULL_LEVEL, LevelChange, MAX_LEVEL,
@@ -487,6 +487,22 @@ impl ChunkView<'_> {
         self.holders.full_block(pos).map(|(state, _)| state)
     }
 
+    /// [`ChunkView::block`] of every position in the box from `min` to `max` (inclusive), in
+    /// X, then Z, then Y order (Y varies fastest), with one chunk lookup per chunk.
+    #[inline]
+    pub fn blocks_in(&self, min: BlockPos, max: BlockPos, f: impl FnMut(Option<BlockStateId>)) {
+        full_blocks_in(self.holders, min, max, f);
+    }
+
+    /// The summary of section `section_y` of the full chunk at `chunk`, `None` outside full
+    /// chunks and the build height.
+    #[inline]
+    pub fn section_summary(&self, chunk: ChunkPos, section_y: i32) -> Option<SectionSummary> {
+        self.holders
+            .full_section(chunk, section_y)
+            .map(|section| section.summary())
+    }
+
     /// Whether the chunk is loaded as a full chunk.
     #[inline]
     pub fn is_full(&self, pos: ChunkPos) -> bool {
@@ -494,6 +510,40 @@ impl ChunkView<'_> {
             .get(&pos)
             .and_then(|h| h.chunk.as_ref())
             .is_some_and(|c| c.status == ChunkStatus::Full)
+    }
+}
+
+/// The block states of the full chunks in the box from `min` to `max` (inclusive), in X, then
+/// Z, then Y order, with one chunk lookup per chunk; `None` outside full chunks and the build
+/// height.
+fn full_blocks_in(
+    holders: &Holders,
+    min: BlockPos,
+    max: BlockPos,
+    mut f: impl FnMut(Option<BlockStateId>),
+) {
+    let mut last: Option<(ChunkPos, Option<&ProtoChunk>)> = None;
+    for x in min.x..=max.x {
+        for z in min.z..=max.z {
+            let chunk_pos = ChunkPos::new(x >> 4, z >> 4);
+            let chunk = match last {
+                Some((pos, chunk)) if pos == chunk_pos => chunk,
+                _ => {
+                    let chunk = holders.get(&chunk_pos).and_then(|holder| {
+                        let chunk = holder
+                            .chunk
+                            .as_ref()
+                            .filter(|c| c.status == ChunkStatus::Full)?;
+                        Some(&**chunk)
+                    });
+                    last = Some((chunk_pos, chunk));
+                    chunk
+                }
+            };
+            for y in min.y..=max.y {
+                f(chunk.and_then(|c| c.chunk.block((x & 15) as u32, y, (z & 15) as u32)));
+            }
+        }
     }
 }
 
@@ -2657,29 +2707,7 @@ impl Chunks {
             }
             return;
         }
-        let mut last: Option<(ChunkPos, Option<&ProtoChunk>)> = None;
-        for x in min.x..=max.x {
-            for z in min.z..=max.z {
-                let chunk_pos = ChunkPos::new(x >> 4, z >> 4);
-                let chunk = match last {
-                    Some((pos, chunk)) if pos == chunk_pos => chunk,
-                    _ => {
-                        let chunk = self.holders.get(&chunk_pos).and_then(|holder| {
-                            let chunk = holder
-                                .chunk
-                                .as_ref()
-                                .filter(|c| c.status == ChunkStatus::Full)?;
-                            Some(&**chunk)
-                        });
-                        last = Some((chunk_pos, chunk));
-                        chunk
-                    }
-                };
-                for y in min.y..=max.y {
-                    f(chunk.and_then(|c| c.chunk.block((x & 15) as u32, y, (z & 15) as u32)));
-                }
-            }
-        }
+        full_blocks_in(&self.holders, min, max, f);
     }
 
     /// [`Chunks::block`] of an accessible chunk ([`Chunks::is_accessible`]) with one map

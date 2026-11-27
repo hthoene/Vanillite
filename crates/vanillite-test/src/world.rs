@@ -7,11 +7,10 @@
 //! exists today (chunk loading, block set and get).
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use vanillite_base::{BlockPos, ChunkPos};
 use vanillite_chunk::{Chunk, facts};
-use vanillite_data::block::{BlockId, BlockState, STATE_COUNT};
+use vanillite_data::block::{BlockId, BlockState};
 
 use crate::scenario::{EntitySpec, Hurt, WorldSpec};
 use crate::trace::{EntityObs, TickObs};
@@ -200,31 +199,10 @@ pub fn state_name(state: BlockState) -> String {
     format!("{name}[{}]", inner.join(","))
 }
 
-/// Installs the per-state chunk facts the stand-in needs (air, fluids, random ticks), once.
+/// Installs the per-state chunk facts (Vanilla's, without the heightmap tags), once. The
+/// same tables as the game's tests, so a test binary gets one set whichever installs first.
 fn install_facts() {
-    static DONE: OnceLock<()> = OnceLock::new();
-    DONE.get_or_init(|| {
-        let flags: Vec<u8> = (0..STATE_COUNT)
-            .map(|id| {
-                let state = BlockState(id as u16);
-                let mut f = 0;
-                if state.is_air() {
-                    f |= facts::AIR;
-                }
-                if state.random_ticks() {
-                    f |= facts::RANDOM_TICKING;
-                }
-                if !state.fluid_state().is_empty() {
-                    f |= facts::FLUID;
-                }
-                f
-            })
-            .collect();
-        facts::install(facts::Tables {
-            block_flags: Box::leak(flags.into_boxed_slice()),
-            biome_count: 1,
-        });
-    });
+    facts::install_vanilla(&[], &[], 1);
 }
 
 /// Overworld height range.
