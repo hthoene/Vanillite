@@ -1,0 +1,3 @@
+tick = 13
+cause = "after the player died (tick 10) Vanillite's level random stops changing while Vanilla's goes on drawing (as dimension_death_respawn_view); the drops of every slot, the cursor and the crafting grid match Vanilla. The client view also lacks Vanilla's entity removal and re-add on respawn (tick 20-21)"
+owner = "gameplay-developer #196"

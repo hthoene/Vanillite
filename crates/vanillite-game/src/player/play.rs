@@ -2406,12 +2406,32 @@ pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop, own_rand
     if drop.stack.is_empty() {
         return;
     }
-    let y = actor.pos.y + actor.eye_height - f64::from(0.3_f32);
+    let (from, velocity) = throw_motion(
+        actor.pos,
+        actor.eye_height,
+        actor.y_rot,
+        actor.x_rot,
+        own_random,
+    );
+    let thrower = drop.thrown.then_some(actor.uuid);
+    level.spawn_item(from, drop.stack, velocity, 40, thrower);
+}
+
+/// `createItemStackToDrop(stack, false, _)`'s start position and motion for a player at `pos`
+/// with eye height `eye_height` looking at `y_rot`/`x_rot`; draws from `own_random`.
+pub fn throw_motion(
+    pos: Vec3,
+    eye_height: f64,
+    y_rot: f32,
+    x_rot: f32,
+    own_random: &mut i64,
+) -> (Vec3, Vec3) {
+    let y = pos.y + eye_height - f64::from(0.3_f32);
     let deg = std::f64::consts::PI / 180.0;
-    let sin_x = sin(f64::from(actor.x_rot) * deg);
-    let cos_x = cos(f64::from(actor.x_rot) * deg);
-    let sin_y = sin(f64::from(actor.y_rot) * deg);
-    let cos_y = cos(f64::from(actor.y_rot) * deg);
+    let sin_x = sin(f64::from(x_rot) * deg);
+    let cos_x = cos(f64::from(x_rot) * deg);
+    let sin_y = sin(f64::from(y_rot) * deg);
+    let cos_y = cos(f64::from(y_rot) * deg);
     // The player's own random, not the level's.
     let mut r = vanillite_base::random::LegacyRandom::from_state(*own_random);
     let (dir, pow2, spread) = {
@@ -2427,14 +2447,7 @@ pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop, own_rand
         f64::from(-sin_x * 0.3 + 0.1 + spread * 0.1),
         f64::from(cos_y * cos_x * 0.3) + f64::from(dir).sin() * f64::from(pow2),
     );
-    let thrower = drop.thrown.then_some(actor.uuid);
-    level.spawn_item(
-        Vec3::new(actor.pos.x, y, actor.pos.z),
-        drop.stack,
-        velocity,
-        40,
-        thrower,
-    );
+    (Vec3::new(pos.x, y, pos.z), velocity)
 }
 
 /// `floor` of a position.

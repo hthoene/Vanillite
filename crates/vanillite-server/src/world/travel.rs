@@ -720,6 +720,11 @@ impl ServerWorld {
                 },
             );
         }
+        // `Player.remove(KILLED)`: the open menu closes; the carried stack and the crafting grid
+        // of the dead player drop (also with keepInventory).
+        if !keep_all {
+            crate::players::drop_menus_on_leave(&mut self.level, id);
+        }
         self.send_away(ctx, id, target, Route::Respawn { keep_all }, false);
     }
 
