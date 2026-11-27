@@ -1,7 +1,10 @@
 //! Java menus as Bedrock containers: chests, barrels, shulker boxes, ender chests, hoppers,
 //! dispensers and droppers, furnaces, brewing stands, crafting tables, crafters, anvils,
-//! enchanting tables, smithing tables, stonecutters, grindstones and cartography tables open at
-//! the block the player used (chest minecarts, chest boats and hopper minecarts at the entity).
+//! enchanting tables, smithing tables, stonecutters, grindstones, cartography tables, beacons,
+//! looms and lecterns open at the block the player used (chest minecarts, chest boats and hopper
+//! minecarts at the entity; the inventories of horses, donkeys, mules, llamas and camels at the
+//! mount). A lectern's book lives in its Bedrock block actor; crafter slots locked on Java are
+//! shown through the crafter's block actor.
 //! A menu with no block or entity behind it (a plugin menu) becomes a form whose buttons click
 //! the slots. Bedrock computes anvil, smithing, stonecutter, grindstone and cartography results
 //! itself; taking one clicks the Java result slot (after `rename_item` or the stonecutter button).
@@ -20,7 +23,7 @@ use vanillite_protocol::packets::play::serverbound::{self as psb, ContainerInput
 use super::Session;
 use super::inventory::{Slot, Target};
 use crate::forms::{Button, Form};
-use crate::packets::{self as bp, container_type as ct, id, window};
+use crate::packets::{self as bp, container_type as ct, id, meta, window};
 
 /// Form id of a menu shown as a form.
 pub(super) const MENU_FORM: u32 = u32::MAX - 1;
@@ -59,6 +62,62 @@ pub(super) enum Kind {
     Grindstone,
     /// `cartography_table`: map, additional, result.
     Cartography,
+    /// `beacon`: the payment item.
+    Beacon,
+    /// `loom`: banner, dye, pattern, result.
+    Loom,
+    /// `lectern`: the book.
+    Lectern,
+    /// `mount_screen_open`: saddle, body armour, then the chest.
+    Mount(Mount),
+}
+
+/// How a mount's Java slots (saddle, body armour, chest) sit in the Bedrock horse window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mount {
+    /// Saddle and armour (horses, camels, nautiluses): the same slots.
+    Horse,
+    /// Saddle then the chest (donkeys, mules): no armour slot.
+    Chested,
+    /// Carpet then the chest (llamas): no saddle slot.
+    Llama,
+}
+
+impl Mount {
+    fn of(java_type: &str) -> Option<Mount> {
+        let name = java_type.strip_prefix("minecraft:")?;
+        Some(match name {
+            "llama" | "trader_llama" => Mount::Llama,
+            "donkey" | "mule" => Mount::Chested,
+            "horse" | "zombie_horse" | "skeleton_horse" | "camel" | "camel_husk" | "nautilus"
+            | "zombie_nautilus" => Mount::Horse,
+            _ => return None,
+        })
+    }
+
+    /// The Bedrock slot of a Java menu slot.
+    pub(super) fn bedrock(self, java: usize) -> Option<usize> {
+        match (self, java) {
+            (Mount::Horse, 0 | 1) | (Mount::Chested, 0) => Some(java),
+            (Mount::Horse, _) | (Mount::Chested, 1) | (Mount::Llama, 0) => None,
+            (Mount::Chested | Mount::Llama, j) => j.checked_sub(1),
+        }
+    }
+
+    /// The Java menu slot of a Bedrock slot.
+    pub(super) fn java(self, bedrock: usize) -> usize {
+        match (self, bedrock) {
+            (Mount::Horse, b) | (Mount::Chested, b @ 0) => b,
+            (Mount::Chested | Mount::Llama, b) => b.saturating_add(1),
+        }
+    }
+}
+
+/// Whether a Java entity type has an inventory menu its rider opens (`HasCustomInventoryScreen`).
+pub(super) fn has_inventory_screen(java_type: &str) -> bool {
+    Mount::of(java_type).is_some()
+        || java_type.ends_with("_chest_boat")
+        || java_type.ends_with("_chest_raft")
 }
 
 /// Bedrock recipe network ids of the three enchanting options (above all crafting recipes).
@@ -81,6 +140,12 @@ pub(super) struct Open {
     title: String,
     /// Enchanting table data: costs, clue enchantments and clue levels of the three options.
     enchant: [[i32; 3]; 3],
+    /// The block the menu belongs to (crafters and lecterns).
+    pos: Option<[i32; 3]>,
+    /// Crafter: bit per disabled slot. Lectern: the Java page.
+    state: i32,
+    /// The Bedrock window is not open yet (a lectern opens once its book is known).
+    pending_open: Option<([i32; 3], i64)>,
 }
 
 /// What the player used last: a block or an entity (Java id).
@@ -113,6 +178,9 @@ fn menu_kind(menu: &str) -> Option<(Kind, usize, i8)> {
         "minecraft:stonecutter" => (Kind::Stonecutter, 2, ct::STONECUTTER),
         "minecraft:grindstone" => (Kind::Grindstone, 3, ct::GRINDSTONE),
         "minecraft:cartography_table" => (Kind::Cartography, 3, ct::CARTOGRAPHY),
+        "minecraft:beacon" => (Kind::Beacon, 1, ct::BEACON),
+        "minecraft:loom" => (Kind::Loom, 4, ct::LOOM),
+        "minecraft:lectern" => (Kind::Lectern, 1, ct::LECTERN),
         _ => return None,
     })
 }
@@ -140,6 +208,10 @@ fn bedrock_slot(open: &Open, i: usize) -> Option<(u32, u32)> {
         Kind::Stonecutter => (window::UI, *[3].get(i)?),
         Kind::Grindstone => (window::UI, *[16, 17].get(i)?),
         Kind::Cartography => (window::UI, *[12, 13].get(i)?),
+        Kind::Beacon => (window::UI, *[27].get(i)?),
+        Kind::Loom => (window::UI, *[9, 10, 11].get(i)?),
+        Kind::Lectern => return None,
+        Kind::Mount(m) => (w, u32::try_from(m.bedrock(i)?).ok()?),
         _ => (w, s),
     })
 }
@@ -220,6 +292,26 @@ impl Session {
             }
             None => (None, -1),
         };
+        self.open_window(
+            container,
+            kind,
+            size,
+            container_type,
+            pos.map(|p| (p, entity)),
+            title,
+        );
+    }
+
+    /// Opens the Bedrock window of a Java menu at a block or entity (`None`: as a form).
+    fn open_window(
+        &mut self,
+        container: i32,
+        kind: Kind,
+        size: usize,
+        container_type: i8,
+        at: Option<([i32; 3], i64)>,
+        title: String,
+    ) {
         self.next_window = if self.next_window >= 99 {
             1
         } else {
@@ -231,6 +323,7 @@ impl Session {
         } else {
             100
         };
+        let deferred = kind == Kind::Lectern;
         self.inv.open = Some(Open {
             container,
             window,
@@ -239,16 +332,73 @@ impl Session {
             state_id: 0,
             container_type,
             cook: java_total,
-            form: pos.is_none(),
+            form: at.is_none(),
             title,
             enchant: [[0, -1, -1]; 3],
+            pos: at.filter(|(_, e)| *e == -1).map(|(p, _)| p),
+            state: 0,
+            pending_open: at.filter(|_| deferred),
         });
-        if let Some(pos) = pos {
+        if let Some((pos, entity)) = at.filter(|_| !deferred) {
             self.send(
                 id::CONTAINER_OPEN,
                 &bp::container_open(window, container_type, pos, entity),
             );
         }
+    }
+
+    /// `mount_screen_open`: the inventory of a horse, donkey, mule, llama, camel or nautilus.
+    pub(super) fn java_mount_screen(&mut self, container: i32, columns: i32, java: i32) {
+        self.close_open_window(true);
+        let columns = usize::try_from(columns.clamp(0, 5)).unwrap_or(0);
+        let target = self.world.as_ref().and_then(|w| {
+            let e = w.entities.get(&java)?;
+            Some((e.pos.map(crate::num::floor_i32), e.java_type))
+        });
+        let Some((pos, java_type)) = target else {
+            self.java_send(&psb::ContainerClose {
+                container_id: container,
+            });
+            return;
+        };
+        let name = super::play::java_type_name(java_type);
+        let mount = Mount::of(name).unwrap_or(Mount::Horse);
+        let chest = columns.saturating_mul(3);
+        let size = chest.saturating_add(2);
+        // The Bedrock horse window takes its layout from the mount's entity data.
+        let bedrock_size = match mount {
+            Mount::Horse => 2,
+            Mount::Chested | Mount::Llama => chest.saturating_add(1),
+        };
+        if let Some(e) = self.world.as_mut().and_then(|w| w.entities.get_mut(&java)) {
+            e.tamed = true;
+            e.chested = chest > 0;
+        }
+        let runtime = self.actor(java);
+        let strength = i32::try_from(columns).unwrap_or(0);
+        let flags = self.actor_flags_of(java);
+        let mut m = bp::Metadata::default()
+            .byte(meta::CONTAINER_TYPE, ct::HORSE.to_le_bytes()[0])
+            .int(
+                meta::CONTAINER_SIZE,
+                i32::try_from(bedrock_size).unwrap_or(0),
+            )
+            .int(meta::CONTAINER_STRENGTH_MODIFIER, 3);
+        if mount == Mount::Llama {
+            m = m.int(meta::STRENGTH, strength).int(meta::STRENGTH_MAX, 5);
+        }
+        if let Some(f) = flags {
+            m = m.long(meta::FLAGS, f);
+        }
+        self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
+        self.open_window(
+            container,
+            Kind::Mount(mount),
+            size,
+            ct::HORSE,
+            Some((pos, super::uid(java))),
+            String::new(),
+        );
     }
 
     /// Closes the Bedrock window of the open menu (`server_side`: the server closed it).
@@ -355,6 +505,8 @@ impl Session {
         self.inv.put(Target::Cursor, c.carried);
         self.send_open_content();
         self.send_inventory();
+        self.send_lectern();
+        self.send_crafter();
     }
 
     /// `container_set_slot` of the open menu.
@@ -379,6 +531,7 @@ impl Session {
                     self.show_menu_form();
                 } else {
                     self.send_open_slot(i);
+                    self.send_lectern();
                 }
             }
         } else if let Some(k) = i.checked_sub(size).filter(|&k| k < INVENTORY_PART) {
@@ -424,6 +577,28 @@ impl Session {
                 open.cook = value.max(1);
                 return;
             }
+            // Java: disabled slots 0-8 (1 = disabled), shown in the crafter's block actor.
+            (Kind::Crafter, k @ 0..=8) => {
+                let bit = 1i32.wrapping_shl(u32::try_from(k).unwrap_or(0));
+                let state = if value == 1 {
+                    open.state | bit
+                } else {
+                    open.state & !bit
+                };
+                if state != open.state {
+                    open.state = state;
+                    self.send_crafter();
+                }
+                return;
+            }
+            // Java: the page of the lectern's book.
+            (Kind::Lectern, 0) => {
+                if open.state != value {
+                    open.state = value;
+                    self.send_lectern();
+                }
+                return;
+            }
             // Java: brew time, fuel; Bedrock also wants the full fuel.
             (Kind::Brewing, 0) => &[(0, value)],
             (Kind::Brewing, 1) => &[(1, value), (2, 20)],
@@ -449,6 +624,139 @@ impl Session {
                 &bp::container_set_data(window, key, v),
             );
         }
+    }
+
+    /// The crafter's block actor with the slots disabled on Java.
+    fn send_crafter(&mut self) {
+        let Some((pos, disabled)) = self
+            .inv
+            .open
+            .as_ref()
+            .filter(|o| o.kind == Kind::Crafter)
+            .and_then(|o| Some((o.pos?, o.state)))
+        else {
+            return;
+        };
+        let [x, y, z] = pos;
+        let mut c = crate::nbt::Compound::default();
+        c.string("id", "Crafter")
+            .short(
+                "disabled_slots",
+                i16::try_from(disabled & 0x1ff).unwrap_or(0),
+            )
+            .int("x", x)
+            .int("y", y)
+            .int("z", z)
+            .byte("isMovable", 1);
+        self.send(id::BLOCK_ACTOR_DATA, &bp::block_actor_data(pos, &c.root()));
+    }
+
+    /// The lectern's block actor with the book of the open lectern menu (Bedrock shows the book
+    /// from it), then the lectern window once the book is known.
+    fn send_lectern(&mut self) {
+        let Some(open) = self.inv.open.as_ref().filter(|o| o.kind == Kind::Lectern) else {
+            return;
+        };
+        let Some(pos) = open.pos.or(open.pending_open.map(|(p, _)| p)) else {
+            return;
+        };
+        let book = open
+            .slots
+            .first()
+            .map(|s| s.stack.clone())
+            .unwrap_or_default();
+        let page = open.state;
+        let [x, y, z] = pos;
+        let mut c = crate::nbt::Compound::default();
+        c.string("id", "Lectern");
+        let content = crate::items::book_content(&book);
+        let name = self.version.palette.items().name(book.item);
+        match (content, name) {
+            (Some((pages, written)), Some((name, meta))) if !book.is_empty() => {
+                let total = i32::try_from(pages.len()).unwrap_or(0);
+                let mut tag = crate::nbt::Compound::default();
+                let pages: Vec<crate::nbt::Compound> = pages
+                    .iter()
+                    .map(|p| {
+                        let mut c = crate::nbt::Compound::default();
+                        c.string("text", p).string("photoname", "");
+                        c
+                    })
+                    .collect();
+                tag.compounds("pages", &pages);
+                if let Some((title, author, generation)) = &written {
+                    tag.string("title", title)
+                        .string("author", author)
+                        .int("generation", *generation)
+                        .string("xuid", "");
+                }
+                let mut item = crate::nbt::Compound::default();
+                item.string("Name", name)
+                    .byte("Count", 1)
+                    .short("Damage", i16::try_from(meta).unwrap_or(0))
+                    .byte("WasPickedUp", 0)
+                    .compound("tag", &tag);
+                // Bedrock pages come in spreads of two.
+                c.byte("hasBook", 1)
+                    .int("page", page.max(0) / 2)
+                    .int("totalPages", total)
+                    .compound("book", &item);
+            }
+            _ => {
+                c.byte("hasBook", 0);
+            }
+        }
+        c.int("x", x).int("y", y).int("z", z).byte("isMovable", 1);
+        self.send(id::BLOCK_ACTOR_DATA, &bp::block_actor_data(pos, &c.root()));
+        let pending = self.inv.open.as_mut().and_then(|o| {
+            let (window, kind) = (o.window, o.container_type);
+            o.pending_open.take().map(|(p, e)| (window, kind, p, e))
+        });
+        if let Some((window, kind, pos, entity)) = pending {
+            self.send(
+                id::CONTAINER_OPEN,
+                &bp::container_open(window, kind, pos, entity),
+            );
+        }
+    }
+
+    /// `lectern_update`: the reader turned to another spread of the book.
+    pub(super) fn lectern_update(&mut self, body: &[u8]) -> crate::io::Result<()> {
+        let (page, pos) = bp::read_lectern_update(body)?;
+        if let Some(open) = self
+            .inv
+            .open
+            .as_ref()
+            .filter(|o| o.kind == Kind::Lectern && o.pos == Some(pos))
+        {
+            // `LecternMenu.clickMenuButton`: 100 + page sets the page.
+            let container_id = open.container;
+            self.java_send(&psb::ContainerButtonClick {
+                container_id,
+                button_id: 100i32.saturating_add(i32::from(page).saturating_mul(2)),
+            });
+        }
+        Ok(())
+    }
+
+    /// `player_toggle_crafter_slot_request`: a crafter slot locked or unlocked.
+    pub(super) fn toggle_crafter_slot(&mut self, body: &[u8]) -> crate::io::Result<()> {
+        let (pos, slot, disabled) = bp::read_toggle_crafter_slot(body)?;
+        if slot < 9
+            && let Some(open) = self
+                .inv
+                .open
+                .as_ref()
+                .filter(|o| o.kind == Kind::Crafter && o.pos.is_none_or(|p| p == pos))
+        {
+            let container_id = open.container;
+            self.java_send(&psb::ContainerSlotStateChanged {
+                slot_id: i32::from(slot),
+                container_id,
+                new_state: !disabled,
+            });
+        }
+        Ok(())
     }
 
     /// `player_enchant_options`: the enchanting table's options with a cost and a clue.
@@ -559,5 +867,30 @@ impl Session {
                 &bp::block_event([pos.x, pos.y, pos.z], 1, i32::from(param > 0)),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mount_slots_round_trip() {
+        for (mount, java_slots) in [
+            (Mount::Horse, vec![0, 1]),
+            (Mount::Chested, vec![0, 2, 3, 16]),
+            (Mount::Llama, vec![1, 2, 16]),
+        ] {
+            for j in java_slots {
+                let b = mount.bedrock(j);
+                assert_eq!(b.map(|b| mount.java(b)), Some(j), "{mount:?} {j}");
+            }
+        }
+        assert_eq!(Mount::Chested.bedrock(1), None);
+        assert_eq!(Mount::Llama.bedrock(0), None);
+        assert_eq!(Mount::Llama.bedrock(1), Some(0));
+        assert!(has_inventory_screen("minecraft:trader_llama"));
+        assert!(has_inventory_screen("minecraft:oak_chest_boat"));
+        assert!(!has_inventory_screen("minecraft:pig"));
     }
 }

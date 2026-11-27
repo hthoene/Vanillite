@@ -390,47 +390,58 @@ pub fn component(
 
 /// Bedrock effect id of a Java mob effect name.
 pub fn effect_id(java: &str) -> Option<i32> {
-    const EFFECTS: &[&str] = &[
-        "speed",
-        "slowness",
-        "haste",
-        "mining_fatigue",
-        "strength",
-        "instant_health",
-        "instant_damage",
-        "jump_boost",
-        "nausea",
-        "regeneration",
-        "resistance",
-        "fire_resistance",
-        "water_breathing",
-        "invisibility",
-        "blindness",
-        "night_vision",
-        "hunger",
-        "weakness",
-        "poison",
-        "wither",
-        "health_boost",
-        "absorption",
-        "saturation",
-        "levitation",
-        "fatal_poison",
-        "conduit_power",
-        "slow_falling",
-        "bad_omen",
-        "hero_of_the_village",
-        "darkness",
-        "trial_omen",
-        "wind_charged",
-        "weaving",
-        "oozing",
-        "infested",
-        "raid_omen",
-    ];
     let name = java.strip_prefix("minecraft:").unwrap_or(java);
-    let i = EFFECTS.iter().position(|e| *e == name)?;
+    let i = EFFECT_NAMES.iter().position(|e| *e == name)?;
     i32::try_from(i).ok()?.checked_add(1)
+}
+
+/// Bedrock effect ids - 1 by Java effect name.
+const EFFECT_NAMES: &[&str] = &[
+    "speed",
+    "slowness",
+    "haste",
+    "mining_fatigue",
+    "strength",
+    "instant_health",
+    "instant_damage",
+    "jump_boost",
+    "nausea",
+    "regeneration",
+    "resistance",
+    "fire_resistance",
+    "water_breathing",
+    "invisibility",
+    "blindness",
+    "night_vision",
+    "hunger",
+    "weakness",
+    "poison",
+    "wither",
+    "health_boost",
+    "absorption",
+    "saturation",
+    "levitation",
+    "fatal_poison",
+    "conduit_power",
+    "slow_falling",
+    "bad_omen",
+    "hero_of_the_village",
+    "darkness",
+    "trial_omen",
+    "wind_charged",
+    "weaving",
+    "oozing",
+    "infested",
+    "raid_omen",
+];
+
+/// The Java `mob_effect` registry id of a Bedrock effect id (0: none).
+pub fn java_effect(bedrock: i32) -> Option<i32> {
+    let i = usize::try_from(bedrock.checked_sub(1)?).ok()?;
+    let java = EFFECT_NAMES.get(i)?;
+    let id = vanillite_data::registry::Registry::by_name("minecraft:mob_effect")?
+        .id(&format!("minecraft:{java}"))?;
+    Some(i32::from(id))
 }
 
 #[cfg(test)]
