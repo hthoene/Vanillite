@@ -30,7 +30,19 @@
 #   instances and the proxy as a bundle in /var/lib/vanillite-incidents (`vanillite-incidents
 #   list|show`, `cargo xtask testserver incidents`).
 # Only ports 30000-30999 are reachable by players.
+#
+# Role bench (VANILLITE_TESTSERVER_ROLE=bench, `cargo xtask testserver --host vanillite-bench
+# provision`, #186): the dedicated benchmark server with a public address. Only the parts the
+# benchmarks need (packages, users, RCON helper, Vanillite units and deploy, the benchmark
+# instances, the monitor and the forwarding secret), plus hardening: a firewall that allows only
+# SSH and TCP/UDP 30000-30999, SSH with keys only, unattended security upgrades, no other
+# services. Nothing runs there outside a benchmark.
 set -euo pipefail
+role=${VANILLITE_TESTSERVER_ROLE:-test}
+case $role in
+    test | bench) ;;
+    *) echo "unknown role $role (test, bench)" >&2; exit 2 ;;
+esac
 
 PAPER_VERSION=26.3
 PAPER_BUILD=262
@@ -53,6 +65,10 @@ write_if_changed() {
 
 echo "== packages"
 export DEBIAN_FRONTEND=noninteractive
+# A fresh cloud machine upgrades its packages on first boot: wait until that holds no apt lock.
+if [ "$role" = bench ] && command -v cloud-init > /dev/null; then
+    cloud-init status --wait > /dev/null || true
+fi
 missing=()
 for pkg in openjdk-25-jre-headless curl rsync jq python3 git build-essential; do
     dpkg -s "$pkg" > /dev/null 2>&1 || missing+=("$pkg")
@@ -62,7 +78,62 @@ if [ ${#missing[@]} -gt 0 ]; then
     apt-get install -y -q "${missing[@]}"
 fi
 
+if [ "$role" = bench ]; then
+    echo "== hardening (public address: firewall, SSH keys only, security upgrades)"
+    missing=()
+    for pkg in ufw unattended-upgrades; do
+        dpkg -s "$pkg" > /dev/null 2>&1 || missing+=("$pkg")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        apt-get update -q
+        apt-get install -y -q "${missing[@]}"
+    fi
+    # The first value sshd reads wins: this file sorts before the cloud image's settings.
+    write_if_changed /etc/ssh/sshd_config.d/00-vanillite-hardening.conf <<'EOF'
+# Installed by scripts/testserver/provision.sh (role bench): keys only.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+PermitEmptyPasswords no
+X11Forwarding no
+EOF
+    sshd -t
+    systemctl reload ssh
+    ufw default deny incoming > /dev/null
+    ufw default allow outgoing > /dev/null
+    ufw allow 22/tcp > /dev/null
+    ufw allow 30000:30999/tcp > /dev/null
+    ufw allow 30000:30999/udp > /dev/null
+    ufw --force enable > /dev/null
+    write_if_changed /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+    # Package updates at a fixed time of day, never during the nightly benchmark (02:00 UTC).
+    for timer in apt-daily apt-daily-upgrade; do
+        install -d "/etc/systemd/system/$timer.timer.d"
+        write_if_changed "/etc/systemd/system/$timer.timer.d/vanillite.conf" <<EOF
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* $([ "$timer" = apt-daily ] && echo 10:00 || echo 10:30)
+RandomizedDelaySec=0
+EOF
+    done
+    # No services besides SSH and the benchmark instances; nothing that wakes up during a run.
+    for unit in snapd.service snapd.socket snapd.seeded.service ModemManager.service \
+        fwupd.service fwupd-refresh.timer udisks2.service multipathd.service multipathd.socket \
+        motd-news.timer; do
+        if systemctl list-unit-files "$unit" > /dev/null 2>&1; then
+            systemctl disable --now --quiet "$unit" 2> /dev/null || true
+            systemctl mask --quiet "$unit" 2> /dev/null || true
+        fi
+    done
+    systemctl daemon-reload
+fi
+
 # Docker engine with buildx: `cargo xtask docker` builds the image here over SSH.
+if [ "$role" = test ]; then
 echo "== docker"
 if ! command -v docker > /dev/null; then
     . /etc/os-release
@@ -74,6 +145,7 @@ if ! command -v docker > /dev/null; then
     apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin
 fi
 systemctl enable --now docker > /dev/null
+fi
 
 echo "== users"
 id minecraft > /dev/null 2>&1 || useradd --system --home-dir /opt/paper --create-home --shell /usr/sbin/nologin minecraft
@@ -757,9 +829,11 @@ write_if_changed /usr/local/bin/vanillite-bench 755 <<'EOF'
 #                                  `limit <target> <cpu %> <MiB>` sets only quota and memory.
 #                                  `reset` drops them
 #   hw                             prints the hardware as JSON: CPU model, CPUs of this machine
-#                                  and of the host, RAM of both, kernel, virtualisation
-#   load                           prints the host load averages and this machine's CPU pressure
-#                                  counter (/proc/pressure/cpu) as JSON
+#                                  and of the host, RAM of both, kernel, virtualisation, the
+#                                  CPUs of the bots (`bots`)
+#   load                           prints the host load averages, this machine's CPU pressure
+#                                  counter (/proc/pressure/cpu) and the CPU time stolen by the
+#                                  hypervisor (/proc/stat) as JSON
 #   start <target> [<profile>]     start it (Vanillite: rule profile) and wait for a status ping;
 #                                  prints {"ready_s", "version", "protocol"}
 #   stop <target>                  clean stop (saves); prints {"stop_s"}
@@ -773,6 +847,9 @@ write_if_changed /usr/local/bin/vanillite-bench 755 <<'EOF'
 #   idle <target> <seconds>        prints {"rss_mib", "rss_max_mib", "cpu_percent"} over the time
 #   chunky on|off                  add or remove the Chunky plugin of paper-loadtest
 #   install <name>                 binary from stdin into /opt/vanillite/bench/bin/<name>
+#   bots <loadbot args...>         runs bin/loadbot against 127.0.0.1 (stdin/stdout passed through)
+#                                  on the CPUs the 4c8g profile leaves free (all CPUs when none
+#                                  are), so the bots never take CPU time from the server
 #   lock <owner>                   waits for the benchmark lock (/run/vanillite-bench.lock), prints
 #                                  "busy <owner>" while another run holds it, then "locked", and
 #                                  holds it until stdin closes (xtask bench and loadtest take it)
@@ -931,6 +1008,17 @@ print(",".join(map(str, cpus[:n])))
         '{profile: $p, cpus: $n, cpu_list: $cpus, cpu_quota_percent: ($n * 100), memory_max_mib: $mib, swap: false}')
 }
 
+# The CPUs of the load bots: those after the first four (the 4c8g profile), else all.
+bot_cpus() {
+    python3 -c '
+cpus = []
+for part in open("/sys/fs/cgroup/cpuset.cpus.effective").read().strip().split(","):
+    a, _, b = part.partition("-")
+    cpus += range(int(a), int(b or a) + 1)
+print(",".join(map(str, cpus[4:] or cpus)))
+'
+}
+
 case $cmd in
     props)
         case $target in
@@ -1029,7 +1117,7 @@ print(json.dumps({"version": v.get("name"), "protocol": v.get("protocol")}))
         ;;
     hw)
         python3 -c '
-import json, os, platform
+import json, os, platform, sys
 def first(path, key):
     for line in open(path):
         if line.startswith(key):
@@ -1054,16 +1142,20 @@ print(json.dumps({
     "host_mem_mib": node_kib // 1024,
     "kernel": platform.release(),
     "virtualisation": virt,
+    "bot_cpu_list": sys.argv[1],
 }))
-'
+' "$(bot_cpus)"
         ;;
     load)
         # In the container /proc/loadavg is the host's, /proc/pressure/cpu this machine's.
         read -r l1 l5 l15 _ < /proc/loadavg
         some=$(awk '/^some/ { sub("total=", "", $5); print $5 }' /proc/pressure/cpu)
+        # In a VM: CPU time the hypervisor gave to others (all CPUs, in clock ticks).
+        steal=$(awk '/^cpu / { print $9 + 0 }' /proc/stat)
         jq -n -c --argjson t "$(now)" --argjson l1 "$l1" --argjson l5 "$l5" --argjson l15 "$l15" \
-            --argjson some "$some" \
-            '{t: $t, load1: $l1, load5: $l5, load15: $l15, cpu_pressure_some_us: $some}'
+            --argjson some "$some" --argjson steal "$steal" --argjson hz "$(getconf CLK_TCK)" \
+            '{t: $t, load1: $l1, load5: $l5, load15: $l15, cpu_pressure_some_us: $some,
+              steal_s: ($steal / $hz)}'
         ;;
     stop)
         t0=$(now)
@@ -1176,8 +1268,8 @@ print(json.dumps({"chunks": n}))
         ;;
     install)
         case $target in
-            vanillite-proxy | chunk_bench) ;;
-            *) echo "usage: vanillite-bench install vanillite-proxy|chunk_bench < binary" >&2; exit 2 ;;
+            vanillite-proxy | chunk_bench | loadbot) ;;
+            *) echo "usage: vanillite-bench install vanillite-proxy|chunk_bench|loadbot < binary" >&2; exit 2 ;;
         esac
         tmp=$(mktemp -p /opt/vanillite/bench/bin)
         cat > "$tmp"
@@ -1185,6 +1277,12 @@ print(json.dumps({"chunks": n}))
         chmod 755 "$tmp"
         chown vanillite:vanillite "$tmp"
         mv -f "$tmp" "/opt/vanillite/bench/bin/$target"
+        ;;
+    bots)
+        # stdin and stdout stay the caller's (--pipe): loadbot ends when stdin closes.
+        exec systemd-run --quiet --wait --pipe --collect --uid=vanillite --gid=vanillite \
+            -p AllowedCPUs="$(bot_cpus)" -p LimitNOFILE=1048576 -p MemoryMax=3G -p MemorySwapMax=0 \
+            /opt/vanillite/bench/bin/loadbot --host 127.0.0.1 "$@"
         ;;
     pregen)
         radius=${1:?radius}
@@ -1253,14 +1351,21 @@ while sleep 1; do
 done
 EOF
 
-echo "== proxy (vanillite-proxy on 30010; Paper with modern forwarding on 30011)"
 if [ ! -s /etc/vanillite-test/forwarding.secret ]; then
     (umask 077 && head -c 24 /dev/urandom | base64 | tr -d '/+=' > /etc/vanillite-test/forwarding.secret)
 fi
 secret=$(cat /etc/vanillite-test/forwarding.secret)
-# Vanillite 30001 and 30002 accept the proxy's players and still direct connections.
+# Vanillite 30001, 30002 and 30901 accept proxied players and still direct connections.
 printf 'VANILLITE_PROXY__VELOCITY_SECRET=%s\nVANILLITE_PROXY__ALLOW_DIRECT_CONNECTIONS=true\n' \
     "$secret" | write_if_changed /etc/vanillite-test/proxy-backend.env 600
+
+if [ "$role" = bench ]; then
+    systemctl daemon-reload
+    echo "== done (role bench)"
+    exit 0
+fi
+
+echo "== proxy (vanillite-proxy on 30010; Paper with modern forwarding on 30011)"
 for port in 30001 30002; do
     install -d "/etc/systemd/system/vanillite@$port.service.d"
     write_if_changed "/etc/systemd/system/vanillite@$port.service.d/proxy.conf" <<'EOF'

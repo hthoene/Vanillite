@@ -111,7 +111,9 @@ pub const USAGE: &str = "usage:
       the internal server for experiments, offline mode).
   cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent; on
-      vanillite-test2 scripts/testserver/provision-test2.sh); status lists the services, ports,
+      vanillite-test2 scripts/testserver/provision-test2.sh; on vanillite-bench, the benchmark
+      server, provision.sh with the role bench: benchmark instances and hardening only); status
+      lists the services, ports,
       the last auto-deploys and incidents (vanillite-test2: lock, disk, last nightly run); the
       others act on vanillite@<port> (default 30001). Host as for deploy.
   cargo xtask testserver [--host <host>] run [--fetch <path>]... -- <xtask args>
@@ -156,9 +158,10 @@ pub const USAGE: &str = "usage:
                        [--limits 4c8g|1c1g] [--rule <key>=<value>]...
                        [--fresh-players] [--binary <file>]
                        [--plugin <dir> [--plugin-set <toml line>]...]...
-      Scaling benchmark: tools/loadbot bots (here) against vanillite@30901 (deployed from this
-      checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the test
-      server and only running during the run. Steps default to 50,100,250,500,1000,2000,5000,
+      Scaling benchmark: tools/loadbot bots against vanillite@30901 (deployed from this
+      checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the
+      benchmark server vanillite-bench (VANILLITE_BENCH_HOST overrides it) and only running
+      during the run; the bots run there too, on the CPUs the server's profile leaves free. Steps default to 50,100,250,500,1000,2000,5000,
       each held 60 s after --settle seconds (default 0); chat is off by default (--chat sets
       seconds between messages per bot). The server runs under the fixed hardware profile
       --limits (default 4c8g: 4 pinned CPUs, 8 GiB; 1c1g: 1 CPU, 1 GiB); every result records
@@ -191,8 +194,8 @@ pub const USAGE: &str = "usage:
       Benchmark suite (`bench list` shows the scenarios): every scenario against Vanillite
       (vanillite@30901, deployed from this checkout; also with the paper rule profile), Paper,
       Vanilla and Pumpkin (taking turns on 30900), or the proxies Velocity and vanillite-proxy,
-      with the same settings and a new world each (`vanillite-bench` on the test server). Player
-      load from tools/loadbot here; command-built scenarios (redstone, mobs, items, hoppers,
+      with the same settings and a new world each (`vanillite-bench` on the benchmark server
+      vanillite-bench, VANILLITE_BENCH_HOST overrides it). Player load from tools/loadbot there; command-built scenarios (redstone, mobs, items, hoppers,
       TNT, fluids, light) use console commands and one observer bot. A server that lacks a
       command is reported as n/a. Writes target/bench/<time>/results.json and keeps the raw
       results under /opt/vanillite/bench/suite on the test server; --publish also updates

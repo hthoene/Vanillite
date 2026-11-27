@@ -10,6 +10,9 @@ const DEFAULT_HOST: &str = "vanillite-test";
 /// SSH host of the internal test server for heavy tests and experiments (#179): the default of
 /// `testserver run` and `testserver nightly`.
 const HEAVY_HOST: &str = "vanillite-test2";
+/// SSH host of the dedicated benchmark server (#186): provisioned with the role `bench` of
+/// scripts/testserver/provision.sh.
+const BENCH_HOST: &str = "vanillite-bench";
 /// The checkout `testserver run` copies the local one to (scripts/testserver/provision-test2.sh).
 const WORK_SRC: &str = "/opt/vanillite-work/src";
 /// Port of the main Vanillite dev server. Paper runs on 30000.
@@ -140,10 +143,23 @@ pub fn testserver(root: &Path, args: &[&str]) -> Result<()> {
             });
             let file =
                 std::fs::File::open(&script).map_err(|e| format!("{}: {e}", script.display()))?;
+            let role = if host == BENCH_HOST { "bench" } else { "test" };
             run(Command::new("ssh")
-                .args([host.as_str(), "bash", "-s"])
+                .args([
+                    host.as_str(),
+                    &format!("VANILLITE_TESTSERVER_ROLE={role}"),
+                    "bash",
+                    "-s",
+                ])
                 .stdin(Stdio::from(file)))
         }
+        ["status"] if host == BENCH_HOST => ssh(
+            &host,
+            "systemctl --no-pager --all list-units 'vanillite@*' '*-loadtest.service'; echo; \
+             ss -ltnp | grep -E ':30[0-9]{3} ' || true; echo; \
+             echo \"lock: $(cat /run/vanillite-bench.owner 2> /dev/null || echo free)\"; \
+             ufw status | head -n 1; df -h /; ls -1t /opt/vanillite/bench/suite | head -n 3",
+        ),
         ["status"] if host == HEAVY_HOST => ssh(
             &host,
             "systemctl --no-pager --all list-units paper.service vanilla.service \
