@@ -1112,6 +1112,8 @@ fn spawn_offspring(
         Rotation::default(),
         child,
     );
+    // `offspring.applyComponentsFromItemStack(spawnEggStack)`.
+    super::item_components::apply_components(ents, id, &stack);
     let parent = ents.store.get(target).map_or(0, |e| e.uuid());
     if !ents.spawned(id, vanillite_abi::spawn_reason::SPAWN_ITEM_USE, parent) {
         return;
@@ -1311,14 +1313,8 @@ pub fn use_spawn_egg_on(
     let below_face = spawn_pos != pos && face == vanillite_base::Direction::Up;
     let seed = crate::mob::new_entity_seed();
     let mut m = MobData::new(kind, seed);
-    let mut ctx =
-        super::fam::SpawnContext::at(level, spawn_pos, super::fam::SpawnReason::SpawnItemUse);
-    kinds::finalize_spawn(&mut m, &mut ctx, env.random);
-    if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
-        m.custom_name = Some(name.into());
-        m.persistent = true;
-    }
-    // `EntityType.spawn(..., shouldOffsetY, shouldOffsetYMore)`: above the block's shape.
+    // `EntityType.spawn(..., shouldOffsetY, shouldOffsetYMore)`: above the block's shape,
+    // facing a random yaw, then `finalizeSpawn`.
     let y_off = spawn_y_offset(level, spawn_pos, below_face, kind);
     let p = Vec3::new(
         f64::from(spawn_pos.x) + 0.5,
@@ -1326,6 +1322,13 @@ pub fn use_spawn_egg_on(
         f64::from(spawn_pos.z) + 0.5,
     );
     let yaw = vanillite_base::math::wrap_degrees_f(env.random.next_float() * 360.0);
+    let mut ctx =
+        super::fam::SpawnContext::at(level, spawn_pos, super::fam::SpawnReason::SpawnItemUse);
+    kinds::finalize_spawn(&mut m, &mut ctx, env.random);
+    if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
+        m.custom_name = Some(name.into());
+        m.persistent = true;
+    }
     let rot = Rotation {
         y_rot: yaw,
         x_rot: 0.0,
@@ -1334,13 +1337,47 @@ pub fn use_spawn_egg_on(
     let uuid = crate::mob::new_uuid();
     m.y_body_rot = yaw;
     let id = super::spawn(ents, network_ids, uuid, p, rot, m);
+    super::item_components::apply_spawn_item(ents, id, stack);
     if !ents.spawned(id, vanillite_abi::spawn_reason::SPAWN_ITEM_USE, 0) {
         return true;
     }
+    play_ambient_sound(ents, env, id);
     if !infinite {
         stack.shrink(1);
     }
     true
+}
+
+/// `Mob.playAmbientSound` of a new mob (`EntityType.spawn`).
+fn play_ambient_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let Some(m) = ents.mob_mut(id) else {
+        return;
+    };
+    // `makeSound`: the volume and pitch are drawn before `playSound` checks `isSilent`.
+    let Some(sound) = kinds::ambient_sound(m) else {
+        return;
+    };
+    let volume = super::fam::mob_sound_volume(m);
+    let a = m.random.next_float();
+    let b = m.random.next_float();
+    let pitch = (a - b) * 0.2 + if m.baby { 1.5 } else { 1.0 };
+    if m.silent {
+        return;
+    }
+    let source = m.kind.sound_source();
+    crate::survival::play_sound(
+        env.out,
+        None,
+        pos,
+        sound,
+        source,
+        volume,
+        pitch,
+        crate::survival::sound_seed(),
+    );
 }
 
 /// `EntityType.getYOffset`: how far up from the block the new mob stands.

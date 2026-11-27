@@ -16,6 +16,7 @@ pub mod equipment;
 pub mod fam;
 pub mod goals;
 pub mod golem_build;
+pub mod item_components;
 pub mod kinds;
 pub mod living;
 pub mod missile;
