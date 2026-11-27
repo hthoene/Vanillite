@@ -23,6 +23,7 @@
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
 //! cargo xtask bench list | report | publish <time|latest|results.json> | nightly [--no-push]
+//! cargo xtask bench commands <scenario>
 //! cargo xtask setup [--global] | regen
 //! ```
 
@@ -192,8 +193,9 @@ pub const USAGE: &str = "usage:
       (vanillite@30901, deployed from this checkout; also with the paper rule profile), Paper,
       Vanilla and Pumpkin (taking turns on 30900), or the proxies Velocity and vanillite-proxy,
       with the same settings and a new world each (`vanillite-bench` on the test server). Player
-      load from tools/loadbot here; command-built scenarios (redstone, mobs, items, hoppers,
-      TNT, fluids, light) use console commands and one observer bot. A server that lacks a
+      load from tools/loadbot here; command-built scenarios (redstone, mobs, farm, monsters,
+      villagers, mobs-far, items, hoppers, TNT, fluids, light) use console commands and one
+      observer bot. A server that lacks a
       command is reported as n/a. Writes target/bench/<time>/results.json and keeps the raw
       results under /opt/vanillite/bench/suite on the test server; --publish also updates
       benchmarks/results/ (latest.json, history.json, runs/<time>.json) and regenerates
@@ -206,6 +208,9 @@ pub const USAGE: &str = "usage:
       /opt/vanillite/bench/suite/<time>/ on the test server (latest: the newest).
   cargo xtask bench report
       Regenerates benchmarks/README.md from benchmarks/results/.
+  cargo xtask bench commands <scenario>
+      Prints the console commands of a command-built scenario (the observer's teleport first),
+      to build it on a local server for profiling.
   cargo xtask bench nightly [--no-push]
       When origin/dev has code newer than the published results: runs `bench all --publish` in
       the worktree target/bench/tree and commits the results on the branch
