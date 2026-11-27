@@ -876,54 +876,111 @@ impl TerrainGenerator {
         aquifer: &mut Aquifer,
         ctx: &mut SamplerContext,
     ) {
+        thread_local! {
+            /// The context the density bounds are computed in.
+            static BOUNDS_CONTEXT: RefCell<SamplerContext> =
+                RefCell::new(SamplerContext::new(true));
+        }
+        // From this Y up a block that is not solid is air, without asking the aquifer.
+        let air_from_y = aquifer.air_from_y();
+        // And from `top` up the density is proven not to be positive: it is only sampled
+        // below, which gives the same values there.
+        let top = BOUNDS_CONTEXT.with_borrow_mut(|scratch| {
+            self.program.not_positive_from(
+                scratch,
+                self.final_density,
+                volume,
+                air_from_y,
+                ctx.has_beardifier(),
+            )
+        });
+        let whole = *volume;
+        let volume = &if top > whole.min_y && top <= whole.max_y() {
+            DensityVolume::new(
+                whole.size_x,
+                top - whole.min_y,
+                whole.size_z,
+                whole.min_x,
+                whole.min_y,
+                whole.min_z,
+            )
+        } else {
+            whole
+        };
         let mut density = vec![0.0_f32; volume.len()];
         self.program
             .sample_volume(ctx, self.final_density, &mut density, volume);
         let default_block = self.settings.default_block;
+        let mut states = vec![BlockState::AIR; volume.size_y as usize];
         for z in 0..volume.size_z {
             let block_z = volume.block_z(z);
             for x in 0..volume.size_x {
                 let block_x = volume.block_x(x);
-                // Below the first block a heightmap matches, its updates change nothing.
-                let (mut surface_done, mut ocean_floor_done) = (false, false);
+                let start = volume.index(x, 0, z);
+                let column = &density[start..start + volume.size_y as usize];
+                // The column's blocks, top down as Vanilla fills it (the aquifer and the
+                // post-processing marks follow that order).
                 for y in (0..volume.size_y).rev() {
                     let block_y = volume.block_y(y);
-                    let value = density[volume.index(x, y, z)];
-                    let state = aquifer
-                        .compute_substance(
-                            &self.program,
-                            ctx,
-                            block_x,
-                            block_y,
-                            block_z,
-                            f64::from(value),
-                        )
-                        .unwrap_or(default_block);
-                    if state == BlockState::AIR {
-                        continue;
-                    }
-                    chunk.set_block_raw(block_x, block_y, block_z, state);
-                    let (lx, lz) = (x as usize, z as usize);
-                    if !(surface_done && ocean_floor_done) {
-                        let flags = facts::block_flags(state.0);
-                        if !ocean_floor_done {
-                            chunk.update_heightmap(WgHeightmap::OceanFloor, lx, block_y, lz, state);
-                            ocean_floor_done = WgHeightmap::OceanFloor.kind().matches(flags);
-                        }
-                        if !surface_done {
-                            chunk.update_heightmap(
-                                WgHeightmap::WorldSurface,
-                                lx,
+                    let value = column[y as usize];
+                    states[y as usize] = if value > 0.0 {
+                        default_block
+                    } else if block_y >= air_from_y {
+                        // (Also for a NaN density, which is not solid in the aquifer either.)
+                        BlockState::AIR
+                    } else {
+                        let state = aquifer
+                            .compute_substance(
+                                &self.program,
+                                ctx,
+                                block_x,
                                 block_y,
-                                lz,
-                                state,
-                            );
-                            surface_done = WgHeightmap::WorldSurface.kind().matches(flags);
+                                block_z,
+                                f64::from(value),
+                            )
+                            .unwrap_or(default_block);
+                        if !state.fluid_state().is_empty() && aquifer.should_schedule_fluid_update()
+                        {
+                            chunk.mark_post_processing(block_x, block_y, block_z);
                         }
-                    }
-                    if aquifer.should_schedule_fluid_update() && !state.fluid_state().is_empty() {
-                        chunk.mark_post_processing(block_x, block_y, block_z);
-                    }
+                        state
+                    };
+                }
+                if !chunk.write_empty_column(block_x, block_z, volume.min_y, &states) {
+                    self.write_column(chunk, block_x, block_z, volume.min_y, &states);
+                }
+            }
+        }
+    }
+
+    /// Sets the blocks of a column block by block, top down, with the heightmap updates of
+    /// `doFill` (for a chunk that already holds blocks).
+    fn write_column(
+        &self,
+        chunk: &mut ProtoChunk,
+        block_x: i32,
+        block_z: i32,
+        min_y: i32,
+        states: &[BlockState],
+    ) {
+        let (lx, lz) = ((block_x & 15) as usize, (block_z & 15) as usize);
+        // Below the first block a heightmap matches, its updates change nothing.
+        let (mut surface_done, mut ocean_floor_done) = (false, false);
+        for (row, &state) in states.iter().enumerate().rev() {
+            if state == BlockState::AIR {
+                continue;
+            }
+            let block_y = min_y + row as i32;
+            chunk.set_block_raw(block_x, block_y, block_z, state);
+            if !(surface_done && ocean_floor_done) {
+                let flags = facts::block_flags(state.0);
+                if !ocean_floor_done {
+                    chunk.update_heightmap(WgHeightmap::OceanFloor, lx, block_y, lz, state);
+                    ocean_floor_done = WgHeightmap::OceanFloor.kind().matches(flags);
+                }
+                if !surface_done {
+                    chunk.update_heightmap(WgHeightmap::WorldSurface, lx, block_y, lz, state);
+                    surface_done = WgHeightmap::WorldSurface.kind().matches(flags);
                 }
             }
         }
@@ -988,7 +1045,7 @@ impl TerrainGenerator {
                 };
                 chunk.set_block(world_x, world_y, world_z, state);
                 let fluid = !state.fluid_state().is_empty();
-                if aquifer.should_schedule_fluid_update() && fluid {
+                if fluid && aquifer.should_schedule_fluid_update() {
                     chunk.mark_post_processing(world_x, world_y, world_z);
                 }
                 if has_grass && chunk.block(world_x, world_y - 1, world_z).block() == self.dirt {

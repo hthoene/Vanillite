@@ -363,6 +363,54 @@ pub struct SearchCache(pub(crate) Option<u32>);
 pub struct ParameterList<T> {
     values: Vec<(ParameterPoint, T)>,
     tree: RTree,
+    /// The entries by depth parameter, for searches along a column (see [`ColumnSearch`]);
+    /// `None` when the entries have too many different depth parameters for that to pay off.
+    depth_classes: Option<DepthClasses>,
+}
+
+/// Index of the depth in a parameter array.
+const DEPTH: usize = 4;
+/// Most different depth parameters a list may have to be searched by column.
+const MAX_DEPTH_CLASSES: usize = 8;
+/// Target coordinates up to this magnitude cannot overflow a distance.
+const SAFE_COORDINATE: i64 = 1 << 29;
+
+/// The entries of a list grouped by their depth parameter.
+#[derive(Debug)]
+struct DepthClasses {
+    classes: Vec<DepthClass>,
+}
+
+/// The entries with one depth parameter.
+#[derive(Debug)]
+struct DepthClass {
+    depth: Parameter,
+    /// A search tree over the entries of the class.
+    tree: RTree,
+    /// Per leaf of `tree`: the entry's index in the list.
+    entries: Vec<u32>,
+    /// Per leaf of `tree`: the entry's depth-first position in the list's tree.
+    ranks: Vec<u32>,
+}
+
+/// The closest entries of a [`ParameterList`] for the targets of one column: targets that
+/// differ only in depth. Within one depth class (entries with the same depth parameter) the
+/// closest entry is the same for every depth, so one search per class answers the whole
+/// column: a target's closest entry is the best class entry with the smallest total distance.
+/// Ties resolve as in the list's tree (see `rtree.rs`): the previous result if it is as close,
+/// else the first closest entry in depth-first order.
+#[derive(Clone, Copy, Debug)]
+pub struct ColumnSearch {
+    /// The target's coordinates other than depth.
+    key: [i64; 5],
+    /// Per depth class: the distance without the depth term, the entry and its rank.
+    best: [(i64, u32, u32); MAX_DEPTH_CLASSES],
+}
+
+/// The coordinates of a target other than its depth.
+#[inline]
+fn column_key(target: &[i64; 7]) -> [i64; 5] {
+    [target[0], target[1], target[2], target[3], target[5]]
 }
 
 impl<T> ParameterList<T> {
@@ -383,7 +431,65 @@ impl<T> ParameterList<T> {
         }
         let spaces: Vec<[Parameter; 7]> = values.iter().map(|v| v.0.parameter_space()).collect();
         let tree = RTree::build(&spaces, children_per_node);
-        Ok(Self { values, tree })
+        let depth_classes = DepthClasses::build(&spaces, &tree);
+        Ok(Self {
+            values,
+            tree,
+            depth_classes,
+        })
+    }
+
+    /// The column search for the column of `target` (any of its targets), if the list supports
+    /// it and the target is in the range where distances cannot overflow.
+    pub fn column_search(&self, target: &TargetPoint) -> Option<ColumnSearch> {
+        let classes = self.depth_classes.as_ref()?;
+        let mut target = target.to_parameter_array();
+        if target.iter().any(|c| c.abs() > SAFE_COORDINATE) {
+            return None;
+        }
+        let key = column_key(&target);
+        let mut best = [(i64::MAX, 0, u32::MAX); MAX_DEPTH_CLASSES];
+        for (class, best) in classes.classes.iter().zip(&mut best) {
+            // Inside the class's depth interval, so the depth adds nothing.
+            target[DEPTH] = class.depth.min;
+            let (leaf, distance) = class.tree.search_lowest_rank(&target, &class.ranks);
+            *best = (distance, class.entries[leaf], class.ranks[leaf]);
+        }
+        Some(ColumnSearch { key, best })
+    }
+
+    /// `tree.search(target, cache)` for a target of the column `column` was made for: the index
+    /// of the closest value; updates `cache` like [`Self::find_value`]. `None` (nothing done)
+    /// if the target is not of that column.
+    #[inline]
+    pub fn search_in_column(
+        &self,
+        column: &ColumnSearch,
+        target: &TargetPoint,
+        cache: &mut SearchCache,
+    ) -> Option<u32> {
+        let classes = self.depth_classes.as_ref()?;
+        let target = target.to_parameter_array();
+        if column_key(&target) != column.key || target[DEPTH].abs() > SAFE_COORDINATE {
+            return None;
+        }
+        let mut closest = (i64::MAX, 0, u32::MAX);
+        for (class, &(base, entry, rank)) in classes.classes.iter().zip(&column.best) {
+            let depth = class.depth.distance(target[DEPTH]);
+            let total = base + depth * depth;
+            if total < closest.0 || (total == closest.0 && rank < closest.2) {
+                closest = (total, entry, rank);
+            }
+        }
+        let mut index = closest.1;
+        if let Some(previous) = cache.0
+            && (previous as usize) < self.values.len()
+            && distance(self.tree.leaf_space(previous as usize), &target) == closest.0
+        {
+            index = previous;
+        }
+        cache.0 = Some(index);
+        Some(index)
     }
 
     /// `values()`.
@@ -430,6 +536,47 @@ impl<T> ParameterList<T> {
             }
         }
         &best.1
+    }
+}
+
+impl DepthClasses {
+    /// Groups the entries (`spaces`, searched by `tree`) by depth parameter.
+    fn build(spaces: &[[Parameter; 7]], tree: &RTree) -> Option<Self> {
+        let mut depths: Vec<Parameter> = Vec::new();
+        for space in spaces {
+            if !depths.contains(&space[DEPTH]) {
+                if depths.len() == MAX_DEPTH_CLASSES {
+                    return None;
+                }
+                depths.push(space[DEPTH]);
+            }
+        }
+        // Entry coordinates in the range where distances cannot overflow.
+        if spaces
+            .iter()
+            .flatten()
+            .any(|p| p.min.abs() > SAFE_COORDINATE || p.max.abs() > SAFE_COORDINATE)
+        {
+            return None;
+        }
+        let all_ranks = tree.depth_first_ranks();
+        let classes = depths
+            .into_iter()
+            .map(|depth| {
+                let entries: Vec<u32> = (0..spaces.len() as u32)
+                    .filter(|&i| spaces[i as usize][DEPTH] == depth)
+                    .collect();
+                let class_spaces: Vec<[Parameter; 7]> =
+                    entries.iter().map(|&i| spaces[i as usize]).collect();
+                DepthClass {
+                    depth,
+                    tree: RTree::build(&class_spaces, 6),
+                    ranks: entries.iter().map(|&i| all_ranks[i as usize]).collect(),
+                    entries,
+                }
+            })
+            .collect();
+        Some(Self { classes })
     }
 }
 

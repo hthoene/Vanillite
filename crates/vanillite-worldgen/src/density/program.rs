@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use super::function::{Axis, DistanceMetric, RoundMode};
 use super::spline::SplineProgram;
+use crate::interval::Interval;
 use crate::noise::Noise;
 
 /// Index of an instruction in [`Program::ops`].
@@ -247,18 +248,40 @@ pub enum Op {
 /// lives in a [`super::SamplerContext`].
 #[derive(Debug, Default)]
 pub struct Program {
+    /// A number no other finished program of the process has (0 until then): the key of
+    /// caches that outlive a sampling context.
+    pub(super) id: u64,
     pub(super) ops: Vec<Op>,
     pub(super) noises: Vec<Arc<Noise>>,
     pub(super) splines: Vec<SplineProgram>,
     pub(super) interval_selects: Vec<IntervalSelectTable>,
     pub(super) cache_cells: u32,
     /// Per instruction: whether sampling it at only some points of a volume saves work, i.e.
-    /// it reads a noise or spline other than through an interpolation or slice.
+    /// it reads a noise, a spline or an interpolation other than through a slice.
     pub(super) maskable: Vec<bool>,
     /// Per cache cell: whether only the function given to [`Self::set_masked_cache_root`]
     /// reads it, so its volume cache may hold values for only some points (no other function
     /// samples it point by point and could see that cache).
     pub(super) partial_cells: Vec<bool>,
+    /// Per instruction: whether its value depends on the position other than through noises
+    /// and splines (a gradient, a slice, a bound field): only then can bounds at a position be
+    /// tighter than its static range.
+    pub(super) positional: Vec<bool>,
+    /// Per instruction: how many noise instructions it reads, counting shared ones once per
+    /// reader (saturating): a measure of what sampling it costs.
+    pub(super) noise_ops: Vec<u16>,
+    /// Per instruction: the static range of its function where the compiler knows it
+    /// (`DensityFunction.range()`), else not an interval.
+    pub(super) ranges: Vec<Interval>,
+    /// The function given to [`Self::set_masked_cache_root`] with the cell sizes (XZ, Y) of its
+    /// interpolations, if it may be sampled over only the lower part of a volume: its
+    /// interpolations share one lattice, and every cache cell that would then hold another
+    /// volume (those not behind a Y slice) is a partial cell, which nothing else reads.
+    pub(super) root_lattice: Option<(super::FnId, i32, i32)>,
+    /// Per instruction: whether leaving out its sampling (or sampling it at only some points)
+    /// cannot be noticed by anything but its own reader: every cache cell it reads is a
+    /// partial cell (see `partial_cells`), or it reads none.
+    pub(super) skippable: Vec<bool>,
     /// Per instruction: whether it samples an input over another volume than its own
     /// (interpolation, slices, surface search, `shift_b`), so its cache cells may end up
     /// holding other volumes depending on the order of evaluation.
@@ -266,6 +289,11 @@ pub struct Program {
 }
 
 impl Program {
+    /// A number no other finished program of the process has.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
     /// All instructions; a [`super::FnId`] is the index of its root instruction.
     pub fn ops(&self) -> &[Op] {
         &self.ops
@@ -312,10 +340,77 @@ impl Program {
                 })
             }
         };
+        let skippable = self.is_skippable(&op);
+        let positional = match op {
+            Op::Gradient { .. }
+            | Op::SliceX { .. }
+            | Op::SliceY { .. }
+            | Op::SliceZ { .. }
+            | Op::SliceXz { .. }
+            | Op::ShiftB { .. }
+            | Op::EndIslands { .. }
+            | Op::DistanceToPoint { .. }
+            | Op::FindTopSurface { .. }
+            | Op::ContextBound { .. } => true,
+            _ => {
+                let mut inputs = Vec::new();
+                self.inputs_of(&op, &mut inputs);
+                inputs
+                    .iter()
+                    .any(|&input| self.positional.get(input as usize).copied().unwrap_or(true))
+            }
+        };
+        self.positional.push(positional);
+        let own = u16::from(matches!(
+            op,
+            Op::Noise { .. }
+                | Op::ShiftedNoiseXz { .. }
+                | Op::ShiftedNoiseXyz { .. }
+                | Op::ShiftB { .. }
+                | Op::EndIslands { .. }
+        ));
+        let mut inputs = Vec::new();
+        self.inputs_of(&op, &mut inputs);
+        let noise_ops = inputs.iter().fold(own, |sum, &input| {
+            sum.saturating_add(
+                self.noise_ops
+                    .get(input as usize)
+                    .copied()
+                    .unwrap_or(u16::MAX),
+            )
+        });
+        self.noise_ops.push(noise_ops);
         self.ops.push(op);
         self.maskable.push(maskable);
         self.other_volumes.push(other_volumes);
+        self.skippable.push(skippable);
+        self.ranges.push(Interval::NAI);
         (self.ops.len() - 1) as OpIndex
+    }
+
+    /// Records the static range of the function instruction `op` computes.
+    pub(super) fn set_range(&mut self, op: OpIndex, range: Interval) {
+        if self.ranges[op as usize].is_nai() {
+            self.ranges[op as usize] = range;
+        }
+    }
+
+    /// [`Self::skippable`] of an instruction whose inputs have theirs.
+    fn is_skippable(&self, op: &Op) -> bool {
+        if let Op::Cached { cell, .. } = *op
+            && !self
+                .partial_cells
+                .get(cell as usize)
+                .copied()
+                .unwrap_or(false)
+        {
+            return false;
+        }
+        let mut inputs = Vec::new();
+        self.inputs_of(op, &mut inputs);
+        inputs
+            .iter()
+            .all(|&input| self.skippable.get(input as usize).copied().unwrap_or(false))
     }
 
     /// Lets the volume caches of the cells only `root` reads hold partial volumes (sampled
@@ -362,6 +457,132 @@ impl Program {
             *partial &= seen;
         }
         self.partial_cells = partial;
+        // Inputs come before the instructions that read them.
+        for op in 0..count {
+            self.skippable[op] = self.is_skippable(&self.ops[op]);
+        }
+        self.root_lattice = self.lattice_of(root).map(|(xz, y)| (root, xz, y));
+    }
+
+    /// Whether the cache cells the functions `roots` read are read by nothing else: sampling
+    /// those functions, or not, then changes nothing for any other function.
+    pub fn cells_private_to(&self, roots: &[super::FnId]) -> bool {
+        let count = self.ops.len();
+        let mut inside = vec![false; count];
+        let mut stack: Vec<OpIndex> = roots.iter().map(|f| f.0).collect();
+        let mut inputs = Vec::new();
+        while let Some(op) = stack.pop() {
+            if std::mem::replace(&mut inside[op as usize], true) {
+                continue;
+            }
+            self.inputs(op, &mut inputs);
+            stack.append(&mut inputs);
+        }
+        // Inputs come before the instructions that read them.
+        let mut reads_cell = vec![false; count];
+        for op in 0..count {
+            self.inputs(op as OpIndex, &mut inputs);
+            reads_cell[op] = matches!(self.ops[op], Op::Cached { .. })
+                || inputs.iter().any(|&input| reads_cell[input as usize]);
+            if !inside[op]
+                && inputs
+                    .iter()
+                    .any(|&input| inside[input as usize] && reads_cell[input as usize])
+            {
+                return false;
+            }
+            inputs.clear();
+        }
+        true
+    }
+
+    /// The cell sizes (XZ, Y) of the interpolations `f` reads, if they all have the same.
+    pub(super) fn interpolation_lattice(&self, f: super::FnId) -> Option<(i32, i32)> {
+        let mut lattice = None;
+        let mut seen = vec![false; self.ops.len()];
+        let mut stack = vec![f.0];
+        let mut inputs = Vec::new();
+        while let Some(op) = stack.pop() {
+            if std::mem::replace(&mut seen[op as usize], true) {
+                continue;
+            }
+            if let Op::Interpolated {
+                cell_size_xz,
+                cell_size_y,
+                ..
+            } = self.ops[op as usize]
+                && *lattice.get_or_insert((cell_size_xz, cell_size_y))
+                    != (cell_size_xz, cell_size_y)
+            {
+                return None;
+            }
+            self.inputs(op, &mut inputs);
+            stack.append(&mut inputs);
+        }
+        lattice.filter(|&(xz, y)| xz > 0 && y > 0)
+    }
+
+    /// See [`Self::root_lattice`].
+    fn lattice_of(&self, root: super::FnId) -> Option<(i32, i32)> {
+        let mut lattice = None;
+        let mut seen = vec![false; self.ops.len()];
+        let mut stack = vec![root.0];
+        let mut inputs = Vec::new();
+        while let Some(op) = stack.pop() {
+            if std::mem::replace(&mut seen[op as usize], true) {
+                continue;
+            }
+            match self.ops[op as usize] {
+                // Sampled over a layer that does not depend on the volume's height.
+                Op::SliceY { .. } => continue,
+                Op::FindTopSurface { .. } => return None,
+                Op::Cached { cell, .. }
+                    if !self
+                        .partial_cells
+                        .get(cell as usize)
+                        .copied()
+                        .unwrap_or(false) =>
+                {
+                    return None;
+                }
+                Op::Interpolated {
+                    cell_size_xz,
+                    cell_size_y,
+                    ..
+                } if *lattice.get_or_insert((cell_size_xz, cell_size_y))
+                    != (cell_size_xz, cell_size_y) =>
+                {
+                    return None;
+                }
+                _ => {}
+            }
+            self.inputs(op, &mut inputs);
+            stack.append(&mut inputs);
+        }
+        // Cut at a multiple of every interpolation's Y cell size, the volume interpolates
+        // as the whole one does.
+        lattice.filter(|&(xz, y)| xz > 0 && y > 0 && y == self.interpolation_y_period())
+    }
+
+    /// Whether sampling `f` at a point gives the same value whatever the cache cells of the
+    /// context hold: nothing it reads is interpolated, the one instruction whose values over a
+    /// volume (which a cell may hold) differ from its values at single points. Such a function
+    /// may be sampled at any time and in any order.
+    pub fn is_point_exact(&self, f: super::FnId) -> bool {
+        let mut seen = vec![false; self.ops.len()];
+        let mut stack = vec![f.0];
+        let mut inputs = Vec::new();
+        while let Some(op) = stack.pop() {
+            if std::mem::replace(&mut seen[op as usize], true) {
+                continue;
+            }
+            if matches!(self.ops[op as usize], Op::Interpolated { .. }) {
+                return false;
+            }
+            self.inputs(op, &mut inputs);
+            stack.append(&mut inputs);
+        }
+        true
     }
 
     /// The instructions `op` reads.
@@ -479,17 +700,19 @@ impl Program {
     fn is_maskable(&self, op: &Op) -> bool {
         let m = |input: OpIndex| self.maskable.get(input as usize).copied().unwrap_or(true);
         match *op {
+            // An interpolation fills only the cells with needed points and asks its input
+            // for their corners only.
             Op::Noise { .. }
             | Op::ShiftedNoiseXz { .. }
             | Op::ShiftedNoiseXyz { .. }
-            | Op::Spline { .. } => true,
+            | Op::Spline { .. }
+            | Op::Interpolated { .. } => true,
             Op::Constant { .. }
             | Op::ContextBound { .. }
             | Op::ShiftB { .. }
             | Op::EndIslands { .. }
             | Op::DistanceToPoint { .. }
             | Op::Gradient { .. }
-            | Op::Interpolated { .. }
             | Op::SliceX { .. }
             | Op::SliceY { .. }
             | Op::SliceZ { .. }
