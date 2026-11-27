@@ -181,7 +181,7 @@ fn has_valid_target(t: &mut Tick<'_, '_>, s: &mut Transport) -> bool {
 
 /// `hasValidTravellingPath`.
 fn valid_travelling_path(t: &mut Tick<'_, '_>, pos: BlockPos, state: BlockState) -> bool {
-    let path = match t.mob_ref().nav.path.clone() {
+    let path = match t.nav_ref().path.clone() {
         Some(p) => Some(p),
         None => crate::mob::nav::create_path_to(t, pos, 0),
     };
@@ -231,7 +231,7 @@ fn center_pos(t: &Tick<'_, '_>, pos: Vec3) -> Vec3 {
 
 /// `getInteractionRange`: 1 once the path is done, else 0.5.
 fn interaction_range(t: &Tick<'_, '_>) -> f64 {
-    if t.mob_ref().nav.path.as_ref().is_some_and(|p| p.is_done()) {
+    if t.nav_ref().path.as_ref().is_some_and(|p| p.is_done()) {
         1.0
     } else {
         0.5
@@ -594,7 +594,7 @@ fn mark_unreachable(t: &mut Tick<'_, '_>, s: &mut Transport, pos: BlockPos) {
 fn stop_targeting(t: &mut Tick<'_, '_>, s: &mut Transport) {
     s.ticks = 0;
     s.target = None;
-    t.mob().nav.stop();
+    t.nav().stop();
     brain::brain(t).erase(M::WalkTarget);
 }
 

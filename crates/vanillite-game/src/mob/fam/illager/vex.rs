@@ -198,7 +198,7 @@ pub fn random_move_tick(t: &mut Tick<'_, '_>) {
                 f64::from(pos.y) + 0.5,
                 f64::from(pos.z) + 0.5,
             );
-            t.mob().move_ctl.set_wanted_position(at, 0.25);
+            t.move_ctl().set_wanted_position(at, 0.25);
             if t.mob_ref().target.is_none() {
                 t.mob().look.set_look_at(at, 180.0, 20.0);
             }

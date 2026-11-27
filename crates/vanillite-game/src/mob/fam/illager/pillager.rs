@@ -127,7 +127,7 @@ pub fn crossbow_can_use(t: &mut Tick<'_, '_>) -> bool {
 
 pub fn crossbow_can_continue(t: &mut Tick<'_, '_>) -> bool {
     valid_target(t)
-        && (crossbow_can_use(t) || !t.mob_ref().nav.is_done())
+        && (crossbow_can_use(t) || !t.nav_ref().is_done())
         && holds_crossbow(t.mob_ref())
 }
 
@@ -208,7 +208,7 @@ pub fn crossbow_tick(t: &mut Tick<'_, '_>, c: &mut Crossbow) {
         }
     } else {
         c.update_path_delay = 0;
-        t.mob().nav.stop();
+        t.nav().stop();
     }
     t.mob()
         .look

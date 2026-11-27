@@ -1086,6 +1086,22 @@ pub fn set_post_processing(stack: &mut ItemStack, value: PostProcessing) {
         .set(components::MAP_POST_PROCESSING, Box::new([id]));
 }
 
+/// Whether the item is a `MapItem`: `filled_map` and the explorer map items
+/// (`buried_treasure_map`, `woodland_mansion_map`, ...), not the empty `map`.
+pub fn is_map_item(item: u16) -> bool {
+    static IDS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        vanillite_data::registry::ITEM
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.ends_with("_map") && **name != "minecraft:map")
+            .filter_map(|(id, _)| u16::try_from(id).ok())
+            .collect()
+    })
+    .contains(&item)
+}
+
 /// `MapItem.create`: a `filled_map` with a new map around the origin.
 pub fn create(
     maps: &Maps,

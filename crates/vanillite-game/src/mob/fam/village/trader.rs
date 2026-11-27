@@ -497,7 +497,7 @@ impl FamilyHooks for Hooks {
                 state_mut(t.mob()).trader.use_remaining = 32;
                 crate::mob::projectile::start_using_item(t);
             }
-            Goal::TradeWithPlayer => t.mob().nav.stop(),
+            Goal::TradeWithPlayer => t.nav().stop(),
             Goal::LookAtTradingPlayer { time, .. } | Goal::LookAt { time, .. } => {
                 let r = t.mob().random.next_int_bounded(40);
                 *time = reduced(40 + r);
@@ -527,7 +527,7 @@ impl FamilyHooks for Hooks {
             }
             Goal::WanderToPosition => {
                 state_mut(t.mob()).trader.wander_target = None;
-                t.mob().nav.stop();
+                t.nav().stop();
             }
         }
     }
@@ -544,7 +544,7 @@ impl FamilyHooks for Hooks {
                 let Some(target) = state(t.mob_ref()).trader.wander_target else {
                     return;
                 };
-                if !t.mob_ref().nav.is_done() {
+                if !t.nav_ref().is_done() {
                     return;
                 }
                 let p = t.pos();

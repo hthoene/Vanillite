@@ -50,6 +50,8 @@
 //!   `dim` in their detail, and a block op works in its `dimension` (default the overworld).
 //!   Scenario entities start in the overworld; the level random of every dimension starts
 //!   from the world seed.
+//! - `client_attributes`: with `client_view`, the view also holds the players' own attribute
+//!   values (`attr`, from `update_attributes`).
 //! - `client_view`: with `dimensions`, frames also hold what the players' clients received
 //!   (`"events"` instead of `true`: also their level and entity events)
 //!   during the tick, normalized (`view`, see [`crate::client_view`]): entities added and
@@ -266,6 +268,9 @@ pub struct WorldSpec {
     pub progress_state: bool,
     /// Whether frames hold what the players' clients received (`"client_view": true`).
     pub client_view: bool,
+    /// Whether the client view holds the players' own attributes (`"client_attributes":
+    /// true`; the recorder then records `update_attributes`).
+    pub client_attributes: bool,
     /// Whether the client view also holds level and entity events (`"client_view": "events"`).
     pub view_events: bool,
     /// Whether the End generates like a new Vanilla world (`"end": "normal"`).
@@ -732,6 +737,10 @@ impl Scenario {
             || v.get("client_view")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+        let client_attributes = v
+            .get("client_attributes")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let normal_end = match v.get("end").and_then(Value::as_str) {
             None | Some("flat") => false,
             Some("normal") => true,
@@ -812,6 +821,7 @@ impl Scenario {
                 datapack,
                 progress_state,
                 client_view,
+                client_attributes,
                 view_events,
                 normal_end,
             },

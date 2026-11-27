@@ -12,7 +12,7 @@ use vanillite_command::selector::EntitySelector;
 use vanillite_command::values::Anchor;
 use vanillite_game::commands::CommandId;
 use vanillite_game::effect::MobEffect;
-use vanillite_game::effect::living::add_queued;
+use vanillite_game::effect::living::{add_queued, add_queued_from};
 use vanillite_game::entities::Entities;
 use vanillite_game::survival::damage::DamageSource;
 use vanillite_nbt::Compound;
@@ -194,13 +194,19 @@ fn effect_give(
     let instance = vanillite_game::effect::EffectInstance::with_flags(
         effect, duration, amplifier, false, particles, particles,
     );
+    // `addEffect(instance, source.getEntity())`: the source's entity of this world.
+    let by = source
+        .entity
+        .as_ref()
+        .filter(|e| e.world == env.world)
+        .and_then(|e| e.id);
     let mut tracker = Tracker::<Component>::default();
     for target in &targets {
         if !is_living(target) {
             continue;
         }
         let changed = match target.entity {
-            Some(id) => add_queued(&mut env.level.entities, id, instance.clone()),
+            Some(id) => add_queued_from(&mut env.level.entities, id, instance.clone(), by),
             // An entity of another world: applied on its world's thread; counted as changed
             // when its kind can be affected.
             None => {

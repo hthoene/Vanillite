@@ -567,13 +567,16 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
         Hit::Entity(target, _) => {
             let src = source(t.ents, t.env.types.mob_projectile, me, d);
             if combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 4.0) {
-                effects::living::add_to_entity(
+                // `firstNonNull(owner, this)`.
+                let by = owner(t.ents, d).or(Some(me));
+                effects::living::add_to_entity_from(
                     t.level,
                     t.ents,
                     t.env,
                     t.cx,
                     target,
                     EffectInstance::new(MobEffect::LEVITATION, 200, 0),
+                    by,
                 );
             }
         }
@@ -597,6 +600,42 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
     }
     land(t, hit);
     discard(t);
+}
+
+/// `ShulkerBullet.hurtServer`: any hit makes the hurt sound and crit particles and destroys it
+/// (`destroy`: gone, with the `ENTITY_DAMAGE` game event).
+pub fn hurt_bullet(
+    ents: &mut Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut super::super::super::MobContext,
+    id: EntityId,
+) -> bool {
+    let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
+        return false;
+    };
+    crate::survival::play_sound(
+        env.out,
+        None,
+        pos,
+        "minecraft:entity.shulker_bullet.hurt",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+        1.0,
+        1.0,
+        crate::survival::sound_seed(),
+    );
+    let crit = crate::level::particles::simple("minecraft:crit");
+    cx.send_particles(crit, pos, 15, Vec3::new(0.2, 0.2, 0.2), 0.0);
+    if let Some(d) = ents.missile_mut(id) {
+        d.removed = true;
+    }
+    cx.discarded.push(id);
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().entity_damage,
+        pos,
+        Some(id),
+    );
+    true
 }
 
 /// `Projectile.onHitBlock`'s `onProjectileHit` of a block hit (comes first in `onHitBlock`).
@@ -813,13 +852,16 @@ fn splash(t: &mut MissileTick<'_, '_>, d: &MissileData, p: Potion, at: Vec3) {
                 #[allow(clippy::cast_possible_truncation)]
                 let duration = (scale * f64::from(effect.duration) + 0.5) as i32;
                 if duration > 20 {
-                    effects::living::add_to_entity(
+                    // `getEffectSource()`: the owner, else the potion.
+                    let by = owner_id.or(Some(t.id));
+                    effects::living::add_to_entity_from(
                         t.level,
                         t.ents,
                         t.env,
                         t.cx,
                         target,
                         EffectInstance { duration, ..effect },
+                        by,
                     );
                 }
             }

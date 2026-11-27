@@ -129,7 +129,7 @@ pub fn follow_can_use(t: &mut Tick<'_, '_>, start_distance: f32) -> bool {
 
 /// `FollowOwnerGoal.canContinueToUse`.
 pub fn follow_can_continue(t: &mut Tick<'_, '_>, stop_distance: f32) -> bool {
-    if t.mob_ref().nav.is_done() {
+    if t.nav_ref().is_done() {
         return false;
     }
     let Some(owner) = owner_of(t.ents, t.mob_ref()) else {
@@ -194,7 +194,7 @@ fn try_to_teleport_to_owner(t: &mut Tick<'_, '_>, owner: Vec3) {
                 f64::from(pos.z) + 0.5,
             );
             t.core_mut().set_pos(p);
-            t.mob().nav.stop();
+            t.nav().stop();
             return;
         }
     }

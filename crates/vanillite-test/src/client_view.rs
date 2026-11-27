@@ -18,7 +18,9 @@
 //!   random).
 //! - `abilities <flags> <flying speed> <walking speed>`, `held <slot>`, `slot <slot> <item>
 //!   <count>` (`inv:<i>` of `set_player_inventory`, `<container>:<i>` of the container
-//!   packets): the state after the tick where it changed.
+//!   packets), `attr <attribute> <value>` (the player's own attributes from
+//!   `update_attributes`: the value the client computes from base and modifiers, 4 decimals):
+//!   the state after the tick where it changed.
 //!
 //! Entity ids, packet order and batching within a tick, chunk data, light, keep-alives and
 //! everything else are left out. So is the game mode the player joins in: the Java recorder
@@ -43,6 +45,12 @@ pub struct ClientView {
     abilities: Option<String>,
     held: Option<i32>,
     slots: BTreeMap<String, String>,
+    /// Whether `update_attributes` counts (`client_attributes`).
+    with_attributes: bool,
+    /// The player's own network id (`login`).
+    own_id: Option<i32>,
+    /// The player's own attribute values by attribute name.
+    attributes: BTreeMap<String, String>,
     /// Whether the client got its join tick.
     joined: bool,
 }
@@ -54,6 +62,7 @@ struct Before {
     abilities: Option<String>,
     held: Option<i32>,
     slots: BTreeMap<String, String>,
+    attributes: BTreeMap<String, String>,
 }
 
 fn round(v: f64) -> String {
@@ -93,6 +102,7 @@ impl ClientView {
             abilities: self.abilities.clone(),
             held: self.held,
             slots: self.slots.clone(),
+            attributes: self.attributes.clone(),
         };
         let mut events = Vec::new();
         let mut blocks: BTreeMap<(i32, i32, i32), String> = BTreeMap::new();
@@ -126,6 +136,11 @@ impl ClientView {
         for (slot, stack) in &self.slots {
             if before.slots.get(slot) != Some(stack) {
                 events.push(format!("slot {slot} {stack}"));
+            }
+        }
+        for (name, value) in &self.attributes {
+            if before.attributes.get(name) != Some(value) {
+                events.push(format!("attr {name} {value}"));
             }
         }
         if !std::mem::replace(&mut self.joined, true) {
@@ -170,11 +185,17 @@ impl ClientView {
             cb::Login::ID => {
                 let p: cb::Login = decode(r)?;
                 self.entities.clear();
+                self.own_id = Some(p.entity_id);
+                self.attributes.clear();
                 events.push(format!("login {}", p.spawn.dimension));
             }
             cb::Respawn::ID => {
                 let p: cb::Respawn = decode(r)?;
                 self.entities.clear();
+                // `KEEP_ATTRIBUTE_MODIFIERS` (bit 0) keeps the attributes.
+                if p.data_to_keep & 1 == 0 {
+                    self.attributes.clear();
+                }
                 events.push(format!(
                     "respawn {} {} keep={}",
                     p.spawn.dimension,
@@ -227,6 +248,11 @@ impl ClientView {
                     p.flags, p.flying_speed, p.walking_speed
                 ));
             }
+            cb::UpdateAttributes::ID if self.with_attributes => {
+                let p: cb::UpdateAttributes = decode(r)?;
+                self.update_attributes(&p.body)
+                    .map_err(|e| format!("update_attributes: {e}"))?;
+            }
             cb::SetHeldSlot::ID => {
                 let p: cb::SetHeldSlot = decode(r)?;
                 self.held = Some(p.slot);
@@ -248,6 +274,57 @@ impl ClientView {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// `update_attributes` of the player itself: per attribute the value the client computes
+    /// (`AttributeInstance.calculateValue` without the attribute's range).
+    fn update_attributes(&mut self, body: &[u8]) -> Result<(), String> {
+        let mut r = Reader::new(body);
+        let e = |e: vanillite_protocol::codec::Error| e.to_string();
+        let f64_of = |r: &mut Reader<'_>| -> Result<f64, String> {
+            let b = r.take(8).map_err(e)?;
+            Ok(f64::from_be_bytes(b.try_into().map_err(|_| "f64")?))
+        };
+        let entity = r.varint().map_err(e)?;
+        if Some(entity) != self.own_id {
+            return Ok(());
+        }
+        let count = r.varint().map_err(e)?;
+        for _ in 0..count {
+            let id = r.varint().map_err(e)?;
+            let base = f64_of(&mut r)?;
+            let mods = r.varint().map_err(e)?;
+            let mut list = Vec::new();
+            for _ in 0..mods {
+                r.string(32767).map_err(e)?;
+                let amount = f64_of(&mut r)?;
+                let op = r.take(1).map_err(e)?[0];
+                list.push((op, amount));
+            }
+            let mut v = base;
+            for &(op, a) in &list {
+                if op == 0 {
+                    v += a;
+                }
+            }
+            let mut result = v;
+            for &(op, a) in &list {
+                if op == 1 {
+                    result += v * a;
+                }
+            }
+            for &(op, a) in &list {
+                if op == 2 {
+                    result *= 1.0 + a;
+                }
+            }
+            let name = usize::try_from(id)
+                .ok()
+                .and_then(|i| vanillite_data::entity::ATTRIBUTES.get(i))
+                .map_or_else(|| format!("?{id}"), |a| a.name.to_owned());
+            self.attributes.insert(name, format!("{:.4}", result + 0.0));
         }
         Ok(())
     }
@@ -318,9 +395,15 @@ fn state(id: i32) -> String {
 
 /// The client views of a scenario's players, by name.
 #[derive(Clone, Debug, Default)]
-pub struct ClientViews(BTreeMap<String, ClientView>);
+pub struct ClientViews(BTreeMap<String, ClientView>, bool);
 
 impl ClientViews {
+    /// Views that also show the players' own attributes (`client_attributes`); a golden holds
+    /// `update_attributes` only when its scenario asked for them.
+    pub fn with_attributes(attributes: bool) -> Self {
+        Self(BTreeMap::new(), attributes)
+    }
+
     /// The frame's view of every player's packets (`(player, packets)`), `<player> <event>`
     /// sorted.
     pub fn frame<'a>(
@@ -329,7 +412,11 @@ impl ClientViews {
     ) -> Vec<String> {
         let mut out = Vec::new();
         for (name, packets) in players {
-            let view = self.0.entry(name.to_owned()).or_default();
+            let attributes = self.1;
+            let view = self.0.entry(name.to_owned()).or_insert_with(|| ClientView {
+                with_attributes: attributes,
+                ..ClientView::default()
+            });
             out.extend(
                 view.tick(packets)
                     .into_iter()

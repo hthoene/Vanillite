@@ -765,6 +765,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             pierce_level: u8::try_from(int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127))
                 .unwrap_or(0),
             pierced: Vec::new(),
+            pierced_killed: Vec::new(),
             crossbow_sound: matches!(
                 tag.get("SoundEvent"),
                 Some(Tag::String(s)) if s.as_str() == "minecraft:item.crossbow.hit"

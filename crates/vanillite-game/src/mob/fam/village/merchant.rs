@@ -183,7 +183,7 @@ fn add_offers_from_set(
     };
     let in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let holder_set = |registry: &str, entry: &str| data.holder_set(registry, entry);
-    // `ExplorationMapFunction` of the cartographer's map trades.
+    // `exploration_map` of the cartographer's map trades, from the merchant's position.
     let generation = level.generation.clone();
     let maps = level.maps_shared();
     let (min_y, height) = (level.min_y(), level.max_y() - level.min_y() + 1);
@@ -202,12 +202,12 @@ fn add_offers_from_set(
     let ctx = crate::loot::LootContext {
         origin: Some(pos),
         this_entity: Some(id),
+        exploration_map: Some(&explore),
         item_in_tag: &in_tag,
         enchanting: Some(&data.enchanting),
         holder_set: &holder_set,
         this_present: true,
         entity: Some(&entity),
-        exploration_map: Some(&explore),
         ..crate::loot::LootContext::empty()
     };
     let sequence = set.random_sequence.as_deref().unwrap_or(key);

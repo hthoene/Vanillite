@@ -37,7 +37,7 @@ const MAP_COLORS: [u32; 62] = [
 /// `MapColor.Brightness` modifiers: LOW, NORMAL, HIGH, LOWEST.
 const BRIGHTNESS: [u32; 4] = [180, 220, 255, 135];
 
-/// A packed Java map colour (`id << 2 | brightness`) as Bedrock's ABGR pixel; id 0 is
+/// A packed Java map colour (`id << 2 | brightness`) as Bedrock's ARGB pixel; id 0 is
 /// transparent.
 pub(super) fn map_pixel(packed: u8) -> u32 {
     let base = usize::from(packed >> 2);
@@ -49,7 +49,7 @@ pub(super) fn map_pixel(packed: u8) -> u32 {
         .copied()
         .unwrap_or(255);
     let channel = |shift: u32| (rgb >> shift & 255).saturating_mul(m) / 255;
-    0xFF00_0000 | channel(0) << 16 | channel(8) << 8 | channel(16)
+    0xFF00_0000 | channel(16) << 16 | channel(8) << 8 | channel(0)
 }
 
 /// The Bedrock image and ARGB colour of a Java map decoration type.
@@ -87,7 +87,7 @@ fn decoration_image(java: i32) -> Option<(u8, u32)> {
         "target_x" => return Some((4, 0xFF00_0000)),
         "target_point" => 5,
         "player_off_map" => 6,
-        "frame" => 7,
+        "frame" => 1,
         "player_off_limits" => 13,
         "mansion" => 14,
         "monument" => 15,
@@ -365,8 +365,8 @@ mod tests {
     #[test]
     fn map_colors_follow_vanilla_brightness() {
         // GRASS (1) at LOW, NORMAL, HIGH; id 0 is transparent.
-        assert_eq!(map_pixel(4), 0xFF00_0000 | 39 << 16 | 125 << 8 | 89);
-        assert_eq!(map_pixel(6), 0xFF00_0000 | 56 << 16 | 178 << 8 | 127);
+        assert_eq!(map_pixel(4), 0xFF00_0000 | 89 << 16 | 125 << 8 | 39);
+        assert_eq!(map_pixel(6), 0xFF00_0000 | 127 << 16 | 178 << 8 | 56);
         assert_eq!(map_pixel(0), 0);
         assert_eq!(map_pixel(3), 0);
         assert_eq!(decoration_image(-1), None);

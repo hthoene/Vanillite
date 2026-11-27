@@ -748,10 +748,10 @@ impl GameWorld {
                 hooks: &vanillite_game::hooks::NoHooks,
                 display_name: &names,
                 // Teams come from `team` commands, so only once the command server runs.
-                entity_team: &|uuid| {
+                entity_team: &|holder| {
                     COMMAND_SERVER
                         .get()
-                        .and_then(|g| vanillite_server::entity_team(g, uuid))
+                        .and_then(|g| vanillite_server::entity_team(g, holder))
                 },
             };
             f(level, &mut ents, &mut env, &mut self.mobs)
@@ -1510,7 +1510,11 @@ pub(crate) fn entity_detail(
         }
         d.insert("goals".into(), running(m.kind, &m.goals.slots));
         d.insert("targets".into(), running(m.kind, &m.targets.slots));
-        if let Some(path) = m.nav.path.as_ref().filter(|p| !p.is_done()) {
+        // `getNavigation()`: a rider steering a mob vehicle reports the vehicle's.
+        let nav = ents
+            .mob(vanillite_game::mob::nav_owner(ents, id))
+            .map_or(&m.nav, |o| &o.nav);
+        if let Some(path) = nav.path.as_ref().filter(|p| !p.is_done()) {
             let nodes: Vec<Value> = path
                 .nodes
                 .iter()
