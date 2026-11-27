@@ -319,6 +319,16 @@ impl WorldFactory {
             climate,
         );
         let saved_tickets = crate::chunk_tickets::load(&data, &mut level);
+        match data.read(vanillite_game::level::structure_refs::SAVED_DATA) {
+            Ok(Some(tag)) => level.set_structure_refs(
+                vanillite_game::level::structure_refs::StructureReferences::load(&tag),
+            ),
+            Ok(None) => {}
+            Err(e) => log::error!(
+                "Cannot read {}: {e}",
+                vanillite_game::level::structure_refs::SAVED_DATA
+            ),
+        }
         let mobs = crate::mobs::WorldMobs::new(self.spawn_table.clone(), seed, &rules);
         let mut world = ServerWorld::new(
             id,

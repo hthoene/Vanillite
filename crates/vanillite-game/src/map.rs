@@ -1503,7 +1503,10 @@ pub fn render_biome_preview(
 
 /// What exploration maps need of the server: the structure search and the biome tags.
 pub trait Explorer: Send + Sync {
-    /// `ChunkGenerator.findNearestMapStructure(level, #tag, origin, radius, skipKnown)`.
+    /// `ChunkGenerator.findNearestMapStructure(level, #tag, origin, radius, skipKnown)`; with
+    /// `known` (`skipKnownStructures`) it first claims the start the origin is in
+    /// (`claimStructureAt`) and finds and references only unreferenced starts.
+    #[allow(clippy::too_many_arguments)]
     fn nearest_structure(
         &self,
         terrain: &vanillite_worldgen::generator::TerrainGenerator,
@@ -1512,6 +1515,7 @@ pub trait Explorer: Send + Sync {
         radius: i32,
         min_y: i32,
         height: i32,
+        known: Option<&crate::level::structure_refs::StructureReferences>,
     ) -> Option<BlockPos>;
     /// A test whether the biome at a position is in `#water_on_map_outlines`.
     fn water_on_map_outlines<'a>(
@@ -1538,6 +1542,7 @@ pub fn exploration_map(
     sea_level: i32,
     request: &crate::loot::ExplorationMap,
     origin: vanillite_base::Vec3,
+    refs: &crate::level::structure_refs::StructureReferences,
 ) -> Option<ItemStack> {
     let explorer = EXPLORER.get()?;
     if !generation.structures {
@@ -1556,6 +1561,7 @@ pub fn exploration_map(
         request.search_radius,
         min_y,
         height,
+        request.skip_existing_chunks.then_some(refs),
     )?;
     let mut map = create(
         maps,
