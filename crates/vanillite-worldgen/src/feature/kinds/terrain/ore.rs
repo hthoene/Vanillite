@@ -293,12 +293,17 @@ impl OreFeature {
                         continue;
                     }
                     let section = ((y >> 4) - min_section) as usize;
-                    // The Zs of this row inside the sphere, as bits of `dz`.
-                    let first = (z_min - start.z) as u32;
-                    let mut chord = 0u64;
-                    for (k, &zd_sqr) in zd_sqrs.iter().enumerate() {
-                        chord |= u64::from(xyd_sqr + zd_sqr < 1.0) << (first + k as u32);
-                    }
+                    // The Zs of this row inside the sphere, as bits of `dz`: a contiguous run,
+                    // as `zd_sqr` falls and then rises along the row (each rounding step of
+                    // its computation is monotonic), so the test holds between the first and
+                    // the last Z that pass it.
+                    let inside = |zd_sqr: &f64| xyd_sqr + *zd_sqr < 1.0;
+                    let Some(low) = zd_sqrs.iter().position(inside) else {
+                        continue;
+                    };
+                    let high = zd_sqrs.iter().rposition(inside).unwrap_or(low);
+                    let first = (z_min - start.z) as u32 + low as u32;
+                    let chord = (u64::MAX >> (63 - (high - low) as u32)) << first;
                     let row = &mut tested[((x - start.x) + (y - start.y) * size_xz) as usize];
                     let mut fresh = chord & !*row;
                     *row |= chord;

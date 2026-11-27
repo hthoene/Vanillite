@@ -334,7 +334,9 @@ impl MaterialSystem {
                 // Set once skipping is allowed for this column (see `surface_level_is_free`).
                 let mut min_surface_level = None;
 
-                for y in (end_y..=height).rev() {
+                let mut y = height + 1;
+                while y > end_y {
+                    y -= 1;
                     match kind_at(y) {
                         AIR => {
                             stone_above_depth = 0;
@@ -361,20 +363,36 @@ impl MaterialSystem {
                                 min_surface_level = Some(context.min_surface_level());
                             }
                             if min_surface_level.is_some_and(|level| y < level) {
-                                let folded = below_surface[(y - end_y) as usize];
-                                if folded.ores == 0 || !context.ore_may_place(folded.ores, y) {
+                                // This block and the stone below it, down to the bottom of the
+                                // run (`next_ceiling_stone_y`, where the look-ahead would find
+                                // the same bottom again), as long as Y alone decides them.
+                                let mut handled = false;
+                                loop {
+                                    let folded = below_surface[(y - end_y) as usize];
+                                    if folded.ores != 0 && context.ore_may_place(folded.ores, y) {
+                                        break;
+                                    }
                                     match folded.outcome {
-                                        BelowSurface::Nothing => continue,
+                                        BelowSurface::Nothing => {}
                                         BelowSurface::Place(state) => {
                                             let old = column[(y - (end_y - 1)) as usize];
                                             if !chunk.replace_solid(block_x, y, block_z, old, state)
                                             {
                                                 set_column_block(chunk, block_x, y, block_z, state);
                                             }
-                                            continue;
                                         }
-                                        BelowSurface::Unknown => {}
+                                        BelowSurface::Unknown => break,
                                     }
+                                    handled = true;
+                                    if y <= next_ceiling_stone_y || y <= end_y {
+                                        break;
+                                    }
+                                    handled = false;
+                                    y -= 1;
+                                    stone_above_depth += 1;
+                                }
+                                if handled {
+                                    continue;
                                 }
                             }
                             let stone_below_depth = y - next_ceiling_stone_y + 1;
