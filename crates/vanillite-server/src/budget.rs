@@ -358,8 +358,15 @@ fn lower_thread_priority(nice: i32) {
         // SAFETY: plain syscalls on the calling thread.
         unsafe {
             let tid = libc::syscall(libc::SYS_gettid);
-            if let Ok(tid) = libc::id_t::try_from(tid) {
-                libc::setpriority(libc::PRIO_PROCESS, tid, nice);
+            if let Ok(tid) = libc::id_t::try_from(tid)
+                && libc::setpriority(libc::PRIO_PROCESS, tid, nice) != 0
+            {
+                // Not allowed here (a sandbox or seccomp filter): the worker keeps the
+                // default priority.
+                log::debug!(
+                    "Compute worker priority unchanged: {}",
+                    std::io::Error::last_os_error()
+                );
             }
         }
     }
