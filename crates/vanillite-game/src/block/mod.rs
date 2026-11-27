@@ -42,6 +42,7 @@ pub mod fluid;
 pub mod furnace;
 pub mod geyser;
 mod growth;
+pub mod hook_events;
 pub mod hopper;
 pub mod interact;
 pub mod jukebox;

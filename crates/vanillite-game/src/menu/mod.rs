@@ -428,6 +428,163 @@ fn same_item(a: &ItemStack, b: &ItemStack) -> bool {
     id(a) == id(b)
 }
 
+/// What a menu's plugin events name: the player, the menu type (`minecraft:inventory` for the
+/// player's own) and the `vanillite_abi::menu_flag` bits.
+#[derive(Clone, Copy, Debug)]
+pub struct MenuEventInfo<'a> {
+    /// The player's UUID.
+    pub player: u128,
+    /// The menu type.
+    pub key: &'a str,
+    /// `vanillite_abi::menu_flag` bits.
+    pub flags: u32,
+}
+
+/// The plugin event of a click before it runs: `INVENTORY_DRAG` for the end of a drag over
+/// slots, `INVENTORY_CLICK` for other clicks (drag steps fire none). `false` when a plugin
+/// cancelled it: the caller then skips the click and corrects the client ([`send_all`],
+/// Vanilla's `sendAllDataToRemote`); a cancelled drag is forgotten.
+pub fn click_event<S: MenuSlots + ?Sized>(
+    s: &mut S,
+    hooks: &dyn crate::hooks::GameHooks,
+    info: MenuEventInfo<'_>,
+    slot: i16,
+    button: i8,
+    input: ContainerInput,
+) -> bool {
+    use vanillite_abi::event::{INVENTORY_CLICK, INVENTORY_DRAG};
+    let st = s.state_ref();
+    let mut ev = if input == ContainerInput::QuickCraft {
+        let ends = i32::from(button) & 3 == 2 && st.quickcraft_status == 1;
+        if !ends || st.quickcraft_slots.is_empty() || !hooks.wants(INVENTORY_DRAG) {
+            return true;
+        }
+        crate::hooks::Event {
+            entity: info.player,
+            key: info.key.to_owned(),
+            value: i64::from(slot),
+            extra: i64::from(st.quickcraft_type),
+            cause: vanillite_abi::click::QUICK_CRAFT,
+            item: "{}".to_owned(),
+            other_item: crate::hooks::item_snbt(&st.carried),
+            text: serde_json::to_string(&st.quickcraft_slots).unwrap_or_default(),
+            flags: info.flags,
+            ..crate::hooks::Event::new(INVENTORY_DRAG)
+        }
+    } else {
+        if !hooks.wants(INVENTORY_CLICK) {
+            return true;
+        }
+        let item = usize::try_from(slot)
+            .ok()
+            .filter(|&i| i < s.slot_count())
+            .map_or_else(|| "{}".to_owned(), |i| crate::hooks::item_snbt(s.item(i)));
+        crate::hooks::Event {
+            entity: info.player,
+            key: info.key.to_owned(),
+            value: i64::from(slot),
+            extra: i64::from(button),
+            cause: click_code(input),
+            item,
+            other_item: crate::hooks::item_snbt(&st.carried),
+            flags: info.flags,
+            ..crate::hooks::Event::new(INVENTORY_CLICK)
+        }
+    };
+    hooks.event(&mut ev);
+    if ev.cancelled && input == ContainerInput::QuickCraft {
+        s.state().reset_quickcraft();
+    }
+    !ev.cancelled
+}
+
+/// The id of the crafting recipe a `width` × `height` grid makes (empty for none): the `key`
+/// of craft events.
+fn crafting_recipe_id(grid: &[ItemStack], width: usize, height: usize) -> String {
+    let Some(data) = crate::player::play::game_data() else {
+        return String::new();
+    };
+    let input = crate::recipe::CraftingInput::of(width, height, grid);
+    data.recipes
+        .crafting_for(&input)
+        .and_then(|i| data.recipes.crafting.get(i))
+        .map(|r| r.id.clone())
+        .unwrap_or_default()
+}
+
+/// `CRAFT_ITEM` (Bukkit's `CraftItemEvent`) before a click on the crafting `result` slot that
+/// takes it; `grid` is the crafting grid (`width` × `height`). `false` when cancelled.
+#[allow(clippy::too_many_arguments)]
+pub fn craft_item_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    info: MenuEventInfo<'_>,
+    result: &ItemStack,
+    carried: &ItemStack,
+    grid: (&[ItemStack], usize, usize),
+    slot: i16,
+    button: i8,
+    input: ContainerInput,
+) -> bool {
+    let takes = matches!(
+        input,
+        ContainerInput::Pickup
+            | ContainerInput::QuickMove
+            | ContainerInput::Swap
+            | ContainerInput::Throw
+    );
+    if !takes || result.is_empty() || !hooks.wants(vanillite_abi::event::CRAFT_ITEM) {
+        return true;
+    }
+    let mut ev = crate::hooks::Event {
+        entity: info.player,
+        key: crafting_recipe_id(grid.0, grid.1, grid.2),
+        value: i64::from(slot),
+        extra: i64::from(button),
+        cause: click_code(input),
+        item: crate::hooks::item_snbt(result),
+        other_item: crate::hooks::item_snbt(carried),
+        flags: info.flags,
+        ..crate::hooks::Event::new(vanillite_abi::event::CRAFT_ITEM)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// `CRAFT_PREPARE` (Bukkit's `PrepareItemCraftEvent`) for the crafting result just computed
+/// from `grid` (`width` × `height`): the result as plugins change it (`None`: unchanged).
+pub fn craft_prepare_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    player: u128,
+    result: &ItemStack,
+    grid: (&[ItemStack], usize, usize),
+) -> Option<ItemStack> {
+    if !hooks.wants(vanillite_abi::event::CRAFT_PREPARE) {
+        return None;
+    }
+    let mut ev = crate::hooks::Event {
+        entity: player,
+        key: crafting_recipe_id(grid.0, grid.1, grid.2),
+        item: crate::hooks::item_snbt(result),
+        ..crate::hooks::Event::new(vanillite_abi::event::CRAFT_PREPARE)
+    };
+    hooks.event(&mut ev);
+    ev.item_out.as_deref().and_then(crate::hooks::parse_item)
+}
+
+/// The `vanillite_abi::click` code of a click type.
+pub fn click_code(input: ContainerInput) -> u32 {
+    use vanillite_abi::click;
+    match input {
+        ContainerInput::Pickup => click::PICKUP,
+        ContainerInput::QuickMove => click::QUICK_MOVE,
+        ContainerInput::Swap => click::SWAP,
+        ContainerInput::Clone => click::CLONE,
+        ContainerInput::Throw => click::THROW,
+        ContainerInput::QuickCraft => click::QUICK_CRAFT,
+        ContainerInput::PickupAll => click::PICKUP_ALL,
+    }
+}
+
 /// `isValidSlotIndex`: -1, -999 or a slot of the menu.
 pub fn is_valid_slot_index<S: MenuSlots + ?Sized>(s: &S, slot: i16) -> bool {
     slot == -1 || slot == CLICKED_OUTSIDE || usize::try_from(slot).is_ok_and(|i| i < s.slot_count())

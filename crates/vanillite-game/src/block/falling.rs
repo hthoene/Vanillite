@@ -514,7 +514,12 @@ fn on_land(level: &mut Level, pos: BlockPos, state: BlockState, replaced: BlockS
             if (fluid::is_water(replaced.fluid_state()) || shared::touches_liquid(level, pos))
                 && let Some(concrete) = shared::concrete_of(state)
             {
-                level.set_block_and_update(pos, concrete.default_state());
+                super::hook_events::set_block_and_update(
+                    level,
+                    vanillite_abi::event::BLOCK_FORM,
+                    pos,
+                    concrete.default_state(),
+                );
             }
         }
         _ => {}

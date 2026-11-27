@@ -305,7 +305,12 @@ impl ServerWorld {
                 to_nether,
                 entry,
                 ..
-            } => self.nether_landing(global, *approx, *to_nether, entry, width, height, false),
+            } => {
+                let uuid = vanillite_game::mob::nbt::uuid_of(&nbt).unwrap_or(0);
+                self.nether_landing(
+                    global, *approx, *to_nether, entry, width, height, false, uuid,
+                )
+            }
             Route::EndPlatform => {
                 let spawn = portal::END_SPAWN_POINT;
                 portal::create_end_platform(&mut self.level, spawn.offset(0, -1, 0));
@@ -1165,6 +1170,7 @@ impl ServerWorld {
                 traveller.width,
                 traveller.height,
                 traveller.data.game_mode == GameMode::Spectator,
+                traveller.uuid,
             ),
             Route::EndPlatform => {
                 let spawn = portal::END_SPAWN_POINT;
@@ -1283,6 +1289,7 @@ impl ServerWorld {
         width: f32,
         height: f32,
         spectator: bool,
+        entity: u128,
     ) -> Option<Landing> {
         let level = &mut self.level;
         // `getExitPortal`.
@@ -1303,7 +1310,8 @@ impl ServerWorld {
                     .dimension_types
                     .get(self.id.index())
                     .map_or(256, |t| t.logical_height);
-                let created = portal::create_portal(level, approx, entry.axis, logical_height);
+                let created =
+                    portal::create_portal_by(level, approx, entry.axis, logical_height, entity);
                 let Some(created) = created else {
                     log::error!("Unable to create a portal, likely target out of worldborder");
                     return None;

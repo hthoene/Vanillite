@@ -397,9 +397,19 @@ fn spawn_fire(level: &mut Level, id: EntityId, pos: Vec3, additional: i32) {
     if !fire::can_spread_fire_around(level, at) {
         return;
     }
+    let bolt = level.entities.store.get(id).map_or(0, |e| e.uuid());
     let place_fire = |level: &mut Level, target: BlockPos| {
         let state = place::fire_state(&*level, target);
-        if level.block(target).is_air() && level.can_survive(state, target) {
+        if level.block(target).is_air()
+            && level.can_survive(state, target)
+            && crate::block::hook_events::may_ignite(
+                level,
+                target,
+                vanillite_abi::ignite_cause::LIGHTNING,
+                bolt,
+                0,
+            )
+        {
             level.set_block_and_update(target, state);
             return 1;
         }

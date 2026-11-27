@@ -82,7 +82,17 @@ pub enum MenuKind {
 impl MenuKind {
     /// The `minecraft:menu` registry id.
     pub fn type_id(self) -> i32 {
-        let name = match self {
+        if let MenuKind::Mount { .. } = self {
+            return -1;
+        }
+        vanillite_data::registry::MENU
+            .id(self.name())
+            .map_or(0, i32::from)
+    }
+
+    /// The `minecraft:menu` key (`minecraft:mount` for mount inventories, which have none).
+    pub fn name(self) -> &'static str {
+        match self {
             MenuKind::Generic { rows } => match rows {
                 1 => "minecraft:generic_9x1",
                 2 => "minecraft:generic_9x2",
@@ -110,9 +120,8 @@ impl MenuKind {
             MenuKind::Lectern => "minecraft:lectern",
             MenuKind::Beacon => "minecraft:beacon",
             MenuKind::Merchant => "minecraft:merchant",
-            MenuKind::Mount { .. } => return -1,
-        };
-        vanillite_data::registry::MENU.id(name).map_or(0, i32::from)
+            MenuKind::Mount { .. } => "minecraft:mount",
+        }
     }
 
     /// Slots before the player's inventory.
@@ -246,6 +255,9 @@ pub struct ContainerMenu {
     /// Opened by a plugin (`menu_open`): its container slots are the menu's own (`local`)
     /// and its events carry `vanillite_abi::menu_flag::PLUGIN`.
     pub plugin: bool,
+    /// The UUID of the player it is open for, when plugins are loaded (0 otherwise): what its
+    /// plugin events name.
+    pub player: u128,
 }
 
 /// Where a menu slot is stored.
@@ -346,6 +358,72 @@ fn slot_item<'a>(
         Some(Source::CrafterResult) if menu.plugin => &ItemStack::EMPTY,
         Some(Source::CrafterResult) => menu.local.first().unwrap_or(&ItemStack::EMPTY),
         None => &ItemStack::EMPTY,
+    }
+}
+
+impl ContainerView<'_> {
+    /// The plugin events of a click on this menu before it runs (`INVENTORY_CLICK`,
+    /// `INVENTORY_DRAG`, `CRAFT_ITEM` on a crafting table's result). `false` when a plugin
+    /// cancelled it: the caller skips the click and resends the menu.
+    pub fn click_events(
+        &mut self,
+        hooks: &dyn crate::hooks::GameHooks,
+        player: u128,
+        slot: i16,
+        button: i8,
+        input: vanillite_protocol::packets::play::serverbound::ContainerInput,
+    ) -> bool {
+        let info = super::MenuEventInfo {
+            player,
+            key: self.menu.kind.name(),
+            flags: if self.menu.plugin {
+                vanillite_abi::menu_flag::PLUGIN
+            } else {
+                0
+            },
+        };
+        if !super::click_event(self, hooks, info, slot, button, input) {
+            return false;
+        }
+        if self.menu.kind != MenuKind::Crafting || slot != 0 || self.menu.plugin {
+            return true;
+        }
+        let menu = &*self.menu;
+        let result = menu.local.first().unwrap_or(&ItemStack::EMPTY);
+        let grid = menu.local.get(1..10).unwrap_or_default();
+        super::craft_item_event(
+            hooks,
+            info,
+            result,
+            &menu.state.carried,
+            (grid, 3, 3),
+            slot,
+            button,
+            input,
+        )
+    }
+
+    /// `CRAFT_PREPARE` for a crafting table result computed since the last
+    /// [`Self::flush_result_updates`]: plugins may replace it before it is sent.
+    pub fn craft_prepare_event(&mut self, hooks: &dyn crate::hooks::GameHooks, player: u128) {
+        if self.menu.kind != MenuKind::Crafting
+            || self.menu.plugin
+            || self.menu.result_updates.is_empty()
+        {
+            return;
+        }
+        let menu = &mut *self.menu;
+        let result = menu.local.first().cloned().unwrap_or_default();
+        let grid = (menu.local.get(1..10).unwrap_or_default(), 3, 3);
+        if let Some(new) = super::craft_prepare_event(hooks, player, &result, grid) {
+            menu.state.set_remote(0, &new);
+            if let Some(last) = menu.result_updates.last_mut() {
+                *last = new.clone();
+            }
+            if let Some(slot) = menu.local.first_mut() {
+                *slot = new;
+            }
+        }
     }
 }
 
@@ -1058,7 +1136,27 @@ impl ContainerView<'_> {
                 .filter(|id| d.recipes.cooking.iter().any(|r| r.id == *id))
                 .collect()
         });
-        let xp = crate::block::furnace::pop_experience(self.level, pos);
+        let mut xp = crate::block::furnace::pop_experience(self.level, pos);
+        // Bukkit's `FurnaceExtractEvent`: plugins may change the experience.
+        if let Some(hooks) = self.level.hooks_for(vanillite_abi::event::FURNACE_EXTRACT) {
+            /// The most experience a plugin may give.
+            const MAX_XP: i64 = 100_000;
+            let taken = if item == 0 || count <= 0 {
+                ItemStack::EMPTY
+            } else {
+                ItemStack::new(item, count)
+            };
+            let mut ev = crate::hooks::Event {
+                entity: self.menu.player,
+                pos,
+                state: Some(self.level.block(pos)),
+                item: crate::hooks::item_snbt(&taken),
+                value: i64::from(xp),
+                ..crate::hooks::Event::new(vanillite_abi::event::FURNACE_EXTRACT)
+            };
+            hooks.event(&mut ev);
+            xp = i32::try_from(ev.value.clamp(0, MAX_XP)).unwrap_or(0);
+        }
         let at = self.player_pos;
         self.level.award_experience(at, xp);
         if !known.is_empty() {
@@ -1167,6 +1265,30 @@ fn open_with(
     inv.container_counter = inv.container_counter % 100 + 1;
     let id = inv.container_counter;
     let kind = request.menu;
+    let player = match (level.hooks(), request.player) {
+        (Some(_), Some(p)) => level.entities.store.get(p).map_or(0, |e| e.uuid()),
+        _ => 0,
+    };
+    // Bukkit's `InventoryOpenEvent`: a cancelled menu stays closed.
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::INVENTORY_OPEN) {
+        let mut ev = crate::hooks::Event {
+            entity: player,
+            key: kind.name().to_owned(),
+            value: i64::from(id),
+            text: request.title.to_json_string(),
+            pos: request.pos,
+            flags: if plugin_items.is_some() {
+                vanillite_abi::menu_flag::PLUGIN
+            } else {
+                0
+            },
+            ..crate::hooks::Event::new(vanillite_abi::event::INVENTORY_OPEN)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return;
+        }
+    }
     let slots = kind.container_slots() + 36;
     let local = match kind {
         MenuKind::Crafting
@@ -1210,6 +1332,7 @@ fn open_with(
         may_build: true,
         merchant: super::merchant::MerchantMenu::default(),
         plugin,
+        player,
     };
     // The menu's constructor counts the viewer (`container.startOpen`).
     for pos in menu.viewed().into_iter().flatten() {
@@ -1449,6 +1572,11 @@ pub fn close(
     let Some(mut menu) = inv.container.take() else {
         return;
     };
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::INVENTORY_CLOSE) {
+        let mut ev = menu_event(&menu, vanillite_abi::event::INVENTORY_CLOSE);
+        ev.pos = menu.pos;
+        hooks.event(&mut ev);
+    }
     if let Some(sink) = sink {
         sink.send(&ContainerCloseClientbound {
             container_id: menu.state.container_id,
@@ -1507,6 +1635,22 @@ pub fn close(
             _ => Some(n + index - 9),
         }
     });
+}
+
+/// An event of `kind` about an open menu: `entity` the player, `key` the menu type, `value`
+/// the container id, `flags` [`vanillite_abi::menu_flag::PLUGIN`] for plugin menus.
+pub fn menu_event(menu: &ContainerMenu, kind: u32) -> crate::hooks::Event {
+    crate::hooks::Event {
+        entity: menu.player,
+        key: menu.kind.name().to_owned(),
+        value: i64::from(menu.state.container_id),
+        flags: if menu.plugin {
+            vanillite_abi::menu_flag::PLUGIN
+        } else {
+            0
+        },
+        ..crate::hooks::Event::new(kind)
+    }
 }
 
 /// `dropOrPlaceInInventory`.

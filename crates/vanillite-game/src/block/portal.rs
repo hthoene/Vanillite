@@ -129,6 +129,7 @@ fn fire_on_place(level: &mut Level, state: BlockState, pos: BlockPos, old: Block
         }
         if level.settings.portal_dimension
             && let Some(shape) = PortalShape::find_empty(&*level, pos, HorizontalAxis::X)
+            && portal_may_form(level, &shape)
         {
             create_portal_blocks(level, &shape);
             break 'base;
@@ -142,6 +143,30 @@ fn fire_on_place(level: &mut Level, state: BlockState, pos: BlockPos, old: Block
         let delay = 30 + level.random().next_int_bounded(10);
         level.schedule_block_tick(pos, ids::FIRE, delay);
     }
+}
+
+/// Whether plugins let fire light the portal `shape` (`PORTAL_CREATE` without an entity,
+/// Bukkit's `PortalCreateEvent` of `FIRE`); a cancelled portal leaves the fire.
+fn portal_may_form(level: &Level, shape: &PortalShape) -> bool {
+    let Some(hooks) = level.hooks_for(vanillite_abi::event::PORTAL_CREATE) else {
+        return true;
+    };
+    // The inside spans `width` blocks from `bottom_left` towards `right`.
+    let [rx, _, rz] = shape.right.normal();
+    let far = shape
+        .bottom_left
+        .offset(rx * (shape.width - 1), 0, rz * (shape.width - 1));
+    let corner = BlockPos::new(
+        shape.bottom_left.x.min(far.x),
+        shape.bottom_left.y,
+        shape.bottom_left.z.min(far.z),
+    );
+    let mut ev = crate::hooks::Event {
+        pos: corner,
+        ..crate::hooks::Event::new(vanillite_abi::event::PORTAL_CREATE)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
 }
 
 /// `PortalShape.createPortalBlocks`: portal blocks without neighbour or shape updates.

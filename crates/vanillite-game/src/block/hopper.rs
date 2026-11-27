@@ -169,6 +169,9 @@ fn eject_items(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
             continue;
         }
         let one = stack.with_count(1);
+        if !move_allowed(level, source, target, &one, None) {
+            return false;
+        }
         let rest = add_item(level, Some(source), target, one, Some(face));
         if rest.is_empty() {
             if let Some(s) = source.get_mut(level, slot) {
@@ -179,6 +182,40 @@ fn eject_items(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
         }
     }
     false
+}
+
+/// Whether plugins let a hopper (or the hopper minecart `minecart`) move one item of `stack`
+/// from `from` into `to` (`INVENTORY_MOVE_ITEM`, Bukkit's `InventoryMoveItemEvent`). `true`
+/// when no plugin listens.
+fn move_allowed(
+    level: &Level,
+    from: ContainerRef,
+    to: ContainerRef,
+    stack: &ItemStack,
+    minecart: Option<vanillite_world::entity::EntityId>,
+) -> bool {
+    let Some(hooks) = level.hooks_for(vanillite_abi::event::INVENTORY_MOVE_ITEM) else {
+        return true;
+    };
+    let at = |c: ContainerRef| match c {
+        ContainerRef::Block(p) | ContainerRef::Double(p, _) => center(p),
+        ContainerRef::Entity(id) => level
+            .entities
+            .store
+            .get(id)
+            .map_or(Vec3::default(), |e| e.pos()),
+    };
+    let mut ev = crate::hooks::Event {
+        from: crate::hooks::Place::at(at(from)),
+        to: crate::hooks::Place::at(at(to)),
+        entity: minecart
+            .and_then(|id| level.entities.store.get(id))
+            .map_or(0, |e| e.uuid()),
+        item: crate::hooks::item_snbt(&stack.with_count(1)),
+        ..crate::hooks::Event::new(vanillite_abi::event::INVENTORY_MOVE_ITEM)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
 }
 
 /// The center of a block (`getContainerAt(level, pos)` looks there).
@@ -216,6 +253,13 @@ fn suck(level: &mut Level, me: ContainerRef, point: Vec3, grid_aligned: bool) ->
             let stack = source.get(level, slot);
             if stack.is_empty() || !source.can_take(level, slot, &stack, Direction::Down) {
                 continue;
+            }
+            let minecart = match me {
+                ContainerRef::Entity(id) => Some(id),
+                _ => None,
+            };
+            if !move_allowed(level, source, me, &stack, minecart) {
+                return false;
             }
             let rest = add_item(level, Some(source), me, stack.with_count(1), None);
             if rest.is_empty() {

@@ -1,11 +1,13 @@
 //! Blocks that spread or decay: grass and mycelium (`SpreadingSnowyBlock`), nylium, leaves,
 //! mushrooms and corals.
 
+use vanillite_abi::event::{BLOCK_FADE, BLOCK_SPREAD, LEAVES_DECAY};
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockId, BlockState, flags, ids};
 use vanillite_worldgen::behaviour::{PosExt, StateExt, merged_face_occludes};
 
+use super::hook_events as he;
 use super::{block_tags, drops, fluid};
 use crate::level::{Level, update};
 
@@ -61,7 +63,7 @@ pub(super) fn spreading_snowy_dirt_random_tick(
 ) {
     let base = ids::DIRT;
     if !can_stay_alive(level, state, pos) {
-        level.set_block_and_update(pos, base.default_state());
+        he::set_block_and_update(level, BLOCK_FADE, pos, base.default_state());
         return;
     }
     if level.max_local_raw_brightness(pos.above()) < 9 {
@@ -76,7 +78,8 @@ pub(super) fn spreading_snowy_dirt_random_tick(
         let target = pos.offset(dx, dy, dz);
         if level.block(target).is(base) && can_propagate(level, spread, target) {
             let snowy = block_tags().snow.contains(level.block(target.above()));
-            level.set_block_and_update(target, spread.set_flag("snowy", snowy));
+            let grown = spread.set_flag("snowy", snowy);
+            he::set_block_and_update(level, BLOCK_SPREAD, target, grown);
         }
     }
 }
@@ -85,7 +88,7 @@ pub(super) fn spreading_snowy_dirt_random_tick(
 pub(super) fn nylium_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let above = level.block(pos.above());
     if light_dampening_into(state, above, Direction::Up) >= 15 {
-        level.set_block_and_update(pos, ids::NETHERRACK.default_state());
+        he::set_block_and_update(level, BLOCK_FADE, pos, ids::NETHERRACK.default_state());
     }
 }
 
@@ -113,6 +116,18 @@ pub(super) fn leaves_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
 /// `LeavesBlock.randomTick`: leaves too far from logs decay.
 pub(super) fn leaves_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if !state.flag("persistent") && state.int("distance") == Some(7) {
+        if let Some(hooks) = level.hooks_for(LEAVES_DECAY) {
+            let mut ev = crate::hooks::Event {
+                pos,
+                key: he::state_text(state),
+                state: Some(state),
+                ..crate::hooks::Event::new(LEAVES_DECAY)
+            };
+            hooks.event(&mut ev);
+            if ev.cancelled {
+                return;
+            }
+        }
         drops::drop_resources(level, pos, state, None);
         level.remove_block(pos, false);
     }
@@ -146,7 +161,7 @@ pub(super) fn mushroom_random_tick(level: &mut Level, state: BlockState, pos: Bl
         offset = random_offset(level, pos);
     }
     if level.block(offset).is_air() && level.can_survive(state, offset) {
-        level.set_block(offset, state, update::CLIENTS);
+        he::set_block(level, BLOCK_SPREAD, offset, state, update::CLIENTS);
     }
 }
 
@@ -204,5 +219,5 @@ pub(super) fn coral_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if let Some(facing) = state.direction("facing") {
         dead_state = dead_state.set_direction("facing", facing);
     }
-    level.set_block(pos, dead_state, update::CLIENTS);
+    he::set_block(level, BLOCK_FADE, pos, dead_state, update::CLIENTS);
 }
