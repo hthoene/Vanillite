@@ -397,11 +397,14 @@ pub(crate) struct Lock(Child);
 impl Lock {
     /// Waits for the lock; `owner` is shown to runs that wait for it.
     pub(crate) fn take(host: &str, owner: &str) -> Result<Self> {
+        Self::take_with(host, "vanillite-bench lock", owner)
+    }
+
+    /// Waits for a lock of the same protocol taken by the remote command `lock` (for example
+    /// `vanillite-lock` on vanillite-test2).
+    pub(crate) fn take_with(host: &str, lock: &str, owner: &str) -> Result<Self> {
         let mut child = Command::new("ssh")
-            .args([
-                host,
-                &format!("vanillite-bench lock '{}'", owner.replace('\'', "")),
-            ])
+            .args([host, &format!("{lock} '{}'", owner.replace('\'', ""))])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -409,14 +412,14 @@ impl Lock {
         let out = child.stdout.take().ok_or("no ssh output")?;
         for line in BufReader::new(out).lines().map_while(std::io::Result::ok) {
             if let Some(holder) = line.strip_prefix("busy") {
-                println!("waiting for the benchmark lock on the test server (held by{holder})");
+                println!("waiting for the lock on {host} (held by{holder})");
             } else if line == "locked" {
                 return Ok(Self(child));
             }
         }
         let _ = child.kill();
         let _ = child.wait();
-        Err("cannot take the benchmark lock on the test server".into())
+        Err(format!("cannot take the lock on {host}"))
     }
 }
 
