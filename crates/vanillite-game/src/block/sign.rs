@@ -330,17 +330,43 @@ pub fn update_text(
     front: bool,
     lines: &[String; 4],
 ) {
-    let Some(BlockEntity::Sign(sign)) = level.block_entity_mut(pos) else {
+    let Some(BlockEntity::Sign(sign)) = level.block_entity(pos) else {
         return;
     };
     if sign.waxed || sign.editor != Some(player) {
         log::warn!("A player just tried to change a non-editable sign");
         return;
     }
+    // `ChatFormatting.stripFormatting`.
+    let mut plain: [String; 4] = std::array::from_fn(|i| strip_formatting(&lines[i]));
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::SIGN_CHANGE) {
+        let mut ev = crate::hooks::Event {
+            player,
+            pos,
+            state: Some(level.block(pos)),
+            flags: u32::from(front),
+            text: serde_json::to_string(&plain).unwrap_or_default(),
+            ..crate::hooks::Event::new(vanillite_abi::event::SIGN_CHANGE)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            // Bukkit's cancelled `SignChangeEvent`: the text stays; the client is corrected.
+            if let Some(BlockEntity::Sign(sign)) = level.block_entity_mut(pos) {
+                sign.editor = None;
+            }
+            level.block_entity_changed(pos);
+            return;
+        }
+        if let Some(new) = ev.text_out.as_ref().and_then(|t| plugin_lines(t.as_str())) {
+            plain = new;
+        }
+    }
+    let Some(BlockEntity::Sign(sign)) = level.block_entity_mut(pos) else {
+        return;
+    };
     let text = sign.text_mut(front);
-    for (slot, line) in text.messages.iter_mut().zip(lines) {
-        // `ChatFormatting.stripFormatting`, keeping the line's style.
-        let plain = strip_formatting(line);
+    for (slot, plain) in text.messages.iter_mut().zip(plain) {
+        // Keeping the line's style.
         *slot = Component {
             content: vanillite_protocol::text::Content::Text(plain),
             style: slot.style.clone(),
@@ -349,6 +375,28 @@ pub fn update_text(
     }
     sign.editor = None;
     level.block_entity_changed(pos);
+}
+
+/// The most characters of a sign line a plugin may set (the line limit of
+/// `ServerboundSignUpdatePacket`).
+const MAX_PLUGIN_LINE: usize = 384;
+
+/// Sign lines from a plugin: a JSON array of up to four strings (missing lines empty, longer
+/// lines cut, formatting codes removed); `None` for anything else.
+fn plugin_lines(json: &str) -> Option<[String; 4]> {
+    // Four escaped lines at most (`\uXXXX` is six bytes a character).
+    if json.len() > 4 * (MAX_PLUGIN_LINE * 6 + 4) + 2 {
+        return None;
+    }
+    let lines: Vec<String> = serde_json::from_str(json).ok()?;
+    if lines.len() > 4 {
+        return None;
+    }
+    Some(std::array::from_fn(|i| {
+        lines.get(i).map_or_else(String::new, |line| {
+            strip_formatting(&line.chars().take(MAX_PLUGIN_LINE).collect::<String>())
+        })
+    }))
 }
 
 /// `ChatFormatting.stripFormatting`: removes `§` and the code after it.

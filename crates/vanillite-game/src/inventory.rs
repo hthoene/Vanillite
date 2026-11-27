@@ -431,6 +431,52 @@ impl PlayerInventory {
         self.result_updates.push(result);
     }
 
+    /// The plugin events of a click on the inventory menu before it runs
+    /// (`INVENTORY_CLICK`, `INVENTORY_DRAG`, `CRAFT_ITEM` on the result slot). `false` when
+    /// a plugin cancelled it: the caller skips the click and resends the menu.
+    pub fn click_events(
+        &mut self,
+        hooks: &dyn crate::hooks::GameHooks,
+        player: u128,
+        slot: i16,
+        button: i8,
+        input: ContainerInput,
+    ) -> bool {
+        let info = menu::MenuEventInfo {
+            player,
+            key: "minecraft:inventory",
+            flags: 0,
+        };
+        menu::click_event(self, hooks, info, slot, button, input)
+            && (slot != 0
+                || menu::craft_item_event(
+                    hooks,
+                    info,
+                    &self.craft_result,
+                    &self.menu.carried,
+                    (&self.craft, 2, 2),
+                    slot,
+                    button,
+                    input,
+                ))
+    }
+
+    /// `CRAFT_PREPARE` for a 2 × 2 crafting result computed since the last
+    /// [`Self::flush_result_updates`]: plugins may replace it before it is sent.
+    pub fn craft_prepare_event(&mut self, hooks: &dyn crate::hooks::GameHooks, player: u128) {
+        if self.result_updates.is_empty() {
+            return;
+        }
+        let grid = (&self.craft[..], 2, 2);
+        if let Some(new) = menu::craft_prepare_event(hooks, player, &self.craft_result, grid) {
+            self.menu.set_remote(0, &new);
+            if let Some(last) = self.result_updates.last_mut() {
+                *last = new.clone();
+            }
+            self.craft_result = new;
+        }
+    }
+
     /// Sends the crafting results [`Self::craft_changed`] computed
     /// (`ClientboundContainerSetSlotPacket` of slot 0).
     pub fn flush_result_updates(&mut self, sink: &dyn PacketSink) {

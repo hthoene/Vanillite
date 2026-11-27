@@ -513,6 +513,9 @@ pub struct Chunks {
     generated: Vec<ChunkPos>,
     /// Chunks that became live since the last [`Chunks::take_promoted`].
     promoted: Vec<ChunkPos>,
+    /// Chunks whose generation finished since the start of the last [`Chunks::tick`]
+    /// ([`Chunks::generated_now`]).
+    generated_full: Vec<ChunkPos>,
     /// `ServerLevel.noSave` (`/save-off`): unneeded chunks are not unloaded.
     no_save: bool,
     /// The visibility of every chunk that is not hidden.
@@ -642,6 +645,7 @@ impl Chunks {
             post_process: Vec::new(),
             generated: Vec::new(),
             promoted: Vec::new(),
+            generated_full: Vec::new(),
             no_save: false,
             visibility: FxHashMap::default(),
             visibility_check: Vec::new(),
@@ -1129,6 +1133,7 @@ impl Chunks {
     /// With an inline executor this runs until nothing can make progress.
     pub fn tick(&mut self) {
         self.tick += 1;
+        self.generated_full.clear();
         for (pos, chunk, entities) in std::mem::take(&mut self.loaded_between_ticks) {
             self.apply_loaded(pos, Ok(Some(chunk)), entities);
         }
@@ -1747,6 +1752,7 @@ impl Chunks {
                     chunk.status = next;
                     if next == ChunkStatus::Full {
                         chunk.generation = None;
+                        self.generated_full.push(pos);
                     }
                     holder.touch(pos, &mut self.changed);
                     if next == ChunkStatus::Spawn {
@@ -1889,6 +1895,12 @@ impl Chunks {
         if ticks {
             self.mark_dirty(pos);
         }
+    }
+
+    /// Whether a chunk that became live since the start of the last [`Chunks::tick`] was
+    /// generated then rather than loaded (plugins' `ChunkLoadEvent.isNewChunk`).
+    pub fn generated_now(&self, pos: ChunkPos) -> bool {
+        self.generated_full.contains(&pos)
     }
 
     /// Chunks that became live since the last call (the game loads their block entities).

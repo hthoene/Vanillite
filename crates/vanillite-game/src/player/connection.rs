@@ -904,8 +904,10 @@ impl Connection {
             inventory,
             drops,
             xp,
+            hooks,
             ..
         } = play;
+        let hooks = *hooks;
         let Some(level) = level.level_mut() else {
             return;
         };
@@ -930,9 +932,15 @@ impl Connection {
                 log::debug!("A player clicked invalid slot index {}", p.slot);
                 return;
             }
+            // Plugins may cancel the click: nothing changes, the client is corrected.
+            if !view.click_events(hooks, actor.uuid, p.slot, p.button, p.input) {
+                crate::menu::send_all(view, sink);
+                return;
+            }
             let full_resync = p.state_id != view.menu.state.state_id();
             view.menu.state.suppress_remote = true;
             crate::menu::click(view, p.slot, p.button, p.input, ctx, drops);
+            view.craft_prepare_event(hooks, actor.uuid);
             view.flush_result_updates(sink);
             crate::menu::receive_predictions(&mut view.menu.state, &p.changed, &p.carried);
             view.menu.state.suppress_remote = false;
@@ -1015,9 +1023,12 @@ impl Connection {
                 creative,
                 play.drops,
             );
+            play.inventory
+                .craft_prepare_event(play.hooks, play.actor.uuid);
             play.inventory.flush_result_updates(sink);
             ghost
         } else {
+            let hooks = play.hooks;
             let PlayContext {
                 level,
                 inventory,
@@ -1077,6 +1088,7 @@ impl Connection {
                         creative,
                         drops,
                     );
+                    view.craft_prepare_event(hooks, actor.uuid);
                     view.flush_result_updates(sink);
                     ghost
                 },
@@ -1292,6 +1304,14 @@ impl Connection {
             log::debug!("A player clicked invalid slot index {}", p.slot);
             return;
         }
+        // Plugins may cancel the click: nothing changes, the client is corrected.
+        if !play
+            .inventory
+            .click_events(play.hooks, play.actor.uuid, p.slot, p.button, p.input)
+        {
+            play.inventory.send_all(sink);
+            return;
+        }
         let full_resync = p.state_id != play.inventory.state_id();
         let ctx = ClickContext {
             infinite: play.actor.game_mode == vanillite_config::GameMode::Creative,
@@ -1301,6 +1321,8 @@ impl Connection {
             .click(p.slot, p.button, p.input, ctx, play.drops);
         let sounds = std::mem::take(&mut play.inventory.menu.sounds);
         play_bundle_sounds(play, sounds);
+        play.inventory
+            .craft_prepare_event(play.hooks, play.actor.uuid);
         play.inventory.flush_result_updates(sink);
         play.inventory.receive_predictions(&p.changed, &p.carried);
         play.inventory.menu.suppress_remote = false;

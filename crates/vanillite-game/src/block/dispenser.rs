@@ -106,6 +106,19 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if stack.is_empty() {
         return;
     }
+    // Bukkit's `BlockDispenseEvent`: a cancelled dispense does nothing.
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::BLOCK_DISPENSE) {
+        let mut ev = crate::hooks::Event {
+            pos,
+            state: Some(state),
+            item: crate::hooks::item_snbt(&stack),
+            ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_DISPENSE)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return;
+        }
+    }
     let facing = state.direction("facing").unwrap_or(Direction::North);
     let source = Source { pos, facing, slot };
     let remaining = if dropper {
@@ -394,7 +407,7 @@ fn execute(
             stack
         }
         B::BoneMeal => {
-            if super::bonemeal::grow_crop(level, target, &mut stack)
+            if super::bonemeal::fertilize(level, target, &mut stack, 0)
                 || super::bonemeal::grow_water_plant(level, target, &mut stack)
             {
                 level.level_event(None, PLANT_GROWTH, target, 15);

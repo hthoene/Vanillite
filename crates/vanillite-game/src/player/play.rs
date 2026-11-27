@@ -1417,6 +1417,21 @@ impl Digging {
                 return false;
             }
         }
+        // Bukkit's `BlockIgniteEvent` (`FLINT_AND_STEEL`): a cancelled use does nothing.
+        if ctx.hooks.wants(vanillite_abi::event::BLOCK_IGNITE) {
+            let mut ev = crate::hooks::Event {
+                pos: target,
+                cause: vanillite_abi::ignite_cause::FLINT_AND_STEEL,
+                entity: ctx.actor.uuid,
+                player: ctx.actor.uuid,
+                state: Some(ctx.level.block(target)),
+                ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_IGNITE)
+            };
+            ctx.hooks.event(&mut ev);
+            if ev.cancelled {
+                return false;
+            }
+        }
         let pitch = ctx.level.random_float() * 0.4 + 0.8;
         let sound = vanillite_data::registry::SOUND_EVENT
             .id("minecraft:item.flintandsteel.use")
@@ -2018,6 +2033,28 @@ fn drop_resources(
                 data.loot.block_drops(&loot, &mut rng, &mut stacks);
             }
         }
+    }
+    if ctx.hooks.wants(vanillite_abi::event::BLOCK_DROP) {
+        let xp = ctx.level.level_mut().map_or(0, |level| {
+            crate::block::break_hooks::break_experience(level, state, tool)
+        });
+        let Some(xp) = crate::block::drops::block_drop_event(
+            ctx.hooks,
+            ctx.actor.uuid,
+            pos,
+            state,
+            &mut stacks,
+            xp,
+        ) else {
+            return;
+        };
+        for stack in stacks {
+            pop_resource(ctx.level, pos, stack);
+        }
+        if let Some(level) = ctx.level.level_mut() {
+            crate::block::break_hooks::spawn_after_break_with(level, state, pos, tool, xp);
+        }
+        return;
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);

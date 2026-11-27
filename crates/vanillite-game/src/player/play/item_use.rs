@@ -434,7 +434,7 @@ fn bone_meal(ctx: &mut PlayContext<'_>, click: Click) -> Used {
     };
     let pos = click.pos;
     let relative = pos.relative(click.face);
-    let grown = if crate::block::bonemeal::grow_crop(level, pos, &mut stack) {
+    let grown = if crate::block::bonemeal::fertilize(level, pos, &mut stack, ctx.actor.uuid) {
         Some(pos)
     } else if crate::block::is_face_sturdy(level.block(pos), click.face)
         && crate::block::bonemeal::grow_water_plant_from(
@@ -543,11 +543,27 @@ fn shears(ctx: &mut PlayContext<'_>, click: Click) -> Used {
 /// `FireChargeItem.useOn`: lights a campfire or candle, or places fire on the clicked face.
 fn fire_charge(ctx: &mut PlayContext<'_>, click: Click) -> Used {
     let player = ctx.actor.entity;
+    let uuid = ctx.actor.uuid;
     let forward = crate::block::place::horizontal_direction_of(ctx.actor.y_rot);
     let lightable = super::can_light(ctx.level.block(click.pos));
     let Some(level) = ctx.level.level_mut() else {
         return Used::Pass;
     };
+    // Bukkit's `BlockIgniteEvent` (`FIREBALL`): a cancelled use does nothing.
+    let target = if lightable {
+        click.pos
+    } else {
+        click.pos.relative(click.face)
+    };
+    if !crate::block::hook_events::may_ignite(
+        level,
+        target,
+        vanillite_abi::ignite_cause::FIREBALL,
+        uuid,
+        uuid,
+    ) {
+        return Used::Fail;
+    }
     let used = if lightable {
         let state = level.block(click.pos);
         play_fire_charge_sound(level, click.pos);

@@ -214,6 +214,20 @@ fn base_trigger_event(
         return false;
     }
     let piston_type = if sticky { "sticky" } else { "normal" };
+    // Bukkit's `BlockPistonExtendEvent` / `BlockPistonRetractEvent`: a cancelled piston stays.
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::BLOCK_PISTON) {
+        let mut ev = crate::hooks::Event {
+            pos,
+            state: Some(state),
+            cause: u32::from(b0 == TRIGGER_EXTEND),
+            value: direction as i64,
+            ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_PISTON)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return false;
+        }
+    }
     if b0 == TRIGGER_EXTEND {
         if !move_blocks(level, pos, direction, true, sticky) {
             return false;
