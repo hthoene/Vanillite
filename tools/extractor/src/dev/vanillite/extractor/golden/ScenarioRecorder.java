@@ -80,7 +80,10 @@ import net.minecraft.world.ticks.ScheduledTick;
  * <p>Scenarios with {@code "dimensions": true} run with all three dimensions (the Nether and the
  * End flat too) and players that load chunks; their region lies in {@code dimension}, the
  * entities of their {@code views} (regions of other dimensions) join the frames with their
- * {@code dim}, and block operations work in their {@code dimension}.
+ * {@code dim}, and block operations work in their {@code dimension}. Before every tick the chunk
+ * system runs without a game tick until the chunks around every player are loaded, promoted and
+ * with their entities as their ticket levels say ({@link #settlePlayers}): a joined, respawned or
+ * teleported player has the same loaded chunks (and spawn candidates) in every recording.
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
@@ -441,6 +444,7 @@ public final class ScenarioRecorder {
           scenario.has("client_attributes") && scenario.get("client_attributes").getAsBoolean();
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
+      Map<ServerLevel, Area> playerAreas = new java.util.IdentityHashMap<>();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
       for (int tick = 1; tick <= ticks; tick++) {
         for (int i = 0; i < specs.size(); i++) {
@@ -517,6 +521,9 @@ public final class ScenarioRecorder {
           }
         }
         entities.clientEnd();
+        if (dimensions) {
+          settlePlayers(server, playerAreas);
+        }
         server.step();
         if (settleLight) {
           server.settleLight();
@@ -640,11 +647,43 @@ public final class ScenarioRecorder {
       maxZ = (max.getZ() >> 4) + 1;
     }
 
+    Area(int x, int z) {
+      minX = maxX = x;
+      minZ = maxZ = z;
+    }
+
     void add(int x, int z) {
       minX = Math.min(minX, x);
       minZ = Math.min(minZ, z);
       maxX = Math.max(maxX, x);
       maxZ = Math.max(maxZ, z);
+    }
+  }
+
+  /**
+   * Settles the chunks around every player of every level ({@link #settle}): the player tickets
+   * go through a throttled dispatcher and the chunks generate on worker threads, so without it a
+   * player's chunks become full (and spawn candidates, whose shuffle draws from the level random)
+   * at a wall-time-dependent tick. The areas grow with every chunk a player stood in, so chunks a
+   * player left unload before the tick too.
+   */
+  private static void settlePlayers(ParityServer server, Map<ServerLevel, Area> areas)
+      throws Exception {
+    int radius = VIEW_DISTANCE + 1;
+    for (ServerLevel level : server.getAllLevels()) {
+      for (net.minecraft.server.level.ServerPlayer p : level.players()) {
+        int cx = p.getBlockX() >> 4;
+        int cz = p.getBlockZ() >> 4;
+        Area area = areas.computeIfAbsent(level, l -> new Area(cx, cz));
+        area.add(cx - radius, cz - radius);
+        area.add(cx + radius, cz + radius);
+      }
+    }
+    for (ServerLevel level : server.getAllLevels()) {
+      Area area = areas.get(level);
+      if (area != null) {
+        settle(server, level, area);
+      }
     }
   }
 
@@ -670,6 +709,9 @@ public final class ScenarioRecorder {
           continue;
         }
         String reason = unsettled(level, source, holder, area);
+        if (reason == null && ticketsPending(source)) {
+          reason = "player tickets pending";
+        }
         if (reason == null && !ParityHooks.hasDeferredEntityLoads()) {
           return;
         }
@@ -699,6 +741,23 @@ public final class ScenarioRecorder {
     return true;
   }
 
+  /**
+   * Whether the throttled dispatcher of the player tickets still holds ticket changes that have
+   * not reached the ticket storage.
+   */
+  private static boolean ticketsPending(ServerChunkCache source) throws Exception {
+    Field f = net.minecraft.server.level.DistanceManager.class.getDeclaredField("ticketDispatcher");
+    f.setAccessible(true);
+    net.minecraft.server.level.ThrottlingChunkTaskDispatcher dispatcher =
+        (net.minecraft.server.level.ThrottlingChunkTaskDispatcher)
+            f.get(source.chunkMap.getDistanceManager());
+    Field running =
+        net.minecraft.server.level.ThrottlingChunkTaskDispatcher.class.getDeclaredField(
+            "chunkPositionsInExecution");
+    running.setAccessible(true);
+    return dispatcher.hasWork() || !((java.util.Collection<?>) running.get(dispatcher)).isEmpty();
+  }
+
   /** Why the area is not settled yet, {@code null} once it is. */
   private static String unsettled(
       ServerLevel level, ServerChunkCache source, Method holder, Area area) throws Exception {
@@ -710,11 +769,17 @@ public final class ScenarioRecorder {
         boolean full = ticketLevel <= ChunkLevel.byStatus(FullChunkStatus.FULL);
         boolean accessible = source.getChunkNow(x, z) != null;
         boolean entities = level.areEntitiesLoaded(key);
-        boolean dropped = ticketLevel <= ChunkLevel.MAX_LEVEL || holder.invoke(source.chunkMap, key) == null;
-        if (accessible != full || entities != full || !dropped) {
+        Object h = holder.invoke(source.chunkMap, key);
+        boolean dropped = ticketLevel <= ChunkLevel.MAX_LEVEL || h == null;
+        // Promoted (ticking, entity ticking) or demoted as the ticket level says.
+        boolean promoted =
+            h == null
+                || ((net.minecraft.server.level.ChunkHolder) h).getFullStatus()
+                    == ChunkLevel.fullStatus(ticketLevel);
+        if (accessible != full || entities != full || !dropped || !promoted) {
           return String.format(
-              "chunk %d, %d: level %d, accessible %b, entities %b, dropped %b",
-              x, z, ticketLevel, accessible, entities, dropped);
+              "chunk %d, %d: level %d, accessible %b, entities %b, dropped %b, promoted %b",
+              x, z, ticketLevel, accessible, entities, dropped, promoted);
         }
       }
     }

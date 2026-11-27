@@ -1,3 +1,0 @@
-tick = 12
-cause = "after the player died (tick 10) Vanillite's level random stops changing while Vanilla's goes on drawing (as dimension_death_respawn_view); the barrel closing and the cursor drop on respawn match Vanilla"
-owner = "gameplay-developer #196"
