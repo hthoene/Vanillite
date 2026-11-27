@@ -244,6 +244,7 @@ its scenario or recorder source. A missing or stale golden fails; it is never sk
 | `cargo xtask golden bless <scenario>...` | Accept Vanillite's trace for intended differences. |
 
 `VANILLITE_SCENARIO=<name>,... cargo test -p vanillite-test --test parity` runs only those scenarios.
+`VANILLITE_SCENARIO_SHARD=<k>/<n>` runs only every n-th scenario in name order from the k-th on.
 
 ### Mob parity scenarios
 
@@ -332,7 +333,8 @@ doc tests with the codegen, egg and golden checks, and the tests in four jobs, a
 with Rust and toolchain caches written by `dev`. The tests are split by crate: the world
 generation goldens (`-p vanillite-worldgen`), the game and world crates (`-p vanillite-game -p
 vanillite-world`, the menu fuzz and chunk level tests), the test harness with the parity
-scenarios (`-p vanillite-test`, built with the world crate at opt-level 1) and all
+scenarios (`-p vanillite-test`, built with the world crate at opt-level 1, in three parts by
+`VANILLITE_SCENARIO_SHARD=<k>/3`) and all
 other crates (`--workspace` with those four excluded). A crate added to the workspace lands in
 the last job by itself.
 `.github/workflows/nightly.yml` records missing bulk goldens and runs the ignored bulk tests (with
