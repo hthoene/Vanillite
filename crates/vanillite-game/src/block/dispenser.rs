@@ -1054,9 +1054,33 @@ fn place_shulker_box(level: &mut Level, source: Source, stack: &mut ItemStack) -
     true
 }
 
+/// `Entity.blocksBuilding` of a live entity that is no spectator: living entities (not marker
+/// armor stands), minecarts, boats, end crystals, falling blocks and primed TNT.
+pub fn blocks_building(level: &Level, id: vanillite_world::entity::EntityId) -> bool {
+    let ents = &level.entities;
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    if kind == entity_ids::PLAYER {
+        return ents
+            .player(id)
+            .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
+    }
+    if kind == entity_ids::ARMOR_STAND {
+        return !ents
+            .mob(id)
+            .is_some_and(crate::decoration::stand::is_marker);
+    }
+    super::plate::is_living(kind)
+        || super::rail::is_minecart(kind)
+        || ents.boat(id).is_some()
+        || kind == entity_ids::END_CRYSTAL
+        || kind == entity_ids::FALLING_BLOCK
+        || kind == entity_ids::TNT
+}
+
 /// `Level.isUnobstructed(state, pos, CollisionContext.empty())`: no entity that blocks
-/// building (players that are no spectators, primed TNT, falling blocks) in the block's
-/// collision shape.
+/// building ([`blocks_building`]) in the block's collision shape.
 fn is_unobstructed(level: &Level, state: BlockState, pos: BlockPos) -> bool {
     let (dx, dy, dz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     for b in state.collision_shape() {
@@ -1070,18 +1094,7 @@ fn is_unobstructed(level: &Level, state: BlockState, pos: BlockPos) -> bool {
         );
         let mut blocked = false;
         level.entities.store.for_each_in(&shape, false, |id| {
-            let Some(entity) = level.entities.store.get(id) else {
-                return;
-            };
-            let kind = entity.kind();
-            if kind == entity_ids::PLAYER {
-                blocked |= level
-                    .entities
-                    .player(id)
-                    .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
-            } else if kind == entity_ids::TNT || kind == entity_ids::FALLING_BLOCK {
-                blocked = true;
-            }
+            blocked |= blocks_building(level, id);
         });
         if blocked {
             return false;

@@ -93,6 +93,15 @@ fn grower(block: BlockId) -> Option<&'static Grower> {
         mega_trees: &[],
         flower_trees: &[],
     };
+    static POPLAR: Grower = Grower {
+        trees: &[
+            ("minecraft:red_poplar", 1),
+            ("minecraft:orange_poplar", 1),
+            ("minecraft:yellow_poplar", 1),
+        ],
+        mega_trees: &[],
+        flower_trees: &[],
+    };
     static AZALEA: Grower = Grower {
         trees: &[("minecraft:azalea_tree", 1)],
         mega_trees: &[],
@@ -108,6 +117,7 @@ fn grower(block: BlockId) -> Option<&'static Grower> {
         b if b == ids::DARK_OAK_SAPLING => &DARK_OAK,
         b if b == ids::PALE_OAK_SAPLING => &PALE_OAK,
         b if b == ids::MANGROVE_PROPAGULE => &MANGROVE,
+        b if b == ids::POPLAR_SAPLING => &POPLAR,
         b if b == ids::AZALEA || b == ids::FLOWERING_AZALEA => &AZALEA,
         _ => return None,
     })
@@ -161,6 +171,7 @@ impl TreeFeatures {
             ids::DARK_OAK_SAPLING,
             ids::PALE_OAK_SAPLING,
             ids::MANGROVE_PROPAGULE,
+            ids::POPLAR_SAPLING,
             ids::AZALEA,
         ];
         for block in all {
@@ -436,7 +447,7 @@ pub fn minimum_height(block: BlockId) -> i32 {
     match block {
         b if b == ids::OAK_SAPLING || b == ids::JUNGLE_SAPLING => 4,
         b if b == ids::SPRUCE_SAPLING || b == ids::BIRCH_SAPLING || b == ids::ACACIA_SAPLING => 5,
-        b if b == ids::CHERRY_SAPLING => 7,
+        b if b == ids::CHERRY_SAPLING || b == ids::POPLAR_SAPLING => 7,
         b if b == ids::MANGROVE_PROPAGULE => 2,
         b if b == ids::AZALEA || b == ids::FLOWERING_AZALEA => 4,
         _ => 0,

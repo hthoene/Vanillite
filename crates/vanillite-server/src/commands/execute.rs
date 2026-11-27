@@ -510,48 +510,6 @@ fn height(env: &Env<'_>, kind: HeightmapKind, pos: BlockPos) -> i32 {
         .saturating_add(chunk.chunk.min_y())
 }
 
-/// The entity types built with `notInPeaceful()` (`EntityType.isAllowedInPeaceful`).
-const NOT_IN_PEACEFUL: [&str; 38] = [
-    "blaze",
-    "bogged",
-    "breeze",
-    "cave_spider",
-    "creaking",
-    "creeper",
-    "drowned",
-    "elder_guardian",
-    "enderman",
-    "endermite",
-    "evoker",
-    "ghast",
-    "giant",
-    "guardian",
-    "hoglin",
-    "husk",
-    "illusioner",
-    "magma_cube",
-    "parched",
-    "phantom",
-    "piglin_brute",
-    "pillager",
-    "ravager",
-    "silverfish",
-    "skeleton",
-    "slime",
-    "spider",
-    "stray",
-    "vex",
-    "vindicator",
-    "warden",
-    "witch",
-    "wither",
-    "wither_skeleton",
-    "zoglin",
-    "zombie",
-    "zombie_villager",
-    "zombified_piglin",
-];
-
 /// `ResourceArgument.getSummonableEntityType` and `SummonCommand.createEntity`: the entity
 /// loaded from `nbt` and moved to `pos`. Items, falling blocks and TNT get their kind data from
 /// the NBT like their `readAdditionalSaveData`; other kinds keep what
@@ -598,7 +556,7 @@ pub(crate) fn summon_for(
     }
     let path = id.strip_prefix("minecraft:").unwrap_or(id);
     if env.global.level.difficulty() == vanillite_game::survival::rules::Difficulty::Peaceful
-        && NOT_IN_PEACEFUL.contains(&path)
+        && !vanillite_game::mob::spawn::allowed_in_peaceful(path)
     {
         return Err(CommandError::new("commands.summon.failed.peaceful", vec![]));
     }

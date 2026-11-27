@@ -243,7 +243,11 @@ fn find_transform(level: &Level, name: &str, pos: BlockPos, face: Direction) -> 
                     return None;
                 };
             let copper_chest = is_copper_chest(state);
-            let door = block.info().kind == BlockKind::DoorBlock;
+            // `instanceof DoorBlock`: the weathering copper doors are doors too.
+            let door = matches!(
+                block.info().kind,
+                BlockKind::DoorBlock | BlockKind::WeatheringCopperDoorBlock
+            );
             Some(Transform {
                 particle,
                 update_from_neighbors: !(copper_chest || door),

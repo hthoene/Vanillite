@@ -478,10 +478,14 @@ impl PlayLevel for WorldLevel<'_> {
             {
                 return false;
             }
+            // Every entity that blocks building (`Level.isUnobstructed`), not only players.
             let mut blocked = false;
-            store.for_each_in(&shape, true, |id| {
+            store.for_each_in(&shape, false, |id| {
                 let is_actor = self.actor.is_some_and(|(a, _)| a == id);
-                if !is_actor && !self.spectators.contains(&id) {
+                if !is_actor
+                    && !self.spectators.contains(&id)
+                    && vanillite_game::block::dispenser::blocks_building(self.level, id)
+                {
                     blocked = true;
                 }
             });
