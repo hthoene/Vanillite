@@ -46,7 +46,8 @@
 # benchmarks need (packages, users, RCON helper, Vanillite units and deploy, the benchmark
 # instances, the monitor and the forwarding secret), plus hardening: a firewall that allows only
 # SSH and TCP/UDP 30000-30999, SSH with keys only, unattended security upgrades, no other
-# services. Nothing runs there outside a benchmark.
+# services. Nothing runs there outside a benchmark. vanillite-bench-auto (timer, #232) runs the
+# benchmark series of the newest green dev by itself whenever the bench is free (see below).
 set -euo pipefail
 role=${VANILLITE_TESTSERVER_ROLE:-test}
 case $role in
@@ -1388,7 +1389,302 @@ printf 'VANILLITE_PROXY__VELOCITY_SECRET=%s\nVANILLITE_PROXY__ALLOW_DIRECT_CONNE
     "$secret" | write_if_changed /etc/vanillite-test/proxy-backend.env 600
 
 if [ "$role" = bench ]; then
+echo "== autonomous benchmark series (vanillite-bench-auto, #232)"
+# Runs the benchmark series of the newest green dev by itself, without anyone driving it from
+# outside: `cargo xtask bench` runs here against this machine (VANILLITE_BENCH_HOST=local, see
+# the ssh shim). Builds with rustup in /opt/vanillite-bench-auto; reads the public repository and
+# the GitHub API without credentials.
+auto=/opt/vanillite-bench-auto
+install -d "$auto" "$auto/home" "$auto/shim" /var/lib/vanillite-bench-auto
+install -d -o vanillite -g vanillite /opt/vanillite/bench/auto /opt/vanillite/bench/auto/runs
+if [ ! -x "$auto/cargo/bin/rustup" ]; then
+    curl -fsSL https://sh.rustup.rs | env HOME="$auto/home" RUSTUP_HOME="$auto/rustup" \
+        CARGO_HOME="$auto/cargo" sh -s -- -y --quiet --no-modify-path --profile minimal \
+        --default-toolchain none
+fi
+write_if_changed "$auto/shim/ssh" 755 <<'EOF'
+#!/bin/sh
+# `ssh local <command>`, as `cargo xtask bench` and `loadtest` call it, runs the command here
+# (vanillite-bench-auto, #232); every other host goes to the real ssh.
+if [ "${1:-}" = local ]; then
+    shift
+    exec bash -c "$*"
+fi
+exec /usr/bin/ssh "$@"
+EOF
+write_if_changed /usr/local/bin/vanillite-bench-auto 755 <<'EOF'
+#!/usr/bin/env bash
+# Usage: vanillite-bench-auto [status | run [--force] | tick]
+# The benchmark series of the newest green dev (#232), without agents:
+# - tick (vanillite-bench-auto.timer, every 10 minutes): resumes the unfinished run, or starts a
+#   new one when the newest dev commit whose CI passed has code that has not been benchmarked yet
+#   or the last finished run is older than 24 h. A run builds that commit (release-fast, nice,
+#   idle IO) in /opt/vanillite-bench-auto/src and then works through its steps: every scenario
+#   of `cargo xtask bench list` on every server one by one, then `cargo xtask loadtest --steps
+#   1000,2000,5000`. Everything holds the shared benchmark lock (`vanillite-bench lock`): a
+#   build or step starts only when the lock is free and nobody waits for it, a build stops as
+#   soon as someone waits, and after a step the run yields to a waiting run and resumes later.
+# - run [--force]: starts a tick now (--force: a new run even when this code was benchmarked).
+# - status: the green dev commit, the last finished run, the current one and the lock.
+# Results: /opt/vanillite/bench/auto/runs/<time>-<code commit>/ (results.json: the whole run as
+# `cargo xtask bench` writes it; README.md, latest.json, history.json: rendered by `cargo xtask
+# bench publish` with the history of the runs here, kept in /opt/vanillite/bench/auto/benchmarks;
+# steps/ and logs/: raw, kept for the newest 30 runs), `latest` points to the newest finished run.
+# Log: journalctl -u vanillite-bench-auto. Installed by scripts/testserver/provision.sh (role bench).
+set -uo pipefail
+repo=https://github.com/hthoene/vanillite.git
+api=https://api.github.com/repos/hthoene/vanillite
+home=/opt/vanillite-bench-auto
+src=$home/src
+state=/var/lib/vanillite-bench-auto
+out=/opt/vanillite/bench/auto
+lockfile=/run/vanillite-bench.lock
+max_age=$((24 * 3600))
+keep_raw=30
+keep_days=365
+suite_days=30
+target_max_kib=$((40 * 1024 * 1024))
+loadtest_steps=1000,2000,5000
+
+export HOME=$home/home RUSTUP_HOME=$home/rustup CARGO_HOME=$home/cargo
+export PATH=$home/shim:$home/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export VANILLITE_BENCH_HOST=local CARGO_TERM_COLOR=never
+
+owner() { cat /run/vanillite-bench.owner 2> /dev/null; }
+# The lock is free (taken and released at once).
+bench_free() { (flock -n 8) 8>> "$lockfile"; }
+# Somebody waits for the lock (a blocked flock on its inode).
+waiting() {
+    local ino
+    ino=$(stat -c %i "$lockfile" 2> /dev/null) || return 1
+    grep -- '-> FLOCK' /proc/locks | grep -q ":$ino "
+}
+xtask() { (cd "$src" && cargo run --locked -q -p xtask -- "$@"); }
+green() {
+    curl -fsS -H 'Accept: application/vnd.github+json' \
+        "$api/actions/workflows/ci.yml/runs?branch=dev&event=push&status=success&per_page=1" \
+        | jq -r '.workflow_runs[0].head_sha // empty'
+}
+
+case "${1:-status}" in
+    status)
+        echo "green dev:   $(green || echo '? (GitHub API unavailable)')"
+        if [ -s "$state/last-code" ]; then
+            echo "benchmarked: $(cut -c1-12 "$state/last-code"), finished $(date -u -d "@$(cat "$state/last-finished")" '+%F %H:%M UTC') ($(readlink "$out/latest"))"
+        else
+            echo "benchmarked: nothing yet"
+        fi
+        if [ -s "$state/current" ]; then
+            dir=$(cat "$state/current")
+            n=$(wc -l < "$dir/steps.txt" 2> /dev/null || echo 0)
+            d=$(wc -l < "$dir/done.txt" 2> /dev/null || echo 0)
+            echo "current run: ${dir##*/}, $d of $n steps done$( [ "$d" -lt "$n" ] && echo ", next: $(sed -n "$((d + 1))p" "$dir/steps.txt")")"
+        else
+            echo "current run: none"
+        fi
+        [ -s "$state/failed-code" ] && echo "unbuildable: $(cut -c1-12 "$state/failed-code") (skipped until dev moves on)"
+        if bench_free; then echo "bench lock:  free"; else echo "bench lock:  held by $(owner)"; fi
+        echo "service:     $(systemctl is-active vanillite-bench-auto.service), next tick $(systemctl show -P NextElapseUSecRealtime vanillite-bench-auto.timer)"
+        journalctl -q -u vanillite-bench-auto -n "${2:-15}" -o short-iso --no-pager
+        exit 0
+        ;;
+    run)
+        [ "${2:-}" = --force ] && touch "$state/force"
+        systemctl start --no-block vanillite-bench-auto.service
+        echo "started: vanillite-bench-auto status, journalctl -fu vanillite-bench-auto"
+        exit 0
+        ;;
+    tick) ;;
+    *)
+        echo "usage: vanillite-bench-auto [status | run [--force] | tick]" >&2
+        exit 2
+        ;;
+esac
+
+install -d "$state" "$out/runs"
+exec 9> "$state/lock"
+flock -n 9 || exit 0
+
+if [ ! -d "$src/.git" ]; then
+    git clone --quiet "$repo" "$src" || { echo "cannot clone $repo"; exit 0; }
+fi
+
+# A new run when there is none to resume.
+if [ ! -s "$state/current" ]; then
+    sha=$(green)
+    [ -n "$sha" ] || { echo "no green dev commit found (GitHub API unavailable?)"; exit 0; }
+    git -C "$src" fetch --quiet origin dev || { echo "cannot fetch dev"; exit 0; }
+    code=$(git -C "$src" log -1 --format=%H "$sha" -- . ':(exclude)benchmarks')
+    [ -n "$code" ] || { echo "${sha:0:12} is not on dev"; exit 0; }
+    force=false
+    [ -e "$state/force" ] && force=true
+    if ! $force; then
+        [ "$code" = "$(cat "$state/failed-code" 2> /dev/null)" ] && exit 0
+        if [ "$code" = "$(cat "$state/last-code" 2> /dev/null)" ] \
+            && [ $(($(date +%s) - $(cat "$state/last-finished" 2> /dev/null || echo 0))) -lt "$max_age" ]; then
+            exit 0
+        fi
+    fi
+    if ! bench_free || waiting; then
+        echo "new run for ${code:0:12} waits: the bench is busy ($(owner))"
+        exit 0
+    fi
+    dir=$out/runs/$(date -u +%Y%m%dT%H%M%SZ)-${code:0:12}
+    install -d "$dir/steps" "$dir/logs"
+    echo "$sha" > "$dir/sha"
+    echo "$code" > "$dir/code"
+    echo "$dir" > "$state/current"
+    rm -f "$state/force"
+    echo "new run ${dir##*/} for dev ${sha:0:12}"
+fi
+dir=$(cat "$state/current")
+sha=$(cat "$dir/sha")
+code=$(cat "$dir/code")
+id=${dir##*/}
+stamp=${id%%-*}
+
+# Builds the run's commit while holding the lock (the build would disturb a measurement);
+# stops as soon as somebody waits for the lock, cargo goes on from there next time.
+build() {
+    exec 8>> "$lockfile"
+    flock -n 8 || { exec 8>&-; return 2; }
+    echo "vanillite-bench-auto: building ${code:0:12} (stops when you wait) since $(date -u '+%Y-%m-%d %H:%M UTC')" \
+        > /run/vanillite-bench.owner
+    if [ "$(du -sk "$src/target" 2> /dev/null | cut -f1)" -gt "$target_max_kib" ] 2> /dev/null; then
+        rm -rf "$src/target"
+    fi
+    setsid nice -n 19 ionice -c 3 bash -ec '
+        cd "$1"
+        git checkout --quiet --force --detach "$2"
+        rustup toolchain install --profile minimal > /dev/null
+        cargo build --locked -q -p xtask
+        cargo build --locked --profile release-fast -p loadbot -p vanillite -p vanillite-proxy
+        cargo build --locked --profile release-fast -p vanillite-server --example chunk_bench
+        # What `cargo xtask loadtest` builds (other features than with the proxy).
+        cargo build --locked --profile release-fast -p loadbot -p vanillite
+    ' build "$src" "$sha" > "$dir/logs/build.log" 2>&1 &
+    local pid=$! rc
+    while kill -0 "$pid" 2> /dev/null; do
+        if waiting; then
+            kill -TERM -- "-$pid" 2> /dev/null
+            wait "$pid"
+            exec 8>&-
+            return 2
+        fi
+        sleep 5
+    done
+    wait "$pid"
+    rc=$?
+    exec 8>&-
+    return "$rc"
+}
+started=$SECONDS
+build
+case $? in
+    0) [ $((SECONDS - started)) -gt 30 ] && echo "built ${code:0:12} in $((SECONDS - started)) s" ;;
+    2) echo "yielding: the bench is wanted ($(owner)); resuming later"; exit 0 ;;
+    *)
+        echo "FAILED: ${code:0:12} does not build, see $dir/logs/build.log; skipped until dev moves on"
+        tail -n 30 "$dir/logs/build.log"
+        echo "$code" > "$state/failed-code"
+        rm -f "$state/current"
+        exit 1
+        ;;
+esac
+
+# The steps of the run, fixed when it starts.
+if [ ! -s "$dir/steps.txt" ]; then
+    xtask bench list | while read -r name rest; do
+        servers=$(sed -n 's/.*(\(.*\))$/\1/p' <<< "$rest" | tr -d ' ' | tr , ' ')
+        for server in $servers; do echo "bench $name $server"; done
+    done > "$dir/steps.tmp"
+    echo loadtest >> "$dir/steps.tmp"
+    mv "$dir/steps.tmp" "$dir/steps.txt"
+    touch "$dir/done.txt"
+fi
+total=$(wc -l < "$dir/steps.txt")
+while :; do
+    done_n=$(wc -l < "$dir/done.txt")
+    [ "$done_n" -lt "$total" ] || break
+    step=$(sed -n "$((done_n + 1))p" "$dir/steps.txt")
+    if ! bench_free || waiting; then
+        echo "yielding after $done_n of $total steps: the bench is wanted ($(owner)); resuming later"
+        exit 0
+    fi
+    started=$SECONDS
+    read -r kind name server <<< "$step"
+    if [ "$kind" = bench ]; then
+        log=$dir/logs/$name-$server.log
+        xtask bench "$name" --servers "$server" > "$log" 2>&1
+        rc=$?
+        file=$(sed -n 's/^wrote \(.*\/results\.json\)$/\1/p' "$log" | tail -n 1)
+        if [ -n "$file" ] && [ -f "$file" ]; then
+            cp "$file" "$dir/steps/$name-$server.json"
+            rm -rf "$(dirname "$file")"
+        fi
+    else
+        xtask loadtest --steps "$loadtest_steps" > "$dir/logs/loadtest.log" 2>&1
+        rc=$?
+    fi
+    printf '%s\t%s\t%s\n' "$step" "$rc" "$((SECONDS - started))" >> "$dir/done.txt"
+    echo "step $((done_n + 1))/$total $step: exit $rc after $((SECONDS - started)) s"
+done
+
+# The whole run: the steps merged into one results.json, rendered with the history kept here.
+if compgen -G "$dir/steps/*.json" > /dev/null; then
+    jq -s --arg date "$stamp" 'reduce .[] as $r ({}; . * $r) | .date = $date' "$dir"/steps/*.json \
+        > "$dir/results.json"
+    pub=$out/benchmarks
+    [ -d "$pub" ] || cp -a "$src/benchmarks" "$pub"
+    rsync -a --delete "$pub/" "$src/benchmarks/"
+    if xtask bench publish "$dir/results.json" > "$dir/logs/publish.log" 2>&1; then
+        rsync -a --delete "$src/benchmarks/" "$pub/"
+        cp "$pub/README.md" "$pub/results/latest.json" "$pub/results/history.json" "$dir/"
+    else
+        echo "rendering failed, see $dir/logs/publish.log"
+    fi
+    git -C "$src" checkout --quiet -- benchmarks
+    git -C "$src" clean -fdq -- benchmarks
+    ln -sfn "runs/$id" "$out/latest.tmp" && mv -T "$out/latest.tmp" "$out/latest"
+    chown -R vanillite:vanillite "$dir"
+    echo "finished ${id}: $(grep -c . "$dir/done.txt") steps, $(awk -F'\t' '$2 != 0' "$dir/done.txt" | wc -l) failed; results in $dir"
+else
+    echo "finished ${id} without results: every step failed, see $dir/logs"
+fi
+echo "$code" > "$state/last-code"
+date +%s > "$state/last-finished"
+rm -f "$state/current"
+
+# Bounded disk use: raw data of older runs, very old runs, raw per-server files of xtask bench.
+ls -1d "$out"/runs/*/ 2> /dev/null | sort -r | tail -n +$((keep_raw + 1)) \
+    | while read -r d; do rm -rf "$d/steps" "$d/logs"; done
+find "$out/runs" -mindepth 1 -maxdepth 1 -type d -mtime +"$keep_days" -exec rm -rf {} +
+find /opt/vanillite/bench/suite -mindepth 1 -maxdepth 1 -type d -mtime +"$suite_days" -exec rm -rf {} +
+exit 0
+EOF
+write_if_changed /etc/systemd/system/vanillite-bench-auto.service <<'EOF'
+[Unit]
+Description=Benchmark series of the newest green dev when the bench is free (vanillite-bench-auto)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vanillite-bench-auto tick
+# A whole series takes hours; the timer starts no second one while this runs.
+TimeoutStartSec=infinity
+EOF
+write_if_changed /etc/systemd/system/vanillite-bench-auto.timer <<'EOF'
+[Unit]
+Description=Resume or start the benchmark series every 10 minutes (vanillite-bench-auto)
+[Timer]
+OnBootSec=5min
+OnCalendar=*:0/10
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+EOF
     systemctl daemon-reload
+    systemctl enable --quiet --now vanillite-bench-auto.timer
     echo "== done (role bench)"
     exit 0
 fi
