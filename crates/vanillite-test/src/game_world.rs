@@ -477,7 +477,7 @@ impl GameWorld {
                 level: &mut world,
                 inventory: &mut player.inventory,
                 xp: Some(&mut player.survival.xp),
-                    random: Some(&mut player.survival.random),
+                random: Some(&mut player.survival.random),
                 food: Some(&mut player.survival.food),
                 recipe_book: Some(&mut player.recipe_book),
                 actor,

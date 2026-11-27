@@ -882,7 +882,8 @@ pub fn tick(
         // `applyEffectsFromBlocks`: `SlimeBlock.stepOn` slows a resting item.
         if !no_physics
             && out.on_ground
-            && block.state(on_pos_legacy(out.pos)).block() == vanillite_data::block::ids::SLIME_BLOCK
+            && block.state(on_pos_legacy(out.pos)).block()
+                == vanillite_data::block::ids::SLIME_BLOCK
         {
             v = crate::block::contact::slime_step_on(v);
         }

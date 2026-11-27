@@ -2170,8 +2170,8 @@ fn push_by_water(entity: &mut EntityMut<'_>, env: &Env<'_>) {
                 if !env.facts.is_water(fluid) {
                     continue;
                 }
-                let top =
-                    f64::from(y) + f64::from(blocks::fluid_height(env.blocks, env.facts, pos, fluid));
+                let top = f64::from(y)
+                    + f64::from(blocks::fluid_height(env.blocks, env.facts, pos, fluid));
                 if top < b.min_y {
                     continue;
                 }
@@ -2190,7 +2190,8 @@ fn push_by_water(entity: &mut EntityMut<'_>, env: &Env<'_>) {
     }
     let old = e.velocity();
     let mut impulse = sum * (1.0 / f64::from(count)) * 0.014;
-    if old.x.abs() < 0.003 && old.z.abs() < 0.003 && impulse.length() < 0.004_500_000_000_000_000_5 {
+    if old.x.abs() < 0.003 && old.z.abs() < 0.003 && impulse.length() < 0.004_500_000_000_000_000_5
+    {
         impulse = impulse.normalize() * 0.004_500_000_000_000_000_5;
     }
     entity.set_velocity(old + impulse);

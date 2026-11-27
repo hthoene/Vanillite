@@ -491,11 +491,18 @@ fn random_chest_clicks_conserve_items() {
         let before = census(&inv, &chest(&level), &drops);
         for _ in 0..200 {
             let (slot, button, input) = random_click(&mut rng, 63);
-            super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
-                if super::is_valid_slot_index(view, slot) {
-                    super::click(view, slot, button, input, SURVIVAL, &mut drops);
-                }
-            });
+            super::container::with_view(
+                &mut inv,
+                &mut level,
+                Vec3::default(),
+                None,
+                None,
+                |view| {
+                    if super::is_valid_slot_index(view, slot) {
+                        super::click(view, slot, button, input, SURVIVAL, &mut drops);
+                    }
+                },
+            );
         }
         let carried = inv
             .container
