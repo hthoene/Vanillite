@@ -1,0 +1,46 @@
+{
+  "description": "A villager spawn egg used on the ground (#183): the villager's own random and the level random from its spawn through its first brain ticks, like EntityType.spawn with SPAWN_ITEM_USE.",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 12,
+  "level_rng": true,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        90
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -61,
+        11
+      ],
+      "item": "minecraft:villager_spawn_egg"
+    }
+  ]
+}

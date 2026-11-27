@@ -63,7 +63,7 @@ pub fn reset_sniffing(t: &mut Tick<'_, '_>) {
     transition_to(t, IDLING);
 }
 
-fn brain_spec() -> BrainSpec {
+pub(super) fn brain_spec() -> BrainSpec {
     let mut panic = Spec::animal_panic(2.0);
     panic.set_on_start(reset_sniffing);
     let core = ActivitySpec::new(
@@ -369,16 +369,16 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     r
 }
 
-/// Synched data: baby (16), state (17), seed drop tick (18).
+/// Synched data: baby (16), age locked (17), state (18), seed drop tick (19).
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
-    w.boolean(16, m.baby, false);
+    crate::mob::fam::companion::encode_ageable(w, m);
     w.varint(
-        17,
+        18,
         crate::player::encode::serializer::SNIFFER_STATE,
         i32::from(sniffer_state(m)),
         0,
     );
-    w.int(18, state(m).drop_seed_at_tick, 0);
+    w.int(19, state(m).drop_seed_at_tick, 0);
 }
 
 // --- Behaviours -----------------------------------------------------------------------------

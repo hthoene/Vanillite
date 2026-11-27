@@ -147,7 +147,10 @@ pub fn update(root: &Path, args: &[&str]) -> Result<()> {
             &new.info,
             &data,
         )
-    }) && steps.run("codegen", || crate::codegen::run(&tree, false));
+    }) && steps.run("codegen", || crate::codegen::run(&tree, false))
+        && steps.run("eggs and Minecraft versions", || {
+            crate::egg::run(&tree, &[])
+        });
     let after = Snapshot::load(&data);
 
     // Goldens recorded with the new version, then the test suite against them.

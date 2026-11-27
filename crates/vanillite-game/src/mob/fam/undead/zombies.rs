@@ -1076,10 +1076,13 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
         s.villager_type = ty;
         s.data_finalized = true;
     }
-    // `Mob.finalizeSpawn`: the follow range bonus and left-handedness, from the level random
-    // once the world has the tick's actions.
-    t.cx.actions
-        .push(crate::mob::WorldAction::MobSpawnBonus(id));
+    // `Mob.finalizeSpawn`: the follow range bonus and left-handedness from the level random.
+    let bonus = t.env.random.triangle(0.0, 0.114_850_000_000_000_01);
+    let left_handed = t.env.random.next_float() < 0.05;
+    if let Some(m) = t.ents.mob_mut(id) {
+        m.attrs.follow_range *= 1.0 + bonus;
+        m.left_handed = left_handed;
+    }
     if let Some(starter) = z.cure_starter
         && let Some(player) = t.ents.player_by_uuid(starter)
     {

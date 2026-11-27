@@ -23,7 +23,7 @@ use crate::loot::{BlockLootContext, LootTables};
 use crate::player::world::{PlayLevel, SoundSource, events};
 use crate::stats::{Stat, StatType, custom};
 
-mod item_use;
+pub(crate) mod item_use;
 
 pub use item_use::adventure_allows;
 pub(crate) use item_use::flush_equips;
@@ -180,6 +180,8 @@ pub struct Actor {
     pub mining_fatigue: Option<i32>,
     /// The player's respawn position if it is in this world.
     pub respawn_here: Option<BlockPos>,
+    /// The player holds the lead of some mob (`FenceBlock.useWithoutItem` binds them).
+    pub leads_mobs: bool,
 }
 
 impl Actor {
@@ -453,6 +455,12 @@ pub struct Digging {
     /// Whether the last `use_item_on` reached the item's own use on entities (spawn eggs,
     /// leads, minecarts): no block reacted and the item has no block use of its own.
     pub entity_item_use: bool,
+    /// `FenceBlock.useWithoutItem` of the last `use_item_on`: the fence the player's leashed
+    /// mobs get tied to (the world runs it next).
+    pub bind_fence: Option<BlockPos>,
+    /// `BlockItem.useOn` fell back to `Item.use` of a consumable block item (carrots, berries)
+    /// that could not be placed: the world starts using it with this hand next.
+    pub start_using: Option<Hand>,
 }
 
 /// `getDestroyProgress` of `state` for the actor.
@@ -833,6 +841,13 @@ impl Digging {
         } else {
             state
         };
+        // `Block.playerWillDestroy`: breaking a block guarded by piglins angers them.
+        if crate::block::place::tags::GUARDED_BY_PIGLINS.has(state)
+            && let Some(player) = ctx.actor.entity
+            && let Some(level) = ctx.level.level_mut()
+        {
+            level.output().piglin_anger.push((player, false));
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -989,6 +1004,8 @@ impl Digging {
     ) {
         self.ack(p.sequence.max(0));
         self.entity_item_use = false;
+        self.bind_fence = None;
+        self.start_using = None;
         let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
         let face = direction_wrapped(p.face);
         if !ctx.actor.within_block_range(pos, 1.0) {
@@ -1122,6 +1139,16 @@ impl Digging {
                     any_block_use(ctx, hand, pos);
                     return result == crate::block::Interaction::Success;
                 }
+            } else if hand == Hand::MainHand
+                && ctx.actor.leads_mobs
+                && crate::mob::tame::is_knot_block(state)
+            {
+                // `FenceBlock.useWithoutItem` -> `LeadItem.bindPlayerMobs`: the world ties the
+                // player's leashed mobs to the fence next.
+                self.bind_fence = Some(pos);
+                ctx.trigger(Event::DefaultBlockUse(pos));
+                any_block_use(ctx, hand, pos);
+                return true;
             } else {
                 // `state.useItemOn(stack, …)`, then `useWithoutItem` for the main hand when it
                 // tries with an empty hand.
@@ -1377,6 +1404,7 @@ impl Digging {
         let Some(place_ctx) =
             place::update_placement_context(&place_ctx, &LevelReader(&*ctx.level))
         else {
+            self.consumable_fallback(ctx, hand, &stack, pos);
             return false;
         };
         let placed = self.place_block(ctx, hand, &stack, &place_ctx);
@@ -1386,8 +1414,41 @@ impl Digging {
             ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
             ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
             any_block_use(ctx, hand, pos);
+        } else {
+            self.consumable_fallback(ctx, hand, &stack, pos);
         }
         placed
+    }
+
+    /// The end of `BlockItem.useOn`: a block item with `consumable` that was not placed is used
+    /// like in the air (`Item.use` -> `Consumable.startConsuming`). It consumes the click
+    /// without a swing when the player can eat it (`CONSUME`: the stat and the triggers of a
+    /// successful item use), and fails otherwise.
+    fn consumable_fallback(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        stack: &ItemStack,
+        pos: BlockPos,
+    ) {
+        if !crate::consumable::is_consumable(stack) {
+            return;
+        }
+        let can = crate::consumable::food(stack).is_none_or(|food| {
+            food.can_always_eat
+                || matches!(
+                    ctx.actor.game_mode,
+                    GameMode::Creative | GameMode::Spectator
+                )
+                || ctx.food.as_deref().is_some_and(|f| f.needs_food())
+        });
+        if !can {
+            return;
+        }
+        self.start_using = Some(hand);
+        ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+        ctx.trigger(Event::ItemUsedOnBlock(pos, stack.clone()));
+        any_block_use(ctx, hand, pos);
     }
 
     /// `useOn` of the items that place decorations: armor stands, item frames, paintings and

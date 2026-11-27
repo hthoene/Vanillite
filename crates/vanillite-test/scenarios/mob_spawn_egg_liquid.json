@@ -1,0 +1,106 @@
+{
+  "description": "Spawn eggs used in the air while looking at a water or lava source (SpawnEggItem.use, SOURCE_ONLY ray): the mob spawns inside the liquid without the move-down offset (#183); looking at the ground does nothing.",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 8,
+  "level_rng": true,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -61,
+        10
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -61,
+        2
+      ],
+      "block": "minecraft:lava"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        40
+      ],
+      "seed": 1
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        4.5
+      ],
+      "rot": [
+        180,
+        40
+      ],
+      "seed": 2
+    },
+    {
+      "name": "sam",
+      "type": "minecraft:player",
+      "pos": [
+        12.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        40
+      ],
+      "seed": 3
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:cod_spawn_egg"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:strider_spawn_egg"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "sam",
+      "item": "minecraft:pig_spawn_egg"
+    },
+    {
+      "tick": 7,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:cod] run setblock 0 -56 0 minecraft:gold_block"
+    }
+  ]
+}

@@ -50,6 +50,13 @@
 //!   `dim` in their detail, and a block op works in its `dimension` (default the overworld).
 //!   Scenario entities start in the overworld; the level random of every dimension starts
 //!   from the world seed.
+//! - `client_view`: with `dimensions`, frames also hold what the players' clients received
+//!   during the tick, normalized (`view`, see [`crate::client_view`]): entities added and
+//!   removed, boss bars, login and respawn (dimension changes), block changes in view, game
+//!   events, abilities and inventory slots. Default `false`.
+//! - `end`: with `dimensions`, `"normal"` generates the End like a new Vanilla world (the
+//!   main island with its spikes and crystals) instead of flat; the dragon fight starts once a
+//!   player is there. Default `"flat"`.
 //! - `datapack`: with `dimensions`, the data pack `datapacks/<name>/` of this crate is in the
 //!   world's `datapacks/` folder from the start (enabled like a new pack), so its dimensions
 //!   are loaded too; a flat one generates its layers in both servers.
@@ -256,6 +263,10 @@ pub struct WorldSpec {
     pub datapack: Option<String>,
     /// Whether frames hold the players' completed advancement criteria and statistics.
     pub progress_state: bool,
+    /// Whether frames hold what the players' clients received (`"client_view": true`).
+    pub client_view: bool,
+    /// Whether the End generates like a new Vanilla world (`"end": "normal"`).
+    pub normal_end: bool,
 }
 
 /// The overworld's dimension id.
@@ -713,6 +724,18 @@ impl Scenario {
         if progress_state && !dimensions {
             return Err("\"progress_state\" needs \"dimensions\"".to_owned());
         }
+        let client_view = v
+            .get("client_view")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let normal_end = match v.get("end").and_then(Value::as_str) {
+            None | Some("flat") => false,
+            Some("normal") => true,
+            Some(other) => return Err(format!("unknown \"end\" {other}: flat or normal")),
+        };
+        if (client_view || normal_end) && !dimensions {
+            return Err("\"client_view\" and \"end\" need \"dimensions\"".to_owned());
+        }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -784,6 +807,8 @@ impl Scenario {
                     .unwrap_or(false),
                 datapack,
                 progress_state,
+                client_view,
+                normal_end,
             },
             min,
             max,

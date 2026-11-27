@@ -103,6 +103,11 @@ pub trait ScenarioWorld {
     fn level_rng(&mut self) -> Option<i64> {
         None
     }
+    /// What the players' clients received since the last call, normalized
+    /// (`"client_view"` scenarios, see [`crate::client_view`]).
+    fn client_view(&mut self) -> Result<Vec<String>, String> {
+        Err("this world has no clients to observe".to_owned())
+    }
     /// Runs a `hurt` action.
     fn hurt(&mut self, hurt: &Hurt) -> Result<(), String> {
         Err(format!("this world cannot hurt `{}`", hurt.entity))

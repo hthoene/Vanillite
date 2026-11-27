@@ -1924,6 +1924,7 @@ impl ServerWorld {
         let state = &global.level;
         let rules = state.rules().clone();
         let hooks = crate::plugins::Hooks::of(global, &self.dimension);
+        let mut random = self.level.lend_random();
         let chunks = &self.level.chunks;
         let blocks = crate::survival::WorldBlocks(chunks);
         let (weather, climate) = (self.survival.weather, self.survival.climate().cloned());
@@ -1934,6 +1935,7 @@ impl ServerWorld {
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = self.survival.env(
+            &mut random,
             state,
             &rules,
             &blocks,
@@ -1959,7 +1961,8 @@ impl ServerWorld {
             p.survival.portal.cooldown = portal::PLAYER_PORTAL_COOLDOWN;
         }
         ender_pearl::land(entities, &mut env, id);
-        self.survival.deliver(&mut self.level.entities, global);
+        self.level.restore_random(random);
+        self.survival.deliver(&mut self.level, global);
     }
 }
 

@@ -1,0 +1,17 @@
+{
+  "description": "An ominous trial spawner (melee zombie configuration): its zombies spawn with the trial_chamber_melee equipment (EquipmentTable, drop chance 0), and while active it picks an item to dispense every tick (level random) and spawns ominous item spawners above the player or a zombie, which drop or shoot their item after 60 to 120 ticks (OminousItemSpawner).",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "time": 17000,
+  "difficulty": "normal",
+  "rules": {"spawn_mobs": "true", "spawn_monsters": "true"},
+  "region": [[0, -61, 0], [15, -52, 15]],
+  "ticks": 128,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [7.5, -60.0, 3.5]}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "setblock 7 -60 8 minecraft:trial_spawner[ominous=true,trial_spawner_state=inactive]{normal_config:\"minecraft:trial_chamber/melee/zombie/normal\",ominous_config:\"minecraft:trial_chamber/melee/zombie/ominous\"}"}
+  ]
+}

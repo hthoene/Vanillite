@@ -1,0 +1,18 @@
+{
+  "description": "Client view (#196): /tp moves a player from the overworld, where a pig stands next to it, to the Nether and back: the client gets the respawn packets of both dimension changes, loses the pig and gets it again.",
+  "dimensions": true,
+  "client_view": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-2, 0, -2], [5, 10, 5]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[2, -61, 2], [12, -57, 12]]}],
+  "ticks": 30,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "client": true, "pos": [8.5, -60.0, 8.5], "rot": [0, 0]},
+    {"name": "pig", "type": "minecraft:pig", "pos": [10.5, -60.0, 10.5], "rot": [0, 0], "seed": 1}
+  ],
+  "actions": [
+    {"tick": 5, "op": "command", "command": "execute in minecraft:the_nether run tp steve 1.5 4.0 1.5"},
+    {"tick": 20, "op": "command", "command": "execute in minecraft:overworld run tp steve 8.5 -60.0 8.5"}
+  ]
+}

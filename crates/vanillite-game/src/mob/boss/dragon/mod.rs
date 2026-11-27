@@ -756,8 +756,40 @@ pub fn tick_death(t: &mut Tick<'_, '_>) -> bool {
     true
 }
 
+/// `EnderDragon.kill`: no killing blow and no dying phase; the dragon is removed at once
+/// (`KILLED`, `ENTITY_DIE`) and its fight learns of the kill (`updateDragon`,
+/// `setDragonKilled`). `false` when `id` is no dragon.
+pub fn kill(ents: &mut Entities, cx: &mut MobContext, id: EntityId) -> bool {
+    let Some(e) = ents.store.get(id) else {
+        return false;
+    };
+    let (uuid, pos) = (e.uuid(), e.pos());
+    let Some(m) = ents.mob_mut(id) else {
+        return false;
+    };
+    let progress = m.health / m.max_health();
+    let Some(in_fight) = m.boss.dragon().map(|s| s.in_fight) else {
+        return false;
+    };
+    m.removed = true;
+    cx.discarded.push(id);
+    cx.actions
+        .push(WorldAction::Level(super::warden::LevelAction::GameEvent {
+            event: crate::level::game_event::events().entity_die,
+            pos,
+            context: crate::level::game_event::GameEventContext::of(Some(id)),
+        }));
+    if in_fight {
+        cx.dragon_events
+            .push(DragonEvent::Update { uuid, progress });
+        cx.dragon_events.push(DragonEvent::Killed { uuid });
+    }
+    true
+}
+
 /// `EnderDragon.hurt(part, source, damage)` up to `reallyHurt`: the damage the living entity
-/// takes, `None` when the hit does nothing.
+/// takes; `Err(true)` for a hit that counts but only players and explosions hurt
+/// (`/damage` without a player, the generic kill damage), `Err(false)` when it does nothing.
 pub fn filter_hurt(
     level: &Level,
     ents: &mut Entities,
@@ -766,27 +798,28 @@ pub fn filter_hurt(
     target: EntityId,
     source: &DamageSource,
     amount: f32,
-) -> Option<f32> {
+) -> Result<f32, bool> {
     let _ = (level, cx);
     let is_arrow_or_charge = source.direct.is_some_and(|d| ents.arrow(d).is_some());
     let cause_is_player = source.cause.is_some_and(|c| ents.player(c).is_some());
-    let m = ents.mob_mut(target)?;
+    let m = ents.mob_mut(target).ok_or(false)?;
     let health = m.health;
-    let s = m.boss.dragon_mut()?;
+    let s = m.boss.dragon_mut().ok_or(false)?;
     let part = s.hit_part.take().unwrap_or(BODY);
     if s.phase == Phase::Dying {
-        return None;
+        return Err(false);
     }
     let mut damage = phase::on_hurt(s.phase, is_arrow_or_charge, amount);
     damage = part_damage(part, damage);
     if damage < 0.01 {
-        return None;
+        return Err(false);
     }
+    // `ALWAYS_HURTS_ENDER_DRAGONS` is `#is_explosion`.
     if !(cause_is_player || env.types.is(source.kind, tag::IS_EXPLOSION)) {
-        return None;
+        return Err(true);
     }
     s.health_before = health;
-    Some(damage)
+    Ok(damage)
 }
 
 /// The damage a part passes on: the head and the neck all of it, the others a quarter plus

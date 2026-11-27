@@ -66,7 +66,7 @@ fn registry_matches_bootstrap() {
     assert_eq!(behaviour_of(&stack(items::ARROW, 1)), Behaviour::Projectile);
     assert_eq!(
         behaviour_of(&stack(items::FIRE_CHARGE, 1)),
-        Behaviour::Entity
+        Behaviour::Projectile
     );
     assert_eq!(behaviour_of(&stack(items::OAK_BOAT, 1)), Behaviour::Entity);
     assert_eq!(
@@ -75,11 +75,11 @@ fn registry_matches_bootstrap() {
     );
     assert_eq!(
         behaviour_of(&stack(items::COD_BUCKET, 1)),
-        Behaviour::Entity
+        Behaviour::FilledBucket
     );
     assert_eq!(
         behaviour_of(&stack(items::PIG_SPAWN_EGG, 1)),
-        Behaviour::Entity
+        Behaviour::SpawnEgg
     );
     assert_eq!(
         behaviour_of(&stack(items::WATER_BUCKET, 1)),
@@ -99,9 +99,9 @@ fn registry_matches_bootstrap() {
 
 #[test]
 fn fallback_items_drop() {
-    let mut level = level_with(&[stack(items::FIRE_CHARGE, 2)]);
+    let mut level = level_with(&[stack(items::OAK_BOAT, 2)]);
     fire(&mut level);
-    assert_eq!(contents(&level), vec![stack(items::FIRE_CHARGE, 1)]);
+    assert_eq!(contents(&level), vec![stack(items::OAK_BOAT, 1)]);
     assert_eq!(items_on_ground(&level), 1);
     assert_eq!(events(&mut level), vec![1000, 2000]);
 }

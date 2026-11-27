@@ -1,0 +1,17 @@
+{
+  "description": "Client view (#196): a player enters an overworld end portal and arrives on the obsidian platform of a freshly generated End: the dragon fight starts with the first player there and the client gets the dragon's boss bar.",
+  "dimensions": true,
+  "end": "normal",
+  "client_view": true,
+  "dimension": "minecraft:the_end",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[95, 45, -5], [105, 53, 5]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[-1, -62, -1], [3, -57, 3]]}],
+  "ticks": 50,
+  "setup": [
+    {"op": "fill", "from": [0, -61, 0], "to": [2, -61, 2], "block": "minecraft:end_portal"}
+  ],
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "client": true, "pos": [1.5, -61.0, 1.5], "rot": [90, 0]}
+  ]
+}

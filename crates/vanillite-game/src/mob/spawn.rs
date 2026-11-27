@@ -1981,9 +1981,10 @@ pub fn spawn_for_chunk_generation(
     }
 }
 
-/// Spawns a mob by command (`/summon`): `finalizeSpawn` with `COMMAND`, persistent. `reason`
-/// is the plugins' `vanillite_abi::spawn_reason` (`COMMAND`, or `PLUGIN` for `entity_spawn`);
-/// a plugin may cancel the spawn (the returned mob is then gone).
+/// Spawns a mob by command (`/summon`): loaded facing south (`Rotation` defaults to zero),
+/// then `finalizeSpawn` with `COMMAND` when `finalize` (`/summon` without NBT). `reason` is the
+/// plugins' `vanillite_abi::spawn_reason` (`COMMAND`, or `PLUGIN` for `entity_spawn`); a
+/// plugin may cancel the spawn (the returned mob is then gone).
 pub fn summon(
     level: &mut Level,
     table: Option<&SpawnTable>,
@@ -1991,12 +1992,23 @@ pub fn summon(
     pos: Vec3,
     difficulty: Difficulty,
     reason: u32,
+    finalize_spawn: bool,
 ) -> EntityId {
-    summon_seeded(level, table, kind, pos, difficulty, reason, None)
+    summon_seeded(
+        level,
+        table,
+        kind,
+        pos,
+        difficulty,
+        reason,
+        finalize_spawn,
+        None,
+    )
 }
 
 /// [`summon`] of a mob whose constructor already took its seed from the entity seed stream
 /// (`seed`), else it takes the next one.
+#[allow(clippy::too_many_arguments)]
 pub fn summon_seeded(
     level: &mut Level,
     table: Option<&SpawnTable>,
@@ -2004,25 +2016,30 @@ pub fn summon_seeded(
     pos: Vec3,
     difficulty: Difficulty,
     reason: u32,
+    finalize_spawn: bool,
     seed: Option<i64>,
 ) -> EntityId {
     let seed = seed.unwrap_or_else(crate::mob::new_entity_seed);
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let env = Environment::default();
-    let extra = with_level_random(level, |level, random| {
-        finalize(
-            level,
-            table,
-            &env,
-            &mut mob,
-            block,
-            difficulty,
-            0,
-            SpawnReason::Command,
-            random,
-        )
-    });
+    let extra = if finalize_spawn {
+        with_level_random(level, |level, random| {
+            finalize(
+                level,
+                table,
+                &env,
+                &mut mob,
+                block,
+                difficulty,
+                0,
+                SpawnReason::Command,
+                random,
+            )
+        })
+    } else {
+        Vec::new()
+    };
     // `EntityType.loadEntityRecursive` of `{id}` reads no `Rotation`: yaw, head and body 0;
     // `snapTo` keeps it (no draw from the level random).
     add_mob_with_code(level, mob, pos, 0.0, extra, reason)

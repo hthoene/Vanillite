@@ -248,6 +248,20 @@ fn use_without_item(
             player: Some(context.player),
             ..request
         });
+        // `PiglinAi.angerNearbyPiglins(level, player, true)` of chests, barrels, ender chests
+        // and shulker boxes.
+        if matches!(
+            kind_of(state.block()),
+            Some(
+                Kind::Chest
+                    | Kind::TrappedChest
+                    | Kind::Barrel
+                    | Kind::EnderChest
+                    | Kind::ShulkerBox
+            )
+        ) {
+            level.output().piglin_anger.push((context.player, true));
+        }
     }
     Interaction::Success
 }
@@ -971,8 +985,9 @@ fn composter_level(state: BlockState) -> i32 {
 
 // --- Viewers ---------------------------------------------------------------------------------
 
-/// `startOpen(player)`: one more viewer (spectators are not counted).
-pub fn start_open(level: &mut Level, pos: BlockPos, spectator: bool) {
+/// `startOpen(player)`: one more viewer (spectators are not counted); `source` is the opening
+/// entity of the `container_open` game event.
+pub fn start_open(level: &mut Level, pos: BlockPos, spectator: bool, source: Option<EntityId>) {
     if spectator {
         return;
     }
@@ -982,7 +997,7 @@ pub fn start_open(level: &mut Level, pos: BlockPos, spectator: bool) {
             let previous = c.openers;
             c.openers += 1;
             let current = c.openers;
-            openers_changed(level, state, pos, previous, current);
+            openers_changed(level, state, pos, previous, current, source);
             if previous == 0 {
                 schedule_recheck(level, state, pos);
             }
@@ -991,7 +1006,7 @@ pub fn start_open(level: &mut Level, pos: BlockPos, spectator: bool) {
             let previous = *openers;
             *openers += 1;
             let current = *openers;
-            openers_changed(level, state, pos, previous, current);
+            openers_changed(level, state, pos, previous, current, source);
             if previous == 0 {
                 schedule_recheck(level, state, pos);
             }
@@ -1078,14 +1093,15 @@ fn recheck_open(level: &mut Level, state: BlockState, pos: BlockPos) {
         Some(BlockEntity::EnderChest { openers }) => *openers = count,
         _ => return,
     }
-    openers_changed(level, state, pos, previous, count);
+    openers_changed(level, state, pos, previous, count, None);
     if count > 0 {
         schedule_recheck(level, state, pos);
     }
 }
 
-/// `stopOpen(player)`: one viewer less.
-pub fn stop_open(level: &mut Level, pos: BlockPos, spectator: bool) {
+/// `stopOpen(player)`: one viewer less; `source` is the closing entity of the
+/// `container_close` game event.
+pub fn stop_open(level: &mut Level, pos: BlockPos, spectator: bool, source: Option<EntityId>) {
     if spectator {
         return;
     }
@@ -1095,13 +1111,13 @@ pub fn stop_open(level: &mut Level, pos: BlockPos, spectator: bool) {
             let previous = c.openers;
             c.openers -= 1;
             let current = c.openers;
-            openers_changed(level, state, pos, previous, current);
+            openers_changed(level, state, pos, previous, current, source);
         }
         Some(BlockEntity::EnderChest { openers }) if *openers > 0 => {
             let previous = *openers;
             *openers -= 1;
             let current = *openers;
-            openers_changed(level, state, pos, previous, current);
+            openers_changed(level, state, pos, previous, current, source);
         }
         _ => {}
     }
@@ -1131,6 +1147,7 @@ fn openers_changed(
     pos: BlockPos,
     previous: i32,
     current: i32,
+    source: Option<EntityId>,
 ) {
     let Some(kind) = kind_of(state.block()) else {
         return;
@@ -1139,7 +1156,7 @@ fn openers_changed(
     let closed = previous > 0 && current == 0;
     let events = crate::level::game_event::events();
     if opened {
-        level.game_event_at(None, events.container_open, pos);
+        level.game_event_at(source, events.container_open, pos);
         // `ContainerOpenersCounter.scheduleRecheck`.
         if matches!(
             kind,
@@ -1148,7 +1165,7 @@ fn openers_changed(
             level.schedule_block_tick(pos, state.block(), OPENERS_RECHECK_DELAY);
         }
     } else if closed {
-        level.game_event_at(None, events.container_close, pos);
+        level.game_event_at(source, events.container_close, pos);
     }
     match kind {
         Kind::Chest | Kind::TrappedChest => {

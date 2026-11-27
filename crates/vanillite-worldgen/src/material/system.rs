@@ -10,7 +10,7 @@ use vanillite_data::block::{BlockId, BlockState};
 use vanillite_datapack::LoadedPacks;
 
 use super::context::MaterialRuleContext;
-use super::rule::{BelowSurface, FoldedRules, FoldedY, YBoundsInput};
+use super::rule::{BelowSurface, FoldMode, FoldedRules, FoldedY, YBoundsInput};
 use super::rules::MaterialRules;
 use crate::Error;
 use crate::anchor::WorldGenerationContext;
@@ -286,9 +286,15 @@ impl MaterialSystem {
         // block in others (deepslate). There the tree is not evaluated: it has no other effect.
         let end_y = chunk.min_y();
         let ore_present = context.ore_veins_present();
-        let below_surface: Vec<FoldedY> = (end_y..=max_y)
-            .map(|y| rules.fold_below_surface(&self.rules, &generation, ore_present, y))
-            .collect();
+        let fold = |mode| -> Vec<FoldedY> {
+            (end_y..=max_y)
+                .map(|y| rules.fold_at(&self.rules, &generation, ore_present, mode, y))
+                .collect()
+        };
+        let below_surface = fold(FoldMode::BelowSurface);
+        // The same for blocks so deep in stone that every stone depth condition is false:
+        // most blocks between a column's surface layers and its minimum surface level.
+        let deep_in_stone = fold(FoldMode::DeepInStone);
         let mut column: Vec<BlockState> = Vec::new();
         let mut kinds: Vec<u8> = Vec::new();
 
@@ -306,6 +312,7 @@ impl MaterialSystem {
                 let gradient_x = surface_gradient_x(chunk, x, z);
                 let gradient_z = surface_gradient_z(chunk, x, z);
                 context.update_xz(block_x, block_z, gradient_x, gradient_z);
+                let (floor_reach, ceiling_reach) = context.stone_depth_reach(rules.stone_depths());
                 let mut stone_above_depth = 0;
                 let mut water_height = i32::MIN;
                 let mut next_ceiling_stone_y = i32::MAX;
@@ -371,6 +378,29 @@ impl MaterialSystem {
                                 }
                             }
                             let stone_below_depth = y - next_ceiling_stone_y + 1;
+                            // Only once the surface level is free, as above: until then the
+                            // rules run as they are, and sample it when they first need it.
+                            if min_surface_level.is_some()
+                                && y <= max_y
+                                && stone_above_depth > floor_reach
+                                && stone_below_depth > ceiling_reach
+                            {
+                                let folded = deep_in_stone[(y - end_y) as usize];
+                                if folded.ores == 0 || !context.ore_may_place(folded.ores, y) {
+                                    match folded.outcome {
+                                        BelowSurface::Nothing => continue,
+                                        BelowSurface::Place(state) => {
+                                            let old = column[(y - (end_y - 1)) as usize];
+                                            if !chunk.replace_solid(block_x, y, block_z, old, state)
+                                            {
+                                                set_column_block(chunk, block_x, y, block_z, state);
+                                            }
+                                            continue;
+                                        }
+                                        BelowSurface::Unknown => {}
+                                    }
+                                }
+                            }
                             context.update_y(stone_above_depth, stone_below_depth, water_height, y);
                             if y >= min_y
                                 && y <= max_y

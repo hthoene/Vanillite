@@ -89,24 +89,45 @@ impl RuleTest {
         })
     }
 
-    /// The result of [`Self::test`] for every state of `block` at any position, when the block
-    /// alone decides it (then the test draws no random number either).
-    pub fn test_block(&self, block: BlockId) -> Option<bool> {
+    /// The result of [`Self::test`] for every state of `block` at any position with block Y
+    /// `y`, when those alone decide it (then the test draws no random number either).
+    pub fn test_block_at(&self, block: BlockId, y: i32) -> Option<bool> {
         match self {
             Self::AlwaysTrue => Some(true),
             Self::BlockMatch(expected) => Some(block == *expected),
             Self::TagMatch(tag) => Some(tag.contains(block.default_state())),
+            Self::HeightMatch {
+                min_inclusive,
+                max_inclusive,
+            } => Some(*min_inclusive <= y && y <= *max_inclusive),
             Self::AllOf(rules) => rules
                 .iter()
-                .try_fold(true, |all, rule| Some(all & rule.test_block(block)?)),
+                .try_fold(true, |all, rule| Some(all & rule.test_block_at(block, y)?)),
             Self::AnyOf(rules) => rules
                 .iter()
-                .try_fold(false, |any, rule| Some(any | rule.test_block(block)?)),
-            Self::Not(rule) => rule.test_block(block).map(|value| !value),
+                .try_fold(false, |any, rule| Some(any | rule.test_block_at(block, y)?)),
+            Self::Not(rule) => rule.test_block_at(block, y).map(|value| !value),
             Self::BlockStateMatch(_)
             | Self::RandomBlockMatch(..)
-            | Self::RandomBlockStateMatch(..)
-            | Self::HeightMatch { .. } => None,
+            | Self::RandomBlockStateMatch(..) => None,
+        }
+    }
+
+    /// Adds the block Ys where a `HeightMatch` of the test changes its value.
+    pub fn height_breaks(&self, breaks: &mut Vec<i32>) {
+        match self {
+            Self::HeightMatch {
+                min_inclusive,
+                max_inclusive,
+            } => {
+                breaks.push(*min_inclusive);
+                breaks.push(max_inclusive.saturating_add(1));
+            }
+            Self::AllOf(rules) | Self::AnyOf(rules) => {
+                rules.iter().for_each(|rule| rule.height_breaks(breaks));
+            }
+            Self::Not(rule) => rule.height_breaks(breaks),
+            _ => {}
         }
     }
 

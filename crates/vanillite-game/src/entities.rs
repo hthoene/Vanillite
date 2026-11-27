@@ -75,6 +75,10 @@ pub struct PrimedTntData {
 /// The key of the plugins' persistent data in an entity's NBT (Paper's `BukkitValues`).
 pub const PERSISTENT_DATA: &str = "BukkitValues";
 
+/// How long [`Entities::departed_uuid`] knows a player that left: longer than the slowest
+/// boss bar player update (once a second).
+const DEPARTED_TICKS: i64 = 100;
+
 /// All entities of a world. Kinds without own data yet only live in the core store.
 #[derive(Debug, Default)]
 pub struct Entities {
@@ -117,6 +121,11 @@ pub struct Entities {
     pub players_by_uuid: FxHashMap<u128, EntityId>,
     /// Leashed mobs and what holds them (`leashHolder`): a player, mob or leash knot.
     pub leashes: FxHashMap<EntityId, EntityId>,
+    /// Players that left for another world ([`Entities::despawn_player`]) by their id here,
+    /// with their UUID and the game time they left: the world's boss bars hold the id until
+    /// their next player update and still reach the player through it, like Vanilla's
+    /// `ServerBossEvent` holding the `ServerPlayer`.
+    departed: FxHashMap<EntityId, (u128, i64)>,
     /// Boat kind data (every type of [`crate::vehicle::BoatKind`]).
     pub boats: Dense<crate::vehicle::BoatData>,
     /// Leash knot kind data (their position block).
@@ -823,11 +832,21 @@ impl Entities {
         if self.players_by_uuid.get(&uuid) == Some(&id) {
             self.players_by_uuid.remove(&uuid);
         }
+        let now = self.game_time;
+        self.departed
+            .retain(|_, &mut (_, left)| now.wrapping_sub(left) < DEPARTED_TICKS);
+        self.departed.insert(id, (uuid, now));
         let (data, moved) = self.players.swap_remove(removed.kind_row)?;
         if let Some(moved) = moved {
             self.store.set_kind_row(moved, removed.kind_row);
         }
         Some((removed, data))
+    }
+
+    /// The UUID of a player that left this world for another one as `id` (see
+    /// [`Entities::despawn_player`]); `None` for players still here and other ids.
+    pub fn departed_uuid(&self, id: EntityId) -> Option<u128> {
+        self.departed.get(&id).map(|&(uuid, _)| uuid)
     }
 
     /// Drops the riding and leash links of a removed entity (`ejectPassengers`,

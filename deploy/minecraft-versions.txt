@@ -1,0 +1,6 @@
+# Minecraft versions Vanillite publishes Docker images for: `<minecraft version> <channel>`,
+# newest first, channel `beta` or `stable` (a stable release exists). The source of the image
+# dropdown of the Pterodactyl eggs and of the moving Docker tags (scripts/release/meta.sh moves
+# `beta`/`latest` only for the newest version). `cargo xtask egg` adds the version of the sources;
+# remove a line once that version gets no more images (its tags stay pullable).
+26.3 beta

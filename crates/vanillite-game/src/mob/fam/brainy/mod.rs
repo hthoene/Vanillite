@@ -898,6 +898,24 @@ impl FamilyHooks for Hooks {
     }
 }
 
+/// `makeBrain(packed)` of the brain kinds of this family: a new brain from the kind's spec.
+pub(crate) fn make_brain(m: &mut MobData) {
+    let spec = match m.kind {
+        Kind::Armadillo => armadillo::brain_spec(),
+        Kind::Piglin => piglin::piglin_brain(),
+        Kind::PiglinBrute => piglin::brute_brain(),
+        Kind::Axolotl => axolotl::brain_spec(),
+        Kind::Sniffer => sniffer::brain_spec(),
+        Kind::Hoglin => hoglin::hoglin_brain(),
+        Kind::Zoglin => hoglin::zoglin_brain(),
+        Kind::Frog => frog::frog_brain(),
+        Kind::Tadpole => frog::tadpole_brain(),
+        Kind::Goat => goat::brain_spec(),
+        _ => return,
+    };
+    m.brain = Some(Box::new(brain::Brain::new(spec, &mut m.random)));
+}
+
 /// `Animal.checkAnimalSpawnRules`' light part: bright enough (natural spawns).
 fn animal_bright(level: &Level, pos: BlockPos, reason: SpawnReason) -> bool {
     if reason == SpawnReason::ChunkGeneration {

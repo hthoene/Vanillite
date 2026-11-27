@@ -1105,6 +1105,7 @@ impl Level {
         chunks.clear();
         self.chunks.take_promoted(&mut chunks);
         for &chunk in &chunks {
+            self.take_generation_entities(chunk);
             self.load_block_entities(chunk);
         }
         self.chunks_loaded_event(&chunks);

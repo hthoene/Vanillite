@@ -1,4 +1,4 @@
-abi 1.9
+abi 1.10
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -334,6 +334,19 @@ const world_create_flag::SEED: u32 = 1
 const world_create_flag::NO_STRUCTURES: u32 = 2
 const world_flag::LOADED: u32 = 1
 const world_flag::EXTRA: u32 = 2
+const block_type_flag::AIR: u32 = 1
+const block_type_flag::SOLID: u32 = 2
+const block_type_flag::OCCLUDING: u32 = 4
+const block_type_flag::FLAMMABLE: u32 = 8
+const block_type_flag::BURNABLE: u32 = 16
+const block_type_flag::GRAVITY: u32 = 32
+const block_type_flag::BLOCK_ENTITY: u32 = 64
+const block_type_flag::REPLACEABLE: u32 = 128
+const block_type_flag::LIQUID: u32 = 256
+const block_type_flag::ITEM: u32 = 512
+const item_type_flag::EDIBLE: u32 = 1
+const item_type_flag::RECORD: u32 = 2
+const item_type_flag::COMPOSTABLE: u32 = 4
 const transform_reason::UNKNOWN: u32 = 0
 const transform_reason::CURED: u32 = 1
 const transform_reason::INFECTION: u32 = 2
@@ -745,6 +758,24 @@ struct EntityInfo size=56 align=8
   yaw: f32 @40
   pitch: f32 @44
   kind: u32 @48
+struct BlockTypeInfo size=36 align=4
+  size: u32 @0
+  default_state: u32 @4
+  state_count: u32 @8
+  flags: u32 @12
+  hardness: f32 @16
+  blast_resistance: f32 @20
+  friction: f32 @24
+  speed_factor: f32 @28
+  jump_factor: f32 @32
+struct ItemTypeInfo size=28 align=4
+  size: u32 @0
+  max_stack_size: u32 @4
+  max_damage: u32 @8
+  block_state: u32 @12
+  flags: u32 @16
+  rarity: u32 @20
+  equip_slot: u32 @24
 struct WorldDetails size=24 align=8
   size: u32 @0
   environment: u32 @4
@@ -838,7 +869,7 @@ struct PacketEvent size=80 align=8
   player: Uuid @40
   body: Bytes @56
   out: *constPacketOut @72
-struct HostApi size=1280 align=8
+struct HostApi size=1320 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -1001,3 +1032,8 @@ struct HostApi size=1280 align=8
   packet_receive: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @1256
   entities_in_box: unsafeextern"C"fn(*mutContext,u32,Vec3,Vec3,Str,*mutEntityInfo,usize,*mutusize,)->Status @1264
   entity_type_name: unsafeextern"C"fn(PluginId,u32,*mutStrBuf)->Status @1272
+  block_type_info: unsafeextern"C"fn(PluginId,Str,*mutBlockTypeInfo)->Status @1280
+  item_type_info: unsafeextern"C"fn(PluginId,Str,*mutItemTypeInfo)->Status @1288
+  registry_entries: unsafeextern"C"fn(PluginId,Str,*constByteSink)->Status @1296
+  registry_tag: unsafeextern"C"fn(PluginId,Str,Str,*constByteSink)->Status @1304
+  player_update_commands: unsafeextern"C"fn(PluginId,Uuid)->Status @1312

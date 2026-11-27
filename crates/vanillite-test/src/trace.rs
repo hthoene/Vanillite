@@ -30,6 +30,10 @@
 //!     goals of the goal and target selector by Vanilla class name, sorted), `path` (the
 //!     navigation path while not done: `to` target block, `next` node index, `reach`, `nodes`
 //!     as `[x, y, z, path type]`).
+//! - View (scenarios with `"client_view": true`): `"view":["<player> <event>", ...]`, what
+//!   the players' clients got during the tick (see [`crate::client_view`]). The recorder
+//!   writes the raw packets instead (`"packets":{"<player>":["<id + body hex>", ...]}`);
+//!   parsing normalizes them.
 //! - Light (scenarios with `"light": true`): `"light":[count,level,...]` in every frame, run-length
 //!   pairs over the region in y, z, x order; a level is `sky << 4 | block` as a client sees it.
 
@@ -142,6 +146,9 @@ pub struct Frame {
     pub light: Vec<u8>,
     /// State of the level random after the tick (scenarios with entities).
     pub level_rng: Option<i64>,
+    /// What the players' clients got during the tick, `<player> <event>` sorted
+    /// (`"client_view"` scenarios).
+    pub view: Vec<String>,
 }
 
 /// A recorded scenario run.
@@ -154,6 +161,8 @@ pub struct Trace {
     pub frames: Vec<Frame>,
     /// For blessed traces: SHA-1 of the scenario they were blessed for.
     pub blessed_for: Option<String>,
+    /// The players' clients of recorded raw packets.
+    clients: crate::client_view::ClientViews,
 }
 
 impl Trace {
@@ -166,6 +175,7 @@ impl Trace {
             index: HashMap::new(),
             frames: Vec::new(),
             blessed_for: None,
+            clients: crate::client_view::ClientViews::default(),
         }
     }
 
@@ -228,8 +238,9 @@ impl Trace {
     }
 
     /// A frame of the trace from its JSON object; `last` holds the blocks of the frame before.
-    fn frame_of(&self, f: &Value, last: &[u32]) -> Result<Frame, String> {
-        let trace = self;
+    fn frame_of(&mut self, f: &Value, last: &[u32]) -> Result<Frame, String> {
+        let view = self.view_of(f)?;
+        let trace = &*self;
         let volume: usize = trace.size().iter().product();
         let tick = f
             .get("tick")
@@ -287,7 +298,41 @@ impl Trace {
             entities: entities(f.get("entities"))?,
             light,
             level_rng: f.get("level_rng").and_then(Value::as_i64),
+            view,
         })
+    }
+
+    /// The `view` of a frame, or its normalized raw `packets`.
+    fn view_of(&mut self, f: &Value) -> Result<Vec<String>, String> {
+        if let Some(view) = f.get("view").and_then(Value::as_array) {
+            return view
+                .iter()
+                .map(|e| {
+                    e.as_str()
+                        .map(str::to_owned)
+                        .ok_or("view entries are strings")
+                })
+                .collect::<Result<_, _>>()
+                .map_err(str::to_owned);
+        }
+        let Some(players) = f.get("packets").and_then(Value::as_object) else {
+            return Ok(Vec::new());
+        };
+        let mut bodies: Vec<(&str, Vec<Vec<u8>>)> = Vec::new();
+        for (name, packets) in players {
+            let packets = packets
+                .as_array()
+                .ok_or("packets per player are arrays")?
+                .iter()
+                .map(|p| p.as_str().and_then(unhex).ok_or("packets are hex strings"))
+                .collect::<Result<Vec<_>, _>>()?;
+            bodies.push((name, packets));
+        }
+        Ok(self.clients.frame(
+            bodies
+                .iter()
+                .map(|(n, p)| (*n, p.iter().map(Vec::as_slice).collect())),
+        ))
     }
 
     /// A streamed trace (`ScenarioRecorder --stream`) from its header line, without frames.
@@ -353,6 +398,9 @@ impl Trace {
         }
         h.add(frame.level_rng.map_or(u64::MAX, |r| r as u64));
         h.add(u64::from(frame.level_rng.is_some()));
+        for e in &frame.view {
+            h.add(fnv(e.as_bytes()));
+        }
         h.0
     }
 
@@ -460,6 +508,9 @@ impl Trace {
             if let Some(r) = f.level_rng {
                 let _ = write!(s, ",\"level_rng\":{r}");
             }
+            if !f.view.is_empty() {
+                let _ = write!(s, ",\"view\":{}", Value::from(f.view.clone()));
+            }
             s.push('}');
         }
         s.push_str("]}\n");
@@ -524,6 +575,9 @@ impl Trace {
             if ee != ae {
                 entity_diff(t, &e.entities, &a.entities, &mut out);
             }
+            if e.view != a.view {
+                view_diff(t, &e.view, &a.view, &mut out);
+            }
             if e.level_rng != a.level_rng {
                 out.push(format!(
                     "tick {t} level random state {:?}, expected {:?}",
@@ -560,6 +614,34 @@ impl Trace {
 }
 
 /// JSON text with the object keys sorted, whatever order the map keeps.
+/// The client view events of a frame that only one side has.
+fn view_diff(t: u32, expected: &[String], actual: &[String], out: &mut Vec<String>) {
+    let mut missing: Vec<&String> = expected.iter().collect();
+    let mut extra = Vec::new();
+    for a in actual {
+        match missing.iter().position(|e| *e == a) {
+            Some(i) => {
+                missing.remove(i);
+            }
+            None => extra.push(a),
+        }
+    }
+    for e in missing {
+        out.push(format!("tick {t} client view: missing `{e}`"));
+    }
+    for a in extra {
+        out.push(format!("tick {t} client view: unexpected `{a}`"));
+    }
+}
+
+/// Bytes of a hex string.
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
 fn canonical(v: &Value) -> String {
     match v {
         Value::Object(m) => {
