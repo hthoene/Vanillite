@@ -1,11 +1,16 @@
 //! The outbound side of a connection: an unbounded channel bounded by bytes (SEC-17) and the
 //! writer task that frames, compresses, encrypts and writes with one syscall per batch.
+//!
+//! A connection starts out writing whatever is queued as soon as it can. Once its owner calls
+//! [`Outbound::flush`] (a world at the end of each tick), the writer waits for the flushes
+//! instead: one wake-up and one write per tick, not one per packet.
 
 use crate::sent_log::SentLog;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use vanillite_multiversion::ClientboundHalf;
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::{
@@ -65,19 +70,35 @@ pub struct Outbound {
     sent: Arc<SentLog>,
     /// The connection's number for the packet tap.
     connection: u64,
+    /// Writes wait for [`Outbound::flush`].
+    flushes: Arc<Flushes>,
+}
+
+/// The writer's side of [`Outbound::flush`].
+#[derive(Debug, Default)]
+pub(crate) struct Flushes {
+    /// Set by the first flush: from then on the writer waits for flushes.
+    deferred: AtomicBool,
+    notify: Notify,
 }
 
 /// [`Outbound::threshold`] value for compression off.
 const NO_COMPRESSION: usize = usize::MAX;
+/// Queued bytes that start a write without waiting for the flush (the chunks of a join).
+const FLUSH_BYTES: usize = 128 * 1024;
+/// The longest a deferred write waits for a flush (a player between worlds, a stalled tick).
+const FLUSH_FALLBACK: Duration = Duration::from_millis(250);
 
 impl Outbound {
     pub(crate) fn new(max_bytes: usize, connection: u64) -> (Self, OutReceiver, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
         let closed = Arc::new(AtomicBool::new(false));
+        let flushes = Arc::new(Flushes::default());
         let rx = OutReceiver {
             rx,
             closed: Arc::clone(&closed),
+            flushes: Arc::clone(&flushes),
         };
         (
             Self {
@@ -88,6 +109,7 @@ impl Outbound {
                 threshold: Arc::new(AtomicUsize::new(NO_COMPRESSION)),
                 sent: Arc::new(SentLog::new()),
                 connection,
+                flushes,
             },
             rx,
             queued,
@@ -107,7 +129,21 @@ impl Outbound {
             self.close();
             return false;
         }
-        self.tx.send(msg).is_ok()
+        let sent = self.tx.send(msg).is_ok();
+        if total >= FLUSH_BYTES && self.flushes.deferred.load(Ordering::Relaxed) {
+            self.flushes.notify.notify_one();
+        }
+        sent
+    }
+
+    /// Writes what is queued; from the first call on, the connection writes only on these
+    /// calls (and when much is queued, or after [`FLUSH_FALLBACK`]). Its owner calls this once
+    /// per tick, after the tick's packets.
+    pub fn flush(&self) {
+        self.flushes.deferred.store(true, Ordering::Relaxed);
+        if self.queued.load(Ordering::Relaxed) > 0 {
+            self.flushes.notify.notify_one();
+        }
     }
 
     /// Queues a typed packet. Returns false if the connection is closed or overloaded.
@@ -169,6 +205,7 @@ impl Outbound {
     pub fn close(&self) {
         if !self.closed.swap(true, Ordering::Relaxed) {
             let _ = self.tx.send(Out::Close);
+            self.flushes.notify.notify_one();
         }
     }
 
@@ -190,11 +227,28 @@ impl Outbound {
 pub(crate) struct OutReceiver {
     rx: mpsc::UnboundedReceiver<Out>,
     closed: Arc<AtomicBool>,
+    flushes: Arc<Flushes>,
 }
 
 impl OutReceiver {
     pub(crate) async fn recv(&mut self) -> Option<Out> {
         self.rx.recv().await
+    }
+
+    /// The next message to write: at once until the first [`Outbound::flush`], then after
+    /// a flush (or [`FLUSH_FALLBACK`]). `None`: every sender is gone.
+    async fn next_write(&mut self) -> Option<Out> {
+        loop {
+            if !self.flushes.deferred.load(Ordering::Relaxed) {
+                return self.rx.recv().await;
+            }
+            let _ = tokio::time::timeout(FLUSH_FALLBACK, self.flushes.notify.notified()).await;
+            match self.rx.try_recv() {
+                Ok(msg) => return Some(msg),
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+            }
+        }
     }
 
     pub(crate) fn try_recv(&mut self) -> Result<Out, mpsc::error::TryRecvError> {
@@ -432,10 +486,24 @@ pub(crate) async fn tcp_writer(
     };
     let mut tap = OutTap::new(tap, connection);
     let mut open = true;
+    // A full buffer was written with messages left in the queue.
+    let mut more = false;
     while open {
-        let Some(first) = rx.recv().await else { break };
+        let first = if more {
+            rx.try_recv().ok()
+        } else {
+            rx.next_write().await
+        };
+        let Some(first) = first else {
+            if more {
+                more = false;
+                continue;
+            }
+            break;
+        };
         let ms = sent.now_ms();
         let mut next = Some(first);
+        more = false;
         while let Some(msg) = next.take() {
             let consumed = msg.queued();
             if let Some(msg) = tap.filter(msg, &mut wire.codec) {
@@ -443,8 +511,13 @@ pub(crate) async fn tcp_writer(
                 open = wire.write(msg);
             }
             queued.fetch_sub(consumed, Ordering::Relaxed);
-            if open && wire.buf.len() < 256 * 1024 {
+            if !open {
+                break;
+            }
+            if wire.buf.len() < 256 * 1024 {
                 next = rx.try_recv().ok();
+            } else {
+                more = true;
             }
         }
         if !wire.buf.is_empty() {
