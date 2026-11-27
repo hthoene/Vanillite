@@ -1529,6 +1529,32 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
+        if let Some(target) = &op.target {
+            // `Player.interactOn` with the stack in the main hand.
+            let player = self.named(&op.entity)?;
+            let target = self.named(target)?;
+            let item = vanillite_data::item::ItemId::by_name(&op.item)
+                .ok_or_else(|| format!("unknown item {}", op.item))?;
+            if let Some(p) = self.level.entities.player_mut(player) {
+                let slot = p.inventory.selected;
+                p.inventory
+                    .set(slot, vanillite_game::item::ItemStack::new(item.0, op.count));
+            }
+            self.with_env(|level, ents, env, cx| {
+                mob::animal::interact_on(
+                    level,
+                    ents,
+                    env,
+                    cx,
+                    player,
+                    target,
+                    vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+                    false,
+                );
+            });
+            self.spawn_drops();
+            return Ok(());
+        }
         if op.item != mob::fam::wildlife::ender_pearl::ITEM {
             // Every other item goes through the real `use_item` packet handler.
             return self.player_use(&crate::scenario::PlayerUse {

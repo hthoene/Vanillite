@@ -115,6 +115,7 @@
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
 //!   main hand and uses it (`ServerPlayerGameMode.useItem`, as a `use_item` packet would).
+//!   `interact`: the same, but on the entity `target` (`Player.interactOn`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -192,6 +193,8 @@ pub enum OpKind {
     Effect,
     /// A player uses an item ([`Op::use_item`]).
     UseItem,
+    /// A player uses an item on an entity ([`Op::use_item`] with a `target`).
+    Interact,
     /// Bone meal used on the block at `pos` (an action).
     Bonemeal,
     /// A command run as the server at the origin ([`Op::command`]).
@@ -212,6 +215,8 @@ pub struct UseItemOp {
     /// Item id, e.g. `minecraft:ender_pearl`.
     pub item: String,
     pub count: i32,
+    /// The entity an `interact` action clicks (`Player.interactOn`).
+    pub target: Option<String>,
 }
 
 /// The potion of a `throw_potion` action.
@@ -609,6 +614,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
         Some("use_item") if action => OpKind::UseItem,
+        Some("interact") if action => OpKind::Interact,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
@@ -759,7 +765,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             ..Op::default()
         });
     }
-    if kind == OpKind::UseItem {
+    if matches!(kind, OpKind::UseItem | OpKind::Interact) {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         return Ok(Op {
             tick,
@@ -772,6 +778,11 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(Value::as_i64)
                     .and_then(|n| i32::try_from(n).ok())
                     .unwrap_or(1),
+                target: if kind == OpKind::Interact {
+                    Some(s("target").ok_or("interact needs a target")?)
+                } else {
+                    None
+                },
             }),
             ..Op::default()
         });
