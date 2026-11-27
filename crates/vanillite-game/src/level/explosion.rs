@@ -643,8 +643,19 @@ impl Level {
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
             // `onExplosionHit`: where the explosion hit the player and what caused it.
+            // `setIgnoreFallDamageFromCurrentImpulse(cause is a wind charge, position())`.
+            let wind_jump = source
+                .and_then(|s| self.entities.store.get(s))
+                .is_some_and(|e| e.kind() == vanillite_data::entity::ids::WIND_CHARGE);
+            let at = self.entities.store.get(id).map(|e| e.pos());
             if let Some(p) = self.entities.player_mut(id) {
                 crate::advancements::tracking::explosion_hit(p, pos, source);
+                if wind_jump && let Some(at) = at {
+                    p.survival.impulse_grace = p.survival.impulse_grace.max(40);
+                    p.survival.impulse_impact = Some(at);
+                } else {
+                    p.survival.impulse_grace = 0;
+                }
             }
             let player = self.entities.player(id);
             if let Some(p) = player {

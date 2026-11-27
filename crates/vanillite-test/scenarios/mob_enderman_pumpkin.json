@@ -1,0 +1,125 @@
+{
+  "description": "A player wearing a carved pumpkin looks an enderman in the eyes: Enderman.isBeingStaredBy ignores players wearing #gaze_disguise_equipment, so it does not get angry.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        -180.0,
+        -10.537
+      ]
+    },
+    {
+      "name": "enderman",
+      "type": "minecraft:enderman",
+      "pos": [
+        8.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 7,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:enderman,limit=1] {NoAI:0b}"
+    },
+    {
+      "tick": 1,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:stick",
+      "inventory": [
+        {
+          "slot": 39,
+          "item": "minecraft:carved_pumpkin",
+          "count": 1
+        }
+      ]
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

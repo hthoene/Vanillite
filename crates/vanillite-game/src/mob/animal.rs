@@ -836,6 +836,28 @@ pub fn infinite_pub(ents: &Entities, player: EntityId) -> bool {
     infinite(ents, player)
 }
 
+/// `Animal.usePlayerItem`; `Axolotl.usePlayerItem` turns a bucket of tropical fish into a
+/// water bucket.
+fn use_player_item(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    target: EntityId,
+    hand: Hand,
+    stack: &ItemStack,
+) {
+    let axolotl = ents.mob(target).is_some_and(|m| m.kind == Kind::Axolotl);
+    if axolotl
+        && Some(stack.item) == vanillite_data::registry::ITEM.id("minecraft:tropical_fish_bucket")
+    {
+        if let Some(id) = vanillite_data::registry::ITEM.id("minecraft:water_bucket") {
+            fill_held(ents, env, player, hand, ItemStack::new(id, 1));
+        }
+    } else {
+        use_item(ents, player, hand);
+    }
+}
+
 /// `Animal.mobInteract` for the family kinds: feeding, love mode and growing babies.
 pub fn animal_interact_pub(ix: &mut super::fam::Interact<'_, '_>) -> Interaction {
     animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack)
@@ -853,12 +875,14 @@ pub fn animal_interact(
         return Interaction::Pass;
     };
     if !is_food(m.kind, stack.item) {
-        return Interaction::Pass;
+        // `AgeableMob.mobInteract`: the golden dandelion.
+        return super::age_lock::interact(ents, env, player, target, hand, stack)
+            .unwrap_or(Interaction::Pass);
     }
     let age = m.age;
     let uuid = ents.store.get(player).map(|e| e.uuid());
     if age == 0 && m.in_love <= 0 {
-        use_item(ents, player, hand);
+        use_player_item(ents, env, player, target, hand, stack);
         if let Some(m) = ents.mob_mut(target) {
             m.in_love = 600;
             m.love_cause = uuid;
@@ -867,8 +891,9 @@ pub fn animal_interact(
         eating_sound(ents, env, target);
         return Interaction::Success;
     }
-    if m.baby {
-        use_item(ents, player, hand);
+    // `canAgeUp`: a locked baby passes on to the golden dandelion (not food).
+    if m.baby && !m.age_locked {
+        use_player_item(ents, env, player, target, hand, stack);
         // `ageUp(getSpeedUpSecondsWhenFeeding(-age), true)`.
         #[allow(clippy::cast_possible_truncation)]
         let seconds = ((-age / 20) as f32 * 0.1) as i32;
@@ -884,7 +909,8 @@ pub fn animal_interact(
         eating_sound(ents, env, target);
         return Interaction::Success;
     }
-    Interaction::Consume
+    // `super.mobInteract`: nothing else uses the food on the server.
+    Interaction::Pass
 }
 
 /// `playEatingSound`: sheep and pigs have one.
@@ -975,19 +1001,31 @@ fn equip_saddle(
     if !ok {
         return Interaction::Pass;
     }
+    let pos = ents.store.get(target).map(|e| e.pos());
     if let Some(m) = ents.mob_mut(target) {
         m.saddled = true;
         m.persistent = true;
+        // `onEquipItem`: the equip sound, seeded by the pig's random, then `EQUIP`.
+        if !m.silent
+            && let Some(pos) = pos
+        {
+            let seed = m.random.next_long();
+            let source = m.kind.sound_source();
+            play_sound(
+                env.out,
+                None,
+                pos,
+                "minecraft:entity.pig.saddle",
+                source,
+                1.0,
+                1.0,
+                seed,
+            );
+        }
     }
+    let event = crate::level::game_event::events().equip;
+    entity_game_event(ents, env, target, event, Some(target));
     use_item(ents, player, hand);
-    sound_at(
-        ents,
-        env,
-        target,
-        "minecraft:entity.pig.saddle",
-        SoundSource::Neutral,
-        1.0,
-    );
     send_saddle(ents, env, target);
     Interaction::Success
 }
@@ -1144,6 +1182,12 @@ fn item_interact(
         entity_game_event(ents, env, target, event, Some(player));
     }
     r
+}
+
+/// `itemStack.interactLivingEntity(player, mob, hand)` for the family kinds that call it in
+/// their `mobInteract` (saddles and harnesses through `Equippable.equipOnTarget`).
+pub fn item_interact_pub(ix: &mut super::fam::Interact<'_, '_>) -> Interaction {
+    item_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack)
 }
 
 /// `LivingEntity.canUseSlot` of the kinds that restrict their saddle or body slot.

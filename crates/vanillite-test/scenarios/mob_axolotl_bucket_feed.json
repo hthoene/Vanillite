@@ -1,0 +1,111 @@
+{
+  "description": "A player feeds a bucket of tropical fish to an axolotl (Axolotl.usePlayerItem): the axolotl falls in love and the bucket becomes a water bucket.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        10.5
+      ]
+    },
+    {
+      "name": "axolotl",
+      "type": "minecraft:axolotl",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 5,
+      "op": "interact",
+      "entity": "steve",
+      "target": "axolotl",
+      "item": "minecraft:tropical_fish_bucket"
+    }
+  ],
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

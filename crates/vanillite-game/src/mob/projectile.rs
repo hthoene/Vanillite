@@ -61,6 +61,8 @@ pub struct ArrowData {
     pub crossbow_sound: bool,
     /// The bow or crossbow it was shot from (`firedFromWeapon`).
     pub weapon: Option<crate::item::ItemStack>,
+    /// `Projectile.lastDeflectedBy`.
+    pub last_deflected: Option<EntityId>,
 }
 
 impl ArrowData {
@@ -94,6 +96,7 @@ impl ArrowData {
             pierced: Vec::new(),
             crossbow_sound: false,
             weapon: None,
+            last_deflected: None,
         }
     }
 
@@ -436,12 +439,8 @@ pub fn tick_arrow(
             if !a.left_owner && a.owner == Some(other) {
                 return;
             }
-            let alive = ents.mob(other).is_some_and(super::MobData::is_alive)
-                || ents.player(other).is_some_and(|p| {
-                    !p.survival.is_dead_or_dying()
-                        && p.game_mode != vanillite_config::GameMode::Spectator
-                });
-            if !alive {
+            // `canHitEntity`: anything a projectile can hit (`canBeHitByProjectile`).
+            if !crate::effect::thrown::can_be_hit(ents, other) {
                 return;
             }
             let Some(oe) = ents.store.get(other) else {
@@ -485,6 +484,16 @@ pub fn tick_arrow(
                 continue;
             }
             hit_any = true;
+            // `hitTargetOrDeflectSelf`: a breeze turns the arrow back, once in a row.
+            if super::missile::deflects(ents, target, kind) {
+                if a.last_deflected != Some(target) {
+                    (velocity, rot) =
+                        super::missile::reverse(ents, env, target, velocity, rot, &mut random);
+                    a.last_deflected = Some(target);
+                }
+                deflected = true;
+                break;
+            }
             // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
             super::missile::land_event(env.out, level, id, a.owner, None, hit);
             // `onHitEntity`.
@@ -508,7 +517,26 @@ pub fn tick_arrow(
             source.projectile_motion = Some(velocity);
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
-            if hurt {
+            let living = crate::effect::thrown::is_living(ents, target);
+            if hurt && !living {
+                // A vehicle, crystal or decoration: only the hit sound (`onHitEntity`).
+                let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
+                let seed = crate::survival::sound_seed();
+                play_sound(
+                    env.out,
+                    None,
+                    pos,
+                    hit_sound(&a),
+                    SoundSource::Neutral,
+                    1.0,
+                    pitch,
+                    seed,
+                );
+                if a.pierce_level == 0 {
+                    discard = true;
+                    break;
+                }
+            } else if hurt {
                 if a.fire {
                     super::attack::ignite(ents, target, 100);
                 }
@@ -567,10 +595,13 @@ pub fn tick_arrow(
                         );
                     }
                 }
-                if let Some(owner) = a.owner
-                    && let Some(m) = ents.mob_mut(owner)
-                {
-                    m.last_hurt_mob = Some(target);
+                // `owner.setLastHurtMob(entity)`: mobs and players (their wolves join in).
+                if let Some(owner) = a.owner {
+                    if let Some(m) = ents.mob_mut(owner) {
+                        m.last_hurt_mob = Some(target);
+                    } else if let Some(p) = ents.player_mut(owner) {
+                        p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
+                    }
                 }
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
                 let seed = crate::survival::sound_seed();

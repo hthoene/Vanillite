@@ -79,6 +79,8 @@ pub struct Enderman {
     pub creepy: bool,
     /// `targetChangeTime`.
     pub target_change_time: i32,
+    /// `SPEED_MODIFIER_ATTACKING` (+0.15) is on.
+    pub attack_speed: bool,
 }
 
 impl Enderman {
@@ -86,6 +88,7 @@ impl Enderman {
         carried: None,
         creepy: false,
         target_change_time: 0,
+        attack_speed: false,
     };
 }
 

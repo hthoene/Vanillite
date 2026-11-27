@@ -1,0 +1,126 @@
+{
+  "description": "A player shoots an arrow at a breeze: Breeze.deflection (#deflects_projectiles) turns it back with the deflect sound instead of a hit.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        -180.0,
+        5.852
+      ],
+      "game_mode": "creative"
+    },
+    {
+      "name": "breeze",
+      "type": "minecraft:breeze",
+      "pos": [
+        8.5,
+        -60.0,
+        4.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 60,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:bow",
+      "inventory": [
+        {
+          "slot": 9,
+          "item": "minecraft:arrow",
+          "count": 4
+        }
+      ]
+    },
+    {
+      "tick": 80,
+      "op": "release_item",
+      "entity": "steve"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

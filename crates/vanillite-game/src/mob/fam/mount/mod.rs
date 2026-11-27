@@ -85,7 +85,7 @@ pub fn state_mut(m: &mut MobData) -> &mut State {
 /// The `AgeableMob` synched data: 16 baby, 17 age locked.
 fn encode_ageable(w: &mut DataWriter<'_>, m: &MobData) {
     w.boolean(16, m.baby, false);
-    w.boolean(17, false, false);
+    w.boolean(17, m.age_locked, false);
 }
 
 /// UUID as the int array of entity NBT.
@@ -129,7 +129,7 @@ fn save_ageable(m: &MobData, out: &mut Compound, can_be_baby: bool) {
     if can_be_baby {
         out.insert("Age", m.age);
         out.insert("ForcedAge", m.forced_age);
-        out.insert("AgeLocked", false);
+        out.insert("AgeLocked", m.age_locked);
     }
     out.insert("InLove", m.in_love);
     if let Some(cause) = m.love_cause {
@@ -142,6 +142,7 @@ fn load_ageable(m: &mut MobData, tag: &Compound, can_be_baby: bool) {
         m.age = int(tag, "Age").unwrap_or(0);
         m.baby = m.age < 0;
         m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
+        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
     }
     m.in_love = int(tag, "InLove").unwrap_or(0);
     m.love_cause = super::super::nbt::uuid_key_of(tag, "LoveCause");

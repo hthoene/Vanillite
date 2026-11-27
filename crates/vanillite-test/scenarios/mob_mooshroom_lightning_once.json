@@ -1,0 +1,115 @@
+{
+  "description": "Lightning strikes a red mooshroom under the open sky: MushroomCow.thunderHit turns it brown once per bolt, however many flashes the bolt has.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "mooshroom",
+      "type": "minecraft:mooshroom",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 5,
+      "op": "lightning",
+      "pos": [
+        8,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 25,
+      "op": "lightning",
+      "pos": [
+        8,
+        -60,
+        8
+      ]
+    }
+  ],
+  "weather": "thunder",
+  "rules": {
+    "spawn_monsters": "false",
+    "mob_griefing": "false",
+    "spawn_mobs": "false"
+  }
+}

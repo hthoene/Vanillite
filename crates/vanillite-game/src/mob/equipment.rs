@@ -220,6 +220,19 @@ fn approximate(base: f64, stack: &ItemStack, slot: EquipmentSlot, attribute: &st
     item::attribute_value(base, &mods, f64::MIN, f64::MAX)
 }
 
+/// `getAttributeValue(name)` of a mob: `base` with the attribute modifiers of its equipment
+/// (and their enchantments), clamped to `min..=max`.
+pub fn attribute(m: &crate::mob::MobData, name: &str, base: f64, min: f64, max: f64) -> f64 {
+    let mut mods = Vec::new();
+    for slot in (0..8).filter_map(EquipmentSlot::from_ordinal) {
+        item::attribute_modifiers(m.equipment.get(slot), slot, name, &mut mods);
+    }
+    if mods.is_empty() {
+        return base;
+    }
+    item::attribute_value(base, &mods, min, max)
+}
+
 /// `canReplaceEqualItem`: more enchantments, less damage, a custom name.
 pub fn can_replace_equal_item(new: &ItemStack, current: &ItemStack) -> bool {
     let enchants = |s: &ItemStack| item::enchantments(s).len();

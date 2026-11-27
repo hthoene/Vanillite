@@ -10,7 +10,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::{EntityFlags, EntityId, Rotation};
 
-use super::{Goal, item_in_tag, st, st_mut};
+use super::{Goal, block_tags, item_in_tag, st, st_mut};
 use crate::item::EquipmentSlot;
 use crate::mob::animal::{Interaction, use_item};
 use crate::mob::common::CommonGoal;
@@ -18,14 +18,16 @@ use crate::mob::equipment;
 use crate::mob::fam::{FamGoal, Interact};
 use crate::mob::goals::{Goal as MobGoal, MeleeKind};
 use crate::mob::kinds::{self, Kind};
-use crate::mob::{MobData, Tick, is_water, living, nav};
+use crate::mob::{MobData, Tick, is_water, living, nav, path, randompos};
 
 fn fam(g: Goal) -> MobGoal {
     MobGoal::Fam(FamGoal::Wildlife(g))
 }
 
 fn is_guardian(t: &Tick<'_, '_>, id: EntityId) -> bool {
-    t.ents.mob(id).is_some_and(|m| m.kind == Kind::Guardian)
+    t.ents
+        .mob(id)
+        .is_some_and(|m| matches!(m.kind, Kind::Guardian | Kind::ElderGuardian))
 }
 
 /// `Dolphin.registerGoals` (`FollowPlayerRiddenEntityGoal` for boats and nautiluses comes
@@ -55,8 +57,9 @@ pub(super) fn register_goals(m: &mut MobData) {
     g.add(5, MobGoal::look_at_player(6.0));
     g.add(
         5,
+        // `DolphinJumpGoal(this, 10)` keeps `reducedTickDelay(10)`.
         fam(Goal::DolphinJump {
-            interval: 10,
+            interval: crate::mob::goals::reduced(10),
             breached: false,
         }),
     );
@@ -113,7 +116,7 @@ pub(super) fn after_tick(t: &mut Tick<'_, '_>) {
 /// `Dolphin.mobInteract`: raw fish grow babies or make it look for treasure.
 pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if ix.stack.is_empty() || !item_in_tag(ix.stack.item, "minecraft:fishes") {
-        return Interaction::Pass;
+        return crate::mob::age_lock::interact_pub(ix).unwrap_or(Interaction::Pass);
     }
     let Some(m) = ix.ents.mob(ix.target) else {
         return Interaction::Pass;
@@ -132,7 +135,7 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let Some(m) = ix.ents.mob(ix.target) else {
         return Interaction::Pass;
     };
-    if m.baby {
+    if m.baby && !m.age_locked {
         // `canAgeUp`: `ageUp(getSpeedUpSecondsWhenFeeding(-age), true)`.
         use_item(ix.ents, ix.player, ix.hand);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
@@ -339,7 +342,8 @@ pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             let b = t.block_pos();
             for i in [0, 1, 4, 5, 6, 7] {
                 let next = BlockPos::new(b.x + sx * i, b.y, b.z + sz * i);
-                let water = is_water(t.level.block(next));
+                let state = t.level.block(next);
+                let water = is_water(state) && !block_tags().blocks_dolphin_jump.contains(state);
                 let above1 = t
                     .level
                     .block(BlockPos::new(next.x, next.y + 1, next.z))
@@ -501,8 +505,7 @@ pub(super) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *player = None;
             t.mob().nav.stop();
         }
-        Goal::DolphinJump { breached, .. } => {
-            *breached = false;
+        Goal::DolphinJump { .. } => {
             let rot = t.core().rot();
             t.core_mut().set_rot(Rotation { x_rot: 0.0, ..rot });
         }
@@ -559,7 +562,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             } else if v.length() > f64::from(1.0e-5_f32) {
                 let h = (v.x * v.x + v.z * v.z).sqrt();
                 #[allow(clippy::cast_possible_truncation)]
-                let x = ((-v.y).atan2(h) * f64::from(57.295_776_f32)) as f32;
+                let x = ((-v.y).atan2(h) * 180.0 / f64::from(std::f32::consts::PI)) as f32;
                 t.core_mut().set_rot(Rotation { x_rot: x, ..rot });
             }
         }
@@ -571,7 +574,56 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         Goal::DolphinPlayWithItems { .. } => {
             drop_item(t);
         }
+        Goal::DolphinSwimToTreasure { stuck } => swim_to_treasure(t, stuck),
         _ => {}
+    }
+}
+
+/// `DolphinSwimToTreasureGoal.tick`: picks the next water position towards the treasure.
+fn swim_to_treasure(t: &mut Tick<'_, '_>, stuck: &mut bool) {
+    let Some(treasure) = st(t.mob_ref()).treasure_pos else {
+        return;
+    };
+    // `closeToNextPos`: the navigation target is within 12 blocks.
+    let p = t.pos();
+    let close = t
+        .mob_ref()
+        .nav
+        .target_pos()
+        .is_some_and(|tp| super::closer_to_center(tp, p, 12.0));
+    if !close && !t.mob_ref().nav.is_done() {
+        return;
+    }
+    let towards = Vec3::new(
+        f64::from(treasure.x) + 0.5,
+        f64::from(treasure.y) + 0.5,
+        f64::from(treasure.z) + 0.5,
+    );
+    let eighth_pi = f64::from(std::f32::consts::FRAC_PI_8);
+    let mut next = randompos::default_pos_towards(t, 16, 1, towards, eighth_pi)
+        .or_else(|| randompos::default_pos_towards(t, 8, 4, towards, randompos::half_pi()));
+    if let Some(n) = next {
+        let at = BlockPos::containing(n.x, n.y, n.z);
+        let state = t.level.block(at);
+        if !is_water(state) || !path::is_pathfindable(state, path::Computation::Water) {
+            next = randompos::default_pos_towards(t, 8, 5, towards, randompos::half_pi());
+        }
+    }
+    let Some(n) = next else {
+        *stuck = true;
+        return;
+    };
+    // `getMaxHeadYRot() + 20`, `getMaxHeadXRot()` (both 1 for dolphins).
+    t.mob().look.set_look_at(n, 21.0, 1.0);
+    nav::move_to_pos(t, n, 1.3);
+    // `adjustedTickDelay(80)`: the goal does not tick every tick.
+    if t.env
+        .random
+        .next_int_bounded(crate::mob::goals::reduced(80))
+        == 0
+    {
+        let id = t.id;
+        living::entity_event(t, id, 38);
     }
 }
 

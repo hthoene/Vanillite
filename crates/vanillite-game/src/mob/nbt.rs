@@ -319,7 +319,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             out.insert("Age", m.age);
             out.insert("ForcedAge", m.forced_age);
-            out.insert("AgeLocked", false);
+            out.insert("AgeLocked", m.age_locked);
             out.insert("InLove", m.in_love);
             if let Some(cause) = m.love_cause {
                 out.insert("LoveCause", uuid_ints(cause));
@@ -503,6 +503,8 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
             m.in_love = int(tag, "InLove").unwrap_or(0);
             m.love_cause = uuid_key(tag, "LoveCause");
             m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
+            m.age_locked =
+                matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
             if kind == Kind::Sheep {
                 super::fam::classic::sheep_mut(m).color =
                     u8::try_from(int(tag, "Color").unwrap_or(0) & 15).unwrap_or(0);
@@ -771,6 +773,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
                 Some(Tag::Compound(c)) => Some(crate::item_nbt::stack_from_nbt(c)),
                 _ => None,
             },
+            last_deflected: None,
         },
     ))
 }

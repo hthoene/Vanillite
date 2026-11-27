@@ -950,7 +950,7 @@ fn equipment_xp(m: &mut MobData) -> i32 {
 pub fn save_ageable(m: &MobData, out: &mut Compound) {
     out.insert("Age", m.age);
     out.insert("ForcedAge", m.forced_age);
-    out.insert("AgeLocked", false);
+    out.insert("AgeLocked", m.age_locked);
     out.insert("InLove", m.in_love);
 }
 
@@ -964,6 +964,7 @@ pub fn load_ageable(m: &mut MobData, tag: &Compound) {
     m.age = int("Age").unwrap_or(0);
     m.baby = m.age < 0;
     m.forced_age = int("ForcedAge").unwrap_or(0);
+    m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
     m.in_love = int("InLove").unwrap_or(0);
 }
 

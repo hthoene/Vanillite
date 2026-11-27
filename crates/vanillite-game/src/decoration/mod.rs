@@ -328,6 +328,16 @@ fn invulnerable_to_base(ents: &Entities, env: &Env<'_>, d: &Decor, source: &Dama
         && !creative(ents, source.cause)
 }
 
+/// `isPickable` of the decorations projectiles hit: item frames, paintings and cushions.
+pub fn pickable(ents: &Entities, id: EntityId) -> bool {
+    ents.decor(id).is_some_and(|d| {
+        matches!(
+            d.data,
+            DecorData::Frame(_) | DecorData::Painting(_) | DecorData::Cushion(_)
+        )
+    })
+}
+
 /// `hurtServer` of a decoration; whether it was hurt.
 pub fn hurt(
     level: &Level,

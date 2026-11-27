@@ -1,0 +1,111 @@
+{
+  "description": "A player kills a baby zombie: Monster.shouldDropLoot and shouldDropExperience ignore the baby state, so it drops its loot and 2.5 times the experience.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        10.5
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false,
+      "baby": true
+    }
+  ],
+  "actions": [
+    {
+      "tick": 10,
+      "op": "hurt",
+      "entity": "zombie",
+      "by": "steve",
+      "amount": 100
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "description": "A player throws a wind charge straight down at its feet and is launched up: ServerPlayer.onExplosionHit ignores the fall damage down to the impact height.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -45,
+      15
+    ]
+  ],
+  "ticks": 140,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        0,
+        90
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 65,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:wind_charge"
+    }
+  ],
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

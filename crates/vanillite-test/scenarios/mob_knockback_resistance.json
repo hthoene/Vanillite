@@ -1,0 +1,128 @@
+{
+  "description": "A zombie hits a player in a netherite chestplate: knockback is scaled by 1 - knockback_resistance (0.1 from the chestplate's attribute modifier).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 100,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        10.5
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:zombie,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:stick",
+      "inventory": [
+        {
+          "slot": 38,
+          "item": "minecraft:netherite_chestplate",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "tick": 70,
+      "op": "hurt",
+      "entity": "steve",
+      "by": "zombie",
+      "amount": 2
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

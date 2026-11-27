@@ -1115,13 +1115,14 @@ pub fn hurt_with(
             // `dealDefaultKnockback`: away from the source position.
             let (xd, zd) = source.knockback_direction(pos);
             let on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
+            let resistance = knockback_resistance(player);
             let v = crate::mob::combat::knockback(
                 entity.as_ref().velocity(),
                 on_ground,
                 f64::from(0.4_f32),
                 xd,
                 zd,
-                0.0,
+                resistance,
                 // `this.random`: the player's own.
                 &mut player.survival.random,
             );
@@ -1526,13 +1527,14 @@ fn apply_item_blocking(
         {
             // `blockedByItem`: a hit that was not fully blocked pushes the defender back.
             let on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
+            let resistance = knockback_resistance(player);
             let v = crate::mob::combat::knockback(
                 entity.as_ref().velocity(),
                 on_ground,
                 0.5,
                 pos.x - at.x,
                 pos.z - at.z,
-                0.0,
+                resistance,
                 &mut player.survival.random,
             );
             if let Some(v) = v {
@@ -1953,7 +1955,7 @@ pub fn base_tick_after_portal(
                 .is_some_and(|s| env.facts.is_bubble_column(s));
         if eye_in_water {
             if !abilities.invulnerable && !player.survival.effects.has_water_breathing() {
-                let air = player.survival.air - 1;
+                let air = decrease_air(player, player.survival.air);
                 set_air(entity, &mut player.survival, air);
                 if player.survival.air <= -20 {
                     set_air(entity, &mut player.survival, 0);
@@ -3102,6 +3104,24 @@ pub fn fall_damage_with(fall_distance: f64, multiplier: f32, safe_fall_distance:
     vanillite_base::math::floor(power * f64::from(multiplier))
 }
 
+/// `Entity.propagateFallToPassengers` for a player riding a falling mob.
+pub(crate) fn passenger_fall(
+    ents: &mut crate::entities::Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    fall_distance: f64,
+    multiplier: f32,
+    kind: DamageKind,
+) {
+    let crate::entities::Entities { store, players, .. } = ents;
+    if let Some(mut entity) = store.get_mut(player) {
+        let row = entity.as_ref().kind_row();
+        if let Some(data) = players.get_mut(row) {
+            cause_fall_damage(&mut entity, data, env, fall_distance, multiplier, kind);
+        }
+    }
+}
+
 /// `Player.causeFallDamage` → `LivingEntity.causeFallDamage`.
 fn cause_fall_damage(
     entity: &mut EntityMut<'_>,
@@ -3741,6 +3761,27 @@ fn tick_head_turn(entity: &EntityMut<'_>, s: &mut Survival) {
     let head = vanillite_base::math::wrap_degrees_f(yaw - s.y_body_rot);
     if head.abs() > 50.0 {
         s.y_body_rot += head - head.signum() * 50.0;
+    }
+}
+
+/// `getAttributeValue(KNOCKBACK_RESISTANCE)` of a player: its equipment's modifiers.
+fn knockback_resistance(player: &PlayerData) -> f64 {
+    crate::player::play::equipment_attribute(
+        &player.inventory,
+        "minecraft:knockback_resistance",
+        0.0,
+    )
+}
+
+/// `LivingEntity.decreaseAirSupply`: with `OXYGEN_BONUS` (Respiration) a tick may keep the air,
+/// drawing from the player's random.
+fn decrease_air(player: &mut PlayerData, air: i32) -> i32 {
+    let bonus =
+        crate::player::play::equipment_attribute(&player.inventory, "minecraft:oxygen_bonus", 0.0);
+    if bonus > 0.0 && player.survival.random.next_double() >= 1.0 / (bonus + 1.0) {
+        air
+    } else {
+        air - 1
     }
 }
 
