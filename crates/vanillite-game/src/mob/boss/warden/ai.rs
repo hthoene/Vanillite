@@ -622,6 +622,7 @@ fn sonic_boom_tick(t: &mut Tick<'_, '_>) {
         cause_is_mob: true,
         cause_name: Some(crate::mob::Kind::Warden.translation_key()),
         disable_shield_seconds: 0.0,
+        piercing_arrow: false,
         projectile_motion: None,
     };
     let hurt = combat::hurt(t.level, t.ents, t.env, t.cx, target, damage, 10.0);

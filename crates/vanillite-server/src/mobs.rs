@@ -942,9 +942,6 @@ impl WorldMobs {
                 &teams,
             );
             let mut discarded = Vec::new();
-            vanillite_game::player::using::tick_all(&mut ents, &mut env);
-            vanillite_game::spear::tick_players(level, &mut ents, &mut env, &mut self.cx);
-            vanillite_game::trident::tick_spin_attacks(level, &mut ents, &mut env, &mut self.cx);
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
             for d in discarded {
                 ents.despawn(d);
@@ -1185,6 +1182,55 @@ impl WorldMobs {
     }
 
     /// The magic damage block entities dealt this tick (conduits hunting mobs).
+    /// What the items players use do to other entities, after the players' ticks: the
+    /// kinetic weapons they hold out (`onUseTick` of `updatingUsingItem`) and their spin
+    /// attacks (`checkAutoSpinAttack`).
+    pub(crate) fn tick_player_items(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        let busy = level
+            .entities
+            .players
+            .iter()
+            .any(|(_, p)| p.survival.using_item.is_some() || p.survival.spin_attack.is_some());
+        if !busy {
+            return;
+        }
+        let state = &global.level;
+        let hooks = crate::plugins::Hooks::of(global, dimension);
+        let rules = state.rules().clone();
+        let mut ents = std::mem::take(&mut level.entities);
+        {
+            let blocks = WorldBlocks(&level.chunks);
+            let raining = |_| false;
+            let mut no_gateway = |_| false;
+            let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let mut env = survival.env(
+                state,
+                &rules,
+                &blocks,
+                &raining,
+                dimension,
+                &mut no_gateway,
+                &hooks,
+                &names,
+                &teams,
+            );
+            vanillite_game::spear::tick_players(level, &mut ents, &mut env, &mut self.cx);
+            vanillite_game::trident::tick_spin_attacks(level, &mut ents, &mut env, &mut self.cx);
+        }
+        level.entities = ents;
+        if !self.cx.actions.is_empty() {
+            self.apply_actions(level, survival, global, dimension);
+        }
+        self.finish_removals(level);
+    }
+
     pub(crate) fn apply_magic_hurts(
         &mut self,
         level: &mut Level,

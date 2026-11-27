@@ -419,6 +419,10 @@ impl ServerWorld {
         if let Some(p) = overworld.entities.player_mut(id) {
             p.survival.simulate_movement = true;
             p.survival.y_body_rot = spec.rot[0];
+            // The recorder seeds the player's own random with its `seed` at the end of the
+            // `Entity` constructor; the `LivingEntity` constructor then draws the yaw.
+            p.survival.random = vanillite_base::random::LegacyRandom::new(spec.seed);
+            vanillite_base::random::RandomSource::next_float(&mut p.survival.random);
         }
         Ok(())
     }

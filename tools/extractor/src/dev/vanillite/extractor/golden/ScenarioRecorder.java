@@ -357,6 +357,7 @@ public final class ScenarioRecorder {
               } else if (op.equals("use_item")
                   || op.equals("interact")
                   || op.equals("release_item")
+                  || op.equals("stab")
                   || op.equals("attack_entity")) {
                 entities.useItem(action, op);
               } else if (op.equals("lightning")) {
