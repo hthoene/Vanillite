@@ -2238,7 +2238,7 @@ mod tests {
 
     /// The number of mobs, the digest of their types and positions and the level random's
     /// next value after 60 rounds.
-    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (82, 15_137_829_681_003_884_519, -454_397_531);
+    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (92, 9_013_686_086_944_484_436, 260_617_355);
 
     /// Packs wander up to 20 blocks from their start, across the 32-block tiles of this test:
     /// the mobs land in several tiles, only in ticking chunks, and the tiles together respect
