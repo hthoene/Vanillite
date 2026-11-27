@@ -457,11 +457,11 @@ fn controlling_player(ents: &Entities, id: EntityId) -> Option<EntityId> {
         .filter(|&p| ents.player(p).is_some())
 }
 
-/// The movement of a player since the start of the tick (`lastKnownClientMovement`).
+/// `lastKnownClientMovement`: the player's last movement packet, kept until a client tick ends
+/// without one.
 fn player_movement(ents: &Entities, id: EntityId) -> Vec3 {
-    ents.store
-        .get(id)
-        .map_or(Vec3::ZERO, |e| e.pos() - e.old_pos())
+    ents.player(id)
+        .map_or(Vec3::ZERO, |p| p.connection.movement.known_movement)
 }
 
 /// `getKnownMovement`: a player's own movement, a mob's velocity (or the movement of the
