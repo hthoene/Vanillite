@@ -1099,6 +1099,20 @@ impl WorldMobs {
         survival.deliver(&mut level.entities, global);
     }
 
+    /// The damage of an explosion made outside the entity tick (a plugin's `explode`) and
+    /// what it queued, applied at once as after an exploding entity's tick.
+    pub(crate) fn after_explosion(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        self.apply_explosion_hurts(level, survival, global, dimension);
+        self.apply_actions(level, survival, global, dimension);
+        survival.deliver(&mut level.entities, global);
+    }
+
     /// Applies what the last mob tick queued: explosions and block changes.
     fn apply_actions(
         &mut self,

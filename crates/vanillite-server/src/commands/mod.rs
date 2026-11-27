@@ -53,6 +53,7 @@ use vanillite_world::entity::EntityId;
 
 pub(crate) use advancement_cmd::perform_on as perform_advancement;
 pub(crate) use bans::ban_reason;
+pub(crate) use blocks_cmd::fill_biome_box;
 pub(crate) use data::{apply_entity_nbt, entity_nbt};
 pub(crate) use data_cmd::merge_compound;
 pub(crate) use entities_cmd::kill_any;
