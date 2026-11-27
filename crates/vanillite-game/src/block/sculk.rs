@@ -174,7 +174,7 @@ pub fn deactivate(level: &mut Level, pos: BlockPos, state: BlockState) {
 /// `SculkSensorBlock.activate`.
 fn activate(
     level: &mut Level,
-    source: Option<EntityId>,
+    source: GameEventContext,
     pos: BlockPos,
     state: BlockState,
     power: i32,
@@ -190,7 +190,7 @@ fn activate(
     level.schedule_block_tick(pos, state.block(), ticks);
     update_neighbours(level, pos, state.block());
     try_resonate_vibration(level, source, pos, frequency);
-    level.game_event_at(source, events().sculk_sensor_tendrils_clicking, pos);
+    level.game_event_block(events().sculk_sensor_tendrils_clicking, pos, source);
     if !state.waterlogged() {
         let pitch = level.random().next_float() * 0.2 + 0.8;
         let sound = sound_id("block.sculk_sensor.clicking");
@@ -201,7 +201,7 @@ fn activate(
 /// `SculkSensorBlock.tryResonateVibration`: amethyst next to an active sensor resonates.
 pub fn try_resonate_vibration(
     level: &mut Level,
-    source: Option<EntityId>,
+    source: GameEventContext,
     pos: BlockPos,
     frequency: i32,
 ) {
@@ -214,7 +214,10 @@ pub fn try_resonate_vibration(
             level.game_event(
                 game_event::resonance_event(frequency),
                 center(neighbour),
-                GameEventContext::with_state(source, state),
+                GameEventContext {
+                    affected: Some(state),
+                    ..source
+                },
             );
             let pitch = super::note::pitch_from_note(TONES[frequency.clamp(0, 15) as usize]);
             let sound = sound_id("block.amethyst_block.resonate");
@@ -244,7 +247,7 @@ pub(crate) fn handle_game_event(
     {
         return;
     }
-    schedule_vibration(level, pos, event, context.source, source, destination);
+    schedule_vibration(level, pos, event, context, source, destination);
 }
 
 /// `Listener.scheduleVibration`: a candidate for the selector.
@@ -252,12 +255,13 @@ fn schedule_vibration(
     level: &mut Level,
     pos: BlockPos,
     event: u16,
-    source: Option<EntityId>,
+    context: GameEventContext,
     origin: Vec3,
     destination: Vec3,
 ) {
     let time = level.game_time();
-    let projectile_owner = super::sculk_vibration::projectile_owner(level, source);
+    let source = context.source;
+    let projectile_owner = super::sculk_vibration::event_projectile_owner(level, context);
     if let Some(BlockEntity::SculkSensor(sensor)) = level.block_entity_mut(pos) {
         let distance = origin.distance_to_sqr(destination).sqrt() as f32;
         sensor.vibration.add_candidate(
@@ -317,7 +321,12 @@ pub fn tick_block_entity(level: &mut Level, pos: BlockPos, _: BlockState) {
         return;
     }
     let distance = dist_sqr(origin, pos).sqrt() as f32;
-    on_receive_vibration(level, pos, vibration.event, vibration.source, distance);
+    let source = GameEventContext {
+        source: vibration.source,
+        affected: None,
+        owner: vibration.projectile_owner,
+    };
+    on_receive_vibration(level, pos, vibration.event, source, distance);
     if let Some(BlockEntity::SculkSensor(sensor)) = level.block_entity_mut(pos) {
         sensor.vibration.current = None;
     }
@@ -328,7 +337,7 @@ fn on_receive_vibration(
     level: &mut Level,
     pos: BlockPos,
     event: u16,
-    source: Option<EntityId>,
+    source: GameEventContext,
     distance: f32,
 ) {
     let state = level.block(pos);
@@ -385,7 +394,14 @@ pub fn step_on(level: &mut Level, pos: BlockPos, entity: EntityId) {
         return;
     }
     // `forceScheduleVibration`.
-    schedule_vibration(level, pos, step, Some(entity), position, center(pos));
+    schedule_vibration(
+        level,
+        pos,
+        step,
+        GameEventContext::of(Some(entity)),
+        position,
+        center(pos),
+    );
 }
 
 #[cfg(test)]

@@ -358,6 +358,7 @@ pub fn lower_fill_level(level: &mut Level, state: BlockState, pos: BlockPos) {
         GameEventContext {
             source: None,
             affected: Some(new_state),
+            owner: None,
         },
     );
 }

@@ -199,7 +199,15 @@ fn load_info(c: &Compound, entity: &impl Fn(u128) -> Option<EntityId>) -> Option
 
 /// The owner of a projectile entity (`VibrationInfo.getProjectileOwner`).
 pub fn projectile_owner(level: &Level, entity: Option<EntityId>) -> Option<EntityId> {
-    level.entities.arrow(entity?).and_then(|a| a.owner)
+    super::projectile_hit::owner(level, entity?)
+}
+
+/// `getProjectileOwner(context.sourceEntity())` of an event: the owner known when it was
+/// posted, else the source's owner now.
+pub fn event_projectile_owner(level: &Level, context: GameEventContext) -> Option<EntityId> {
+    context
+        .owner
+        .or_else(|| projectile_owner(level, context.source))
 }
 
 /// `VibrationSystem.User.isValidVibration` for a listener hearing `listenable`.
@@ -249,12 +257,18 @@ pub fn is_valid_vibration(
             }
             return false;
         }
-        // `dampensVibrations`: wardens.
+        // `dampensVibrations`: wardens, and items in `#dampens_vibrations` (wool, carpets).
         if level
             .entities
             .store
             .get(entity)
             .is_some_and(|e| e.kind() == vanillite_data::entity::ids::WARDEN)
+            || level.entities.item(entity).is_some_and(|i| {
+                !i.stack.is_empty()
+                    && crate::player::play::game_data().is_some_and(|d| {
+                        d.item_in_tag(i.stack.item, "minecraft:dampens_vibrations")
+                    })
+            })
         {
             return false;
         }

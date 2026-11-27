@@ -449,7 +449,11 @@ impl PlayLevel for WorldLevel<'_> {
         source: Option<vanillite_world::entity::EntityId>,
         affected: Option<BlockState>,
     ) {
-        let context = vanillite_game::level::game_event::GameEventContext { source, affected };
+        let context = vanillite_game::level::game_event::GameEventContext {
+            source,
+            affected,
+            owner: None,
+        };
         self.level.game_event_block(event, pos, context);
     }
 

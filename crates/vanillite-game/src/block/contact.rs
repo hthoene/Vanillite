@@ -94,6 +94,7 @@ pub fn trample_farmland(level: &mut Level, pos: BlockPos, source: Option<EntityI
         GameEventContext {
             source,
             affected: Some(dirt),
+            owner: None,
         },
     );
 }

@@ -356,7 +356,7 @@ fn on_hit(
         crate::mob::missile::hit_block(t.level, t.cx, id, pos, at);
     }
     // `super.onHit`: the land game event comes first.
-    crate::mob::missile::land_event(t.env.out, t.level, id, block.map(|(b, _)| b), at);
+    crate::mob::missile::land_event(t.env.out, t.level, id, owner, block.map(|(b, _)| b), at);
     if let Some((pos, face)) = block
         && PotionContents::of_stack(&stack).is_water()
     {

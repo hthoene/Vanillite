@@ -167,6 +167,26 @@ pub fn catalyst_near(level: &Level, position: Vec3) -> bool {
     !found.is_empty()
 }
 
+/// [`catalyst_near`] from the blocks alone, for a player's death in the player tick: a
+/// catalyst block within the listener radius (every catalyst block has its listener).
+pub fn catalyst_block_near(
+    blocks: &dyn crate::survival::blocks::BlockAccess,
+    position: Vec3,
+) -> bool {
+    let c = containing(position);
+    let r = LISTENER_RADIUS;
+    (-r..=r).any(|dx| {
+        (-r..=r).any(|dy| {
+            (-r..=r).any(|dz| {
+                dx * dx + dy * dy + dz * dz <= r * r
+                    && blocks
+                        .block_state(BlockPos::new(c.x + dx, c.y + dy, c.z + dz))
+                        .is_some_and(|s| s.is(ids::SCULK_CATALYST))
+            })
+        })
+    })
+}
+
 fn nearest_catalysts(level: &Level, position: Vec3, out: &mut Vec<(BlockPos, f64)>) {
     let radius = crate::level::game_event::notification_radius(events().entity_die);
     level.block_listeners_near(
@@ -394,8 +414,9 @@ fn attempt_spread_vein(
     spread_all(level, false, state, pos) > 0
 }
 
+/// `getFluidState().is(Fluids.WATER)`: still (source) water only, not flowing water.
 pub(super) fn is_water(state: BlockState) -> bool {
-    crate::mob::is_water(state)
+    crate::mob::is_water(state) && state.fluid_state().info().source
 }
 
 /// `SculkBehaviour.attemptUseCharge`.

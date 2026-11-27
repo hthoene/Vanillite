@@ -634,6 +634,7 @@ pub fn fence_gate_explosion_hit(level: &mut Level, state: BlockState, pos: Block
         crate::level::game_event::GameEventContext {
             source: None,
             affected: Some(state),
+            owner: None,
         },
     );
 }

@@ -280,6 +280,7 @@ pub fn cave_vines_use(
         GameEventContext {
             source,
             affected: Some(new_state),
+            owner: None,
         },
     );
     Interaction::Success
@@ -330,6 +331,7 @@ fn sweet_berry_use_without_item(
         GameEventContext {
             source: Some(ctx.player),
             affected: Some(new_state),
+            owner: None,
         },
     );
     Interaction::Success

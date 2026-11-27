@@ -259,7 +259,7 @@ pub(crate) fn handle_game_event(
         return;
     }
     let time = level.game_time();
-    let projectile_owner = sculk_vibration::projectile_owner(level, context.source);
+    let projectile_owner = sculk_vibration::event_projectile_owner(level, context);
     let distance = source.distance_to_sqr(destination).sqrt() as f32;
     if let Some(m) = level.entities.mob_mut(id) {
         allay_mut(m).vibration.add_candidate(

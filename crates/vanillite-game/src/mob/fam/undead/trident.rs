@@ -210,7 +210,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
             if let Some((target, hit)) = entity_hit {
                 pos = hit;
                 hit_entity(t, &mut d, target, pos);
-                crate::mob::missile::land_event(t.env.out, t.level, id, None, hit);
+                crate::mob::missile::land_event(t.env.out, t.level, id, d.owner, None, hit);
                 velocity = velocity.multiply(-0.01, -0.1, -0.01);
                 let turn = 170.0 + own.next_float() * 20.0;
                 rot.y_rot += turn;
@@ -235,7 +235,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
                 let pitch = 1.2 / (own.next_float() * 0.2 + 0.9);
                 sound(t, pos, "minecraft:item.trident.hit_ground", 1.0, pitch);
                 hit_block_effects(t, &d, hit_pos, at);
-                crate::mob::missile::land_event(t.env.out, t.level, id, Some(hit_pos), at);
+                crate::mob::missile::land_event(t.env.out, t.level, id, d.owner, Some(hit_pos), at);
             } else {
                 pos = to;
             }

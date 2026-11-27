@@ -259,6 +259,7 @@ pub fn set_the_item(level: &mut Level, pos: BlockPos, item: ItemStack) {
             GameEventContext {
                 source: None,
                 affected: Some(new),
+                owner: None,
             },
         );
     }
@@ -294,6 +295,7 @@ fn stop(level: &mut Level, pos: BlockPos) {
         GameEventContext {
             source: None,
             affected: Some(state),
+            owner: None,
         },
     );
     level.level_event(None, 1011, pos, 0);
@@ -346,6 +348,7 @@ pub fn tick(level: &mut Level, pos: BlockPos, state: BlockState) {
             GameEventContext {
                 source: None,
                 affected: Some(state),
+                owner: None,
             },
         );
         // `spawnMusicParticles`: a note above the jukebox in one of four colours.
@@ -377,6 +380,7 @@ pub fn removed(level: &mut Level, pos: BlockPos, state: BlockState) {
         GameEventContext {
             source: None,
             affected: Some(state),
+            owner: None,
         },
     );
     level.level_event(None, 1011, pos, 0);

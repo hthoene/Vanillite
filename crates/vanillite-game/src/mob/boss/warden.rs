@@ -523,7 +523,7 @@ pub(crate) fn handle_game_event(
         return;
     }
     let time = level.game_time();
-    let projectile_owner = sculk_vibration::projectile_owner(level, context.source);
+    let projectile_owner = sculk_vibration::event_projectile_owner(level, context);
     let distance = source.distance_to_sqr(destination).sqrt() as f32;
     if let Some(s) = state_mut(&mut level.entities, id) {
         s.vibration.add_candidate(
