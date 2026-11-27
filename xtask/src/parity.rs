@@ -84,7 +84,7 @@ fn fetch_recording(root: &Path, port: &str, name: &str) -> Result<std::path::Pat
 }
 
 /// The compiled recorder: its classes with the class path, the agent jar and the work dir.
-fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
+pub(crate) fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
     let key = golden::Key::current(root)?;
     let (classes, cp, broken) = golden::harness(root, &key)?;
     let recorder_broken = broken.files.iter().any(|f| {

@@ -13,6 +13,7 @@
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+//! cargo xtask parity worlds [--ticks N] [--jobs N] [--minutes N] [--prepare-only] [<world>...]
 //! cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask light sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask dev [--release] [-- <server args>]
@@ -41,6 +42,7 @@ mod golden;
 mod loadtest;
 mod merge;
 mod parity;
+mod parity_worlds;
 mod version;
 mod worldgen;
 
@@ -115,6 +117,12 @@ pub const USAGE: &str = "usage:
       <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
       tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
       Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
+  cargo xtask parity worlds [--ticks N] [--jobs N] [--minutes N] [--prepare-only] [<world>...]
+      Complex real-world worlds and schematics (redstone, farms, machines; #244) against
+      Vanilla: the corpus crates/vanillite-test/parity-worlds.toml is downloaded into
+      ~/.cache/vanillite/parity-worlds/ (SHA-256 checked), upgraded or pasted by the pinned
+      Vanilla server, then run like soak scenarios (blocks, ticks, entities and block entities
+      per tick). Writes target/parity-worlds/summary.md and <world>.md. Runs nightly.
   cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
       World generation against Vanilla (#223): for --seeds world seeds (default 3, derived from
       --seed, default the day number; or the given --world-seed values) and every kind
@@ -283,6 +291,7 @@ fn main() -> ExitCode {
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
+        ["parity", "worlds", rest @ ..] => parity_worlds::worlds(&repo_root(), rest),
         ["worldgen", "sweep", rest @ ..] => worldgen::sweep(&repo_root(), rest),
         ["light", "sweep", rest @ ..] => worldgen::light_sweep(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
