@@ -179,6 +179,10 @@ pub fn start_riding(
     }
     position_riders_of(ents, vehicle);
     send_passengers(ents, env, vehicle);
+    // `Mob.startRiding`: a leashed mob drops its lead.
+    if ents.mob(passenger).is_some() && ents.leashes.contains_key(&passenger) {
+        crate::mob::tame::drop_leash(ents, env, passenger, true);
+    }
     true
 }
 

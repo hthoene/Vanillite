@@ -370,6 +370,7 @@ impl Level {
             data.health = short("Health", 5);
             data.fire_ticks = i32::from(short("Fire", 0)).max(0);
             data.target = uuid_of(&nbt, "Owner");
+            data.invulnerable = matches!(nbt.get("Invulnerable"), Some(Tag::Byte(b)) if *b != 0);
             data.fall_distance = match nbt.get("fall_distance") {
                 Some(Tag::Double(v)) => *v,
                 _ => 0.0,

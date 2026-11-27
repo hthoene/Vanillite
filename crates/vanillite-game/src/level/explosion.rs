@@ -563,10 +563,23 @@ impl Level {
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
             let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
                 || crate::minecart::MinecartKind::of(kind).is_some();
-            // `ItemEntity.hurtServer`: a mob's explosion spares items without `mob_griefing`.
+            // `ItemEntity.ignoreExplosion`: an explosion that does not affect block-like
+            // entities (wind charges; with `mob_griefing` off every explosion that keeps the
+            // blocks) neither hurts nor pushes items.
+            let affects_blocklike = if self.settings.mob_griefing {
+                !wind
+            } else {
+                destroys && !wind
+            };
+            if kind == entity_ids::ITEM && !affects_blocklike {
+                continue;
+            }
+            // `ItemEntity.hurtServer`: a mob's explosion spares items without `mob_griefing`,
+            // and `Invulnerable` items take none.
             let mob_spared = !self.settings.mob_griefing
                 && indirect.is_some_and(|i| self.entities.mob(i).is_some());
-            if kind == entity_ids::ITEM && style.damages_entities && !mob_spared {
+            let invulnerable = self.entities.item(id).is_some_and(|d| d.invulnerable);
+            if kind == entity_ids::ITEM && style.damages_entities && !mob_spared && !invulnerable {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
                 #[allow(clippy::cast_possible_truncation)]
@@ -582,6 +595,16 @@ impl Level {
                     d.health = health;
                     health <= 0
                 });
+                if self.entities.item(id).is_some_and(|d| {
+                    crate::item::damage_resistant(&d.stack) != Some("minecraft:is_explosion")
+                }) {
+                    // `gameEvent(ENTITY_DAMAGE, source.getEntity())`.
+                    self.game_event(
+                        crate::level::game_event::events().entity_damage,
+                        pos,
+                        crate::level::game_event::GameEventContext::of(indirect),
+                    );
+                }
                 if destroyed {
                     // `Item.onDestroyed`: a bundle's or a container item's contents drop.
                     let contents = self
