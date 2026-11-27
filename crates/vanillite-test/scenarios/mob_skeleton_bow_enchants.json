@@ -1,0 +1,102 @@
+{
+  "description": "Skeletons loaded from NBT reassess their weapon goal: one with a Power/Punch/Flame bow and a tipped arrow in the off hand shoots it with the bow's enchantments (ProjectileUtil.getMobArrow with the weapon); one with a sword uses the melee goal.",
+  "tier": "fast",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -55,
+      23
+    ]
+  ],
+  "ticks": 90,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        23
+      ],
+      "to": [
+        23,
+        -56,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        23
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        23,
+        -60,
+        0
+      ],
+      "to": [
+        23,
+        -56,
+        23
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        12.5,
+        -60.0,
+        18.5
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:skeleton 12.5 -60 4.5 {UUID:[I;1,2,3,4],equipment:{mainhand:{id:\"minecraft:bow\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:power\":1,\"minecraft:punch\":2,\"minecraft:flame\":1}}},offhand:{id:\"minecraft:tipped_arrow\",count:1,components:{\"minecraft:potion_contents\":{potion:\"minecraft:poison\"}}}}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:skeleton 4.5 -60 12.5 {UUID:[I;1,2,3,5],equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1}}}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

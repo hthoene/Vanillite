@@ -2471,7 +2471,7 @@ mod tests {
     /// next value after 60 rounds.
     /// (#217: `checkSpawnObstruction` tests entities that block building, pack members no
     /// longer spawn inside each other.)
-    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (82, 4_572_461_501_885_315_024, 619_422_097);
+    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (85, 13_380_462_405_938_920_257, 1_076_452_858);
 
     /// Packs wander up to 20 blocks from their start, across the 32-block tiles of this test:
     /// the mobs land in several tiles, only in ticking chunks, and the tiles together respect

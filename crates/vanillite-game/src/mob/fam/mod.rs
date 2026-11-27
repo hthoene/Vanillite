@@ -167,6 +167,8 @@ pub enum GroupData {
     TropicalFish(i32),
     /// `Spider.SpiderEffectsGroupData`: the effect of the group, if any.
     Spider(Option<crate::effect::MobEffect>),
+    /// `Zombie.ZombieGroupData`: the whole group spawns as babies or as adults.
+    Zombie(bool),
 }
 
 /// What `finalizeSpawn` gets (`DifficultyInstance`, the spawn reason, the biome) and the mobs
@@ -721,6 +723,10 @@ pub fn remove_when_far_away_mob(m: &MobData, dist_sqr: f64) -> bool {
     )
 }
 pub fn requires_custom_persistence(m: &MobData) -> bool {
+    // `EnderMan.requiresCustomPersistence`: while it carries a block.
+    if m.kind == Kind::Enderman {
+        return classic::enderman(m).carried.is_some();
+    }
     by_family!(m.kind, false, requires_custom_persistence(m))
 }
 pub fn malus(kind: Kind) -> &'static MalusTable {

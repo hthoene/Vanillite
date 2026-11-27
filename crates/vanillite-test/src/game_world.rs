@@ -1378,6 +1378,8 @@ pub(crate) fn spawn_mob(
         *level.random() = random;
     }
     if let Some(baby) = spec.baby {
+        // `setBaby`: zombies also change their speed modifier.
+        vanillite_game::mob::fam::undead::set_baby(&mut m, baby);
         m.baby = baby;
         m.age = if baby { -24000 } else { 0 };
     }

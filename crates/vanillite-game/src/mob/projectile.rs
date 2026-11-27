@@ -15,7 +15,6 @@ use crate::entities::Entities;
 use crate::level::Level;
 use crate::survival::play_sound;
 use crate::survival::player::Env;
-use crate::survival::rules::Difficulty;
 
 /// Whether `kind` is an arrow (`Arrow` or `SpectralArrow`).
 pub fn is_arrow_kind(kind: vanillite_data::entity::EntityTypeId) -> bool {
@@ -258,10 +257,63 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let difficulty = t.env.difficulty;
     let id = t.id;
+    // `getItemInHand(getWeaponHoldingHand(BOW))` and `getProjectile(bow)`: an arrow held in
+    // a hand (off hand first), else a plain arrow.
+    let (weapon, ammo) = {
+        use crate::item::EquipmentSlot;
+        let m = t.mob_ref();
+        let bow = vanillite_data::item::ids::BOW.0;
+        let main = m.equipment.get(EquipmentSlot::MainHand);
+        let off = m.equipment.get(EquipmentSlot::OffHand);
+        let weapon = if !main.is_empty() && main.item == bow {
+            main.clone()
+        } else {
+            off.clone()
+        };
+        let is_arrow = |s: &crate::item::ItemStack| {
+            !s.is_empty()
+                && crate::player::play::game_data()
+                    .is_some_and(|d| d.item_in_tag(s.item, "minecraft:arrows"))
+        };
+        let ammo = if is_arrow(off) {
+            Some(off.clone())
+        } else if is_arrow(main) {
+            Some(main.clone())
+        } else {
+            None
+        };
+        (weapon, ammo)
+    };
     let m = t.mob();
     // The arrow's own random (its constructor); `setBaseDamageFromMob` and `shoot` draw from
     // it, not from the skeleton's.
     let mut own = LegacyRandom::new(super::new_entity_seed());
+    // `getArrow` of the skeleton kinds: tipped arrows and the wither skeleton's fire.
+    let (effect, fire) = super::fam::undead::skeleton_arrow(m.kind);
+    let (kind, item) = match &ammo {
+        None => (entity_ids::ARROW, mob_arrow(effect)),
+        Some(a) => {
+            let (kind, mut item) = arrow_of(a);
+            // `Arrow.addEffect` onto the held arrow's potion.
+            if kind == entity_ids::ARROW
+                && let Some(e) = effect
+            {
+                let mut contents = crate::effect::potion::PotionContents::of_stack(&item);
+                contents.custom_effects.push(e);
+                item.patch_mut().set(
+                    vanillite_protocol::components::ids::POTION_CONTENTS,
+                    contents.encode(),
+                );
+            }
+            (kind, item)
+        }
+    };
+    // The `AbstractArrow` constructor with the weapon: its Piercing level.
+    let weapon = (!weapon.is_empty()).then_some(weapon);
+    let pierce = match (&weapon, crate::player::play::game_data()) {
+        (Some(w), Some(d)) => d.enchants.piercing_count(w, &item, t.env.random),
+        _ => 0,
+    };
     #[allow(clippy::cast_precision_loss)]
     let base_damage =
         f64::from(power) * 2.0 + own.triangle(f64::from(difficulty as i32) * 0.11, 0.574_25);
@@ -280,25 +332,58 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
         uncertainty,
     );
     let uuid = crate::mob::new_uuid();
-    let crit = false;
-    // `getArrow` of the skeleton kinds: tipped arrows and the wither skeleton's fire.
-    let (effect, fire) = super::fam::undead::skeleton_arrow(m.kind);
-    let mut new = NewEntity::new(entity_ids::ARROW, t.level.network_ids().next(), uuid, start);
+    let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), item);
+    data.crit = false;
+    // `igniteForSeconds(100)` of the wither skeleton's arrow.
+    data.fire = if fire { 2000 } else { 0 };
+    data.pierce_level = u8::try_from(pierce.clamp(0, 127)).unwrap_or(0);
+    // The weapon's Power (`modifyDamage`), Punch (`modifyKnockback`) and Flame
+    // (`onProjectileSpawned`).
+    if let Some(w) = &weapon {
+        let combat = super::attack::combat_data();
+        let (enchants, tags): (
+            &crate::enchant::Enchantments,
+            &dyn crate::predicate::EntityTags,
+        ) = (&combat.enchants, &*combat);
+        let arrow = crate::predicate::EntityFacts {
+            kind: Some(kind),
+            ..crate::predicate::EntityFacts::default()
+        };
+        let types = crate::survival::damage::DamageTypes::built_in();
+        let cx = crate::enchant::EnchantContext {
+            types: &types,
+            tags,
+            this: None,
+            attacker: super::attack::facts(t.ents, id),
+            direct_attacker: Some(arrow),
+            attacking_player: None,
+            source: None,
+            raining: false,
+            thundering: false,
+            location: None,
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let dmg = enchants.modify_damage(w, &cx, t.env.random, data.base_damage as f32);
+        data.base_damage = f64::from(dmg);
+        data.knockback = enchants.modify_knockback(w, &cx, t.env.random, 0.0);
+        if enchants.projectile_ignite(w).is_some() {
+            // `igniteForSeconds(100)`.
+            data.fire = 2000;
+        }
+    }
+    data.weapon = weapon;
+    let mut new = NewEntity::new(kind, t.level.network_ids().next(), uuid, start);
     new.velocity = velocity;
     new.rot = rot;
     new.flags = EntityFlags::HAS_IMPULSE;
-    if fire {
+    if data.fire > 0 {
         new.flags.set(EntityFlags::ON_FIRE, true);
     }
-    let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), mob_arrow(effect));
-    data.crit = crit;
-    data.fire = if fire { 2000 } else { 0 };
     let arrow = t.ents.spawn_arrow(new, data);
     t.ents.launched(arrow, Some(id));
     let m = t.mob();
     let pitch = 1.0 / (m.random.next_float() * 0.4 + 0.8);
     super::kinds::play_sound(t, "minecraft:entity.skeleton.shoot", 1.0, pitch);
-    let _ = Difficulty::Peaceful;
 }
 
 /// The arrow a skeleton type shoots (`AbstractSkeleton.getArrow`): `Arrow.addEffect` puts the

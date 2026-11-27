@@ -304,6 +304,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             out.insert("IsBaby", m.baby);
             out.insert("CanBreakDoors", m.can_break_doors);
             super::fam::undead::zombies::save_conversion(m, &mut out);
+            super::fam::undead::zombies::save_attributes(m, &mut out);
         }
         Kind::Creeper => {
             let c = super::fam::classic::creeper(m);
@@ -347,7 +348,15 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             }
         }
         Kind::Skeleton => super::fam::undead::skeletons::save_conversion(m, &mut out),
-        Kind::Spider | Kind::Enderman => {}
+        Kind::Enderman => {
+            if let Some(state) = super::fam::classic::enderman(m).carried {
+                out.insert(
+                    "carriedBlockState",
+                    crate::level::block_entity::write_state_codec(state),
+                );
+            }
+        }
+        Kind::Spider => {}
         _ => super::fam::save(m, &mut out),
     }
     out
@@ -423,6 +432,10 @@ pub fn apply_mob(m: &mut MobData, tag: &Compound, game_time: i64, day_time: i64)
 /// The saved state of a mob (`readAdditionalSaveData` of the entity classes) from `tag`.
 fn read_mob(m: &mut MobData, tag: &Compound) {
     let kind = m.kind;
+    // The saved attributes of the zombies before the health (`attributes` comes first).
+    if super::fam::undead::zombies::is_zombie(kind) {
+        super::fam::undead::zombies::load_attributes(m, tag);
+    }
     // Effects first: their modifiers (Health Boost) raise the maximum health.
     m.effects.load(tag.get("active_effects"));
     if !m.effects.is_empty() {
@@ -531,7 +544,14 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
             }
         }
         Kind::Skeleton => super::fam::undead::skeletons::load_conversion(m, tag),
-        Kind::Spider | Kind::Enderman => {}
+        Kind::Enderman => {
+            let carried = tag
+                .get("carriedBlockState")
+                .and_then(crate::level::block_entity::read_state_codec)
+                .filter(|s| !s.is_air());
+            super::fam::classic::enderman_mut(m).carried = carried;
+        }
+        Kind::Spider => {}
         _ => super::fam::load(m, tag),
     }
 }

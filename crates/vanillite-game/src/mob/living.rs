@@ -840,7 +840,10 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         }
     }
     // `Mob.aiStep`'s looting.
-    if t.mob_ref().kind.family() == super::Family::Classic {
+    if t.mob_ref().kind == super::Kind::Skeleton {
+        // `AbstractSkeleton`'s pickup rules and `onEquipItem` reassessment.
+        super::fam::undead::skeletons::pick_up_items(t);
+    } else if t.mob_ref().kind.family() == super::Family::Classic {
         let rules = super::equipment::PickupRules::default();
         super::equipment::pick_up_items(t, &rules, None, (1.0, 0.0, 1.0));
     } else {
