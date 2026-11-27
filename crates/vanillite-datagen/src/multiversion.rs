@@ -48,12 +48,48 @@ const NETWORK_REGISTRIES: &[&str] = &[
 /// Registries whose entries an older version lacks are mapped to the most similar older entry
 /// by name (see [`similar`]); in all others they have no counterpart, because the entry's
 /// network codec may differ (data components, particles, argument types). Entity types are
-/// mapped only to an older type with the same category and size (the same entity class).
+/// mapped only to an older type with the same category and size (the same entity class), or
+/// to a hand-picked stand-in ([`ENTITY_STAND_INS`]).
 const SIMILAR: &[&str] = &[
     "minecraft:block",
     "minecraft:item",
     "minecraft:map_decoration_type",
 ];
+
+/// Stand-ins for entity types an older version lacks and that match none of its types by class
+/// and name: the first one the older version has is shown instead, else the entity would stay
+/// invisible to the client (its entity data is mapped by field name, unknown fields dropped).
+const ENTITY_STAND_INS: &[(&str, &[&str])] = &[
+    ("minecraft:bamboo_raft", &["minecraft:boat"]),
+    ("minecraft:bamboo_chest_raft", &["minecraft:chest_boat"]),
+    ("minecraft:creaking", &["minecraft:enderman"]),
+    ("minecraft:creaking_transient", &["minecraft:enderman"]),
+    ("minecraft:camel_husk", &["minecraft:camel"]),
+    ("minecraft:parched", &["minecraft:skeleton"]),
+    ("minecraft:nautilus", &["minecraft:turtle"]),
+    (
+        "minecraft:zombie_nautilus",
+        &["minecraft:nautilus", "minecraft:turtle"],
+    ),
+    ("minecraft:happy_ghast", &["minecraft:ghast"]),
+    ("minecraft:copper_golem", &["minecraft:iron_golem"]),
+    ("minecraft:mannequin", &["minecraft:armor_stand"]),
+    ("minecraft:sulfur_cube", &["minecraft:slime"]),
+    ("minecraft:cushion", &["minecraft:interaction"]),
+];
+
+/// The stand-in of an item that name similarity would map to an unrelated item or stone: spears
+/// show as the sword of their material, music discs as a music disc, harnesses as a saddle.
+fn item_stand_in(name: &str) -> Option<String> {
+    if let Some(material) = name.strip_suffix("_spear") {
+        return Some(format!("{material}_sword"));
+    }
+    if name.starts_with("minecraft:music_disc_") {
+        return Some("minecraft:music_disc_13".to_owned());
+    }
+    name.ends_with("_harness")
+        .then(|| "minecraft:saddle".to_owned())
+}
 
 /// Entries whose ids the hand-written step code needs (renamed components, placeholders).
 const NAMED: &[(&str, &str)] = &[
@@ -420,7 +456,13 @@ fn step(old: &Facts, new: &Facts, cb: &[String], sb: &[String]) -> Result<String
         let remap = remap_by_name(&oe, &ne, |name| {
             if SIMILAR.contains(registry) {
                 // Blocks and items without a similar older one show as stone.
-                similar(name, &oe).or_else(|| oe.iter().position(|e| e == "minecraft:stone"))
+                let stand_in = (*registry == "minecraft:item")
+                    .then(|| item_stand_in(name))
+                    .flatten()
+                    .and_then(|s| oe.iter().position(|o| *o == s));
+                stand_in
+                    .or_else(|| similar(name, &oe))
+                    .or_else(|| oe.iter().position(|e| e == "minecraft:stone"))
             } else if *registry == "minecraft:entity_type" {
                 let facts = new.entities.get(name)?;
                 let same: Vec<String> = oe
@@ -428,8 +470,14 @@ fn step(old: &Facts, new: &Facts, cb: &[String], sb: &[String]) -> Result<String
                     .filter(|o| old.entities.get(*o) == Some(facts))
                     .cloned()
                     .collect();
-                let i = similar(name, &same)?;
-                oe.iter().position(|o| Some(o) == same.get(i))
+                similar(name, &same)
+                    .and_then(|i| oe.iter().position(|o| Some(o) == same.get(i)))
+                    .or_else(|| {
+                        let (_, stand_ins) = ENTITY_STAND_INS.iter().find(|(n, _)| *n == name)?;
+                        stand_ins
+                            .iter()
+                            .find_map(|s| oe.iter().position(|o| o == s))
+                    })
             } else {
                 None
             }
