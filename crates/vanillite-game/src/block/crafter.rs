@@ -337,7 +337,17 @@ fn dispense_item(
 ) {
     use super::container::ContainerRef;
     let direction = front(state);
-    let into = ContainerRef::at(level, pos.relative(direction));
+    // `HopperBlockEntity.getContainerAt`: the block container (a composter too), else a
+    // random container entity at the block's centre.
+    let front = pos.relative(direction);
+    let into = ContainerRef::at_point(
+        level,
+        vanillite_base::Vec3::new(
+            f64::from(front.x) + 0.5,
+            f64::from(front.y) + 0.5,
+            f64::from(front.z) + 0.5,
+        ),
+    );
     let from = Some(ContainerRef::Block(pos));
     let face = Some(direction.opposite());
     let mut remaining = result;

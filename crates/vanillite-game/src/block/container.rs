@@ -541,6 +541,8 @@ pub fn items(level: &Level, pos: BlockPos) -> Option<&[ItemStack]> {
         BlockEntity::DecoratedPot(p) => Some(std::slice::from_ref(&p.item)),
         BlockEntity::ChiseledBookshelf(b) => Some(&b.items),
         BlockEntity::Crafter(c) => Some(&c.items),
+        BlockEntity::Jukebox(j) => Some(std::slice::from_ref(&j.item)),
+        BlockEntity::Shelf(s) => Some(&s.items),
         _ => None,
     }
 }
@@ -555,6 +557,8 @@ pub fn items_mut(level: &mut Level, pos: BlockPos) -> Option<&mut [ItemStack]> {
         BlockEntity::DecoratedPot(p) => Some(std::slice::from_mut(&mut p.item)),
         BlockEntity::ChiseledBookshelf(b) => Some(&mut b.items),
         BlockEntity::Crafter(c) => Some(&mut c.items),
+        BlockEntity::Jukebox(j) => Some(std::slice::from_mut(&mut j.item)),
+        BlockEntity::Shelf(s) => Some(&mut s.items),
         _ => None,
     }
 }
@@ -802,6 +806,9 @@ impl ContainerRef {
             super::bookshelf::set_item(level, p, i, stack);
         } else if let Some(BlockEntity::Crafter(c)) = level.block_entity_mut(p) {
             c.set_item(i, stack);
+        } else if let Some(BlockEntity::Jukebox(_)) = level.block_entity(p) {
+            // `JukeboxBlockEntity.setTheItem`: the disc plays.
+            super::jukebox::set_the_item(level, p, stack);
         } else if let Some(target) = items_mut(level, p).and_then(|items| items.get_mut(i)) {
             *target = stack;
         }
@@ -819,14 +826,33 @@ impl ContainerRef {
         };
         if let Some(BlockEntity::ChiseledBookshelf(_)) = level.block_entity(p) {
             super::bookshelf::remove_item(level, p, i);
+        } else if let Some(BlockEntity::Jukebox(_)) = level.block_entity(p) {
+            // `JukeboxBlockEntity.splitTheItem`: the whole disc leaves, the song stops.
+            super::jukebox::set_the_item(level, p, ItemStack::EMPTY);
         } else if let Some(s) = items_mut(level, p).and_then(|items| items.get_mut(i)) {
             s.shrink(1);
         }
     }
 
+    /// `JukeboxBlockEntity.canTakeItem(into, …)`: a jukebox only gives its disc to a
+    /// container with an empty slot.
+    pub fn takes_only_into_empty(self, level: &Level) -> bool {
+        matches!(self, ContainerRef::Block(p) if matches!(level.block_entity(p), Some(BlockEntity::Jukebox(_))))
+    }
+
     /// `setChanged`.
     pub fn set_changed(self, level: &mut Level) {
         match self {
+            // `ShelfBlockEntity.setChanged`: a block update and `block_activate`.
+            ContainerRef::Block(p)
+                if matches!(level.block_entity(p), Some(BlockEntity::Shelf(_))) =>
+            {
+                super::shelf::set_changed(
+                    level,
+                    p,
+                    Some(crate::level::game_event::events().block_activate),
+                );
+            }
             ContainerRef::Block(p) => set_changed(level, p),
             ContainerRef::Double(a, b) => {
                 set_changed(level, a);
@@ -940,6 +966,10 @@ impl ContainerRef {
                 super::bookshelf::accepts(stack) && b.items.get(i).is_some_and(ItemStack::is_empty)
             }
             Some(BlockEntity::Crafter(c)) => c.can_place_item(i, stack),
+            // `JukeboxBlockEntity.canPlaceItem`: a playable disc into the empty slot.
+            Some(BlockEntity::Jukebox(j)) => {
+                super::jukebox::is_playable(stack) && j.item.is_empty()
+            }
             Some(BlockEntity::Container(_))
                 if kind_of(level.block(p).block()) == Some(Kind::ShulkerBox) =>
             {

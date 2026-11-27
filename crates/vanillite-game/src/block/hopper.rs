@@ -256,6 +256,11 @@ fn suck(level: &mut Level, me: ContainerRef, point: Vec3, grid_aligned: bool) ->
             if stack.is_empty() || !source.can_take(level, slot, &stack, Direction::Down) {
                 continue;
             }
+            if source.takes_only_into_empty(level)
+                && !(0..me.size(level)).any(|i| me.get(level, i).is_empty())
+            {
+                continue;
+            }
             let minecart = match me {
                 ContainerRef::Entity(id) => Some(id),
                 _ => None,

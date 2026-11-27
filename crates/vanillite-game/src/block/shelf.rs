@@ -283,7 +283,7 @@ fn swap(level: &mut Level, pos: BlockPos, slot: usize, stack: ItemStack) -> Item
 }
 
 /// `ShelfBlockEntity.setChanged(event)`.
-fn set_changed(level: &mut Level, pos: BlockPos, event: Option<u16>) {
+pub(crate) fn set_changed(level: &mut Level, pos: BlockPos, event: Option<u16>) {
     level.block_entity_changed(pos);
     super::container::set_changed(level, pos);
     if let Some(event) = event {
