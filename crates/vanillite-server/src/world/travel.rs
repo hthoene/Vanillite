@@ -489,7 +489,9 @@ impl ServerWorld {
     /// `Entity.teleportTo(level, ...)` of `/tp` and `/teleport` into another world: a player
     /// travels like through a portal, another entity moves as its saved data (without its
     /// passengers) and is added there. `rotation` `None` keeps the entity's own. The motion is
-    /// dropped, like `TeleportCommand.performTeleport` does.
+    /// dropped, like `TeleportCommand.performTeleport` does. A player fires the plugins'
+    /// teleport event with `cause` first (`None`: it already did); a handler may send it
+    /// elsewhere, another world too.
     pub(crate) fn teleport_to_world(
         &mut self,
         global: &Global,
@@ -497,6 +499,7 @@ impl ServerWorld {
         target: WorldId,
         pos: Vec3,
         rotation: Option<(f32, f32)>,
+        cause: Option<u32>,
     ) {
         let entities = &mut self.level.entities;
         let Some(id) = crate::commands::find_uuid(entities, uuid) else {
@@ -512,6 +515,30 @@ impl ServerWorld {
             vanillite_base::math::wrap_degrees_f(x_rot),
         );
         if entity.kind() == vanillite_data::entity::ids::PLAYER {
+            let (mut target, mut pos, mut y_rot, mut x_rot) = (target, pos, y_rot, x_rot);
+            if let Some(cause) = cause
+                && let Some(hooks) = self.level.hooks_for(vanillite_abi::event::PLAYER_TELEPORT)
+            {
+                let to = vanillite_game::hooks::Place {
+                    world: (target != self.id).then_some(u32::from(target.0)),
+                    ..vanillite_game::hooks::Place::looking(pos, y_rot, x_rot)
+                };
+                let hooks: &dyn vanillite_game::hooks::GameHooks = &*hooks;
+                let Some(place) = vanillite_game::player::movement::teleport_event(
+                    Some(hooks),
+                    &self.level.entities,
+                    id,
+                    cause,
+                    to,
+                ) else {
+                    return;
+                };
+                target = match place.world {
+                    None => self.id,
+                    Some(w) => crate::commands::exec::plugin_world(w).unwrap_or(target),
+                };
+                (pos, y_rot, x_rot) = (place.vec(), place.yaw, place.pitch);
+            }
             let Some(mut traveller) = self.take_player(id, Route::Command { pos, y_rot, x_rot })
             else {
                 return;
@@ -1413,19 +1440,42 @@ impl ServerWorld {
     /// The gateway's teleport within this world: to the bottom centre of `exit`, players
     /// keeping velocity and rotation, then `PLACE_PORTAL_TICKET`.
     fn teleport_through_gateway(&mut self, id: EntityId, exit: BlockPos) {
+        let hooks = self.level.hooks_for(vanillite_abi::event::PLAYER_TELEPORT);
         let entities = &mut self.level.entities;
         let pos = if entities.player(id).is_some() {
-            let pos = Vec3::new(
+            let mut pos = Vec3::new(
                 f64::from(exit.x) + 0.5,
                 f64::from(exit.y),
                 f64::from(exit.z) + 0.5,
             );
+            // Bukkit's `PlayerTeleportEvent` (`END_GATEWAY`): cancelled, the player stays; a
+            // handler may move the exit within this world.
+            let mut turn = (0.0, 0.0);
+            if let Some(hooks) = &hooks
+                && let Some(rot) = entities.store.get(id).map(|e| e.rot())
+            {
+                let hooks: &dyn vanillite_game::hooks::GameHooks = &**hooks;
+                let to = vanillite_game::hooks::Place::looking(pos, rot.y_rot, rot.x_rot);
+                let Some(place) = vanillite_game::player::movement::teleport_event(
+                    Some(hooks),
+                    entities,
+                    id,
+                    vanillite_abi::teleport_cause::END_GATEWAY,
+                    to,
+                ) else {
+                    return;
+                };
+                if place.world.is_none() {
+                    pos = place.vec();
+                    turn = (place.yaw - rot.y_rot, place.pitch - rot.x_rot);
+                }
+            }
             let Some(pos) = vanillite_game::player::movement::teleport_within_world(
                 entities,
                 id,
                 pos,
-                0.0,
-                0.0,
+                turn.0,
+                turn.1,
                 KEEP_MOTION_AND_ROTATION,
             ) else {
                 return;
@@ -1457,6 +1507,30 @@ impl ServerWorld {
         });
         if !allowed {
             return;
+        }
+        // Bukkit's `PlayerTeleportEvent` (`ENDER_PEARL`): cancelled, the owner stays; a
+        // handler may move the landing within the pearl's world.
+        let mut arrival = arrival;
+        if let Some(hooks) = self.level.hooks_for(vanillite_abi::event::PLAYER_TELEPORT)
+            && let Some(rot) = self.level.entities.store.get(id).map(|e| e.rot())
+        {
+            let to = vanillite_game::hooks::Place {
+                world: (target != self.id).then_some(u32::from(target.0)),
+                ..vanillite_game::hooks::Place::looking(arrival.pos, rot.y_rot, rot.x_rot)
+            };
+            let hooks: &dyn vanillite_game::hooks::GameHooks = &*hooks;
+            let Some(place) = vanillite_game::player::movement::teleport_event(
+                Some(hooks),
+                &self.level.entities,
+                id,
+                vanillite_abi::teleport_cause::ENDER_PEARL,
+                to,
+            ) else {
+                return;
+            };
+            if place.world == to.world {
+                arrival.pos = place.vec();
+            }
         }
         let Some(traveller) = self.take_player(id, Route::Pearl(arrival)) else {
             return;

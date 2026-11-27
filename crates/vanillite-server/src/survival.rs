@@ -442,6 +442,16 @@ impl WorldSurvival {
         amount: f32,
         events: &mut Vec<PendingGameEvent>,
     ) -> bool {
+        // The causing and direct entities for the plugins' damage and death events.
+        let attackers = if global.plugins.wants(vanillite_abi::event::ENTITY_DAMAGE)
+            || global.plugins.wants(vanillite_abi::event::PLAYER_DEATH)
+        {
+            let uuid_of =
+                |id: Option<EntityId>| id.and_then(|i| entities.store.get(i)).map(|e| e.uuid());
+            (uuid_of(source.cause), uuid_of(source.direct))
+        } else {
+            (None, None)
+        };
         Self::on_player(
             entities,
             chunks,
@@ -449,7 +459,7 @@ impl WorldSurvival {
             dimension,
             id,
             events,
-            |entity, data, env| player::hurt(entity, data, env, source, amount),
+            |entity, data, env| player::hurt_by(entity, data, env, source, amount, attackers),
         )
     }
 

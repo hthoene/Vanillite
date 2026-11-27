@@ -829,11 +829,32 @@ pub fn hurt(
     source: DamageSource,
     amount: f32,
 ) -> bool {
-    hurt_with(entity, player, env, source, amount, None)
+    hurt_with(entity, player, env, source, amount, None, (None, None))
+}
+
+/// [`hurt`] with the UUIDs of the source's causing and direct entities for the plugins'
+/// damage and death events (resolved by callers that have the entities, only when a plugin
+/// listens: [`wants_attackers`]).
+pub fn hurt_by(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    source: DamageSource,
+    amount: f32,
+    attackers: (Option<u128>, Option<u128>),
+) -> bool {
+    hurt_with(entity, player, env, source, amount, None, attackers)
+}
+
+/// Whether the plugins' damage or death events need the UUIDs of a player's attackers.
+pub fn wants_attackers(hooks: &dyn crate::hooks::GameHooks) -> bool {
+    hooks.wants(vanillite_abi::event::ENTITY_DAMAGE)
+        || hooks.wants(vanillite_abi::event::PLAYER_DEATH)
 }
 
 /// [`hurt`] with the armour effectiveness of the source's weapon (Breach, see
-/// [`crate::mob::attack::armor_effectiveness`]).
+/// [`crate::mob::attack::armor_effectiveness`]) and the UUIDs of the causing and direct
+/// entities (see [`hurt_by`]).
 pub fn hurt_with(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
@@ -841,6 +862,7 @@ pub fn hurt_with(
     source: DamageSource,
     amount: f32,
     armor_effectiveness: Option<&dyn Fn(f32) -> f32>,
+    attackers: (Option<u128>, Option<u128>),
 ) -> bool {
     let types = env.types;
     let kind = source.kind;
@@ -874,10 +896,15 @@ pub fn hurt_with(
         }
     }
     let uuid = entity.as_ref().uuid();
-    match env
-        .hooks
-        .entity_damage(uuid, "minecraft:player", &types.get(kind).id, damage, None, None)
-    {
+    let (attacker, direct) = attackers;
+    match env.hooks.entity_damage(
+        uuid,
+        "minecraft:player",
+        &types.get(kind).id,
+        damage,
+        attacker,
+        direct,
+    ) {
         Some(changed) => damage = changed,
         None => return false,
     }
@@ -979,7 +1006,7 @@ pub fn hurt_with(
         if took_full {
             player_sound(env, id, pos, "minecraft:entity.player.death");
         }
-        die(entity, player, env, source);
+        die(entity, player, env, source, attackers.0);
     } else if took_full {
         player_sound(env, id, pos, types.get(kind).effects.sound());
     }
@@ -1349,12 +1376,14 @@ fn fall_location(s: &Survival) -> Option<FallLocation> {
     }
 }
 
-/// `ServerPlayer.die`.
+/// `ServerPlayer.die`; `killer` is the UUID of the source's causing entity (the kill credit)
+/// for the plugins' death event, when the caller resolved it.
 pub fn die(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,
     source: DamageSource,
+    killer: Option<u128>,
 ) {
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
@@ -1375,7 +1404,7 @@ pub fn die(
         keep_inventory: env.rules.bool(Rule::KEEP_INVENTORY),
     };
     env.hooks
-        .player_death(uuid, &env.types.get(source.kind).id, None, &mut death);
+        .player_death(uuid, &env.types.get(source.kind).id, killer, &mut death);
     sink.send(&PlayerCombatKill {
         player_id: network_id,
         message: death.message.clone().unwrap_or_else(Component::empty),

@@ -100,9 +100,13 @@ fn update_source(level: &mut Level, pos: BlockPos, state: BlockState) {
     }
 }
 
-/// `entityInside`.
+/// `entityInside`; a plugin may keep a player from triggering it
+/// ([`super::contact::physical_cancelled`]).
 fn wire_entity_inside(level: &mut Level, state: BlockState, pos: BlockPos, entity: EntityId) {
-    if !powered(state) && !level.chunks.has_block_tick(pos, ids::TRIPWIRE.0) {
+    if !powered(state)
+        && !level.chunks.has_block_tick(pos, ids::TRIPWIRE.0)
+        && !super::contact::physical_cancelled(level, pos, entity)
+    {
         let pressed = !ignores_block_triggers(level, entity);
         check_pressed_with(level, pos, pressed);
     }

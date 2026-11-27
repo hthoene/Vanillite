@@ -284,8 +284,17 @@ pub(super) fn teleport(w: &mut PluginWorld<'_>, entity: u128, to: Location) -> R
     let target =
         crate::commands::local_target(w.0.entities(), world, id).ok_or(status::NOT_FOUND)?;
     if to.world == u32::from(world.0) {
-        return exec::teleport_local(w.0.level_mut(), &target, pos, 0, to.yaw, to.pitch)
-            .map_err(|_| status::INVALID_ARGUMENT);
+        return exec::teleport_local(
+            w.0.level_mut(),
+            w.1,
+            &target,
+            pos,
+            0,
+            to.yaw,
+            to.pitch,
+            vanillite_abi::teleport_cause::PLUGIN,
+        )
+        .map_err(|_| status::INVALID_ARGUMENT);
     }
     let destination = u16::try_from(to.world)
         .ok()
@@ -300,6 +309,7 @@ pub(super) fn teleport(w: &mut PluginWorld<'_>, entity: u128, to: Location) -> R
         WorldId(destination),
         pos,
         Some((to.yaw, to.pitch)),
+        Some(vanillite_abi::teleport_cause::PLUGIN),
     );
     Ok(())
 }

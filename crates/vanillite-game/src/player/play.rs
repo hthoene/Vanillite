@@ -624,6 +624,20 @@ impl Digging {
                     block_update(sink, ctx.level, pos);
                     return;
                 }
+                // Bukkit's `PlayerInteractEvent` `LEFT_CLICK_BLOCK`: a cancelled hit leaves
+                // the block as it is and corrects the client.
+                if ctx.hooks.wants(vanillite_abi::event::PLAYER_INTERACT)
+                    && !ctx.hooks.player_interact(
+                        ctx.actor.uuid,
+                        vanillite_abi::interact::LEFT_CLICK_BLOCK,
+                        hand_index(Hand::MainHand),
+                        held_name(ctx, Hand::MainHand),
+                        Some((pos, u32::from(direction % 6), ctx.level.block(pos))),
+                    )
+                {
+                    block_update(sink, ctx.level, pos);
+                    return;
+                }
                 if ctx.actor.creative() {
                     self.destroy_and_ack(ctx, pos, sink);
                     return;
@@ -954,6 +968,7 @@ impl Digging {
                 build_limit_message(sink, true, max_y);
             } else if !ctx.hooks.player_interact(
                 ctx.actor.uuid,
+                vanillite_abi::interact::USE_ON_BLOCK,
                 hand_index(p.hand),
                 held_name(ctx, p.hand),
                 Some((
@@ -1678,10 +1693,13 @@ impl Digging {
         if ctx.actor.game_mode == GameMode::Spectator {
             return false;
         }
-        if !ctx
-            .hooks
-            .player_interact(ctx.actor.uuid, hand_index(hand), held_name(ctx, hand), None)
-        {
+        if !ctx.hooks.player_interact(
+            ctx.actor.uuid,
+            vanillite_abi::interact::USE_ITEM,
+            hand_index(hand),
+            held_name(ctx, hand),
+            None,
+        ) {
             // A plugin cancelled the use: nothing uses the item.
             return true;
         }

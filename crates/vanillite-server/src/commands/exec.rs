@@ -210,14 +210,19 @@ fn wrap_degrees(v: f32) -> f32 {
     }
 }
 
-/// `TeleportCommand.performTeleport` for an entity in this world.
+/// `TeleportCommand.performTeleport` for an entity in this world. Players fire the plugins'
+/// teleport event with `cause` (`vanillite_abi::teleport_cause`): cancelled, they stay; a
+/// destination in another world sends them there.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn teleport_local(
     level: &mut vanillite_game::level::Level,
+    global: &Global,
     target: &Target,
     pos: Vec3,
     relatives: i32,
     y_rot: f32,
     x_rot: f32,
+    cause: u32,
 ) -> Result<(), CommandError> {
     use vanillite_protocol::packets::play::clientbound::relative;
     if !in_spawnable_bounds(pos) {
@@ -229,6 +234,37 @@ pub(crate) fn teleport_local(
     let Some(id) = target.entity else {
         return Ok(());
     };
+    let (mut pos, mut y_rot, mut x_rot) = (pos, y_rot, x_rot);
+    if level.entities.player(id).is_some()
+        && let Some(hooks) = level.hooks_for(vanillite_abi::event::PLAYER_TELEPORT)
+    {
+        let to = vanillite_game::hooks::Place::looking(pos, y_rot, x_rot);
+        let hooks: &dyn vanillite_game::hooks::GameHooks = &*hooks;
+        let Some(place) = vanillite_game::player::movement::teleport_event(
+            Some(hooks),
+            &level.entities,
+            id,
+            cause,
+            to,
+        ) else {
+            return Ok(());
+        };
+        if let Some(world) = place.world {
+            if let Some(world) = plugin_world(world) {
+                move_to_world(
+                    global,
+                    target,
+                    world,
+                    place.vec(),
+                    Some((place.yaw, place.pitch)),
+                    None,
+                );
+                return Ok(());
+            }
+        } else {
+            (pos, y_rot, x_rot) = (place.vec(), place.yaw, place.pitch);
+        }
+    }
     // `ServerPlayer.teleportTo`: a sleeper leaves its bed first.
     vanillite_game::survival::sleep::stop_sleep_in_bed(
         level,
@@ -473,7 +509,14 @@ pub(crate) fn teleport(
                         return;
                     }
                     for target in &targets {
-                        move_to_world(global, target, world, pos, Some((rot.y_rot, rot.x_rot)));
+                        move_to_world(
+                            global,
+                            target,
+                            world,
+                            pos,
+                            Some((rot.y_rot, rot.x_rot)),
+                            Some(vanillite_abi::teleport_cause::COMMAND),
+                        );
                     }
                     source.send_success(global, message, true);
                 });
@@ -481,7 +524,16 @@ pub(crate) fn teleport(
             };
             for target in &targets {
                 if target.entity.is_some() {
-                    teleport_local(env.level, target, pos, 0, y_rot, x_rot)?;
+                    teleport_local(
+                        env.level,
+                        global,
+                        target,
+                        pos,
+                        0,
+                        y_rot,
+                        x_rot,
+                        vanillite_abi::teleport_cause::COMMAND,
+                    )?;
                 } else {
                     if !in_spawnable_bounds(pos) {
                         return Err(CommandError::new(
@@ -489,7 +541,14 @@ pub(crate) fn teleport(
                             vec![],
                         ));
                     }
-                    move_to_world(global, target, env.world, pos, Some((y_rot, x_rot)));
+                    move_to_world(
+                        global,
+                        target,
+                        env.world,
+                        pos,
+                        Some((y_rot, x_rot)),
+                        Some(vanillite_abi::teleport_cause::COMMAND),
+                    );
                 }
             }
             source.send_success(global, message, true);
@@ -515,14 +574,30 @@ pub(crate) fn teleport(
                             vec![],
                         ));
                     }
-                    move_to_world(global, target, source.world, pos, rot);
+                    move_to_world(
+                        global,
+                        target,
+                        source.world,
+                        pos,
+                        rot,
+                        Some(vanillite_abi::teleport_cause::COMMAND),
+                    );
                     continue;
                 }
                 let (y_rot, x_rot) = match rot {
                     Some(r) => r,
                     None => target.place.map_or((0.0, 0.0), |(_, y, x)| (y, x)),
                 };
-                teleport_local(env.level, target, pos, bits, y_rot, x_rot)?;
+                teleport_local(
+                    env.level,
+                    global,
+                    target,
+                    pos,
+                    bits,
+                    y_rot,
+                    x_rot,
+                    vanillite_abi::teleport_cause::COMMAND,
+                )?;
             }
             let coords = [pos.x, pos.y, pos.z].map(|v| Arg::String(format_double(v)));
             let message = match targets.as_slice() {
@@ -547,21 +622,31 @@ pub(crate) fn teleport(
 }
 
 /// Moves a target of another world than the command's to `world` on the target's world
-/// thread (`Entity.teleportTo(level, ...)`).
+/// thread (`Entity.teleportTo(level, ...)`). A player fires the plugins' teleport event with
+/// `cause` there (`None`: it already did).
 pub(crate) fn move_to_world(
     global: &Global,
     target: &Target,
     world: WorldId,
     pos: Vec3,
     rotation: Option<(f32, f32)>,
+    cause: Option<u32>,
 ) {
     let Some(global_arc) = global.arc() else {
         return;
     };
     let uuid = target.uuid;
     global.run_in_world(target.world, move |w| {
-        w.teleport_to_world(&global_arc, uuid, world, pos, rotation);
+        w.teleport_to_world(&global_arc, uuid, world, pos, rotation, cause);
     });
+}
+
+/// The world of a plugin's world index, if there is one.
+pub(crate) fn plugin_world(index: u32) -> Option<WorldId> {
+    u16::try_from(index)
+        .ok()
+        .filter(|&i| usize::from(i) < crate::server::DIMENSIONS.len())
+        .map(WorldId)
 }
 
 /// `ComponentUtils.formatList` with `, ` in gray.
@@ -727,7 +812,12 @@ pub(crate) fn kick(
 ) -> i32 {
     for target in targets {
         if let Some((sink, _)) = global.players.connection(Uuid(target.uuid)) {
-            sink.kick(reason.clone());
+            let world = u32::from(target.world.0);
+            match crate::plugins::player_kick(&global.plugins, world, target.uuid, reason.clone()) {
+                Some(reason) => sink.kick(reason),
+                // A plugin kept the player (Bukkit's cancelled `PlayerKickEvent`).
+                None => continue,
+            }
         }
         source.send_success(
             global,

@@ -185,7 +185,10 @@ impl ServerAccess for Services {
         let Some((sink, _)) = global.players.connection(Uuid(player)) else {
             return false;
         };
-        sink.kick(component(reason));
+        let world = self.player_world(player).unwrap_or(0);
+        if let Some(reason) = player_kick(&global.plugins, world, player, component(reason)) {
+            sink.kick(reason);
+        }
         true
     }
 
@@ -543,11 +546,39 @@ fn is_empty(text: &NewText) -> bool {
 }
 
 /// A plugin's replacement text as a component.
-fn new_component(text: &NewText) -> Component {
+pub(crate) fn new_component(text: &NewText) -> Component {
     match text {
         NewText::Plain(s) => component(Text::Plain(s)),
         NewText::Json(s) => component(Text::Json(s)),
     }
+}
+
+/// Bukkit's `PlayerKickEvent` for a kick the server decided (`/kick`, a plugin, idling,
+/// spam; not protocol errors and shutdown) of `player` in `world`: `None` when a plugin
+/// cancelled it, else the reason, maybe replaced.
+pub(crate) fn player_kick(
+    host: &PluginHost,
+    world: u32,
+    player: u128,
+    reason: Component,
+) -> Option<Component> {
+    if !host.wants(vanillite_abi::event::PLAYER_KICK) {
+        return Some(reason);
+    }
+    let text = reason.to_json_string();
+    let mut event = vanillite_plugin_host::GameEvent {
+        kind: vanillite_abi::event::PLAYER_KICK,
+        world,
+        entity: player,
+        entity_type: "minecraft:player",
+        text: &text,
+        ..vanillite_plugin_host::GameEvent::default()
+    };
+    host.game_event(None, &mut event);
+    if event.cancelled {
+        return None;
+    }
+    Some(event.text_out.map_or(reason, |t| new_component(&t)))
 }
 
 /// The game mode as plugins number it.
@@ -965,11 +996,13 @@ impl GameHooks for WorldHooks {
     fn player_interact(
         &self,
         player: u128,
+        action: u32,
         hand: u32,
         item: &str,
         block: Option<(BlockPos, u32, BlockState)>,
     ) -> bool {
-        self.hooks().player_interact(player, hand, item, block)
+        self.hooks()
+            .player_interact(player, action, hand, item, block)
     }
 }
 
@@ -1161,6 +1194,7 @@ impl GameHooks for Hooks<'_> {
     fn player_interact(
         &self,
         player: u128,
+        action: u32,
         hand: u32,
         item: &str,
         block: Option<(BlockPos, u32, BlockState)>,
@@ -1175,6 +1209,6 @@ impl GameHooks for Hooks<'_> {
             state: state.as_deref().unwrap_or(""),
         });
         self.host
-            .player_interact(self.world, player, hand, item, target)
+            .player_interact(self.world, player, action, hand, item, target)
     }
 }

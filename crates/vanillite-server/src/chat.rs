@@ -67,7 +67,10 @@ pub(crate) fn handle_requests(
                 None
             }
         };
-        if let Some(reason) = kicked {
+        // The spam kicks; a plugin may keep the player.
+        if let Some(reason) = kicked
+            .and_then(|r| crate::plugins::player_kick(&global.plugins, u32::from(world.0), uuid, r))
+        {
             leaving.push((id, Some(Box::new(reason))));
             return;
         }
@@ -93,20 +96,27 @@ fn chat(
         .chat
         .chain
         .unpack(uuid, signature, body, enforce);
-    let message = match unpacked {
+    let mut message = match unpacked {
         Ok(message) => message,
         Err(e) => {
             decode_failure(player.connection.sink.as_ref(), &name, e);
             return None;
         }
     };
-    if global.plugins.wants(vanillite_abi::event::PLAYER_CHAT)
-        && !global
-            .plugins
-            .player_chat(uuid, &name, &message.decorated_content().plain())
-            .cancelled
-    {
-        return None;
+    // Bukkit's `AsyncPlayerChatEvent`: cancelled, nobody sees the message; a new text is
+    // shown as its unsigned content (`PlayerChatMessage.withUnsignedContent`), the signature
+    // stays.
+    if global.plugins.wants(vanillite_abi::event::PLAYER_CHAT) {
+        let decision =
+            global
+                .plugins
+                .player_chat(uuid, &name, &message.decorated_content().plain());
+        if decision.cancelled {
+            return None;
+        }
+        if let Some(text) = decision.text {
+            message.unsigned_content = Some(crate::plugins::new_component(&text));
+        }
     }
     let chat_type = ChatTypeBound {
         chat_type: global.chat_types.chat,

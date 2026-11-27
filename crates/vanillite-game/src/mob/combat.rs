@@ -110,6 +110,12 @@ pub fn hurt(
         return false;
     }
     let armor = super::attack::armor_effectiveness(ents, env.types, target, &source);
+    let attackers = if player::wants_attackers(env.hooks) {
+        let uuid_of = |id: Option<EntityId>| id.and_then(|i| ents.store.get(i)).map(|e| e.uuid());
+        (uuid_of(source.cause), uuid_of(source.direct))
+    } else {
+        (None, None)
+    };
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -119,7 +125,15 @@ pub fn hurt(
         return false;
     };
     let was_alive = !data.survival.is_dead_or_dying();
-    let hurt = player::hurt_with(&mut entity, data, env, source, amount, armor.as_deref());
+    let hurt = player::hurt_with(
+        &mut entity,
+        data,
+        env,
+        source,
+        amount,
+        armor.as_deref(),
+        attackers,
+    );
     let died = was_alive && data.survival.is_dead_or_dying();
     view::resolve_combat(ents, env.types, target);
     // `ServerPlayer.die` → `tellNeutralMobsThatIDied`: at once, so an attacker calms down

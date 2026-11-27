@@ -442,8 +442,22 @@ fn example_plugin_runs_through_the_abi() {
         face: 1,
         state: "minecraft:stone",
     };
-    assert!(!host.player_interact(0, PLAYER, 0, "minecraft:flint_and_steel", Some(block)));
-    assert!(host.player_interact(0, PLAYER, 0, "minecraft:stick", None));
+    assert!(!host.player_interact(
+        0,
+        PLAYER,
+        vanillite_abi::interact::USE_ON_BLOCK,
+        0,
+        "minecraft:flint_and_steel",
+        Some(block)
+    ));
+    assert!(host.player_interact(
+        0,
+        PLAYER,
+        vanillite_abi::interact::USE_ITEM,
+        0,
+        "minecraft:stick",
+        None
+    ));
     let death = host
         .player_death(0, PLAYER, "minecraft:fall", None, "\"Alex fell\"", false)
         .expect("the example listens to deaths");
