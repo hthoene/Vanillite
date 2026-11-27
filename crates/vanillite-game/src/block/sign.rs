@@ -105,6 +105,8 @@ pub struct Sign {
     pub waxed: bool,
     /// `playerWhoMayEdit`.
     pub editor: Option<u128>,
+    /// `allow_op_features`: the click commands run (signs of old worlds, set by the data fixers).
+    pub allow_op_features: bool,
 }
 
 impl Sign {
@@ -119,6 +121,9 @@ impl Sign {
 
     /// The stored and client data (`saveAdditional`, `getUpdateTag`).
     pub fn save(&self, out: &mut Compound) {
+        if self.allow_op_features {
+            out.insert("allow_op_features", Tag::Byte(1));
+        }
         out.insert("front_text", self.front.save());
         out.insert("back_text", self.back.save());
         out.insert("is_waxed", Tag::Byte(i8::from(self.waxed)));
@@ -126,6 +131,8 @@ impl Sign {
 
     /// Loads the stored fields.
     pub fn load(&mut self, nbt: &Compound) {
+        self.allow_op_features =
+            matches!(nbt.get("allow_op_features"), Some(Tag::Byte(v)) if *v != 0);
         if let Some(Tag::Compound(c)) = nbt.get("front_text") {
             self.front = SignText::load(c);
         }

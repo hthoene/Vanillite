@@ -911,6 +911,10 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::CreakingHeart(h) => h.save(&mut nbt),
         _ => {}
     }
+    // `saveWithoutMetadata` always stores the components, empty or not.
+    if nbt.get("components").is_none() {
+        nbt.insert("components", Tag::Compound(Compound::new()));
+    }
     nbt
 }
 
@@ -1007,7 +1011,11 @@ impl Level {
     pub fn block_entity_nbt(&self, pos: BlockPos) -> Option<Compound> {
         let state = self.block(pos);
         if let Some(entity) = self.block_entities.get(pos) {
-            return Some(save(entity, state, pos));
+            let mut nbt = save(entity, state, pos);
+            if let Some(kept) = self.block_entities.kept_components(pos) {
+                nbt.insert("components", Tag::Compound(kept.clone()));
+            }
+            return Some(nbt);
         }
         let kind = state.block().info().block_entity;
         if kind == u16::MAX || modelled(state) {

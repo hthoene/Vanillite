@@ -34,6 +34,9 @@
 //!   the players' clients got during the tick (see [`crate::client_view`]). The recorder
 //!   writes the raw packets instead (`"packets":{"<player>":["<id + body hex>", ...]}`);
 //!   parsing normalizes them.
+//! - Block entities (scenarios with `"block_entities": true`, #244): `"block_entities":
+//!   ["x,y,z <nbt>", ...]`, sorted, the block entities of the region with the canonical text of
+//!   their full saved data ([`canonical_nbt`]).
 //! - Light (scenarios with `"light": true`): `"light":[count,level,...]` in every frame, run-length
 //!   pairs over the region in y, z, x order; a level is `sky << 4 | block` as a client sees it.
 
@@ -149,6 +152,8 @@ pub struct Frame {
     /// What the players' clients got during the tick, `<player> <event>` sorted
     /// (`"client_view"` scenarios).
     pub view: Vec<String>,
+    /// `x,y,z <nbt>` of the region's block entities, sorted (`"block_entities"` scenarios).
+    pub block_entities: Vec<String>,
 }
 
 /// A recorded scenario run.
@@ -299,6 +304,20 @@ impl Trace {
             light,
             level_rng: f.get("level_rng").and_then(Value::as_i64),
             view,
+            block_entities: {
+                let mut list = f
+                    .get("block_entities")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .map(|e| e.as_str().map(str::to_owned))
+                            .collect::<Option<Vec<_>>>()
+                    })
+                    .unwrap_or(Some(Vec::new()))
+                    .ok_or("block entities are strings")?;
+                list.sort_unstable();
+                list
+            },
         })
     }
 
@@ -400,6 +419,13 @@ impl Trace {
         h.add(u64::from(frame.level_rng.is_some()));
         for e in &frame.view {
             h.add(fnv(e.as_bytes()));
+        }
+        // Only when observed, so the checksums of other scenarios stay as they were.
+        if !frame.block_entities.is_empty() {
+            h.add(frame.block_entities.len() as u64);
+            for e in &frame.block_entities {
+                h.add(fnv(e.as_bytes()));
+            }
         }
         h.0
     }
@@ -511,6 +537,13 @@ impl Trace {
             if !f.view.is_empty() {
                 let _ = write!(s, ",\"view\":{}", Value::from(f.view.clone()));
             }
+            if !f.block_entities.is_empty() {
+                let _ = write!(
+                    s,
+                    ",\"block_entities\":{}",
+                    Value::from(f.block_entities.clone())
+                );
+            }
             s.push('}');
         }
         s.push_str("]}\n");
@@ -578,6 +611,9 @@ impl Trace {
             if e.view != a.view {
                 view_diff(t, &e.view, &a.view, &mut out);
             }
+            if e.block_entities != a.block_entities {
+                block_entity_diff(t, &e.block_entities, &a.block_entities, &mut out);
+            }
             if e.level_rng != a.level_rng {
                 out.push(format!(
                     "tick {t} level random state {:?}, expected {:?}",
@@ -631,6 +667,114 @@ fn view_diff(t: u32, expected: &[String], actual: &[String], out: &mut Vec<Strin
     }
     for a in extra {
         out.push(format!("tick {t} client view: unexpected `{a}`"));
+    }
+}
+
+/// The block entities of a frame that differ, by position.
+fn block_entity_diff(t: u32, expected: &[String], actual: &[String], out: &mut Vec<String>) {
+    let split = |e: &String| {
+        let (pos, nbt) = e.split_once(' ').unwrap_or((e.as_str(), ""));
+        (pos.to_owned(), nbt.to_owned())
+    };
+    let ex: std::collections::BTreeMap<String, String> = expected.iter().map(split).collect();
+    let ac: std::collections::BTreeMap<String, String> = actual.iter().map(split).collect();
+    for (pos, e) in &ex {
+        match ac.get(pos) {
+            None => out.push(format!(
+                "tick {t} block entity {pos}: missing, expected {e}"
+            )),
+            Some(a) if a != e => {
+                out.push(format!("tick {t} block entity {pos}: {a}, expected {e}"))
+            }
+            Some(_) => {}
+        }
+    }
+    for (pos, a) in &ac {
+        if !ex.contains_key(pos) {
+            out.push(format!("tick {t} block entity {pos}: {a}, expected none"));
+        }
+    }
+}
+
+/// The canonical text of a tag, the same as `ScenarioRecorder.Trace.canonical` on the Java
+/// side: compound keys sorted, typed numbers (`1b 2s 3 4L`), floats and doubles as `1.0f` /
+/// `1.0d` when integral and below 10^6, else as their bit pattern (`f:3fc00000`, `d:...`),
+/// strings quoted with `\` and `"` escaped.
+pub fn canonical_nbt(out: &mut String, tag: &vanillite_nbt::Tag) {
+    use vanillite_nbt::Tag;
+    fn quote(out: &mut String, s: &str) {
+        out.push('"');
+        for c in s.chars() {
+            if c == '"' || c == '\\' {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push('"');
+    }
+    fn list<T: std::fmt::Display>(out: &mut String, prefix: &str, v: &[T]) {
+        out.push_str(prefix);
+        for (i, x) in v.iter().enumerate() {
+            let _ = write!(out, "{}{x}", if i == 0 { "" } else { "," });
+        }
+        out.push(']');
+    }
+    match tag {
+        Tag::Compound(c) => {
+            let mut entries: Vec<(&str, &Tag)> = c.iter().collect();
+            entries.sort_unstable_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+            out.push('{');
+            for (i, (k, v)) in entries.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                quote(out, k);
+                out.push(':');
+                canonical_nbt(out, v);
+            }
+            out.push('}');
+        }
+        Tag::List(l) => {
+            out.push('[');
+            for (i, v) in l.0.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                canonical_nbt(out, v);
+            }
+            out.push(']');
+        }
+        Tag::ByteArray(v) => list(out, "[B;", v),
+        Tag::IntArray(v) => list(out, "[I;", v),
+        Tag::LongArray(v) => list(out, "[L;", v),
+        Tag::Byte(v) => {
+            let _ = write!(out, "{v}b");
+        }
+        Tag::Short(v) => {
+            let _ = write!(out, "{v}s");
+        }
+        Tag::Int(v) => {
+            let _ = write!(out, "{v}");
+        }
+        Tag::Long(v) => {
+            let _ = write!(out, "{v}L");
+        }
+        Tag::Float(v) => {
+            if v.round_ties_even() == *v && v.abs() < 1.0e6 && v.to_bits() != 0x8000_0000 {
+                let _ = write!(out, "{}.0f", *v as i64);
+            } else {
+                let _ = write!(out, "f:{:x}", v.to_bits());
+            }
+        }
+        Tag::Double(v) => {
+            if v.round_ties_even() == *v && v.abs() < 1.0e6 && v.to_bits() != 0x8000_0000_0000_0000
+            {
+                let _ = write!(out, "{}.0d", *v as i64);
+            } else {
+                let _ = write!(out, "d:{:x}", v.to_bits());
+            }
+        }
+        Tag::String(v) => quote(out, v),
     }
 }
 

@@ -1,0 +1,627 @@
+# The parity world corpus (#244): complex real-world worlds and schematics that
+# `cargo xtask parity worlds` runs in Vanilla and in Vanillite and compares tick by tick.
+#
+# Nothing of these files is in the repository: they are downloaded into
+# ~/.cache/vanillite/parity-worlds/<name>/ and checked against `sha256`. Every entry says where
+# it comes from, under which licence and what it holds.
+#
+# Fields:
+# - name: snake_case, the scenario name (known divergences: scenarios/divergences/<name>.toml).
+# - group: the subsystem it mostly exercises (redstone, pistons, tnt, hoppers, mobs, farms,
+#   villagers, entities), for handing divergences to the right owner.
+# - url, sha256: a direct download (pinned to a commit where possible).
+# - format: litematic, schem, schematic, nbt or world (a zip with level.dat); default from the
+#   url's extension. world_path: the folder with level.dat inside the zip (default: the
+#   shallowest one).
+# - licence, source, contents: where it comes from and what it holds.
+# - region: the observed box [[x, y, z], [x, y, z]] (inclusive, absolute). Default for
+#   schematics: the pasted box and 2 blocks around it. Schematics are pasted with their
+#   minimum corner at 0 0 0 into a void world (plains biome, no structures).
+# - trigger: without actions, every lever of a schematic flips at trigger_tick (default 20;
+#   "none" turns it off). snapshot_entities (default true): the world's own entities (minecarts,
+#   villagers, mobs) load with its chunks.
+# - ticks (default 1200), rules (game rules as in scenarios), difficulty, seed (default 0;
+#   chunks outside the saved area are generated from it).
+# - actions, entities: scenario actions and entities (crates/vanillite-test/src/scenario.rs),
+#   e.g. {tick = 20, op = "place", pos = [3, 1, 0], block = "minecraft:redstone_block"} to
+#   press the input. For schematics `pos`, `from` and `to` are relative to the pasted corner.
+
+[[world]]
+name = "qbradq_alu_v12"
+group = "redstone"
+url = "https://github.com/qbradq/redstone-cpu/raw/6954789a622f34a91b5fb32dd8c603a1775dcd2a/schematics/alu_v12.schem"
+sha256 = "8f614b81037bcfcbd7eedf0fae33e6119311919de162ddcc68f99056ff3093e5"
+licence = "MIT"
+source = "https://github.com/qbradq/redstone-cpu"
+contents = "ALU of a redstone CPU, operands and operation on levers"
+
+[[world]]
+name = "qbradq_cca8_adder"
+group = "redstone"
+url = "https://github.com/qbradq/redstone-cpu/raw/6954789a622f34a91b5fb32dd8c603a1775dcd2a/schematics/cca8.schem"
+sha256 = "c8cf291e2a7b63f70dd411f3123ea65ad65abf7be01ed3fdc888c08e07bf2197"
+licence = "MIT"
+source = "https://github.com/qbradq/redstone-cpu"
+contents = "8-bit carry-cancel adder, lever inputs"
+
+[[world]]
+name = "qbradq_dual_read_registers"
+group = "redstone"
+url = "https://github.com/qbradq/redstone-cpu/raw/6954789a622f34a91b5fb32dd8c603a1775dcd2a/schematics/15x8-bit_dual_read_reg_v5.schem"
+sha256 = "46a94aa9a7a85f05e82cf7f10fd97ffc17104bdde7ac22ce0b44fe367c5fa1c3"
+licence = "MIT"
+source = "https://github.com/qbradq/redstone-cpu"
+contents = "15x8-bit register file with two read ports (crafters), levers"
+
+[[world]]
+name = "nucleation_multiplier_8bit"
+group = "redstone"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/computational_schematics/MULTIPY003_8bit_comb_multiplier.schem"
+sha256 = "94602dcdad670ff8a13fee096f2878417ce4b5c92f2af8a9123fc880bd6011ba"
+licence = "MIT (repository licence)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "8-bit combinational multiplier, lever inputs"
+
+[[world]]
+name = "nucleation_divider_8bit"
+group = "redstone"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/computational_schematics/DIVIDE009_3_33hz_5tpb_8b_divider_zPippo.schem"
+sha256 = "ecd25496c6b87734581aab36004d3f8f5cc90ee385ce17d0982b60f191aa1332"
+licence = "MIT (repository licence)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "8-bit sequential divider by zPippo (5 ticks per bit, hoppers), lever start"
+
+[[world]]
+name = "nucleation_register_file"
+group = "redstone"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/computational_schematics/REGISTERFILE001_register_file.schem"
+sha256 = "158370f236d9339d3de9b3f6021572c422f5cfd683fbc3ca0870a3af2db52229"
+licence = "MIT (repository licence)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "register file, levers and buttons"
+
+[[world]]
+name = "trecar_cpu"
+group = "redstone"
+url = "https://github.com/Trecar/MC-CPU01-Assembler/raw/177908614b6f963fd8b9fcef1710d903e3d10905/tre_ycpu_ramfix.schem"
+sha256 = "e9e1e2660f854b2f1c0071e6eb72578a4617a887c31e902beb01d4447ef838f2"
+licence = "MIT"
+source = "https://github.com/Trecar/MC-CPU01-Assembler"
+contents = "full CPU with ROM and RAM (1.16), buttons and levers"
+ticks = 400
+
+[[world]]
+name = "p16_cpu"
+group = "redstone"
+url = "https://github.com/pishleback/P16-Tools/raw/dbeb7b686f67cc3a81275cc77ff34ddbc0863415/p16/p16_v2.2.schem"
+sha256 = "3228fed379c20adc58882363d7eae2a9fd9ba182b46239235a251a0de8e93ae9"
+licence = "none stated"
+source = "https://github.com/pishleback/P16-Tools"
+contents = "P16 16-bit CPU (8 KB RAM, 2 KB ROM, lever program grid), stress case"
+ticks = 200
+
+[[world]]
+name = "cca_adder_16bit"
+group = "redstone"
+url = "https://github.com/NaCl-5844/redstone_schematics/raw/257f895d9148c494270c254c303a710af22ea715/DD16bCCA/DD16bCCA.schem"
+sha256 = "8788bd700261023b87e3ea0a81b5c85e5e2cdfb9bc4452de8f3cf777691b6cf7"
+licence = "MIT"
+source = "https://github.com/NaCl-5844/redstone_schematics"
+contents = "16-bit carry-cancel adder (4 ticks), comparators, repeaters, dust"
+
+[[world]]
+name = "fibonacci_computer"
+group = "redstone"
+url = "https://github.com/HashDG/minecraft-computers/raw/28da925675c4c1363145a9846b9eb89a26b3b4e3/fib_computer.schem"
+sha256 = "28018e72104bf7e9b850ece2a50439bc0520e50c3903d20fa874fe6956aac662"
+licence = "CC-BY-SA-4.0"
+source = "https://github.com/HashDG/minecraft-computers"
+contents = "Fibonacci computer (adder, registers, clock lever)"
+
+[[world]]
+name = "reda_add8"
+group = "redstone"
+url = "https://github.com/formalized-si/redstone-verify/raw/0c72d36858b62521cdbf8e2c8a2a1fa477b85b12/circuits_thirdparty/reda/add8/add8.litematic"
+sha256 = "c8b62cff8836f2a6c3b004ed58a8bf4eb2ce981fc55cc560ecfa7bff5314da58"
+licence = "MIT (third-party REDA output)"
+source = "https://github.com/formalized-si/redstone-verify"
+contents = "machine-generated flat 8-bit adder, lever inputs"
+ticks = 400
+
+[[world]]
+name = "colinwang_cpu_world"
+group = "redstone"
+url = "https://github.com/colinwang05/minecraft-redstone-cpu/raw/fac130bd341187bbe539a556a3d963cf6a2e066b/MinecraftWorld.zip"
+sha256 = "defe31b512a27d6b7e055e36b844fd52d7b47c3cdac064fbd626b06a89e47ae5"
+licence = "none stated"
+source = "https://github.com/colinwang05/minecraft-redstone-cpu"
+contents = "world with a redstone CPU and a loaded program (1.21.5), around the saved player"
+
+[[world]]
+name = "door_3x3_shinji"
+group = "pistons"
+url = "https://github.com/lemonnn-git/minecraft-piston-doors/raw/5307276d8910440ef91557b6973b673e992cf95e/0.3s_3x3_by__shinji__and_dividedbyzer0_.nbt"
+sha256 = "65f7a450cbf9f1e0655328240260acab9bf82d4eaacbe144044dcc06dfbdf3a4"
+licence = "none stated"
+source = "https://github.com/lemonnn-git/minecraft-piston-doors"
+contents = "0.3 s 3x3 piston door, external input"
+
+[[world]]
+name = "door_4x4_045s"
+group = "pistons"
+url = "https://github.com/lemonnn-git/minecraft-piston-doors/raw/5307276d8910440ef91557b6973b673e992cf95e/0.45s_4x4_by_br1ckcraft3r_and_yaboiimmenselad.nbt"
+sha256 = "b201c719dbffbe1bfe810b5382c11b3988bf83dc3aa04ae1126342006b0bf16c"
+licence = "none stated"
+source = "https://github.com/lemonnn-git/minecraft-piston-doors"
+contents = "0.45 s 4x4 piston door, external input"
+
+[[world]]
+name = "door_3x3_flush_synced"
+group = "pistons"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/crates/mc-tick/tests/corpus/litematics/3x3_flush_synced.litematic"
+sha256 = "15c0ab577426044277ac69078b8e5bfe7ccbf6ad7aba24db4a65d453b7e90e46"
+licence = "MIT (repository licence)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "flush 3x3 door with synced piston timing, external input"
+
+[[world]]
+name = "door_4x4_vault"
+group = "pistons"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/crates/mc-tick/tests/corpus/litematics/fast_4x4_vault_door.litematic"
+sha256 = "1169fe1ce07eeeebc7de14c6f4c1f75495c9bdc724c80ef66f92a7617b6261ae"
+licence = "MIT (repository licence)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "fast 4x4 vault door (slime, observers, composter/barrel comparators), lever"
+
+[[world]]
+name = "door_6x6_sliding"
+group = "pistons"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/crates/mc-tick/tests/corpus/litematics/6x6_sliding_door.litematic"
+sha256 = "413dea766d1739189557318fea19b8826aae77a379c04f490f400004986ab71c"
+licence = "MIT (repository licence)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "6x6 sliding door (slime/honey, jukebox and shulker box comparators), lever"
+
+[[world]]
+name = "door_3x3_55_block"
+group = "pistons"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/tests/scenarios/55_3x3.litematic"
+sha256 = "6764b03d999a19e5ae5fa657b44a8256a4b741c4df1ff867fd2a13a6c86cd0bf"
+licence = "MIT (repository licence)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "55-block 3x3 piston door with furnace minecarts and fireballs in the mechanism"
+
+[[world]]
+name = "door_3x3_piscescup"
+group = "pistons"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E6%87%92%E5%BE%97%E5%88%86/3x3%E6%B4%BB%E5%A1%9E%E9%97%A82.0.litematic"
+sha256 = "c58f639adc6e4649481a0aabee34ced97f16cde8860d1b724516a5196237331e"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "3x3 piston door 2.0 (slime, observers, powered rail), external input"
+
+[[world]]
+name = "fm_carpet_bridge"
+group = "pistons"
+url = "https://archive.org/download/floating-carpet-pathway-maker/carpet%20%2B%20waltuh%20bridge%20maker.litematic"
+sha256 = "f48f30156f9efdbe659c03f021c952ae9a2ef2750981f401903b04c8b6e6525d"
+licence = "none stated"
+source = "https://archive.org/details/floating-carpet-pathway-maker"
+contents = "slime flying machine laying carpet bridges on water"
+
+[[world]]
+name = "fm_frosted_ice_highway"
+group = "pistons"
+url = "https://archive.org/download/frosted-ice-pathway-maker/Frosted%20Ice%20Highway%20Maker%203.litematic"
+sha256 = "0b1271254b073b9e82aaca16acca4416cffa4b42c5f52059165a4036260f833d"
+licence = "none stated"
+source = "https://archive.org/details/frosted-ice-pathway-maker"
+contents = "slime/honey flying machine making a frosted-ice bridge (minecart, armor stands)"
+
+[[world]]
+name = "world_eater_trench_272"
+group = "tnt"
+url = "https://github.com/La1m1e/MinecraftDocs/raw/61fd5965e2979bf9b85f19a76c86ac789bb3eaf1/Pages/Perimeters/media/272SmallTrenchWorldEater.litematic"
+sha256 = "49295c8cef986107f5c6593ee50d3395363b1f40252a5f495027aa7374ff0c69"
+licence = "MIT"
+source = "https://github.com/La1m1e/MinecraftDocs"
+contents = "272-wide TNT world eater with trenches (TNT/slime flying machines, 44 minecarts)"
+ticks = 100
+
+[[world]]
+name = "world_eater_qswe_528"
+group = "tnt"
+url = "https://github.com/Manolo006/FermiumSMP/raw/21b67fe4429c1e3c76f321adb69a3cefc3345b09/schematics/QSWE-V3_528x528.litematic"
+sha256 = "c3716299ffc2b8431fc3dbc652a631fae69d08394068a8df9fdb9a9d5bee6530"
+licence = "none stated"
+source = "https://github.com/Manolo006/FermiumSMP"
+contents = "QSWE-V3 528x528 world eater (TNT, slime/honey, observers)"
+ticks = 60
+
+[[world]]
+name = "world_eater_17x17"
+group = "tnt"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E7%94%9F%E7%94%B5%E6%9C%BA%E5%99%A8/%E7%82%B8%E5%9D%91/17x17%E4%B8%96%E5%90%9E.litematic"
+sha256 = "c3e9a8179b7a1eca7af6abda1ada62061dcb8b6142eccf7f54b58c842a48f22a"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "17x17 world eater (TNT, slime/honey, detector rails, 33 minecarts)"
+ticks = 400
+
+[[world]]
+name = "trencher_6gt"
+group = "tnt"
+url = "https://github.com/La1m1e/MinecraftDocs/raw/61fd5965e2979bf9b85f19a76c86ac789bb3eaf1/Pages/Perimeters/media/6gt_trencher_13_wide_1.18_weather_proof.litematic"
+sha256 = "bd1606188c06773f88c69e0cb07e45c7c529f2b1c1cd02a91af3b1377e351805"
+licence = "MIT"
+source = "https://github.com/La1m1e/MinecraftDocs"
+contents = "6 gt 13-wide TNT trencher flying machine"
+
+[[world]]
+name = "tnt_duper_mercury"
+group = "tnt"
+url = "https://github.com/DuskScorpio/Scorpio-File-Downloads/raw/c3956162182bbef0413c601ef1c26691f7783a36/Files/TNT%20Dupers/TNT%20Duper%20by%20Mercury.litematic"
+sha256 = "51dee171ae192e3a86f89c6447abc034c31d299a99fd953c7d70b361ffc60deb"
+licence = "CC0-1.0"
+source = "https://github.com/DuskScorpio/Scorpio-File-Downloads"
+contents = "minimal observer/piston TNT duper"
+
+[[world]]
+name = "tnt_duper_carpet"
+group = "tnt"
+url = "https://github.com/DuskScorpio/Scorpio-File-Downloads/raw/c3956162182bbef0413c601ef1c26691f7783a36/Files/TNT%20Dupers/Carpet%20TNT%20Duper%20by%20_Afferent_Neuron.litematic"
+sha256 = "f5e3e20df69368f6c366a81a5f5b41fbb0e731967b53177557953af38bfc0731"
+licence = "CC0-1.0"
+source = "https://github.com/DuskScorpio/Scorpio-File-Downloads"
+contents = "carpet/slime TNT duper, lever"
+
+[[world]]
+name = "tnt_dupers_world"
+group = "tnt"
+url = "https://github.com/DuskScorpio/Scorpio-File-Downloads/raw/c3956162182bbef0413c601ef1c26691f7783a36/Files/TNT%20Dupers/TNT%20Dupers.zip"
+sha256 = "e9a03a0d59e491dcb7ac4ea3269198d8a9b1339e2f49c299b47790bea8878b51"
+licence = "CC0-1.0"
+source = "https://github.com/DuskScorpio/Scorpio-File-Downloads"
+contents = "showcase world with four TNT duper designs, around the saved player"
+
+[[world]]
+name = "tnt_duper_array"
+group = "tnt"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E6%87%92%E5%BE%97%E5%88%86/tnt%E5%A4%8D%E5%88%B6%E9%98%B5%E5%88%97.litematic"
+sha256 = "a0e9f1d892867d49f6781acdfb35c40fee6ed910909e91379c502b9bf4246c74"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "TNT duper array (observer/note block chain)"
+
+[[world]]
+name = "tnt_cannon_dragon"
+group = "tnt"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E6%87%92%E5%BE%97%E5%88%86/%E5%B1%A0%E9%BE%99%E7%82%AE.litematic"
+sha256 = "e535e61b414d147051826c4eff9305058b3e871ed6114017f77b3a2b264b8163"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "dragon-killing TNT cannon (soul sand bubble column, observers), lever"
+
+[[world]]
+name = "tnt_pearl_cannon"
+group = "tnt"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/sync/%E5%87%8B%E9%9B%B6%E9%AA%B7%E9%AB%85%E5%A1%94%E8%BF%94%E7%A8%8B%E7%82%AE.litematic"
+sha256 = "903f3e3c342a4a163c25a99de5d6f6551675cf044750b09c90f715a533502ab9"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "TNT pearl cannon (buttons, tripwire)"
+
+[[world]]
+name = "tunnel_bore"
+group = "tnt"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/sync/%E7%9F%BF%E6%9C%BA%E7%9B%BE%E6%9E%84.litematic"
+sha256 = "55e938321552cbd46f436ce486fecfe8a7bd5f25415297c9a67ac7014a1fa69b"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "overworld TNT tunnel bore (slime flying machine, 24 minecarts)"
+
+[[world]]
+name = "tunnel_bore_nether"
+group = "tnt"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E7%94%9F%E7%94%B5%E6%9C%BA%E5%99%A8/%E7%82%B8%E5%9D%91/%E5%9C%B0%E7%8B%B1%E7%9B%BE%E6%9E%84.litematic"
+sha256 = "b9683c2d480a4c97fd1edf9608e1a8161b97a2c1050f1f84b5bc818b47f57840"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "nether TNT tunnel bore (16 minecarts), run in the overworld"
+
+[[world]]
+name = "bud_3gt_generator"
+group = "redstone"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E6%87%92%E5%BE%97%E5%88%86/3gtBUD%E5%8F%91%E7%94%9F%E5%99%A8.litematic"
+sha256 = "d2b0fa6736fed8645198e2062e62704f209f4eb0942d09009699ecf7537727f0"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "3 gt BUD pulse generator (dropper, comparator, sticky pistons), self-running"
+
+[[world]]
+name = "push_limit_detector"
+group = "pistons"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E6%87%92%E5%BE%97%E5%88%86/%E6%8E%A8%E5%8A%A8%E4%B8%8A%E9%99%90%E6%A3%80%E6%B5%8B.litematic"
+sha256 = "0aa76641ce299a4c37c5c8cff8d75acc6ca98d595ae584d2f9f3f3e398d86411"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "piston push-limit detector (slime, observers, note blocks, hopper/dropper)"
+
+[[world]]
+name = "down_retract_3x5x3"
+group = "pistons"
+url = "https://github.com/DuskScorpio/Scorpio-File-Downloads/raw/c3956162182bbef0413c601ef1c26691f7783a36/Files/3x5x3%20Down%20Retract.litematic"
+sha256 = "73e0dcb99706095b797ead97596f5e9555cfff8b75df678ccd2fd08288fdbc20"
+licence = "CC0-1.0"
+source = "https://github.com/DuskScorpio/Scorpio-File-Downloads"
+contents = "downward piston retraction module (slime, observer, note block, bell), lever"
+
+[[world]]
+name = "clock_unbreakable_pulse"
+group = "redstone"
+url = "https://github.com/Storage-Catalog/Archive/raw/07df2ff236961c2ffd955db1d72b21cc71612b70/Archive/CC_clocks-and-counters/CC005_Unbreakable_custom-duration_pulsed_clock/attachments/CC005_unbreakable_custom_clock_demo.litematic"
+sha256 = "3de454cf9fcb166397da3aa561b8ca3ca3010e6879f50aee13c128bc0f340ac2"
+licence = "none stated (README asks for credit and a link)"
+source = "https://github.com/Storage-Catalog/Archive"
+contents = "lever clock with trapdoor latch, 2 gt piston ordering"
+
+[[world]]
+name = "counter_8gt"
+group = "redstone"
+url = "https://github.com/Storage-Catalog/Archive/raw/07df2ff236961c2ffd955db1d72b21cc71612b70/Archive/CC_clocks-and-counters/CC007_8gt_Fast_Switch_1wt_Divide-by-N_Counter/attachments/CC007_1wt_8gt_counter.litematic"
+sha256 = "e1a65956be90e833385d00ecaf41339d2757d3fecf2ed6e3393340f9ce6a9af7"
+licence = "none stated (README asks for credit and a link)"
+source = "https://github.com/Storage-Catalog/Archive"
+contents = "1-wide divide-by-N counter (dropper items set N)"
+
+[[world]]
+name = "ss_encoder"
+group = "redstone"
+url = "https://github.com/Leroymilo/Litematicas/raw/c3dded074dc010d4d5ea7ba166323b74ebb176c7/redstone/2w_ABtileable_redcoder.litematic"
+sha256 = "b862e3da3a0ec4b360ec324a6a658d46822e25106b90f1f4d99fdfcd431e71a7"
+licence = "none stated (README: free to use)"
+source = "https://github.com/Leroymilo/Litematicas"
+contents = "2-wide signal strength encoder (comparators, torches)"
+
+[[world]]
+name = "sand_duper_12gt"
+group = "pistons"
+url = "https://github.com/DuskScorpio/Scorpio-File-Downloads/raw/c3956162182bbef0413c601ef1c26691f7783a36/Files/12gt%20Sand%20Duper/12gt%20Sand%20Duper%20V4.litematic"
+sha256 = "cc7a3cb90ea786f12878ac82ae3f3bb957f7061d454085fbea9d33f41060061c"
+licence = "CC0-1.0"
+source = "https://github.com/DuskScorpio/Scorpio-File-Downloads"
+contents = "12 gt sand duper (end portal, slime/honey), lever"
+
+[[world]]
+name = "item_sorter_mis_v5"
+group = "hoppers"
+url = "https://github.com/Storage-Catalog/Archive/raw/07df2ff236961c2ffd955db1d72b21cc71612b70/Archive/MF_multi-item-filters/MF004_MIS_V5.1/attachments/MF004_MIS_V5.1_1wt.litematic"
+sha256 = "a01505629ee9af60e64983963aec8b60238e181d32a5eb8adf5f0311d85bf164"
+licence = "none stated (README asks for credit and a link)"
+source = "https://github.com/Storage-Catalog/Archive"
+contents = "multi-item sorter (hopper speed, 1.14)"
+
+[[world]]
+name = "box_sorter_8gt"
+group = "hoppers"
+url = "https://github.com/Storage-Catalog/Archive/raw/07df2ff236961c2ffd955db1d72b21cc71612b70/Archive/BS_first-item-box-sorters/BS004_Simple_8gt_Box_Sorter/attachments/BS004_Simple_Box_Sorter.litematic"
+sha256 = "32d1dee90478152a0f488f2b11e8e43de0e66f62af99fff34ebc504a53dd0023"
+licence = "none stated (README asks for credit and a link)"
+source = "https://github.com/Storage-Catalog/Archive"
+contents = "8 gt shulker box sorter by first item, filter hoppers"
+
+[[world]]
+name = "yams_storage"
+group = "hoppers"
+url = "https://github.com/Storage-Catalog/Archive/raw/07df2ff236961c2ffd955db1d72b21cc71612b70/Archive/LS_large-storages/LS006_Yams_v2.3/attachments/LS006_YAMS_V2.33_MB_Bugfixed.litematic"
+sha256 = "34068f07f2552fcb5f53e986ec6c2ec3d341349720dd7c13aeb7fa267c74b58a"
+licence = "none stated (README asks for credit and a link)"
+source = "https://github.com/Storage-Catalog/Archive"
+contents = "YAMS v2.33 storage: about 4k hoppers, 10k block entities, glow item frames"
+ticks = 200
+
+[[world]]
+name = "scorpio_mis_base"
+group = "hoppers"
+url = "https://github.com/DuskScorpio/Scorpio-File-Downloads/raw/c3956162182bbef0413c601ef1c26691f7783a36/Files/Scorpio%20MIS/Litematics%201.21.5/Scorpio%20MIS%20%28Base%29%20v3.49%20%281.21.5%29.litematic"
+sha256 = "3eb2bfe9d6900d80e033c0e8389c44d8bc0567a9fc800baa157e75045d9737ca"
+licence = "CC0-1.0"
+source = "https://github.com/DuskScorpio/Scorpio-File-Downloads"
+contents = "Scorpio multi-item sorter storage (1147 block entities, item frames), lever"
+
+[[world]]
+name = "lithium_item_sorter"
+group = "hoppers"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/tests/corpus/lithium-litematic/gametest/structure/item_sorter.litematic"
+sha256 = "153dfbd644afd9188bbeb126cf71c9f2a61bb22e9400c56bdca8ca45315b7509"
+licence = "MIT repository, Lithium gametest upstream (LGPL-3.0)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "hopper/comparator item sorter with pre-filled containers"
+
+[[world]]
+name = "iron_farm_single"
+group = "mobs"
+url = "https://github.com/CasualMinecraft/casual-builds/raw/0901c0036f4ee2481d38cbac6b4d178a640a17bd/farms/iron-farm-single--casual/schematics/iron-farm-single--casual_v1.0.schem"
+sha256 = "b4d98e6619a533d554d3c2d60358e02445dc1fd97b6e508b1741564de99d93cf"
+licence = "none stated"
+source = "https://github.com/CasualMinecraft/casual-builds"
+contents = "villager-panic iron golem farm (beds, lava, hoppers), no villagers in the file"
+
+[[world]]
+name = "gold_farm_gnembon"
+group = "mobs"
+url = "https://github.com/Mindstormman06/litematics/raw/2d00783c66f50aefece05f7e158e157f5271118e/Farms/Gold/Gnembon%20Gold%20Farm.litematic"
+sha256 = "f347d371f49ffee323242a9579692bcd2bdd9e4d19fd4ec3bb8238ebfefb2f67"
+licence = "none stated"
+source = "https://github.com/Mindstormman06/litematics"
+contents = "nether-roof gold farm with 65 zombified piglins and hopper minecarts, run in the overworld"
+ticks = 400
+
+[[world]]
+name = "raid_farm_413k"
+group = "mobs"
+url = "https://github.com/DuskScorpio/Scorpio-File-Downloads/raw/c3956162182bbef0413c601ef1c26691f7783a36/Files/413k%20Prenether%20Stacking%20Raid%20Farm%20by%20Hydrogen_PDC%20%26%20Scorpio/Litematics/413k%20Prenether%20Stacking%20Raid%20Farm%20by%20Hydrogen_PDC%20%26%20Scorpio.litematic"
+sha256 = "ee79787e25793efb660aafa8af6c22d31f4b14c5ee1b401b45a103d4da1a6cfa"
+licence = "CC0-1.0"
+source = "https://github.com/DuskScorpio/Scorpio-File-Downloads"
+contents = "stacking raid farm with 10 villagers (no raid started)"
+
+[[world]]
+name = "guardian_farm_15k"
+group = "mobs"
+url = "https://archive.org/download/15k-guardian-farm/15.3k%201D%20Guardian%20Farm.litematic"
+sha256 = "f66d15c372c6a8b37a2522a7d76c054552ec0cae8f0b9e59a751fe9d0ddeb935"
+licence = "none stated"
+source = "https://archive.org/details/15k-guardian-farm"
+contents = "guardian farm with 10 guardians (no monument in a void world)"
+
+[[world]]
+name = "guardian_farm_15k_world"
+group = "mobs"
+url = "https://archive.org/download/15k-guardian-farm/%E7%AE%80%E5%8D%95%E5%AE%88%E5%8D%AB%E8%80%85%E5%86%9C%E5%9C%BA.zip"
+sha256 = "9134108097018fa406348223790ff6e2d6ad2aac6d271167650616988ebc6957"
+licence = "none stated"
+source = "https://archive.org/details/15k-guardian-farm"
+contents = "world of the guardian farm with its monument, around the saved player"
+
+[[world]]
+name = "creeper_farm_72k"
+group = "mobs"
+url = "https://archive.org/download/72.5k-creeper-farm/72k%201D%20Creeper%20Farm.litematic"
+sha256 = "abe5aab2ef7c59df5140eb9c728b54f42deee1ba6460adcc8e42c347c64d8758"
+licence = "none stated"
+source = "https://archive.org/details/72.5k-creeper-farm"
+contents = "boat creeper farm (192 boats, lava cauldron kill, shulker loader, crafter), lever"
+ticks = 400
+
+[[world]]
+name = "slime_farm_swamp"
+group = "mobs"
+url = "https://github.com/Mindstormman06/litematics/raw/2d00783c66f50aefece05f7e158e157f5271118e/Farms/Slime/Simple%20Swamp%20Slime%20Farm.litematic"
+sha256 = "02796e6c1e62037e6d6243ef2c2afcc1af9bba9c8c5e9fe954a6d7e86ac5b80c"
+licence = "none stated"
+source = "https://github.com/Mindstormman06/litematics"
+contents = "swamp slime farm platforms with a few mobs in the file"
+
+[[world]]
+name = "sugarcane_8x8x8"
+group = "farms"
+url = "https://github.com/Firebee45/Archive/raw/0d0e56f3d93d5efdd0e03115111ab6a599b007f6/Archive/assets/downloads/litematic/8x8x8_Sugar_Cane_Farm.litematic"
+sha256 = "759892710890ec95b9e28908f8da58982f6c23c1fa43589f008b44ced63b1732"
+licence = "none stated"
+source = "https://github.com/Firebee45/Archive"
+contents = "8x8x8 observer sugar cane farm (43 plants), random ticks"
+rules = { random_tick_speed = "3" }
+
+[[world]]
+name = "kelp_8x8x8"
+group = "farms"
+url = "https://github.com/Firebee45/Archive/raw/0d0e56f3d93d5efdd0e03115111ab6a599b007f6/Archive/assets/downloads/litematic/8x8x8_Kelp_Farm.litematic"
+sha256 = "f977133967485e19a1abd19743e5d3cd4605284c9276b15f7b70ccfd5d8a1c9d"
+licence = "none stated"
+source = "https://github.com/Firebee45/Archive"
+contents = "8x8x8 kelp farm with a jukebox timer, random ticks"
+rules = { random_tick_speed = "3" }
+
+[[world]]
+name = "bamboo_8x8x8"
+group = "farms"
+url = "https://github.com/Firebee45/Archive/raw/0d0e56f3d93d5efdd0e03115111ab6a599b007f6/Archive/assets/downloads/litematic/8x8x8_Bamboo_farm.litematic"
+sha256 = "f3db03b89fc5069294c4fca0c3fec7172ab9dbe8c3c57c7e8e4d19113a1369b3"
+licence = "none stated"
+source = "https://github.com/Firebee45/Archive"
+contents = "8x8x8 bamboo farm with a jukebox timer and box loader, random ticks"
+rules = { random_tick_speed = "3" }
+
+[[world]]
+name = "kelp_module_vexed"
+group = "farms"
+url = "https://github.com/GSVexed/vexed-schematics/raw/8ff1fc7c9ef6d1715296edee30c8b3bbcd5a439c/kelp.litematic"
+sha256 = "b25750fcc8e7e86fefb6ba9a0b9c3d436fffc7369f4ac1883c9c76e38d16f261"
+licence = "none stated"
+source = "https://github.com/GSVexed/vexed-schematics"
+contents = "observer/dispenser bone meal kelp module, lever, random ticks"
+rules = { random_tick_speed = "3" }
+
+[[world]]
+name = "sugarcane_ilmango"
+group = "farms"
+url = "https://github.com/Mindstormman06/litematics/raw/2d00783c66f50aefece05f7e158e157f5271118e/Farms/Various%20Plants/ilmango%20sugarcane.litematic"
+sha256 = "0c35da3db814a6265b7f767793d514947aed00a9203d1cc6070dfa346b736f62"
+licence = "none stated"
+source = "https://github.com/Mindstormman06/litematics"
+contents = "ilmango sugar cane farm with a flying machine harvester, random ticks"
+rules = { random_tick_speed = "3" }
+
+[[world]]
+name = "trading_hall_1w"
+group = "villagers"
+url = "https://archive.org/download/mredog_1-wide_tileable_villager_trading_halls/1w%20Trading%20Hall%20Base%20Version.litematic"
+sha256 = "6c7653c791cfd4ad213b47329c39be7ec36776022a6bf64ab9b2f5f9b468ed6e"
+licence = "none stated"
+source = "https://archive.org/details/mredog_1-wide_tileable_villager_trading_halls"
+contents = "1-wide tileable trading hall (cell selection, conveyor), levers and buttons"
+
+[[world]]
+name = "trading_hall_1w_world"
+group = "villagers"
+url = "https://archive.org/download/mredog_1-wide_tileable_villager_trading_halls/Cell%20Selection%20Trading%20Hall%20V3.zip"
+sha256 = "37503b1ad567b7c88fb34ac4d794e135b76a18d600bce01ca4224cfb4a0dce49"
+licence = "none stated"
+source = "https://archive.org/details/mredog_1-wide_tileable_villager_trading_halls"
+contents = "world of the trading hall, around the saved player"
+
+[[world]]
+name = "trading_hall_zombie"
+group = "villagers"
+url = "https://github.com/transcental/Litematics/raw/b0f0e76602406a3b8f1facb08e1fa947139d61e9/Files/logicalgeekboy/SM_TradingHall_Zombie.litematic"
+sha256 = "10d41c02c0a9c03464dc06f41281c4b4829907667ffdcdc9c8e749341eac6eab"
+licence = "none stated"
+source = "https://github.com/transcental/Litematics"
+contents = "small trading hall with a zombie curing cell (lecterns, observer)"
+
+[[world]]
+name = "villager_breeder"
+group = "villagers"
+url = "https://github.com/transcental/Litematics/raw/b0f0e76602406a3b8f1facb08e1fa947139d61e9/Files/logicalgeekboy/SM_VillagerBreeder.litematic"
+sha256 = "ea2624ade0847bcb383ff310ba115e8279455655e6598303c67155b29ac250e6"
+licence = "none stated"
+source = "https://github.com/transcental/Litematics"
+contents = "villager breeder with 3 villagers (beds, composter farmer, dispensers)"
+
+[[world]]
+name = "lag_10000_hoppers"
+group = "lag"
+url = "https://github.com/Piscescup/MC-Java-Schematics/raw/7da7d7d395dab97c6cbe46d751b81217dfe1170a/%E5%8D%A1%E9%A1%BF%E6%B5%8B%E8%AF%95/10000%20hopper.litematic"
+sha256 = "ecc192a0bec4245fe2a8c27d44e1d63b038dc744b3eda7ab667d3cc7a2853a9c"
+licence = "none stated"
+source = "https://github.com/Piscescup/MC-Java-Schematics"
+contents = "10000 hoppers (10k block entities), passive"
+ticks = 400
+
+[[world]]
+name = "lithium_all_entities"
+group = "lag"
+url = "https://github.com/Schem-at/Nucleation/raw/dec14b6ce5f1dd53dd0d359a69dbfff2106328e6/tests/corpus/lithium-litematic/gametest/structure/spawn_almost_all_entities.litematic"
+sha256 = "65124345e3ef13a85aef3f3d5cd9cb2a63d154aadd0f9344b22dcdd2e1b069b8"
+licence = "MIT repository, Lithium gametest upstream (LGPL-3.0)"
+source = "https://github.com/Schem-at/Nucleation"
+contents = "158 command blocks summoning nearly every entity type on a repeater chain"
+
+[[world]]
+name = "lag_machine_3b3t_world"
+group = "lag"
+url = "https://archive.org/download/3b3t-3b3t-lag-machine-2014-05-16-world-download/3b3t%20lag%20machine%20%282014-05-16%29%20-%203b3t%20world%20download%20%28Minecraft%201.21.4%29.zip"
+sha256 = "1675079c9ae95e2b2234afbe0245119e0906f5e688b60e12b952c83fa0043a75"
+licence = "none stated (2b2t Library)"
+source = "https://archive.org/details/3b3t-3b3t-lag-machine-2014-05-16-world-download"
+contents = "2014 3b3t lag machine world (1.21.4), around the saved player"
+
+[[world]]
+name = "lag_machine_2b2t_world"
+group = "lag"
+url = "https://archive.org/download/2b2t-block-game-mecca-lag-machine-2018-05-30-world-download/Block%20Game%20Mecca%20lag%20machine%20%282018-05-30%29%20-%202b2t%20world%20download%20%28Minecraft%201.21.4%29.zip"
+sha256 = "7c058aab7f75b0eefb654abb5547277b1ea0bbc5dc861810e06d0c6a47094e5a"
+licence = "none stated (2b2t Library)"
+source = "https://archive.org/details/2b2t-block-game-mecca-lag-machine-2018-05-30-world-download"
+contents = "2018 2b2t lag machine world at x 3066807 (far coordinates), around the saved player"
