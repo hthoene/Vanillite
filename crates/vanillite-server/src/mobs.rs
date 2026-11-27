@@ -1806,6 +1806,11 @@ pub fn player_entity_action(
                 );
             }
         }
+        EntityAction::StartUsing(hand) => {
+            if usable {
+                vanillite_game::player::using::start(ents, env, network_ids, player, hand);
+            }
+        }
         EntityAction::BindToFence(pos) => {
             if usable {
                 vanillite_game::mob::tame::bind_player_mobs(ents, env, network_ids, player, pos);

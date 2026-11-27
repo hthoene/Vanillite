@@ -1,0 +1,21 @@
+{
+  "description": "BlockItem.useOn falls back to Item.use for consumable block items: a hungry player right-clicks stone with a carrot (no farmland, cannot be planted) and eats it; later sweet berries on stone are eaten as well. A full player's click with a potato on stone does nothing.",
+  "tier": "fast",
+  "player_state": true,
+  "time": 6000,
+  "region": [[0, -61, 0], [15, -58, 15]],
+  "ticks": 90,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [5.5, -60.0, 5.5]},
+    {"name": "alex", "type": "minecraft:player", "pos": [10.5, -60.0, 5.5]}
+  ],
+  "setup": [
+    {"op": "set", "pos": [5, -60, 7], "block": "minecraft:stone"},
+    {"op": "set", "pos": [10, -60, 7], "block": "minecraft:stone"}
+  ],
+  "actions": [
+    {"tick": 2, "op": "use", "entity": "steve", "pos": [5, -60, 7], "face": "up", "item": "minecraft:carrot", "count": 3, "food": 10},
+    {"tick": 2, "op": "use", "entity": "alex", "pos": [10, -60, 7], "face": "up", "item": "minecraft:potato", "count": 3},
+    {"tick": 50, "op": "use", "entity": "steve", "pos": [5, -60, 7], "face": "north", "item": "minecraft:sweet_berries", "count": 2}
+  ]
+}
