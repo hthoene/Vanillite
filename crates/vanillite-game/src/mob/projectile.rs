@@ -15,7 +15,6 @@ use crate::entities::Entities;
 use crate::level::Level;
 use crate::survival::play_sound;
 use crate::survival::player::Env;
-use crate::survival::rules::Difficulty;
 
 /// Whether `kind` is an arrow (`Arrow` or `SpectralArrow`).
 pub fn is_arrow_kind(kind: vanillite_data::entity::EntityTypeId) -> bool {
@@ -41,9 +40,12 @@ pub struct ArrowData {
     pub random_state: i64,
     /// The knockback of the weapon's enchantments (Punch).
     pub knockback: f32,
-    /// `remainingFireTicks`: while burning (Flame, fire, lava) it sets what it hits on fire
-    /// for 5 seconds.
-    pub fire_ticks: i32,
+    /// `remainingFireTicks`: a burning arrow (Flame, wither skeletons, lava, fire) sets what
+    /// it hits on fire for 5 seconds.
+    pub fire: i32,
+    /// `wasTouchingWater`: the water contact `baseTick` found at the end of the last flying
+    /// tick (`isInWater`).
+    pub touching_water: bool,
     /// The item it is picked up as (`pickupItemStack`): an arrow, a tipped arrow with its
     /// `potion_contents`, or a spectral arrow.
     pub item: crate::item::ItemStack,
@@ -91,8 +93,8 @@ impl ArrowData {
             pickup,
             random_state,
             knockback: 0.0,
-            // `-getFireImmuneTicks()`.
-            fire_ticks: -1,
+            fire: 0,
+            touching_water: false,
             item,
             in_ground_time: 0,
             spectral_duration: 200,
@@ -206,60 +208,47 @@ pub fn shoot_arrow(
     data.crit = crit;
     data.weapon = weapon.cloned();
     if let Some(w) = weapon {
-        weapon_enchantments(ents, owner, kind, w, random, &mut data);
+        let combat = super::attack::combat_data();
+        let (enchants, tags): (
+            &crate::enchant::Enchantments,
+            &dyn crate::predicate::EntityTags,
+        ) = (&combat.enchants, &*combat);
+        let arrow = crate::predicate::EntityFacts {
+            kind: Some(kind),
+            ..crate::predicate::EntityFacts::default()
+        };
+        let types = crate::survival::damage::DamageTypes::built_in();
+        let cx = crate::enchant::EnchantContext {
+            types: &types,
+            tags,
+            this: None,
+            attacker: owner.and_then(|o| super::attack::facts(ents, o)),
+            direct_attacker: Some(arrow),
+            attacking_player: None,
+            source: None,
+            raining: false,
+            thundering: false,
+            location: None,
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let dmg = enchants.modify_damage(w, &cx, random, data.base_damage as f32);
+        data.base_damage = f64::from(dmg);
+        data.knockback = enchants.modify_knockback(w, &cx, random, 0.0);
+        if enchants.projectile_ignite(w).is_some() {
+            // `igniteForSeconds(100)`.
+            data.fire = 2000;
+        }
     }
     let mut new = NewEntity::new(kind, network_ids.next(), uuid, start);
     new.velocity = velocity;
     new.rot = rot;
     new.flags = EntityFlags::HAS_IMPULSE;
-    if data.fire_ticks > 0 {
+    if data.fire > 0 {
         new.flags.set(EntityFlags::ON_FIRE, true);
     }
     let id = ents.spawn_arrow(new, data);
     ents.launched(id, owner);
     id
-}
-
-/// The arrow's enchantment effects of the weapon it is shot from (`firedFromWeapon`): Power
-/// adds damage, Punch knockback, Flame fire.
-fn weapon_enchantments(
-    ents: &Entities,
-    owner: Option<EntityId>,
-    kind: vanillite_data::entity::EntityTypeId,
-    w: &crate::item::ItemStack,
-    random: &mut LegacyRandom,
-    data: &mut ArrowData,
-) {
-    let combat = super::attack::combat_data();
-    let (enchants, tags): (
-        &crate::enchant::Enchantments,
-        &dyn crate::predicate::EntityTags,
-    ) = (&combat.enchants, &*combat);
-    let arrow = crate::predicate::EntityFacts {
-        kind: Some(kind),
-        ..crate::predicate::EntityFacts::default()
-    };
-    let types = crate::survival::damage::DamageTypes::built_in();
-    let cx = crate::enchant::EnchantContext {
-        types: &types,
-        tags,
-        this: None,
-        attacker: owner.and_then(|o| super::attack::facts(ents, o)),
-        direct_attacker: Some(arrow),
-        attacking_player: None,
-        source: None,
-        raining: false,
-        thundering: false,
-        location: None,
-    };
-    #[allow(clippy::cast_possible_truncation)]
-    let dmg = enchants.modify_damage(w, &cx, random, data.base_damage as f32);
-    data.base_damage = f64::from(dmg);
-    data.knockback = enchants.modify_knockback(w, &cx, random, 0.0);
-    // `onProjectileSpawned`: Flame's `ignite` for 100 seconds.
-    if enchants.projectile_ignite(w).is_some() {
-        data.fire_ticks = 2000;
-    }
 }
 
 /// `AbstractSkeleton.performRangedAttack`.
@@ -272,10 +261,63 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     let start = Vec3::new(p.x, t.eye_y() - f64::from(0.1_f32), p.z);
     let difficulty = t.env.difficulty;
     let id = t.id;
+    // `getItemInHand(getWeaponHoldingHand(BOW))` and `getProjectile(bow)`: an arrow held in
+    // a hand (off hand first), else a plain arrow.
+    let (weapon, ammo) = {
+        use crate::item::EquipmentSlot;
+        let m = t.mob_ref();
+        let bow = vanillite_data::item::ids::BOW.0;
+        let main = m.equipment.get(EquipmentSlot::MainHand);
+        let off = m.equipment.get(EquipmentSlot::OffHand);
+        let weapon = if !main.is_empty() && main.item == bow {
+            main.clone()
+        } else {
+            off.clone()
+        };
+        let is_arrow = |s: &crate::item::ItemStack| {
+            !s.is_empty()
+                && crate::player::play::game_data()
+                    .is_some_and(|d| d.item_in_tag(s.item, "minecraft:arrows"))
+        };
+        let ammo = if is_arrow(off) {
+            Some(off.clone())
+        } else if is_arrow(main) {
+            Some(main.clone())
+        } else {
+            None
+        };
+        (weapon, ammo)
+    };
     let m = t.mob();
     // The arrow's own random (its constructor); `setBaseDamageFromMob` and `shoot` draw from
     // it, not from the skeleton's.
     let mut own = LegacyRandom::new(super::new_entity_seed());
+    // `getArrow` of the skeleton kinds: tipped arrows and the wither skeleton's fire.
+    let (effect, fire) = super::fam::undead::skeleton_arrow(m.kind);
+    let (kind, item) = match &ammo {
+        None => (entity_ids::ARROW, mob_arrow(effect)),
+        Some(a) => {
+            let (kind, mut item) = arrow_of(a);
+            // `Arrow.addEffect` onto the held arrow's potion.
+            if kind == entity_ids::ARROW
+                && let Some(e) = effect
+            {
+                let mut contents = crate::effect::potion::PotionContents::of_stack(&item);
+                contents.custom_effects.push(e);
+                item.patch_mut().set(
+                    vanillite_protocol::components::ids::POTION_CONTENTS,
+                    contents.encode(),
+                );
+            }
+            (kind, item)
+        }
+    };
+    // The `AbstractArrow` constructor with the weapon: its Piercing level.
+    let weapon = (!weapon.is_empty()).then_some(weapon);
+    let pierce = match (&weapon, crate::player::play::game_data()) {
+        (Some(w), Some(d)) => d.enchants.piercing_count(w, &item, t.env.random),
+        _ => 0,
+    };
     #[allow(clippy::cast_precision_loss)]
     let base_damage =
         f64::from(power) * 2.0 + own.triangle(f64::from(difficulty as i32) * 0.11, 0.574_25);
@@ -294,37 +336,51 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
         uncertainty,
     );
     let uuid = crate::mob::new_uuid();
-    let crit = false;
-    // `getArrow` of the skeleton kinds: tipped arrows and the wither skeleton's fire.
-    let (effect, fire) = super::fam::undead::skeleton_arrow(m.kind);
-    let mut new = NewEntity::new(entity_ids::ARROW, t.level.network_ids().next(), uuid, start);
+    let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), item);
+    data.crit = false;
+    // `igniteForSeconds(100)` of the wither skeleton's arrow.
+    data.fire = if fire { 2000 } else { 0 };
+    data.pierce_level = u8::try_from(pierce.clamp(0, 127)).unwrap_or(0);
+    // The weapon's Power (`modifyDamage`), Punch (`modifyKnockback`) and Flame
+    // (`onProjectileSpawned`).
+    if let Some(w) = &weapon {
+        let combat = super::attack::combat_data();
+        let (enchants, tags): (
+            &crate::enchant::Enchantments,
+            &dyn crate::predicate::EntityTags,
+        ) = (&combat.enchants, &*combat);
+        let arrow = crate::predicate::EntityFacts {
+            kind: Some(kind),
+            ..crate::predicate::EntityFacts::default()
+        };
+        let types = crate::survival::damage::DamageTypes::built_in();
+        let cx = crate::enchant::EnchantContext {
+            types: &types,
+            tags,
+            this: None,
+            attacker: super::attack::facts(t.ents, id),
+            direct_attacker: Some(arrow),
+            attacking_player: None,
+            source: None,
+            raining: false,
+            thundering: false,
+            location: None,
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let dmg = enchants.modify_damage(w, &cx, t.env.random, data.base_damage as f32);
+        data.base_damage = f64::from(dmg);
+        data.knockback = enchants.modify_knockback(w, &cx, t.env.random, 0.0);
+        if enchants.projectile_ignite(w).is_some() {
+            // `igniteForSeconds(100)`.
+            data.fire = 2000;
+        }
+    }
+    data.weapon = weapon;
+    let mut new = NewEntity::new(kind, t.level.network_ids().next(), uuid, start);
     new.velocity = velocity;
     new.rot = rot;
     new.flags = EntityFlags::HAS_IMPULSE;
-    let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), mob_arrow(effect));
-    data.crit = crit;
-    if fire {
-        data.fire_ticks = 2000;
-    }
-    // `getMobArrow(.., bowItem)`: the arrow keeps the bow and its Power, Punch and Flame.
-    let bow = t
-        .mob_ref()
-        .equipment
-        .get(crate::item::EquipmentSlot::MainHand)
-        .clone();
-    if !bow.is_empty() {
-        let mut random = t.mob().random.clone();
-        weapon_enchantments(
-            t.ents,
-            Some(id),
-            entity_ids::ARROW,
-            &bow,
-            &mut random,
-            &mut data,
-        );
-        data.weapon = Some(bow);
-    }
-    if data.fire_ticks > 0 {
+    if data.fire > 0 {
         new.flags.set(EntityFlags::ON_FIRE, true);
     }
     let arrow = t.ents.spawn_arrow(new, data);
@@ -332,7 +388,6 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     let m = t.mob();
     let pitch = 1.0 / (m.random.next_float() * 0.4 + 0.8);
     super::kinds::play_sound(t, "minecraft:entity.skeleton.shoot", 1.0, pitch);
-    let _ = Difficulty::Peaceful;
 }
 
 /// The arrow a skeleton type shoots (`AbstractSkeleton.getArrow`): `Arrow.addEffect` puts the
@@ -430,18 +485,6 @@ pub fn tick_arrow(
         super::missile::shoot_event(env.out, pos, a.owner);
     }
     a.tick_count += 1;
-    // `Entity.baseTick`: the fire burns down; the client sees it (`setSharedFlagOnFire`).
-    if a.fire_ticks > 0 {
-        a.fire_ticks -= 1;
-    }
-    let on_fire = a.fire_ticks > 0;
-    // `isInWaterOrRain`: `clearFire`.
-    if super::is_water(level.block(BlockPos::containing(pos.x, pos.y, pos.z)))
-        || level.is_raining_at(BlockPos::containing(pos.x, pos.y, pos.z))
-        || level.is_raining_at(BlockPos::containing(pos.x, start_box.max_y, pos.z))
-    {
-        a.fire_ticks = 0;
-    }
     let block_pos = BlockPos::containing(pos.x, pos.y, pos.z);
     let state = level.block(block_pos);
     if !state.is_air() {
@@ -463,6 +506,10 @@ pub fn tick_arrow(
     }
     if a.shake > 0 {
         a.shake -= 1;
+    }
+    // `isInWaterOrRain`: `clearFire`.
+    if a.fire > 0 && (a.touching_water || in_rain(level, pos)) {
+        a.fire = 0;
     }
     let mut discard = false;
     if a.in_ground {
@@ -488,15 +535,13 @@ pub fn tick_arrow(
         a.in_ground_time += 1;
         if !discard {
             inside_blocks(level, cx, id, start_box, start, pos);
-            a.fire_ticks = a
-                .fire_ticks
-                .max(fire_from_blocks(level, start_box, start, pos));
+            fire_effects(level, &mut a, &mut random, env, start_box, start, pos);
         }
     } else {
         a.in_ground_time = 0;
         // The step and the rotation use the motion from the start of the tick.
         let movement = velocity;
-        let in_water = super::is_water(state);
+        let in_water = a.touching_water;
         if in_water {
             velocity = velocity * f64::from(0.6_f32);
         }
@@ -530,9 +575,23 @@ pub fn tick_arrow(
             .aabb()
             .expand_towards(velocity.x, velocity.y, velocity.z)
             .inflate(1.0, 1.0, 1.0);
-        let mut hits: Vec<(EntityId, f64, Vec3)> = Vec::new();
+        let mut hits: Vec<(EntityId, f64, Vec3, Option<usize>)> = Vec::new();
+        let mut dragons: Vec<EntityId> = Vec::new();
+        ents.store
+            .for_each_in(&area.inflate(12.0, 12.0, 12.0), false, |other| {
+                if ents
+                    .mob(other)
+                    .is_some_and(|m| m.kind == super::Kind::EnderDragon)
+                {
+                    dragons.push(other);
+                }
+            });
         ents.store.for_each_in(&area, false, |other| {
             if other == id || a.pierced.contains(&other) {
+                return;
+            }
+            // `EnderDragon.isPickable` is false: arrows hit its parts.
+            if dragons.contains(&other) {
                 return;
             }
             if !a.left_owner && a.owner == Some(other) {
@@ -566,20 +625,51 @@ pub fn tick_arrow(
                 aabb_clip(&bb, outside, towards).map(|_| outside)
             });
             if let Some(hit) = hit {
-                hits.push((other, pos.distance_to_sqr(oe.pos()), hit));
+                hits.push((other, pos.distance_to_sqr(oe.pos()), hit, None));
             }
         });
+        // `Level.getEntities` adds the dragon parts (`EnderDragonPart`) in the area last.
+        for &dragon in &dragons {
+            if a.pierced.contains(&dragon)
+                || !crate::effect::thrown::can_be_hit(ents, dragon)
+                || (!a.left_owner && a.owner == Some(dragon))
+            {
+                continue;
+            }
+            let Some(s) = ents.mob(dragon).and_then(|m| m.boss.dragon()) else {
+                continue;
+            };
+            for i in 0..super::boss::dragon::PARTS.len() {
+                let bb = s.part_box(i);
+                if !bb.intersects(&area) {
+                    continue;
+                }
+                let hit = aabb_clip(&bb, pos, end).or_else(|| {
+                    if margin <= 0.0 {
+                        return None;
+                    }
+                    let m = f64::from(margin);
+                    let outside = aabb_clip(&bb.inflate(m, m, m), pos, end)?;
+                    let towards = physics::clip(level as &dyn Blocks, outside, bb.center())
+                        .map_or(bb.center(), |(_, p)| p);
+                    aabb_clip(&bb, outside, towards).map(|_| outside)
+                });
+                if let Some(hit) = hit {
+                    hits.push((dragon, pos.distance_to_sqr(s.parts[i]), hit, Some(i)));
+                }
+            }
+        }
         // `stepMoveAndHit`: the entities on the way, nearest first, are hit one after the
         // other until one stops the arrow; a piercing arrow then flies on.
         hits.sort_by(|x, y| x.1.total_cmp(&y.1));
         let mut deflected = false;
-        if let Some(&(_, _, first)) = hits.first() {
+        if let Some(&(_, _, first, _)) = hits.first() {
             pos = first;
         }
         // Whether an entity was hit: Bukkit's `ProjectileHitEvent` may make the arrow ignore
         // every one on its way.
         let mut hit_any = false;
-        for &(target, _, hit) in &hits {
+        for &(target, _, hit, part) in &hits {
             if !super::missile::hit_event(
                 level,
                 ents,
@@ -591,7 +681,7 @@ pub fn tick_arrow(
             }
             hit_any = true;
             // `hitTargetOrDeflectSelf`: a breeze turns the arrow back, once in a row.
-            if super::missile::deflects(ents, target, kind) {
+            if part.is_none() && super::missile::deflects(ents, target, kind) {
                 if a.last_deflected != Some(target) {
                     (velocity, rot) =
                         super::missile::reverse(ents, env, target, velocity, rot, &mut random);
@@ -624,6 +714,12 @@ pub fn tick_arrow(
             let mut source = combat::entity_source(ents, env.types.arrow, owner, id);
             source.position = Some(pos);
             source.projectile_motion = Some(velocity);
+            // A dragon part passes the hit on (`EnderDragonPart.hurtServer`).
+            if let Some(i) = part
+                && let Some(s) = ents.mob_mut(target).and_then(|m| m.boss.dragon_mut())
+            {
+                s.hit_part = Some(i);
+            }
             // `owner.setLastHurtMob(entity)`: mobs and players (their wolves join in).
             if let Some(owner) = a.owner {
                 if let Some(m) = ents.mob_mut(owner) {
@@ -634,12 +730,16 @@ pub fn tick_arrow(
             }
             // A burning arrow sets the target on fire for 5 seconds before the hurt.
             let fire_before = fire_ticks(ents, target);
-            if a.fire_ticks > 0 {
+            if a.fire > 0 {
                 super::attack::ignite(ents, target, 100);
             }
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
-            let living = crate::effect::thrown::is_living(ents, target);
+            // A perched dragon sets the arrow burning (`AbstractDragonSittingPhase.onHurt`).
+            if let Some(d) = ents.arrow(id) {
+                a.fire = a.fire.max(d.fire);
+            }
+            let living = part.is_none() && crate::effect::thrown::is_living(ents, target);
             if hurt && !living {
                 // A vehicle, crystal or decoration: only the hit sound (`onHitEntity`).
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
@@ -872,15 +972,26 @@ pub fn tick_arrow(
             pos = to;
         }
         inside_blocks(level, cx, id, start_box, start, pos);
-        a.fire_ticks = a
-            .fire_ticks
-            .max(fire_from_blocks(level, start_box, start, pos));
-        if !super::is_water(level.block(BlockPos::containing(pos.x, pos.y, pos.z))) {
+        fire_effects(level, &mut a, &mut random, env, start_box, start, pos);
+        if !in_water {
             // `applyInertia(0.99F)`.
             velocity = velocity * f64::from(0.99_f32);
         }
         if !a.in_ground {
             velocity.y -= 0.05;
+        }
+        // `super.tick()` → `baseTick`: the water contact (`updateFluidInteraction`), then the
+        // fire burns down while the arrow flies.
+        let moved_box = start_box.offset(pos.x - start.x, pos.y - start.y, pos.z - start.z);
+        a.touching_water = crate::survival::blocks::fluid_contact(
+            &level.view(),
+            crate::survival::blocks::fluid_facts(),
+            moved_box,
+            pos,
+        )
+        .in_water();
+        if a.fire > 0 {
+            a.fire -= 1;
         }
     }
     a.random_state = random.state();
@@ -916,9 +1027,8 @@ pub fn tick_arrow(
         e.set_pos(pos);
         e.set_velocity(velocity);
         e.set_rot(rot);
-        if e.as_ref().flags().contains(EntityFlags::ON_FIRE) != on_fire {
-            e.set_flags(EntityFlags::ON_FIRE, on_fire);
-        }
+        // `setSharedFlagOnFire`.
+        e.set_flags(EntityFlags::ON_FIRE, a.fire > 0);
         if color_changed || synched != (a.crit, a.pierce_level, a.in_ground) {
             e.mark_data_dirty();
         }
@@ -975,27 +1085,6 @@ fn fire_ticks(ents: &Entities, id: EntityId) -> Option<i32> {
     ents.mob(id)
         .map(|m| m.fire_ticks)
         .or_else(|| ents.player(id).map(|p| p.survival.fire_ticks))
-}
-
-/// The fire ticks the blocks on a projectile's way give it (`applyEffectsFromBlocks`):
-/// `BaseFireBlock.fireIgnite` 8 seconds, lava's `lavaIgnite` 15.
-fn fire_from_blocks(level: &Level, start_box: Aabb, from: Vec3, to: Vec3) -> i32 {
-    #[allow(clippy::cast_possible_truncation)]
-    let dims = vanillite_world::entity::Dimensions {
-        width: (start_box.max_x - start_box.min_x) as f32,
-        height: (start_box.max_y - start_box.min_y) as f32,
-    };
-    let mut ticks = 0;
-    let way = [crate::survival::inside::Movement::plain(from, to)];
-    crate::block::plate::for_each_inside(level, dims, &way, |pos| {
-        let state = level.block(pos);
-        if super::is_lava(state) {
-            ticks = ticks.max(300);
-        } else if crate::block::is_fire(state) {
-            ticks = ticks.max(160);
-        }
-    });
-    ticks
 }
 
 /// `Entity.applyEffectsFromBlocks(from, to)` of a projectile whose box was `start_box` at
@@ -1129,6 +1218,89 @@ fn bubble_column_particles(random: &mut LegacyRandom, cx: &mut MobContext, pos: 
 }
 
 /// `soundEvent`: what the arrow sounds like when it hits.
+/// `isInRain` of an arrow at `pos` (its box is 0.5 high).
+fn in_rain(level: &Level, pos: Vec3) -> bool {
+    let feet = BlockPos::containing(pos.x, pos.y, pos.z);
+    level.is_raining_at(feet)
+        || level.is_raining_at(BlockPos::new(
+            feet.x,
+            vanillite_base::math::floor(pos.y + 0.5),
+            feet.z,
+        ))
+}
+
+/// The fire part of an arrow's `applyEffectsFromBlocks` on the way `from` → `to`: fire blocks
+/// (`BaseFireBlock.fireIgnite`) and lava (`lavaIgnite`) set it burning, water and powder snow
+/// (`EXTINGUISH`) and rain put it out with the extinguish sound (from the arrow's random).
+fn fire_effects(
+    level: &Level,
+    a: &mut ArrowData,
+    random: &mut LegacyRandom,
+    env: &mut Env<'_>,
+    start_box: Aabb,
+    from: Vec3,
+    to: Vec3,
+) {
+    let facts = crate::survival::blocks::fluid_facts();
+    #[allow(clippy::cast_possible_truncation)]
+    let dims = vanillite_world::entity::Dimensions {
+        width: (start_box.max_x - start_box.min_x) as f32,
+        height: (start_box.max_y - start_box.min_y) as f32,
+    };
+    let way = [crate::survival::inside::Movement::plain(from, to)];
+    let inside =
+        crate::survival::blocks::inside_blocks(&level.view(), facts, dims, false, &way, |_| {});
+    if !inside.burns() && a.fire == 0 {
+        return;
+    }
+    let previous = a.fire;
+    for step in inside.steps() {
+        if step.fire.is_some() {
+            if a.fire < 0 {
+                a.fire += 1;
+            }
+            if a.fire >= 0 {
+                a.fire = a.fire.max(160);
+            }
+        }
+        if step.lava_blocks > 0 {
+            a.fire = a.fire.max(300);
+        }
+        if step.extinguish {
+            a.fire = a.fire.min(0);
+        }
+    }
+    if a.fire > 0 && in_rain(level, to) {
+        a.fire = 0;
+    }
+    if previous > 0 && a.fire <= 0 {
+        // `playEntityOnFireExtinguishedSound`.
+        let pitch = 1.6 + (random.next_float() - random.next_float()) * 0.4;
+        play_sound(
+            env.out,
+            None,
+            to,
+            "minecraft:entity.generic.extinguish_fire",
+            SoundSource::Neutral,
+            0.7,
+            pitch,
+            crate::survival::sound_seed(),
+        );
+    }
+    if a.fire <= 0 && a.fire <= previous {
+        a.fire = 0;
+    }
+}
+
+/// `instanceof AbstractArrow || instanceof WindCharge`: arrows, spectral arrows, tridents and
+/// the players' wind charges (not the breeze's).
+pub fn is_arrow_or_wind_charge(ents: &Entities, id: EntityId) -> bool {
+    ents.store.get(id).is_some_and(|e| {
+        let k = e.kind();
+        is_arrow_kind(k) || k == entity_ids::TRIDENT || k == entity_ids::WIND_CHARGE
+    })
+}
+
 fn hit_sound(a: &ArrowData) -> &'static str {
     if a.crossbow_sound {
         "minecraft:item.crossbow.hit"

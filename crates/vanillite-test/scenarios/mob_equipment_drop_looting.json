@@ -1,0 +1,244 @@
+{
+  "description": "A player with Looting III kills eight zombies: Mob.dropCustomDeathLoot adds 0.01 per Looting level to the equipment drop chances (processEquipmentDropChance) and never drops the helmet with Curse of Vanishing (PREVENT_EQUIPMENT_DROP), even at a preserved chance.",
+  "tier": "fast",
+  "time": 6000,
+  "difficulty": "normal",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 20,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -60,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -59.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "zombie0",
+      "type": "minecraft:zombie",
+      "pos": [
+        2.5,
+        -59.0,
+        10.5
+      ],
+      "seed": 10,
+      "finalize": false
+    },
+    {
+      "name": "zombie1",
+      "type": "minecraft:zombie",
+      "pos": [
+        4.0,
+        -59.0,
+        10.5
+      ],
+      "seed": 11,
+      "finalize": false
+    },
+    {
+      "name": "zombie2",
+      "type": "minecraft:zombie",
+      "pos": [
+        5.5,
+        -59.0,
+        10.5
+      ],
+      "seed": 12,
+      "finalize": false
+    },
+    {
+      "name": "zombie3",
+      "type": "minecraft:zombie",
+      "pos": [
+        7.0,
+        -59.0,
+        10.5
+      ],
+      "seed": 13,
+      "finalize": false
+    },
+    {
+      "name": "zombie4",
+      "type": "minecraft:zombie",
+      "pos": [
+        8.5,
+        -59.0,
+        10.5
+      ],
+      "seed": 14,
+      "finalize": false
+    },
+    {
+      "name": "zombie5",
+      "type": "minecraft:zombie",
+      "pos": [
+        10.0,
+        -59.0,
+        10.5
+      ],
+      "seed": 15,
+      "finalize": false
+    },
+    {
+      "name": "zombie6",
+      "type": "minecraft:zombie",
+      "pos": [
+        11.5,
+        -59.0,
+        10.5
+      ],
+      "seed": 16,
+      "finalize": false
+    },
+    {
+      "name": "zombie7",
+      "type": "minecraft:zombie",
+      "pos": [
+        13.0,
+        -59.0,
+        10.5
+      ],
+      "seed": 17,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "item replace entity 56414e49-0000-0001-0000-000000000000 weapon.mainhand with minecraft:diamond_sword[enchantments={\"minecraft:looting\":3}]"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0002-0000-00000000000a {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0003-0000-00000000000b {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0004-0000-00000000000c {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0005-0000-00000000000d {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0006-0000-00000000000e {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0007-0000-00000000000f {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0008-0000-000000000010 {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity 56414e49-0000-0009-0000-000000000011 {NoAI:1b,equipment:{mainhand:{id:\"minecraft:iron_sword\",count:1},head:{id:\"minecraft:iron_helmet\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:vanishing_curse\":1}}},feet:{id:\"minecraft:iron_boots\",count:1}},drop_chances:{mainhand:0.04,head:2.0,feet:0.02}}"
+    },
+    {
+      "tick": 3,
+      "op": "hurt",
+      "entity": "zombie0",
+      "by": "steve",
+      "amount": 100
+    },
+    {
+      "tick": 4,
+      "op": "hurt",
+      "entity": "zombie1",
+      "by": "steve",
+      "amount": 100
+    },
+    {
+      "tick": 5,
+      "op": "hurt",
+      "entity": "zombie2",
+      "by": "steve",
+      "amount": 100
+    },
+    {
+      "tick": 6,
+      "op": "hurt",
+      "entity": "zombie3",
+      "by": "steve",
+      "amount": 100
+    },
+    {
+      "tick": 7,
+      "op": "hurt",
+      "entity": "zombie4",
+      "by": "steve",
+      "amount": 100
+    },
+    {
+      "tick": 8,
+      "op": "hurt",
+      "entity": "zombie5",
+      "by": "steve",
+      "amount": 100
+    },
+    {
+      "tick": 9,
+      "op": "hurt",
+      "entity": "zombie6",
+      "by": "steve",
+      "amount": 100
+    },
+    {
+      "tick": 10,
+      "op": "hurt",
+      "entity": "zombie7",
+      "by": "steve",
+      "amount": 100
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

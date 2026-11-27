@@ -12,6 +12,7 @@
 
 mod blended;
 mod gradient;
+mod lanes;
 mod normal;
 mod perlin;
 mod simplex;

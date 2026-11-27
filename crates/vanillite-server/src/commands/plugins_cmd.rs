@@ -14,6 +14,10 @@ const INFO: Color = Color::Rgb(0x34_9F_DA);
 const NATIVE_HEADER: Color = Color::Rgb(0x02_88_D1);
 /// Header colour of the `Bukkit` group.
 const BUKKIT_HEADER: Color = Color::Rgb(0xED_81_06);
+/// Author, website and licence of the server, shown by `/version`.
+pub(super) const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
+pub(super) const WEBSITE: &str = env!("CARGO_PKG_HOMEPAGE");
+pub(super) const LICENSE: &str = env!("CARGO_PKG_LICENSE");
 /// Plugin names per line of `/plugins`.
 const PER_LINE: usize = 10;
 
@@ -117,6 +121,11 @@ fn version_lines(server: &str, list: &[PluginEntry], plugin: Option<&str>) -> Ve
                     "Click to copy to clipboard",
                 )))
                 .click(ClickEvent::CopyToClipboard(server.to_owned())),
+            Component::text("Author: ").append(named(AUTHOR, NamedColor::Green)),
+            Component::text("Website: ").append(
+                named(WEBSITE, NamedColor::Green).click(ClickEvent::OpenUrl(WEBSITE.to_owned())),
+            ),
+            Component::text("License: ").append(named(LICENSE, NamedColor::Green)),
         ];
     };
     // `VersionCommand`: the plugin of that exact name, else every one whose name contains it.
@@ -274,7 +283,12 @@ mod tests {
         let list = [essentials, worldtools, entry(None, "EssentialsChat", true)];
         assert_eq!(
             plain(&version_lines(server, &list, None)),
-            ["This server is running Vanillite 0.1.0 (Minecraft 26.3, abc1234)"]
+            [
+                "This server is running Vanillite 0.1.0 (Minecraft 26.3, abc1234)",
+                "Author: Hannes Thöne",
+                "Website: https://vanillite.org",
+                "License: Apache-2.0",
+            ]
         );
         assert_eq!(
             plain(&version_lines(server, &list, Some("Essentials"))),

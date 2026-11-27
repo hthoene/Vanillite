@@ -141,6 +141,7 @@ fn with_tick<R>(
     let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
     let mut env = Env {
         hooks: &crate::hooks::NoHooks,
+        hook_world: crate::hooks::HookWorld::NONE,
         types: &types,
         facts: &facts,
         blocks: &NoBlocks,
@@ -240,6 +241,7 @@ fn skull_hit_withers_by_difficulty() {
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,
@@ -307,7 +309,8 @@ fn powered_wither_ignores_arrows() {
             pickup: 0,
             random_state: 0,
             knockback: 0.0,
-            fire_ticks: -1,
+            fire: 0,
+            touching_water: false,
             item: crate::item::ItemStack::default(),
             in_ground_time: 0,
             spectral_duration: 200,
@@ -342,6 +345,7 @@ fn powered_wither_ignores_arrows() {
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,

@@ -85,6 +85,16 @@ impl HotSections {
 }
 
 impl Chunk {
+    /// Heap bytes of the chunk: sections, light and heightmaps (a section shared between
+    /// chunks counts in each; `/vanillite memory`).
+    pub fn heap_bytes(&self) -> usize {
+        self.sections.len() * size_of::<Arc<Section>>()
+            + self.sections.iter().map(|s| s.heap_bytes()).sum::<usize>()
+            + self.light.heap_bytes()
+            + size_of::<Heightmaps>()
+            + self.heightmaps.heap_bytes()
+    }
+
     /// An empty chunk (air, one biome) from `min_y` with `height` blocks; both multiples of 16.
     /// It keeps the heightmaps of a live chunk. All empty sections share one allocation until
     /// written.

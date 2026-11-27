@@ -134,6 +134,8 @@ pub(crate) struct Conn {
     peer: Peer,
     /// Packets plugins feed in as if the client sent them (play only).
     injected: Option<Arc<Injected>>,
+    /// Protocol, brand and packet counts for `/vanillite debug`.
+    details: Arc<crate::player::ClientDetails>,
 }
 
 /// The packet tap's verdict on a received body: one load and branch without listeners.
@@ -170,6 +172,8 @@ async fn injected_ready(injected: Option<&Injected>) {
 /// A connection the client drops this soon after joining logs the last packets it was sent:
 /// the client most likely failed on one of them.
 const EARLY_DROP: Duration = Duration::from_secs(10);
+/// Packets named when a client closes the connection later (one log line at info).
+const LAST_PACKETS_ON_CLOSE: usize = 24;
 
 impl Conn {
     pub(crate) fn tcp(
@@ -215,6 +219,7 @@ impl Conn {
         let now = Instant::now();
         let rate = RateLimiter::new(shared.config.rate_limits);
         let connection = out.connection();
+        let details = Arc::new(crate::player::ClientDetails::new(out.sent_log()));
         Self {
             deadline: now.checked_add(shared.config.status_timeout),
             shared,
@@ -246,6 +251,7 @@ impl Conn {
                 player: 0,
             },
             injected: None,
+            details,
         }
     }
 
@@ -302,6 +308,15 @@ impl Conn {
                 self.addr,
                 at.elapsed().as_secs_f32(),
                 self.out.sent_log().dump()
+            ),
+            // A client that leaves closes the connection the same way as one that failed on
+            // a packet ("Network Protocol Error"), so every close in play names the packets
+            // the client got last; a failing one is among them (#243).
+            Some((at, name)) if matches!(end, End::Closed(_)) => log::info!(
+                "{name} ({}) dropped {:.0}s after joining: {why}; last packets sent: {}",
+                self.addr,
+                at.elapsed().as_secs_f32(),
+                self.out.sent_log().dump_last(LAST_PACKETS_ON_CLOSE)
             ),
             _ if log::log_enabled!(log::Level::Debug) && !matches!(end, End::Closed(None)) => {
                 log::debug!(
@@ -364,6 +379,7 @@ impl Conn {
     /// Receives and decodes the next packet and counts it for `rate-limit`.
     async fn recv<T>(&mut self, decode: fn(&[u8]) -> vanillite_protocol::Result<T>) -> Result<T> {
         let packet = self.recv_packet(decode).await?;
+        self.details.count_received();
         self.count_packet()?;
         Ok(packet)
     }
@@ -579,6 +595,7 @@ impl Conn {
             Intent::Status => self.status(hs.protocol_version).await,
             Intent::Login | Intent::Transfer => {
                 self.enter(State::Login, Some(self.shared.config.login_timeout));
+                self.details.set_protocol(hs.protocol_version);
                 if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION
                     && let Some(adapter) = self
                         .shared
@@ -610,7 +627,9 @@ impl Conn {
                 self.peer.player = profile.id.0;
                 self.out.control(Out::Player(profile.id.0));
                 let client_info = self.configure().await?;
-                self.play(profile, client_info, overridden).await
+                let transferred = hs.intent == Intent::Transfer;
+                self.play(profile, client_info, overridden, transferred)
+                    .await
             }
         }
     }
@@ -909,8 +928,15 @@ impl Conn {
                     return Ok(info);
                 }
                 ServerboundConfiguration::KeepAlive(k) => self.keepalive_answer(k.id)?,
-                ServerboundConfiguration::CustomPayload(_)
-                | ServerboundConfiguration::Pong(_)
+                ServerboundConfiguration::CustomPayload(p) => {
+                    if p.channel.as_str() == "minecraft:brand"
+                        && let Ok(brand) =
+                            vanillite_protocol::codec::Reader::new(&p.data.0).string(128)
+                    {
+                        self.details.set_brand(brand);
+                    }
+                }
+                ServerboundConfiguration::Pong(_)
                 | ServerboundConfiguration::CookieResponse(_)
                 | ServerboundConfiguration::CustomClickAction(_) => {}
                 ServerboundConfiguration::SelectKnownPacks(_)
@@ -984,6 +1010,7 @@ impl Conn {
         profile: GameProfile,
         client_info: ClientInfo,
         login_overridden: bool,
+        transferred: bool,
     ) -> Result<()> {
         self.enter(State::Play, None);
         self.joined = Some((Instant::now(), profile.name.clone()));
@@ -998,8 +1025,10 @@ impl Conn {
             inbound: rx,
             outbound: self.out.clone(),
             latency: self.keepalive.latency.clone(),
+            details: Arc::clone(&self.details),
             injector: injected.injector(),
             login_overridden,
+            transferred,
         };
         self.injected = Some(injected);
         if self.shared.joins.try_send(joined).is_err() {

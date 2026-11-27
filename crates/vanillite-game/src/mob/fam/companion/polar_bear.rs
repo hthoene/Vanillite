@@ -219,7 +219,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if !panics {
                 return false;
             }
-            match crate::mob::randompos::default_pos(t, 5, 4) {
+            match crate::mob::animal::panic_pos(t) {
                 Some(p) => {
                     *pos = p;
                     true
@@ -260,7 +260,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
-        Goal::Panic { .. } => !t.mob_ref().nav.is_done(),
+        Goal::Panic { .. } => !t.nav_ref().is_done(),
         Goal::AttackPlayers { state, .. } => crate::mob::goals::target_can_continue(t, state),
     }
 }

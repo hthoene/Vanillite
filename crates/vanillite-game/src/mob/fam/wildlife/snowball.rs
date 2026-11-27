@@ -424,7 +424,7 @@ fn tick_egg_or_bottle(t: &mut MissileTick<'_, '_>) {
             let source = thrown_source(t, owner);
             crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 0.0);
         }
-        // `Projectile.onHitBlock`: `onProjectileHit` of the block (target, bell, ...).
+        // `Projectile.onHitBlock`: target blocks, bells, chorus flowers, pots.
         if let Some(block) = block {
             crate::mob::missile::hit_block(t.level, t.cx, t.id, block, hit_at);
         }
@@ -446,7 +446,6 @@ fn tick_egg_or_bottle(t: &mut MissileTick<'_, '_>) {
         }
         break_event(t);
     } else {
-        // `Projectile.onHitBlock`: `onProjectileHit` of the block (target, bell, ...).
         if let Some(block) = block {
             crate::mob::missile::hit_block(t.level, t.cx, t.id, block, hit_at);
         }

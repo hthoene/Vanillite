@@ -51,6 +51,10 @@ pub struct PlayerEntry {
     pub ip: String,
     /// The client allows being listed in the server list sample (`allowsListing`).
     pub allows_listing: bool,
+    /// Protocol, brand and packet counts of a network connection (`/vanillite debug`).
+    pub details: Option<Arc<vanillite_net::ClientDetails>>,
+    /// A Bedrock player (a remote virtual connection of the Bedrock frontend).
+    pub bedrock: bool,
 }
 
 /// A player's connection with its chat inbox.

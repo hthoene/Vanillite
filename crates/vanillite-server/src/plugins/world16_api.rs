@@ -2,6 +2,7 @@
 //! states, force-loaded chunks (`/forceload`) and plugin chunk tickets, the world border
 //! (`/worldborder`), explosions, ray traces, plugin menus and item components.
 
+use super::ReadWorld;
 use vanillite_abi::{self as abi, chunk_state, explode_flag, ray_hit, raytrace_flag, status};
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
@@ -42,8 +43,8 @@ fn qualified(id: &str) -> String {
 /// The biome of the quart at a position (`getNoiseBiome(x >> 2, y >> 2, z >> 2)` as Bukkit's
 /// `World.getBiome` reads it, the quart `/fillbiome` sets); [`status::NOT_FOUND`] outside
 /// loaded chunks.
-pub(super) fn biome(w: &PluginWorld<'_>, [x, y, z]: [i32; 3]) -> Result<String> {
-    let level = w.0.level();
+pub(super) fn biome(w: &impl ReadWorld, [x, y, z]: [i32; 3]) -> Result<String> {
+    let level = w.level()?;
     let pos = BlockPos::new(x, y, z);
     if !level.is_loaded(pos) {
         return Err(status::NOT_FOUND);
@@ -88,8 +89,8 @@ pub(super) fn set_biome(w: &mut PluginWorld<'_>, area: BlockBox, biome: &str) ->
 
 /// `getBrightness(SKY)` and `getBrightness(BLOCK)`; [`status::NOT_FOUND`] outside loaded
 /// chunks.
-pub(super) fn light(w: &PluginWorld<'_>, [x, y, z]: [i32; 3]) -> Result<(u32, u32)> {
-    let level = w.0.level();
+pub(super) fn light(w: &impl ReadWorld, [x, y, z]: [i32; 3]) -> Result<(u32, u32)> {
+    let level = w.level()?;
     let pos = BlockPos::new(x, y, z);
     if !level.is_loaded(pos) {
         return Err(status::NOT_FOUND);

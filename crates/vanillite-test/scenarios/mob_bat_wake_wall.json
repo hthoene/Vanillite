@@ -1,0 +1,138 @@
+{
+  "description": "A resting bat with a player 3 blocks away behind a wall: BAT_RESTING_TARGETING (forNonCombat().range(4)) needs line of sight, so the bat keeps resting until the wall is gone.",
+  "tier": "fast",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -55,
+        1
+      ],
+      "to": [
+        14,
+        -55,
+        14
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        9
+      ],
+      "to": [
+        14,
+        -56,
+        9
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        11.5
+      ]
+    },
+    {
+      "name": "bat",
+      "type": "minecraft:bat",
+      "pos": [
+        7.5,
+        -56.0,
+        7.5
+      ],
+      "seed": 9,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:bat,limit=1] {BatFlags:1b}"
+    },
+    {
+      "tick": 30,
+      "op": "command",
+      "command": "fill 1 -60 9 14 -56 9 minecraft:air"
+    }
+  ]
+}

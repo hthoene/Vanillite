@@ -30,8 +30,10 @@ use vanillite_protocol::types::VarIntList;
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::EntityId;
 
+use crate::compute::Compute;
 use crate::global::Global;
 use crate::level::LevelState;
+use vanillite_game::player::PacketSink;
 
 /// Block access of a world's loaded chunks.
 pub(crate) struct WorldBlocks<'a>(pub(crate) &'a Chunks);
@@ -83,6 +85,36 @@ pub(crate) struct WorldSurvival {
     ticking: Vec<EntityId>,
     /// The delivered packets per receiver.
     outgoing: Outgoing,
+    /// The compute pool for the parallel delivery to crowds (set by the world's tick).
+    pub(crate) compute: Option<Compute>,
+}
+
+/// Receivers from which effects are delivered in parallel parts (fewer: on the tick thread).
+const PARALLEL_RECEIVERS: usize = 256;
+/// Pairs (effect, receiver) from which a delivery runs in parallel parts: below, splitting
+/// costs more than it saves.
+const PARALLEL_PAIRS: usize = 128 * 1024;
+/// Receivers per part of a parallel delivery at least.
+const RECEIVERS_PER_PART: usize = 128;
+
+/// Whom a packet effect of a parallel delivery reaches (see [`WorldSurvival::deliver`]).
+#[derive(Clone, Copy, Debug)]
+enum Reach {
+    /// The players tracking `entity` at `pos` (in `chunk`), and its own row if given.
+    Tracking {
+        entity: EntityId,
+        pos: Vec3,
+        chunk: ChunkPos,
+        own_row: Option<u32>,
+    },
+    /// The players within `range` of `pos` but `except`.
+    Nearby {
+        pos: Vec3,
+        range: f64,
+        except: Option<EntityId>,
+    },
+    /// The player in `row`.
+    Row(u32),
 }
 
 /// A player as a receiver of delivered effects.
@@ -105,6 +137,8 @@ struct Outgoing {
     frame: Vec<u8>,
     /// Frames by player row.
     batches: Vec<Vec<u8>>,
+    /// The frames of a parallel delivery.
+    arena: Vec<u8>,
     /// Rows with frames, in the order they got their first one.
     rows: Vec<u32>,
 }
@@ -325,6 +359,7 @@ impl WorldSurvival {
             scratch: Vec::new(),
             ticking: Vec::new(),
             outgoing: Outgoing::default(),
+            compute: None,
         }
     }
 
@@ -408,6 +443,7 @@ impl WorldSurvival {
             random,
             out: &mut self.effects,
             hooks,
+            hook_world: vanillite_game::hooks::HookWorld::NONE,
             display_name,
             entity_team,
         }
@@ -740,13 +776,15 @@ impl WorldSurvival {
             let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = Env {
                 hooks: &hooks,
+                hook_world: vanillite_game::hooks::HookWorld::NONE,
                 display_name: &names,
                 entity_team: &teams,
                 types: &state.damage_types,
                 facts: &state.block_facts,
                 blocks: &blocks,
                 rules: &rules,
-                difficulty: state.difficulty(),
+                // The level's own (the server's, kept in sync every tick).
+                difficulty: level.settings.difficulty,
                 game_time: state.game_time(),
                 min_y: level.min_y(),
                 dimension,
@@ -830,6 +868,7 @@ impl WorldSurvival {
         let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = Env {
             hooks: &hooks,
+            hook_world: vanillite_game::hooks::HookWorld::NONE,
             display_name: &names,
             entity_team: &teams,
             types: &level.damage_types,
@@ -895,10 +934,231 @@ impl WorldSurvival {
         let effects = std::mem::take(&mut self.effects);
         collect_game_events(&effects, &mut self.game_events);
         self.build_grid(entities);
-        let mut receivers = Vec::new();
         let mut out = std::mem::take(&mut self.outgoing);
         out.begin(entities);
-        for effect in &effects {
+        match self.compute.clone().filter(|c| {
+            c.phase_threads() > 1
+                && self.receivers.len() >= PARALLEL_RECEIVERS
+                && effects.len().saturating_mul(self.receivers.len()) >= PARALLEL_PAIRS
+        }) {
+            Some(compute) => self.deliver_parts(&effects, entities, global, &mut out, &compute),
+            None => self.deliver_serial(&effects, entities, global, &mut out),
+        }
+        out.flush(entities);
+        self.outgoing = out;
+        spawn_drops(&effects, entities, &global.network_ids, random, global);
+    }
+
+    /// [`WorldSurvival::deliver`] to a crowd: the packets are framed once on the tick thread,
+    /// then parts of the receivers (contiguous rows) pick the packets they get in effect
+    /// order, each into its own batches, and queue them, in parallel. Every receiver gets the
+    /// same packets in the same order as from [`WorldSurvival::deliver_serial`]. Effects that
+    /// reach beyond the packets (messages, deaths) and packets that cannot be framed run on
+    /// the tick thread between the parts.
+    fn deliver_parts(
+        &self,
+        effects: &[Effect],
+        entities: &mut Entities,
+        global: &Global,
+        out: &mut Outgoing,
+        compute: &Compute,
+    ) {
+        let mut reaches: Vec<(Reach, usize, usize)> = Vec::new();
+        out.arena.clear();
+        for effect in effects {
+            let (reach, packet) = match effect {
+                Effect::Tracking {
+                    entity,
+                    with_self,
+                    packet,
+                } => {
+                    let Some(source) = entities.store.get(*entity) else {
+                        continue;
+                    };
+                    let pos = source.pos();
+                    let own_row =
+                        (*with_self && source.kind() == ids::PLAYER).then(|| source.kind_row());
+                    let reach = Reach::Tracking {
+                        entity: *entity,
+                        pos,
+                        chunk: chunk_of(pos),
+                        own_row,
+                    };
+                    (reach, packet)
+                }
+                Effect::Nearby {
+                    pos,
+                    range,
+                    except,
+                    packet,
+                } => {
+                    let reach = Reach::Nearby {
+                        pos: *pos,
+                        range: *range,
+                        except: *except,
+                    };
+                    (reach, packet)
+                }
+                Effect::To { player, packet } if entities.player(*player).is_some() => {
+                    match entities.store.get(*player) {
+                        Some(e) if e.kind() == ids::PLAYER => (Reach::Row(e.kind_row()), packet),
+                        _ => continue,
+                    }
+                }
+                Effect::To { player, packet } => {
+                    // Not in this world: sent past the batches, which only this world's
+                    // players get.
+                    send_departed(entities, global, *player, packet);
+                    continue;
+                }
+                Effect::Broadcast(_) | Effect::Died { .. } => {
+                    self.run_parts(&reaches, entities, out, compute);
+                    reaches.clear();
+                    out.arena.clear();
+                    self.deliver_serial(std::slice::from_ref(effect), entities, global, out);
+                    out.flush(entities);
+                    continue;
+                }
+                _ => continue,
+            };
+            out.packet(packet);
+            if out.frame.is_empty() {
+                // Not framed: on its own after what is batched, like the serial delivery.
+                self.run_parts(&reaches, entities, out, compute);
+                reaches.clear();
+                out.arena.clear();
+                self.deliver_serial(std::slice::from_ref(effect), entities, global, out);
+                out.flush(entities);
+                continue;
+            }
+            let start = out.arena.len();
+            out.arena.extend_from_slice(&out.frame);
+            reaches.push((reach, start, out.arena.len()));
+        }
+        self.run_parts(&reaches, entities, out, compute);
+        out.arena.clear();
+    }
+
+    /// The parallel parts of [`WorldSurvival::deliver_parts`] for `reaches` (framed in
+    /// `out.arena`): batches and queues the packets of every receiver.
+    fn run_parts(
+        &self,
+        reaches: &[(Reach, usize, usize)],
+        entities: &Entities,
+        out: &mut Outgoing,
+        compute: &Compute,
+    ) {
+        if reaches.is_empty() {
+            return;
+        }
+        let sinks: Vec<&Arc<dyn PacketSink>> = entities
+            .players
+            .iter()
+            .map(|(_, player)| &player.connection.sink)
+            .collect();
+        let n = sinks.len().min(out.batches.len());
+        let Outgoing {
+            threshold,
+            arena,
+            batches,
+            ..
+        } = out;
+        let (threshold, arena) = (*threshold, &*arena);
+        let (grid, receivers) = (&self.grid, &self.receivers);
+        let player_range = f64::from(self.player_range);
+        compute.parts(&mut batches[..n], RECEIVERS_PER_PART, |offset, part| {
+            let rows = offset..offset + part.len();
+            let mut near = Vec::new();
+            let mut add = |row: u32, frame: &[u8]| {
+                if let Some(batch) = (row as usize)
+                    .checked_sub(offset)
+                    .and_then(|i| part.get_mut(i))
+                {
+                    batch.extend_from_slice(frame);
+                }
+            };
+            for &(reach, start, end) in reaches {
+                let frame = &arena[start..end];
+                match reach {
+                    Reach::Tracking {
+                        entity,
+                        pos,
+                        chunk,
+                        own_row,
+                    } => {
+                        near_rows(grid, receivers.len(), pos, player_range, &mut near);
+                        for &row in &near {
+                            if !rows.contains(&(row as usize)) {
+                                continue;
+                            }
+                            let Some(&Receiver {
+                                view,
+                                pos: Some(at),
+                            }) = receivers.get(row as usize)
+                            else {
+                                continue;
+                            };
+                            if view.entity == entity {
+                                continue;
+                            }
+                            let d = at - pos;
+                            if view.sees_chunk(chunk)
+                                && d.x * d.x + d.z * d.z <= player_range * player_range
+                            {
+                                add(row, frame);
+                            }
+                        }
+                        if let Some(row) = own_row {
+                            add(row, frame);
+                        }
+                    }
+                    Reach::Nearby { pos, range, except } => {
+                        near_rows(grid, receivers.len(), pos, range, &mut near);
+                        for &row in &near {
+                            if !rows.contains(&(row as usize)) {
+                                continue;
+                            }
+                            let Some(&Receiver {
+                                view,
+                                pos: Some(at),
+                            }) = receivers.get(row as usize)
+                            else {
+                                continue;
+                            };
+                            if Some(view.entity) == except {
+                                continue;
+                            }
+                            let d = at - pos;
+                            if d.x * d.x + d.y * d.y + d.z * d.z < range * range {
+                                add(row, frame);
+                            }
+                        }
+                    }
+                    Reach::Row(row) => add(row, frame),
+                }
+            }
+            for (i, batch) in part.iter_mut().enumerate() {
+                if batch.is_empty() {
+                    continue;
+                }
+                let frames = std::mem::take(batch);
+                if let Some(sink) = sinks.get(offset + i) {
+                    sink.send_batch(frames, threshold, BatchMark::UNKNOWN);
+                }
+            }
+        });
+    }
+
+    /// [`WorldSurvival::deliver`] on the tick thread, effect by effect.
+    fn deliver_serial(
+        &self,
+        effects: &[Effect],
+        entities: &mut Entities,
+        global: &Global,
+        out: &mut Outgoing,
+    ) {
+        let mut receivers = Vec::new();
+        for effect in effects {
             match effect {
                 Effect::Tracking {
                     entity,
@@ -911,7 +1171,7 @@ impl WorldSurvival {
                     let pos = source.pos();
                     let chunk = chunk_of(pos);
                     let range = f64::from(self.player_range);
-                    self.near(pos, range, &mut receivers);
+                    near_rows(&self.grid, self.receivers.len(), pos, range, &mut receivers);
                     out.packet(packet);
                     for &row in &receivers {
                         let Some(&Receiver {
@@ -939,7 +1199,13 @@ impl WorldSurvival {
                     except,
                     packet,
                 } => {
-                    self.near(*pos, *range, &mut receivers);
+                    near_rows(
+                        &self.grid,
+                        self.receivers.len(),
+                        *pos,
+                        *range,
+                        &mut receivers,
+                    );
                     out.packet(packet);
                     for &row in &receivers {
                         let Some(&Receiver {
@@ -1004,28 +1270,31 @@ impl WorldSurvival {
                 | Effect::RespawnShoulder { .. } => {}
             }
         }
-        out.flush(entities);
-        self.outgoing = out;
-        spawn_drops(&effects, entities, &global.network_ids, random, global);
     }
+}
 
-    /// The player rows of the chunks within `range` of `pos` (all players when that is
-    /// fewer).
-    fn near(&self, pos: Vec3, range: f64, out: &mut Vec<u32>) {
-        out.clear();
-        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let r = (range / 16.0).ceil() as i32 + 1;
-        let side = usize::try_from(2 * r + 1).unwrap_or(usize::MAX);
-        if self.receivers.len() <= side.saturating_mul(side) {
-            out.extend((0u32..).take(self.receivers.len()));
-            return;
-        }
-        let c = chunk_of(pos);
-        for x in c.x - r..=c.x + r {
-            for z in c.z - r..=c.z + r {
-                if let Some(list) = self.grid.get(&ChunkPos::new(x, z)) {
-                    out.extend_from_slice(list);
-                }
+/// The rows of the receivers near `pos`: all of them when there are few, else those of the
+/// chunks in range.
+fn near_rows(
+    grid: &FxHashMap<ChunkPos, Vec<u32>>,
+    receivers: usize,
+    pos: Vec3,
+    range: f64,
+    out: &mut Vec<u32>,
+) {
+    out.clear();
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    let r = (range / 16.0).ceil() as i32 + 1;
+    let side = usize::try_from(2 * r + 1).unwrap_or(usize::MAX);
+    if receivers <= side.saturating_mul(side) {
+        out.extend((0u32..).take(receivers));
+        return;
+    }
+    let c = chunk_of(pos);
+    for x in c.x - r..=c.x + r {
+        for z in c.z - r..=c.z + r {
+            if let Some(list) = grid.get(&ChunkPos::new(x, z)) {
+                out.extend_from_slice(list);
             }
         }
     }

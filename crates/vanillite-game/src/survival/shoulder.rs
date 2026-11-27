@@ -156,7 +156,13 @@ pub fn handle(
     // `setGameMode(SPECTATOR)` drops them too; here at the next tick.
     let spectator = player.game_mode == vanillite_config::GameMode::Spectator;
     let s = &player.survival;
-    if s.fall_distance > 0.5 || s.fluids.in_water() || sleeping || spectator {
+    if s.fall_distance > 0.5
+        || s.fluids.in_water()
+        || s.flying
+        || sleeping
+        || s.in_powder_snow
+        || spectator
+    {
         remove_entities(entity, player, env);
     }
 }

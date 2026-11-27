@@ -799,8 +799,21 @@ pub fn filter_hurt(
     amount: f32,
 ) -> Result<f32, bool> {
     let _ = (level, cx);
-    let is_arrow_or_charge = source.direct.is_some_and(|d| ents.arrow(d).is_some());
+    let is_arrow_or_charge = source
+        .direct
+        .is_some_and(|d| crate::mob::projectile::is_arrow_or_wind_charge(ents, d));
     let cause_is_player = source.cause.is_some_and(|c| ents.player(c).is_some());
+    let sitting = ents
+        .mob(target)
+        .and_then(|m| m.boss.dragon())
+        .is_some_and(|s| phase::on_hurt(s.phase, true, 1.0) == 0.0);
+    if is_arrow_or_charge
+        && sitting
+        && let Some(a) = source.direct.and_then(|d| ents.arrow_mut(d))
+    {
+        // `AbstractDragonSittingPhase.onHurt`: `getDirectEntity().igniteForSeconds(1)`.
+        a.fire = a.fire.max(20);
+    }
     let m = ents.mob_mut(target).ok_or(false)?;
     let health = m.health;
     let s = m.boss.dragon_mut().ok_or(false)?;
@@ -911,6 +924,14 @@ pub fn ignores_knockback(ents: &Entities, id: EntityId) -> bool {
     ents.mob(id)
         .and_then(|m| m.boss.dragon())
         .is_some_and(|s| s.phase.is_sitting())
+}
+
+/// The seeds the eight `EnderDragonPart`s take from the entity seed stream: the dragon's
+/// constructor creates them right after the dragon took its own.
+pub fn part_seeds() {
+    for _ in 0..PARTS.len() {
+        crate::mob::new_entity_seed();
+    }
 }
 
 /// The part a network id names (`dragon id + 1 ..= + 8`), if `target` is a dragon.

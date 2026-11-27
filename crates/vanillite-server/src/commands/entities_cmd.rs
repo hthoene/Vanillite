@@ -833,6 +833,7 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
         piercing_arrow: false,
         projectile_motion: None,
         responsible_player: None,
+        own_blocked_by_item: false,
     };
     let hurt = match target.entity {
         Some(id) => {

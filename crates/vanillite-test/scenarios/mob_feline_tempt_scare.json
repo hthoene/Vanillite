@@ -1,0 +1,125 @@
+{
+  "description": "A player holding cod tempts an ocelot (OcelotTemptGoal, canScare) and a tamed cat ignores it (CatTemptGoal: not tame); the player stands still, so the ocelot is not scared.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ]
+    },
+    {
+      "name": "ocelot",
+      "type": "minecraft:ocelot",
+      "pos": [
+        3.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false
+    },
+    {
+      "name": "cat",
+      "type": "minecraft:cat",
+      "pos": [
+        12.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 8,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:cod"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:cat,limit=1] {Owner:[I;1,2,3,4]}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

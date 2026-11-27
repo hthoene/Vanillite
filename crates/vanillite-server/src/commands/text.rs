@@ -145,7 +145,8 @@ impl Context<'_, '_> {
 
     /// The entities of a selector pattern (`EntitySelector.findEntities`).
     fn select(&self, pattern: &str) -> Result<Vec<Target>, CommandError> {
-        let limits = self.env.global.commands.limits();
+        let commands = self.env.global.commands();
+        let limits = commands.limits();
         let mut reader = StringReader::new(pattern);
         let selector = SelectorParser::new(&mut reader, true, limits).parse()?;
         select::optional(self.env, self.source, &selector)
@@ -200,7 +201,8 @@ impl Context<'_, '_> {
             return Ok(Component::empty());
         }
         self.nbt_count = self.nbt_count.saturating_add(1);
-        let limits = self.env.global.commands.limits();
+        let commands = self.env.global.commands();
+        let limits = commands.limits();
         let Ok(path) = vanillite_command::nbt_path::parse(&mut StringReader::new(path), limits)
         else {
             return Ok(Component::empty());

@@ -33,6 +33,7 @@ pub mod randompos;
 pub mod spawn;
 pub mod structures;
 pub mod tame;
+pub mod teleport;
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
@@ -169,6 +170,8 @@ pub struct MobData {
     pub persistent: bool,
     pub no_ai: bool,
     pub silent: bool,
+    /// `Entity.invulnerable` (`Invulnerable`).
+    pub invulnerable: bool,
     pub ambient_sound_time: i32,
     pub target: Option<EntityId>,
     pub aggressive: bool,
@@ -335,6 +338,7 @@ impl MobData {
             persistent: false,
             no_ai: false,
             silent: false,
+            invulnerable: false,
             ambient_sound_time: 0,
             target: None,
             aggressive: false,
@@ -413,6 +417,10 @@ impl MobData {
             }
             Kind::Rabbit => {
                 let _ = mob.random.next_int_bounded(40);
+            }
+            // `Guardian`: `clientSideTailAnimation = random.nextFloat()`.
+            Kind::Guardian | Kind::ElderGuardian => {
+                let _ = mob.random.next_float();
             }
             _ => {}
         }
@@ -505,6 +513,8 @@ pub struct Environment {
     pub creaking_active: bool,
     /// `EnvironmentAttributes.TURTLE_EGG_HATCH_CHANCE` (the `day` timeline in the overworld).
     pub turtle_egg_hatch_chance: f32,
+    /// `EnvironmentAttributes.CAT_WAKING_UP_GIFT_CHANCE` (the `day` timeline in the overworld).
+    pub cat_waking_up_gift_chance: f32,
     /// `EnvironmentAttributes.SUN_ANGLE` in degrees (the `day` timeline in the overworld, 0
     /// elsewhere).
     pub sun_angle: f32,
@@ -535,6 +545,7 @@ impl Default for Environment {
             bees_stay_in_hive: false,
             creaking_active: false,
             turtle_egg_hatch_chance: 0.002,
+            cat_waking_up_gift_chance: 0.0,
             sun_angle: 0.0,
             eyeblossom_open: None,
             nether_portal_spawns_piglins: false,
@@ -569,6 +580,12 @@ impl Environment {
             monster_light_test: (0, 7),
             ambient_light: 0.0,
             turtle_egg_hatch_chance: turtle_egg_hatch_chance(day),
+            // Constant ease: 0.7 from 23667 to 362, 0 in between.
+            cat_waking_up_gift_chance: if (362..23667).contains(&day.rem_euclid(24000)) {
+                0.0
+            } else {
+                0.7
+            },
             sun_angle: day_sun_angle(day),
             eyeblossom_open: Some((12600..23401).contains(&day.rem_euclid(24000))),
             nether_portal_spawns_piglins: true,
@@ -867,6 +884,9 @@ pub enum WorldAction {
     TrampleFarmland(BlockPos, EntityId),
     /// `destroyBlock(pos, drop, breaker)` (ravagers in crops).
     DestroyBlockBy(BlockPos, bool, EntityId),
+    /// `PiglinAi.angerNearbyPiglins(player, true)` of a chest vehicle the player opened or
+    /// broke: queued like the block containers' ([`crate::level::LevelOutput::piglin_anger`]).
+    PiglinAnger(EntityId),
     /// Frost Walker's `replace_disk` around a player's position.
     FrostWalker {
         pos: Vec3,
@@ -913,6 +933,9 @@ impl WorldAction {
             }
             WorldAction::DestroyBlockBy(pos, drop, id) => {
                 level.destroy_block(pos, drop, Some(id));
+            }
+            WorldAction::PiglinAnger(player) => {
+                level.output().piglin_anger.push((player, true));
             }
             WorldAction::FrostWalker {
                 pos,
@@ -1132,6 +1155,14 @@ pub fn is_lava(state: BlockState) -> bool {
 
 /// `getEyeHeight` of a mob: the type's eye height, scaled for babies.
 pub fn eye_height(mob: &MobData) -> f64 {
+    if let Some(eye) = fam::undead::zombies::baby_eye_height(mob) {
+        return f64::from(eye);
+    }
+    if mob.baby
+        && let Some((_, _, eye)) = kinds::baby_dimensions(mob.kind)
+    {
+        return f64::from(eye);
+    }
     let info = mob.kind.type_id().info();
     let scale = fam::size_scale(mob).unwrap_or(if mob.baby { 0.5 } else { 1.0 });
     f64::from(info.eye_height * scale)
@@ -1310,6 +1341,68 @@ impl Tick<'_, '_> {
             .expect("the ticking mob is in the mob store")
     }
 
+    /// The mob whose navigation and move control the ticking mob uses (`Mob.getNavigation`,
+    /// `getMoveControl`): the mob vehicle it steers, down the chain, else itself.
+    pub fn nav_owner(&self) -> EntityId {
+        nav_owner(self.ents, self.id)
+    }
+
+    /// `getNavigation()`: the navigation of [`Self::nav_owner`].
+    pub fn nav(&mut self) -> &mut nav::Navigation {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return &mut self.mob().nav;
+        }
+        &mut self
+            .ents
+            .mob_mut(owner)
+            .expect("the controlled vehicle is a mob")
+            .nav
+    }
+
+    /// `getNavigation()`, read only.
+    pub fn nav_ref(&self) -> &nav::Navigation {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return &self.mob_ref().nav;
+        }
+        &self
+            .ents
+            .mob(owner)
+            .expect("the controlled vehicle is a mob")
+            .nav
+    }
+
+    /// `getMoveControl()`: the move control of [`Self::nav_owner`].
+    pub fn move_ctl(&mut self) -> &mut nav::MoveControl {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return &mut self.mob().move_ctl;
+        }
+        &mut self
+            .ents
+            .mob_mut(owner)
+            .expect("the controlled vehicle is a mob")
+            .move_ctl
+    }
+
+    /// Runs `f` as the mob of [`Self::nav_owner`] (the navigation calls of a mob that steers
+    /// its vehicle path and move the vehicle).
+    pub fn as_nav_owner<R>(&mut self, f: impl FnOnce(&mut Tick<'_, '_>) -> R) -> R {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return f(self);
+        }
+        let mut v = Tick {
+            level: self.level,
+            ents: &mut *self.ents,
+            env: &mut *self.env,
+            cx: &mut *self.cx,
+            id: owner,
+        };
+        f(&mut v)
+    }
+
     /// Whether the ticking mob still exists.
     pub fn exists(&self) -> bool {
         self.ents.mob(self.id).is_some()
@@ -1416,6 +1509,54 @@ impl Tick<'_, '_> {
         }
         light_magic_value(self.level, &self.cx.env, pos)
     }
+}
+
+/// `Mob.getControllingPassenger` for mob riders: the first passenger of a mob with AI when it
+/// is a mob that can control vehicles (not in `#non_controlling_rider`). Player controllers
+/// (saddled horses, pigs, striders) are not mobs and never steer through the AI.
+pub fn controlling_mob_passenger(ents: &Entities, vehicle: EntityId) -> Option<EntityId> {
+    let &first = ents.riding.passengers_of(vehicle).first()?;
+    if ents.mob(vehicle)?.no_ai {
+        return None;
+    }
+    let rider = ents.mob(first)?;
+    (!matches!(rider.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube)).then_some(first)
+}
+
+/// `hasControllingPassenger`: a player steers `vehicle` or a mob rider does.
+pub fn has_controlling_passenger(ents: &Entities, vehicle: EntityId) -> bool {
+    ents.riding
+        .passengers_of(vehicle)
+        .first()
+        .is_some_and(|&p| crate::riding::controls(ents, p, vehicle))
+        || controlling_mob_passenger(ents, vehicle).is_some()
+}
+
+/// `getControlledVehicle() instanceof Mob`: the mob vehicle `id` steers.
+pub fn controlled_mob_vehicle(ents: &Entities, id: EntityId) -> Option<EntityId> {
+    let vehicle = ents.vehicle_of(id)?;
+    (controlling_mob_passenger(ents, vehicle) == Some(id)).then_some(vehicle)
+}
+
+/// `getRootVehicle`: the lowest vehicle under `id`, or `id` itself.
+pub fn root_vehicle(ents: &Entities, id: EntityId) -> EntityId {
+    let mut root = id;
+    while let Some(v) = ents.vehicle_of(root) {
+        root = v;
+    }
+    root
+}
+
+/// The end of the [`controlled_mob_vehicle`] chain from `id` (`getNavigation` recurses).
+pub fn nav_owner(ents: &Entities, id: EntityId) -> EntityId {
+    let mut owner = id;
+    while let Some(v) = controlled_mob_vehicle(ents, owner) {
+        if v == id {
+            break;
+        }
+        owner = v;
+    }
+    owner
 }
 
 /// Another living entity as a mob sees it.
@@ -1549,5 +1690,5 @@ mod size_tests {
         );
     }
 
-    const LIMIT: usize = 1792;
+    const LIMIT: usize = 1808;
 }

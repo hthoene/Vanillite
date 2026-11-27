@@ -9,7 +9,7 @@ use vanillite_config::GameMode;
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::packets::play::clientbound::{SetEntityLink, SoundSource};
 use vanillite_protocol::packets::play::serverbound::Hand;
-use vanillite_world::entity::{EntityId, NetworkIds, NewEntity};
+use vanillite_world::entity::{EntityFlags, EntityId, NetworkIds, NewEntity};
 
 use super::animal::Interaction;
 use super::kinds::Kind;
@@ -45,7 +45,7 @@ pub fn tame_event(ents: &Entities, animal: EntityId, owner: u128) -> bool {
         player: owner,
         ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TAME)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     !ev.cancelled
 }
 
@@ -129,7 +129,7 @@ pub fn follow_can_use(t: &mut Tick<'_, '_>, start_distance: f32) -> bool {
 
 /// `FollowOwnerGoal.canContinueToUse`.
 pub fn follow_can_continue(t: &mut Tick<'_, '_>, stop_distance: f32) -> bool {
-    if t.mob_ref().nav.is_done() {
+    if t.nav_ref().is_done() {
         return false;
     }
     let Some(owner) = owner_of(t.ents, t.mob_ref()) else {
@@ -194,7 +194,7 @@ fn try_to_teleport_to_owner(t: &mut Tick<'_, '_>, owner: Vec3) {
                 f64::from(pos.z) + 0.5,
             );
             t.core_mut().set_pos(p);
-            t.mob().nav.stop();
+            t.nav().stop();
             return;
         }
     }
@@ -384,9 +384,14 @@ pub fn link_pairing_packet(ents: &Entities, mob: EntityId) -> Option<SetEntityLi
 /// `setLeashedTo(holder, true)`.
 pub fn set_leashed_to(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, holder: EntityId) {
     ents.leashes.insert(mob, holder);
+    // A new `LeashData` starts without angular momentum; a changed holder keeps it.
+    ents.leash_momentum.entry(mob).or_insert(0.0);
+    // Leading is not persistence (`requiresCustomPersistence` while leashed).
     if let Some(m) = ents.mob_mut(mob) {
-        m.persistent = true;
         m.pending_leash = None;
+    }
+    if let Some(b) = ents.boat_mut(mob) {
+        b.pending_leash = None;
     }
     link_packet(ents, env, mob, Some(holder));
     if ents.vehicle_of(mob).is_some() {
@@ -468,14 +473,21 @@ pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_it
     if ents.leashes.remove(&mob).is_none() {
         return;
     }
+    ents.leash_momentum.remove(&mob);
     // `Mob.onLeashRemoved`: `clearHome`.
     if let Some(m) = ents.mob_mut(mob) {
         m.restrict_center = BlockPos::ZERO;
         m.restrict_radius = -1;
     }
     link_packet(ents, env, mob, None);
-    if drop_item
-        && let Some(pos) = ents.store.get(mob).map(|e| e.pos())
+    if drop_item {
+        spawn_lead(ents, env, mob);
+    }
+}
+
+/// `spawnAtLocation(level, Items.LEAD)`.
+fn spawn_lead(ents: &Entities, env: &mut Env<'_>, mob: EntityId) {
+    if let Some(pos) = ents.store.get(mob).map(|e| e.pos())
         && let Some(lead) = vanillite_data::registry::ITEM.id("minecraft:lead")
     {
         let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
@@ -1015,51 +1027,6 @@ pub fn tick_leashes(
     env: &mut Env<'_>,
     discarded: &mut Vec<EntityId>,
 ) {
-    // `restoreLeashFromSave`: leashes read from NBT find their holder (any entity of the
-    // world, or the knot at the fence); after 100 ticks without one the lead drops.
-    let pending: Vec<(EntityId, super::LeashRef, i32)> = ents
-        .mobs
-        .iter()
-        .filter_map(|(id, m)| m.pending_leash.map(|l| (id, l, m.tick_count)))
-        .collect();
-    for (id, l, tick_count) in pending {
-        let holder = match l {
-            super::LeashRef::Entity(uuid) => ents
-                .player_by_uuid(uuid)
-                .or_else(|| ents.store.by_uuid(uuid))
-                .filter(|&h| h != id),
-            super::LeashRef::Knot(pos) => {
-                if level.is_loaded(pos) && is_knot_block(level.block(pos)) {
-                    let uuid = crate::mob::new_entity_uuid();
-                    Some(knot_at(ents, level.network_ids(), pos, uuid))
-                } else {
-                    None
-                }
-            }
-        };
-        if let Some(h) = holder {
-            set_leashed_to(ents, env, id, h);
-        } else if matches!(l, super::LeashRef::Entity(_)) && tick_count > 100 {
-            if let Some(m) = ents.mob_mut(id) {
-                m.pending_leash = None;
-            }
-            // `spawnAtLocation(Items.LEAD)`.
-            if let Some(pos) = ents.store.get(id).map(|e| e.pos())
-                && let Some(lead) = vanillite_data::registry::ITEM.id("minecraft:lead")
-            {
-                let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
-                env.out.push(Effect::DropItem {
-                    random: item_random,
-                    uuid,
-                    pos,
-                    velocity,
-                    y_rot,
-                    pickup_delay: 10,
-                    stack: ItemStack::new(lead, 1),
-                });
-            }
-        }
-    }
     if !ents.knots.is_empty() {
         let gone: Vec<EntityId> = ents
             .knots
@@ -1086,56 +1053,247 @@ pub fn tick_leashes(
             ents.leashes.remove(&mob);
         }
     }
+    // `LeashFenceKnotEntity.notifyLeasheeRemoved`: knots whose last lead was dropped go.
+    if !ents.knots.is_empty() {
+        let empty: Vec<EntityId> = ents
+            .knots
+            .iter()
+            .map(|(id, _)| id)
+            .filter(|k| !ents.leashes.values().any(|h| h == k) && !discarded.contains(k))
+            .collect();
+        discarded.extend(empty);
+    }
 }
 
-/// `Leashable.tickLeash` of the ticking mob (end of `Mob.tick`).
-pub fn tick_leash(t: &mut Tick<'_, '_>) {
-    let Some(holder) = leash_holder(t.ents, t.id) else {
-        return;
-    };
-    let mob = t.id;
-    let Some(he) = t.ents.store.get(holder) else {
-        return;
-    };
-    let alive = t.mob_ref().is_alive();
-    let holder_ok = t
-        .ents
-        .player(holder)
-        .is_none_or(|p| !p.survival.is_dead_or_dying() && p.game_mode != GameMode::Spectator);
-    let (hpos, hw, hh) = (
-        he.pos(),
-        f64::from(he.dims().width),
-        f64::from(he.dims().height),
-    );
-    let holder_motion = if t.ents.player(holder).is_some() {
-        he.pos() - he.old_pos()
-    } else {
-        he.velocity()
-    };
-    if !alive || !holder_ok {
-        let drops = t.env.rules.bool(Rule::ENTITY_DROPS);
-        drop_leash(t.ents, t.env, mob, drops);
-        return;
+/// What `Leashable.tickLeash` did, for the mob-specific parts.
+enum LeashStep {
+    /// Not leashed (any more).
+    Free,
+    /// The lead snapped (`leashTooFarBehaviour`).
+    Snapped,
+    /// `checkElasticInteractions` pulled (`onElasticLeashPull`).
+    Pulled,
+    /// `closeRangeLeashBehaviour` towards the holder.
+    Close(EntityId),
+}
+
+/// `getLeashHolder` of a restored `LeashData`: any entity of the world by UUID
+/// (`level.getEntity(uuid)`) or the knot at a fence. `None` while not found.
+fn restore_holder(level: &Level, ents: &mut Entities, leash: super::LeashRef) -> Option<EntityId> {
+    match leash {
+        super::LeashRef::Entity(uuid) => ents
+            .players_by_uuid
+            .get(&uuid)
+            .copied()
+            .or_else(|| ents.store.by_uuid(uuid)),
+        super::LeashRef::Knot(pos) => {
+            if level.is_loaded(pos) && is_knot_block(level.block(pos)) {
+                let uuid = crate::mob::new_entity_uuid();
+                Some(knot_at(ents, level.network_ids(), pos, uuid))
+            } else {
+                None
+            }
+        }
     }
-    let me = t.core();
-    let (mpos, mw, mh) = (
+}
+
+/// `Leashable.restoreLeashFromSave`: the saved holder, or after 100 ticks without one the
+/// lead drops. Returns the pending leash left.
+fn restore_leash(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    id: EntityId,
+    leash: super::LeashRef,
+    tick_count: i32,
+) -> Option<super::LeashRef> {
+    if let Some(h) = restore_holder(level, ents, leash) {
+        set_leashed_to(ents, env, id, h);
+        return None;
+    }
+    if tick_count > 100 {
+        spawn_lead(ents, env, id);
+        return None;
+    }
+    Some(leash)
+}
+
+/// `leashSnapDistance` / `leashElasticDistance` of the leashed entity.
+fn leash_distances(ents: &Entities, id: EntityId) -> (f64, f64) {
+    if ents.mob(id).is_some_and(|m| m.kind == Kind::HappyGhast) {
+        (16.0, 10.0)
+    } else {
+        (12.0, 6.0)
+    }
+}
+
+/// `supportQuadLeash`: horses (not llamas), camels, sniffers and boats.
+fn supports_quad_leash(ents: &Entities, id: EntityId) -> bool {
+    if ents.boat(id).is_some() {
+        return true;
+    }
+    ents.mob(id).is_some_and(|m| {
+        matches!(
+            m.kind,
+            Kind::Horse
+                | Kind::Donkey
+                | Kind::Mule
+                | Kind::ZombieHorse
+                | Kind::SkeletonHorse
+                | Kind::Camel
+                | Kind::CamelHusk
+                | Kind::Sniffer
+        )
+    })
+}
+
+/// `getHolderMovement`: no-AI mobs don't move their leads, the others their known movement.
+fn holder_movement(ents: &Entities, id: EntityId) -> Vec3 {
+    if ents.mob(id).is_some_and(|m| m.no_ai) {
+        return Vec3::ZERO;
+    }
+    crate::spear::known_movement(ents, id)
+}
+
+/// `Entity.canInteractWithLevel`: alive, not removed, not a spectator.
+fn can_interact_with_level(ents: &Entities, id: EntityId) -> bool {
+    if !ents.store.contains(id) {
+        return false;
+    }
+    if let Some(p) = ents.player(id) {
+        return !p.survival.is_dead_or_dying() && p.game_mode != GameMode::Spectator;
+    }
+    ents.mob(id).is_none_or(MobData::is_alive)
+}
+
+/// `Vec3.multiply(dims).yRot(-yRot)` of an attachment point.
+fn attachment(point: Vec3, width: f64, height: f64, y_rot: f32) -> Vec3 {
+    let rad = -(y_rot * (std::f32::consts::PI / 180.0));
+    let v = Vec3::new(point.x * width, point.y * height, point.z * width);
+    let (c, s) = (
+        f64::from(vanillite_base::math::cos(f64::from(rad))),
+        f64::from(vanillite_base::math::sin(f64::from(rad))),
+    );
+    Vec3::new(v.x * c + v.z * s, v.y, v.z * c - v.x * s)
+}
+
+/// `Leashable.checkElasticInteractions`: the dampened spring of each attachment point.
+/// Returns whether any spring pulled.
+fn check_elastic(ents: &mut Entities, id: EntityId, holder: EntityId, slack: f64) -> bool {
+    const QUAD: [Vec3; 4] = [
+        Vec3::new(-0.5, 0.5, 0.5),
+        Vec3::new(-0.5, 0.5, -0.5),
+        Vec3::new(0.5, 0.5, -0.5),
+        Vec3::new(0.5, 0.5, 0.5),
+    ];
+    let quad = ents.mob(holder).is_some_and(|m| m.kind == Kind::HappyGhast)
+        && supports_quad_leash(ents, id);
+    let (Some(me), Some(he)) = (ents.store.get(id), ents.store.get(holder)) else {
+        return false;
+    };
+    let (mpos, mw, mh, my) = (
         me.pos(),
         f64::from(me.dims().width),
         f64::from(me.dims().height),
+        me.rot().y_rot,
     );
-    let y_rot = me.rot().y_rot;
-    let velocity = me.velocity();
-    let distance = mpos.distance_to_sqr(hpos).sqrt();
-    // `PathfinderMob.whenLeashedTo`: home at the holder, `leashElasticDistance - 1` around it.
-    {
-        let m = t.mob();
-        m.restrict_center = BlockPos::containing(hpos.x, hpos.y, hpos.z);
-        m.restrict_radius = 5;
+    let (hpos, hw, hh, hy) = (
+        he.pos(),
+        f64::from(he.dims().width),
+        f64::from(he.dims().height),
+        he.rot().y_rot,
+    );
+    let (mine, theirs): (&[Vec3], &[Vec3]) = if quad {
+        (&QUAD, &QUAD)
+    } else {
+        (&[Vec3::new(0.0, 0.5, 0.5)], &[Vec3::new(0.0, 0.5, 0.0)])
+    };
+    let motion = holder_movement(ents, id);
+    let mut any = false;
+    let (mut force, mut torque) = (Vec3::ZERO, 0.0);
+    for (a, b) in mine.iter().zip(theirs) {
+        let arm = attachment(*a, mw, mh, my);
+        let at = mpos + arm;
+        let pivot = hpos + attachment(*b, hw, hh, hy);
+        // `computeDampenedSpringInteraction`.
+        let distance = at.distance_to_sqr(pivot).sqrt();
+        if distance < slack {
+            continue;
+        }
+        let mut d = (pivot - at).normalize() * (distance - slack);
+        let t = arm.z * d.x - arm.x * d.z;
+        if motion.dot(d) >= 0.0 {
+            d = d * f64::from(0.3_f32);
+        }
+        any = true;
+        force = force + d;
+        torque += t;
     }
-    if distance > 12.0 {
+    if !any {
+        return false;
+    }
+    let scale = if quad { 0.25 } else { 1.0 };
+    let (force, torque) = (force * scale, torque * scale);
+    if let Some(m) = ents.leash_momentum.get_mut(&id) {
+        *m += 10.0 * torque;
+    }
+    let rel = holder_movement(ents, holder) - crate::spear::known_movement(ents, id);
+    let v = ents.store.get(id).map_or(Vec3::ZERO, |e| e.velocity());
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.set_velocity(v + (force.multiply(0.8, 0.2, 0.8) + rel * 0.11));
+    }
+    true
+}
+
+/// `Leashable.tickLeash` without the mob-specific behaviour (end of `Entity.baseTick`) of a
+/// mob or boat. `in_liquid` is `isInLiquid` for the angular friction.
+fn leash_step(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    id: EntityId,
+    in_liquid: bool,
+) -> LeashStep {
+    let Some(holder) = leash_holder(ents, id) else {
+        return LeashStep::Free;
+    };
+    if !can_interact_with_level(ents, id) || !can_interact_with_level(ents, holder) {
+        let drops = env.rules.bool(Rule::ENTITY_DROPS);
+        drop_leash(ents, env, id, drops);
+        return LeashStep::Free;
+    }
+    let (Some(me), Some(he)) = (ents.store.get(id), ents.store.get(holder)) else {
+        return LeashStep::Free;
+    };
+    let distance = me
+        .aabb()
+        .center()
+        .distance_to_sqr(he.aabb().center())
+        .sqrt();
+    let (hpos, hw, mw) = (
+        he.pos(),
+        f64::from(he.dims().width),
+        f64::from(me.dims().width),
+    );
+    let momentum = ents.leash_momentum.get(&id).copied().unwrap_or(0.0);
+    let (snap, elastic) = leash_distances(ents, id);
+    // `whenLeashedTo`: `PathfinderMob` homes at the holder; a happy ghast holding a
+    // four-point leash shows it (`notifyLeashHolder`).
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    if let Some(m) = ents.mob_mut(id) {
+        m.restrict_center = BlockPos::containing(hpos.x, hpos.y, hpos.z);
+        m.restrict_radius = elastic as i32 - 1;
+    }
+    if supports_quad_leash(ents, id)
+        && let Some(h) = ents.mob_mut(holder)
+        && h.kind == Kind::HappyGhast
+    {
+        super::fam::mount::ghast::notify_leash_holder(h);
+    }
+    let step = if distance > snap {
         let seed = crate::survival::sound_seed();
         play_sound(
-            t.env.out,
+            env.out,
             None,
             hpos,
             "minecraft:item.lead.break",
@@ -1144,30 +1302,143 @@ pub fn tick_leash(t: &mut Tick<'_, '_>) {
             1.0,
             seed,
         );
-        drop_leash(t.ents, t.env, mob, true);
-    } else if distance > 6.0 - hw - mw {
-        // `checkElasticInteractions` with one attachment point each.
-        let a = y_rot * std::f32::consts::PI / 180.0;
-        let (s, c) = (f64::from(a.sin()), f64::from(a.cos()));
-        // `(0, 0.5, 0.5) * dims` turned by the yaw.
-        let arm = Vec3::new(-0.5 * mw * s, 0.5 * mh, 0.5 * mw * c);
-        let at = mpos + arm;
-        let pivot = hpos + Vec3::new(0.0, 0.5 * hh, 0.0);
-        let d = at.distance_to_sqr(pivot).sqrt();
-        if d >= 6.0 {
-            let mut force = (pivot - at).normalize() * (d - 6.0);
-            if velocity.dot(force) >= 0.0 {
-                force = force * 0.3;
+        drop_leash(ents, env, id, true);
+        LeashStep::Snapped
+    } else if distance > elastic - hw - mw && check_elastic(ents, id, holder, elastic) {
+        LeashStep::Pulled
+    } else {
+        LeashStep::Close(holder)
+    };
+    // `setYRot(getYRot() - angularMomentum)`, then the friction of the momentum (of the
+    // `LeashData` read at the start, so also after the lead snapped).
+    let momentum = ents.leash_momentum.get(&id).copied().unwrap_or(momentum);
+    let Some(me) = ents.store.get(id) else {
+        return step;
+    };
+    let on_ground = me.flags().contains(EntityFlags::ON_GROUND);
+    let p = me.pos();
+    #[allow(clippy::cast_possible_truncation)]
+    let y_rot = (f64::from(me.rot().y_rot) - momentum) as f32;
+    let friction = if on_ground {
+        let below = BlockPos::containing(p.x, p.y - f64::from(0.500_001_f32), p.z);
+        level.block(below).block().info().friction * 0.91
+    } else if in_liquid {
+        0.8
+    } else {
+        0.91
+    };
+    let mut r = me.rot();
+    r.y_rot = y_rot;
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.set_rot(r);
+    }
+    if let Some(m) = ents.leash_momentum.get_mut(&id) {
+        *m = momentum * f64::from(friction);
+    }
+    step
+}
+
+/// `Leashable.tickLeash` of the ticking mob (end of `Entity.baseTick`) with `Mob` and
+/// `PathfinderMob`'s parts.
+pub fn tick_leash(t: &mut Tick<'_, '_>) {
+    let id = t.id;
+    if let Some(l) = t.mob_ref().pending_leash {
+        let tick_count = t.mob_ref().tick_count;
+        let left = restore_leash(t.level, t.ents, t.env, id, l, tick_count);
+        t.mob().pending_leash = left;
+    }
+    let in_liquid = {
+        let f = &t.mob_ref().fluids;
+        f.in_water() || f.in_lava()
+    };
+    match leash_step(t.level, t.ents, t.env, id, in_liquid) {
+        LeashStep::Free | LeashStep::Snapped => {}
+        LeashStep::Pulled => on_elastic_pull(t),
+        LeashStep::Close(holder) => {
+            // `PathfinderMob.closeRangeLeashBehaviour`: walk to 2 blocks from the holder.
+            let kind = t.mob_ref().kind;
+            let stays = !matches!(kind, Kind::Allay | Kind::HappyGhast);
+            if stays && !super::animal::is_panicking(t.mob_ref()) {
+                let Some(hpos) = t.ents.store.get(holder).map(|e| e.pos()) else {
+                    return;
+                };
+                let mpos = t.pos();
+                #[allow(clippy::cast_possible_truncation)]
+                let (xd, yd, zd) = (
+                    (mpos.x - hpos.x) as f32,
+                    (mpos.y - hpos.y) as f32,
+                    (mpos.z - hpos.z) as f32,
+                );
+                let distance = (xd * xd + yd * yd + zd * zd).sqrt();
+                let delta = (hpos - mpos).normalize() * f64::from((distance - 2.0).max(0.0));
+                let speed = if matches!(kind, Kind::Llama | Kind::TraderLlama) {
+                    2.0
+                } else {
+                    1.0
+                };
+                nav::move_to_pos(t, mpos + delta, speed);
             }
-            let rel = holder_motion - velocity;
-            let add = force.multiply(0.8, 0.2, 0.8) + rel * 0.11;
-            t.set_velocity(velocity + add);
         }
-    } else if !super::animal::is_panicking(t.mob_ref()) {
-        // `PathfinderMob.closeRangeLeashBehaviour`: stay within 2 blocks of the holder.
-        let to = hpos - mpos;
-        let len = to.length();
-        let target = mpos + to.normalize() * (len - 2.0).max(0.0);
-        nav::move_to_pos(t, target, 1.0);
+    }
+}
+
+/// `onElasticLeashPull`: the fall distance is capped; horses stop eating, camels stand up,
+/// happy ghasts wait.
+fn on_elastic_pull(t: &mut Tick<'_, '_>) {
+    let vy = t.velocity().y;
+    {
+        let m = t.mob();
+        if vy > -0.5 && m.fall_distance > 1.0 {
+            m.fall_distance = 1.0;
+        }
+    }
+    match t.mob_ref().kind {
+        Kind::Horse | Kind::Donkey | Kind::Mule | Kind::ZombieHorse | Kind::SkeletonHorse => {
+            super::fam::companion::horse::stop_eating(t);
+        }
+        Kind::Camel | Kind::CamelHusk => {
+            use super::fam::mount::camel;
+            let now = t.game_time();
+            if camel::is_sitting(t.mob_ref())
+                && !camel::in_pose_transition(t.mob_ref(), now)
+                && camel::can_change_pose(t)
+            {
+                camel::stand_up(t);
+            }
+        }
+        Kind::HappyGhast => t.mob().move_ctl.operation = nav::Operation::Wait,
+        _ => {}
+    }
+}
+
+/// `Leashable.tickLeash` of a boat (in `Entity.baseTick` of `AbstractBoat.tick`).
+pub fn tick_boat_leash(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    if let Some((l, tick_count)) = ents
+        .boat(id)
+        .and_then(|b| b.pending_leash.map(|l| (l, b.tick_count)))
+    {
+        let left = restore_leash(level, ents, env, id, l, tick_count);
+        if let Some(b) = ents.boat_mut(id) {
+            b.pending_leash = left;
+        }
+    }
+    let in_liquid = ents.boat(id).is_some_and(|b| {
+        !matches!(
+            b.status,
+            crate::vehicle::Status::OnLand | crate::vehicle::Status::InAir
+        )
+    });
+    let pulled = matches!(
+        leash_step(level, ents, env, id, in_liquid),
+        LeashStep::Pulled
+    );
+    // `onElasticLeashPull`: `checkFallDistanceAccumulation`.
+    let vy = ents.store.get(id).map_or(0.0, |e| e.velocity().y);
+    if pulled
+        && vy > -0.5
+        && let Some(b) = ents.boat_mut(id)
+        && b.fall_distance > 1.0
+    {
+        b.fall_distance = 1.0;
     }
 }

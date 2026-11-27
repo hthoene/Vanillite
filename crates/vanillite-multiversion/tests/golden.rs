@@ -413,18 +413,26 @@ fn entity_data_and_spawn() {
     };
     assert_eq!(cb(&mut c, &add(false)), Some(add(true)));
 
-    // A cushion (26.3 only) is not shown.
-    let mut cushion = varint(10);
-    cushion.extend_from_slice(&[0xcd; 16]);
-    cushion.extend(varint(ids.new_id("minecraft:entity_type", "cushion")));
-    cushion.extend_from_slice(&[0; 24]);
-    cushion.extend_from_slice(&[0, 0, 0, 0]);
-    cushion.push(0);
-    let cushion = body(
-        ids.new_packet("play", "clientbound", "add_entity"),
-        &cushion,
-    );
-    assert_eq!(cb(&mut c, &cushion), None);
+    // A cushion (26.3 only) shows as an interaction entity, its stand-in.
+    let cushion = |old: bool| {
+        let mut b = varint(10);
+        b.extend_from_slice(&[0xcd; 16]);
+        b.extend(varint(if old {
+            ids.old_id("minecraft:entity_type", "interaction")
+        } else {
+            ids.new_id("minecraft:entity_type", "cushion")
+        }));
+        b.extend_from_slice(&[0; 24]);
+        b.extend_from_slice(&[0, 0, 0, 0]);
+        b.push(0);
+        let packet = if old {
+            ids.old_packet("play", "clientbound", "add_entity")
+        } else {
+            ids.new_packet("play", "clientbound", "add_entity")
+        };
+        body(packet, &b)
+    };
+    assert_eq!(cb(&mut c, &cushion(false)), Some(cushion(true)));
 
     // Entity data: a block state and an item, then a dye color (26.3 only) that is left out.
     let data = |old: bool| {

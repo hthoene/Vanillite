@@ -270,6 +270,11 @@ packet_set! {
         PlayerAbilities(play::clientbound::PlayerAbilities),
         PlayerChat(play::clientbound::PlayerChat),
         PlayerCombatKill(play::clientbound::PlayerCombatKill),
+        PlayerCombatEnter(play::clientbound::PlayerCombatEnter),
+        PlayerCombatEnd(play::clientbound::PlayerCombatEnd),
+        SoundEntity(play::clientbound::SoundEntity),
+        TeleportEntity(play::clientbound::TeleportEntity),
+        AddTransientBlock(play::clientbound::AddTransientBlock),
         PlayerLookAt(play::clientbound::PlayerLookAt),
         PlayerInfoRemove(play::clientbound::PlayerInfoRemove),
         PlayerInfoUpdate(play::clientbound::PlayerInfoUpdate),
@@ -293,6 +298,8 @@ packet_set! {
         OpenBook(play::clientbound::OpenBook),
         MapItemData(play::clientbound::MapItemData),
         Cooldown(play::clientbound::Cooldown),
+        Waypoint(play::clientbound::Waypoint),
+        ServerData(play::clientbound::ServerData),
     }
     unhandled Unhandled
 }

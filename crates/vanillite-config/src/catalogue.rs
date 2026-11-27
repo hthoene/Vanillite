@@ -25,11 +25,24 @@ rules! {
         /// Thread counts.
         threads: ThreadRules = "performance.threads" {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
-            /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
+            /// tick phases). 0 = the cores the server may use (`performance.budget.cpu`, the
+            /// cgroup CPU quota and the CPU affinity): the workers run at a lower OS priority
+            /// (`compute-nice`), so the tick threads still get a core whenever they need one.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
+            /// Nice value of the compute workers (Linux; the tick threads stay at 0). Higher
+            /// values leave the CPU to the tick threads sooner: 10 gives a tick thread sharing a
+            /// core with a worker about 90 % of it. 0 = the same priority as the tick threads.
+            compute_nice: u8 = "compute-nice", Setting, range = [0, 19], restart = true,
+                vanilla = 10;
             /// I/O threads of the network (connections, encryption, compression of outgoing
             /// packets). 0 = 2, or 1 with less than two cores, so the tick keeps the only core.
             network: u16 = "network", Setting, range = [0, 64], restart = true, vanilla = 0;
+            /// Threads that share a parallel phase of a world's tick (in crowds: the entity
+            /// packets, the delivery of sounds and particles, the advancement checks; the tiles
+            /// of `region-threading`), the tick thread included. 0 = the compute workers plus the tick thread; 1 = the tick
+            /// thread alone. The result is the same with any number, only the speed differs.
+            tick_phases: u16 = "tick-phases", Setting, range = [0, 1024], restart = true,
+                vanilla = 0;
         }
         /// What the hardware allows. With less than two cores, background work (generation,
         /// light, saving) runs only between ticks and below the CPU quota, so the tick stays

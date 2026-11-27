@@ -13,7 +13,6 @@ use crate::item::{self, ItemStack};
 use crate::level::Level;
 use crate::mob::MobContext;
 use crate::mob::missile::{MissileData, MissileKind};
-use crate::survival::play_sound;
 use crate::survival::player::Env;
 
 /// `TridentItem.THROW_THRESHOLD_TIME`.
@@ -116,7 +115,11 @@ pub fn release(
     }
     if riptide == 0.0
         && let Some(uuid) = ents.store.get(player).map(|e| e.uuid())
-        && !env.hooks.projectile_launch(uuid, "minecraft:trident")
+        && !env.hooks.projectile_launch(
+            crate::hooks::HookWorld::entities(ents),
+            uuid,
+            "minecraft:trident",
+        )
     {
         return;
     }
@@ -171,16 +174,16 @@ pub fn release(
             1.0,
             data,
         );
-        if let Some(at) = id.and_then(|i| ents.store.get(i)).map(|e| e.pos()) {
-            play_sound(
+        if let Some(id) = id {
+            crate::survival::play_entity_sound(
                 env.out,
+                ents,
                 None,
-                at,
+                id,
                 &sound,
                 SoundSource::Players,
                 1.0,
                 1.0,
-                crate::survival::sound_seed(),
             );
         }
         return;
@@ -217,18 +220,16 @@ pub fn release(
         // `move(SELF, (0, 1.2, 0))`.
         crate::survival::player::lift_player(ents, env, player, f64::from(1.199_999_9_f32));
     }
-    if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
-        play_sound(
-            env.out,
-            None,
-            pos,
-            &sound,
-            SoundSource::Players,
-            1.0,
-            1.0,
-            crate::survival::sound_seed(),
-        );
-    }
+    crate::survival::play_entity_sound(
+        env.out,
+        ents,
+        None,
+        player,
+        &sound,
+        SoundSource::Players,
+        1.0,
+        1.0,
+    );
 }
 
 /// `ItemStack.hurtWithoutBreaking(1, player)`: one point, never the last one (Unbreaking may

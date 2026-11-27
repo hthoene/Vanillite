@@ -92,6 +92,9 @@ pub fn creaking_mut(m: &mut MobData) -> &mut Creaking {
 pub fn init(m: &mut MobData) {
     creaking_mut(m);
     m.nav.can_float = true;
+    // `CreakingMoveControl` and `CreakingLookControl`: only while it can move.
+    m.move_ctl.kind = crate::mob::nav::MoveKind::Custom;
+    m.look.kind = crate::mob::nav::LookKind::Custom;
     super::ai::creaking_brain(m);
 }
 
@@ -233,11 +236,18 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     let could = creaking(t.mob_ref()).can_move;
     let can = check_can_move(t);
     if can != could {
+        let (pos, id) = (t.pos(), t.id);
+        crate::survival::game_event(
+            t.env.out,
+            crate::level::game_event::events().entity_action,
+            pos,
+            Some(id),
+        );
         if can {
             super::make_sound(t, "minecraft:entity.creaking.unfreeze");
         } else {
             // `stopInPlace`.
-            t.mob().nav.stop();
+            t.nav().stop();
             let m = t.mob();
             m.xxa = 0.0;
             m.zza = 0.0;
@@ -313,9 +323,11 @@ fn is_looked_at_by(t: &Tick<'_, '_>, player: EntityId, heights: &[f64]) -> bool 
         let dot = view.x * dir.x + view.y * dir.y + view.z * dir.z;
         // `adjustForDistance` is false: the same cone at every distance.
         if dot > 1.0 - 0.5 {
-            let from = eye;
+            // `hasLineOfSight(this, VISUAL, NONE, h)`: through glass and iron bars, up to 128.
             let target = Vec3::new(p.x, h, p.z);
-            if crate::mob::physics::clip(t.level, from, target).is_none() {
+            if target.distance_to_sqr(eye) <= 128.0 * 128.0
+                && crate::mob::physics::clip_visual(t.level, eye, target).is_none()
+            {
                 return true;
             }
         }
@@ -373,7 +385,7 @@ pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
         return None;
     }
     // `blameSourceForDamage`.
-    let player = crate::mob::combat::blame(h.ents, h.target, &h.source);
+    let player = crate::mob::combat::blame(h.ents, h.env.types, h.target, &h.source);
     let direct_living_or_projectile = h.source.direct.is_some_and(|d| {
         h.ents.mob(d).is_some()
             || h.ents.player(d).is_some()

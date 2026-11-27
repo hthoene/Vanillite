@@ -854,7 +854,7 @@ pub fn create_portal_by(
             entity,
             ..crate::hooks::Event::new(vanillite_abi::event::PORTAL_CREATE)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
         if ev.cancelled {
             return None;
         }

@@ -1,0 +1,91 @@
+{
+  "description": "A zombie loaded with saved attributes (leader max health bonus, knockback resistance): LivingEntity reads the attributes before the health, so the health is not clamped to 20; then it is hurt.",
+  "tier": "fast",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 12,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:zombie 10.5 -60 10.5 {UUID:[I;1,2,3,12],NoAI:1b,Health:35f,attributes:[{id:\"minecraft:max_health\",base:20.0d,modifiers:[{id:\"minecraft:leader_zombie_bonus\",amount:1.5d,operation:\"add_multiplied_total\"}]},{id:\"minecraft:knockback_resistance\",base:0.04d}]}"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "damage @e[type=minecraft:zombie,limit=1] 10 minecraft:generic"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -75,6 +75,7 @@ impl World {
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types: &self.types,
             facts: &self.facts,
             blocks: &NoBlocks,
@@ -271,6 +272,7 @@ fn respawn_stages_take_604_ticks() {
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types,
             facts,
             blocks: &NoBlocks,
@@ -329,6 +331,7 @@ impl World {
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types,
             facts,
             blocks: &NoBlocks,
@@ -452,6 +455,7 @@ fn kill_removes_the_fight_dragon_at_once_and_ends_the_fight() {
     let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
     let mut env = Env {
         hooks: &crate::hooks::NoHooks,
+        hook_world: crate::hooks::HookWorld::NONE,
         types,
         facts,
         blocks: &NoBlocks,

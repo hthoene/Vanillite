@@ -155,6 +155,7 @@ fn schooling_fish(t: &Tick<'_, '_>, id: EntityId) -> bool {
 pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     g.add(0, fam(FamGoal::Fox(Goal::Float)));
+    g.add(0, fam(FamGoal::ClimbPowderSnow));
     g.add(1, fam(FamGoal::Fox(Goal::Faceplant { countdown: 0 })));
     g.add(2, fam(FamGoal::Fox(Goal::Panic { pos: Vec3::ZERO })));
     g.add(3, G::breed(1.0));
@@ -812,7 +813,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                 && t.mob().random.next_float() < 0.02
                 && !flag_of(t.mob_ref(), SLEEPING)
                 && t.mob_ref().target.is_none()
-                && t.mob_ref().nav.is_done()
+                && t.nav_ref().is_done()
                 && !alertable(t)
                 && !flag_of(t.mob_ref(), POUNCING)
                 && !flag_of(t.mob_ref(), CROUCHING)
@@ -853,7 +854,7 @@ fn can_sleep(t: &mut Tick<'_, '_>, countdown: &mut i32) -> bool {
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::Faceplant { countdown } => flag_of(t.mob_ref(), FACEPLANTED) && *countdown > 0,
-        Goal::Panic { .. } | Goal::SeekShelter { .. } => !t.mob_ref().nav.is_done(),
+        Goal::Panic { .. } | Goal::SeekShelter { .. } => !t.nav_ref().is_done(),
         Goal::Avoid(cg) => crate::mob::common::can_continue(t, cg),
         Goal::Pounce => {
             let Some(target) = t.mob_ref().target else {
@@ -902,7 +903,7 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 let v = t.velocity();
                 t.set_velocity(Vec3::new(v.x + uv.x * 0.8, v.y + 0.9, v.z + uv.z * 0.8));
             }
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::SeekShelter { wanted, .. } => {
             clear_states(t);
@@ -914,9 +915,9 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             set_flag(t, INTERESTED, false);
             t.mob().jumping = false;
             set_flag(t, SLEEPING, true);
-            t.mob().nav.stop();
+            t.nav().stop();
             let p = t.pos();
-            t.mob().move_ctl.set_wanted_position(p, 0.0);
+            t.move_ctl().set_wanted_position(p, 0.0);
         }
         Goal::EatBerries { base, waited } => {
             *waited = 0;
@@ -937,7 +938,7 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             reset_look(t, rel_x, rel_z, look_time);
             *looks_remaining = 2 + t.mob().random.next_int_bounded(3);
             set_flag(t, SITTING, true);
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::DefendTrusted {
             state,
@@ -978,7 +979,7 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             {
                 set_flag(t, INTERESTED, true);
                 set_flag(t, CROUCHING, true);
-                t.mob().nav.stop();
+                t.nav().stop();
                 // `getMaxHeadYRot`, `getMaxHeadXRot`.
                 t.mob()
                     .look
@@ -1004,7 +1005,7 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             state.target_mob = None;
         }
         Goal::Panic { .. } | Goal::SeekShelter { .. } | Goal::SearchForItems => {
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         _ => {}
     }
@@ -1030,7 +1031,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             if o.pos.distance_to_sqr(t.pos()) <= 36.0 {
                 set_flag(t, INTERESTED, true);
                 set_flag(t, CROUCHING, true);
-                t.mob().nav.stop();
+                t.nav().stop();
             } else {
                 nav::move_to_entity(t, o.pos, 1, 1.5);
             }

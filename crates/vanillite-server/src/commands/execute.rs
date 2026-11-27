@@ -670,6 +670,10 @@ fn summon_one(
             // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
             return Err(failed());
         }
+        // `Entity.load` of the given data: its `UUID` replaces the constructor's.
+        if matches!(nbt.get("UUID"), Some(Tag::IntArray(i)) if i.len() == 4) {
+            env.level.entities.store.set_uuid(id, uuid);
+        }
         // The given tags on top of what the mob has (like `data merge`).
         let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
         super::data_cmd::merge_compound(&mut loaded, nbt);
@@ -753,6 +757,10 @@ fn summon_one(
         let id = *entities.store.columns().id.last().ok_or_else(failed)?;
         if entities.store.get(id).is_none_or(|e| e.uuid() != uuid) {
             return Err(failed());
+        }
+        // The orb's own random: the seed its constructor took.
+        if let (Some(seed), Some(orb)) = (fresh_seed, entities.experience_orb_mut(id)) {
+            orb.random_state = vanillite_base::random::LegacyRandom::new(seed).state();
         }
         if !entities.spawned(id, reason, 0) {
             return Err(failed());

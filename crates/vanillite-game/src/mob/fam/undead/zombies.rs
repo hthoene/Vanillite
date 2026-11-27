@@ -15,7 +15,7 @@ use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::{self, CommonGoal, MoveToBlock};
 use crate::mob::equipment::{self, PickupRules};
-use crate::mob::fam::{ExtraMob, Hurt, Interact, Relation, SpawnContext, SpawnReason};
+use crate::mob::fam::{ExtraMob, GroupData, Hurt, Interact, Relation, SpawnContext, SpawnReason};
 use crate::mob::goals::{self, MeleeKind};
 use crate::mob::nav::{self, MoveKind, NavKind};
 use crate::mob::{Environment, Kind, MobData, Tick, kinds, randompos};
@@ -52,6 +52,20 @@ pub struct ZombieState {
     pub speed_bonus: bool,
     /// `Drowned.searchingForLand`.
     pub searching_for_land: bool,
+    /// `MoveThroughVillageGoal`: the village points of interest it reached (`visited`) and
+    /// the path `canUse` made for `start` (boxed: only zombies near villages have it).
+    pub village: Option<Box<VillageWalk>>,
+}
+
+/// The state of `MoveThroughVillageGoal`.
+#[derive(Clone, Debug, Default)]
+pub struct VillageWalk {
+    pub visited: Vec<BlockPos>,
+    pub path: Option<crate::mob::path::Path>,
+}
+
+fn village_mut(m: &mut MobData) -> &mut VillageWalk {
+    zs_mut(m).village.get_or_insert_with(Box::default)
 }
 
 /// Every `Zombie` (the classic one too).
@@ -163,6 +177,20 @@ pub fn dimensions(m: &MobData) -> Option<Dimensions> {
         width: 0.49,
         height: 0.98,
     })
+}
+
+/// The eye height of `BABY_DIMENSIONS` of the zombies.
+pub fn baby_eye_height(m: &MobData) -> Option<f32> {
+    if !m.baby {
+        return None;
+    }
+    match m.kind {
+        Kind::Zombie | Kind::Drowned => Some(0.775),
+        Kind::Husk => Some(0.825),
+        Kind::ZombieVillager => Some(0.67),
+        Kind::ZombifiedPiglin => Some(0.78),
+        _ => None,
+    }
 }
 
 // --- Spawn rules ------------------------------------------------------------------------
@@ -375,6 +403,12 @@ pub fn register_goals(m: &mut MobData) {
             g.add(8, goals::Goal::random_look());
             g.add(2, goal(Goal::SpearUse(SpearUse::new(1.0, 1.0, 10.0, 2.0))));
             g.add(3, goals::Goal::melee(MeleeKind::Zombie, 1.0, false));
+            g.add(
+                6,
+                goal(Goal::MoveThroughVillage {
+                    poi: BlockPos::ZERO,
+                }),
+            );
             g.add(7, goals::Goal::stroll(1.0));
             tg.add(1, goals::Goal::hurt_by(true));
             tg.add(2, goals::Goal::nearest_player(true));
@@ -444,16 +478,32 @@ fn zombie_finalize_with(m: &mut MobData, ctx: &mut SpawnContext<'_>, roll_baby: 
     if !conversion {
         m.can_pick_up_loot = m.random.next_float() < 0.55 * special;
     }
-    // `ZombieGroupData(getSpawnAsBabyOdds(random), true)`.
-    if roll_baby && m.random.next_float() < 0.05 {
-        super::set_baby(m, true);
-        kinds::zombie_chicken_jockey(m, ctx);
-    }
-    let doors = m.random.next_float() < special * 0.1;
-    set_can_break_doors(m, doors);
-    if !conversion {
-        populate_equipment(m, ctx.difficulty, special);
-        equipment::populate_default_enchantments(m, special);
+    // `ZombieGroupData(getSpawnAsBabyOdds(random), true)` once per spawn group: the later
+    // members take the first one's baby status; other group data skips the zombie part.
+    let baby = if !roll_baby {
+        Some(false)
+    } else {
+        match ctx.group {
+            GroupData::None => {
+                let baby = m.random.next_float() < 0.05;
+                ctx.group = GroupData::Zombie(baby);
+                Some(baby)
+            }
+            GroupData::Zombie(baby) => Some(baby),
+            _ => None,
+        }
+    };
+    if let Some(baby) = baby {
+        if baby {
+            super::set_baby(m, true);
+            kinds::zombie_chicken_jockey(m, ctx);
+        }
+        let doors = m.random.next_float() < special * 0.1;
+        set_can_break_doors(m, doors);
+        if !conversion {
+            populate_equipment(m, ctx.difficulty, special);
+            equipment::populate_default_enchantments(m, special);
+        }
     }
     kinds::halloween_head(m);
     // `handleAttributes` draws from the zombie's own random (`this.random`).
@@ -759,7 +809,7 @@ fn spear_start(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
 }
 
 fn spear_stop(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
-    t.mob().nav.stop();
+    t.nav().stop();
     goals::set_aggressive(t, false);
     s.active = false;
     crate::mob::projectile::stop_using_item(t);
@@ -781,15 +831,11 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
     while let Some(v) = t.ents.vehicle_of(root) {
         root = v;
     }
-    // `chargeSpeedModifier` of the mob the zombie rides (zombie horses charge faster).
-    let speed = if root != t.id
-        && t.ents
-            .mob(root)
-            .is_some_and(|m| m.kind == Kind::ZombieHorse)
-    {
-        1.4_f32
-    } else {
-        1.0
+    // `chargeSpeedModifier` of the mob at the bottom of the stack the zombie rides.
+    let speed = match t.ents.mob(root).map(|m| m.kind) {
+        Some(Kind::ZombieHorse) if root != t.id => 1.4_f32,
+        Some(Kind::CamelHusk) if root != t.id => 4.0,
+        _ => 1.0,
     };
     let speed = f64::from(speed);
     let mount = if t.ents.vehicle_of(t.id).is_some() {
@@ -803,7 +849,7 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
         .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 30.0, 30.0);
     if s.engage_time < 0 {
         if dist_sqr > f64::from(s.approach_sqr) {
-            nav::move_to_entity(t, o.pos, 0, speed * s.reposition_speed);
+            nav::move_to_entity(t, o.pos, 1, speed * s.reposition_speed);
             return;
         }
         s.engage_time = goals::reduced(crate::spear::mob_use_duration(t.mob_ref()));
@@ -835,7 +881,7 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
     }
     if let Some(away) = s.away {
         nav::move_to_pos(t, away, speed * s.reposition_speed);
-        if t.mob_ref().nav.is_done() {
+        if t.nav_ref().is_done() {
             if s.fleeing_time > 0 {
                 s.done = true;
                 return;
@@ -843,8 +889,8 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
             s.away = None;
         }
     } else {
-        nav::move_to_entity(t, o.pos, 0, speed * s.charge_speed);
-        if dist_sqr < f64::from(s.in_range_sqr) || t.mob_ref().nav.is_done() {
+        nav::move_to_entity(t, o.pos, 1, speed * s.charge_speed);
+        if dist_sqr < f64::from(s.in_range_sqr) || t.nav_ref().is_done() {
             let d = dist_sqr.sqrt();
             s.away = randompos::land_pos_away(t, 6.0 + mount - d, 7.0 + mount - d, 7, o.pos);
         }
@@ -1012,19 +1058,37 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
     let Some(z) = zs(t.mob_ref()).cloned() else {
         return;
     };
-    // `dropPreservedEquipment`: what the zombie villager picked up goes into the villager's
-    // inventory slot of the same index.
+    // `dropPreservedEquipment(!PREVENT_ARMOR_CHANGE)`: what the zombie villager picked up is
+    // dropped; Curse of Binding items go into the villager's inventory slot of the slot's
+    // index (`getIndex() + 300`) instead.
     let mut kept: Vec<(usize, ItemStack)> = Vec::new();
+    let mut dropped: Vec<ItemStack> = Vec::new();
     {
         let m = t.mob();
-        for (i, chance) in m.equipment.drop_chances.iter().enumerate() {
-            if *chance > 1.0 && !m.equipment.items[i].is_empty() {
-                kept.push((i, m.equipment.items[i].clone()));
+        for slot in equipment::SLOTS {
+            let i = usize::from(slot.ordinal());
+            let stack = &m.equipment.items[i];
+            if stack.is_empty() {
+                continue;
+            }
+            let bound = crate::player::play::game_data()
+                .is_some_and(|d| d.enchantment_level(stack, "minecraft:binding_curse") > 0);
+            if bound {
+                let index = match slot {
+                    EquipmentSlot::OffHand | EquipmentSlot::Legs => 1,
+                    EquipmentSlot::Chest => 2,
+                    EquipmentSlot::Head => 3,
+                    _ => 0,
+                };
+                kept.push((index, stack.clone()));
+            } else if m.equipment.drop_chances[i] > 1.0 {
+                dropped.push(stack.clone());
             }
         }
     }
     let silent = t.mob_ref().silent;
     let pos = t.block_pos();
+    let drop_at = t.pos();
     // The zombie as `CURED_ZOMBIE_VILLAGER` sees it, before it is replaced.
     let zombie = z
         .cure_starter
@@ -1064,6 +1128,19 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
     ) else {
         return;
     };
+    // The dropped equipment (`spawnAtLocation`, created after the villager).
+    for stack in dropped {
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
+        t.env.out.push(crate::survival::Effect::DropItem {
+            random: item_random,
+            uuid,
+            pos: drop_at,
+            velocity,
+            y_rot,
+            pickup_delay: 10,
+            stack,
+        });
+    }
     // `finalizeSpawn(CONVERSION)`: the villager type of the biome unless final.
     if let Some(v) = t.ents.mob_mut(id)
         && !crate::mob::fam::village::villager::vs(v).data_finalized
@@ -1143,7 +1220,7 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
             t.set_velocity(Vec3::new(v.x, v.y + 0.002, v.z));
         }
         let ctl = t.mob_ref().move_ctl;
-        if ctl.operation != nav::Operation::MoveTo || t.mob_ref().nav.is_done() {
+        if ctl.operation != nav::Operation::MoveTo || t.nav_ref().is_done() {
             // `setSpeed(0)`: also the forward input.
             let m = t.mob();
             m.speed = 0.0;
@@ -1239,7 +1316,7 @@ pub fn drowned_throw_trident(t: &mut Tick<'_, '_>, target: EntityId, _power: f32
 
 /// `closeToNextPos`: the path's target is within 2 blocks.
 fn close_to_next_pos(t: &Tick<'_, '_>) -> bool {
-    let Some(path) = t.mob_ref().nav.path.as_ref() else {
+    let Some(path) = t.nav_ref().path.as_ref() else {
         return false;
     };
     let target = path.target;
@@ -1424,7 +1501,8 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
     {
         return;
     }
-    let mut new = MobData::new(kind, crate::mob::new_entity_seed());
+    let seed = crate::mob::new_entity_seed();
+    let mut new = MobData::new(kind, seed);
     let (x, y, z) = (
         vanillite_base::math::floor(pos.x),
         vanillite_base::math::floor(pos.y),
@@ -1442,10 +1520,12 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
             continue;
         }
         let mut random = LegacyRandom::new(h.env.random.next_long());
+        // The real level: at night the open surface is dark enough.
+        let level_env = h.level.spawner_env.env;
         if !crate::mob::fam::check_spawn_rules(
             kind,
             h.level,
-            &Environment::default(),
+            &level_env,
             spawn,
             &mut random,
             SpawnReason::Reinforcement,
@@ -1461,15 +1541,13 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
         kinds::finalize_spawn(&mut new, &mut ctx, h.env.random);
         zs_mut(&mut new).reinforcement -= 0.05;
         let uuid = crate::mob::new_uuid();
-        let y_rot = 0.0;
-        let id = crate::mob::spawn(
-            h.ents,
-            h.level.network_ids(),
-            uuid,
-            at,
-            super::rotation(y_rot),
-            new,
-        );
+        // `setPos` only: the yaw of `LivingEntity`'s constructor, the head and body at 0.
+        let rot = vanillite_world::entity::Rotation {
+            y_rot: crate::mob::constructor_y_rot(seed),
+            x_rot: 0.0,
+            y_head_rot: 0.0,
+        };
+        let id = crate::mob::spawn(h.ents, h.level.network_ids(), uuid, at, rot, new);
         let parent = h.ents.store.get(h.target).map_or(0, |e| e.uuid());
         if !h
             .ents
@@ -1677,7 +1755,7 @@ pub fn save(m: &MobData, out: &mut Compound) {
     out.insert("IsBaby", m.baby);
     out.insert("CanBreakDoors", m.can_break_doors);
     save_conversion(m, out);
-    save_reinforcement(m, out);
+    save_attributes(m, out);
     let z = zs(m).cloned().unwrap_or_default();
     match m.kind {
         Kind::ZombieVillager => {
@@ -1716,23 +1794,90 @@ pub fn save(m: &MobData, out: &mut Compound) {
     }
 }
 
-/// `SPAWN_REINFORCEMENTS_CHANCE` in the `attributes` list.
-fn save_reinforcement(m: &MobData, out: &mut Compound) {
-    let mut a = Compound::new();
-    a.insert("id", "minecraft:spawn_reinforcements");
-    a.insert("base", zs(m).map_or(0.0, |z| z.reinforcement));
-    out.insert("attributes", vanillite_nbt::List(vec![Tag::Compound(a)]));
+/// `LivingEntity.addAdditionalSaveData`'s `attributes` of the zombies: the spawn bonuses of
+/// `handleAttributes` (leader health and reinforcements, follow range, knockback resistance)
+/// as the values they make, without effect modifiers.
+pub fn save_attributes(m: &MobData, out: &mut Compound) {
+    let a = m.base_attrs.as_deref().unwrap_or(&m.attrs);
+    let entries = [
+        ("minecraft:follow_range", a.follow_range),
+        ("minecraft:knockback_resistance", a.knockback_resistance),
+        ("minecraft:max_health", a.max_health),
+        (
+            "minecraft:spawn_reinforcements",
+            zs(m).map_or(0.0, |z| z.reinforcement),
+        ),
+    ];
+    let list = entries
+        .iter()
+        .map(|&(id, base)| {
+            let mut c = Compound::new();
+            c.insert("id", id);
+            c.insert("base", base);
+            Tag::Compound(c)
+        })
+        .collect();
+    out.insert("attributes", vanillite_nbt::List(list));
 }
 
-fn load_reinforcement(m: &mut MobData, tag: &Compound) {
-    if let Some(Tag::List(l)) = tag.get("attributes") {
+/// The value of a saved attribute: its base with the modifiers applied (`AttributeInstance`
+/// order: add, multiply base, multiply total).
+fn attribute_value(c: &Compound) -> Option<f64> {
+    let Some(Tag::Double(base)) = c.get("base") else {
+        return None;
+    };
+    let mut mods = Vec::new();
+    if let Some(Tag::List(l)) = c.get("modifiers") {
         for t in &l.0 {
-            if let Tag::Compound(c) = t
-                && c.get("id").and_then(Tag::as_str) == Some("minecraft:spawn_reinforcements")
-                && let Some(Tag::Double(v)) = c.get("base")
+            if let Tag::Compound(m) = t
+                && let Some(Tag::Double(amount)) = m.get("amount")
             {
-                zs_mut(m).reinforcement = *v;
+                mods.push((
+                    m.get("operation").and_then(Tag::as_str).unwrap_or(""),
+                    *amount,
+                ));
             }
+        }
+    }
+    let mut v = *base;
+    for (op, a) in &mods {
+        if *op == "add_value" {
+            v += a;
+        }
+    }
+    let mut r = v;
+    for (op, a) in &mods {
+        if *op == "add_multiplied_base" {
+            r += v * a;
+        }
+    }
+    for (op, a) in &mods {
+        if *op == "add_multiplied_total" {
+            r *= 1.0 + a;
+        }
+    }
+    Some(r)
+}
+
+/// Reads the zombie attributes [`save_attributes`] writes (before the health, like
+/// `LivingEntity.readAdditionalSaveData`).
+pub fn load_attributes(m: &mut MobData, tag: &Compound) {
+    let Some(Tag::List(l)) = tag.get("attributes") else {
+        return;
+    };
+    for t in &l.0 {
+        let Tag::Compound(c) = t else {
+            continue;
+        };
+        let Some(v) = attribute_value(c) else {
+            continue;
+        };
+        match c.get("id").and_then(Tag::as_str) {
+            Some("minecraft:follow_range") => m.attrs.follow_range = v,
+            Some("minecraft:knockback_resistance") => m.attrs.knockback_resistance = v,
+            Some("minecraft:max_health") => m.attrs.max_health = v,
+            Some("minecraft:spawn_reinforcements") => zs_mut(m).reinforcement = v,
+            _ => {}
         }
     }
 }
@@ -1756,7 +1901,6 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     super::set_baby(m, boolean("IsBaby"));
     set_can_break_doors(m, boolean("CanBreakDoors"));
     load_conversion(m, tag);
-    load_reinforcement(m, tag);
     match m.kind {
         Kind::ZombieVillager => {
             let int = |k: &str| match tag.get(k) {
@@ -1818,6 +1962,92 @@ pub fn load(m: &mut MobData, tag: &Compound) {
 
 // --- Goals --------------------------------------------------------------------------------
 
+/// `BlockPos.closerToCenterThan(pos, dist)`.
+fn closer_to_center(p: BlockPos, pos: Vec3, dist: f64) -> bool {
+    let c = Vec3::new(
+        f64::from(p.x) + 0.5,
+        f64::from(p.y) + 0.5,
+        f64::from(p.z) + 0.5,
+    );
+    c.distance_to_sqr(pos) < dist * dist
+}
+
+/// `MoveThroughVillageGoal(mob, 1.0, true, 4, this::canBreakDoors).canUse`: at night near a
+/// village, a path to an occupied village point of interest it has not visited yet.
+fn village_can_use(t: &mut Tick<'_, '_>, poi: &mut BlockPos) -> bool {
+    if !t.mob_ref().nav.is_ground() {
+        return false;
+    }
+    // `updateVisited`.
+    if let Some(v) = zs_mut(t.mob()).village.as_deref_mut()
+        && v.visited.len() > 15
+    {
+        v.visited.remove(0);
+    }
+    if t.cx.env.is_bright_outside() {
+        return false;
+    }
+    let pos = t.block_pos();
+    if !t.ents.poi.is_close_to_village(pos, 6) {
+        return false;
+    }
+    let visited = zs(t.mob_ref())
+        .and_then(|z| z.village.as_ref())
+        .map(|v| v.visited.clone())
+        .unwrap_or_default();
+    let find = |t: &Tick<'_, '_>, at: BlockPos| {
+        t.ents.poi.find(
+            crate::poi::PoiType::is_village,
+            |p| !visited.contains(&p),
+            at,
+            10,
+            crate::poi::Occupancy::IsOccupied,
+        )
+    };
+    let land = randompos::land_pos_weighted(t, 15, 7, |t, p| {
+        if !t.ents.poi.is_village(p) {
+            return f64::NEG_INFINITY;
+        }
+        find(t, p).map_or(f64::NEG_INFINITY, |q| -q.dist_sqr(pos))
+    });
+    let Some(land) = land else {
+        return false;
+    };
+    let Some(target) = find(t, BlockPos::containing(land.x, land.y, land.z)) else {
+        return false;
+    };
+    *poi = target;
+    let doors = t.mob_ref().can_break_doors;
+    t.mob().nav.can_open_doors = doors;
+    let mut path = nav::create_path_to(t, target, 0);
+    t.mob().nav.can_open_doors = true;
+    if path.is_none() {
+        let towards = randompos::bottom_center(target);
+        let Some(step) = randompos::default_pos_towards(t, 10, 7, towards, randompos::half_pi())
+        else {
+            return false;
+        };
+        t.mob().nav.can_open_doors = doors;
+        path = nav::create_path_to(t, BlockPos::containing(step.x, step.y, step.z), 0);
+        t.mob().nav.can_open_doors = true;
+        if path.is_none() {
+            return false;
+        }
+    }
+    if let Some(p) = &path {
+        let door = p.nodes.iter().find(|n| {
+            crate::mob::movement::is_wooden_door(t.level.block(BlockPos::new(n.x, n.y + 1, n.z)))
+        });
+        if let Some(n) = door {
+            let at = BlockPos::new(n.x, n.y, n.z);
+            path = nav::create_path_to(t, at, 0);
+        }
+    }
+    let found = path.is_some();
+    village_mut(t.mob()).path = path;
+    found
+}
+
 pub fn goal_flags(g: &Goal) -> u8 {
     use crate::mob::goals::flag::{JUMP, LOOK, MOVE, TARGET};
     match g {
@@ -1827,6 +2057,7 @@ pub fn goal_flags(g: &Goal) -> u8 {
         Goal::DrownedGoToBeach(_) => MOVE | JUMP,
         Goal::HurtByIgnoringDrowned(_) => TARGET,
         Goal::SpearUse(_) => MOVE | LOOK,
+        Goal::MoveThroughVillage { .. } => MOVE,
         _ => 0,
     }
 }
@@ -1840,6 +2071,7 @@ pub fn goal_every_tick(g: &Goal) -> bool {
 
 pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::MoveThroughVillage { poi } => village_can_use(t, poi),
         Goal::SpearUse(_) => spear_can_use(t),
         Goal::DrownedMelee(melee) => {
             melee.with(t, goals::can_use)
@@ -1892,6 +2124,12 @@ pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
+        Goal::MoveThroughVillage { poi } => {
+            !t.mob_ref().nav.is_done() && {
+                let width = f64::from(t.core().dims().width);
+                !closer_to_center(*poi, t.pos(), width + 4.0)
+            }
+        }
         Goal::SpearUse(s) => spear_can_continue(t, s),
         Goal::DrownedMelee(melee) => {
             melee.with(t, goals::can_continue)
@@ -1900,7 +2138,7 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                     .is_some_and(|id| drowned_ok_target(t, id))
         }
         Goal::DrownedTrident(c) => common::can_continue(t, c),
-        Goal::DrownedGoToWater { .. } => !t.mob_ref().nav.is_done(),
+        Goal::DrownedGoToWater { .. } => !t.nav_ref().is_done(),
         Goal::DrownedGoToBeach(mtb) => mtb.can_continue(t, beach_target),
         Goal::DrownedSwimUp { stuck, .. } => {
             !*stuck
@@ -1915,6 +2153,10 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::MoveThroughVillage { .. } => {
+            let path = village_mut(t.mob()).path.take();
+            nav::move_to_path(t, path, 1.0);
+        }
         Goal::SpearUse(s) => spear_start(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::start),
         Goal::DrownedTrident(c) => {
@@ -1940,6 +2182,12 @@ pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub fn goal_stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
+        Goal::MoveThroughVillage { poi } => {
+            if t.mob_ref().nav.is_done() || closer_to_center(*poi, t.pos(), 4.0) {
+                let poi = *poi;
+                village_mut(t.mob()).visited.push(poi);
+            }
+        }
         Goal::SpearUse(s) => spear_stop(t, s),
         Goal::DrownedMelee(melee) => melee.with(t, goals::stop),
         Goal::DrownedTrident(c) => {
@@ -1964,8 +2212,7 @@ pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         }
         Goal::DrownedSwimUp { speed, stuck } => {
             let sea = t.cx.env.sea_level;
-            if t.pos().y < f64::from(sea - 1) && (t.mob_ref().nav.is_done() || close_to_next_pos(t))
-            {
+            if t.pos().y < f64::from(sea - 1) && (t.nav_ref().is_done() || close_to_next_pos(t)) {
                 let p = t.pos();
                 let towards = Vec3::new(p.x, f64::from(sea - 1), p.z);
                 match randompos::default_pos_towards(t, 4, 8, towards, randompos::half_pi()) {
@@ -2018,6 +2265,23 @@ mod tests {
             )
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn spawn_group_shares_baby_status() {
+        // `ZombieGroupData`: the first member rolls, the others take it over.
+        for seed in 0..40 {
+            let mut ctx = SpawnContext::simple(Difficulty::Normal, SpawnReason::Natural);
+            let mut random = vanillite_base::random::LegacyRandom::new(seed);
+            let mut first = MobData::new(Kind::Zombie, seed);
+            kinds::finalize_spawn(&mut first, &mut ctx, &mut random);
+            assert_eq!(ctx.group, GroupData::Zombie(first.baby));
+            for i in 1..4 {
+                let mut m = MobData::new(Kind::Zombie, seed * 10 + i);
+                kinds::finalize_spawn(&mut m, &mut ctx, &mut random);
+                assert_eq!(m.baby, first.baby);
+            }
+        }
     }
 
     #[test]
@@ -2116,5 +2380,23 @@ mod tests {
         let mut n = MobData::new(Kind::Zombie, 2);
         load_conversion(&mut n, &out);
         assert!(zs(&n).is_some_and(|z| z.converting && z.conversion_time == 123));
+    }
+
+    #[test]
+    fn attributes_round_trip() {
+        let mut m = MobData::new(Kind::Zombie, 1);
+        m.attrs.max_health = 50.0;
+        m.attrs.follow_range = 70.0;
+        m.attrs.knockback_resistance = 0.03;
+        zs_mut(&mut m).reinforcement = 0.6;
+        let mut out = Compound::new();
+        save_attributes(&m, &mut out);
+        let mut n = MobData::new(Kind::Zombie, 2);
+        load_attributes(&mut n, &out);
+        let same = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(same(n.attrs.max_health, 50.0));
+        assert!(same(n.attrs.follow_range, 70.0));
+        assert!(same(n.attrs.knockback_resistance, 0.03));
+        assert!(zs(&n).is_some_and(|z| same(z.reinforcement, 0.6)));
     }
 }

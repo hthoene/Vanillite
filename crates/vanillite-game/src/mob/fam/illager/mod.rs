@@ -930,7 +930,7 @@ impl FamilyHooks for Hooks {
             Goal::Patrol(p) => raider::patrol_can_use(t, p),
             Goal::HurtBy(h) => goals::target_can_continue(t, &mut h.state),
             Goal::LookAt(l) => raider::look_at_can_continue(t, l),
-            Goal::Stroll(_) => !t.mob_ref().nav.is_done(),
+            Goal::Stroll(_) => !t.nav_ref().is_done(),
             Goal::Locked(inner) => common::can_continue(t, inner),
             Goal::Target { inner, .. } => common::can_continue(t, inner),
             Goal::RaidDoor { inner, breaker } => {
@@ -988,7 +988,7 @@ impl FamilyHooks for Hooks {
             Goal::ObtainBanner { .. } => raider::banner_start(t),
             Goal::MoveThroughVillage(v) => raider::move_through_start(t, v),
             Goal::Celebration => raider::set_celebrating(t, true),
-            Goal::SpellCasting => t.mob().nav.stop(),
+            Goal::SpellCasting => t.nav().stop(),
             Goal::Spell(s) => spellcaster::start(t, s),
             Goal::VexCharge => vex::charge_start(t),
             Goal::VexCopyOwner(state) => vex::copy_owner_start(t, state),
@@ -1016,7 +1016,7 @@ impl FamilyHooks for Hooks {
                 h.state.target_mob = None;
             }
             Goal::LookAt(l) => l.look_at = None,
-            Goal::Stroll(_) => t.mob().nav.stop(),
+            Goal::Stroll(_) => t.nav().stop(),
             Goal::Locked(inner) => common::stop(t, inner),
             Goal::Target { inner, .. } => common::stop(t, inner),
             Goal::RaidDoor { inner, .. } | Goal::WitchHeal(inner) => common::stop(t, inner),

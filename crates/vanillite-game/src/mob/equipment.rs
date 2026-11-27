@@ -464,7 +464,7 @@ pub fn pick_up_items(
                 value: i64::from(data.stack.count),
                 ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_PICKUP_ITEM)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::split(t.level, t.ents), &mut ev);
             if ev.cancelled {
                 continue;
             }
@@ -538,28 +538,29 @@ pub fn prevents_drop(stack: &ItemStack) -> bool {
 }
 
 /// `Mob.dropCustomDeathLoot`'s equipment part: each slot drops with its chance when a player
-/// killed the mob (preserved slots always), damaged unless preserved. `looting` is the
-/// Looting level of a player killer (`processEquipmentDropChance`: +1 % per level); items
-/// with Curse of Vanishing stay.
+/// killed the mob (preserved slots always), damaged unless preserved.
 pub fn death_drops(
     m: &mut MobData,
     killed_by_player: bool,
-    looting: i32,
+    looting: f32,
     out: &mut Vec<ItemStack>,
 ) {
     for slot in SLOTS {
         let i = usize::from(slot.ordinal());
-        let base = m.equipment.drop_chances[i];
-        if base == 0.0 {
+        let chance = m.equipment.drop_chances[i];
+        if chance == 0.0 {
             continue;
         }
-        let preserve = base > 1.0;
-        #[allow(clippy::cast_precision_loss)]
-        let chance = base + 0.01 * looting.max(0) as f32;
-        if m.equipment.items[i].is_empty() || prevents_drop(&m.equipment.items[i]) {
-            continue;
-        }
-        if !(killed_by_player || preserve) || m.random.next_float() >= chance {
+        let preserve = chance > 1.0;
+        // `EnchantmentHelper.processEquipmentDropChance`: Looting of the killing player.
+        let chance = chance + looting;
+        // `PREVENT_EQUIPMENT_DROP` (Curse of Vanishing).
+        let vanishes = prevents_drop(&m.equipment.items[i]);
+        if m.equipment.items[i].is_empty()
+            || vanishes
+            || !(killed_by_player || preserve)
+            || m.random.next_float() >= chance
+        {
             continue;
         }
         let mut s = std::mem::take(&mut m.equipment.items[i]);
@@ -623,8 +624,16 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     }
     if let Some(Tag::Compound(c)) = tag.get("drop_chances") {
         for (i, name) in NAMES.iter().enumerate() {
-            if let Some(Tag::Float(v)) = c.get(name) {
-                m.equipment.drop_chances[i] = *v;
+            // `ExtraCodecs.NON_NEGATIVE_FLOAT`: any number (`2.0` in SNBT is a double).
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            let v = match c.get(name) {
+                Some(Tag::Float(v)) => Some(*v),
+                Some(Tag::Double(v)) => Some(*v as f32),
+                Some(Tag::Int(v)) => Some(*v as f32),
+                _ => None,
+            };
+            if let Some(v) = v.filter(|v| *v >= 0.0) {
+                m.equipment.drop_chances[i] = v;
             }
         }
     }

@@ -71,6 +71,7 @@ pub fn register_goals(m: &mut MobData) {
     set_speed_modifier(m, 0.0);
     let g = &mut m.goals;
     g.add(1, G::Float);
+    g.add(1, fam(FamGoal::ClimbPowderSnow));
     g.add(1, fam(FamGoal::Rabbit(Goal::Panic { pos: Vec3::ZERO })));
     g.add(2, G::breed(0.8));
     g.add(3, G::tempt(1.0, TemptItems::Tag("minecraft:rabbit_food")));
@@ -272,7 +273,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         {
             face_point(t, o.pos.x, o.pos.z);
             let speed = t.mob_ref().move_ctl.speed_modifier;
-            t.mob().move_ctl.set_wanted_position(o.pos, speed);
+            t.move_ctl().set_wanted_position(o.pos, speed);
             start_jumping(t);
             st_mut(t.mob()).was_on_ground = true;
         }
@@ -281,7 +282,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
             && st(t.mob_ref()).jump_delay_ticks == 0
         {
             let width = t.core().dims().width;
-            let pos = match &t.mob_ref().nav.path {
+            let pos = match &t.nav_ref().path {
                 Some(path) if !path.is_done() => path.next_entity_pos(width),
                 _ => t.mob_ref().move_ctl.wanted,
             };
@@ -390,7 +391,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if !panics {
                 return false;
             }
-            match crate::mob::randompos::default_pos(t, 5, 4) {
+            match crate::mob::animal::panic_pos(t) {
                 Some(p) => {
                     *pos = p;
                     true
@@ -431,7 +432,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
-        Goal::Panic { .. } => !t.mob_ref().nav.is_done(),
+        Goal::Panic { .. } => !t.nav_ref().is_done(),
         Goal::Avoid(cg) => crate::mob::common::can_continue(t, cg),
         Goal::RaidGarden { base, can_raid, .. } => *can_raid && base.can_continue(t, raid_target),
     }
@@ -450,7 +451,7 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
 pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::Avoid(cg) => crate::mob::common::stop(t, cg),
-        Goal::Panic { .. } => t.mob().nav.stop(),
+        Goal::Panic { .. } => t.nav().stop(),
         Goal::RaidGarden { .. } => {}
     }
 }

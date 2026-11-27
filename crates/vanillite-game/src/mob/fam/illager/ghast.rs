@@ -184,7 +184,7 @@ pub fn float_start(t: &mut Tick<'_, '_>) {
         let c = pick(&mut t.mob().random);
         let m = t.mob_ref();
         if !m.has_restriction() || m.is_within_restriction(BlockPos::containing(c.x, c.y, c.z)) {
-            t.mob().move_ctl.set_wanted_position(c, 1.0);
+            t.move_ctl().set_wanted_position(c, 1.0);
             return;
         }
     }
@@ -195,7 +195,7 @@ pub fn float_start(t: &mut Tick<'_, '_>) {
         let y = t.pos().y;
         result = Vec3::new(result.x, y - (y - result.y).abs(), result.z);
     }
-    t.mob().move_ctl.set_wanted_position(result, 1.0);
+    t.move_ctl().set_wanted_position(result, 1.0);
 }
 
 /// `GhastShootFireballGoal.tick`.

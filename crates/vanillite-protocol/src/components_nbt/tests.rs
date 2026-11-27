@@ -368,6 +368,65 @@ fn samples_round_trip_and_every_type_is_covered() {
     assert!(missing.is_empty(), "types without a sample: {missing:?}");
 }
 
+/// The forms players write in `/give` item arguments (#251), including Vanilla's shorthands.
+#[test]
+fn command_shorthands_decode() {
+    let names = TestNames::default();
+    for (name, snbt) in [
+        ("potion_contents", r#"{potion:"minecraft:swiftness"}"#),
+        ("potion_contents", r#""minecraft:swiftness""#),
+        ("potion_contents", r#""swiftness""#),
+        (
+            "written_book_content",
+            r#"{title:"T",author:"A",pages:["hello"]}"#,
+        ),
+        (
+            "written_book_content",
+            r#"{title:{raw:"T"},author:"A",pages:[{raw:"a",filtered:"b"},{text:"c"}]}"#,
+        ),
+        ("writable_book_content", r#"{pages:["a",{raw:"b"}]}"#),
+        ("dyed_color", "16711680"),
+        ("dyed_color", "[1.0f,0.0f,0.5f]"),
+        ("profile", r#"{name:"Notch"}"#),
+        ("profile", r#""Notch""#),
+        (
+            "fireworks",
+            r#"{flight_duration:2,explosions:[{shape:"star",colors:[I;255]}]}"#,
+        ),
+        ("fireworks", r#"{flight_duration:2b}"#),
+        (
+            "firework_explosion",
+            r#"{shape:"creeper",colors:[I;1,2],has_trail:true}"#,
+        ),
+        ("custom_model_data", r#"{colors:[1,[0.0f,1.0f,0.0f]]}"#),
+        ("enchantments", "{sharpness:5}"),
+        ("custom_name", r#""Blade""#),
+        ("damage", "10"),
+    ] {
+        let t = type_by_name(&format!("minecraft:{name}")).unwrap();
+        let tag = vanillite_nbt::snbt::parse(snbt).unwrap();
+        if let Err(e) = from_nbt(t, &tag, &names) {
+            panic!("{name}={snbt}: {e}");
+        }
+    }
+    let dyed = type_by_name("minecraft:dyed_color").unwrap();
+    let rgb = vanillite_nbt::snbt::parse("[1.0f,0.0f,0.5f]").unwrap();
+    assert_eq!(
+        &*from_nbt(dyed, &rgb, &names).unwrap(),
+        &0xFFFF_007F_u32.to_be_bytes()
+    );
+    for (name, snbt) in [
+        ("dyed_color", "[1.0f,0.0f]"),
+        ("potion_contents", "5"),
+        ("written_book_content", r#"{author:"A"}"#),
+        ("fireworks", r#"{explosions:[{shape:"square"}]}"#),
+    ] {
+        let t = type_by_name(&format!("minecraft:{name}")).unwrap();
+        let tag = vanillite_nbt::snbt::parse(snbt).unwrap();
+        assert!(from_nbt(t, &tag, &names).is_err(), "{name}: {snbt}");
+    }
+}
+
 #[test]
 fn defaults_are_omitted_like_vanilla() {
     let names = TestNames::default();

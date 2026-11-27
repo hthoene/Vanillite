@@ -45,7 +45,7 @@ pub fn fertilize(level: &mut Level, pos: BlockPos, stack: &mut ItemStack, player
             state: Some(state),
             ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_FERTILIZE)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
         if ev.cancelled {
             return false;
         }

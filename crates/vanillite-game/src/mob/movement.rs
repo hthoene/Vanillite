@@ -8,7 +8,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_protocol::SharedPacket;
-use vanillite_protocol::packets::play::clientbound::{Animate, BlockDestruction, SoundSource};
+use vanillite_protocol::packets::play::clientbound::{BlockDestruction, SoundSource};
 
 use super::common::MoveToBlock;
 use super::goals::{Goal, flag, reduced};
@@ -260,15 +260,11 @@ pub fn set_can_break_doors(m: &mut MobData, on: bool) {
 
 /// `hasControllingPassenger`.
 fn has_controlling_passenger(t: &Tick<'_, '_>) -> bool {
-    t.ents
-        .riding
-        .passengers_of(t.id)
-        .first()
-        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id))
+    crate::mob::has_controlling_passenger(t.ents, t.id)
 }
 
 /// `DoorBlock.isWoodenDoor`: a door that opens by hand.
-fn is_wooden_door(state: BlockState) -> bool {
+pub(crate) fn is_wooden_door(state: BlockState) -> bool {
     state.block().name().ends_with("_door")
         && crate::block::redstone::BlockSet::of(state.block()).can_open_by_hand
 }
@@ -293,7 +289,7 @@ fn door_can_use(t: &mut Tick<'_, '_>, door: &mut DoorState) -> bool {
         return false;
     }
     let p = t.pos();
-    let Some(path) = &t.mob_ref().nav.path else {
+    let Some(path) = &t.nav_ref().path else {
         return false;
     };
     if path.is_done() {
@@ -537,7 +533,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut MoveGoal) -> bool {
 
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut MoveGoal) -> bool {
     match g {
-        MoveGoal::Wander { .. } => !t.mob_ref().nav.is_done() && !has_controlling_passenger(t),
+        MoveGoal::Wander { .. } => !t.nav_ref().is_done() && !has_controlling_passenger(t),
         MoveGoal::TryFindLiquid { .. } | MoveGoal::BreathAir | MoveGoal::ClimbOnTopOfPowderSnow => {
             can_use(t, g)
         }
@@ -599,11 +595,11 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut MoveGoal) {
             }
             if let Some(f) = found {
                 let at = Vec3::new(f64::from(f.x), f64::from(f.y), f64::from(f.z));
-                t.mob().move_ctl.set_wanted_position(at, 1.0);
+                t.move_ctl().set_wanted_position(at, 1.0);
             }
         }
         MoveGoal::BreathAir => {
-            t.mob().nav.stop();
+            t.nav().stop();
             find_air_position(t);
         }
         MoveGoal::OpenDoor {
@@ -634,7 +630,7 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut MoveGoal) {
 
 pub fn stop(t: &mut Tick<'_, '_>, g: &mut MoveGoal) {
     match g {
-        MoveGoal::Wander { .. } => t.mob().nav.stop(),
+        MoveGoal::Wander { .. } => t.nav().stop(),
         MoveGoal::OpenDoor { door, .. } => {
             let d = *door;
             door_set_open(t, &d, false);
@@ -790,16 +786,7 @@ pub fn break_progress(break_time: i32, total: i32) -> i32 {
 
 /// `swingForAttack` when not swinging: the arm swing animation.
 fn swing(t: &mut Tick<'_, '_>) {
-    let id = t.id;
-    let network_id = t.core().network_id().0;
-    t.env.out.push(Effect::Tracking {
-        entity: id,
-        with_self: false,
-        packet: SharedPacket::of(&Animate {
-            entity_id: network_id,
-            action: 0,
-        }),
-    });
+    crate::mob::brain::behavior::swing_for_attack(t);
 }
 
 /// `level.playSound(null, pos, sound, source, volume, pitch)` at a block.

@@ -3,7 +3,10 @@
 
 use vanillite_command::{ArgumentType, Builder, Dispatcher, StringKind, argument, literal};
 
-use super::{CommandId, FetchProfileOp, RandomOp, StopwatchOp, TestOp, WaypointOp, level, suggest};
+use super::{
+    CommandId, FetchProfileOp, RandomOp, StopwatchOp, TestOp, VanilliteOp, WaypointOp, level,
+    suggest,
+};
 
 fn int() -> ArgumentType {
     ArgumentType::Integer {
@@ -167,6 +170,113 @@ pub(super) fn register_bukkit_version(d: &mut Dispatcher<CommandId>) {
                         .executes(CommandId::BukkitVersion),
                 ),
         );
+    }
+}
+
+/// Vanillite's own `vanillite <sub>` and its alias `vl`, also namespaced `vanillite:`; `tps`
+/// and `mspt` as commands of their own, without a namespace only with `paper_aliases`. Each
+/// subcommand needs its node `vanillite.command.<sub>`, which a permission plugin can grant or
+/// deny; without its answer the default permission level of [`VanilliteOp::SUBCOMMANDS`].
+pub(super) fn register_vanillite(d: &mut Dispatcher<CommandId>, paper_aliases: bool) {
+    let run = CommandId::Vanillite;
+    let guarded = |op: VanilliteOp, node: Builder<CommandId>| {
+        let (_, _, permission, default) = VanilliteOp::SUBCOMMANDS
+            .into_iter()
+            .find(|(o, ..)| *o == op)
+            .unwrap_or((op, "", "vanillite.command", level::OWNERS));
+        node.permission_or_level(permission, default)
+    };
+    let world = || argument("world", ArgumentType::Dimension);
+    for label in ["vanillite", "vl", "vanillite:vanillite", "vanillite:vl"] {
+        d.register(
+            literal(label)
+                .executes(run(VanilliteOp::Help))
+                .then(guarded(
+                    VanilliteOp::Version,
+                    literal("version").executes(run(VanilliteOp::Version)),
+                ))
+                .then(guarded(
+                    VanilliteOp::Status,
+                    literal("status").executes(run(VanilliteOp::Status)),
+                ))
+                .then(guarded(
+                    VanilliteOp::Tps,
+                    literal("tps").executes(run(VanilliteOp::Tps)),
+                ))
+                .then(guarded(
+                    VanilliteOp::Mspt,
+                    literal("mspt").executes(run(VanilliteOp::Mspt)),
+                ))
+                .then(guarded(
+                    VanilliteOp::Profile,
+                    literal("profile").executes(run(VanilliteOp::Profile)).then(
+                        argument(
+                            "seconds",
+                            ArgumentType::Integer {
+                                min: Some(1),
+                                max: Some(600),
+                            },
+                        )
+                        .executes(run(VanilliteOp::Profile)),
+                    ),
+                ))
+                .then(guarded(
+                    VanilliteOp::Chunks,
+                    literal("chunks")
+                        .executes(run(VanilliteOp::Chunks))
+                        .then(world().executes(run(VanilliteOp::Chunks))),
+                ))
+                .then(guarded(
+                    VanilliteOp::Entities,
+                    literal("entities")
+                        .executes(run(VanilliteOp::Entities))
+                        .then(
+                            world().executes(run(VanilliteOp::Entities)).then(
+                                argument(
+                                    "type",
+                                    ArgumentType::Resource {
+                                        registry: "minecraft:entity_type",
+                                    },
+                                )
+                                .executes(run(VanilliteOp::Entities)),
+                            ),
+                        ),
+                ))
+                .then(guarded(
+                    VanilliteOp::Memory,
+                    literal("memory").executes(run(VanilliteOp::Memory)),
+                ))
+                .then(guarded(
+                    VanilliteOp::ReloadConfig,
+                    literal("reload")
+                        .then(literal("config").executes(run(VanilliteOp::ReloadConfig))),
+                ))
+                .then(guarded(
+                    VanilliteOp::Debug,
+                    literal("debug").then(
+                        argument(
+                            "player",
+                            ArgumentType::Entity {
+                                single: true,
+                                players_only: true,
+                            },
+                        )
+                        .executes(run(VanilliteOp::Debug)),
+                    ),
+                )),
+        );
+    }
+    let mut short = vec!["vanillite:tps", "vanillite:mspt"];
+    if paper_aliases {
+        short.extend(["tps", "mspt"]);
+    }
+    for label in short {
+        let op = if label.ends_with("tps") {
+            VanilliteOp::Tps
+        } else {
+            VanilliteOp::Mspt
+        };
+        d.register(guarded(op, literal(label).executes(run(op))));
     }
 }
 

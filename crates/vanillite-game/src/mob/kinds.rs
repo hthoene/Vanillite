@@ -7,7 +7,7 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::{BlockState, ids};
 use vanillite_data::entity::{EntityTypeId, ids as entity_ids};
 use vanillite_protocol::packets::play::clientbound::SoundSource;
-use vanillite_world::entity::{Dimensions, EntityFlags, EntityId};
+use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::fam::classic;
 use super::goals::{Goal, MeleeKind};
@@ -306,6 +306,22 @@ impl Kind {
             return fam::ambient_sound_interval(self);
         }
         if self.is_monster() { 80 } else { 120 }
+    }
+
+    /// `instanceof AbstractHorse` (horses, donkeys, mules, llamas, camels).
+    pub fn is_abstract_horse(self) -> bool {
+        matches!(
+            self,
+            Kind::Horse
+                | Kind::Donkey
+                | Kind::Mule
+                | Kind::SkeletonHorse
+                | Kind::ZombieHorse
+                | Kind::Llama
+                | Kind::TraderLlama
+                | Kind::Camel
+                | Kind::CamelHusk
+        )
     }
 
     /// `#burn_in_daylight`.
@@ -612,7 +628,61 @@ pub fn experience_reward(m: &mut MobData) -> i32 {
 /// The dimensions of a mob: its family's when they depend on state, else the type's (babies
 /// at half size).
 pub fn mob_dimensions(m: &MobData) -> Dimensions {
+    if m.kind == Kind::Zombie {
+        // `Zombie.BABY_DIMENSIONS` of the classic zombie.
+        if let Some(d) = fam::undead::zombies::dimensions(m) {
+            return d;
+        }
+    }
+    if m.baby
+        && let Some((width, height, _)) = baby_dimensions(m.kind)
+    {
+        return Dimensions { width, height };
+    }
     fam::dimensions(m).unwrap_or_else(|| dimensions(m.kind.type_id(), m.baby))
+}
+
+/// The `BABY_DIMENSIONS` of the kinds that define their own (width, height, eye height): a
+/// fixed size, or the adult's scaled (`scale` scales the eye height too) with an eye height of
+/// its own where Vanilla sets one.
+pub fn baby_dimensions(kind: Kind) -> Option<(f32, f32, f32)> {
+    let fixed = |w: f32, h: f32, eye: f32| Some((w, h, eye));
+    let scaled = |scale: f32, eye: Option<f32>| {
+        let info = kind.type_id().info();
+        let d = Dimensions::of(kind.type_id());
+        Some((
+            d.width * scale,
+            d.height * scale,
+            eye.unwrap_or(info.eye_height * scale),
+        ))
+    };
+    match kind {
+        Kind::Axolotl => fixed(0.375, 0.21, 0.093_75),
+        Kind::Chicken => fixed(0.3, 0.4, 0.281_25),
+        Kind::Cow | Kind::Mooshroom => fixed(0.45, 0.7, 0.69),
+        Kind::Cat | Kind::Ocelot => fixed(0.3, 0.35, 0.343_75),
+        Kind::Goat => fixed(0.45, 0.65, 0.593_75),
+        Kind::Pig => fixed(0.45, 0.45, 0.406_25),
+        Kind::PolarBear => fixed(0.7, 0.7, 0.343_75),
+        Kind::Rabbit => fixed(0.24, 0.4, 0.39),
+        Kind::Sheep => fixed(0.45, 0.65, 0.656_25),
+        Kind::Squid | Kind::GlowSquid => fixed(0.5, 0.5, 0.37),
+        Kind::Wolf => fixed(0.3, 0.425, 0.343_75),
+        Kind::Strider => fixed(0.45, 0.85, 0.4375),
+        Kind::Hoglin | Kind::Zoglin => fixed(0.75, 0.85, 0.625),
+        Kind::Piglin => fixed(0.49, 0.98, 0.78),
+        Kind::Villager => fixed(0.49, 0.98, 0.63),
+        Kind::Dolphin => scaled(0.65, Some(0.093_75)),
+        Kind::Horse | Kind::SkeletonHorse | Kind::ZombieHorse => scaled(0.7, None),
+        Kind::Llama | Kind::TraderLlama => scaled(0.5, None),
+        Kind::Fox => scaled(0.6, Some(0.343_75)),
+        Kind::HappyGhast => scaled(0.2375, Some(0.468_75)),
+        Kind::Nautilus => scaled(0.5, None),
+        Kind::Panda => scaled(0.5, Some(0.281_25)),
+        Kind::Turtle => scaled(0.3, None),
+        Kind::Armadillo => scaled(0.6, Some(0.218_75)),
+        _ => None,
+    }
 }
 
 /// The dimensions of a mob type (babies at half size).
@@ -684,8 +754,8 @@ pub fn register_goals(m: &mut MobData) {
                     super::common::baby_turtle_on_land,
                 )),
             );
-            // `reassessWeaponGoal`: skeletons hold a bow.
-            g.add(4, Goal::bow(1.0, 40, 15.0));
+            // The constructor's `reassessWeaponGoal` (no bow yet): the melee goal.
+            g.add(4, fam::undead::skeletons::melee_goal());
         }
         Kind::Creeper => {
             g.add(1, Goal::Float);
@@ -892,15 +962,9 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                 equipment::stack("minecraft:bow"),
             );
             equipment::populate_default_enchantments(m, ctx.special_multiplier);
+            fam::undead::skeletons::reassess_weapon_goal(m, difficulty);
             m.can_pick_up_loot = m.random.next_float() < 0.55 * ctx.special_multiplier;
             halloween_head(m);
-            if difficulty == Difficulty::Hard {
-                for slot in &mut m.goals.slots {
-                    if let Goal::Bow { interval_min, .. } = &mut slot.goal {
-                        *interval_min = 20;
-                    }
-                }
-            }
         }
         Kind::Spider => spider_finalize(m, ctx),
         _ => {}
@@ -1125,6 +1189,7 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
             if t.mob_ref().removed {
                 return;
             }
+            fam::undead::skeletons::reassess_if_due(t);
             let m = t.mob();
             if m.using_item >= 0 {
                 m.using_item += 1;
@@ -1215,10 +1280,12 @@ fn lay_egg(t: &mut Tick<'_, '_>) {
         let uuid = t.core().uuid();
         for stack in items {
             let item = crate::item::item_id(&stack).name();
-            if t.env
-                .hooks
-                .entity_drop_item(uuid, "minecraft:chicken", item)
-            {
+            if t.env.hooks.entity_drop_item(
+                crate::hooks::HookWorld::split(t.level, t.ents),
+                uuid,
+                "minecraft:chicken",
+                item,
+            ) {
                 super::equipment::spawn_at_location(t, stack, 0.0);
             }
         }
@@ -1265,7 +1332,9 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     if kind.ageable() && t.mob_ref().is_alive() {
         // `AgeableMob.aiStep` (`canAgeUp`: not age locked) and `Animal.aiStep`.
         let m = t.mob();
-        if m.age < 0 && !m.age_locked {
+        // `ZombieHorse` and `SkeletonHorse.canAgeUp` are false.
+        let grows = !matches!(m.kind, Kind::ZombieHorse | Kind::SkeletonHorse);
+        if m.age < 0 && !m.age_locked && grows {
             m.age += 1;
         } else if m.age > 0 {
             m.age -= 1;
@@ -1324,7 +1393,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
             t.mob().target = None;
             super::goals::enderman_set_target(t, None);
             let id = t.id;
-            teleport_randomly(t.level, t.ents, t.env, id);
+            teleport_randomly(t.level, t.ents, t.env, t.cx, id);
         }
     }
 }
@@ -1352,19 +1421,23 @@ pub fn after_attack(t: &mut Tick<'_, '_>, target: EntityId) {
         fam::after_attack(t, target);
         return;
     }
-    if t.mob_ref().kind != Kind::Zombie || !t.mob_ref().is_on_fire() {
+    if t.mob_ref().kind != Kind::Zombie {
         return;
     }
-    #[allow(clippy::cast_precision_loss)]
-    let difficulty = t.env.difficulty as i32 as f32;
-    if t.mob().random.next_float() < difficulty * 0.3 {
+    // `Zombie.doHurtTarget`: a burning zombie with an empty main hand sets its target on fire
+    // (chance and seconds from the local effective difficulty).
+    let empty = t
+        .mob_ref()
+        .equipment
+        .get(crate::item::EquipmentSlot::MainHand)
+        .is_empty();
+    if !empty || !t.mob_ref().is_on_fire() {
+        return;
+    }
+    let diff = crate::level::difficulty::at(t.level, t.block_pos()).effective;
+    if t.mob().random.next_float() < diff * 0.3 {
         #[allow(clippy::cast_possible_truncation)]
-        let ticks = 2 * difficulty as i32 * 20;
-        if let Some(p) = t.ents.player_mut(target) {
-            p.survival.fire_ticks = p.survival.fire_ticks.max(ticks);
-        } else if let Some(m) = t.ents.mob_mut(target) {
-            m.fire_ticks = m.fire_ticks.max(ticks);
-        }
+        super::attack::ignite(t.ents, target, 2 * diff as i32 * 20);
     }
 }
 
@@ -1496,7 +1569,7 @@ pub fn teleport_towards(t: &mut Tick<'_, '_>, to: Vec3, eye_y: f64) -> bool {
     let y = p.y + f64::from(r.next_int_bounded(16) - 8) - dir.y * 16.0;
     let z = p.z + (r.next_double() - 0.5) * 8.0 - dir.z * 16.0;
     let id = t.id;
-    teleport_to(t.level, t.ents, t.env, id, Vec3::new(x, y, z))
+    teleport_to(t.level, t.ents, t.env, t.cx, id, Vec3::new(x, y, z))
 }
 
 /// `EnderMan.teleport()`: a random spot within 32 blocks.
@@ -1504,6 +1577,7 @@ pub fn teleport_randomly(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
+    cx: &mut MobContext,
     id: EntityId,
 ) -> bool {
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
@@ -1515,27 +1589,21 @@ pub fn teleport_randomly(
     let x = pos.x + (m.random.next_double() - 0.5) * 64.0;
     let y = pos.y + f64::from(m.random.next_int_bounded(64) - 32);
     let z = pos.z + (m.random.next_double() - 0.5) * 64.0;
-    teleport_to(level, ents, env, id, Vec3::new(x, y, z))
+    teleport_to(level, ents, env, cx, id, Vec3::new(x, y, z))
 }
 
-/// `EnderMan.teleport(x, y, z)` and `randomTeleport`.
+/// `EnderMan.teleport(x, y, z)`: `randomTeleport(x, y, z, true,
+/// #enderman_does_not_teleport_to)`, then the teleport game event, level event 2018 (the
+/// trail) and the teleport sound at the old and the new position.
 fn teleport_to(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
+    cx: &mut MobContext,
     id: EntityId,
     to: Vec3,
 ) -> bool {
-    // `randomTeleport`: the target is clamped into the world border.
-    let to = level.border.clamp_vec(to.x, to.y, to.z);
-    let mut pos = BlockPos::containing(to.x, to.y, to.z);
-    while pos.y > level.min_y()
-        && !blocks_motion(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
-    {
-        pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
-    }
-    let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));
-    if !blocks_motion(below) || super::is_water(level.block(pos)) || !level.is_loaded(pos) {
+    if ents.vehicle_of(id).is_some() {
         return false;
     }
     let Some(e) = ents.store.get(id) else {
@@ -1543,40 +1611,142 @@ fn teleport_to(
     };
     let old = e.pos();
     let dims = e.dims();
-    let dest = Vec3::new(to.x, f64::from(pos.y), to.z);
+    // `LivingEntity.randomTeleport`: walks down from the target to a block of
+    // `#entities_can_teleport_to`; the height keeps its fraction.
+    let clamped = level.border.clamp_vec(to.x, to.y, to.z);
+    let mut pos = BlockPos::containing(clamped.x, clamped.y, clamped.z);
+    let mut y = to.y;
+    if !level.is_loaded(pos) {
+        return false;
+    }
+    let mut floor = None;
+    while pos.y > level.min_y() {
+        pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
+        let state = level.block(pos);
+        if can_teleport_onto(state) {
+            floor = Some(state);
+            break;
+        }
+        y -= 1.0;
+    }
+    let Some(floor) = floor else {
+        return false;
+    };
+    // `checkPositionAndTeleport`.
+    if enderman_avoids(floor) {
+        return false;
+    }
+    let dest = Vec3::new(clamped.x, y, clamped.z);
     let aabb = dims.bounding_box(dest);
     let mut scratch = Vec::new();
-    if !physics::no_collision(&level.view(), &aabb, &mut scratch)
-        || physics::contains_any_liquid(level, &aabb)
-    {
+    if !physics::no_collision(&level.view(), &aabb, &mut scratch) {
+        return false;
+    }
+    // `containsAnyLiquid` and `findBlocksIn(aabb).filterState(isInvalidPosition)`: the blocks
+    // from the minimum to the maximum corner, both included.
+    let lo = BlockPos::containing(aabb.min_x, aabb.min_y, aabb.min_z);
+    let hi = BlockPos::containing(aabb.max_x, aabb.max_y, aabb.max_z);
+    for bx in lo.x..=hi.x {
+        for by in lo.y..=hi.y {
+            for bz in lo.z..=hi.z {
+                if !level
+                    .block(BlockPos::new(bx, by, bz))
+                    .fluid_state()
+                    .is_empty()
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    for bx in lo.x..=hi.x {
+        for by in lo.y..=hi.y {
+            for bz in lo.z..=hi.z {
+                if enderman_avoids(level.block(BlockPos::new(bx, by, bz))) {
+                    return false;
+                }
+            }
+        }
+    }
+    // `EnderMan.canRandomlyTeleportTo`: no water below.
+    let below = BlockPos::containing(dest.x, dest.y, dest.z);
+    if super::is_water(level.block(BlockPos::new(below.x, below.y - 1, below.z))) {
         return false;
     }
     if let Some(mut e) = ents.store.get_mut(id) {
+        // `teleportTo` → `snapTo`: the old position moves along, the motion stays.
         e.set_pos(dest);
-        e.set_velocity(Vec3::ZERO);
-        e.set_flags(EntityFlags::HAS_IMPULSE, true);
+        e.set_old_pos();
     }
-    if let Some(m) = ents.mob_mut(id) {
-        m.nav.stop();
+    // `broadcastEntityEvent(this, 46)`: the teleport particles.
+    if let Some(e) = ents.store.get(id) {
+        let network_id = e.network_id().0;
+        env.out.push(crate::survival::Effect::Tracking {
+            entity: id,
+            with_self: false,
+            packet: vanillite_protocol::SharedPacket::of(
+                &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                    entity_id: network_id,
+                    event: 46,
+                },
+            ),
+        });
     }
+    let silent = match ents.mob_mut(id) {
+        Some(m) => {
+            m.nav.stop();
+            (m.silent, m.kind.sound_source())
+        }
+        None => (true, SoundSource::Hostile),
+    };
     crate::survival::game_event(
         env.out,
         crate::level::game_event::events().teleport,
         old,
         Some(id),
     );
-    let seed = crate::survival::sound_seed();
-    crate::survival::play_sound(
-        env.out,
-        None,
-        old,
-        "minecraft:entity.enderman.teleport",
-        SoundSource::Hostile,
-        1.0,
-        1.0,
-        seed,
-    );
+    if !silent.0 {
+        let from = BlockPos::containing(old.x, old.y, old.z);
+        let now = BlockPos::containing(dest.x, dest.y, dest.z);
+        // `BlockUtil.clampedPackDifferenceInPosition(from, now, 127, 127, 127)`.
+        let d = |a: i32, b: i32| ((b - a).clamp(-127, 127) + 127) & 0xFF;
+        let packed = d(from.x, now.x) << 16 | d(from.y, now.y) << 8 | d(from.z, now.z);
+        cx.actions
+            .push(super::WorldAction::LevelEvent(2018, from, packed));
+        // `playSound(xo, yo, zo)` after `snapTo` and `this.playSound`: both at the new spot.
+        for at in [dest, dest] {
+            let seed = crate::survival::sound_seed();
+            crate::survival::play_sound(
+                env.out,
+                None,
+                at,
+                "minecraft:entity.enderman.teleport",
+                silent.1,
+                1.0,
+                1.0,
+                seed,
+            );
+        }
+    }
     true
+}
+
+/// `#entities_can_teleport_to` (`#blocks_motion`).
+fn can_teleport_onto(state: BlockState) -> bool {
+    match crate::player::play::game_data() {
+        Some(d)
+            if d.block_tags
+                .contains_key("minecraft:entities_can_teleport_to") =>
+        {
+            d.block_in_tag(state.block().0, "minecraft:entities_can_teleport_to")
+        }
+        _ => blocks_motion(state),
+    }
+}
+
+/// `#enderman_does_not_teleport_to`: `#dangerous_for_teleportation` and bedrock.
+fn enderman_avoids(state: BlockState) -> bool {
+    super::spawn::in_block_tag(state, "minecraft:enderman_does_not_teleport_to")
 }
 
 /// `BlockState.blocksMotion`: solid and not cobweb or bamboo sapling.
@@ -1589,11 +1759,11 @@ pub fn enderman_dodge(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
-    _cx: &mut MobContext,
+    cx: &mut MobContext,
     id: EntityId,
 ) {
     for _ in 0..64 {
-        if teleport_randomly(level, ents, env, id) {
+        if teleport_randomly(level, ents, env, cx, id) {
             return;
         }
     }
@@ -1605,6 +1775,7 @@ pub fn after_hurt(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
+    cx: &mut MobContext,
     id: EntityId,
     source: DamageSource,
 ) {
@@ -1619,7 +1790,7 @@ pub fn after_hurt(
     }
     // `teleport()` does nothing for a dead enderman.
     if !living_cause && m.random.next_int_bounded(10) != 0 && m.is_alive() {
-        teleport_randomly(level, ents, env, id);
+        teleport_randomly(level, ents, env, cx, id);
     }
 }
 

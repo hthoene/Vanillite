@@ -400,6 +400,10 @@ pub struct DamageSource {
     /// causing player, or the owner of a tame wolf that caused it. Set by the callers that
     /// have the entities ([`crate::mob::combat::hurt`]).
     pub responsible_player: Option<EntityId>,
+    /// The direct attacker overrides `blockedByItem` (hoglins, zoglins, ravagers): a block
+    /// does not push the defender back generically; [`crate::mob::combat::hurt`] runs the
+    /// attacker's own reaction afterwards.
+    pub own_blocked_by_item: bool,
 }
 
 impl DamageSource {
@@ -416,6 +420,7 @@ impl DamageSource {
             piercing_arrow: false,
             projectile_motion: None,
             responsible_player: None,
+            own_blocked_by_item: false,
         }
     }
 

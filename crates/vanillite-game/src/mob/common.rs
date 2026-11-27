@@ -186,6 +186,11 @@ pub fn villager(t: &Tick<'_, '_>, id: EntityId) -> bool {
         .is_some_and(|e| e.kind() == ids::VILLAGER || e.kind() == ids::WANDERING_TRADER)
 }
 
+/// An adult `AbstractVillager` (`Ravager`'s villager target: `!target.isBaby()`).
+pub fn adult_villager(t: &Tick<'_, '_>, id: EntityId) -> bool {
+    villager(t, id) && !t.ents.mob(id).is_some_and(|m| m.baby)
+}
+
 /// An `Enemy` (monsters, slimes, ghasts, phantoms, shulkers, hoglins).
 pub fn enemy(t: &Tick<'_, '_>, id: EntityId) -> bool {
     t.ents.mob(id).is_some_and(|m| m.kind.is_monster())
@@ -544,11 +549,11 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
             state, precheck, ..
         } => precheck.is_none_or(|g| g(t)) && target_can_continue(t, state),
         CommonGoal::Avoid { .. } | CommonGoal::MoveTowardsRestriction { .. } => {
-            !t.mob_ref().nav.is_done()
+            !t.nav_ref().is_done()
         }
         CommonGoal::Ranged { target, .. } => {
             let alive = target.is_some_and(|id| t.other(id).is_some());
-            can_use(t, g) || alive && !t.mob_ref().nav.is_done()
+            can_use(t, g) || alive && !t.nav_ref().is_done()
         }
         CommonGoal::ResetUniversalAnger { .. } => false,
     }
@@ -642,7 +647,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
             } else {
                 *walk
             };
-            t.mob().nav.speed_modifier = speed;
+            t.nav().speed_modifier = speed;
         }
         CommonGoal::Ranged {
             speed,
@@ -668,7 +673,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
             }
             let radius_sqr = f64::from(*radius * *radius);
             if dist_sqr <= radius_sqr && *see_time >= 5 {
-                t.mob().nav.stop();
+                t.nav().stop();
             } else {
                 nav::move_to_entity(t, o.pos, 1, *speed);
             }

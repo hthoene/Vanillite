@@ -1,3 +1,0 @@
-tick = 1
-cause = "riding a mob on a mob: Vanillite lacks the zombie's vehicle attachment (ridingOffset), still lets the ridden pig skip RandomLookAroundGoal and lets the riding zombie path (goal control flags with passengers, #221 gap table I-row)"
-owner = "gameplay-developer #221"

@@ -168,7 +168,7 @@ fn brew_event(
         item: vanillite_nbt::snbt::to_string(&Tag::List(List(list))),
         ..crate::hooks::Event::new(vanillite_abi::event::BREW)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
     if ev.cancelled {
         return None;
     }

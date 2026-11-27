@@ -6,10 +6,11 @@
 use vanillite_base::math::floor;
 use vanillite_base::random::RandomSource;
 
-use super::gradient::{GradientNoise, dot, dot_xz, smoothstep, wrap};
+use super::gradient::{GradientNoise, dot_xz, smoothstep, wrap};
+use super::lanes::F32x4;
 use super::stack::Octave;
 use crate::interval::Interval;
-use crate::mth::lerp3_f;
+use crate::mth::lerp_f;
 use crate::volume::DensityVolume;
 
 /// `SmearedPerlinNoise.SHIFT_UP_EPSILON`, a `float` widened to `double` where it is used.
@@ -21,18 +22,20 @@ pub(super) struct PerlinNoise {
     base: GradientNoise,
 }
 
-/// The XZ parts of the eight corner dot products and the corner gradients' Y components of one
-/// lattice cell, cached per column while the cell's Y does not change (`addToVolume`).
+/// The XZ parts of the eight corner dot products and the corner gradients' Y components of the
+/// lattice cells of the lanes of [`add_columns`], corner by corner, cached while the cells' Y
+/// does not change (`addToVolume`).
 #[derive(Clone, Copy, Default)]
-struct CellColumn {
-    xz: [f32; 8],
-    gy: [f32; 8],
+struct Cells {
+    xz: [[f32; LANES]; 8],
+    gy: [[f32; LANES]; 8],
 }
 
-impl CellColumn {
-    /// The corner values of the cell at `floor_y` above `column`, in `lerp3` order.
+impl Cells {
+    /// Sets lane `lane` to the corner values of the cell at `floor_y` above `column`, in
+    /// `lerp3` order.
     #[inline(always)]
-    fn new(noise: &GradientNoise, column: &Column, floor_y: i32) -> Self {
+    fn set(&mut self, lane: usize, noise: &GradientNoise, column: &Column, floor_y: i32) {
         let (x0, x1, floor_z) = (column.x0, column.x1, column.z.floor);
         let (rx, rz) = (column.x.relative, column.z.relative);
         // (Each pair holds the permutations of an index and of the next one.)
@@ -47,35 +50,14 @@ impl CellColumn {
             (xy0.second(), rx),
             (xy1.second(), rx1),
         ];
-        let mut column = Self::default();
         for (i, (xy, cx)) in corners.into_iter().enumerate() {
             let xyz = noise.pair(xy.wrapping_add(floor_z));
             let (g, g1) = (xyz.first_grad(), xyz.second_grad());
-            column.xz[i] = dot_xz(g, cx, rz);
-            column.gy[i] = g[1];
-            column.xz[i + 4] = dot_xz(g1, cx, rz1);
-            column.gy[i + 4] = g1[1];
+            self.xz[i][lane] = dot_xz(g, cx, rz);
+            self.gy[i][lane] = g[1];
+            self.xz[i + 4][lane] = dot_xz(g1, cx, rz1);
+            self.gy[i + 4][lane] = g1[1];
         }
-        column
-    }
-
-    /// Trilinear interpolation of the corner values at relative Y `ry`.
-    #[inline(always)]
-    fn lerp(&self, alpha_x: f32, alpha_y: f32, alpha_z: f32, ry: f32) -> f32 {
-        let (xz, gy) = (&self.xz, &self.gy);
-        lerp3_f(
-            alpha_x,
-            alpha_y,
-            alpha_z,
-            xz[0] + gy[0] * ry,
-            xz[1] + gy[1] * ry,
-            xz[2] + gy[2] * (ry - 1.0),
-            xz[3] + gy[3] * (ry - 1.0),
-            xz[4] + gy[4] * ry,
-            xz[5] + gy[5] * ry,
-            xz[6] + gy[6] * (ry - 1.0),
-            xz[7] + gy[7] * (ry - 1.0),
-        )
     }
 }
 
@@ -103,6 +85,7 @@ impl Lattice {
 }
 
 /// The X and Z values of one (Z, X) column in `addToVolume`, with the X permutations.
+#[derive(Clone, Copy)]
 struct Column {
     x: Lattice,
     z: Lattice,
@@ -168,6 +151,8 @@ impl Rows {
 trait Points: Copy {
     /// Whether any point of the column starting at `start` (`len` points) is needed.
     fn any(self, start: usize, len: usize) -> bool;
+    /// The points of the column starting at `start` (`len` points), indexed from 0.
+    fn column(self, start: usize, len: usize) -> Self;
     /// Whether point `index` is needed.
     fn has(self, index: usize) -> bool;
 }
@@ -183,6 +168,11 @@ impl Points for All {
     }
 
     #[inline(always)]
+    fn column(self, _: usize, _: usize) -> Self {
+        self
+    }
+
+    #[inline(always)]
     fn has(self, _: usize) -> bool {
         true
     }
@@ -195,49 +185,131 @@ impl Points for &[bool] {
     }
 
     #[inline(always)]
+    fn column(self, start: usize, len: usize) -> Self {
+        &self[start..start + len]
+    }
+
+    #[inline(always)]
     fn has(self, index: usize) -> bool {
         self[index]
     }
 }
 
-/// Runs `body` for every (Z, X) column of `volume` with a needed point, with the column's
-/// slice of `buffer` and the index of its first point (the outer loops of `addToVolume`).
+/// The columns [`add_columns`] samples together, one per lane of its vector steps.
+const LANES: usize = 4;
+
+/// `addToVolume` at `points`, the outer loops and the cell interpolation of both Perlin noise
+/// kinds: `row_of(index_y)` gives a row's lattice cell, relative Y and alpha. Runs of
+/// [`LANES`] consecutive (Z, X) columns go through the rows together, each lane doing exactly
+/// the arithmetic of one column. A column's cell is computed when its Y cell changes at a
+/// needed point of any lane, so the values do not depend on which points are skipped.
 #[inline(always)]
-fn for_each_column(
+fn add_columns<P: Points>(
     noise: &GradientNoise,
     buffer: &mut [f32],
     volume: &DensityVolume,
     xz_scale: f64,
-    points: impl Points,
-    mut body: impl FnMut(&mut [f32], &Column, usize),
+    amplitude: f32,
+    points: P,
+    mut row_of: impl FnMut(i32) -> (i32, f32, f32),
 ) {
     let size_y = volume.size_y as usize;
-    let mut columns = buffer[..volume.len()].chunks_exact_mut(size_y);
-    let mut start = 0;
-    for index_z in 0..volume.size_z {
-        let z = Lattice::new(
-            f64::from(volume.block_z(index_z)) * xz_scale,
-            noise.offset_z,
-        );
-        for index_x in 0..volume.size_x {
-            let out = columns.next().expect("buffer covers the volume");
-            let first = start;
-            start += size_y;
-            if !points.any(first, size_y) {
+    let size_x = volume.size_x.max(0) as usize;
+    let columns = size_x * volume.size_z.max(0) as usize;
+    if size_y == 0 || columns == 0 {
+        return;
+    }
+    let mut rows = Rows::new(size_y);
+    let amplitude = F32x4::splat(amplitude);
+    for (group_index, group) in buffer[..columns * size_y]
+        .chunks_mut(LANES * size_y)
+        .enumerate()
+    {
+        let start = group_index * LANES;
+        let count = group.len() / size_y;
+        let mut lanes: [Option<Column>; LANES] = [None; LANES];
+        let mut lane_points = [points; LANES];
+        for (l, (lane, lane_points)) in lanes.iter_mut().zip(&mut lane_points).enumerate() {
+            let column = start + l;
+            if l >= count || !points.any(column * size_y, size_y) {
                 continue;
             }
+            let (index_x, index_z) = ((column % size_x) as i32, (column / size_x) as i32);
             let x = Lattice::new(
                 f64::from(volume.block_x(index_x)) * xz_scale,
                 noise.offset_x,
             );
+            let z = Lattice::new(
+                f64::from(volume.block_z(index_z)) * xz_scale,
+                noise.offset_z,
+            );
             let xs = noise.pair(x.floor);
-            let column = Column {
+            *lane = Some(Column {
                 x0: xs.first(),
                 x1: xs.second(),
                 x,
                 z,
+            });
+            *lane_points = points.column(column * size_y, size_y);
+        }
+        if lanes.iter().all(Option::is_none) {
+            continue;
+        }
+        let (mut alpha_x, mut alpha_z) = ([0.0f32; LANES], [0.0f32; LANES]);
+        for (l, lane) in lanes.iter().enumerate() {
+            if let Some(column) = lane {
+                alpha_x[l] = column.x.alpha;
+                alpha_z[l] = column.z.alpha;
+            }
+        }
+        let (alpha_x, alpha_z) = (F32x4::new(alpha_x), F32x4::new(alpha_z));
+        let mut cells = Cells::default();
+        let (mut xz, mut gy) = ([F32x4::splat(0.0); 8], [F32x4::splat(0.0); 8]);
+        let mut last_floor_y = i32::MIN;
+        for index_y in 0..size_y {
+            let mut needed = [false; LANES];
+            for ((need, lane), lane_points) in needed.iter_mut().zip(&lanes).zip(lane_points) {
+                *need = lane.is_some() && lane_points.has(index_y);
+            }
+            if !needed.contains(&true) {
+                continue;
+            }
+            let row = rows.get(index_y, || row_of(index_y as i32));
+            if last_floor_y != row.floor {
+                for (l, lane) in lanes.iter().enumerate() {
+                    if let Some(column) = lane {
+                        cells.set(l, noise, column, row.floor);
+                    }
+                }
+                for corner in 0..8 {
+                    xz[corner] = F32x4::new(cells.xz[corner]);
+                    gy[corner] = F32x4::new(cells.gy[corner]);
+                }
+                last_floor_y = row.floor;
+            }
+            // `lerp3` of the corners `xz + gy * ry` (`ry - 1` at `y + 1`), as `CellColumn` of
+            // one column would compute it.
+            let (ry, ry1) = (F32x4::splat(row.relative), F32x4::splat(row.relative - 1.0));
+            let corner = |i: usize, ry: F32x4| xz[i].add(gy[i].mul(ry));
+            let alpha_y = F32x4::splat(row.alpha);
+            let lerp2 = |x00: F32x4, x10: F32x4, x01: F32x4, x11: F32x4| {
+                F32x4::lerp(
+                    alpha_y,
+                    F32x4::lerp(alpha_x, x00, x10),
+                    F32x4::lerp(alpha_x, x01, x11),
+                )
             };
-            body(out, &column, first);
+            let value = F32x4::lerp(
+                alpha_z,
+                lerp2(corner(0, ry), corner(1, ry), corner(2, ry1), corner(3, ry1)),
+                lerp2(corner(4, ry), corner(5, ry), corner(6, ry1), corner(7, ry1)),
+            );
+            let values = amplitude.mul(value).to_array();
+            for (l, (need, value)) in needed.into_iter().zip(values).enumerate() {
+                if need {
+                    group[l * size_y + index_y] += value;
+                }
+            }
         }
     }
 }
@@ -272,19 +344,47 @@ impl PerlinNoise {
         let c10 = n.pair(xy1.first().wrapping_add(z));
         let c01 = n.pair(xy0.second().wrapping_add(z));
         let c11 = n.pair(xy1.second().wrapping_add(z));
-        let d000 = dot(c00.first_grad(), rx, ry, rz);
-        let d100 = dot(c10.first_grad(), rx - 1.0, ry, rz);
-        let d010 = dot(c01.first_grad(), rx, ry - 1.0, rz);
-        let d110 = dot(c11.first_grad(), rx - 1.0, ry - 1.0, rz);
-        let d001 = dot(c00.second_grad(), rx, ry, rz - 1.0);
-        let d101 = dot(c10.second_grad(), rx - 1.0, ry, rz - 1.0);
-        let d011 = dot(c01.second_grad(), rx, ry - 1.0, rz - 1.0);
-        let d111 = dot(c11.second_grad(), rx - 1.0, ry - 1.0, rz - 1.0);
-        let x_alpha = smoothstep(rx);
-        let y_alpha = smoothstep(original_ry);
-        let z_alpha = smoothstep(rz);
-        lerp3_f(
-            x_alpha, y_alpha, z_alpha, d000, d100, d010, d110, d001, d101, d011, d111,
+        // The corners' dot products in lanes, `x` and `x + 1` apart: (y, z), (y + 1, z),
+        // (y, z + 1), (y + 1, z + 1); each lane computes `dot` of one corner.
+        let (rx1, ry1, rz1) = (rx - 1.0, ry - 1.0, rz - 1.0);
+        let (ys, zs) = (
+            F32x4::new([ry, ry1, ry, ry1]),
+            F32x4::new([rz, rz, rz1, rz1]),
+        );
+        let dots = |g: [&[f32; 3]; 4], xs: F32x4| {
+            let component = |i: usize| F32x4::new([g[0][i], g[1][i], g[2][i], g[3][i]]);
+            component(0)
+                .mul(xs)
+                .add(component(1).mul(ys))
+                .add(component(2).mul(zs))
+        };
+        let low = dots(
+            [
+                c00.first_grad(),
+                c01.first_grad(),
+                c00.second_grad(),
+                c01.second_grad(),
+            ],
+            F32x4::splat(rx),
+        );
+        let high = dots(
+            [
+                c10.first_grad(),
+                c11.first_grad(),
+                c10.second_grad(),
+                c11.second_grad(),
+            ],
+            F32x4::splat(rx1),
+        );
+        let [x_alpha, y_alpha, z_alpha, _] = F32x4::new([rx, original_ry, rz, 0.0])
+            .smoothstep()
+            .to_array();
+        // `lerp3`: along X in the lanes, then along Y and Z.
+        let [x00, x10, x01, x11] = F32x4::lerp(F32x4::splat(x_alpha), low, high).to_array();
+        lerp_f(
+            z_alpha,
+            lerp_f(y_alpha, x00, x10),
+            lerp_f(y_alpha, x01, x11),
         )
     }
 }
@@ -349,26 +449,11 @@ impl PerlinNoise {
         points: impl Points,
     ) {
         let n = &self.base;
-        let mut rows = Rows::new(volume.size_y as usize);
-        for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
-            let mut cell = CellColumn::default();
-            let mut last_floor_y = i32::MIN;
-            for (index_y, value) in (0..volume.size_y).zip(out.iter_mut()) {
-                if !points.has(first + index_y as usize) {
-                    continue;
-                }
-                let row = rows.get(index_y as usize, || {
-                    let y = wrap(f64::from(volume.block_y(index_y)) * y_scale) + n.offset_y;
-                    let floor_y = floor(y);
-                    let ry = (y - f64::from(floor_y)) as f32;
-                    (floor_y, ry, smoothstep(ry))
-                });
-                if last_floor_y != row.floor {
-                    cell = CellColumn::new(n, c, row.floor);
-                    last_floor_y = row.floor;
-                }
-                *value += amplitude * cell.lerp(c.x.alpha, row.alpha, c.z.alpha, row.relative);
-            }
+        add_columns(n, buffer, volume, xz_scale, amplitude, points, |index_y| {
+            let y = wrap(f64::from(volume.block_y(index_y)) * y_scale) + n.offset_y;
+            let floor_y = floor(y);
+            let ry = (y - f64::from(floor_y)) as f32;
+            (floor_y, ry, smoothstep(ry))
         });
     }
 }
@@ -472,28 +557,13 @@ impl SmearedPerlinNoise {
         points: impl Points,
     ) {
         let n = &self.perlin.base;
-        let mut rows = Rows::new(volume.size_y as usize);
-        for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
-            let mut cell = CellColumn::default();
-            let mut last_floor_y = i32::MIN;
-            for (index_y, value) in (0..volume.size_y).zip(out.iter_mut()) {
-                if !points.has(first + index_y as usize) {
-                    continue;
-                }
-                let row = rows.get(index_y as usize, || {
-                    let original_y = f64::from(volume.block_y(index_y)) * y_scale;
-                    let y = wrap(original_y) + n.offset_y;
-                    let floor_y = floor(y);
-                    let ry = y - f64::from(floor_y);
-                    let fudged_ry = (ry - self.compute_fudge_y(original_y, ry)) as f32;
-                    (floor_y, fudged_ry, smoothstep(ry as f32))
-                });
-                if last_floor_y != row.floor {
-                    cell = CellColumn::new(n, c, row.floor);
-                    last_floor_y = row.floor;
-                }
-                *value += amplitude * cell.lerp(c.x.alpha, row.alpha, c.z.alpha, row.relative);
-            }
+        add_columns(n, buffer, volume, xz_scale, amplitude, points, |index_y| {
+            let original_y = f64::from(volume.block_y(index_y)) * y_scale;
+            let y = wrap(original_y) + n.offset_y;
+            let floor_y = floor(y);
+            let ry = y - f64::from(floor_y);
+            let fudged_ry = (ry - self.compute_fudge_y(original_y, ry)) as f32;
+            (floor_y, fudged_ry, smoothstep(ry as f32))
         });
     }
 }

@@ -1193,6 +1193,11 @@ impl Inner {
             || self.reloading.load(Ordering::Acquire) == plugin.local + 1
     }
 
+    /// Whether the plugins are enabled (after `load`).
+    pub(crate) fn is_running(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == RUNNING
+    }
+
     /// Whether `plugin` is being reloaded right now.
     pub(crate) fn is_reloading(&self, plugin: &Plugin) -> bool {
         self.reloading.load(Ordering::Acquire) == plugin.local + 1
@@ -1647,6 +1652,12 @@ impl PluginHost {
     /// or when it does not decide, operators have every node.
     pub fn has_permission(&self, player: u128, node: &str, operator: bool) -> bool {
         api::has_permission(&self.inner, player, node, operator)
+    }
+
+    /// The permission provider's explicit answer for a node, else the default a plugin
+    /// registered for it; `None` when nobody decides it (the caller's own default applies).
+    pub fn permission_answer(&self, player: u128, node: &str, operator: bool) -> Option<bool> {
+        api::permission_answer(&self.inner, player, node, operator)
     }
 }
 

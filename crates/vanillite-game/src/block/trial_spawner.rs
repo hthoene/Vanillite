@@ -1505,14 +1505,21 @@ pub fn tick_item_spawner(level: &mut Level, id: EntityId) {
                 if let Some(event) = event {
                     level.level_event(None, event, block, 0);
                 }
-                super::dispenser::spawn_projectile_item(
+                let shot = super::dispenser::spawn_projectile_item(
                     level,
                     pos,
                     Direction::Down,
                     &item,
                     power,
                     uncertainty,
-                )
+                );
+                // `projectile.setOwner(this)`: an arrow of the spawner cannot be picked up
+                // (`AbstractArrow.setOwner`: `Pickup.DISALLOWED`).
+                if let Some(a) = shot.and_then(|s| level.entities.arrow_mut(s)) {
+                    a.owner = Some(id);
+                    a.pickup = 0;
+                }
+                shot
             }
             // `new ItemEntity(level, x, y, z, item)`: its motion from its own random.
             None => super::drops::spawn_item_moving(level, pos, item, None, 0, None),

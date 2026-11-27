@@ -48,6 +48,9 @@ pub struct State {
     pub eating_counter: i32,
     pub mouth_counter: i32,
     pub stand_counter: i32,
+    /// `standAnim` and `standAnimO`: the rearing animation, which lifts and moves the rider.
+    pub stand_anim: f32,
+    pub stand_anim_o: f32,
     pub sprint_counter: i32,
     /// `AbstractHorse.gallopSoundCounter`.
     pub gallop_counter: i32,
@@ -166,6 +169,8 @@ pub enum Goal {
     Panda(panda::Goal),
     Bear(polar_bear::Goal),
     Rabbit(rabbit::Goal),
+    /// `ClimbOnTopOfPowderSnowGoal` (rabbits and foxes).
+    ClimbPowderSnow,
 }
 
 /// A family goal as a selector goal.
@@ -723,12 +728,16 @@ impl FamilyHooks for Hooks {
     fn check_spawn_rules(
         kind: Kind,
         level: &Level,
-        _env: &Environment,
+        env: &Environment,
         pos: BlockPos,
         random: &mut LegacyRandom,
         reason: SpawnReason,
     ) -> bool {
         match kind {
+            // `SpawnPlacements`: `Monster::checkMonsterSpawnRules`.
+            Kind::ZombieHorse => {
+                crate::mob::spawn::check_monster_spawn_rules(kind, level, env, pos, random, reason)
+            }
             Kind::Wolf => wolf::spawn_rules(level, pos, reason),
             Kind::Rabbit => rabbit::spawn_rules(level, pos, reason),
             Kind::Fox => fox::spawn_rules(level, pos, reason),
@@ -737,7 +746,6 @@ impl FamilyHooks for Hooks {
             Kind::Parrot => parrot::spawn_rules(level, pos, reason),
             Kind::Llama => llama::spawn_rules(level, pos, reason),
             Kind::SkeletonHorse => horse::skeleton_spawn_rules(level, pos, reason),
-            Kind::ZombieHorse => horse::zombie_spawn_rules(level, pos, reason),
             Kind::Panda
             | Kind::Horse
             | Kind::Donkey
@@ -824,6 +832,12 @@ impl FamilyHooks for Hooks {
             Kind::Panda => panda::before_tick(t),
             Kind::PolarBear => polar_bear::before_tick(t),
             _ => {}
+        }
+    }
+
+    fn after_tick(t: &mut Tick<'_, '_>) {
+        if is_horse(t.mob_ref().kind) {
+            horse::after_tick(t.mob());
         }
     }
 
@@ -1116,6 +1130,7 @@ impl FamilyHooks for Hooks {
             Goal::Panda(g) => panda::flags(g),
             Goal::Bear(g) => polar_bear::flags(g),
             Goal::Rabbit(g) => rabbit::flags(g),
+            Goal::ClimbPowderSnow => crate::mob::goals::flag::JUMP,
         }
     }
 
@@ -1133,6 +1148,7 @@ impl FamilyHooks for Hooks {
             Goal::Panda(g) => panda::every_tick(g),
             Goal::Bear(g) => polar_bear::every_tick(g),
             Goal::Rabbit(g) => rabbit::every_tick(g),
+            Goal::ClimbPowderSnow => true,
         }
     }
 
@@ -1144,7 +1160,7 @@ impl FamilyHooks for Hooks {
                 if !should_panic(t, *env_only) {
                     return false;
                 }
-                match crate::mob::randompos::default_pos(t, 5, 4) {
+                match crate::mob::animal::panic_pos(t) {
                     Some(p) => {
                         *pos = p;
                         true
@@ -1161,6 +1177,7 @@ impl FamilyHooks for Hooks {
             Goal::Panda(g) => panda::can_use(t, g),
             Goal::Bear(g) => polar_bear::can_use(t, g),
             Goal::Rabbit(g) => rabbit::can_use(t, g),
+            Goal::ClimbPowderSnow => climb_powder_snow_can_use(t),
         }
     }
 
@@ -1168,7 +1185,7 @@ impl FamilyHooks for Hooks {
         match g {
             Goal::Idle => false,
             Goal::Guard(c, cg) => cond_holds(t, *c) && crate::mob::common::can_continue(t, cg),
-            Goal::TamePanic { .. } => !t.mob_ref().nav.is_done(),
+            Goal::TamePanic { .. } => !t.nav_ref().is_done(),
             Goal::Horse(g) => horse::can_continue(t, g),
             Goal::Llama(g) => llama::can_continue(t, g),
             Goal::Wolf(g) => wolf::can_continue(t, g),
@@ -1178,6 +1195,7 @@ impl FamilyHooks for Hooks {
             Goal::Panda(g) => panda::can_continue(t, g),
             Goal::Bear(g) => polar_bear::can_continue(t, g),
             Goal::Rabbit(g) => rabbit::can_continue(t, g),
+            Goal::ClimbPowderSnow => climb_powder_snow_can_use(t),
         }
     }
 
@@ -1197,6 +1215,7 @@ impl FamilyHooks for Hooks {
             Goal::Panda(g) => panda::start(t, g),
             Goal::Bear(g) => polar_bear::start(t, g),
             Goal::Rabbit(g) => rabbit::start(t, g),
+            Goal::ClimbPowderSnow => {}
         }
     }
 
@@ -1214,6 +1233,7 @@ impl FamilyHooks for Hooks {
             Goal::Panda(g) => panda::stop(t, g),
             Goal::Bear(g) => polar_bear::stop(t, g),
             Goal::Rabbit(g) => rabbit::stop(t, g),
+            Goal::ClimbPowderSnow => {}
         }
     }
 
@@ -1236,8 +1256,23 @@ impl FamilyHooks for Hooks {
             Goal::Panda(g) => panda::tick(t, g),
             Goal::Bear(g) => polar_bear::tick(t, g),
             Goal::Rabbit(g) => rabbit::tick(t, g),
+            Goal::ClimbPowderSnow => t.mob().jump = true,
         }
     }
+}
+
+/// `ClimbOnTopOfPowderSnowGoal.canUse`: in powder snow (this or the last tick), a
+/// `#powder_snow_walkable_mobs` kind, with powder snow or no collision above.
+fn climb_powder_snow_can_use(t: &Tick<'_, '_>) -> bool {
+    let m = t.mob_ref();
+    if !(m.was_in_powder_snow || m.in_powder_snow)
+        || !crate::effect::entity_in_tag(m.kind.type_id(), "minecraft:powder_snow_walkable_mobs")
+    {
+        return false;
+    }
+    let p = t.block_pos();
+    let above = t.level.block(BlockPos::new(p.x, p.y + 1, p.z));
+    above.block() == vanillite_data::block::ids::POWDER_SNOW || above.collision_shape().is_empty()
 }
 
 /// `Animal.mobInteract`: feeding for love and growth.

@@ -1,0 +1,147 @@
+{
+  "description": "Arrows keep their own fire state (remainingFireTicks): a plain arrow shot through a lava pool starts burning and primes the TNT under it (TntBlock.onProjectileHit), while a flame arrow shot through a water pool is put out and does not.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -63,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -62,
+        3
+      ],
+      "to": [
+        8,
+        -62,
+        5
+      ],
+      "block": "minecraft:tnt"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -61,
+        3
+      ],
+      "to": [
+        8,
+        -61,
+        5
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -62,
+        10
+      ],
+      "to": [
+        8,
+        -62,
+        12
+      ],
+      "block": "minecraft:tnt"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -61,
+        10
+      ],
+      "to": [
+        8,
+        -61,
+        12
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        0.8
+      ],
+      "rot": [
+        0,
+        35
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        8.2
+      ],
+      "rot": [
+        0,
+        38.4
+      ],
+      "seed": 8
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:bow",
+      "inventory": [
+        {
+          "slot": 9,
+          "item": "minecraft:arrow",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:bow",
+      "components": "{\"minecraft:enchantments\": {\"minecraft:flame\": 1}}",
+      "inventory": [
+        {
+          "slot": 9,
+          "item": "minecraft:arrow",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "tick": 27,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 27,
+      "op": "release_item",
+      "entity": "alex"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

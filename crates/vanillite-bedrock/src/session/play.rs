@@ -1002,7 +1002,7 @@ impl Session {
             bp::Attribute {
                 name: "minecraft:health",
                 min: 0.0,
-                max: 20f32.max(health),
+                max: 20f32.max(health.ceil()),
                 value: health.ceil(),
                 default: 20.0,
             },
@@ -1537,7 +1537,11 @@ impl Session {
                 }
                 w.next_boss = w.next_boss.wrapping_add(1);
                 let entity = BOSS_BASE.saturating_add(i64::from(w.next_boss & 0xffff));
-                let colour = u8::try_from(colour.clamp(0, 6)).unwrap_or(0);
+                // Java white (6) is Bedrock white (7); 6 is Bedrock's rebecca purple.
+                let colour = match colour.clamp(0, 6) {
+                    6 => 7,
+                    c => u8::try_from(c).unwrap_or(0),
+                };
                 w.bosses
                     .insert(uuid, (entity, title.clone(), health, colour));
                 // An invisible, tiny actor carries the bar (Bedrock shows bars of actors).

@@ -172,7 +172,7 @@ fn portal_may_form(level: &Level, shape: &PortalShape) -> bool {
         pos: corner,
         ..crate::hooks::Event::new(vanillite_abi::event::PORTAL_CREATE)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
     !ev.cancelled
 }
 

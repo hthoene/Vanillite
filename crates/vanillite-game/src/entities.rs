@@ -131,6 +131,8 @@ pub struct Entities {
     pub players_by_uuid: FxHashMap<u128, EntityId>,
     /// Leashed mobs and what holds them (`leashHolder`): a player, mob or leash knot.
     pub leashes: FxHashMap<EntityId, EntityId>,
+    /// `LeashData.angularMomentum` of the leashed entities.
+    pub leash_momentum: FxHashMap<EntityId, f64>,
     /// Players that left for another world ([`Entities::despawn_player`]) by their id here,
     /// with their UUID and the game time they left: the world's boss bars hold the id until
     /// their next player update and still reach the player through it, like Vanilla's
@@ -277,7 +279,7 @@ impl Entities {
             to: crate::hooks::Place::looking(e.pos(), r.y_rot, r.x_rot),
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_SPAWN)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::entities(self), &mut ev);
         if ev.cancelled {
             self.despawn(id);
             return false;
@@ -309,7 +311,7 @@ impl Entities {
             to: crate::hooks::Place::at(e.pos()),
             ..crate::hooks::Event::new(vanillite_abi::event::PROJECTILE_LAUNCH)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::entities(self), &mut ev);
         if ev.cancelled {
             self.despawn(id);
             return false;
@@ -342,7 +344,7 @@ impl Entities {
             cause: reason,
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TRANSFORM)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::entities(self), &mut ev);
         !ev.cancelled
     }
 

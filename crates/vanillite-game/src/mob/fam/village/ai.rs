@@ -1952,11 +1952,23 @@ pub fn behavior_tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
                 v::make_sound(t, "minecraft:entity.villager.celebrate");
             }
             if t.mob().random.next_int_bounded(200) == 0 && no_blocks_above(t, t.block_pos()) {
-                // The firework (`DyeColor` and flight duration); firework rockets are not
-                // modelled yet, so only the randomness is consumed.
+                // A rocket of a random dye colour and flight duration from the eyes.
                 let r = &mut t.mob().random;
-                let _color = r.next_int_bounded(16);
-                let _flight = r.next_int_bounded(3);
+                let color = r.next_int_bounded(16);
+                let flight = r.next_int_bounded(3);
+                let stack = crate::recipe::celebration_rocket(color, flight);
+                let p = t.pos();
+                let at = vanillite_base::Vec3::new(p.x, t.eye_y(), p.z);
+                let me = t.id;
+                crate::firework::spawn_rocket(
+                    t.ents,
+                    t.level.network_ids(),
+                    Some(me),
+                    at,
+                    &stack,
+                    None,
+                    None,
+                );
             }
         }
         _ => {}
@@ -2719,12 +2731,16 @@ fn stand_on(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
 }
 
 /// `InteractWithDoor`.
-fn door(t: &mut Tick<'_, '_>, last_node: &mut Option<BlockPos>, cooldown: &mut i32) -> bool {
+pub(crate) fn door(
+    t: &mut Tick<'_, '_>,
+    last_node: &mut Option<BlockPos>,
+    cooldown: &mut i32,
+) -> bool {
     let me = t.id;
     let Some((prev, next)) = path_nodes(t, me) else {
         return false;
     };
-    let started = t.mob_ref().nav.path.as_ref().is_some_and(|p| p.next > 0);
+    let started = t.nav_ref().path.as_ref().is_some_and(|p| p.next > 0);
     if !started {
         return false;
     }

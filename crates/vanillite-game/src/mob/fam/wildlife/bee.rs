@@ -259,7 +259,7 @@ fn pathfind_directly_towards(t: &mut Tick<'_, '_>, target: BlockPos) -> bool {
     t.mob().nav.max_visited_nodes_multiplier = 10.0;
     let path = nav::create_path_to(t, target, close_enough);
     nav::move_to_path(t, path, 1.0);
-    t.mob_ref().nav.path.as_ref().is_some_and(|p| p.reached)
+    t.nav_ref().path.as_ref().is_some_and(|p| p.reached)
 }
 
 /// `BeeLocateHiveGoal.findNearbyHivesWithSpace`: the bee homes within 20 blocks with room,
@@ -464,7 +464,7 @@ fn find_nearby_flower(t: &mut Tick<'_, '_>) -> Option<BlockPos> {
 /// check).
 pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     if matches!(g, Goal::BeeWander) {
-        return t.mob_ref().nav.is_done() && t.mob().random.next_int_bounded(10) == 0;
+        return t.nav_ref().is_done() && t.mob().random.next_int_bounded(10) == 0;
     }
     can_bee_use(t, g) && !is_angry(t)
 }
@@ -575,7 +575,7 @@ fn close_to(a: BlockPos, b: BlockPos, distance: i32) -> bool {
 /// `canContinueToUse`: `canBeeContinueToUse() && !isAngry()` for the bee goals.
 pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     let go_on = match g {
-        Goal::BeeWander => return !t.mob_ref().nav.is_done(),
+        Goal::BeeWander => return !t.nav_ref().is_done(),
         Goal::BeePollinate { successful, .. } => {
             let s = st(t.mob_ref());
             if !s.pollinating || s.flower_pos.is_none() || t.cx.env.raining {
@@ -717,17 +717,17 @@ pub(super) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             let s = st_mut(t.mob());
             s.pollinating = false;
             s.cooldown_flower = 200;
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::BeeGoToKnownFlower { travelling } => {
             *travelling = 0;
-            t.mob().nav.stop();
+            t.nav().stop();
             t.mob().nav.max_visited_nodes_multiplier = 1.0;
         }
         Goal::BeeGoToHive { travelling, stuck } => {
             *travelling = 0;
             *stuck = 0;
-            t.mob().nav.stop();
+            t.nav().stop();
             t.mob().nav.max_visited_nodes_multiplier = 1.0;
         }
         _ => {}
@@ -779,7 +779,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                     let ox = f64::from((r.next_float() * 2.0 - 1.0) * 0.333_333_34);
                     let oz = f64::from((r.next_float() * 2.0 - 1.0) * 0.333_333_34);
                     *hover = Vec3::new(flower.x + ox, flower.y, flower.z + oz);
-                    t.mob().nav.stop();
+                    t.nav().stop();
                 } else {
                     set_wanted = false;
                 }
@@ -803,7 +803,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *travelling += 1;
             if *travelling > reduced(2400) {
                 drop_flower(t);
-            } else if t.mob_ref().nav.is_done() {
+            } else if t.nav_ref().is_done() {
                 if close_to(t.block_pos(), f, 48) {
                     pathfind_randomly_towards(t, f);
                 } else {
@@ -818,7 +818,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *travelling += 1;
             if *travelling > reduced(2400) {
                 drop_and_blacklist_hive(t);
-            } else if t.mob_ref().nav.is_done() {
+            } else if t.nav_ref().is_done() {
                 if !close_to(hive, t.block_pos(), 16) {
                     if too_far(t, hive) {
                         drop_hive(t);
@@ -828,7 +828,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 } else if !pathfind_directly_towards(t, hive) {
                     drop_and_blacklist_hive(t);
                 } else {
-                    let path = t.mob_ref().nav.path.as_ref().map(|p| p.nodes.clone());
+                    let path = t.nav_ref().path.as_ref().map(|p| p.nodes.clone());
                     let s = st_mut(t.mob());
                     if s.hive_last_path.is_some() && s.hive_last_path == path {
                         *stuck += 1;

@@ -1,0 +1,86 @@
+{
+  "description": "A player's wind charge hits a spider in daylight: wind charge damage to #no_anger_from_wind_charge mobs sets no last hurt by mob (LivingEntity.resolveMobResponsibleForDamage), so the spider does not turn on the player; a pig hit the same way panics as usual.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        3.5
+      ],
+      "rot": [
+        0,
+        10
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        11.5,
+        -60.0,
+        3.5
+      ],
+      "rot": [
+        0,
+        10
+      ],
+      "seed": 5
+    },
+    {
+      "name": "spider",
+      "type": "minecraft:spider",
+      "pos": [
+        4.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 51,
+      "finalize": false
+    },
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        11.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 52,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:wind_charge"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:wind_charge"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

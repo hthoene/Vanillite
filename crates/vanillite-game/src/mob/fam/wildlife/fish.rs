@@ -166,10 +166,17 @@ pub(super) fn surface_water_rules(level: &Level, pos: BlockPos) -> bool {
             == vanillite_data::block::ids::WATER
 }
 
-/// `TropicalFish.checkTropicalFishSpawnRules` (the biomes of
-/// `#allows_tropical_fish_spawns_at_any_height` are not known here: surface rules apply).
+/// `TropicalFish.checkTropicalFishSpawnRules`: water below and above, and either a biome of
+/// `#allows_tropical_fish_spawns_at_any_height` (lush caves) or the surface rules.
 pub(super) fn tropical_rules(level: &Level, pos: BlockPos) -> bool {
-    surface_water_rules(level, pos)
+    is_water(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
+        && level.block(BlockPos::new(pos.x, pos.y + 1, pos.z)).block()
+            == vanillite_data::block::ids::WATER
+        && (crate::mob::fam::undead::zombies::biome_is(
+            level,
+            pos,
+            "minecraft:allows_tropical_fish_spawns_at_any_height",
+        ) || surface_water_rules(level, pos))
 }
 
 /// `AbstractFish.aiStep` before `super.aiStep()`: a fish on land flops.
@@ -205,7 +212,7 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
         t.set_velocity(Vec3::new(v.x, v.y + 0.005, v.z));
     }
     let ctl = t.mob_ref().move_ctl;
-    if ctl.operation == Operation::MoveTo && !t.mob_ref().nav.is_done() {
+    if ctl.operation == Operation::MoveTo && !t.nav_ref().is_done() {
         #[allow(clippy::cast_possible_truncation)]
         let target = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
         let speed = t.mob_ref().speed;
@@ -432,9 +439,7 @@ pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
-        Goal::Swim { .. } => {
-            !t.mob_ref().nav.is_done() && t.ents.riding.passengers_of(t.id).is_empty()
-        }
+        Goal::Swim { .. } => !t.nav_ref().is_done() && t.ents.riding.passengers_of(t.id).is_empty(),
         Goal::FollowFlockLeader { .. } => {
             let m = t.mob_ref();
             if !is_follower(t, m) {

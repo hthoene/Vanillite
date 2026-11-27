@@ -4,7 +4,6 @@
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_chunk::HeightmapKind;
-use vanillite_config::GameMode;
 use vanillite_data::block::flags;
 use vanillite_world::entity::Rotation;
 
@@ -48,20 +47,18 @@ pub(super) fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
                     ..rot
                 });
             }
-            // `getNearestPlayer(BAT_RESTING_TARGETING)`: any player within 4 blocks.
-            let p = t.pos();
+            // `getNearestPlayer(BAT_RESTING_TARGETING)`: `forNonCombat().range(4)`, with the
+            // visibility percent (sneaking, invisibility, heads) and line of sight.
             let area = t.aabb().inflate(4.0, 4.0, 4.0);
-            let mut near = false;
-            let ents = &*t.ents;
-            ents.store.for_each_in(&area, true, |id| {
-                if let (Some(e), Some(pd)) = (ents.store.get(id), ents.player(id))
-                    && pd.game_mode != GameMode::Spectator
-                    && !pd.survival.is_dead_or_dying()
-                    && e.pos().distance_to_sqr(p) <= 16.0
-                {
-                    near = true;
-                }
-            });
+            let mut candidates = std::mem::take(&mut t.cx.ids);
+            candidates.clear();
+            t.ents
+                .store
+                .for_each_in(&area, true, |id| candidates.push(id));
+            let near = candidates
+                .iter()
+                .any(|&id| crate::mob::goals::test_player(t, id, false, 4.0, true));
+            t.cx.ids = candidates;
             if near {
                 set_resting(t, false);
                 take_off(t, pos);

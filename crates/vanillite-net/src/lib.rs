@@ -28,7 +28,7 @@ pub use configuration::{ConfigurationData, json_to_nbt, network_tags};
 pub use conn::rand_bytes;
 pub use limits::{ConnectionGuard, ConnectionLimiter};
 pub use outbound::Outbound;
-pub use player::{Injector, Joined, Latency, LoginCheck};
+pub use player::{ClientDetails, Injector, Joined, Latency, LoginCheck};
 pub use status::{StatusCache, StatusInfo};
 pub use vanillite_protocol::{Inbound, SharedPacket};
 

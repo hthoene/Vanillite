@@ -744,6 +744,16 @@ pub mod clientbound {
         pub state: i32,
     }
 
+    /// `add_transient_block`: a block the client shows at once where a falling block landed
+    /// (`FallingBlockEntity.tick`).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Play, dir = Clientbound, name = "add_transient_block")]
+    pub struct AddTransientBlock {
+        pub pos: BlockPos,
+        #[field(varint)]
+        pub state: i32,
+    }
+
     /// `block_destruction`: crack progress 0–9 of a block a player digs; other values remove
     /// it.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]

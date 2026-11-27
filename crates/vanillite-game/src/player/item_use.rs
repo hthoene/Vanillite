@@ -99,7 +99,11 @@ pub fn use_item(
         .unwrap_or_default();
     if let Some(projectile) = launched_projectile(&held)
         && let Some(uuid) = ents.store.get(player).map(|e| e.uuid())
-        && !env.hooks.projectile_launch(uuid, projectile)
+        && !env.hooks.projectile_launch(
+            crate::hooks::HookWorld::split(level, ents),
+            uuid,
+            projectile,
+        )
     {
         return;
     }

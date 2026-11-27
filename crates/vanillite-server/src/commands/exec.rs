@@ -333,6 +333,19 @@ pub(crate) fn teleport_local(
         if let Some(mob) = entities.mob_mut(id) {
             mob.nav.stop();
         }
+        vanillite_game::riding::send_teleport_transition(
+            level,
+            id,
+            vanillite_protocol::packets::play::clientbound::PositionMoveRotation {
+                position: vanillite_game::riding::wire_vec(wire),
+                delta: vanillite_game::riding::wire_vec(Vec3::ZERO),
+                y_rot: y,
+                x_rot: x,
+            },
+            relatives,
+            current,
+            flags.contains(EntityFlags::ON_GROUND),
+        );
         return Ok(());
     };
     let sink = std::sync::Arc::clone(&player.connection.sink);

@@ -143,7 +143,7 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
         set_speed(m, (m.speed / 2.0).max(0.06));
     }
     let ctl = t.mob_ref().move_ctl;
-    if ctl.operation != Operation::MoveTo || t.mob_ref().nav.is_done() {
+    if ctl.operation != Operation::MoveTo || t.nav_ref().is_done() {
         set_speed(t.mob(), 0.0);
         return;
     }
@@ -303,7 +303,7 @@ pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     let s = st(t.mob_ref()).clone();
     match g {
-        Goal::TurtlePanic { .. } | Goal::TurtleStroll { .. } => !t.mob_ref().nav.is_done(),
+        Goal::TurtlePanic { .. } | Goal::TurtleStroll { .. } => !t.nav_ref().is_done(),
         Goal::TurtleBreed {
             partner, love_time, ..
         } => {
@@ -321,7 +321,7 @@ pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             stuck, close_ticks, ..
         } => !home_within(t, 7.0) && !*stuck && *close_ticks <= reduced(600),
         Goal::TurtleTravel { stuck, .. } => {
-            !t.mob_ref().nav.is_done()
+            !t.nav_ref().is_done()
                 && !*stuck
                 && !s.going_home
                 && t.mob_ref().in_love <= 0
@@ -481,7 +481,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             if close {
                 *close_ticks += 1;
             }
-            if !t.mob_ref().nav.is_done() {
+            if !t.nav_ref().is_done() {
                 return;
             }
             let home_v = randompos::bottom_center(home);
@@ -507,7 +507,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 *stuck = true;
                 return;
             };
-            if !t.mob_ref().nav.is_done() {
+            if !t.nav_ref().is_done() {
                 return;
             }
             let target = randompos::bottom_center(travel);

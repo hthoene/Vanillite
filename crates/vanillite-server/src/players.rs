@@ -210,7 +210,7 @@ impl FanOut {
         };
 
         // Jobs over ranges of runs with about the same number of pairs.
-        let workers = compute.scheduler().workers() + 1;
+        let workers = compute.phase_threads();
         let jobs = workers.min(pairs.div_ceil(FAN_OUT_PAIRS_PER_JOB)).max(1);
         let per_job = pairs.div_ceil(jobs);
         let mut ranges = Vec::with_capacity(jobs);
@@ -431,6 +431,10 @@ pub(crate) struct Arrival {
     pub(crate) advancements: Option<String>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
+    /// Transferred from another server: no `server_data` at join.
+    pub(crate) transferred: bool,
+    /// Protocol, brand and packet counts of a network connection.
+    pub(crate) details: Option<Arc<vanillite_net::ClientDetails>>,
 }
 
 /// The players' side of a world.
@@ -447,6 +451,8 @@ pub(crate) struct WorldPlayers {
     respawns: Vec<EntityId>,
     /// `debug.session-recording` (overworld only).
     pub(crate) recording: crate::session_recording::SessionRecording,
+    /// The locator bar.
+    waypoints: crate::waypoints::Waypoints,
 }
 
 fn chunk_of(pos: Vec3) -> ChunkPos {
@@ -467,6 +473,7 @@ impl WorldPlayers {
             chatting: Vec::new(),
             respawns: Vec::new(),
             recording: crate::session_recording::SessionRecording::default(),
+            waypoints: crate::waypoints::Waypoints::default(),
         }
     }
 
@@ -681,6 +688,13 @@ impl WorldPlayers {
         connection
             .movement
             .teleport(&mut body, pos, rot.0, rot.1, sink.as_ref());
+        if !arrival.transferred {
+            let data = global
+                .server_data
+                .read()
+                .map_or_else(|e| Arc::clone(&e.into_inner()), |d| Arc::clone(&d));
+            sink.send_shared(&data);
+        }
         // The tab list: everyone to the new player (itself included), the new player to everyone else.
         let entries = global.players.info_entries();
         sink.send(&join::player_info_add(&entries));
@@ -1101,6 +1115,7 @@ impl WorldPlayers {
         global: &Global,
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
+        compute: &Compute,
     ) {
         crate::commands::answer_suggestions(&mut level.entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
@@ -1113,7 +1128,7 @@ impl WorldPlayers {
             }
         }
         self.tick_players(level, global, blocks);
-        crate::progress::tick(level, global, world, self.level.dimension.as_str());
+        crate::progress::tick(level, global, world, self.level.dimension.as_str(), compute);
         let entities = &mut level.entities;
         let Entities { store, players, .. } = entities;
         for (id, player) in players.iter_mut() {
@@ -1132,6 +1147,7 @@ impl WorldPlayers {
             player.connection.chat.chat_spam.tick();
             player.connection.chat.command_spam.tick();
         }
+        self.waypoints.tick(entities, global);
         // `PlayerList.tick`: latencies for the tab list. The first world sends them for all.
         if tick.is_multiple_of(LATENCY_UPDATE_TICKS)
             && self.level.dimension.as_str() == "minecraft:overworld"
@@ -2167,7 +2183,7 @@ fn touch_orb(
                 value: i64::from(points),
                 ..vanillite_game::hooks::Event::new(vanillite_abi::event::PLAYER_EXP_CHANGE)
             };
-            hooks.event(&mut ev);
+            hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
             points = i32::try_from(ev.value.clamp(0, i64::from(i32::MAX))).unwrap_or(0);
         }
         if points <= 0 {

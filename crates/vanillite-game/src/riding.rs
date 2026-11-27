@@ -22,10 +22,42 @@ fn vehicle_attachment(ents: &Entities, passenger: EntityId) -> f64 {
     if ents.player(passenger).is_some() {
         return 0.6;
     }
-    match ents.mob(passenger).map(|m| m.kind) {
-        Some(Kind::Skeleton) => 0.7,
+    let Some(m) = ents.mob(passenger) else {
+        return 0.0;
+    };
+    // `EntityType.Builder.ridingOffset(offset)`: the vehicle attachment is `-offset`.
+    let offset = match m.kind {
+        // `Zombie.BABY_DIMENSIONS` attaches at 0.1875 (husks, drowned, zombie villagers and
+        // zombified piglins share it).
+        Kind::Zombie
+        | Kind::Husk
+        | Kind::Drowned
+        | Kind::ZombieVillager
+        | Kind::ZombifiedPiglin
+            if m.baby =>
+        {
+            return f64::from(0.1875_f32);
+        }
+        Kind::Zombie
+        | Kind::Husk
+        | Kind::Drowned
+        | Kind::ZombieVillager
+        | Kind::ZombifiedPiglin
+        | Kind::Skeleton
+        | Kind::Stray
+        | Kind::Bogged
+        | Kind::Parched
+        | Kind::Piglin
+        | Kind::PiglinBrute => -0.7_f32,
+        Kind::Evoker | Kind::Illusioner | Kind::Pillager | Kind::Vindicator => -0.6,
+        Kind::WitherSkeleton => -0.875,
+        Kind::Giant => -3.75,
+        Kind::Phantom => -0.125,
+        Kind::Allay | Kind::Vex => 0.04,
+        Kind::Ghast | Kind::HappyGhast => 0.5,
         _ => 0.0,
-    }
+    };
+    -f64::from(offset)
 }
 
 /// `getPassengerAttachmentPoint` of a living vehicle (`passengerAttachments`), scaled for
@@ -133,7 +165,11 @@ pub fn start_riding(
         }
         up = ents.vehicle_of(v);
     }
-    if !force && !can_add_passenger(ents, vehicle) {
+    // `canRide`: the wither, the warden and the dragon never get on by themselves.
+    let cannot_ride = ents
+        .mob(passenger)
+        .is_some_and(|m| matches!(m.kind, Kind::Wither | Kind::Warden | Kind::EnderDragon));
+    if !force && (cannot_ride || !can_add_passenger(ents, vehicle)) {
         return false;
     }
     if !riding_event(
@@ -152,7 +188,17 @@ pub fn start_riding(
         e.set_pose(Pose::Standing);
         e.set_flags(EntityFlags::PASSENGER, true);
     }
+    let ghast = ents
+        .mob(vehicle)
+        .is_some_and(|m| m.kind == Kind::HappyGhast);
+    if ghast {
+        let first = ents.riding.passengers_of(vehicle).is_empty();
+        crate::mob::fam::mount::ghast::add_passenger(ents, env, vehicle, first);
+    }
     ents.riding.add(passenger, vehicle, is_player);
+    if ghast {
+        crate::mob::fam::mount::ghast::passenger_added(ents, vehicle);
+    }
     if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
         let event = crate::level::game_event::events().entity_mount;
         crate::survival::game_event(env.out, event, at, Some(passenger));
@@ -177,6 +223,10 @@ pub fn start_riding(
     crate::effect::living::send_vehicle_effects(ents, passenger, vehicle, true);
     if let Some(m) = ents.mob_mut(passenger) {
         m.nav.stop();
+    }
+    // `Mob.startRiding`: a leashed mob drops its lead (where it stood).
+    if ents.mob(passenger).is_some() {
+        crate::mob::tame::drop_leash(ents, env, passenger, true);
     }
     position_riders_of(ents, vehicle);
     send_passengers(ents, env, vehicle);
@@ -203,7 +253,7 @@ fn riding_event(ents: &Entities, kind: u32, passenger: EntityId, vehicle: Entity
         other_type: v.kind().name().to_owned(),
         ..crate::hooks::Event::new(kind)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     !ev.cancelled
 }
 
@@ -260,6 +310,18 @@ pub fn stop_riding_in_level(level: &mut crate::level::Level, passenger: EntityId
 /// `stopRiding`: `passenger` gets off and is placed at the dismount location. Returns the
 /// old vehicle; `None` also when a plugin cancelled it (`VEHICLE_EXIT`: it stays, its
 /// client is corrected).
+/// `LivingEntity.baseTick` with the eyes under water (no bubble column): a passenger of a
+/// vehicle in `#dismounts_underwater` gets off.
+pub fn dismount_underwater(ents: &mut Entities, env: &mut Env<'_>, passenger: EntityId) {
+    if let Some(v) = ents.vehicle_of(passenger)
+        && ents.store.get(v).is_some_and(|e| {
+            crate::effect::entity_in_tag(e.kind(), "minecraft:dismounts_underwater")
+        })
+    {
+        stop_riding(ents, env, passenger);
+    }
+}
+
 pub fn stop_riding(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -277,6 +339,12 @@ pub fn stop_riding(
 /// exit event cannot be cancelled.
 fn dismount(ents: &mut Entities, env: &mut Env<'_>, passenger: EntityId) -> Option<EntityId> {
     let vehicle = ents.riding.remove(passenger)?;
+    if ents
+        .mob(vehicle)
+        .is_some_and(|m| m.kind == Kind::HappyGhast)
+    {
+        crate::mob::fam::mount::ghast::passenger_removed(ents, env, vehicle);
+    }
     if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
         let event = crate::level::game_event::events().entity_dismount;
         crate::survival::game_event(env.out, event, at, Some(passenger));
@@ -440,6 +508,13 @@ fn dismount_location(
     let fallback = Vec3::new(vpos.x, v.aabb().max_y, vpos.z);
     let (pw, ph) = (f64::from(p.dims().width), f64::from(p.dims().height));
     let mut scratch = Vec::new();
+    // `HappyGhast.getDismountLocationForPassenger`: always the top centre.
+    if ents
+        .mob(vehicle)
+        .is_some_and(|m| m.kind == Kind::HappyGhast)
+    {
+        return Some(fallback);
+    }
     if let Some(m) = ents.minecart(vehicle) {
         let flipped = m.flipped;
         if let Some(t) = minecart_dismount(ents, level, vehicle, passenger, flipped) {
@@ -469,6 +544,22 @@ fn dismount_location(
             }
         }
         return Some(fallback);
+    }
+    if ents.mob(vehicle).is_some_and(|m| {
+        matches!(
+            m.kind,
+            Kind::Horse
+                | Kind::Donkey
+                | Kind::Mule
+                | Kind::ZombieHorse
+                | Kind::SkeletonHorse
+                | Kind::Llama
+                | Kind::TraderLlama
+                | Kind::Camel
+                | Kind::CamelHusk
+        )
+    }) {
+        return Some(horse_dismount(ents, level, vehicle, passenger).unwrap_or(vpos));
     }
     // `LivingEntity.getDismountLocationForPassenger`: the blocks around the vehicle in
     // `DismountHelper.offsetsForDirection(getMotionDirection())` order.
@@ -504,6 +595,65 @@ fn dismount_location(
         }
     }
     Some(fallback)
+}
+
+/// `AbstractHorse.getDismountLocationForPassenger`: beside the rider's main hand, then its
+/// other hand (`getDismountLocationInDirection`); `None` falls back to the horse's position.
+fn horse_dismount(
+    ents: &Entities,
+    level: &dyn physics::Blocks,
+    vehicle: EntityId,
+    passenger: EntityId,
+) -> Option<Vec3> {
+    let v = ents.store.get(vehicle)?;
+    let p = ents.store.get(passenger)?;
+    let right = match ents.player(passenger) {
+        Some(pd) => pd.client.main_hand == crate::player::MainHand::Right,
+        None => !ents.mob(passenger).is_some_and(|m| m.left_handed),
+    };
+    let (vw, pw) = (f64::from(v.dims().width), f64::from(p.dims().width));
+    let (vpos, aabb, y_rot) = (v.pos(), v.aabb(), v.rot().y_rot);
+    // `getDismountPoses` with their box sizes.
+    let poses: Vec<(f64, f64)> = if ents.player(passenger).is_some() {
+        vec![(0.6, 1.8), (0.6, 1.5), (0.6, 0.6)]
+    } else {
+        vec![(pw, f64::from(p.dims().height))]
+    };
+    let mut scratch = Vec::new();
+    for main in [true, false] {
+        let side = if right == main { 90.0 } else { -90.0 };
+        // `getCollisionHorizontalEscapeVector(width, passengerWidth, yRot +- 90)`.
+        let distance = (vw + pw + f64::from(1.0e-5_f32)) / 2.0;
+        let a = f64::from((y_rot + side) * (std::f32::consts::PI / 180.0));
+        let (xd, zd) = (-vanillite_base::math::sin(a), vanillite_base::math::cos(a));
+        let scale = xd.abs().max(zd.abs());
+        let (tx, tz) = (
+            vpos.x + f64::from(xd) * distance / f64::from(scale),
+            vpos.z + f64::from(zd) * distance / f64::from(scale),
+        );
+        let limit = aabb.max_y + 0.75;
+        for &(width, height) in &poses {
+            let mut pos = BlockPos::containing(tx, aabb.min_y, tz);
+            loop {
+                let h = block_floor_height(level, pos);
+                if f64::from(pos.y) + h > limit {
+                    break;
+                }
+                if floor_valid(h) {
+                    let t = Vec3::new(tx, f64::from(pos.y) + h, tz);
+                    if can_dismount_to(level, width, height, t, &mut scratch) {
+                        return Some(t);
+                    }
+                }
+                pos = BlockPos::new(pos.x, pos.y + 1, pos.z);
+                // `do { ... } while (!(y < limit))` as Vanilla has it.
+                if f64::from(pos.y) < limit {
+                    break;
+                }
+            }
+        }
+    }
+    None
 }
 
 /// `AbstractMinecart.getDismountLocationForPassenger`: the blocks beside the minecart's
@@ -626,6 +776,10 @@ pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
     let y_rot = v.rot().y_rot;
     let height = v.dims().height;
     let count = list.len();
+    // `AbstractHorse.positionRider`: living passengers turn their body with the horse.
+    let horse_body_rot = ents
+        .mob(vehicle)
+        .and_then(|m| m.kind.is_abstract_horse().then_some(m.y_body_rot));
     for (i, &p) in list.iter().enumerate() {
         let attach = if let Some(b) = ents.boat(vehicle) {
             let animal = ents.store.get(p).is_some_and(|e| is_animal(e.kind()));
@@ -634,13 +788,25 @@ pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
             Vec3::new(0.0, crate::minecart::passenger_height(ents, p), 0.0)
         } else if let Some(m) = ents.mob(vehicle) {
             let scale = if m.baby { 0.5 } else { 1.0 };
-            Vec3::new(0.0, mob_passenger_height(m.kind, height) * scale, 0.0)
+            let base = Vec3::new(0.0, mob_passenger_height(m.kind, height) * scale, 0.0);
+            if crate::mob::fam::companion::is_horse(m.kind) {
+                #[allow(clippy::cast_possible_truncation)]
+                let s = scale as f32;
+                base + crate::mob::fam::companion::horse::rearing_offset(m, y_rot, s)
+            } else {
+                base
+            }
         } else {
             Vec3::new(0.0, f64::from(height), 0.0)
         };
         let target = vpos + attach - Vec3::new(0.0, vehicle_attachment(ents, p), 0.0);
         if let Some(mut e) = ents.store.get_mut(p) {
             e.set_pos(target);
+        }
+        if let Some(rot) = horse_body_rot
+            && let Some(m) = ents.mob_mut(p)
+        {
+            m.y_body_rot = rot;
         }
     }
 }
@@ -882,8 +1048,9 @@ pub fn paddle_boat(ents: &mut Entities, player: EntityId, left: bool, right: boo
     }
 }
 
-/// `FoodOnAStickItem.use`: the pig the player steers gets a boost; the carrot on a stick
-/// loses 7 durability and turns into a fishing rod when it breaks.
+/// `FoodOnAStickItem.use`: the pig (carrot on a stick) or strider (warped fungus on a stick)
+/// the player steers gets a boost; the stick loses 7 (carrot) or 1 (fungus) durability and
+/// turns into a fishing rod when it breaks.
 pub fn boost(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -900,9 +1067,13 @@ pub fn boost(
     let Some(m) = ents.mob_mut(vehicle) else {
         return false;
     };
-    if m.boosting {
+    // `vehicle.is(canInteractWith)` and `consumeItemDamage`.
+    let fungus = stack.item == vanillite_data::item::ids::WARPED_FUNGUS_ON_A_STICK.0;
+    let wanted = if fungus { Kind::Strider } else { Kind::Pig };
+    if m.kind != wanted || m.boosting {
         return false;
     }
+    let cost = if fungus { 1 } else { 7 };
     m.boosting = true;
     m.boost_time = 0;
     m.boost_total = m.random.next_int_bounded(841) + 140;
@@ -915,7 +1086,7 @@ pub fn boost(
     let unbreaking = crate::player::play::game_data()
         .map_or(0, |d| d.enchantment_level(stack, "minecraft:unbreaking"));
     let mut n = 0;
-    for _ in 0..7 {
+    for _ in 0..cost {
         #[allow(clippy::cast_precision_loss)]
         let level = unbreaking.max(0) as f32;
         // `remove_binomial`: the draw removes the point below level / (level + 1).
@@ -940,7 +1111,7 @@ pub fn boost(
         }
     }
     if d >= crate::item::max_damage(stack) {
-        // `hurtAndConvertOnBreak(7, FISHING_ROD)`: the components stay, the damage resets.
+        // `hurtAndConvertOnBreak(cost, FISHING_ROD)`: the components stay, the damage resets.
         let mut rod = stack.clone();
         rod.item = vanillite_data::item::ids::FISHING_ROD.0;
         rod.count = 1;
@@ -960,5 +1131,115 @@ pub fn riding_jump(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, str
     };
     if strength > 0 {
         crate::mob::fam::rider_jump(ents, env, vehicle, strength);
+    }
+}
+
+/// `getMoveSimulationType() == SERVER_AND_CLIENT` (items, falling blocks, TNT, experience
+/// orbs, projectiles) or `!type.hasUpdateInterval()` (area effect clouds, cushions, end
+/// crystals, item frames, leash knots): kinds whose teleports go to every tracking player.
+pub fn teleport_reaches_trackers(kind: vanillite_data::entity::EntityTypeId) -> bool {
+    use vanillite_data::entity::ids as e;
+    kind.info().update_interval == i32::MAX
+        || [
+            e::ITEM,
+            e::FALLING_BLOCK,
+            e::TNT,
+            e::EXPERIENCE_ORB,
+            e::ARROW,
+            e::SPECTRAL_ARROW,
+            e::TRIDENT,
+            e::SNOWBALL,
+            e::EGG,
+            e::ENDER_PEARL,
+            e::EXPERIENCE_BOTTLE,
+            e::SPLASH_POTION,
+            e::LINGERING_POTION,
+            e::FIREBALL,
+            e::SMALL_FIREBALL,
+            e::DRAGON_FIREBALL,
+            e::WITHER_SKULL,
+            e::WIND_CHARGE,
+            e::BREEZE_WIND_CHARGE,
+            e::SHULKER_BULLET,
+            e::LLAMA_SPIT,
+            e::FIREWORK_ROCKET,
+            e::FISHING_BOBBER,
+        ]
+        .contains(&kind)
+}
+
+/// `Entity.sendTeleportTransitionToPlayers` after a same-level teleport of a non-player entity
+/// (already at its new place): `teleport_entity` to every player riding it (the controlling
+/// one gets the transition as given, the others the new absolute place), and to the players
+/// near its old position when [`teleport_reaches_trackers`]. `on_ground` is the state before
+/// the teleport.
+pub fn send_teleport_transition(
+    level: &mut Level,
+    id: EntityId,
+    transition: vanillite_protocol::packets::play::clientbound::PositionMoveRotation,
+    relatives: i32,
+    old_pos: Vec3,
+    on_ground: bool,
+) {
+    use vanillite_protocol::packets::play::clientbound::{PositionMoveRotation, TeleportEntity};
+    let ents = &level.entities;
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    let kind = e.kind();
+    let rot = e.rot();
+    let entity_id = e.network_id().0;
+    let absolute = TeleportEntity {
+        entity_id,
+        change: PositionMoveRotation {
+            position: wire_vec(e.pos()),
+            delta: wire_vec(e.velocity()),
+            y_rot: rot.y_rot,
+            x_rot: rot.x_rot,
+        },
+        relatives: 0,
+        on_ground,
+    };
+    // `getIndirectPassengersStream`: depth first.
+    let mut stack: Vec<EntityId> = ents
+        .riding
+        .passengers_of(id)
+        .iter()
+        .rev()
+        .copied()
+        .collect();
+    while let Some(p) = stack.pop() {
+        stack.extend(ents.riding.passengers_of(p).iter().rev().copied());
+        let Some(player) = ents.player(p) else {
+            continue;
+        };
+        if controls(ents, p, id) {
+            player.connection.sink.send(&TeleportEntity {
+                entity_id,
+                change: transition,
+                relatives,
+                on_ground,
+            });
+        } else {
+            player.connection.sink.send(&absolute);
+        }
+    }
+    if teleport_reaches_trackers(kind) {
+        // Riding players are near: they get it a second time (Vanilla skips them), which
+        // leaves them at the same place.
+        let range = f64::from(kind.info().tracking_range.saturating_mul(16));
+        level
+            .output()
+            .nearby_packets
+            .push((old_pos, range, SharedPacket::of(&absolute)));
+    }
+}
+
+/// A position for the wire.
+pub fn wire_vec(v: Vec3) -> vanillite_protocol::types::Vec3 {
+    vanillite_protocol::types::Vec3 {
+        x: v.x,
+        y: v.y,
+        z: v.z,
     }
 }

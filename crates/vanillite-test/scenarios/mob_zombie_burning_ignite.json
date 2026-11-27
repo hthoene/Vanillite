@@ -1,0 +1,131 @@
+{
+  "description": "Burning zombies in daylight chase a player: Zombie.doHurtTarget ignites the target only with an empty main hand, chance and seconds from the local effective difficulty; the classic baby zombie has BABY_DIMENSIONS (0.49 x 0.98).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        12.5
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        3.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 3,
+      "finalize": false
+    },
+    {
+      "name": "armed",
+      "type": "minecraft:zombie",
+      "pos": [
+        11.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 4,
+      "finalize": false
+    },
+    {
+      "name": "baby",
+      "type": "minecraft:zombie",
+      "pos": [
+        7.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 5,
+      "finalize": false,
+      "baby": true
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "item replace entity @e[type=minecraft:zombie,x=11,y=-60,z=3,distance=..1.5] weapon.mainhand with minecraft:stick"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

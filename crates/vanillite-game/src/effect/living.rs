@@ -19,6 +19,7 @@ use crate::entities::Entities;
 use crate::level::Level;
 use crate::mob::{Attrs, MobContext, Tick, WorldAction};
 use crate::player::PlayerData;
+use crate::survival::combat::{AttackerName, SourceNames};
 use crate::survival::damage::DamageSource;
 use crate::survival::player::{self, Env};
 use crate::survival::{Effect, play_sound};
@@ -44,6 +45,9 @@ pub struct PlayerHost<'a, 'b, 'c> {
     /// The players of the world by UUID, for the pvp rule of player-caused damage; `None`
     /// where effects hurt without a causing entity (ticking effects).
     pub players: Option<&'a vanillite_base::hash::FxHashMap<u128, EntityId>>,
+    /// The names of the entities that may cause the damage, resolved before the host took the
+    /// player out of the entities (death messages).
+    pub names: &'a [(EntityId, AttackerName)],
 }
 
 impl std::fmt::Debug for PlayerHost<'_, '_, '_> {
@@ -89,13 +93,34 @@ impl EffectHost for PlayerHost<'_, '_, '_> {
             }
             _ => (None, None),
         };
-        player::hurt_by(
+        let own = self.entity.as_ref().id();
+        let name = |id: Option<EntityId>| {
+            let id = id?;
+            if let Some((_, n)) = self.names.iter().find(|(i, _)| *i == id) {
+                return Some(n.clone());
+            }
+            (id == own).then(|| AttackerName {
+                name: (self.env.display_name)(
+                    &self.player.profile.name,
+                    self.entity.as_ref().uuid(),
+                ),
+                item: crate::mob::combat::custom_named_item(self.player.inventory.selected_item()),
+            })
+        };
+        let names = SourceNames {
+            cause: name(source.cause),
+            direct: name(source.direct).map(|a| a.name),
+            responsible: name(source.responsible_player).map(|a| a.name),
+        };
+        player::hurt_with(
             self.entity,
             self.player,
             self.env,
             source,
             amount,
+            None,
             attackers,
+            names,
         )
     }
     fn absorption(&self) -> f32 {
@@ -259,6 +284,7 @@ pub fn tick_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
             player,
             env,
             players: None,
+            names: &[],
         };
         active::tick(&mut host);
         sync_player(host.entity, host.player, host.env);
@@ -875,6 +901,20 @@ pub fn with_host<R>(
     target: EntityId,
     f: impl FnOnce(&mut dyn EffectHost) -> R,
 ) -> Option<R> {
+    with_host_from(level, ents, env, cx, target, HurtKind::Magic, f)
+}
+
+/// [`with_host`] where `f` may hurt with `source`: a player knows the names of its entities
+/// for the death message.
+pub fn with_host_from<R>(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: HurtKind,
+    f: impl FnOnce(&mut dyn EffectHost) -> R,
+) -> Option<R> {
     if ents.mob(target).is_some() {
         let r = {
             let mut t = Tick {
@@ -888,6 +928,14 @@ pub fn with_host<R>(
         };
         sync_mob(ents, env.out, target);
         return Some(r);
+    }
+    let mut names = Vec::new();
+    if let HurtKind::IndirectMagic { direct, owner } = source {
+        for id in [direct, owner].into_iter().flatten() {
+            if let Some(n) = crate::mob::combat::attacker_name(ents, env, id) {
+                names.push((id, n));
+            }
+        }
     }
     let Entities {
         store,
@@ -904,6 +952,7 @@ pub fn with_host<R>(
             player: data,
             env,
             players: Some(players_by_uuid),
+            names: &names,
         };
         f(&mut host)
     };
@@ -929,7 +978,7 @@ pub fn apply_potion_to_entity(
         direct: drinker,
         owner: drinker,
     };
-    with_host(level, ents, env, cx, target, |host| {
+    with_host_from(level, ents, env, cx, target, source, |host| {
         super::consume::apply_potion(kind, contents, scale, host, source);
     });
 }

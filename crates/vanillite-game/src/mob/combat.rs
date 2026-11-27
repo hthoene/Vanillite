@@ -15,10 +15,12 @@ use crate::advancements::trigger::{Event, TriggerKind};
 use crate::advancements::view;
 use crate::entities::Entities;
 use crate::level::Level;
+use crate::survival::combat::{AttackerName, SourceNames};
 use crate::survival::damage::{DamageKind, DamageSource, tag};
 use crate::survival::player::{self, Env};
 use crate::survival::rules::Rule;
 use crate::survival::{Effect, play_sound};
+use vanillite_protocol::text::{Component, HoverEvent};
 
 /// `LivingEntity.knockback(power, xd, zd)`: the new velocity, `None` when the resistance
 /// absorbs it.
@@ -111,6 +113,7 @@ pub fn hurt(
         return false;
     }
     let mut source = with_blocking_facts(ents, source);
+    let attacker_of_block = source.direct.filter(|_| source.own_blocked_by_item);
     // `resolvePlayerResponsibleForDamage`: the causing player, or a tame wolf's owner.
     source.responsible_player = source.cause.and_then(|c| {
         if ents.player(c).is_some() {
@@ -142,6 +145,7 @@ pub fn hurt(
     } else {
         (None, None)
     };
+    let names = source_names(ents, env, &source);
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -159,10 +163,13 @@ pub fn hurt(
         amount,
         armor.as_deref(),
         attackers,
+        names,
     );
     let died = was_alive && data.survival.is_dead_or_dying();
+    let blocked_by_item = data.survival.blocked_by_item.take();
     // The killer's type while it is still there (`ENTITY_KILLED_BY`).
     if died {
+        let mut credit = None;
         for effect in env.out.iter_mut().rev() {
             if let Effect::Died {
                 victim,
@@ -173,11 +180,35 @@ pub fn hurt(
                 && *victim == target
             {
                 *killer_kind = killer.and_then(|k| ents.store.get(k)).map(|e| e.kind());
+                credit = *killer;
                 break;
             }
         }
+        // `ServerPlayer.die` → `createWitherRose(killer)`.
+        if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+            create_wither_rose(level, ents, env, cx, pos, credit);
+        }
     }
     view::resolve_combat(ents, env.types, target);
+    // `blockUsingItem` → the attacker's own `blockedByItem`.
+    if blocked_by_item.is_some()
+        && let Some(attacker) = attacker_of_block
+    {
+        let mut t = super::Tick {
+            level,
+            ents,
+            env,
+            cx,
+            id: attacker,
+        };
+        match t.mob_ref().kind {
+            Kind::Ravager => super::fam::illager::ravager::blocked_by_item(&mut t, target),
+            Kind::Hoglin | Kind::Zoglin if !t.mob_ref().baby => {
+                super::fam::brainy::hoglin::throw_target(&mut t, target);
+            }
+            _ => {}
+        }
+    }
     // `ServerPlayer.die` → `tellNeutralMobsThatIDied`: at once, so an attacker calms down
     // within its own tick.
     if died && env.rules.bool(Rule::FORGIVE_DEAD_PLAYERS) {
@@ -199,6 +230,11 @@ fn with_blocking_facts(ents: &Entities, mut source: DamageSource) -> DamageSourc
     // `getSecondsToDisableBlocking`: the `weapon` of the main hand item, unless the attacker
     // uses the item of its other hand (`getActiveItem`).
     let weapon = if let Some(m) = ents.mob(direct) {
+        if m.kind == Kind::Warden {
+            // `Warden.getSecondsToDisableBlocking`.
+            source.disable_shield_seconds = 5.0;
+            return source;
+        }
         Some(m.equipment.get(crate::item::EquipmentSlot::MainHand))
     } else {
         ents.player(direct).and_then(|p| {
@@ -208,6 +244,9 @@ fn with_blocking_facts(ents: &Entities, mut source: DamageSource) -> DamageSourc
             (!off_hand).then(|| p.inventory.selected_item())
         })
     };
+    source.own_blocked_by_item = ents
+        .mob(direct)
+        .is_some_and(|m| matches!(m.kind, Kind::Hoglin | Kind::Zoglin | Kind::Ravager));
     if let Some(weapon) = weapon {
         source.disable_shield_seconds = if weapon.is_empty() {
             0.0
@@ -254,16 +293,28 @@ fn with_projectile_motion(ents: &Entities, mut source: DamageSource) -> DamageSo
     source
 }
 
-/// `isInvulnerableTo` of a mob.
-fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: DamageKind) -> bool {
+/// `isInvulnerableTo` of a mob: also the `Invulnerable` flag, unless the damage bypasses it
+/// or comes from a creative player (`isCreativePlayer`).
+fn invulnerable_to(
+    ents: &Entities,
+    env: &Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+) -> bool {
     let types = env.types;
+    let kind = source.kind;
     let Some(e) = ents.store.get(target) else {
         return true;
     };
     let Some(m) = ents.mob(target) else {
         return true;
     };
+    let creative = source
+        .cause
+        .and_then(|c| ents.player(c))
+        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
     m.removed
+        || m.invulnerable && !types.is(kind, tag::BYPASSES_INVULNERABILITY) && !creative
         || crate::enchant::location::frost_walker_immune(
             types,
             kind,
@@ -286,6 +337,38 @@ pub fn hurt_mob(
     amount: f32,
 ) -> bool {
     let source = with_projectile_motion(ents, source);
+    // `EnderMan.hurtServer`: after `super.hurtServer`, whatever it returned (also while
+    // invulnerable after a hit), damage not caused by a living entity makes it teleport.
+    // A projectile (not while riding) makes it dodge instead; a thrown potion only hurts with
+    // water and then always makes it try to teleport away (`repeatedlyTryToTeleport`).
+    let enderman_after = ents.mob(target).is_some_and(|m| m.kind == Kind::Enderman)
+        && !(env.types.is(source.kind, tag::IS_PROJECTILE) && ents.vehicle_of(target).is_none())
+        && !invulnerable_to(ents, env, target, &source)
+        && !immune_to_damage(ents, env, target, &source);
+    let thrown_potion = if enderman_after {
+        enderman_potion_hurts(ents, source.direct)
+    } else {
+        None
+    };
+    let took = hurt_mob_inner(level, ents, env, cx, target, source, amount);
+    match (enderman_after, thrown_potion) {
+        (true, None) => kinds::after_hurt(level, ents, env, cx, target, source),
+        (true, Some(true)) => kinds::enderman_dodge(level, ents, env, cx, target),
+        _ => {}
+    }
+    took
+}
+
+#[allow(clippy::too_many_lines)]
+fn hurt_mob_inner(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+    amount: f32,
+) -> bool {
     let kind = source.kind;
     let types = env.types;
     if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
@@ -296,7 +379,7 @@ pub fn hurt_mob(
     {
         return took;
     }
-    if invulnerable_to(ents, env, target, kind) || immune_to_damage(ents, env, target, &source) {
+    if invulnerable_to(ents, env, target, &source) || immune_to_damage(ents, env, target, &source) {
         return false;
     }
     if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
@@ -317,8 +400,22 @@ pub fn hurt_mob(
     }
     let mob_kind = m.kind;
     let mut amount = amount;
-    if mob_kind == Kind::Enderman && types.is(kind, tag::IS_PROJECTILE) {
-        // `EnderMan.hurtServer`: projectiles make it teleport instead.
+    // `EnderMan.hurtServer`: a thrown potion only hurts with water and always makes it try to
+    // teleport away.
+    let thrown_potion = if mob_kind == Kind::Enderman {
+        enderman_potion_hurts(ents, source.direct)
+    } else {
+        None
+    };
+    if mob_kind == Kind::Enderman
+        && types.is(kind, tag::IS_PROJECTILE)
+        && ents.vehicle_of(target).is_none()
+    {
+        // `EnderMan.hurtServer`: projectiles make it teleport instead (not while riding).
+        kinds::enderman_dodge(level, ents, env, cx, target);
+        return false;
+    }
+    if thrown_potion == Some(false) {
         kinds::enderman_dodge(level, ents, env, cx, target);
         return false;
     }
@@ -340,6 +437,7 @@ pub fn hurt_mob(
     if let Some(e) = ents.store.get(target) {
         let uuid_of = |id: Option<EntityId>| id.and_then(|i| ents.store.get(i)).map(|e| e.uuid());
         match env.hooks.entity_damage(
+            crate::hooks::HookWorld::split(level, ents),
             e.uuid(),
             e.kind().name(),
             &types.get(kind).id,
@@ -400,7 +498,20 @@ pub fn hurt_mob(
     // `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage`.
     if let Some(cause) = source.cause {
         let is_player = ents.player(cause).is_some();
-        let living = is_player || ents.mob(cause).is_some();
+        let living =
+            (is_player || ents.mob(cause).is_some()) && angers(ents, env.types, target, &source);
+        // `resolvePlayerResponsibleForDamage`: a tame wolf's hit counts for its owner (none
+        // without an owner).
+        let wolf_owner = ents
+            .mob(cause)
+            .filter(|m| m.kind == Kind::Wolf && m.tame)
+            .map(|m| super::tame::owner_of(ents, m));
+        if let Some(owner) = wolf_owner
+            && let Some(m) = ents.mob_mut(target)
+        {
+            m.last_hurt_by_player = owner;
+            m.last_hurt_by_player_time = if owner.is_some() { 100 } else { 0 };
+        }
         if let Some(m) = ents.mob_mut(target) {
             if living {
                 m.last_hurt_by_mob = Some(cause);
@@ -488,9 +599,6 @@ pub fn hurt_mob(
     }
     // What the kinds' `hurtServer` overrides do after `super.hurtServer` (even when it died).
     if mob_kind.family() == super::Family::Classic {
-        if mob_kind == Kind::Enderman {
-            kinds::after_hurt(level, ents, env, target, source);
-        }
         if mob_kind == Kind::Zombie {
             // `Zombie.hurtServer`: reinforcements on Hard.
             let mut h = super::fam::Hurt {
@@ -772,10 +880,15 @@ fn actually_hurt(
 
 /// `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage` without damage
 /// (`Creaking.blameSourceForDamage`): the responsible player, if any.
-pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Option<EntityId> {
+pub fn blame(
+    ents: &mut Entities,
+    types: &crate::survival::damage::DamageTypes,
+    target: EntityId,
+    source: &DamageSource,
+) -> Option<EntityId> {
     let cause = source.cause?;
     let is_player = ents.player(cause).is_some();
-    let living = is_player || ents.mob(cause).is_some();
+    let living = (is_player || ents.mob(cause).is_some()) && angers(ents, types, target, source);
     let m = ents.mob_mut(target)?;
     if living {
         m.last_hurt_by_mob = Some(cause);
@@ -786,6 +899,24 @@ pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Op
         m.last_hurt_by_player_time = 100;
     }
     is_player.then_some(cause)
+}
+
+/// The conditions of `resolveMobResponsibleForDamage` on the damage: not `#no_anger`
+/// (`mob_attack_no_aggro`), and no wind charge damage to a `#no_anger_from_wind_charge` mob.
+fn angers(
+    ents: &Entities,
+    types: &crate::survival::damage::DamageTypes,
+    target: EntityId,
+    source: &DamageSource,
+) -> bool {
+    let id = types.get(source.kind).id.as_str();
+    if id == "minecraft:mob_attack_no_aggro" {
+        return false;
+    }
+    !(id == "minecraft:wind_charge"
+        && ents.store.get(target).is_some_and(|e| {
+            crate::effect::entity_in_tag(e.kind(), "minecraft:no_anger_from_wind_charge")
+        }))
 }
 
 /// `checkTotemDeathProtection` of a dying mob: a death protection item in a hand is used up
@@ -813,7 +944,9 @@ fn mob_totem(
     };
     let kind_name = m.kind.type_id().name();
     if let Some(uuid) = ents.store.get(target).map(|e| e.uuid())
-        && !env.hooks.entity_resurrect(uuid, kind_name)
+        && !env
+            .hooks
+            .entity_resurrect(crate::hooks::HookWorld::split(level, ents), uuid, kind_name)
     {
         return false;
     }
@@ -858,7 +991,7 @@ pub fn blame_and_die(
     target: EntityId,
     source: DamageSource,
 ) {
-    blame(ents, target, &source);
+    blame(ents, env.types, target, &source);
     die(level, ents, env, cx, target, source);
 }
 
@@ -886,7 +1019,13 @@ fn die(
         )
         && env.rules.bool(Rule::SHOW_DEATH_MESSAGES)
     {
-        let name = mob_name(m);
+        let name = attacker_name(ents, env, target).map_or_else(|| mob_name(m), |a| a.name);
+        // `getKillCredit`.
+        let credit = m
+            .last_hurt_by_player
+            .or(m.last_hurt_by_mob)
+            .and_then(|c| attacker_name(ents, env, c))
+            .map(|a| a.name);
         if let Some(owner) = super::tame::owner_of(ents, m).filter(|&o| ents.player(o).is_some()) {
             let mut tracker = crate::survival::combat::CombatTracker::default();
             tracker.record_damage(
@@ -895,6 +1034,7 @@ fn die(
                     damage: 0.0,
                     fall_location: None,
                     fall_distance: 0.0,
+                    names: source_names(ents, env, &source),
                 },
                 0,
                 false,
@@ -904,7 +1044,7 @@ fn die(
                 player: owner,
                 packet: SharedPacket::of(
                     &vanillite_protocol::packets::play::clientbound::SystemChat {
-                        content: tracker.death_message(env.types, name),
+                        content: tracker.death_message(env.types, name, credit),
                         overlay: false,
                     },
                 ),
@@ -989,6 +1129,42 @@ fn die(
             )
         });
     }
+    // `Creeper.killedEntity`: a charged creeper's kill drops `charged_creeper/root` (the
+    // mob heads) once.
+    if let Some(cause) = source.cause
+        && env.rules.bool(Rule::MOB_DROPS)
+        && ents.mob(cause).is_some_and(|c| {
+            c.kind == Kind::Creeper && {
+                let s = super::fam::classic::creeper(c);
+                s.powered && !s.dropped_skulls
+            }
+        })
+    {
+        let heads = named_table_loot(
+            level,
+            ents,
+            env,
+            target,
+            &source,
+            "minecraft:charged_creeper/root",
+        )
+        .unwrap_or_default();
+        for stack in heads.into_iter().filter(|s| !s.is_empty()) {
+            if let Some(c) = ents.mob_mut(cause) {
+                super::fam::classic::creeper_mut(c).dropped_skulls = true;
+            }
+            let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
+            env.out.push(Effect::DropItem {
+                random: item_random,
+                uuid,
+                pos,
+                velocity,
+                y_rot,
+                pickup_delay: 10,
+                stack,
+            });
+        }
+    }
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
@@ -1044,18 +1220,24 @@ fn die(
                     .map(|m| kinds::death_loot(m, killed_by_player))
             })
             .unwrap_or_default();
-        // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
-        // enderman's block.
-        // `LivingEntity.dropEquipment` drops nothing; `Mob` and the players drop theirs.
-        // Looting of a player killer (`equipment_drops`, `attacker` is a player).
+        // `looting.json` `equipment_drops`: +0.01 per level for a killing player.
         let looting = source
             .cause
             .and_then(|c| ents.player(c))
             .and_then(|p| {
-                crate::player::play::game_data()
-                    .map(|d| d.enchantment_level(p.inventory.selected_item(), "minecraft:looting"))
+                let d = crate::player::play::game_data()?;
+                let hand = p.inventory.equipment(crate::item::EquipmentSlot::MainHand);
+                Some(d.enchantment_level(hand, "minecraft:looting"))
             })
-            .unwrap_or(0);
+            .filter(|&l| l > 0)
+            .map_or(0.0, |l| {
+                #[allow(clippy::cast_precision_loss)]
+                let above = (l - 1) as f32;
+                0.01_f32 + 0.01 * above
+            });
+        // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
+        // enderman's block.
+        // `LivingEntity.dropEquipment` drops nothing; `Mob` and the players drop theirs.
         if let Some(m) = ents
             .mob_mut(target)
             .filter(|m| m.kind.family() != super::Family::Decor)
@@ -1099,7 +1281,7 @@ fn die(
             to: crate::hooks::Place::at(pos),
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::split(level, ents), &mut ev);
         if let Some(new) = crate::hooks::drops_out(&ev) {
             drops = new;
         }
@@ -1188,15 +1370,107 @@ pub fn create_wither_rose(
 }
 
 /// `getDisplayName` of a mob without team: its custom name, else its type's name.
-fn mob_name(m: &super::MobData) -> vanillite_protocol::text::Component {
-    if let Some(bytes) = &m.custom_name {
-        let mut input = &bytes[..];
-        let mut budget = vanillite_nbt::Budget::file();
-        if let Ok(Some(tag)) = vanillite_nbt::read::read_network(&mut input, &mut budget) {
-            return vanillite_protocol::text::Component::from_nbt(&tag);
-        }
+fn mob_name(m: &super::MobData) -> Component {
+    if let Some(name) = m.custom_name.as_deref().and_then(nbt_name) {
+        return name;
     }
-    vanillite_protocol::text::Component::translatable(m.kind.translation_key(), vec![])
+    Component::translatable(m.kind.translation_key(), vec![])
+}
+
+/// A custom name as network NBT.
+fn nbt_name(bytes: &[u8]) -> Option<Component> {
+    let mut input = bytes;
+    let mut budget = vanillite_nbt::Budget::file();
+    match vanillite_nbt::read::read_network(&mut input, &mut budget) {
+        Ok(Some(tag)) => Some(Component::from_nbt(&tag)),
+        _ => None,
+    }
+}
+
+/// `Entity.getDisplayName` (entities that are no players without their team) with the
+/// custom-named item in a living entity's main hand, for death messages.
+pub fn attacker_name(ents: &Entities, env: &Env<'_>, id: EntityId) -> Option<AttackerName> {
+    let e = ents.store.get(id)?;
+    if let Some(p) = ents.player(id) {
+        return Some(AttackerName {
+            name: (env.display_name)(&p.profile.name, e.uuid()),
+            item: custom_named_item(p.inventory.selected_item()),
+        });
+    }
+    let type_name = e.kind().name();
+    let custom = ents
+        .mob(id)
+        .and_then(|m| m.custom_name.as_deref())
+        .or_else(|| crate::decoration::custom_name(ents, id))
+        .and_then(nbt_name);
+    // `getName`: the custom name, else the type's name.
+    let name = custom.unwrap_or_else(|| {
+        Component::translatable(format!("entity.{}", type_name.replace(':', ".")), vec![])
+    });
+    let display = name
+        .clone()
+        .hover(HoverEvent::ShowEntity {
+            id: type_name.to_owned(),
+            uuid: e.uuid(),
+            name: Some(name),
+        })
+        .insertion(vanillite_protocol::types::Uuid(e.uuid()).to_string());
+    let item = ents
+        .mob(id)
+        .and_then(|m| custom_named_item(m.equipment.get(crate::item::EquipmentSlot::MainHand)));
+    Some(AttackerName {
+        name: display,
+        item,
+    })
+}
+
+/// `ItemStack.getDisplayName` of a stack with a custom name: the italic name in brackets in
+/// the rarity colour, showing the item on hover.
+pub(crate) fn custom_named_item(stack: &crate::item::ItemStack) -> Option<Component> {
+    use vanillite_data::item::Rarity;
+    use vanillite_protocol::codec::DecodeLimited as _;
+    use vanillite_protocol::text::{Color, NamedColor};
+    if stack.is_empty() {
+        return None;
+    }
+    let bytes = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME)?;
+    let name = Component::decode_limited(
+        &mut vanillite_protocol::codec::Reader::new(bytes),
+        bytes.len(),
+    )
+    .ok()?;
+    let enchanted = !crate::item::enchantments(stack).is_empty();
+    let color = match (crate::item::item_id(stack).info().rarity, enchanted) {
+        (Rarity::Common, false) => NamedColor::White,
+        (Rarity::Uncommon, false) => NamedColor::Yellow,
+        (Rarity::Common | Rarity::Uncommon | Rarity::Rare, true) | (Rarity::Rare, false) => {
+            NamedColor::Aqua
+        }
+        (Rarity::Epic, _) => NamedColor::LightPurple,
+    };
+    let name = Component::empty().append(name).italic(true);
+    Some(
+        Component::translatable("chat.square_brackets", vec![name])
+            .color(Color::Named(color))
+            .hover(HoverEvent::ShowItem {
+                id: vanillite_data::registry::ITEM
+                    .name(stack.item)
+                    .unwrap_or("minecraft:air")
+                    .to_owned(),
+                count: stack.count,
+                components: None,
+            }),
+    )
+}
+
+/// The names of a damage source's entities for the death message of a player.
+pub fn source_names(ents: &Entities, env: &Env<'_>, source: &DamageSource) -> SourceNames {
+    let name = |id: Option<EntityId>| id.and_then(|id| attacker_name(ents, env, id));
+    SourceNames {
+        cause: name(source.cause),
+        direct: name(source.direct).map(|a| a.name),
+        responsible: name(source.responsible_player).map(|a| a.name),
+    }
 }
 
 /// `ExperienceOrb.award`: the world splits `amount` into orbs from the [`Effect::Experience`].
@@ -1376,11 +1650,23 @@ fn table_loot(
     target: EntityId,
     source: &DamageSource,
 ) -> Option<Vec<crate::item::ItemStack>> {
-    let data = crate::player::play::game_data()?;
     let name = ents.store.get(target)?.kind().info().name;
     let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
     let table = format!("{ns}:entities/{path}");
-    if !data.loot.contains(&table) {
+    named_table_loot(level, ents, env, target, source, &table)
+}
+
+/// `dropFromLootTable` of the loot table `table` for the dying `target`.
+fn named_table_loot(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+    table: &str,
+) -> Option<Vec<crate::item::ItemStack>> {
+    let data = crate::player::play::game_data()?;
+    if !data.loot.contains(table) {
         return None;
     }
     let this = super::attack::facts(ents, target)?;
@@ -1429,6 +1715,25 @@ fn table_loot(
     // `dropFromLootTable` without a loot table seed: the table's random sequence, else the
     // level random.
     data.loot
-        .roll_table(level, &table, &ctx, env.random, &mut out);
+        .roll_table(level, table, &ctx, env.random, &mut out);
     Some(out)
+}
+
+/// `EnderMan.hurtServer`'s thrown potion (`AbstractThrownPotion` as the direct entity):
+/// `Some(hurts)`, true for a potion in `#hurts_water_sensitive_entities` (water); `None` for
+/// any other damage.
+fn enderman_potion_hurts(ents: &Entities, direct: Option<EntityId>) -> Option<bool> {
+    let id = direct?;
+    let kind = ents.store.get(id)?.kind();
+    if !crate::effect::thrown::is_thrown_potion(kind) {
+        return None;
+    }
+    let water = crate::effect::potion::water_id();
+    let hurts = match ents.special(id) {
+        Some(crate::mob::boss::special::SpecialData::ThrownPotion(p)) => {
+            crate::effect::potion::PotionContents::of_stack(&p.stack).potion == water
+        }
+        _ => false,
+    };
+    Some(hurts)
 }

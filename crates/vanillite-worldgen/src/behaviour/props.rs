@@ -3,8 +3,10 @@
 //! Vanilla reads properties through typed `Property` objects; here a property is addressed by its
 //! name, and the helpers convert between the serialized values and Rust types.
 
+use std::sync::OnceLock;
 use vanillite_base::{BlockPos, Direction};
-use vanillite_data::block::{BlockId, BlockState};
+
+use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, PROPERTIES, StateProperty};
 
 /// `Direction.Plane.HORIZONTAL` in Vanilla's order.
 pub const HORIZONTAL: [Direction; 4] = [
@@ -143,10 +145,121 @@ pub trait StateExt: Sized {
     }
 }
 
+/// How a block reads and sets one integer property without looking it up by name.
+#[derive(Clone, Copy, Debug)]
+enum IntEntry {
+    /// The block does not have the property.
+    Absent,
+    /// Values `first..first + count` in index order.
+    Range(StateProperty, i32, u16),
+    /// Other values: read and set by name ([`StateExt::int`], [`StateExt::set_int`]).
+    ByName,
+}
+
+/// An integer property of every block that has one named `name` (`distance`, …), read and set
+/// as [`StateExt::int`] and [`StateExt::set_int`] do, from a table per block.
+#[derive(Debug)]
+pub struct IntProperty {
+    name: &'static str,
+    blocks: Box<[IntEntry]>,
+}
+
+impl IntProperty {
+    fn new(name: &'static str) -> Self {
+        let blocks = (0..BLOCK_COUNT)
+            .map(|block| {
+                let block = BlockId(block as u16);
+                let Some(info) = block.info().properties.iter().find_map(|&p| {
+                    let info = &PROPERTIES[usize::from(p)];
+                    (info.name == name).then_some(info)
+                }) else {
+                    return IntEntry::Absent;
+                };
+                let first = info.values.first().and_then(|v| v.parse::<i32>().ok());
+                match (first, StateProperty::of(block, name)) {
+                    (Some(first), Some(property))
+                        if info.values.iter().enumerate().all(|(i, v)| {
+                            i32::try_from(i).is_ok_and(|i| v.parse() == Ok(first + i))
+                        }) && u16::try_from(info.values.len()).is_ok() =>
+                    {
+                        IntEntry::Range(property, first, info.values.len() as u16)
+                    }
+                    _ => IntEntry::ByName,
+                }
+            })
+            .collect();
+        Self { name, blocks }
+    }
+
+    /// `distance` (leaves, scaffolding).
+    pub fn distance() -> &'static Self {
+        static DISTANCE: OnceLock<IntProperty> = OnceLock::new();
+        DISTANCE.get_or_init(|| Self::new("distance"))
+    }
+
+    #[inline]
+    fn entry(&self, state: BlockState) -> IntEntry {
+        self.blocks
+            .get(usize::from(state.block().0))
+            .copied()
+            .unwrap_or(IntEntry::ByName)
+    }
+
+    /// [`StateExt::int`].
+    #[inline]
+    pub fn get(&self, state: BlockState) -> Option<i32> {
+        match self.entry(state) {
+            IntEntry::Absent => None,
+            IntEntry::Range(property, first, _) => Some(first + i32::from(property.index(state))),
+            IntEntry::ByName => state.int(self.name),
+        }
+    }
+
+    /// [`StateExt::set_int`].
+    #[inline]
+    pub fn set(&self, state: BlockState, value: i32) -> BlockState {
+        match self.entry(state) {
+            IntEntry::Absent => state,
+            IntEntry::Range(property, first, count) => match value.checked_sub(first) {
+                Some(index) if (0..i32::from(count)).contains(&index) => {
+                    property.with_index(state, index as u16)
+                }
+                _ => state,
+            },
+            IntEntry::ByName => state.set_int(self.name, value),
+        }
+    }
+}
+
+/// Per block: its `waterlogged` property and the index of `true`, if it has the property.
+type WaterloggedTable = Box<[Option<(StateProperty, u16)>]>;
+
+/// `waterlogged` of every block that has it, read without looking it up by name.
+fn waterlogged_table() -> &'static [Option<(StateProperty, u16)>] {
+    static TABLE: OnceLock<WaterloggedTable> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        (0..BLOCK_COUNT)
+            .map(|block| {
+                let property = StateProperty::of(BlockId(block as u16), "waterlogged")?;
+                Some((property, property.value_index("true")?))
+            })
+            .collect()
+    })
+}
+
 impl StateExt for BlockState {
     #[inline]
     fn is(self, block: BlockId) -> bool {
         self.block() == block
+    }
+
+    #[inline]
+    fn waterlogged(self) -> bool {
+        match waterlogged_table().get(usize::from(self.block().0)) {
+            Some(Some((property, true_index))) => property.index(self) == *true_index,
+            Some(None) => false,
+            None => self.flag("waterlogged"),
+        }
     }
 
     #[inline]

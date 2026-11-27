@@ -8,7 +8,7 @@ use vanillite_nbt::Compound;
 use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::{EntityFlags, EntityId, Pose};
 
-use super::{SpawnContext, entity_event, nbt_bool, sound_at, spec, state, state_mut, voice_pitch};
+use super::{SpawnContext, entity_event, nbt_bool, spec, state, state_mut, voice_pitch};
 use crate::mob::animal::Interaction;
 use crate::mob::brain::behavior::{Shape, Spec};
 use crate::mob::brain::memory::MemoryStatus as S;
@@ -298,18 +298,17 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         } else {
             "minecraft:entity.goat.eat"
         };
-        if let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) {
+        if ix.ents.store.get(ix.target).is_some() {
             let pitch = 0.8 + ix.env.random.next_float() * 0.4;
-            let seed = crate::survival::sound_seed();
-            crate::survival::play_sound(
+            crate::survival::play_entity_sound(
                 ix.env.out,
+                ix.ents,
                 None,
-                pos,
+                ix.target,
                 sound,
                 SoundSource::Neutral,
                 1.0,
                 pitch,
-                seed,
             );
         }
     }
@@ -581,7 +580,7 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, now: i64) {
                         Jumper::Goat => "minecraft:entity.goat.long_jump",
                         Jumper::Frog => "minecraft:entity.frog.long_jump",
                     };
-                    sound_at(t, sound, SoundSource::Neutral, 1.0, 1.0);
+                    super::entity_sound_at(t, sound, SoundSource::Neutral, 1.0, 1.0);
                 }
             } else {
                 *tries -= 1;
@@ -609,7 +608,7 @@ pub fn stop(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
                     Jumper::Goat => "minecraft:entity.goat.step",
                     Jumper::Frog => "minecraft:entity.frog.step",
                 };
-                sound_at(t, sound, SoundSource::Neutral, 2.0, 1.0);
+                super::entity_sound_at(t, sound, SoundSource::Neutral, 2.0, 1.0);
             }
             t.mob().discard_friction = false;
             t.core_mut().set_pose(Pose::Standing);
@@ -701,7 +700,7 @@ fn prepare_ram_tick(
         .map(|p| BlockPos::containing(p.x, p.y, p.z));
     if now_target != Some(target_pos) {
         entity_event(t, 59);
-        t.mob().nav.stop();
+        t.nav().stop();
         choose_ram_position(t, target, candidate, reached_at);
     } else if t.block_pos() == start {
         entity_event(t, 58);
@@ -720,7 +719,7 @@ fn prepare_ram_tick(
                 "minecraft:entity.goat.prepare_ram"
             };
             let pitch = voice_pitch(t.mob());
-            sound_at(t, sound, SoundSource::Neutral, 1.0, pitch);
+            super::entity_sound_at(t, sound, SoundSource::Neutral, 1.0, pitch);
             *candidate = None;
         }
     }
@@ -780,11 +779,11 @@ fn ram_tick(t: &mut Tick<'_, '_>, direction: Vec3) {
             None,
         );
         finish_ram(t);
-        sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
+        super::entity_sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
     } else if rammed_horn_breaking_block(t) {
-        sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
+        super::entity_sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
         if drop_horn(t) {
-            sound_at(
+            super::entity_sound_at(
                 t,
                 "minecraft:entity.goat.horn_break",
                 SoundSource::Neutral,

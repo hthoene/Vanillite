@@ -690,7 +690,7 @@ pub fn teleport_event(
         to,
         ..crate::hooks::Event::new(kind)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     if ev.cancelled {
         return None;
     }

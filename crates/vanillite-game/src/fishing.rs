@@ -100,7 +100,10 @@ pub fn use_rod(
         );
         return Used::Success;
     }
-    if !env.hooks.player_fish(uuid, "fishing") {
+    if !env
+        .hooks
+        .player_fish(crate::hooks::HookWorld::split(level, ents), uuid, "fishing")
+    {
         return Used::Pass;
     }
     let pitch = 0.4 / (env.random.next_float() * 0.4 + 0.8);
@@ -810,7 +813,10 @@ fn retrieve(
         "reel_in"
     };
     let uuid = ents.store.get(owner).map_or(0, |e| e.uuid());
-    if !env.hooks.player_fish(uuid, state) {
+    if !env
+        .hooks
+        .player_fish(crate::hooks::HookWorld::split(level, ents), uuid, state)
+    {
         return 0;
     }
     let mut damage = 0;

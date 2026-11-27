@@ -1,0 +1,19 @@
+{
+  "description": "Sky light under a roof that only gets light from the side of a neighbouring chunk stays as it is while large block changes two chunks away (in two chunks diagonal to each other) are lit in the same tick.",
+  "tier": "fast",
+  "light": true,
+  "region": [[32, -60, 0], [47, -57, 15]],
+  "ticks": 2,
+  "setup": [
+    {"op": "fill", "from": [32, -56, 0], "to": [47, -56, 15], "block": "minecraft:stone"},
+    {"op": "fill", "from": [31, -60, 0], "to": [31, -56, 15], "block": "minecraft:stone"},
+    {"op": "fill", "from": [48, -60, 0], "to": [48, -56, 15], "block": "minecraft:stone"},
+    {"op": "fill", "from": [32, -60, 16], "to": [47, -56, 16], "block": "minecraft:stone"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "fill", "from": [0, -50, 0], "to": [15, -50, 15], "block": "minecraft:stone"},
+    {"tick": 1, "op": "fill", "from": [16, -50, 16], "to": [31, -50, 31], "block": "minecraft:stone"},
+    {"tick": 2, "op": "fill", "from": [0, -50, 0], "to": [15, -50, 15], "block": "minecraft:air"},
+    {"tick": 2, "op": "fill", "from": [16, -50, 16], "to": [31, -50, 31], "block": "minecraft:air"}
+  ]
+}

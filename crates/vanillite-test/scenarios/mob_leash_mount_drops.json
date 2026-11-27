@@ -1,0 +1,105 @@
+{
+  "description": "A cow tied to a fence knot gets into a boat (/ride): Mob.startRiding drops its lead (an item) and frees it.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        12
+      ],
+      "block": "minecraft:oak_fence"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:oak_boat 8.5 -60 5.5 {UUID:[I;1,2,3,1]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:cow 8.5 -60 10.5 {leash:[I;8,-60,12]}"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "ride @e[type=minecraft:cow,limit=1] mount @e[type=minecraft:oak_boat,limit=1]"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -16,6 +16,12 @@
 //!   ([`BfsLightEngine::relight_area`], the reference).
 //!
 //! Levels are processed from 15 down in buckets, so every cell is finalised once.
+//!
+//! Like Vanilla, light also lives in the light sections below and above the world (layers 0 and
+//! `sections + 1`), where a chunk keeps them: when a section next to them, also in a
+//! neighbouring chunk, holds blocks (`LayerLightSectionStorage`). Their cells are air; a column
+//! open down to the bottom of the world has sky light sources below it as well
+//! (`ChunkSkyLightSources`: lowest source at negative infinity).
 //! Not yet ported: Vanilla's exceptions for sections it keeps no light data for (huge empty
 //! areas far from any block).
 
@@ -62,18 +68,16 @@ impl LightEngine for BfsLightEngine {
             let chunk = &mut target.chunk;
             let highest = highest_filled_section(chunk);
             let light = chunk.light_mut();
-            for (index, layer) in light.block_mut().iter_mut().enumerate() {
-                *layer = if index == 0 {
-                    LightNibbles::Absent
-                } else {
-                    LightNibbles::Uniform(0)
-                };
+            // The layers below and above the world start empty and take light from the
+            // neighbours; the chunk's own `light_chunks` drops them where it keeps no light.
+            for layer in light.block_mut().iter_mut() {
+                *layer = LightNibbles::Uniform(0);
             }
             let has_sky = self.has_sky;
             for (index, layer) in light.sky_mut().iter_mut().enumerate() {
                 // Light layer `index` is section `index - 1`.
                 let below_top = highest.is_some_and(|h| index >= 1 && index - 1 <= h);
-                *layer = if has_sky && below_top {
+                *layer = if has_sky && (below_top || index == 0) {
                     LightNibbles::Uniform(0)
                 } else {
                     LightNibbles::Absent
@@ -100,8 +104,10 @@ impl LightEngine for BfsLightEngine {
                 grid.fill_sky_sources(self.has_sky, |i| i == 4);
                 grid.seed_block_sources(|i| i == 4);
                 grid.run();
-                grid.into_light()
+                let store = grid.store[4];
+                (grid.into_light(), store)
             };
+            let (result, store) = result;
             for (i, light) in result.into_iter().enumerate() {
                 let Some(light) = light else { continue };
                 let pos = grid_pos(origin, 3, i);
@@ -110,6 +116,17 @@ impl LightEngine for BfsLightEngine {
                 } else if let Some(chunk) = neighbours.get_mut(pos) {
                     chunk.chunk.light_mut().merge_max(&light);
                 }
+            }
+            // The whole 3 × 3 area is known here: the layers below and above the world the
+            // chunk keeps no light in go (later merges keep them absent).
+            let light = target.chunk.light_mut();
+            let top = light.block().len() - 1;
+            if !store[0] {
+                light.block_mut()[0] = LightNibbles::Absent;
+                light.sky_mut()[0] = LightNibbles::Absent;
+            }
+            if !store[1] {
+                light.block_mut()[top] = LightNibbles::Absent;
             }
             target.light_on = true;
         }
@@ -146,8 +163,10 @@ impl BfsLightEngine {
             grid.fill_sky_sources(self.has_sky, |_| true);
             grid.seed_block_sources(|_| true);
             grid.run();
-            grid.into_light()
+            let store = grid.store.clone();
+            (grid.into_light(), store)
         };
+        let (result, store) = result;
         for (i, light) in result.into_iter().enumerate() {
             let pos = grid_pos(origin, 5, i);
             if pos.chessboard_distance(center) > 1 {
@@ -158,18 +177,30 @@ impl BfsLightEngine {
             };
             let highest = highest_filled_section(&chunk.chunk);
             let target = chunk.chunk.light_mut();
-            for (index, layer) in light.block().iter().enumerate().skip(1) {
-                if index <= target.block().len() - 2 {
-                    target.block_mut()[index] = layer.clone();
+            let top = target.block().len() - 1;
+            // The layers below and above the world: as computed where the chunk keeps light
+            // there (empty if no light got there), else absent.
+            let border = |index: usize, layer: &LightNibbles| {
+                let kept = store[i][usize::from(index != 0)];
+                match layer {
+                    _ if !kept => LightNibbles::Absent,
+                    LightNibbles::Absent => LightNibbles::Uniform(0),
+                    layer => layer.clone(),
                 }
+            };
+            for (index, layer) in light.block().iter().enumerate() {
+                target.block_mut()[index] = if index == 0 || index == top {
+                    border(index, layer)
+                } else {
+                    layer.clone()
+                };
             }
             if self.has_sky {
-                for (index, layer) in light.sky().iter().enumerate().skip(1) {
-                    if index > target.sky().len() - 2 {
-                        continue;
-                    }
-                    let above_top = highest.is_none_or(|h| index - 1 > h);
-                    target.sky_mut()[index] = if above_top {
+                for (index, layer) in light.sky().iter().enumerate() {
+                    let above_top = index > 0 && highest.is_none_or(|h| index - 1 > h);
+                    target.sky_mut()[index] = if index == 0 {
+                        border(index, layer)
+                    } else if above_top {
                         LightNibbles::Absent
                     } else {
                         layer.clone()
@@ -178,6 +209,58 @@ impl BfsLightEngine {
             }
         }
     }
+}
+
+/// Per chunk of a square of `size` chunks: whether it keeps light in its layers below and above
+/// the world, a bottom (top) section with blocks in its 3 × 3 chunk area (Vanilla keeps light
+/// data for sections within one section of a non-empty one). Missing chunks count as empty;
+/// chunks outside the square as filled, so light can pass the border layers of the square's
+/// outer chunks (each chunk drops the layers it does not keep when it is lit itself).
+fn border_storage(chunks: &[Option<&Chunk>], size: usize) -> Vec<[bool; 2]> {
+    let filled: Vec<[bool; 2]> = chunks
+        .iter()
+        .map(|chunk| {
+            chunk.map_or([false; 2], |c| {
+                let sections = c.sections();
+                [
+                    sections.first().is_some_and(|s| !s.summary().is_empty()),
+                    sections.last().is_some_and(|s| !s.summary().is_empty()),
+                ]
+            })
+        })
+        .collect();
+    (0..chunks.len())
+        .map(|i| {
+            let (x, z) = ((i % size) as isize, (i / size) as isize);
+            let mut store = [false; 2];
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let (nx, nz) = (x + dx, z + dz);
+                    if (0..size as isize).contains(&nx) && (0..size as isize).contains(&nz) {
+                        let f = filled[nz as usize * size + nx as usize];
+                        store[0] |= f[0];
+                        store[1] |= f[1];
+                    } else {
+                        store = [true; 2];
+                    }
+                }
+            }
+            store
+        })
+        .collect()
+}
+
+/// Whether light can get from the bottom row of the world into the layer below it: a cell
+/// there that lets light through or emits it.
+fn bottom_open(chunk: &Chunk) -> bool {
+    let Some(section) = chunk.sections().first() else {
+        return false;
+    };
+    let passes = |state: u16| LightFacts::opacity(state) < 15 || LightFacts::light(state).0 > 0;
+    if let Some(state) = section.blocks().single() {
+        return passes(state);
+    }
+    (0..16).any(|z| (0..16).any(|x| passes(section.block(x, 0, z))))
 }
 
 /// Position of grid cell `i` (row-major, z then x).
@@ -228,9 +311,14 @@ struct Grid<'a> {
     origin: ChunkPos,
     size: usize,
     width: usize,
-    /// Cells of the grid in y: from the bottom of the world to the section above the highest
-    /// non-air section of the area.
+    /// Cells of the grid in y: from the bottom of the world (or of the layer below it,
+    /// [`Self::bottom`]) to the section above the highest non-air section of the area (at most
+    /// the layer above the world).
     height: usize,
+    /// Cells of the layer below the world in the grid: 16 when light can get there, else 0.
+    bottom: usize,
+    /// Per chunk: whether it keeps light below and above the world ([`border_storage`]).
+    store: Vec<[bool; 2]>,
     /// Sections of the world.
     sections: usize,
     min_y: i32,
@@ -253,7 +341,17 @@ impl<'a> Grid<'a> {
             .flatten()
             .filter_map(|c| highest_filled_section(c))
             .max();
-        let height = top.map_or(0, |t| (t + 2).min(sections)) * 16;
+        let store = border_storage(chunks, size);
+        let bottom = if chunks
+            .iter()
+            .zip(&store)
+            .any(|(chunk, store)| store[0] && chunk.is_some_and(bottom_open))
+        {
+            16
+        } else {
+            0
+        };
+        let height = bottom + top.map_or(0, |t| (t + 2).min(sections + 1)) * 16;
         let width = size * 16;
         let cells = width * width * height;
         Grid {
@@ -261,6 +359,8 @@ impl<'a> Grid<'a> {
             size,
             width,
             height,
+            bottom,
+            store,
             sections,
             min_y,
             chunks,
@@ -291,11 +391,17 @@ impl<'a> Grid<'a> {
     }
 
     /// Block state at grid coordinates; `None` in missing chunks (they block light like
-    /// Vanilla's bedrock stand-in).
+    /// Vanilla's bedrock stand-in) and in border layers a chunk keeps no light in. Border layers
+    /// are air.
     #[inline]
     fn state(&self, x: usize, y: usize, z: usize) -> Option<u16> {
         let chunk = self.chunk(x, z)?;
-        let section = &chunk.sections()[y >> 4];
+        let Some(y) = y.checked_sub(self.bottom) else {
+            return self.store[(z >> 4) * self.size + (x >> 4)][0].then_some(0);
+        };
+        let Some(section) = chunk.sections().get(y >> 4) else {
+            return self.store[(z >> 4) * self.size + (x >> 4)][1].then_some(0);
+        };
         Some(section.block((x & 15) as u32, (y & 15) as u32, (z & 15) as u32))
     }
 
@@ -388,7 +494,13 @@ impl<'a> Grid<'a> {
         for (i, chunk) in self.chunks.iter().enumerate() {
             let Some(chunk) = chunk else { continue };
             let (base_x, base_z) = ((i % self.size) * 16, (i / self.size) * 16);
-            let sources = self.lowest_sources(chunk);
+            let mut sources = self.lowest_sources(chunk);
+            // In grid cells; a column open to the bottom also has sources below the world where
+            // the chunk keeps light there.
+            let below = if self.store[i][0] { 0 } else { self.bottom };
+            for low in &mut sources {
+                *low = if *low == 0 { below } else { *low + self.bottom };
+            }
             for z in 0..16 {
                 let row = (base_z + z) * width + base_x;
                 lowest[row..row + 16].copy_from_slice(&sources[z * 16..z * 16 + 16]);
@@ -452,7 +564,7 @@ impl<'a> Grid<'a> {
                             }
                             let cell = self.index(
                                 base_x + x as usize,
-                                index * 16 + y as usize,
+                                self.bottom + index * 16 + y as usize,
                                 base_z + z as usize,
                             );
                             if self.block[cell] < emission {
@@ -469,17 +581,23 @@ impl<'a> Grid<'a> {
     fn run(&mut self) {
         let mut sky = std::mem::take(&mut self.sky);
         let mut queue = std::mem::take(&mut self.sky_queue);
-        self.propagate(&mut sky, &mut queue);
+        self.propagate(&mut sky, &mut queue, true);
         self.sky = sky;
         let mut block = std::mem::take(&mut self.block);
         let mut queue = std::mem::take(&mut self.block_queue);
-        self.propagate(&mut block, &mut queue);
+        self.propagate(&mut block, &mut queue, false);
         self.block = block;
     }
 
     /// Propagates queued levels, highest first (`propagateIncrease`).
-    fn propagate(&self, light: &mut [u8], queue: &mut [Vec<u32>; 16]) {
+    ///
+    /// Sky light that crosses into another chunk from the bottom row of the world, where the
+    /// chunk it leaves keeps no light below the world, also fills the column below the world of
+    /// the chunk it enters if that one keeps light there (`SkyLightEngine
+    /// .propagateFromEmptySections`: the missing layer reads as the bottom row above it).
+    fn propagate(&self, light: &mut [u8], queue: &mut [Vec<u32>; 16], sky: bool) {
         let (width, height) = (self.width, self.height);
+        let fill_below = sky && self.bottom > 0;
         for level in (2..=15u8).rev() {
             while let Some(cell) = queue[usize::from(level)].pop() {
                 let cell = cell as usize;
@@ -515,16 +633,37 @@ impl<'a> Grid<'a> {
                     if new > 1 {
                         queue[usize::from(new)].push(to_cell as u32);
                     }
+                    if fill_below && y == self.bottom && dy == 0 {
+                        let (from_chunk, to_chunk) = (
+                            (z >> 4) * self.size + (x >> 4),
+                            (tz >> 4) * self.size + (tx >> 4),
+                        );
+                        if from_chunk != to_chunk
+                            && !self.store[from_chunk][0]
+                            && self.store[to_chunk][0]
+                        {
+                            for by in 0..self.bottom {
+                                let below = self.index(tx, by, tz);
+                                if light[below] < new {
+                                    light[below] = new;
+                                    if new > 1 {
+                                        queue[usize::from(new)].push(below as u32);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
     /// The computed light per present chunk, in the chunk's layout (layer `i + 1` is section
-    /// `i`; the border layers stay absent). Sections without light are `Uniform(0)`; above the
-    /// grid sky light is absent (full) and block light 0.
+    /// `i`). Sections without light are `Uniform(0)`; above the grid sky light is absent (full)
+    /// and block light 0. The border layers are absent unless the chunk keeps light there and
+    /// the grid holds them; the sky layer above the world stays absent.
     fn into_light(self) -> Vec<Option<ChunkLight>> {
-        let grid_sections = self.height / 16;
+        let top = self.bottom + self.sections * 16;
         (0..self.chunks.len())
             .map(|i| {
                 self.chunks[i]?;
@@ -532,29 +671,37 @@ impl<'a> Grid<'a> {
                 let base_z = (i / self.size) * 16;
                 let mut light = ChunkLight::new(self.sections);
                 for section in 0..self.sections {
-                    if section < grid_sections {
-                        light.sky_mut()[section + 1] =
-                            self.layer(&self.sky, base_x, base_z, section);
-                        light.block_mut()[section + 1] =
-                            self.layer(&self.block, base_x, base_z, section);
+                    let y = self.bottom + section * 16;
+                    if y < self.height {
+                        light.sky_mut()[section + 1] = self.layer(&self.sky, base_x, base_z, y);
+                        light.block_mut()[section + 1] = self.layer(&self.block, base_x, base_z, y);
                     } else {
                         light.block_mut()[section + 1] = LightNibbles::Uniform(0);
                     }
+                }
+                if self.bottom > 0 && self.store[i][0] {
+                    light.sky_mut()[0] = self.layer(&self.sky, base_x, base_z, 0);
+                    light.block_mut()[0] = self.layer(&self.block, base_x, base_z, 0);
+                }
+                if top < self.height && self.store[i][1] {
+                    light.block_mut()[self.sections + 1] =
+                        self.layer(&self.block, base_x, base_z, top);
                 }
                 Some(light)
             })
             .collect()
     }
 
-    fn layer(&self, buffer: &[u8], base_x: usize, base_z: usize, section: usize) -> LightNibbles {
+    /// The layer of a chunk's column whose bottom cell is at grid `y`.
+    fn layer(&self, buffer: &[u8], base_x: usize, base_z: usize, y0: usize) -> LightNibbles {
         // The 16 levels of a row as two words.
         let row = |y: usize, z: usize| -> [u64; 2] {
-            let start = self.index(base_x, section * 16 + y, base_z + z);
+            let start = self.index(base_x, y0 + y, base_z + z);
             let (halves, _) = buffer[start..start + 16].as_chunks::<8>();
             [u64::from_le_bytes(halves[0]), u64::from_le_bytes(halves[1])]
         };
         // Most layers hold one level (full sky light above the terrain, none inside it).
-        let first = buffer[self.index(base_x, section * 16, base_z)];
+        let first = buffer[self.index(base_x, y0, base_z)];
         let uniform = u64::from_le_bytes([first; 8]);
         if (0..16).all(|y| (0..16).all(|z| row(y, z) == [uniform; 2])) {
             return LightNibbles::Uniform(first);

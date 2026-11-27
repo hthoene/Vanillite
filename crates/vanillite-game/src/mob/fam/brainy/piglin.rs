@@ -182,6 +182,10 @@ pub(super) fn piglin_brain() -> BrainSpec {
         vec![
             Spec::look_at_target_sink(45, 90),
             Spec::move_to_target_sink(),
+            Spec::of(bh::Behavior::InteractWithDoor {
+                last_node: None,
+                cooldown: 0,
+            }),
             Spec::copy_with_expiry(is_baby, M::NearestVisibleNemesis, M::AvoidTarget, 100, 140),
             Spec::copy_with_expiry(
                 is_near_zombified,
@@ -352,6 +356,10 @@ pub(super) fn brute_brain() -> BrainSpec {
         vec![
             Spec::look_at_target_sink(45, 90),
             Spec::move_to_target_sink(),
+            Spec::of(bh::Behavior::InteractWithDoor {
+                last_node: None,
+                cooldown: 0,
+            }),
             Spec::of(bh::Behavior::StopBeingAngryIfTargetDead),
         ],
     );
@@ -1266,7 +1274,7 @@ pub fn pick_up_items(t: &mut Tick<'_, '_>) {
 /// `PiglinAi.pickUpItem`.
 fn pick_up_item(t: &mut Tick<'_, '_>, item: EntityId) -> bool {
     brain::brain(t).erase(M::WalkTarget);
-    t.mob().nav.stop();
+    t.nav().stop();
     let Some(stack) = t.ents.item(item).map(|d| d.stack.clone()) else {
         return false;
     };
@@ -1497,7 +1505,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     hold_in_off_hand(&mut t, taken);
     admire(&mut t);
     brain::brain(&mut t).erase(M::WalkTarget);
-    t.mob().nav.stop();
+    t.nav().stop();
     Interaction::Success
 }
 
@@ -1704,7 +1712,7 @@ pub fn can_still_use(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) -> bool 
             let b = brain_ref(t);
             b.int(M::SpearFleeingTime).unwrap_or(100) < 100
                 && b.has(M::SpearFleeingPosition)
-                && !t.mob_ref().nav.is_done()
+                && !t.nav_ref().is_done()
                 && spear_able(t)
         }
         _ => false,
@@ -1809,12 +1817,12 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
             }
             if let Some(away) = brain_ref(t).vec3(M::SpearChargePosition) {
                 nav::move_to_pos(t, away, *reposition);
-                if t.mob_ref().nav.is_done() {
+                if t.nav_ref().is_done() {
                     brain::brain(t).erase(M::SpearChargePosition);
                 }
             } else if let Some(tp) = bh::entity_pos(t, target) {
                 nav::move_to_entity(t, tp, 1, *charge);
-                if d_sqr < f64::from(*radius_sqr) || t.mob_ref().nav.is_done() {
+                if d_sqr < f64::from(*radius_sqr) || t.nav_ref().is_done() {
                     let d = d_sqr.sqrt();
                     let away = randompos::land_pos_away(t, 6.0 + mount - d, 7.0 + mount - d, 7, tp);
                     brain::brain(t).set_opt(M::SpearChargePosition, away.map(MemValue::Vec3));
@@ -1849,11 +1857,11 @@ pub fn stop(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
             *state = 0;
         }
         Behavior::SpearApproach { .. } => {
-            t.mob().nav.stop();
+            t.nav().stop();
             brain::brain(t).set(M::SpearStatus, MemValue::Int(CHARGING));
         }
         Behavior::SpearAttack { .. } => {
-            t.mob().nav.stop();
+            t.nav().stop();
             crate::mob::projectile::stop_using_item(t);
             let b = brain::brain(t);
             b.erase(M::SpearChargePosition);
@@ -1861,7 +1869,7 @@ pub fn stop(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
             b.set(M::SpearStatus, MemValue::Int(RETREAT));
         }
         Behavior::SpearRetreat { .. } => {
-            t.mob().nav.stop();
+            t.nav().stop();
             super::set_aggressive(t, false);
             crate::mob::projectile::stop_using_item(t);
             let b = brain::brain(t);

@@ -1,0 +1,61 @@
+{
+  "description": "A zombie summoned with Invulnerable:1b survives /damage (Entity.isInvulnerableTo); /kill (bypasses_invulnerability) still kills it.",
+  "tier": "fast",
+  "time": 6000,
+  "difficulty": "normal",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 20,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -60,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:zombie 8.5 -59 8.5 {UUID:[I;1,2,3,4],Invulnerable:1b,NoAI:1b}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "damage @e[type=minecraft:zombie,limit=1] 50 minecraft:generic"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "damage @e[type=minecraft:zombie,limit=1] 50 minecraft:on_fire"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "kill @e[type=minecraft:zombie]"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

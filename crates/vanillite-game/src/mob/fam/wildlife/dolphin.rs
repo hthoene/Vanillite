@@ -428,7 +428,7 @@ pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
         Goal::BreathAir => {
-            t.mob().nav.stop();
+            t.nav().stop();
             find_air(t);
         }
         Goal::TryFindWater => {
@@ -449,12 +449,12 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             }
             if let Some(pos) = found {
                 let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-                t.mob().move_ctl.set_wanted_position(at, 1.0);
+                t.move_ctl().set_wanted_position(at, 1.0);
             }
         }
         Goal::DolphinSwimToTreasure { stuck } => {
             *stuck = false;
-            t.mob().nav.stop();
+            t.nav().stop();
             // `findNearestMapStructure(#dolphin_located, pos, 50, false)`.
             let found =
                 crate::level::locate::nearest_named(t.level, DOLPHIN_LOCATED, t.block_pos(), 50);
@@ -477,7 +477,7 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 v.y + 0.7,
                 v.z + f64::from(sz) * 0.6,
             ));
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::DolphinMoveToItem { cooldown } => {
             if let Some((_, pos)) = first_item(t) {
@@ -505,7 +505,7 @@ pub(super) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
         }
         Goal::DolphinSwimWithPlayer { player, .. } => {
             *player = None;
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::DolphinJump { .. } => {
             let rot = t.core().rot();
@@ -537,7 +537,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 .look
                 .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 21.0, 1.0);
             if t.pos().distance_to_sqr(o.pos) < 6.25 {
-                t.mob().nav.stop();
+                t.nav().stop();
             } else {
                 nav::move_to_entity(t, o.pos, 1, *speed);
             }
@@ -593,7 +593,7 @@ fn swim_to_treasure(t: &mut Tick<'_, '_>, stuck: &mut bool) {
         .nav
         .target_pos()
         .is_some_and(|tp| super::closer_to_center(tp, p, 12.0));
-    if !close && !t.mob_ref().nav.is_done() {
+    if !close && !t.nav_ref().is_done() {
         return;
     }
     let towards = Vec3::new(
