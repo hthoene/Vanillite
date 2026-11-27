@@ -146,15 +146,32 @@ pub fn play_sound(
     pitch: f32,
     seed: i64,
 ) {
-    let packet = SharedPacket::of(&Sound::at(
+    play_sound_event(
+        out,
+        except,
+        pos,
         sound_event(sound),
         source,
-        pos.x,
-        pos.y,
-        pos.z,
         volume,
         pitch,
         seed,
+    );
+}
+
+/// [`play_sound`] of a sound event id.
+#[allow(clippy::too_many_arguments)]
+pub fn play_sound_event(
+    out: &mut Vec<Effect>,
+    except: Option<EntityId>,
+    pos: Vec3,
+    sound: SoundEvent,
+    source: SoundSource,
+    volume: f32,
+    pitch: f32,
+    seed: i64,
+) {
+    let packet = SharedPacket::of(&Sound::at(
+        sound, source, pos.x, pos.y, pos.z, volume, pitch, seed,
     ));
     out.push(Effect::Nearby {
         pos,

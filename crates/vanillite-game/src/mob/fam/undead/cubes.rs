@@ -680,7 +680,7 @@ pub fn on_die(_h: &mut Hurt<'_, '_>) {}
 
 // --- Sulfur cubes -------------------------------------------------------------------------
 
-fn has_body_item(m: &MobData) -> bool {
+pub fn has_body_item(m: &MobData) -> bool {
     !m.equipment.get(EquipmentSlot::Body).is_empty()
 }
 

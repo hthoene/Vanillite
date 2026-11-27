@@ -1427,8 +1427,8 @@ pub(crate) fn post_game_event(
     ));
 }
 
-/// `Entity.applyMovementEmissionAndPlaySound`: the `STEP` and `SWIM` game events of a mob's
-/// move (the step sounds are not simulated).
+/// `Entity.applyMovementEmissionAndPlaySound`: the step sounds and the `STEP` and `SWIM` game
+/// events of a mob's move.
 fn movement_emission(
     t: &mut Tick<'_, '_>,
     movement: Vec3,
@@ -1468,6 +1468,9 @@ fn movement_emission(
     let mut produced = false;
     if steps(t, effect_state) {
         produced = true;
+        if emits_sounds(t.mob_ref().kind) {
+            walking_step_sound(t, effect_pos, effect_state);
+        }
         if only_effect {
             post_game_event(
                 t,
@@ -1499,6 +1502,211 @@ fn movement_emission(
         }
         post_game_event(t, crate::level::game_event::events().swim, pos, None);
     }
+}
+
+/// `Entity.walkingStepSound`: the step sound, then the amethyst chime on
+/// `#crystal_sound_blocks` at most once a second.
+fn walking_step_sound(t: &mut Tick<'_, '_>, pos: BlockPos, state: BlockState) {
+    play_step_sound(t, pos, state);
+    let m = t.mob_ref();
+    if m.tick_count >= m.last_crystal_tick.saturating_add(20)
+        && super::spawn::in_block_tag(state, "minecraft:crystal_sound_blocks")
+    {
+        // `playAmethystStepSound`.
+        let m = t.mob();
+        #[allow(clippy::cast_possible_truncation)]
+        let decay = 0.997_f64.powi(m.tick_count - m.last_crystal_tick) as f32;
+        m.crystal_intensity = (m.crystal_intensity * decay + 0.07).min(1.0);
+        let pitch = 0.5 + m.crystal_intensity * m.random.next_float() * 1.2;
+        let volume = 0.1 + m.crystal_intensity * 1.2;
+        m.last_crystal_tick = m.tick_count;
+        kinds::play_sound(t, "minecraft:block.amethyst_block.chime", volume, pitch);
+    }
+}
+
+/// `Entity.playStepSound` (the block's step sound) and the kinds' overrides.
+fn play_step_sound(t: &mut Tick<'_, '_>, pos: BlockPos, state: BlockState) {
+    use super::Kind;
+    let m = t.mob_ref();
+    let baby = m.baby;
+    let (sound, volume) = match m.kind {
+        Kind::Cod
+        | Kind::Salmon
+        | Kind::Pufferfish
+        | Kind::TropicalFish
+        | Kind::Tadpole
+        | Kind::HappyGhast
+        | Kind::Nautilus
+        | Kind::ZombieNautilus
+        | Kind::Allay
+        | Kind::Bee => return,
+        Kind::Armadillo => ("minecraft:entity.armadillo.step", 0.15),
+        Kind::Pig if baby => ("minecraft:entity.baby_pig.step", 0.15),
+        Kind::Pig => ("minecraft:entity.pig.step", 0.15),
+        Kind::Chicken if baby => ("minecraft:entity.baby_chicken.step", 0.15),
+        Kind::Chicken => ("minecraft:entity.chicken.step", 0.15),
+        Kind::Wolf if baby => ("minecraft:entity.baby_wolf.step", 0.15),
+        Kind::Wolf => ("minecraft:entity.wolf.step", 0.15),
+        Kind::Cow
+            if kinds::sound_variant_names(Kind::Cow).get(usize::from(m.sound_variant))
+                == Some(&"moody") =>
+        {
+            ("minecraft:entity.cow_moody.step", 0.15)
+        }
+        Kind::Cow | Kind::Mooshroom => ("minecraft:entity.cow.step", 0.15),
+        Kind::Parrot => ("minecraft:entity.parrot.step", 0.15),
+        Kind::Camel | Kind::CamelHusk => {
+            let sand = super::spawn::in_block_tag(state, "minecraft:camel_sand_step_sound_blocks");
+            match (m.kind == Kind::Camel, sand) {
+                (true, true) => ("minecraft:entity.camel.step_sand", 1.0),
+                (true, false) => ("minecraft:entity.camel.step", 1.0),
+                (false, true) => ("minecraft:entity.camel_husk.step_sand", 0.4),
+                (false, false) => ("minecraft:entity.camel_husk.step", 0.4),
+            }
+        }
+        Kind::Sniffer => ("minecraft:entity.sniffer.step", 0.15),
+        Kind::Strider if m.fluids.in_lava() => ("minecraft:entity.strider.step_lava", 1.0),
+        Kind::Strider => ("minecraft:entity.strider.step", 1.0),
+        Kind::Piglin => ("minecraft:entity.piglin.step", 0.15),
+        Kind::PiglinBrute => ("minecraft:entity.piglin_brute.step", 0.15),
+        Kind::IronGolem => ("minecraft:entity.iron_golem.step", 1.0),
+        Kind::Sheep => ("minecraft:entity.sheep.step", 0.15),
+        Kind::CopperGolem => {
+            use super::fam::mount::copper_golem::{Weather, golem};
+            match golem(m).weather {
+                Weather::Weathered => ("minecraft:entity.copper_golem_weathered.step", 1.0),
+                Weather::Oxidized => ("minecraft:entity.copper_golem_oxidized.step", 1.0),
+                _ => ("minecraft:entity.copper_golem.step", 1.0),
+            }
+        }
+        Kind::Frog => ("minecraft:entity.frog.step", 0.15),
+        Kind::Goat => ("minecraft:entity.goat.step", 0.15),
+        Kind::Zombie | Kind::ZombifiedPiglin | Kind::Giant => {
+            ("minecraft:entity.zombie.step", 0.15)
+        }
+        Kind::Husk => ("minecraft:entity.husk.step", 0.15),
+        Kind::Drowned => ("minecraft:entity.drowned.step", 0.15),
+        Kind::ZombieVillager => ("minecraft:entity.zombie_villager.step", 0.15),
+        Kind::Skeleton => ("minecraft:entity.skeleton.step", 0.15),
+        Kind::WitherSkeleton => ("minecraft:entity.wither_skeleton.step", 0.15),
+        Kind::Stray => ("minecraft:entity.stray.step", 0.15),
+        Kind::Bogged => ("minecraft:entity.bogged.step", 0.15),
+        Kind::Parched => ("minecraft:entity.parched.step", 0.15),
+        Kind::Turtle if baby => ("minecraft:entity.turtle.shamble_baby", 0.15),
+        Kind::Turtle => ("minecraft:entity.turtle.shamble", 0.15),
+        Kind::Endermite => ("minecraft:entity.endermite.step", 0.15),
+        Kind::Silverfish => ("minecraft:entity.silverfish.step", 0.15),
+        Kind::Ravager => ("minecraft:entity.ravager.step", 0.15),
+        Kind::Zoglin => ("minecraft:entity.zoglin.step", 0.15),
+        Kind::Hoglin => ("minecraft:entity.hoglin.step", 0.15),
+        Kind::Creaking => ("minecraft:entity.creaking.step", 0.15),
+        Kind::Spider | Kind::CaveSpider => ("minecraft:entity.spider.step", 0.15),
+        Kind::Warden => ("minecraft:entity.warden.step", 10.0),
+        Kind::Llama | Kind::TraderLlama => ("minecraft:entity.llama.step", 0.15),
+        Kind::PolarBear => ("minecraft:entity.polar_bear.step", 0.15),
+        Kind::Panda => ("minecraft:entity.panda.step", 0.15),
+        Kind::Horse | Kind::Donkey | Kind::Mule | Kind::SkeletonHorse | Kind::ZombieHorse => {
+            horse_step_sound(t, pos, state);
+            return;
+        }
+        Kind::SulfurCube if super::fam::undead::cubes::has_body_item(m) => return,
+        _ => {
+            let st = state.block().sound();
+            let id = vanillite_protocol::packets::play::clientbound::SoundEvent(i32::from(
+                st.step_sound,
+            ));
+            play_sound_event(t, id, st.volume * 0.15, st.pitch);
+            return;
+        }
+    };
+    kinds::play_sound(t, sound, volume, 1.0);
+}
+
+/// `AbstractHorse.playStepSound`: the block's sound type (snow on top wins), galloping under a
+/// rider (`Horse.playGallopSound` breathes one time in ten), wood or the horse's own step.
+fn horse_step_sound(t: &mut Tick<'_, '_>, pos: BlockPos, state: BlockState) {
+    use super::Kind;
+    use vanillite_data::block::ids;
+    // `BlockState.liquid()`: water and lava blocks.
+    if state.block() == ids::WATER || state.block() == ids::LAVA {
+        return;
+    }
+    let above = t.level.block(BlockPos::new(pos.x, pos.y + 1, pos.z));
+    let st = if above.block() == ids::SNOW {
+        above.block().sound()
+    } else {
+        state.block().sound()
+    };
+    let sound_id = |name: &str| crate::survival::sound_event(name);
+    let kind = t.mob_ref().kind;
+    let gallops = matches!(kind, Kind::Horse | Kind::SkeletonHorse | Kind::ZombieHorse);
+    let wood = [
+        "minecraft:block.wood.step",
+        "minecraft:block.nether_wood.step",
+        "minecraft:block.stem.step",
+        "minecraft:block.cherry_wood.step",
+        "minecraft:block.bamboo_wood.step",
+    ]
+    .iter()
+    .any(|n| crate::survival::sound_event(n).0 == i32::from(st.step_sound));
+    if gallops && !t.ents.riding.passengers_of(t.id).is_empty() {
+        let m = t.mob();
+        m.gallop_counter += 1;
+        let counter = m.gallop_counter;
+        if counter > 5 && counter % 3 == 0 {
+            play_sound_event(
+                t,
+                sound_id("minecraft:entity.horse.gallop"),
+                st.volume * 0.15,
+                st.pitch,
+            );
+            if kind == Kind::Horse && t.mob().random.next_int_bounded(10) == 0 {
+                let breathe = if t.mob_ref().baby {
+                    "minecraft:entity.baby_horse.breathe"
+                } else {
+                    "minecraft:entity.horse.breathe"
+                };
+                play_sound_event(t, sound_id(breathe), st.volume * 0.6, st.pitch);
+            }
+        } else if counter <= 5 {
+            play_sound_event(
+                t,
+                sound_id("minecraft:entity.horse.step_wood"),
+                st.volume * 0.15,
+                st.pitch,
+            );
+        }
+    } else if wood {
+        play_sound_event(
+            t,
+            sound_id("minecraft:entity.horse.step_wood"),
+            st.volume * 0.15,
+            st.pitch,
+        );
+    } else {
+        let step = if t.mob_ref().baby {
+            "minecraft:entity.baby_horse.step"
+        } else {
+            "minecraft:entity.horse.step"
+        };
+        play_sound_event(t, sound_id(step), st.volume * 0.15, st.pitch);
+    }
+}
+
+/// `Entity.playSound` of a sound event id.
+fn play_sound_event(
+    t: &mut Tick<'_, '_>,
+    sound: vanillite_protocol::packets::play::clientbound::SoundEvent,
+    volume: f32,
+    pitch: f32,
+) {
+    if t.mob_ref().silent {
+        return;
+    }
+    let pos = t.pos();
+    let source = t.mob_ref().kind.sound_source();
+    let seed = crate::survival::sound_seed();
+    crate::survival::play_sound_event(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
 
 /// `Entity.processFlappingMovement`: bees flap every other tick in the air, chickens and
@@ -1741,6 +1949,7 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) -> bo
             t.mob_ref().kind.fall_sound_small()
         };
         kinds::play_sound(t, sound, 1.0, 1.0);
+        play_block_fall_sound(t);
         let source = DamageSource::of(t.env.types.fall);
         #[allow(clippy::cast_precision_loss)]
         let hurt = hurt_self(t, source, damage as f32);
@@ -1749,6 +1958,23 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) -> bo
     }
     kinds::on_fall_damage(t, distance);
     false
+}
+
+/// `LivingEntity.playBlockFallSound`: the fall sound of the block 0.2 below the feet.
+fn play_block_fall_sound(t: &mut Tick<'_, '_>) {
+    let p = t.pos();
+    let state = t.level.block(BlockPos::new(
+        floor(p.x),
+        floor(p.y - f64::from(0.2_f32)),
+        floor(p.z),
+    ));
+    if state.is_air() {
+        return;
+    }
+    let st = state.block().sound();
+    let sound =
+        vanillite_protocol::packets::play::clientbound::SoundEvent(i32::from(st.fall_sound));
+    play_sound_event(t, sound, st.volume * 0.5, st.pitch * 0.75);
 }
 
 /// Queues `TurtleEggBlock.destroyEgg` for the eggs the mob stands on.
