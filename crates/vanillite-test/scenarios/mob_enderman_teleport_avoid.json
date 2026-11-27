@@ -1,0 +1,620 @@
+{
+  "description": "An enderman is hurt by cactus damage again and again over a floor of magma stripes, a pool and a bedrock row: EnderMan.teleport uses randomTeleport with #enderman_does_not_teleport_to (no magma or bedrock below or inside), canRandomlyTeleportTo (no water below) and keeps the fractional height.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      -26,
+      -61,
+      -26
+    ],
+    [
+      42,
+      -50,
+      42
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        -26,
+        -61,
+        -26
+      ],
+      "to": [
+        -26,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -24,
+        -61,
+        -26
+      ],
+      "to": [
+        -24,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -22,
+        -61,
+        -26
+      ],
+      "to": [
+        -22,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -20,
+        -61,
+        -26
+      ],
+      "to": [
+        -20,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -18,
+        -61,
+        -26
+      ],
+      "to": [
+        -18,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -16,
+        -61,
+        -26
+      ],
+      "to": [
+        -16,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -14,
+        -61,
+        -26
+      ],
+      "to": [
+        -14,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -12,
+        -61,
+        -26
+      ],
+      "to": [
+        -12,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -10,
+        -61,
+        -26
+      ],
+      "to": [
+        -10,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -8,
+        -61,
+        -26
+      ],
+      "to": [
+        -8,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -6,
+        -61,
+        -26
+      ],
+      "to": [
+        -6,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -4,
+        -61,
+        -26
+      ],
+      "to": [
+        -4,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -2,
+        -61,
+        -26
+      ],
+      "to": [
+        -2,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -61,
+        -26
+      ],
+      "to": [
+        0,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        -26
+      ],
+      "to": [
+        2,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -61,
+        -26
+      ],
+      "to": [
+        4,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -61,
+        -26
+      ],
+      "to": [
+        6,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        8,
+        -61,
+        -26
+      ],
+      "to": [
+        8,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -61,
+        -26
+      ],
+      "to": [
+        10,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        12,
+        -61,
+        -26
+      ],
+      "to": [
+        12,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        14,
+        -61,
+        -26
+      ],
+      "to": [
+        14,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        16,
+        -61,
+        -26
+      ],
+      "to": [
+        16,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        18,
+        -61,
+        -26
+      ],
+      "to": [
+        18,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        20,
+        -61,
+        -26
+      ],
+      "to": [
+        20,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        22,
+        -61,
+        -26
+      ],
+      "to": [
+        22,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        24,
+        -61,
+        -26
+      ],
+      "to": [
+        24,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        26,
+        -61,
+        -26
+      ],
+      "to": [
+        26,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        28,
+        -61,
+        -26
+      ],
+      "to": [
+        28,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        30,
+        -61,
+        -26
+      ],
+      "to": [
+        30,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        32,
+        -61,
+        -26
+      ],
+      "to": [
+        32,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        34,
+        -61,
+        -26
+      ],
+      "to": [
+        34,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        36,
+        -61,
+        -26
+      ],
+      "to": [
+        36,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        38,
+        -61,
+        -26
+      ],
+      "to": [
+        38,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        40,
+        -61,
+        -26
+      ],
+      "to": [
+        40,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        42,
+        -61,
+        -26
+      ],
+      "to": [
+        42,
+        -61,
+        42
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        -26,
+        -61,
+        -26
+      ],
+      "to": [
+        42,
+        -61,
+        -26
+      ],
+      "block": "minecraft:bedrock"
+    },
+    {
+      "op": "fill",
+      "from": [
+        18,
+        -60,
+        18
+      ],
+      "to": [
+        30,
+        -60,
+        30
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "fill",
+      "from": [
+        18,
+        -61,
+        18
+      ],
+      "to": [
+        30,
+        -61,
+        30
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "enderman",
+      "type": "minecraft:enderman",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 21,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 41,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 61,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 81,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 101,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 121,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 141,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 161,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    },
+    {
+      "tick": 181,
+      "op": "command",
+      "command": "damage @e[type=minecraft:enderman,limit=1] 1 minecraft:cactus"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

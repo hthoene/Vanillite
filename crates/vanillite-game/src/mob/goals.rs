@@ -1825,7 +1825,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 if kinds::is_stared_at_by(t, target) {
                     if dist < 16.0 {
                         let id = t.id;
-                        kinds::teleport_randomly(t.level, t.ents, t.env, id);
+                        kinds::teleport_randomly(t.level, t.ents, t.env, t.cx, id);
                     }
                     *teleport_time = 0;
                 } else if dist > 256.0 {

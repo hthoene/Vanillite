@@ -7,7 +7,7 @@ use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::{BlockState, ids};
 use vanillite_data::entity::{EntityTypeId, ids as entity_ids};
 use vanillite_protocol::packets::play::clientbound::SoundSource;
-use vanillite_world::entity::{Dimensions, EntityFlags, EntityId};
+use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::fam::classic;
 use super::goals::{Goal, MeleeKind};
@@ -1301,7 +1301,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
             t.mob().target = None;
             super::goals::enderman_set_target(t, None);
             let id = t.id;
-            teleport_randomly(t.level, t.ents, t.env, id);
+            teleport_randomly(t.level, t.ents, t.env, t.cx, id);
         }
     }
 }
@@ -1473,7 +1473,7 @@ pub fn teleport_towards(t: &mut Tick<'_, '_>, to: Vec3, eye_y: f64) -> bool {
     let y = p.y + f64::from(r.next_int_bounded(16) - 8) - dir.y * 16.0;
     let z = p.z + (r.next_double() - 0.5) * 8.0 - dir.z * 16.0;
     let id = t.id;
-    teleport_to(t.level, t.ents, t.env, id, Vec3::new(x, y, z))
+    teleport_to(t.level, t.ents, t.env, t.cx, id, Vec3::new(x, y, z))
 }
 
 /// `EnderMan.teleport()`: a random spot within 32 blocks.
@@ -1481,6 +1481,7 @@ pub fn teleport_randomly(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
+    cx: &mut MobContext,
     id: EntityId,
 ) -> bool {
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
@@ -1492,27 +1493,21 @@ pub fn teleport_randomly(
     let x = pos.x + (m.random.next_double() - 0.5) * 64.0;
     let y = pos.y + f64::from(m.random.next_int_bounded(64) - 32);
     let z = pos.z + (m.random.next_double() - 0.5) * 64.0;
-    teleport_to(level, ents, env, id, Vec3::new(x, y, z))
+    teleport_to(level, ents, env, cx, id, Vec3::new(x, y, z))
 }
 
-/// `EnderMan.teleport(x, y, z)` and `randomTeleport`.
+/// `EnderMan.teleport(x, y, z)`: `randomTeleport(x, y, z, true,
+/// #enderman_does_not_teleport_to)`, then the teleport game event, level event 2018 (the
+/// trail) and the teleport sound at the old and the new position.
 fn teleport_to(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
+    cx: &mut MobContext,
     id: EntityId,
     to: Vec3,
 ) -> bool {
-    // `randomTeleport`: the target is clamped into the world border.
-    let to = level.border.clamp_vec(to.x, to.y, to.z);
-    let mut pos = BlockPos::containing(to.x, to.y, to.z);
-    while pos.y > level.min_y()
-        && !blocks_motion(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
-    {
-        pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
-    }
-    let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));
-    if !blocks_motion(below) || super::is_water(level.block(pos)) || !level.is_loaded(pos) {
+    if ents.vehicle_of(id).is_some() {
         return false;
     }
     let Some(e) = ents.store.get(id) else {
@@ -1520,40 +1515,139 @@ fn teleport_to(
     };
     let old = e.pos();
     let dims = e.dims();
-    let dest = Vec3::new(to.x, f64::from(pos.y), to.z);
+    // `LivingEntity.randomTeleport`: walks down from the target to a block of
+    // `#entities_can_teleport_to`; the height keeps its fraction.
+    let clamped = level.border.clamp_vec(to.x, to.y, to.z);
+    let mut pos = BlockPos::containing(clamped.x, clamped.y, clamped.z);
+    let mut y = to.y;
+    if !level.is_loaded(pos) {
+        return false;
+    }
+    let mut floor = None;
+    while pos.y > level.min_y() {
+        pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
+        let state = level.block(pos);
+        if can_teleport_onto(state) {
+            floor = Some(state);
+            break;
+        }
+        y -= 1.0;
+    }
+    let Some(floor) = floor else {
+        return false;
+    };
+    // `checkPositionAndTeleport`.
+    if enderman_avoids(floor) {
+        return false;
+    }
+    let dest = Vec3::new(clamped.x, y, clamped.z);
     let aabb = dims.bounding_box(dest);
     let mut scratch = Vec::new();
-    if !physics::no_collision(&level.view(), &aabb, &mut scratch)
-        || physics::contains_any_liquid(level, &aabb)
-    {
+    if !physics::no_collision(&level.view(), &aabb, &mut scratch) {
+        return false;
+    }
+    // `containsAnyLiquid` and `findBlocksIn(aabb).filterState(isInvalidPosition)`: the blocks
+    // from the minimum to the maximum corner, both included.
+    let lo = BlockPos::containing(aabb.min_x, aabb.min_y, aabb.min_z);
+    let hi = BlockPos::containing(aabb.max_x, aabb.max_y, aabb.max_z);
+    for bx in lo.x..=hi.x {
+        for by in lo.y..=hi.y {
+            for bz in lo.z..=hi.z {
+                if !level
+                    .block(BlockPos::new(bx, by, bz))
+                    .fluid_state()
+                    .is_empty()
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    for bx in lo.x..=hi.x {
+        for by in lo.y..=hi.y {
+            for bz in lo.z..=hi.z {
+                if enderman_avoids(level.block(BlockPos::new(bx, by, bz))) {
+                    return false;
+                }
+            }
+        }
+    }
+    // `EnderMan.canRandomlyTeleportTo`: no water below.
+    let below = BlockPos::containing(dest.x, dest.y, dest.z);
+    if super::is_water(level.block(BlockPos::new(below.x, below.y - 1, below.z))) {
         return false;
     }
     if let Some(mut e) = ents.store.get_mut(id) {
+        // `teleportTo` → `snapTo`: the old position moves along, the motion stays.
         e.set_pos(dest);
-        e.set_velocity(Vec3::ZERO);
-        e.set_flags(EntityFlags::HAS_IMPULSE, true);
+        e.set_old_pos();
     }
-    if let Some(m) = ents.mob_mut(id) {
-        m.nav.stop();
+    // `broadcastEntityEvent(this, 46)`: the teleport particles.
+    if let Some(e) = ents.store.get(id) {
+        let network_id = e.network_id().0;
+        env.out.push(crate::survival::Effect::Tracking {
+            entity: id,
+            with_self: false,
+            packet: vanillite_protocol::SharedPacket::of(
+                &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                    entity_id: network_id,
+                    event: 46,
+                },
+            ),
+        });
     }
+    let silent = match ents.mob_mut(id) {
+        Some(m) => {
+            m.nav.stop();
+            (m.silent, m.kind.sound_source())
+        }
+        None => (true, SoundSource::Hostile),
+    };
     crate::survival::game_event(
         env.out,
         crate::level::game_event::events().teleport,
         old,
         Some(id),
     );
-    let seed = crate::survival::sound_seed();
-    crate::survival::play_sound(
-        env.out,
-        None,
-        old,
-        "minecraft:entity.enderman.teleport",
-        SoundSource::Hostile,
-        1.0,
-        1.0,
-        seed,
-    );
+    if !silent.0 {
+        let from = BlockPos::containing(old.x, old.y, old.z);
+        let now = BlockPos::containing(dest.x, dest.y, dest.z);
+        // `BlockUtil.clampedPackDifferenceInPosition(from, now, 127, 127, 127)`.
+        let d = |a: i32, b: i32| ((b - a).clamp(-127, 127) + 127) & 0xFF;
+        let packed = d(from.x, now.x) << 16 | d(from.y, now.y) << 8 | d(from.z, now.z);
+        cx.actions
+            .push(super::WorldAction::LevelEvent(2018, from, packed));
+        // `playSound(xo, yo, zo)` after `snapTo` and `this.playSound`: both at the new spot.
+        for at in [dest, dest] {
+            let seed = crate::survival::sound_seed();
+            crate::survival::play_sound(
+                env.out,
+                None,
+                at,
+                "minecraft:entity.enderman.teleport",
+                silent.1,
+                1.0,
+                1.0,
+                seed,
+            );
+        }
+    }
     true
+}
+
+/// `#entities_can_teleport_to` (`#blocks_motion`).
+fn can_teleport_onto(state: BlockState) -> bool {
+    match crate::player::play::game_data() {
+        Some(d) if d.block_tags.contains_key("minecraft:entities_can_teleport_to") => {
+            d.block_in_tag(state.block().0, "minecraft:entities_can_teleport_to")
+        }
+        _ => blocks_motion(state),
+    }
+}
+
+/// `#enderman_does_not_teleport_to`: `#dangerous_for_teleportation` and bedrock.
+fn enderman_avoids(state: BlockState) -> bool {
+    super::spawn::in_block_tag(state, "minecraft:enderman_does_not_teleport_to")
 }
 
 /// `BlockState.blocksMotion`: solid and not cobweb or bamboo sapling.
@@ -1566,11 +1660,11 @@ pub fn enderman_dodge(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
-    _cx: &mut MobContext,
+    cx: &mut MobContext,
     id: EntityId,
 ) {
     for _ in 0..64 {
-        if teleport_randomly(level, ents, env, id) {
+        if teleport_randomly(level, ents, env, cx, id) {
             return;
         }
     }
@@ -1582,6 +1676,7 @@ pub fn after_hurt(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
+    cx: &mut MobContext,
     id: EntityId,
     source: DamageSource,
 ) {
@@ -1596,7 +1691,7 @@ pub fn after_hurt(
     }
     // `teleport()` does nothing for a dead enderman.
     if !living_cause && m.random.next_int_bounded(10) != 0 && m.is_alive() {
-        teleport_randomly(level, ents, env, id);
+        teleport_randomly(level, ents, env, cx, id);
     }
 }
 

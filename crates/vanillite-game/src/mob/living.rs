@@ -664,6 +664,10 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         if !t.exists() || t.mob_ref().removed {
             return;
         }
+    } else if t.mob_ref().kind == super::Kind::Enderman {
+        // `EnderMan.aiStep`: `updatePersistentAnger(level, true)` (20 to 39 seconds).
+        t.mob().jumping = false;
+        super::common::update_persistent_anger(t, true, (400, 780));
     }
     // `Monster.updateNoActionTime` (`Raider`: always).
     let kind = t.mob_ref().kind;

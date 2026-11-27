@@ -272,6 +272,29 @@ pub fn hurt_mob(
     amount: f32,
 ) -> bool {
     let source = with_projectile_motion(ents, source);
+    // `EnderMan.hurtServer`: after `super.hurtServer`, whatever it returned (also while
+    // invulnerable after a hit), damage not caused by a living entity makes it teleport.
+    let enderman_after = ents.mob(target).is_some_and(|m| m.kind == Kind::Enderman)
+        && !env.types.is(source.kind, tag::IS_PROJECTILE)
+        && !invulnerable_to(ents, env, target, source.kind)
+        && !immune_to_damage(ents, env, target, &source);
+    let took = hurt_mob_inner(level, ents, env, cx, target, source, amount);
+    if enderman_after {
+        kinds::after_hurt(level, ents, env, cx, target, source);
+    }
+    took
+}
+
+#[allow(clippy::too_many_lines)]
+fn hurt_mob_inner(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+    amount: f32,
+) -> bool {
     let kind = source.kind;
     let types = env.types;
     if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
@@ -472,9 +495,6 @@ pub fn hurt_mob(
     }
     // What the kinds' `hurtServer` overrides do after `super.hurtServer` (even when it died).
     if mob_kind.family() == super::Family::Classic {
-        if mob_kind == Kind::Enderman {
-            kinds::after_hurt(level, ents, env, target, source);
-        }
         if mob_kind == Kind::Zombie {
             // `Zombie.hurtServer`: reinforcements on Hard.
             let mut h = super::fam::Hurt {
