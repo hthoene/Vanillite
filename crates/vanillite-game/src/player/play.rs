@@ -180,6 +180,8 @@ pub struct Actor {
     pub mining_fatigue: Option<i32>,
     /// The player's respawn position if it is in this world.
     pub respawn_here: Option<BlockPos>,
+    /// The player holds the lead of some mob (`FenceBlock.useWithoutItem` binds them).
+    pub leads_mobs: bool,
 }
 
 impl Actor {
@@ -453,6 +455,9 @@ pub struct Digging {
     /// Whether the last `use_item_on` reached the item's own use on entities (spawn eggs,
     /// leads, minecarts): no block reacted and the item has no block use of its own.
     pub entity_item_use: bool,
+    /// `FenceBlock.useWithoutItem` of the last `use_item_on`: the fence the player's leashed
+    /// mobs get tied to (the world runs it next).
+    pub bind_fence: Option<BlockPos>,
 }
 
 /// `getDestroyProgress` of `state` for the actor.
@@ -833,6 +838,13 @@ impl Digging {
         } else {
             state
         };
+        // `Block.playerWillDestroy`: breaking a block guarded by piglins angers them.
+        if crate::block::place::tags::GUARDED_BY_PIGLINS.has(state)
+            && let Some(player) = ctx.actor.entity
+            && let Some(level) = ctx.level.level_mut()
+        {
+            level.output().piglin_anger.push((player, false));
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -989,6 +1001,7 @@ impl Digging {
     ) {
         self.ack(p.sequence.max(0));
         self.entity_item_use = false;
+        self.bind_fence = None;
         let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
         let face = direction_wrapped(p.face);
         if !ctx.actor.within_block_range(pos, 1.0) {
@@ -1122,6 +1135,16 @@ impl Digging {
                     any_block_use(ctx, hand, pos);
                     return result == crate::block::Interaction::Success;
                 }
+            } else if hand == Hand::MainHand
+                && ctx.actor.leads_mobs
+                && crate::mob::tame::is_knot_block(state)
+            {
+                // `FenceBlock.useWithoutItem` -> `LeadItem.bindPlayerMobs`: the world ties the
+                // player's leashed mobs to the fence next.
+                self.bind_fence = Some(pos);
+                ctx.trigger(Event::DefaultBlockUse(pos));
+                any_block_use(ctx, hand, pos);
+                return true;
             } else {
                 // `state.useItemOn(stack, …)`, then `useWithoutItem` for the main hand when it
                 // tries with an empty hand.

@@ -725,6 +725,8 @@ impl WorldPlayers {
         // between adds or removes players.
         self.recording.begin_tick(&mut level.entities);
         let mut players = std::mem::take(&mut level.entities.players);
+        // The holders of leads (`FenceBlock.useWithoutItem` ties their mobs to fences).
+        let lead_holders: FxHashSet<EntityId> = level.entities.leashes.values().copied().collect();
         let spectators: FxHashSet<EntityId> = players
             .iter()
             .filter(|(_, p)| p.game_mode == GameMode::Spectator)
@@ -773,6 +775,7 @@ impl WorldPlayers {
                 .as_ref()
                 .filter(|r| r.dimension == dimension_name)
                 .map(|r| r.pos);
+            actor.leads_mobs = lead_holders.contains(&id);
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let (aabb, dims) = (entity.aabb(), entity.dims());
@@ -1882,6 +1885,7 @@ pub fn player_actor(
             .then(|| effects.dig_speed_amplification()),
         mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
         respawn_here: None,
+        leads_mobs: false,
     }
 }
 

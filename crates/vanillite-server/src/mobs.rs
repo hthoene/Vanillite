@@ -713,6 +713,40 @@ impl WorldMobs {
             level.climate().map(|c| c.sea_level),
         );
         self.cx.begin_tick(env, self.settings, has_players);
+        // `PiglinAi.angerNearbyPiglins` of the block uses and breaks of the players' packets.
+        let anger = std::mem::take(&mut level.output().piglin_anger);
+        if !anger.is_empty() {
+            let mut ents = std::mem::take(&mut level.entities);
+            {
+                let blocks = WorldBlocks(&level.chunks);
+                let raining = |_| false;
+                let mut no_gateway = |_| false;
+                let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+                let mut env = survival.env(
+                    state,
+                    &rules,
+                    &blocks,
+                    &raining,
+                    dimension,
+                    &mut no_gateway,
+                    &hooks,
+                    &names,
+                    &teams,
+                );
+                for (player, only_if_seen) in anger {
+                    vanillite_game::mob::fam::brainy::piglin::anger_nearby_piglins(
+                        level,
+                        &mut ents,
+                        &mut env,
+                        &mut self.cx,
+                        player,
+                        only_if_seen,
+                    );
+                }
+            }
+            level.entities = ents;
+        }
         // What spawner blocks read when the block entities tick after the entities.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
@@ -1770,6 +1804,11 @@ pub fn player_entity_action(
                     face,
                     location,
                 );
+            }
+        }
+        EntityAction::BindToFence(pos) => {
+            if usable {
+                vanillite_game::mob::tame::bind_player_mobs(ents, env, network_ids, player, pos);
             }
         }
         EntityAction::StartFallFlying => {

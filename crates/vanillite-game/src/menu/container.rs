@@ -258,6 +258,8 @@ pub struct ContainerMenu {
     /// The UUID of the player it is open for, when plugins are loaded (0 otherwise): what its
     /// plugin events name.
     pub player: u128,
+    /// The entity of the player it is open for (the source of the container game events).
+    pub opener: Option<EntityId>,
 }
 
 /// Where a menu slot is stored.
@@ -1341,10 +1343,11 @@ fn open_with(
         merchant: super::merchant::MerchantMenu::default(),
         plugin,
         player,
+        opener: request.player,
     };
     // The menu's constructor counts the viewer (`container.startOpen`).
     for pos in menu.viewed().into_iter().flatten() {
-        blocks::start_open(level, pos, who.spectator);
+        blocks::start_open(level, pos, who.spectator, menu.opener);
     }
     if let Storage::Mount(mount) = request.storage {
         // `openHorseInventory` / `openNautilusInventory`.
@@ -1595,7 +1598,7 @@ pub fn close(
     give_back(inv, carried, who, drops);
     // `ChestMenu.removed` etc.: one viewer less.
     for pos in menu.viewed().into_iter().flatten() {
-        blocks::stop_open(level, pos, who.spectator);
+        blocks::stop_open(level, pos, who.spectator, menu.opener);
     }
     // `CraftingMenu.removed`: the grid goes back; workstations give their inputs back.
     if menu.kind == MenuKind::Crafting {

@@ -837,7 +837,7 @@ pub enum WorldAction {
     /// `CreakingHeartBlockEntity.creakingHurt` of the heart at the position.
     CreakingHurt(BlockPos),
     /// `container.startOpen(user)` (`true`) or `stopOpen(user)` of a block container by a mob.
-    ContainerOpen(crate::block::container::ContainerRef, bool),
+    ContainerOpen(crate::block::container::ContainerRef, bool, EntityId),
     /// `setItem` of the given slots of a block container by a mob, then `setChanged`.
     ContainerSlots(
         crate::block::container::ContainerRef,
@@ -963,7 +963,7 @@ impl WorldAction {
             WorldAction::CreakingHurt(pos) => {
                 crate::block::creaking_heart::creaking_hurt(level, pos)
             }
-            WorldAction::ContainerOpen(c, open) => {
+            WorldAction::ContainerOpen(c, open, by) => {
                 let halves = match c {
                     crate::block::container::ContainerRef::Block(p) => [Some(p), None],
                     crate::block::container::ContainerRef::Double(a, b) => [Some(a), Some(b)],
@@ -972,9 +972,9 @@ impl WorldAction {
                 };
                 for p in halves.into_iter().flatten() {
                     if open {
-                        crate::block::container::start_open(level, p, false);
+                        crate::block::container::start_open(level, p, false, Some(by));
                     } else {
-                        crate::block::container::stop_open(level, p, false);
+                        crate::block::container::stop_open(level, p, false, Some(by));
                     }
                 }
             }
