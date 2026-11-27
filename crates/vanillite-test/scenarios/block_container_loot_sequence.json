@@ -1,0 +1,18 @@
+{
+  "description": "A chest with a loot table and no seed rolls with the table's random sequence (LootContext.Builder.create(randomSequence)), not the level random: a player opens it, then /setblock destroys it and its contents drop. A vault whose config has no key_item accepts no key (lenientOptionalFieldOf gives the empty stack): a player using a trial key on it gets nothing.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [[0, -61, 0], [15, -56, 15]],
+  "ticks": 40,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [7.5, -60.0, 4.5]}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "setblock 5 -60 7 minecraft:chest[facing=north]{LootTable:\"minecraft:chests/simple_dungeon\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 9 -60 7 minecraft:vault[facing=north]{config:{loot_table:\"minecraft:chests/trial_chambers/reward\"}}"},
+    {"tick": 3, "op": "use", "entity": "steve", "pos": [5, -60, 7], "face": "north", "item": "minecraft:air"},
+    {"tick": 6, "op": "command", "command": "setblock 5 -60 7 minecraft:air destroy"},
+    {"tick": 8, "op": "use", "entity": "steve", "pos": [9, -60, 7], "face": "north", "item": "minecraft:trial_key"}
+  ]
+}

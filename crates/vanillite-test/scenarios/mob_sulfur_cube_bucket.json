@@ -1,15 +1,15 @@
 {
-  "description": "A sulfur cube that swallowed dirt goes into a bucket with its sulfur_cube_content, custom name and bucket_entity_data (SulfurCube.saveToBucketTag) and comes out of it with the block again (applyImplicitComponents, loadFromBucketTag) (#183). A gold block marks the released cube with the block, name and bucket data. Only the marks are observed: a cube holding a block is not simulated like Vanilla yet.",
+  "description": "A sulfur cube that swallowed dirt goes into a bucket with its sulfur_cube_content, custom name and bucket_entity_data (SulfurCube.saveToBucketTag) and comes out of it with the block again (applyImplicitComponents, loadFromBucketTag) (#183). The filled bucket in the player's hand matches nbt={SelectedItem:...} and the item predicate with its sulfur_cube_content (gold blocks at x 1 and 2, #204); a gold block at x 0 marks the released cube with the block, name and bucket data. The cube holding dirt is observed (its regular archetype, #204).",
   "region": [
     [
       0,
-      -56,
+      -61,
       0
     ],
     [
-      0,
-      -56,
-      0
+      15,
+      -55,
+      15
     ]
   ],
   "ticks": 10,
@@ -59,6 +59,16 @@
       "entity": "alex",
       "target": "cube",
       "item": "minecraft:bucket"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "execute if entity @e[type=!minecraft:sulfur_cube,nbt={SelectedItem:{id:\"minecraft:sulfur_cube_bucket\",components:{\"minecraft:sulfur_cube_content\":{id:\"minecraft:dirt\"}}}}] run setblock 1 -56 0 minecraft:gold_block"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "execute if items entity @e[type=!minecraft:sulfur_cube] weapon.mainhand minecraft:sulfur_cube_bucket[minecraft:sulfur_cube_content={id:\"minecraft:dirt\"}] run setblock 2 -56 0 minecraft:gold_block"
     },
     {
       "tick": 5,

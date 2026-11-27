@@ -613,7 +613,8 @@ fn land(t: &mut MissileTick<'_, '_>, hit: Hit) {
         Hit::Block(pos, at, _) => (Some(pos), at),
         Hit::Miss => return,
     };
-    crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
+    let owner = t.ents.missile(t.id).and_then(|d| d.owner);
+    crate::mob::missile::land_event(t.env.out, t.level, t.id, owner, block, at);
 }
 
 // --- Evoker fangs ---------------------------------------------------------------------------

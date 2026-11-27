@@ -80,12 +80,7 @@ pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
                     .unwrap_or(state);
                 if he::allows(level, BLOCK_FORM, top, grown) {
                     // `Block.pushEntitiesUp`: the collision grows by one layer.
-                    let (x, y, z) = (f64::from(top.x), f64::from(top.y), f64::from(top.z));
-                    let (low, high) = (f64::from(layers - 1) / 8.0, f64::from(layers) / 8.0);
-                    super::contact::push_entities_up_from(
-                        level,
-                        vanillite_base::Aabb::new(x, y + low, z, x + 1.0, y + high, z + 1.0),
-                    );
+                    super::contact::push_entities_up_states(level, top, state, grown);
                     level.set_block_and_update(top, grown);
                 }
             }
@@ -484,6 +479,17 @@ pub(super) fn weathers(block: BlockId) -> bool {
 pub(super) fn copper_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     // Doors weather from their lower half only.
     if state.value("half") == Some("upper") {
+        return;
+    }
+    // `WeatheringCopperChestBlock.randomTick`: not the right half of a double chest, and only
+    // while nobody has the chest open.
+    if state.block().info().kind == vanillite_data::block::BlockKind::WeatheringCopperChestBlock
+        && (state.value("type") == Some("right")
+            || !matches!(
+                level.block_entity(pos),
+                Some(crate::level::block_entity::BlockEntity::Container(c)) if c.openers == 0
+            ))
+    {
         return;
     }
     if level.random().next_float() >= 0.056_888_89 {

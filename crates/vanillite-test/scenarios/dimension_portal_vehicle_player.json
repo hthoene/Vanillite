@@ -1,5 +1,5 @@
 {
-  "description": "A player riding a minecart into a nether portal: the minecart (no portal delay for non-players) goes to the Nether the next tick and takes the player along (teleportCrossDimension; the riding player never enters the portal itself, canUsePortal(false)), who rides the new minecart again in the exit portal.",
+  "description": "A player riding a minecart into a nether portal: the minecart (no portal delay for non-players) goes to the Nether the next tick and takes the player along (teleportCrossDimension; the riding player never enters the portal itself, canUsePortal(false)), who rides the new minecart again in the exit portal. All Nether chunks in the player's simulation distance are forced, so the level random does not depend on how fast Vanilla loads them.",
   "dimensions": true,
   "dimension": "minecraft:the_nether",
   "rules": {
@@ -7,14 +7,14 @@
   },
   "region": [
     [
-      -6,
+      -16,
       0,
-      -6
+      -16
     ],
     [
-      6,
+      31,
       10,
-      8
+      31
     ]
   ],
   "views": [
@@ -34,7 +34,7 @@
       ]
     }
   ],
-  "ticks": 27,
+  "ticks": 40,
   "setup": [
     {
       "op": "fill",

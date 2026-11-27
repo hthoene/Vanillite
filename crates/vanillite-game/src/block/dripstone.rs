@@ -217,6 +217,7 @@ fn maybe_transfer_fluid(level: &mut Level, state: BlockState, pos: BlockPos, val
     };
     if source_state.is(ids::MUD) && drip == Drip::Water {
         let clay = ids::CLAY.default_state();
+        super::contact::push_entities_up_states(level, source, source_state, clay);
         level.set_block_and_update(source, clay);
         level.game_event_block(
             crate::level::game_event::events().block_change,

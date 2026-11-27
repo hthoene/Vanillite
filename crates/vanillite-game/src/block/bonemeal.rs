@@ -466,12 +466,15 @@ fn perform_lichen(level: &mut Level, pos: BlockPos, state: BlockState) {
 /// `isBonemealSuccess(level, random, pos, state, INTERACTION)`.
 fn is_success(level: &mut Level, state: BlockState) -> bool {
     match kind(state) {
-        BlockKind::SaplingBlock | BlockKind::AzaleaBlock => level.random().next_float() < 0.45,
+        // `nextFloat() < 0.45` compares as double.
+        BlockKind::SaplingBlock | BlockKind::AzaleaBlock => {
+            f64::from(level.random().next_float()) < 0.45
+        }
         BlockKind::MangrovePropaguleBlock if !state.flag("hanging") => {
-            level.random().next_float() < 0.45
+            f64::from(level.random().next_float()) < 0.45
         }
         BlockKind::NetherFungusBlock | BlockKind::MushroomBlock => {
-            level.random().next_float() < 0.4
+            f64::from(level.random().next_float()) < 0.4
         }
         _ => true,
     }

@@ -397,9 +397,33 @@ pub fn tick_boat(
     if dirty && let Some(mut e) = ents.store.get_mut(id) {
         e.mark_data_dirty();
     }
-    // `applyEffectsFromBlocks`: lily pads break, plates and tripwire react, on the boat's way
-    // this tick.
-    if let Some(e) = ents.store.get(id) {
+    // `applyEffectsFromBlocks`, twice like Vanilla: `stepOn` of the block below on land (slime
+    // slows the boat; sensors, shriekers and redstone ore react), then lily pads break, plates
+    // and tripwire react, on the boat's way this tick.
+    for _ in 0..2 {
+        let Some(e) = ents.store.get(id) else {
+            break;
+        };
+        if e.flags().contains(EntityFlags::ON_GROUND) {
+            let pos = e.pos();
+            let on = BlockPos::new(
+                floor(pos.x),
+                floor(pos.y - f64::from(0.2_f32)),
+                floor(pos.z),
+            );
+            let block = level.block(on).block();
+            if block == vanillite_data::block::ids::SLIME_BLOCK {
+                let v = e.velocity();
+                if let Some(mut e) = ents.store.get_mut(id) {
+                    e.set_velocity(crate::block::contact::slime_step_on(v));
+                }
+            } else if crate::block::contact::has_step_on(block) {
+                cx.actions.push(crate::mob::WorldAction::StepOn(on, id));
+            }
+        }
+        let Some(e) = ents.store.get(id) else {
+            break;
+        };
         let way = [crate::survival::inside::Movement::plain(
             e.old_pos(),
             e.pos(),

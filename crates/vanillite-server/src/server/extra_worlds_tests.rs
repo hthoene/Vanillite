@@ -35,6 +35,16 @@ impl Server {
         self.wait_until_next_tick(0, true);
     }
 
+    /// Ticks until the player `uuid` is in `world`: a move between worlds places the player
+    /// once the destination chunks are generated, on the worker threads (in wall-clock time,
+    /// not in a fixed number of these unthrottled ticks).
+    fn step_until_held(&mut self, world: WorldId, uuid: u128) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !self.holds_player(world, uuid) && Instant::now() < deadline {
+            self.step_once();
+        }
+    }
+
     fn services(&self) -> crate::plugins::Services {
         crate::plugins::Services::new(&self.global, &self.compute, &self.config, &self.dir)
     }
@@ -120,9 +130,7 @@ fn extra_worlds_load_move_players_and_unload() {
     }
     assert_eq!(server.world_of(uuid), Some(WorldId(0)));
     services.move_player(uuid, to(lobby)).unwrap();
-    for _ in 0..5 {
-        server.step_once();
-    }
+    server.step_until_held(lobby, uuid);
     assert_eq!(server.world_of(uuid), Some(lobby));
     assert!(server.holds_player(lobby, uuid));
     assert!(!server.holds_player(WorldId(0), uuid));
@@ -132,9 +140,7 @@ fn extra_worlds_load_move_players_and_unload() {
     );
     assert!(server.unload_world(lobby, true).is_err());
     services.move_player(uuid, to(WorldId(0))).unwrap();
-    for _ in 0..5 {
-        server.step_once();
-    }
+    server.step_until_held(WorldId(0), uuid);
     assert!(server.holds_player(WorldId(0), uuid));
 
     // Unloading releases the folder; loading again keeps the index and the seed.

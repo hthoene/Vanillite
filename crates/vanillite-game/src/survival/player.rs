@@ -201,6 +201,10 @@ pub struct Survival {
     pub death_time: i32,
     /// `isRemoved()`: `tickDeath` removed the dead player (once, until it respawns).
     pub removed: bool,
+    /// `skipDropExperience` (`wasExperienceConsumed`): a sculk catalyst took the experience
+    /// reward (an armor stand the player broke next to one); the player drops no orbs and
+    /// feeds no catalyst until it respawns.
+    pub experience_consumed: bool,
     pub xp: Experience,
     /// `DATA_SCORE_ID`.
     pub score: i32,
@@ -347,6 +351,7 @@ impl Default for Survival {
             last_hurt: 0.0,
             death_time: 0,
             removed: false,
+            experience_consumed: false,
             xp: Experience::default(),
             score: 0,
             last_death: None,
@@ -1611,6 +1616,30 @@ pub fn die(
         entity.as_ref().pos(),
         Some(id),
     );
+    // `CatalystListener.handleGameEvent(ENTITY_DIE)`: the nearest sculk catalyst takes the
+    // experience reward as charge (`skipDropExperience`: no orbs) and blooms.
+    let consumed_before = player.survival.experience_consumed;
+    let consumed = consumed_before
+        || crate::block::sculk_catalyst::catalyst_block_near(env.blocks, entity.as_ref().pos());
+    if consumed && !consumed_before {
+        // `Player.getBaseExperienceReward`.
+        let reward =
+            if env.rules.bool(Rule::KEEP_INVENTORY) || player.game_mode == GameMode::Spectator {
+                0
+            } else {
+                player.survival.xp.level.saturating_mul(7).min(100)
+            };
+        player
+            .survival
+            .world_actions
+            .push(crate::mob::WorldAction::Level(
+                crate::mob::boss::warden::LevelAction::SculkDeath {
+                    pos: entity.as_ref().pos(),
+                    experience: reward,
+                    player: None,
+                },
+            ));
+    }
     env.out.push(Effect::PearlsVanish(uuid));
     let sink = std::sync::Arc::clone(&player.connection.sink);
     let mut death = crate::hooks::Death {
@@ -1667,7 +1696,7 @@ pub fn die(
             Vec3::new(pos.x, eye_y - f64::from(0.3_f32), pos.z),
             env,
         );
-        if amount > 0 {
+        if amount > 0 && !consumed {
             env.out.push(Effect::Experience { pos, amount });
         }
     }
@@ -2141,7 +2170,7 @@ pub fn do_tick_end(
 
 /// `updateFluidInteraction`: the fluids around the player; touching water resets the fall
 /// distance, and entering it splashes.
-fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+fn update_fluids(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
     let e = entity.as_ref();
     let pos = e.pos();
     let eye = Vec3::new(pos.x, pos.y + eye_height(e.dims().height), pos.z);
@@ -2153,7 +2182,74 @@ fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<
         if !was_in_water && !player.survival.first_tick && player.game_mode != GameMode::Spectator {
             water_splash(entity, env);
         }
+        // `isPushedByFluid` (not flying): `applyCurrentTo(WATER, 0.014)`.
+        if !player.survival.flying && player.game_mode != GameMode::Spectator {
+            push_by_fluid(entity, env, true, 0.014);
+        }
     }
+    // `applyCurrentTo(LAVA, ...)`: three times as hard where lava is fast (the Nether).
+    if contact.in_lava() && !player.survival.flying && player.game_mode != GameMode::Spectator {
+        let scale = if env.dimension == "minecraft:the_nether" {
+            0.007
+        } else {
+            0.002_333_333_333_333_333_5
+        };
+        push_by_fluid(entity, env, false, scale);
+    }
+}
+
+/// `EntityFluidInteraction.update` and `applyCurrentTo(fluid, entity, scale)` for a player:
+/// the flows of the water (or lava) the box touches (scaled by the height of that fluid so far
+/// below 0.4), averaged (other entities take the direction instead).
+fn push_by_fluid(entity: &mut EntityMut<'_>, env: &Env<'_>, water: bool, scale: f64) {
+    let e = entity.as_ref();
+    let aabb = e.aabb();
+    let b = aabb.inflate(-0.001, -0.001, -0.001);
+    let ceil = vanillite_base::math::ceil;
+    let floor = vanillite_base::math::floor;
+    let flows = MoveBlocks(env.blocks, env.border);
+    let (mut sum, mut count, mut height) = (Vec3::ZERO, 0_u32, 0.0_f64);
+    for x in floor(b.min_x)..ceil(b.max_x) {
+        for y in floor(b.min_y)..ceil(b.max_y) {
+            for z in floor(b.min_z)..ceil(b.max_z) {
+                let pos = BlockPos::new(x, y, z);
+                let Some(state) = env.blocks.block_state(pos) else {
+                    return;
+                };
+                let fluid = state.fluid_state();
+                let same = if water {
+                    env.facts.is_water(fluid)
+                } else {
+                    env.facts.is_lava(fluid)
+                };
+                if !same {
+                    continue;
+                }
+                let top = f64::from(y)
+                    + f64::from(blocks::fluid_height(env.blocks, env.facts, pos, fluid));
+                if top < b.min_y {
+                    continue;
+                }
+                height = height.max(top - aabb.min_y);
+                let mut flow = crate::mob::living::fluid_flow(&flows, env.facts, pos, fluid, water);
+                if height < 0.4 {
+                    flow = flow * height;
+                }
+                sum = sum + flow;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 || sum.length_sqr() < f64::from(1.0e-5_f32) {
+        return;
+    }
+    let old = e.velocity();
+    let mut impulse = sum * (1.0 / f64::from(count)) * scale;
+    if old.x.abs() < 0.003 && old.z.abs() < 0.003 && impulse.length() < 0.004_500_000_000_000_000_5
+    {
+        impulse = impulse.normalize() * 0.004_500_000_000_000_000_5;
+    }
+    entity.set_velocity(old + impulse);
 }
 
 /// `Player.doWaterSplashEffect`: the splash sound and the `splash` game event (the bubble and
@@ -2893,7 +2989,7 @@ fn check_fall_damage(
                 pos,
                 Some(on_state),
             ));
-            // `TurtleEggBlock.fallOn`: one egg breaks with chance 1/3 (spawn protection is not
+            // `TurtleEggBlock.fallOn`: one egg in three breaks (spawn protection is not
             // checked).
             if on_state.block() == vanillite_data::block::ids::TURTLE_EGG {
                 player
@@ -2926,7 +3022,11 @@ fn check_fall_damage(
                             event: entity_event::HONEY_SLIDE,
                         }),
                     });
-                    cause_fall_damage(entity, player, env, fall, 0.2, env.types.fall);
+                    if cause_fall_damage(entity, player, env, fall, 0.2, env.types.fall) {
+                        // The honey block's fall sound (`soundType.getFallSound()`).
+                        let sound = super::sound_event("minecraft:block.honey_block.fall");
+                        step_sound_event(env, id, pos, sound, 0.5, 0.75);
+                    }
                 }
                 Landing::Stalagmite => {
                     let kind = env.types.stalagmite;
@@ -2968,6 +3068,30 @@ fn check_fall_damage(
     }
 }
 
+/// `ShelfMushroomBlock.bounceOn`: the bounce sound at the block below that affects the
+/// movement (`getBlockPosBelowThatAffectsMyMovement`) of an entity at `pos`.
+pub fn shelf_mushroom_bounce(out: &mut Vec<Effect>, pos: Vec3) {
+    let below = BlockPos::new(
+        vanillite_base::math::floor(pos.x),
+        vanillite_base::math::floor(pos.y - 0.500_001),
+        vanillite_base::math::floor(pos.z),
+    );
+    play_sound(
+        out,
+        None,
+        Vec3::new(
+            f64::from(below.x) + 0.5,
+            f64::from(below.y) + 0.5,
+            f64::from(below.z) + 0.5,
+        ),
+        "minecraft:block.shelf_mushroom.bounce",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Blocks,
+        1.0,
+        1.0,
+        super::sound_seed(),
+    );
+}
+
 /// `calculateFallDamage`.
 pub fn fall_damage(fall_distance: f64, multiplier: f32) -> i32 {
     fall_damage_with(fall_distance, multiplier, SAFE_FALL_DISTANCE)
@@ -3006,9 +3130,9 @@ fn cause_fall_damage(
     fall_distance: f64,
     multiplier: f32,
     kind: DamageKind,
-) {
+) -> bool {
     if Abilities::of(player.game_mode).mayfly {
-        return;
+        return false;
     }
     // `LivingEntity.causeFallDamage`: a fall after an impulse counts from its impact point.
     let fall_distance = match player.survival.impulse_impact {
@@ -3059,6 +3183,7 @@ fn cause_fall_damage(
         let amount = damage as f32;
         hurt(entity, player, env, DamageSource::of(kind), amount);
     }
+    damage > 0
 }
 
 /// `ServerPlayer.checkMovementStatistics`: the distance statistics and the exhaustion of
@@ -3549,25 +3674,10 @@ fn simulate_move(
                 -current.y * 0.0
             };
             if restitution > 0.0 {
-                // `ShelfMushroomBlock.bounceOn`: the bounce sound at the block below.
-                let block = pos_below_affecting_movement(below);
                 if effect_state
                     .is_some_and(|s| s.block() == vanillite_data::block::ids::SHELF_MUSHROOM)
                 {
-                    crate::survival::play_sound(
-                        env.out,
-                        None,
-                        Vec3::new(
-                            f64::from(block.x) + 0.5,
-                            f64::from(block.y) + 0.5,
-                            f64::from(block.z) + 0.5,
-                        ),
-                        "minecraft:block.shelf_mushroom.bounce",
-                        SoundSource::Blocks,
-                        1.0,
-                        1.0,
-                        crate::survival::sound_seed(),
-                    );
+                    shelf_mushroom_bounce(env.out, below);
                 }
                 player.survival.game_events.push((
                     crate::level::game_event::events().bounce,

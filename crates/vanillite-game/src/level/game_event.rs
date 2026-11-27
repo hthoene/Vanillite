@@ -38,6 +38,9 @@ pub struct GameEventContext {
     pub source: Option<EntityId>,
     /// The block state it affected.
     pub affected: Option<BlockState>,
+    /// `Projectile.getOwner()` of the source when the event was posted: Vanilla's context
+    /// holds the entity itself, so its owner stays known after the projectile is removed.
+    pub owner: Option<EntityId>,
 }
 
 impl GameEventContext {
@@ -46,6 +49,7 @@ impl GameEventContext {
         GameEventContext {
             source,
             affected: None,
+            owner: None,
         }
     }
 
@@ -54,6 +58,7 @@ impl GameEventContext {
         GameEventContext {
             source,
             affected: Some(affected),
+            owner: None,
         }
     }
 }

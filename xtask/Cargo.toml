@@ -11,6 +11,7 @@ publish = false
 serde_json = { workspace = true, features = ["preserve_order"] }
 sha1.workspace = true
 toml.workspace = true
+vanillite-datagen.workspace = true
 ureq.workspace = true
 vanillite-config.workspace = true
 zip.workspace = true

@@ -403,7 +403,7 @@ pub(crate) fn known_movement(ents: &Entities, id: EntityId) -> Vec3 {
 }
 
 /// `getKnownSpeed`: a mob's movement between its last two ticks, a player's movement.
-fn known_speed(ents: &Entities, id: EntityId) -> Vec3 {
+pub(crate) fn known_speed(ents: &Entities, id: EntityId) -> Vec3 {
     if ents.player(id).is_some() {
         return player_movement(ents, id);
     }
@@ -594,9 +594,11 @@ fn cause_extra_knockback(
     target: EntityId,
     amount: f32,
     old_movement: Option<Vec3>,
+    by: (f32, bool),
 ) {
+    let by = Some((a.id, by.0, by.1));
     if a.is_player {
-        extra_knockback(ents, env, a.id, target, amount, a.y_rot, old_movement);
+        extra_knockback(ents, env, a.id, target, amount, a.y_rot, old_movement, by);
         return;
     }
     let living = ents.mob(target).is_some() || ents.player(target).is_some();
@@ -606,7 +608,7 @@ fn cause_extra_knockback(
             f64::from(vanillite_base::math::sin(rad)),
             f64::from(vanillite_base::math::cos(rad)),
         );
-        combat::knock_living(ents, env, target, f64::from(amount), sin, -cos);
+        combat::knock_living(ents, env, target, f64::from(amount), sin, -cos, by);
         if let Some(mut e) = ents.store.get_mut(a.id) {
             let v = e.as_ref().velocity();
             e.set_velocity(v.multiply(0.6, 1.0, 0.6));
@@ -644,9 +646,9 @@ pub fn stab_attack(
     let dealt = deals_damage && combat::hurt(level, ents, env, cx, target, source, damage);
     let mut affected = deals_knockback | dealt;
     if deals_knockback {
-        cause_extra_knockback(ents, env, a, target, 0.4, old_movement);
+        cause_extra_knockback(ents, env, a, target, 0.4, old_movement, (damage, false));
         let amount = knockback_amount(ents, env, a.id, target, weapon, &source);
-        cause_extra_knockback(ents, env, a, target, amount, old_movement);
+        cause_extra_knockback(ents, env, a, target, amount, old_movement, (damage, true));
     }
     let dismountable = ents.store.get(target).is_some_and(|e| {
         !crate::effect::entity_in_tag(e.kind(), "minecraft:cannot_be_dismounted_by_item_usage")

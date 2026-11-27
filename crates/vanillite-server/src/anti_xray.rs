@@ -233,9 +233,13 @@ impl AntiXray {
         &self,
         chunks: &Chunks,
         changes: &[BlockPos],
-        changed: &mut FxHashMap<SectionPos, Vec<BlockPos>>,
+        changed: &mut FxHashMap<SectionPos, vanillite_game::level::SectionChanges>,
     ) {
-        let mut seen: FxHashSet<BlockPos> = changed.values().flatten().copied().collect();
+        let mut seen: FxHashSet<BlockPos> = changed
+            .values()
+            .flat_map(|c| c.positions())
+            .copied()
+            .collect();
         let r = self.radius;
         for &center in changes {
             if center.y.saturating_sub(r) >= self.max_y {
@@ -252,7 +256,7 @@ impl AntiXray {
                             BlockPos::new(center.x.wrapping_add(dx), y, center.z.wrapping_add(dz));
                         if chunks.block(pos).is_some_and(|s| self.is_masked(s)) && seen.insert(pos)
                         {
-                            changed.entry(pos.section()).or_default().push(pos);
+                            changed.entry(pos.section()).or_default().insert(pos);
                         }
                     }
                 }
@@ -462,7 +466,11 @@ mod tests {
         let above = BlockPos::new(5, -62, 5);
         chunks.set_block(above, BlockState::AIR.0).expect("mine");
         packets.invalidate(&mut chunks, &[], &mut changed);
-        let updates: Vec<BlockPos> = changed.values().flatten().copied().collect();
+        let updates: Vec<BlockPos> = changed
+            .values()
+            .flat_map(|c| c.positions())
+            .copied()
+            .collect();
         assert!(updates.contains(&covered));
         assert!(updates.contains(&near));
         // A fresh packet shows the now exposed ore and still masks the covered one.
@@ -484,6 +492,11 @@ mod tests {
         packets.invalidate(&mut chunks, &[], &mut changed);
         let sent = sent_blocks(&packets, &chunks, ChunkPos::new(0, 0));
         assert_eq!(block_of(&sent, covered), diamond);
-        assert!(changed.values().flatten().all(|p| *p == covered));
+        assert!(
+            changed
+                .values()
+                .flat_map(|c| c.positions())
+                .all(|p| *p == covered)
+        );
     }
 }

@@ -695,7 +695,11 @@ impl FamilyHooks for Hooks {
     }
 
     fn look_control(t: &mut Tick<'_, '_>) -> bool {
-        t.mob_ref().kind == Kind::Phantom
+        match t.mob_ref().kind {
+            Kind::Phantom => true,
+            Kind::SulfurCube => cubes::look_control(t),
+            _ => false,
+        }
     }
 
     fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {

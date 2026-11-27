@@ -548,7 +548,9 @@ echo "== benchmark instances (xtask loadtest and bench; running only during a ru
 # `vanillite-bench props` (same seed, world type, difficulty and distances).
 VANILLA_VERSION=26.3
 VANILLA_SHA1=33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c
+# Release tag and its commit; `cargo xtask bench` reads both into the published results.
 PUMPKIN_TAG="0.2.2+26.3-26.60"
+PUMPKIN_COMMIT=eda69440e6369c5f8a05c3f69fc809c40dab93a6
 PUMPKIN_SHA256=3755df414cdece664223388a93421c5c674682f5b9264387416b8a9074cd8d59
 VELOCITY_JAR=velocity-4.3.1-45.jar
 VELOCITY_SHA256=0844bcabdcdb4f5b875906fd4c3365bc1bb76918e42bc595ed88ad195258dd75
@@ -1331,7 +1333,7 @@ write_if_changed /usr/local/bin/vanillite-loadtest-monitor 755 <<'EOF'
 #   S <rss KiB> <cpu ticks> <net rx bytes> <net tx bytes> <read syscalls> <storage read bytes>
 #     <storage write bytes>                                  every second
 #   T <tick nanoseconds>                                     every tick (vanillite@<port>)
-#   Q <output of /tick query>                                every 5 s (paper/vanilla-loadtest)
+#   Q <output of /tick query>                                every 5 s (paper/vanilla/pumpkin-loadtest)
 # Installed by scripts/testserver/provision.sh.
 set -u
 unit=${1:?usage: vanillite-loadtest-monitor <unit>}
@@ -1348,6 +1350,19 @@ case $unit in
         case $unit in vanilla-loadtest*) rcon=25578 ;; esac
         while sleep 5; do
             echo "Q $(paper-rcon --port "$rcon" tick query 2> /dev/null | tr '\n' ' ')"
+        done &
+        ;;
+    pumpkin-loadtest*)
+        # No RCON: the query goes to the console FIFO, its answer to stdout (the journal).
+        journalctl -u "$unit" -f -n 0 -o cat 2> /dev/null | sed -u 's/\x1b\[[0-9;]*m//g' |
+            while IFS= read -r line; do
+                case $line in
+                    *"Average time per tick:"*) avg=$line ;;
+                    *Percentiles:*) echo "Q ${avg:-} $line"; avg= ;;
+                esac
+            done &
+        while sleep 5; do
+            [ -p /run/vanillite-console/pumpkin ] && echo "tick query" > /run/vanillite-console/pumpkin
         done &
         ;;
 esac

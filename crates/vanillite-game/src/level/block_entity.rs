@@ -748,6 +748,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
         BlockEntity::Jukebox(j) => j.load(nbt),
         BlockEntity::Hopper(h) => {
+            h.lock = crate::block::lock::load(nbt);
             h.custom_name = crate::block::container::load_name(nbt);
             (h.loot_table, h.loot_seed) = crate::block::chest_loot::load(nbt);
             if h.loot_table.is_none() {
@@ -820,7 +821,11 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         }
         BlockEntity::SculkShrieker(shrieker) => shrieker.save(&mut nbt),
         BlockEntity::SculkCatalyst(catalyst) => catalyst.save(&mut nbt),
-        BlockEntity::Container(c) => c.save(&mut nbt),
+        BlockEntity::Container(c) => c.save(
+            &mut nbt,
+            crate::block::container::kind_of(state.block())
+                != Some(crate::block::container::Kind::ShulkerBox),
+        ),
         BlockEntity::Furnace(f) => f.save(&mut nbt),
         BlockEntity::BrewingStand(b) => b.save(&mut nbt),
         BlockEntity::Sign(sign) => sign.save(&mut nbt),
@@ -837,9 +842,10 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
         BlockEntity::Jukebox(j) => j.save(&mut nbt),
         BlockEntity::Hopper(h) => {
+            crate::block::lock::save(&h.lock, &mut nbt);
             crate::block::container::save_name(&h.custom_name, &mut nbt);
             if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {
-                crate::block::container::save_items(&h.items, &mut nbt);
+                crate::block::container::save_items_always(&h.items, &mut nbt);
             }
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
@@ -1256,6 +1262,10 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
 /// `BlockEntity.collectComponents`: the value of component `id` the block entity puts on the
 /// item it drops (loot `copy_components`), as a wire value.
 pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
+    if id == components::LOCK {
+        let lock = crate::block::lock::slot(entity)?.as_ref()?;
+        return crate::block::lock::component(lock);
+    }
     match entity {
         BlockEntity::Skull(skull) => skull.component(id),
         BlockEntity::Banner(banner) => banner.component(id),
@@ -1309,6 +1319,23 @@ fn merge_compound(target: &mut Compound, other: &Compound) {
             _ => target.insert(key, value.clone()),
         }
     }
+}
+
+/// Whether the stack's `block_entity_data` holds `key` (`TypedEntityData.contains`).
+pub fn block_entity_data_contains(stack: &ItemStack, key: &str) -> bool {
+    let Some(wire) = stack.component(components::BLOCK_ENTITY_DATA) else {
+        return false;
+    };
+    let mut reader = vanillite_protocol::codec::Reader::new(wire);
+    if reader.varint().is_err() {
+        return false;
+    }
+    let mut rest = reader.rest();
+    let mut budget = vanillite_nbt::Budget::file();
+    matches!(
+        vanillite_nbt::read::read_network(&mut rest, &mut budget),
+        Ok(Some(Tag::Compound(data))) if data.get(key).is_some()
+    )
 }
 
 /// `BlockItem.updateCustomBlockEntityTag`: the item's `block_entity_data` merged into the
@@ -1366,6 +1393,12 @@ pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
             .component(components::CONTAINER)
             .and_then(|v| vanillite_protocol::item::decode_container_contents(v).ok())
     };
+    if let Some(lock) = level
+        .block_entity_mut(pos)
+        .and_then(crate::block::lock::slot_mut)
+    {
+        *lock = crate::block::lock::from_stack(stack);
+    }
     match level.block_entity_mut(pos) {
         Some(BlockEntity::Skull(skull)) => skull.apply(stack),
         Some(BlockEntity::Banner(banner)) => banner.apply(stack),

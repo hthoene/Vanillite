@@ -220,3 +220,46 @@ fn configuration_sends_links_code_of_conduct_and_required_pack() {
     thread.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A player the server refuses (whitelist on, not on it) gets a login disconnect with
+/// Vanilla's reason before `LoginFinished`, not a kick after configuration (#212).
+#[test]
+fn refusal_is_a_login_disconnect() {
+    use vanillite_protocol::client::{ClientError, TestClient};
+    use vanillite_protocol::packets::handshake::Intent;
+
+    let dir = std::env::temp_dir().join(format!("vanillite-admin-wl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("server.properties"),
+        "view-distance=2\nonline-mode=false\nwhite-list=true\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
+    let mut builder = ServerBuilder::new(&dir);
+    builder.vanilla_pack(VanillaPack::None).network(false);
+    let server = builder.start().expect("server starts");
+    let addr = server.local_addr().expect("listening");
+    let handle = server.handle();
+    let thread = std::thread::spawn(move || server.run());
+
+    let stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let mut client = TestClient::new(stream);
+    client
+        .handshake("localhost", addr.port(), Intent::Login)
+        .unwrap();
+    match client.login("Mallory", None) {
+        Err(ClientError::Disconnected(reason)) => {
+            assert_eq!(reason, "multiplayer.disconnect.not_whitelisted");
+        }
+        other => panic!("expected a login disconnect, got {other:?}"),
+    }
+
+    handle.stop();
+    thread.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

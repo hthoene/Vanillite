@@ -47,6 +47,16 @@ const NEAR: i32 = 2;
 const SPREAD_SPEED: f64 = 72.7;
 /// Bytes read per `read` call.
 const READ_CHUNK: usize = 16 * 1024;
+/// Id of the `MOTION_BLOCKING` heightmap in `level_chunk_with_light`.
+const MOTION_BLOCKING: i32 = 4;
+/// Lowest block y of the overworld, the base of the heightmap values (load tests run there).
+const MIN_Y: f64 = -64.0;
+/// Half the width of a player's bounding box.
+const HALF_WIDTH: f64 = 0.3;
+
+/// The ground of one chunk: the `MOTION_BLOCKING` heights by `x + 16 * z`, as block y above
+/// [`MIN_Y`].
+type Ground = Box<[u16; 256]>;
 
 type BotResult<T> = Result<T, String>;
 
@@ -97,7 +107,7 @@ enum Action {
     Ping(i32),
     Teleport(PlayerPosition),
     BatchFinished,
-    Chunk(i32, i32),
+    Chunk(i32, i32, Option<Ground>),
     Forget(i32, i32),
     Pong(i64),
     Disconnect(String),
@@ -131,6 +141,9 @@ impl Bot {
         // Spread: the point this bot flies to (picked when the mode starts).
         let mut goal: Option<(f64, f64)> = None;
         let mut loaded: HashSet<(i32, i32)> = HashSet::new();
+        // The ground of the chunks the random walk can reach: bots walk on the terrain
+        // instead of into it, which the server would answer with a setback.
+        let mut ground: HashMap<(i32, i32), Ground> = HashMap::new();
         // Full view: every chunk within the view distance (a circle) has arrived.
         let mut full_view = false;
         let view = i32::from(self.config.view_distance.max(1));
@@ -189,9 +202,23 @@ impl Bot {
                             })?,
                             Action::Forget(cx, cz) => {
                                 loaded.remove(&(cx, cz));
+                                ground.remove(&(cx, cz));
                                 self.metrics.chunks_forgotten.fetch_add(1, Ordering::Relaxed);
                             }
-                            Action::Chunk(cx, cz) => {
+                            Action::Chunk(cx, cz, heights) => {
+                                // Chunks within the walk radius around home (the walk turns
+                                // back at the radius, so it reaches a bit beyond).
+                                let reach = self.config.radius + 32.0;
+                                let (dx, dz) = (
+                                    (f64::from(cx) * 16.0 + 8.0 - home.0).abs(),
+                                    (f64::from(cz) * 16.0 + 8.0 - home.1).abs(),
+                                );
+                                if let Some(heights) = heights
+                                    && dx < reach
+                                    && dz < reach
+                                {
+                                    ground.insert((cx, cz), heights);
+                                }
                                 if let Some(since) = wanted.remove(&(cx, cz))
                                     && let Ok(mut v) = self.metrics.chunk_ms.lock()
                                 {
@@ -322,8 +349,19 @@ impl Bot {
                         continue;
                     }
                     let rad = yaw.to_radians();
+                    let (old_x, old_z) = (*x, *z);
                     *x -= rad.sin() * speed;
                     *z += rad.cos() * speed;
+                    if movement == Movement::Random
+                        && let Some(new) = ground_at(&ground, *x, *z)
+                    {
+                        // Up at once; down only once the box left the higher ground, as
+                        // the server moves along y first, at the old position.
+                        *y = match ground_at(&ground, old_x, old_z) {
+                            Some(old) if new < *y => new.max(old.min(*y)),
+                            _ => new,
+                        };
+                    }
                     conn.queue(&MovePlayerPosRot {
                         x: *x,
                         y: *y,
@@ -368,6 +406,49 @@ impl Bot {
             }
         }
     }
+}
+
+/// The highest ground under a player's box at `x`, `z` (`None`: a chunk is not known).
+fn ground_at(ground: &HashMap<(i32, i32), Ground>, x: f64, z: f64) -> Option<f64> {
+    let mut top = 0u16;
+    for (dx, dz) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+        let bx = (x + dx * HALF_WIDTH).floor() as i32;
+        let bz = (z + dz * HALF_WIDTH).floor() as i32;
+        let heights = ground.get(&(bx >> 4, bz >> 4))?;
+        top = top.max(heights[((bx & 15) + 16 * (bz & 15)) as usize]);
+    }
+    Some(MIN_Y + f64::from(top))
+}
+
+/// Reads the `MOTION_BLOCKING` heightmap from the rest of `level_chunk_with_light` after the
+/// position (`None` if it is missing or malformed).
+fn read_ground(r: &mut Reader<'_>) -> Option<Ground> {
+    let mut found = None;
+    for _ in 0..r.varint().ok()? {
+        let kind = r.varint().ok()?;
+        let longs = usize::try_from(r.varint().ok()?).ok()?;
+        if kind != MOTION_BLOCKING {
+            for _ in 0..longs {
+                r.i64().ok()?;
+            }
+            continue;
+        }
+        // Values do not span longs (`SimpleBitStorage`).
+        let per_long = 256usize.div_ceil(longs.max(1));
+        let bits = 64 / per_long;
+        let mask = (1u64 << bits) - 1;
+        let mut heights = Box::new([0u16; 256]);
+        for l in 0..longs {
+            let v = r.i64().ok()? as u64;
+            for k in 0..per_long {
+                if let Some(h) = heights.get_mut(l * per_long + k) {
+                    *h = ((v >> (k * bits)) & mask) as u16;
+                }
+            }
+        }
+        found = Some(heights);
+    }
+    found
 }
 
 /// Moves `y` towards the cruise altitude; returns the horizontal speed: none while climbing,
@@ -629,7 +710,8 @@ impl Conn {
                 }
                 id::CHUNK_BATCH_FINISHED => Action::BatchFinished,
                 id::LEVEL_CHUNK_WITH_LIGHT => {
-                    Action::Chunk(r.i32().map_err(err)?, r.i32().map_err(err)?)
+                    let (x, z) = (r.i32().map_err(err)?, r.i32().map_err(err)?);
+                    Action::Chunk(x, z, read_ground(&mut r))
                 }
                 id::FORGET_LEVEL_CHUNK => {
                     // `ChunkPos` as one long: x in the low, z in the high 32 bits.

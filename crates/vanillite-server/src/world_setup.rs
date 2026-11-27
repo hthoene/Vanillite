@@ -719,7 +719,7 @@ impl ChunkPackets {
         &mut self,
         chunks: &mut Chunks,
         light: &[(ChunkPos, vanillite_world::chunks::LightChange)],
-        changed: &mut FxHashMap<vanillite_base::SectionPos, Vec<vanillite_base::BlockPos>>,
+        changed: &mut FxHashMap<vanillite_base::SectionPos, vanillite_game::level::SectionChanges>,
     ) {
         let cache = self.cache.get_mut();
         for (pos, _) in light {

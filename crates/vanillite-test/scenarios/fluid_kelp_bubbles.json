@@ -1,0 +1,233 @@
+{
+  "description": "Kelp and seagrass in a pool: a kelp column breaks when its ground goes, bone meal grows seagrass tall and kelp up; soul sand and magma under the pool grow bubble columns that push an item and an experience orb up and pull an item and primed TNT down; a tall seagrass breaks with its upper half; at last a sponge soaks up the pool, the bubble columns and the plants, which drop.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "level_rng": true,
+  "entities": [],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      8,
+      -56,
+      8
+    ]
+  ],
+  "ticks": 70,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -62,
+        0
+      ],
+      "to": [
+        8,
+        -57,
+        8
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -61,
+        1
+      ],
+      "to": [
+        7,
+        -57,
+        7
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:kelp_plant"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:kelp_plant"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -59,
+        2
+      ],
+      "block": "minecraft:kelp[age=3]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        2
+      ],
+      "block": "minecraft:seagrass"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -61,
+        2
+      ],
+      "block": "minecraft:tall_seagrass[half=lower]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:tall_seagrass[half=upper]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        6
+      ],
+      "block": "minecraft:kelp_plant"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        6
+      ],
+      "block": "minecraft:kelp[age=10]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        6
+      ],
+      "block": "minecraft:seagrass"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        2,
+        -62,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 3,
+      "op": "bonemeal",
+      "pos": [
+        4,
+        -61,
+        2
+      ]
+    },
+    {
+      "tick": 4,
+      "op": "bonemeal",
+      "pos": [
+        2,
+        -60,
+        6
+      ]
+    },
+    {
+      "tick": 5,
+      "op": "place",
+      "pos": [
+        6,
+        -62,
+        6
+      ],
+      "block": "minecraft:soul_sand"
+    },
+    {
+      "tick": 5,
+      "op": "place",
+      "pos": [
+        6,
+        -62,
+        4
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "tick": 12,
+      "op": "command",
+      "command": "summon item 6.5 -60 6.5 {Item:{id:\"minecraft:stick\",count:1}}"
+    },
+    {
+      "tick": 12,
+      "op": "command",
+      "command": "summon item 6.5 -58.5 4.5 {Item:{id:\"minecraft:stone\",count:1}}"
+    },
+    {
+      "tick": 13,
+      "op": "command",
+      "command": "summon experience_orb 6.5 -60 6.5 {Value:2}"
+    },
+    {
+      "tick": 13,
+      "op": "command",
+      "command": "summon tnt 6.5 -59 4.5 {fuse:200}"
+    },
+    {
+      "tick": 30,
+      "op": "place",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        4,
+        -57,
+        4
+      ],
+      "block": "minecraft:sponge"
+    }
+  ]
+}

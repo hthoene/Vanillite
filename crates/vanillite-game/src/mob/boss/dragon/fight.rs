@@ -308,7 +308,7 @@ impl DragonFight {
             // `addTicketWithRadius(DRAGON, (0, 0), 9)`; the ticket type loads and simulates.
             let center = ChunkPos::new(0, 0);
             self.ticket = Some([
-                level.chunks.add_ticket(center, 33 - 9),
+                level.chunks.add_ticket_deferred(center, 33 - 9),
                 level.chunks.add_simulation_ticket(center, 33 - 9),
             ]);
         }
@@ -365,13 +365,22 @@ impl DragonFight {
     }
 
     /// `isArenaLoaded`: Vanilla checks the chunks `x -8..8` of the row `z = 8` only.
-    fn arena_loaded(&self, level: &Level) -> bool {
+    fn arena_loaded(&self, level: &mut Level) -> bool {
+        use vanillite_world::chunks::BLOCK_TICKING_LEVEL;
         let c = self.origin.chunk();
         for x in c.x - 8..=c.x + 8 {
             let chunk = ChunkPos::new(x, c.z + 8);
-            if !level.is_block_ticking(chunk) {
+            // `LevelChunk.getFullStatus` follows the holder's ticket level, which tickets added
+            // since the chunk system's last run do not change yet; `getChunk(x, z, FULL,
+            // false)` loads or generates the chunk while the world thread waits.
+            if level
+                .chunks
+                .holder_level(chunk)
+                .is_none_or(|l| l > BLOCK_TICKING_LEVEL)
+            {
                 return false;
             }
+            level.load_chunk(chunk);
         }
         (-1..=1)
             .all(|dx| (-1..=1).all(|dz| level.entities_loaded(ChunkPos::new(c.x + dx, c.z + dz))))
@@ -495,7 +504,8 @@ impl DragonFight {
             Rotation {
                 y_rot: yaw,
                 x_rot: 0.0,
-                y_head_rot: yaw,
+                // The head keeps the constructor's rotation (`snapTo` turns body and yaw only).
+                y_head_rot: 0.0,
             },
             mob,
         );

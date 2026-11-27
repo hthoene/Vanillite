@@ -1,6 +1,6 @@
 //! Items and the default values of their core components.
 //!
-//! The full default component set of every item is in `data/vanilla/items.json`; typed component
+//! The full default component set of every item is in [`crate::raw::ITEMS_JSON`]; typed component
 //! structs are generated from it as gameplay needs them.
 
 pub use crate::generated::items::{ITEMS, Rarity, TOOLS, ids};

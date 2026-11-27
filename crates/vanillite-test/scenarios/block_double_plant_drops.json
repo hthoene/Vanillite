@@ -1,0 +1,387 @@
+{
+ "description": "Tall grass and large ferns drop from one half only (DoublePlantBlock with the location_check of their loot tables): a player breaks lower halves and upper halves by hand (the broken half drops in playerWillDestroy while the other half is there; the other half breaks by its shape update and fails the check), a large fern with shears gives two ferns once, and a large fern whose ground is destroyed by /setblock drops once.",
+ "tier": "fast",
+ "level_rng": true,
+ "player_state": true,
+ "region": [
+  [
+   3,
+   -62,
+   3
+  ],
+  [
+   13,
+   -57,
+   13
+  ]
+ ],
+ "ticks": 40,
+ "entities": [
+  {
+   "name": "p",
+   "type": "minecraft:player",
+   "pos": [
+    8.5,
+    -60.0,
+    8.5
+   ]
+  }
+ ],
+ "setup": [
+  {
+   "op": "set",
+   "pos": [
+    6,
+    -60,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    6,
+    -59,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    6,
+    -60,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    6,
+    -59,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    7,
+    -60,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    7,
+    -59,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    7,
+    -60,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    7,
+    -59,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    8,
+    -60,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    8,
+    -59,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    8,
+    -60,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    8,
+    -59,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    9,
+    -60,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    9,
+    -59,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    9,
+    -60,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    9,
+    -59,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    10,
+    -60,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    10,
+    -59,
+    6
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    10,
+    -60,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    10,
+    -59,
+    11
+   ],
+   "block": "minecraft:tall_grass[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    6,
+    -60,
+    8
+   ],
+   "block": "minecraft:large_fern[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    6,
+    -59,
+    8
+   ],
+   "block": "minecraft:large_fern[half=upper]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    11,
+    -60,
+    8
+   ],
+   "block": "minecraft:large_fern[half=lower]"
+  },
+  {
+   "op": "set",
+   "pos": [
+    11,
+    -59,
+    8
+   ],
+   "block": "minecraft:large_fern[half=upper]"
+  }
+ ],
+ "actions": [
+  {
+   "tick": 2,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    6,
+    -60,
+    6
+   ],
+   "face": "south",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 4,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    7,
+    -60,
+    6
+   ],
+   "face": "south",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 6,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    8,
+    -60,
+    6
+   ],
+   "face": "south",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 8,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    9,
+    -60,
+    6
+   ],
+   "face": "south",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 10,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    10,
+    -60,
+    6
+   ],
+   "face": "south",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 12,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    6,
+    -59,
+    11
+   ],
+   "face": "north",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 14,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    7,
+    -59,
+    11
+   ],
+   "face": "north",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 16,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    8,
+    -59,
+    11
+   ],
+   "face": "north",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 18,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    9,
+    -59,
+    11
+   ],
+   "face": "north",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 20,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    10,
+    -59,
+    11
+   ],
+   "face": "north",
+   "item": "minecraft:air"
+  },
+  {
+   "tick": 22,
+   "op": "attack",
+   "entity": "p",
+   "pos": [
+    6,
+    -60,
+    8
+   ],
+   "face": "east",
+   "item": "minecraft:shears"
+  },
+  {
+   "tick": 24,
+   "op": "command",
+   "command": "setblock 11 -61 8 minecraft:air destroy"
+  }
+ ]
+}

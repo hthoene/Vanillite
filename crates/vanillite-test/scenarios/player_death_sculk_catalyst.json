@@ -1,0 +1,63 @@
+{
+  "description": "A player with 10 levels dies by /damage next to a sculk catalyst (CatalystListener.handleGameEvent(ENTITY_DIE) of ServerPlayer.die): the catalyst takes the experience reward as charge, the player drops no experience orbs (skipDropExperience), the catalyst blooms and the charge spreads sculk. All chunks in the player's simulation distance are forced.",
+  "tier": "fast",
+  "dimensions": true,
+  "player_state": true,
+  "level_rng": true,
+  "time": 6000,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -62,
+      -16
+    ],
+    [
+      31,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 45,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        7
+      ],
+      "block": "minecraft:sculk_catalyst[bloom=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "xp add alex 10 levels"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "damage alex 50 minecraft:generic"
+    }
+  ]
+}
