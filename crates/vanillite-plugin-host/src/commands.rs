@@ -628,6 +628,33 @@ mod tests {
         status::OK
     }
 
+    struct Op;
+
+    impl vanillite_command::Source for Op {
+        fn permission_level(&self) -> u8 {
+            4
+        }
+
+        fn online_player_names(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    fn node(parent: Option<usize>, literal: bool, name: &str) -> Node {
+        Node {
+            parent,
+            literal,
+            name: name.into(),
+            arg_type: abi::arg::WORD,
+            min: None,
+            max: None,
+            level: 0,
+            permission: None,
+            executes: 1,
+            suggests: 0,
+        }
+    }
+
     fn push(host: &PluginHost, name: &str, late: bool) {
         let commands = &host.inner.commands;
         commands
@@ -636,18 +663,7 @@ mod tests {
             .unwrap_or_else(PoisonError::into_inner)
             .push(Tree {
                 plugin: 0,
-                nodes: vec![Node {
-                    parent: None,
-                    literal: true,
-                    name: name.into(),
-                    arg_type: 0,
-                    min: None,
-                    max: None,
-                    level: 0,
-                    permission: None,
-                    executes: 1,
-                    suggests: 0,
-                }],
+                nodes: vec![node(None, true, name), node(Some(0), false, "word")],
                 execute,
                 suggest: None,
                 user: SendPtr(std::ptr::null_mut()),
@@ -686,5 +702,65 @@ mod tests {
             "the old tree is unchanged"
         );
         assert!(host.add_late_commands(&next, |n| n).is_none());
+    }
+
+    #[test]
+    fn a_parsed_command_runs_the_same_after_late_commands() {
+        let host = PluginHost::empty();
+        push(&host, "early", false);
+        let mut dispatcher = Dispatcher::<u32>::new();
+        host.register_commands(&mut dispatcher, |n| n);
+        // A compiled function keeps the parse of the old tree (node ids into it).
+        let compiled = dispatcher.parse_command("early abc", &Op).expect("parses");
+        push(&host, "late", true);
+        let next = host
+            .add_late_commands(&dispatcher, |n| n)
+            .expect("late trees are added");
+        for arg in compiled.args.iter() {
+            assert_eq!(
+                format!("{:?}", next.node(arg.node).map(|n| &n.kind)),
+                format!("{:?}", dispatcher.node(arg.node).map(|n| &n.kind)),
+            );
+        }
+        let again = next.parse_command("early abc", &Op).expect("parses");
+        assert_eq!(again.command, compiled.command);
+        assert_eq!(format!("{:?}", again.args), format!("{:?}", compiled.args));
+        assert!(next.parse_command("late x", &Op).is_ok());
+    }
+
+    #[test]
+    fn invalid_trees_change_nothing() {
+        let host = PluginHost::empty();
+        let mut dispatcher = Dispatcher::<u32>::new();
+        host.register_commands(&mut dispatcher, |n| n);
+        let empty = abi::CommandSpec {
+            size: abi::size_of::<abi::CommandSpec>(),
+            nodes: std::ptr::null(),
+            count: 0,
+            stride: size_of::<abi::CommandNode>(),
+            execute,
+            suggest: None,
+            user: std::ptr::null_mut(),
+        };
+        assert!(copy_nodes(&empty).is_err());
+        let commands = &host.inner.commands;
+        assert!(!commands.late.load(Ordering::Acquire));
+        assert!(host.add_late_commands(&dispatcher, |n| n).is_none());
+        // Late trees whose name exists already leave the tree as it was.
+        push(&host, "dup", false);
+        let mut dispatcher = Dispatcher::<u32>::new();
+        host.register_commands(&mut dispatcher, |n| n);
+        push(&host, "dup", true);
+        let next = host
+            .add_late_commands(&dispatcher, |n| n)
+            .expect("a copy is made");
+        assert_eq!(
+            format!("{:?}", next.find(&["dup", "word"])),
+            format!("{:?}", dispatcher.find(&["dup", "word"]))
+        );
+        assert_eq!(
+            next.parse_command("dup x", &Op).map(|p| p.command).ok(),
+            Some(1)
+        );
     }
 }
