@@ -279,6 +279,72 @@ pub fn tick_mob(t: &mut Tick<'_, '_>) {
     sync_mob(t.ents, t.env.out, id);
 }
 
+/// `sendEffectToPassengers` / `onEffectsRemoved` of a mob: its effect events as packets to
+/// the players riding it.
+fn send_to_passengers(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) {
+    let riders: Vec<EntityId> = ents
+        .riding
+        .passengers_of(id)
+        .iter()
+        .copied()
+        .filter(|&p| ents.player(p).is_some())
+        .collect();
+    let Some(network_id) = ents.store.get(id).map(|e| e.network_id().0) else {
+        return;
+    };
+    let Some(m) = ents.mob_mut(id) else {
+        return;
+    };
+    for event in m.effects.take_events() {
+        let packet = match event {
+            EffectEvent::Update {
+                instance, blend, ..
+            } => SharedPacket::of(&update_packet(network_id, &instance, blend)),
+            EffectEvent::Resend(instance) => {
+                SharedPacket::of(&update_packet(network_id, &instance, false))
+            }
+            EffectEvent::Remove(effect) => SharedPacket::of(&RemoveMobEffect {
+                entity_id: network_id,
+                effect: i32::from(effect.0),
+            }),
+            _ => continue,
+        };
+        for &player in &riders {
+            out.push(Effect::To {
+                player,
+                packet: std::sync::Arc::clone(&packet),
+            });
+        }
+    }
+}
+
+/// `ServerPlayer.startRiding` (`sendActiveEffects` of a living vehicle) and `removeVehicle`
+/// (a `remove_mob_effect` per effect): the vehicle's effects for its riding player.
+pub fn send_vehicle_effects(ents: &mut Entities, player: EntityId, vehicle: EntityId, mount: bool) {
+    let Some(network_id) = ents.store.get(vehicle).map(|e| e.network_id().0) else {
+        return;
+    };
+    let Some(effects) = ents
+        .mob(vehicle)
+        .map(|m| m.effects.iter().cloned().collect::<Vec<_>>())
+    else {
+        return;
+    };
+    let Some(p) = ents.player_mut(player) else {
+        return;
+    };
+    for e in &effects {
+        if mount {
+            p.connection.sink.send(&update_packet(network_id, e, false));
+        } else {
+            p.connection.sink.send(&RemoveMobEffect {
+                entity_id: network_id,
+                effect: i32::from(e.effect.0),
+            });
+        }
+    }
+}
+
 /// Sends what changed in a player's effects: `update_mob_effect` / `remove_mob_effect` to its
 /// client, the invisibility and glowing flags and particles to everyone, the changed
 /// attributes to everyone tracking it and itself (`onAttributeUpdated` clamps health and
@@ -543,9 +609,12 @@ fn attr_field_ref(attrs: &Attrs, a: Attribute) -> Option<f64> {
 
 /// Sync of a mob after its effects changed: flags and particles, the attribute values
 /// (`attrs` carries the modified values, the unmodified ones wait in `base_attrs`), health and
-/// absorption clamped, and the synced attributes to the trackers. Riders hear nothing (no
-/// `sendEffectToPassengers`): the events are dropped.
+/// absorption clamped, and the synced attributes to the trackers. Riding players hear of the
+/// changes (`sendEffectToPassengers`).
 pub fn sync_mob(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) {
+    if ents.mob(id).is_some_and(|m| m.effects.has_events()) {
+        send_to_passengers(ents, out, id);
+    }
     let Entities { store, mobs, .. } = ents;
     let Some(mut entity) = store.get_mut(id) else {
         return;
