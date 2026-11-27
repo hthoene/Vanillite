@@ -1,17 +1,16 @@
 //! A player's connection as the world sees it, and the play packet handlers of milestone 1
 //! (Vanilla's `ServerGamePacketListenerImpl`).
 
-use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vanillite_base::Vec3;
-use vanillite_protocol::InboundReceiver;
 use vanillite_protocol::chat::{
     ArgumentSignature, ChatSessionData, LastSeenUpdate, MessageSignature,
 };
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
+use vanillite_protocol::{Inbound, InboundReceiver};
 
 use crate::block::technical;
 use vanillite_protocol::packets::play::serverbound::{
@@ -64,8 +63,9 @@ pub enum EntityAction {
         sneaking: bool,
     },
     /// `use_item` (after the block handling): items used on air that need the entities
-    /// (boats, carrot on a stick, shields, eating).
-    UseItem(Hand),
+    /// (boats, carrot on a stick, shields, eating, throwing), with the player's known movement
+    /// when the packet arrived (later moves of the tick change it).
+    UseItem { hand: Hand, known_movement: Vec3 },
     /// `use_item_on` with an item that acts on entities (spawn eggs, leads on fences).
     UseItemOn {
         hand: Hand,
@@ -87,6 +87,8 @@ pub enum EntityAction {
     Stab,
     /// `player_command` `START_FALL_FLYING`.
     StartFallFlying,
+    /// `punch`: the swing resets the attack strength (`resetAttackStrengthTicker`).
+    Punch,
 }
 
 /// What a player sends to steer its vehicle.
@@ -244,6 +246,8 @@ pub struct Connection {
     /// Clientbound packets.
     pub sink: Arc<dyn PacketSink>,
     inbound: InboundReceiver,
+    /// The packets taken from `inbound` for this tick (kept for its capacity).
+    taken: Vec<Inbound>,
     /// Movement validation and teleports.
     pub movement: Movement,
     /// Chunk view and sending.
@@ -317,6 +321,7 @@ impl Connection {
         Connection {
             sink,
             inbound,
+            taken: Vec::new(),
             movement: Movement::new(pos),
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
@@ -340,20 +345,22 @@ impl Connection {
         play: &mut PlayContext<'_>,
         budget: usize,
     ) -> Handled {
-        for _ in 0..budget {
-            let packet = match self.inbound.try_recv() {
-                Ok(inbound) => inbound.packet,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Handled::Disconnected,
-            };
+        let mut taken = std::mem::take(&mut self.taken);
+        taken.clear();
+        let disconnected = self.inbound.take(budget, &mut taken).is_err();
+        for inbound in taken.drain(..) {
             play.actor.pos = state.body.pos;
             play.actor.y_rot = state.body.y_rot;
             play.actor.x_rot = state.body.x_rot;
             play.actor.on_ground = state.body.on_ground;
             play.actor.sneaking = state.shift_key_down;
-            if let Err(Kick(reason)) = self.handle(packet, state, ctx, chat, play) {
+            if let Err(Kick(reason)) = self.handle(inbound.packet, state, ctx, chat, play) {
                 return Handled::Kick(reason);
             }
+        }
+        self.taken = taken;
+        if disconnected {
+            return Handled::Disconnected;
         }
         if self.sink.is_closed() {
             Handled::Disconnected
@@ -478,6 +485,13 @@ impl Connection {
         play: &mut PlayContext<'_>,
     ) -> Result<(), Kick> {
         let sink = self.sink.as_ref();
+        let ctx = MoveContext {
+            blocks: play
+                .level
+                .level()
+                .map(|l| -> &dyn crate::mob::physics::Blocks { l }),
+            ..ctx
+        };
         let mv =
             |pos: Option<(f64, f64, f64)>,
              rot,
@@ -731,11 +745,27 @@ impl Connection {
             }
             ServerboundPlay::UseItem(p) => {
                 if self.movement.has_client_loaded() {
+                    // `handleUseItem`: a held item turns the player to the packet's rotation
+                    // first.
+                    let stack = match p.hand {
+                        Hand::MainHand => play.inventory.selected_item(),
+                        Hand::OffHand => &play.inventory.offhand,
+                    };
+                    if !stack.is_empty() {
+                        let y_rot = crate::player::movement::wrap_degrees(p.y_rot);
+                        let x_rot = crate::player::movement::wrap_degrees(p.x_rot);
+                        if x_rot != state.body.x_rot || y_rot != state.body.y_rot {
+                            crate::player::movement::snap_rotation(&mut state.body, y_rot, x_rot);
+                        }
+                    }
                     let handled = self
                         .play
                         .use_item(play, p.hand, p.sequence, p.y_rot, p.x_rot);
                     if !handled && self.entity_actions.len() < 16 {
-                        self.entity_actions.push(EntityAction::UseItem(p.hand));
+                        self.entity_actions.push(EntityAction::UseItem {
+                            hand: p.hand,
+                            known_movement: self.movement.known_movement,
+                        });
                     }
                 }
             }
@@ -752,6 +782,9 @@ impl Connection {
                     );
                 if swing {
                     play.swings.push(Hand::MainHand);
+                }
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Punch);
                 }
             }
             ServerboundPlay::SetCarriedItem(p) => match usize::try_from(p.slot) {

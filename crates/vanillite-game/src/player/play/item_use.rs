@@ -414,13 +414,12 @@ fn pop_resource_from_face(level: &mut Level, pos: BlockPos, face: Direction, sta
     } else {
         f64::from(sz) * 0.1
     };
-    crate::block::drops::spawn_item(
+    crate::block::drops::spawn_item_with_motion(
         level,
         Vec3::new(x, y, z),
         stack,
         Vec3::new(dx, dy, dz),
         10,
-        None,
     );
 }
 

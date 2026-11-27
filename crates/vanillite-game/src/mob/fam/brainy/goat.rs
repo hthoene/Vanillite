@@ -862,9 +862,10 @@ fn drop_horn(t: &mut Tick<'_, '_>) -> bool {
     let dy = f64::from(0.3 + r.next_float() * 0.4);
     let dz = f64::from(-0.2 + r.next_float() * 0.4);
     let pos = t.pos();
-    let (uuid, y_rot, _) = crate::mob::new_item_entity();
+    let (uuid, y_rot, item_random) = crate::mob::new_item_entity_with_motion();
     let stack = crate::mob::equipment::stack("minecraft:goat_horn");
     t.env.out.push(crate::survival::Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity: Vec3::new(dx, dy, dz),

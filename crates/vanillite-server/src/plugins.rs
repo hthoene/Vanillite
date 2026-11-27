@@ -567,6 +567,17 @@ impl ServerAccess for Services {
         true
     }
 
+    fn send_packet(&self, player: u128, body: Vec<u8>, skip_listeners: bool) -> bool {
+        let Some((sink, _)) = self.connection(player) else {
+            return false;
+        };
+        if skip_listeners {
+            sink.send_untapped(body)
+        } else {
+            sink.send_body(body)
+        }
+    }
+
     fn send_plugin_message(&self, player: u128, channel: &str, data: &[u8]) -> bool {
         let Ok(channel) = vanillite_protocol::types::Identifier::new(channel) else {
             return false;

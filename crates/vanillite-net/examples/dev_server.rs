@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             j.outbound.close();
             players.push(j);
         }
-        players.retain(|p| {
+        players.retain_mut(|p| {
             loop {
                 match p.inbound.try_recv() {
                     Ok(_) => {}

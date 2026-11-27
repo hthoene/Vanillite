@@ -19,7 +19,7 @@
 //! traces a ray along the player's view, mobs drop twice the experience and, with
 //! `protect.enabled`, phantoms do not spawn naturally.
 //!
-//! ABI 1.7: `/hello lobby` creates the flat extra world `hello_lobby` (own folder, like a
+//! ABI 1.8: `/hello lobby` creates the flat extra world `hello_lobby` (own folder, like a
 //! Multiverse world) on first use and moves the player there once it is loaded.
 //!
 //! Build it with `cargo build -p vanillite-example-hello` and put `plugin.toml` and the library

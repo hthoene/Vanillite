@@ -14,9 +14,9 @@ use crate::types::{
 };
 
 mod v16;
-mod v17;
+mod v18;
 pub use v16::{RayHit, WorldBorder};
-pub use v17::{Environment, WorldCreator, WorldDetails};
+pub use v18::{Environment, WorldCreator, WorldDetails};
 
 /// Thread-safe access to the server. Cheap to copy; usable from any thread after `load`.
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +53,10 @@ impl Server {
 
     fn api(&self) -> &'static abi::HostApi {
         self.host.api
+    }
+
+    pub(crate) fn host(&self) -> Host {
+        self.host
     }
 
     /// The plugin's data folder (`plugins/<id>/`).

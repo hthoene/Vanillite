@@ -236,8 +236,6 @@ pub struct GameWorld {
     clock_time: i64,
     /// The entities the ticking lightning bolt strikes.
     bolt_hits: Vec<EntityId>,
-    /// The own random of item entities (not seeded per entity yet).
-    item_random: LegacyRandom,
     item_scratch: vanillite_server::ItemScratch,
     /// The packet-level players, in join order.
     clients: Vec<Client>,
@@ -557,7 +555,6 @@ impl GameWorld {
             level_rng: spec.level_rng,
             clock_time: spec.time.unwrap_or(0),
             bolt_hits: Vec::new(),
-            item_random: LegacyRandom::new(spec.seed),
             item_scratch: vanillite_server::ItemScratch::default(),
             clients: Vec::new(),
             network_names: Vec::new(),
@@ -642,7 +639,6 @@ impl GameWorld {
         // What block entities (beehives) read of the world after the entities.
         self.level.spawner_env.env = self.env;
         self.level.entities.day_time = self.env.day_time;
-        minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
             if !vanillite_game::entities::in_ticking_range(&self.level, id) {
@@ -694,16 +690,14 @@ impl GameWorld {
             }
             if kind == ids::ITEM {
                 let level = &mut self.level;
-                let random = &mut self.item_random;
                 let (types, facts) = PACK.get().expect("installed");
                 let mut ents = std::mem::take(&mut level.entities);
                 let burn = {
                     let raining = |pos| level.is_raining_at(pos);
                     vanillite_server::tick_item(
                         &mut ents,
-                        &level.chunks,
+                        level,
                         id,
-                        &mut || random.next_float(),
                         MIN_Y,
                         vanillite_server::ItemSettings {
                             lifetime: ITEM_LIFETIME,
@@ -895,6 +889,7 @@ impl GameWorld {
             }
             if let Effect::DropItem {
                 uuid,
+                random: item_random,
                 pos,
                 velocity,
                 y_rot,
@@ -908,7 +903,7 @@ impl GameWorld {
                     pos,
                     velocity,
                     y_rot,
-                    ItemData::new(stack, pickup_delay, None),
+                    ItemData::new(stack, pickup_delay, None, item_random),
                 );
             }
         }
@@ -1062,6 +1057,11 @@ impl GameWorld {
         // Nobody moves the mock player: the server does, like Vanilla's. A client player
         // moves by its packets.
         data.survival.simulate_movement = !spec.client;
+        // The recorder seeds the player's own random with the spec's seed
+        // (`ParityHooks.seedNext`), then the `LivingEntity` constructor draws the yaw from it.
+        let mut own = LegacyRandom::new(spec.seed);
+        let _ = own.next_float();
+        data.survival.own_random = own.state();
         data.survival.y_body_rot = spec.rot[0];
         let id =
             self.level
@@ -2379,12 +2379,16 @@ impl GameWorld {
                 vanillite_config::Profile::Vanilla,
             )
             .movement;
-        let border = self.level.border.clone();
         let ctx = MoveContext {
             runs_normally: true,
             rules: &movement_rules,
-            border: Some(&border),
             no_wrong_move_check: false,
+            no_physics: false,
+            dims: vanillite_world::entity::Dimensions {
+                width: 0.6,
+                height: 1.8,
+            },
+            blocks: None,
             movement_check: self.rules.bool(Rule::PLAYER_MOVEMENT_CHECK),
             elytra_movement_check: self.rules.bool(Rule::ELYTRA_MOVEMENT_CHECK),
         };
@@ -2425,7 +2429,7 @@ impl GameWorld {
                 0,
                 &self.level.chunks,
             );
-            let (aabb, uuid) = (entity.aabb(), entity.uuid());
+            let (aabb, uuid, dims) = (entity.aabb(), entity.uuid(), entity.dims());
             let mut effects = vanillite_server::LevelEffects::default();
             let mut drops = Vec::new();
             let mut swings = Vec::new();
@@ -2461,6 +2465,8 @@ impl GameWorld {
                             player.game_mode,
                             GameMode::Spectator | GameMode::Creative
                         ),
+                        no_physics: player.game_mode == GameMode::Spectator,
+                        dims,
                         ..ctx
                     },
                     ChatContext {
@@ -2473,7 +2479,12 @@ impl GameWorld {
                 );
                 let actor = play.actor;
                 for drop in drops {
-                    vanillite_game::player::play::throw_item(&mut world, &actor, drop);
+                    vanillite_game::player::play::throw_item(
+                        &mut world,
+                        &actor,
+                        drop,
+                        &mut player.survival.own_random,
+                    );
                 }
                 handled
             };
@@ -2489,6 +2500,9 @@ impl GameWorld {
             let body = state.body;
             if body.pos != before.body.pos {
                 entity.set_pos(body.pos);
+            }
+            if body.velocity != before.body.velocity {
+                entity.set_velocity(body.velocity);
             }
             if body.y_rot != before.body.y_rot || body.x_rot != before.body.x_rot {
                 entity.set_rot(Rotation {

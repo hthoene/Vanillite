@@ -97,7 +97,7 @@ impl Level {
 
     /// `ServerLevel.tickChunk`: precipitation checks and `randomTickSpeed` random ticks per
     /// section that has randomly ticking blocks or fluids.
-    fn tick_chunk(&mut self, chunk: ChunkPos, speed: i32) {
+    pub(super) fn tick_chunk(&mut self, chunk: ChunkPos, speed: i32) {
         let min_x = chunk.x * 16;
         let min_z = chunk.z * 16;
         for _ in 0..speed {
@@ -128,29 +128,29 @@ impl Level {
             let min_y = (min_section + index as i32) * 16;
             for _ in 0..speed {
                 let pos = self.block_random_pos(min_x, min_y, min_z, 15);
-                let state = self.block(pos);
-                if state.random_ticks()
-                    && let Some(random_tick) = self.behaviours.get(state.block()).random_tick
-                {
-                    random_tick(self, state, pos);
-                }
-                let fluid = state.fluid_state();
-                if fluid.info().random_ticks {
-                    fluid::random_tick(self, pos, fluid);
-                }
+                self.random_tick_at(pos);
             }
+        }
+    }
+
+    /// The random tick of the block and of the fluid at `pos`, if they tick randomly.
+    #[inline]
+    pub(super) fn random_tick_at(&mut self, pos: BlockPos) {
+        let state = self.block(pos);
+        if state.random_ticks()
+            && let Some(random_tick) = self.behaviours.get(state.block()).random_tick
+        {
+            random_tick(self, state, pos);
+        }
+        let fluid = state.fluid_state();
+        if fluid.info().random_ticks {
+            fluid::random_tick(self, pos, fluid);
         }
     }
 
     /// `getBlockRandomPos(x, y, z, mask)`: Vanilla's cheap LCG over `randValue`.
     pub fn block_random_pos(&mut self, x: i32, y: i32, z: i32, mask: i32) -> BlockPos {
-        self.rand_value = self.rand_value.wrapping_mul(3).wrapping_add(1_013_904_223);
-        let value = self.rand_value >> 2;
-        BlockPos::new(
-            x + (value & mask),
-            y + (value >> 16 & mask),
-            z + (value >> 8 & mask),
-        )
+        random_pos(&mut self.rand_value, x, y, z, mask)
     }
 
     /// `runBlockEvents`: every queued block event whose chunk ticks runs (events added meanwhile
@@ -187,4 +187,16 @@ impl Level {
         }
         self.handling_tick = false;
     }
+}
+
+/// `getBlockRandomPos` over a `randValue`: the level's, or a tile's in tile region mode.
+#[inline]
+pub(super) fn random_pos(rand_value: &mut i32, x: i32, y: i32, z: i32, mask: i32) -> BlockPos {
+    *rand_value = rand_value.wrapping_mul(3).wrapping_add(1_013_904_223);
+    let value = *rand_value >> 2;
+    BlockPos::new(
+        x + (value & mask),
+        y + (value >> 16 & mask),
+        z + (value >> 8 & mask),
+    )
 }

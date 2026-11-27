@@ -610,11 +610,15 @@ pub(crate) fn summon_for(
     let decor = vanillite_game::decoration::is_decor_kind(kind)
         || vanillite_game::mob::kinds::Kind::by_name(id)
             .is_some_and(|k| k.family() == vanillite_game::mob::Family::Decor);
+    // The seed a fresh UUID's new entity took (its own random).
+    let mut fresh_seed = None;
     let mut fresh_uuid = || {
         if decor {
             vanillite_game::mob::new_uuid()
         } else {
-            env.level.new_uuid()
+            let (uuid, seed) = env.level.new_uuid_and_seed();
+            fresh_seed = Some(seed);
+            uuid
         }
     };
     let uuid = match nbt.get("UUID") {
@@ -753,7 +757,23 @@ pub(crate) fn summon_for(
         if stack.is_empty() {
             return Err(duplicate());
         }
-        let data = vanillite_game::item_entity::ItemData::new(stack, 0, None);
+        #[allow(clippy::cast_possible_truncation)]
+        let short = |name: &str, default: i16| {
+            nbt.get(name)
+                .and_then(Tag::as_i64)
+                .map_or(default, |v| v as i16)
+        };
+        let mut data = vanillite_game::item_entity::ItemData::new(
+            stack,
+            short("PickupDelay", 0),
+            None,
+            vanillite_game::item_entity::loaded_random(
+                fresh_seed.unwrap_or_else(vanillite_game::mob::new_entity_seed),
+            ),
+        );
+        data.age = short("Age", 0);
+        data.health = short("Health", 5);
+        data.fire_ticks = i32::from(short("Fire", 0)).max(0);
         entities.spawn_item(network_id, uuid, pos, Vec3::new(0.0, 0.0, 0.0), 0.0, data)
     } else if kind == ids::FALLING_BLOCK {
         let mut data = FallingBlockData::new(

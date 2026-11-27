@@ -118,6 +118,21 @@ impl<P: Plugin> Registrar<P> {
         self
     }
 
+    /// Adds a packet listener ([`Server::on_packet`], which also works after `load`); see
+    /// [`packet`](crate::packet). Since ABI 1.7.
+    pub fn on_packet(
+        &mut self,
+        filter: crate::packet::PacketFilter,
+        listener: impl Fn(&mut crate::packet::PacketEvent<'_>) + Send + Sync + 'static,
+    ) -> &mut Self {
+        if let Err(e) = self.server().on_packet(filter, listener)
+            && self.error.is_none()
+        {
+            self.error = Some(e);
+        }
+        self
+    }
+
     /// The next `on_*` handler is skipped while its event is cancelled (Bukkit's
     /// `ignoreCancelled = true`), e.g. `registrar.ignore_cancelled().on_chat(...)`. Since
     /// ABI 1.5.
@@ -986,7 +1001,7 @@ impl<P: Plugin> Registrar<P> {
         self.on_event(abi::event::WORLD_SAVE, priority, f)
     }
 
-    /// A world was loaded (an extra world). See [`abi::event::WORLD_LOAD`]. Since ABI 1.7.
+    /// A world was loaded (an extra world). See [`abi::event::WORLD_LOAD`]. Since ABI 1.8.
     pub fn on_world_load(
         &mut self,
         priority: i32,
@@ -996,7 +1011,7 @@ impl<P: Plugin> Registrar<P> {
     }
 
     /// An extra world is about to be unloaded; cancellable. See [`abi::event::WORLD_UNLOAD`].
-    /// Since ABI 1.7.
+    /// Since ABI 1.8.
     pub fn on_world_unload(
         &mut self,
         priority: i32,

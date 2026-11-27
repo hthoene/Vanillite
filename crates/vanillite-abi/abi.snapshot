@@ -1,4 +1,4 @@
-abi 1.7
+abi 1.8
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -22,6 +22,8 @@ type GoalCheckFn = unsafeextern"C"fn(user:*mutc_void,mob:*constGoalMob)->u32
 type GoalFn = unsafeextern"C"fn(user:*mutc_void,mob:*constGoalMob)
 type GoalTickFn = unsafeextern"C"fn(user:*mutc_void,mob:*constGoalMob,action:*mutGoalAction)
 type PopulateFn = unsafeextern"C"fn(user:*mutc_void,world:*constWorldInfo,chunks:*constGenChunk,count:usize,stride:usize,)->Status
+type PacketFn = unsafeextern"C"fn(user:*mutc_void,ctx:*mutContext,event:*mutPacketEvent)->Status
+type PacketSetFn = unsafeextern"C"fn(state:*mutc_void,body:Bytes)->Status
 const status::OK: Status = 0
 const status::ERROR: Status = 1
 const status::UNSUPPORTED: Status = 2
@@ -410,6 +412,20 @@ const chunk_state::BLOCK_TICKING: u32 = 2
 const chunk_state::ENTITY_TICKING: u32 = 3
 const gen_stage::AFTER_SURFACE: u32 = 1
 const gen_stage::AFTER_FEATURES: u32 = 2
+const packet_state::HANDSHAKE: u32 = 0
+const packet_state::STATUS: u32 = 1
+const packet_state::LOGIN: u32 = 2
+const packet_state::CONFIGURATION: u32 = 3
+const packet_state::PLAY: u32 = 4
+const packet_direction::CLIENTBOUND: u32 = 0
+const packet_direction::SERVERBOUND: u32 = 1
+const packet_id::ANY: i32 = -1
+const packet_listen::BROADCAST: u32 = 1
+const packet_listen::IGNORE_CANCELLED: u32 = 2
+const packet_event::BROADCAST: u32 = 1
+const packet_event::REPLACED: u32 = 2
+const packet_send::SKIP_LISTENERS: u32 = 1
+const packet_limits::MAX_BODY: u32 = 8388608
 const set_mode::UPDATE: u32 = 0
 const set_mode::NO_PHYSICS: u32 = 1
 struct Str size=16 align=8
@@ -790,7 +806,33 @@ struct ChunkPopulatorProvider size=32 align=8
   stage: u32 @8
   user: *mutc_void @16
   populate: PopulateFn @24
-struct HostApi size=1208 align=8
+struct PacketSpec size=48 align=8
+  size: u32 @0
+  direction: u32 @4
+  state: u32 @8
+  id: i32 @12
+  priority: i32 @16
+  flags: u32 @20
+  run: PacketFn @24
+  drop: Option<DropFn> @32
+  user: *mutc_void @40
+struct PacketOut size=24 align=8
+  size: u32 @0
+  state: *mutc_void @8
+  set: PacketSetFn @16
+struct PacketEvent size=80 align=8
+  size: u32 @0
+  direction: u32 @4
+  state: u32 @8
+  id: i32 @12
+  cancelled: u32 @16
+  flags: u32 @20
+  protocol: i32 @24
+  connection: u64 @32
+  player: Uuid @40
+  body: Bytes @56
+  out: *constPacketOut @72
+struct HostApi size=1256 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -938,9 +980,15 @@ struct HostApi size=1208 align=8
   item_data_set: unsafeextern"C"fn(PluginId,Str,Str,u32,Bytes,*constByteSink)->Status @1136
   item_data_remove: unsafeextern"C"fn(PluginId,Str,Str,*constByteSink)->Status @1144
   item_data_keys: unsafeextern"C"fn(PluginId,Str,*constByteSink)->Status @1152
-  world_create: unsafeextern"C"fn(PluginId,*constWorldCreate,*mutu32)->Status @1160
-  world_load: unsafeextern"C"fn(PluginId,Str,*mutu32)->Status @1168
-  world_unload: unsafeextern"C"fn(PluginId,u32,u32)->Status @1176
-  world_count: unsafeextern"C"fn(PluginId,*mutu32)->Status @1184
-  world_info: unsafeextern"C"fn(PluginId,u32,*mutWorldDetails,*mutStrBuf)->Status @1192
-  player_move: unsafeextern"C"fn(PluginId,Uuid,*constLocation)->Status @1200
+  packet_subscribe: unsafeextern"C"fn(PluginId,*constPacketSpec,*mutu64)->Status @1160
+  packet_unsubscribe: unsafeextern"C"fn(PluginId,u64)->Status @1168
+  packet_id: unsafeextern"C"fn(PluginId,u32,u32,Str,*muti32)->Status @1176
+  packet_name: unsafeextern"C"fn(PluginId,u32,u32,i32,*mutStrBuf)->Status @1184
+  packet_send: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @1192
+  protocol_version: unsafeextern"C"fn(PluginId,*muti32)->Status @1200
+  world_create: unsafeextern"C"fn(PluginId,*constWorldCreate,*mutu32)->Status @1208
+  world_load: unsafeextern"C"fn(PluginId,Str,*mutu32)->Status @1216
+  world_unload: unsafeextern"C"fn(PluginId,u32,u32)->Status @1224
+  world_count: unsafeextern"C"fn(PluginId,*mutu32)->Status @1232
+  world_info: unsafeextern"C"fn(PluginId,u32,*mutWorldDetails,*mutStrBuf)->Status @1240
+  player_move: unsafeextern"C"fn(PluginId,Uuid,*constLocation)->Status @1248

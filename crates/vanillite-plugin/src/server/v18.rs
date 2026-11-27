@@ -1,4 +1,4 @@
-//! [`Server`] functions added with ABI 1.7: extra worlds (Bukkit's `createWorld`,
+//! [`Server`] functions added with ABI 1.8: extra worlds (Bukkit's `createWorld`,
 //! `unloadWorld`, `getWorlds`) and moving players between worlds from any thread.
 
 use vanillite_abi::{self as abi, status};
@@ -7,7 +7,7 @@ use super::Server;
 use crate::ffi::read_string;
 use crate::types::{Error, Location, Uuid, World};
 
-/// The environment of a world: its dimension type. Since ABI 1.7.
+/// The environment of a world: its dimension type. Since ABI 1.8.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Environment {
     /// `minecraft:overworld`.
@@ -42,7 +42,7 @@ impl Environment {
 }
 
 /// A new extra world (Bukkit's `WorldCreator`): its own folder, `level.dat`, seed and
-/// generator. Since ABI 1.7.
+/// generator. Since ABI 1.8.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorldCreator {
     /// Name and folder (letters, digits, `_`, `-`, `.`); the dimension key is
@@ -100,7 +100,7 @@ impl WorldCreator {
     }
 }
 
-/// What a world is ([`Server::world_details`]). Since ABI 1.7.
+/// What a world is ([`Server::world_details`]). Since ABI 1.8.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorldDetails {
     /// Its dimension type.
@@ -118,7 +118,7 @@ pub struct WorldDetails {
 impl Server {
     /// Creates an extra world, or loads it when its folder holds one (it keeps its seed and
     /// generator). It loads in the next global phase ([`abi::event::WORLD_LOAD`]); the world
-    /// is usable from then on. A loaded world of that name is returned as it is. Since ABI 1.7.
+    /// is usable from then on. A loaded world of that name is returned as it is. Since ABI 1.8.
     pub fn create_world(&self, creator: &WorldCreator) -> Result<World, Error> {
         let mut flags = 0;
         if creator.seed.is_some() {
@@ -141,7 +141,7 @@ impl Server {
         Ok(World(world))
     }
 
-    /// Loads the extra world in the folder `name` (see [`Server::create_world`]). Since ABI 1.7.
+    /// Loads the extra world in the folder `name` (see [`Server::create_world`]). Since ABI 1.8.
     pub fn load_world(&self, name: &str) -> Result<World, Error> {
         let mut world = 0;
         // SAFETY: valid host function, string and output.
@@ -152,13 +152,13 @@ impl Server {
     }
 
     /// Unloads an extra world in the next global phase, its chunks saved with `save`; fails
-    /// while players are in it ([`abi::event::WORLD_UNLOAD`] may still keep it). Since ABI 1.7.
+    /// while players are in it ([`abi::event::WORLD_UNLOAD`] may still keep it). Since ABI 1.8.
     pub fn unload_world(&self, world: World, save: bool) -> Result<(), Error> {
         // SAFETY: valid host function.
         Error::check(unsafe { (self.api().world_unload)(self.host.id, world.0, u32::from(save)) })
     }
 
-    /// The number of world indices, loaded or not; every [`World`] is below it. Since ABI 1.7.
+    /// The number of world indices, loaded or not; every [`World`] is below it. Since ABI 1.8.
     pub fn world_count(&self) -> u32 {
         let mut count = 0;
         // SAFETY: valid host function and output.
@@ -166,7 +166,7 @@ impl Server {
         if s == status::OK { count } else { 0 }
     }
 
-    /// What a world is; `None` past the last world. Since ABI 1.7.
+    /// What a world is; `None` past the last world. Since ABI 1.8.
     pub fn world_details(&self, world: World) -> Option<WorldDetails> {
         let mut details = abi::WorldDetails {
             size: abi::size_of::<abi::WorldDetails>(),
@@ -189,7 +189,7 @@ impl Server {
     }
 
     /// Moves an online player to a place in any loaded world, from any thread: between the
-    /// ticks of its world, to another world like `/tp` (with the teleport event). Since ABI 1.7.
+    /// ticks of its world, to another world like `/tp` (with the teleport event). Since ABI 1.8.
     pub fn move_player(&self, player: Uuid, to: Location) -> Result<(), Error> {
         let to = to.to_abi();
         // SAFETY: valid host function and record.

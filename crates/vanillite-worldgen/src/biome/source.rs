@@ -9,7 +9,7 @@ use vanillite_datapack::LoadedPacks;
 
 use super::BiomeRegistry;
 use super::climate::{
-    ClimateCache, ClimateSampler, ParameterList, ParameterPoint, SearchCache, target,
+    ClimateCache, ClimateSampler, ColumnSearch, ParameterList, ParameterPoint, SearchCache, target,
 };
 use super::preset::Preset;
 use crate::Error;
@@ -206,6 +206,7 @@ impl BiomeSource {
         });
         ChunkResolver::Sampled(SampledResolver {
             list,
+            columns: vec![None; (volume.size_x * volume.size_z) as usize],
             volume,
             min_quart,
             buffers,
@@ -364,6 +365,8 @@ pub struct SampledResolver<'a> {
     /// Temperature, vegetation, continents, erosion, depth, ridges.
     buffers: [Vec<f32>; 6],
     cache: SearchCache,
+    /// Per (x, z) column of the grid: its column search, made at its first quart.
+    columns: Vec<Option<ColumnSearch>>,
 }
 
 impl BiomeResolver for SampledResolver<'_> {
@@ -377,6 +380,18 @@ impl BiomeResolver for SampledResolver<'_> {
         );
         let [t, h, c, e, d, w] = &self.buffers;
         let target = target(t[index], h[index], c[index], e[index], d[index], w[index]);
+        // The quarts of a column usually differ only in depth: one search per column then
+        // answers them all, with the results of the tree search per quart.
+        let column = ((quart_x - self.min_quart.0)
+            + (quart_z - self.min_quart.2) * self.volume.size_x) as usize;
+        if self.columns[column].is_none() {
+            self.columns[column] = self.list.column_search(&target);
+        }
+        if let Some(search) = &self.columns[column]
+            && let Some(found) = self.list.search_in_column(search, &target, &mut self.cache)
+        {
+            return *self.list.value_at(found);
+        }
         *self.list.find_value(&target, &mut self.cache)
     }
 }

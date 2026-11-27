@@ -8,7 +8,7 @@
 
 use crate::Packet;
 use crate::cipher::Cfb8;
-use crate::codec::{Error, Result, varint_len, write_varint};
+use crate::codec::{Error, Reader, Result, varint_len, write_varint};
 use crate::compress::{self, Codec};
 
 /// Largest frame the 3-byte length prefix can describe.
@@ -420,6 +420,30 @@ pub fn for_each_body(
     decoder.push(frames);
     while let Some(body) = decoder.next_frame()? {
         if !f(body)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Calls `f` with the packet id of every frame of `frames` (built with [`encode_frame`] for
+/// `threshold`) until `f` returns false, without copying or inflating: a compressed frame
+/// reports `None`.
+pub fn for_each_id(
+    frames: &[u8],
+    threshold: Option<usize>,
+    mut f: impl FnMut(Option<i32>) -> bool,
+) -> Result<()> {
+    let mut frames = Reader::new(frames);
+    while frames.remaining() > 0 {
+        let len = usize::try_from(frames.varint()?).map_err(|_| Error::BadFrame("frame length"))?;
+        let mut frame = Reader::new(frames.take(len)?);
+        let id = if threshold.is_some() && frame.varint()? != 0 {
+            None
+        } else {
+            Some(frame.varint()?)
+        };
+        if !f(id) {
             break;
         }
     }

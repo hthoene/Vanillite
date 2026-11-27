@@ -22,6 +22,8 @@ pub(crate) struct Registries {
     pub dynamic: Vec<Dynamic>,
     /// Registries whose data the older version does not synchronise, with their entry names.
     pub dropped: Vec<(String, Vec<String>)>,
+    /// The stonecutter of a client before 1.21.2 (step 1.21.1 ↔ 1.21.2).
+    pub cutter: crate::recipe::Cutter,
 }
 
 impl Registries {

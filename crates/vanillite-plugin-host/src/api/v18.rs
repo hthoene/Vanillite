@@ -1,4 +1,4 @@
-//! The host functions added with ABI 1.7: extra worlds (create, load, unload, list) and moving
+//! The host functions added with ABI 1.8: extra worlds (create, load, unload, list) and moving
 //! players between worlds from any thread.
 
 use vanillite_abi::{self as abi, Status, status};

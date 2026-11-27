@@ -1,5 +1,5 @@
-//! Connecting a player to a backend: handshake, login with Velocity modern forwarding, and the
-//! switch to configuration. The result is a link whose next packets are the backend's
+//! Connecting a player to a backend: handshake, login with the configured player info
+//! forwarding (Velocity modern, BungeeCord legacy or none), and the switch to configuration. The result is a link whose next packets are the backend's
 //! configuration phase.
 
 use std::net::IpAddr;
@@ -16,6 +16,7 @@ use vanillite_protocol::packets::login::{
 use vanillite_protocol::sets::ClientboundLogin;
 use vanillite_protocol::types::{GameProfile, RawBytes};
 
+use crate::config::Forwarding;
 use crate::link::{self, Rx, Tx};
 
 /// A backend connection in the configuration state.
@@ -35,6 +36,7 @@ pub(crate) struct Player {
     pub(crate) profile: GameProfile,
     pub(crate) address: IpAddr,
     pub(crate) secret: Option<Secret>,
+    pub(crate) forwarding: Forwarding,
     pub(crate) compression_level: i32,
     /// The client's compression threshold, offered to backends for a trusted link; `None` if
     /// the link is off.
@@ -65,9 +67,18 @@ async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend
         .map(|(h, p)| (h, p.parse().unwrap_or(25565)))
         .unwrap_or((address, 25565));
     let fail = |e: vanillite_protocol::Error| format!("protocol error: {e}");
+    let host = match player.forwarding {
+        Forwarding::Legacy => legacy_host(host, player),
+        Forwarding::Modern | Forwarding::None => host.to_owned(),
+    };
+    // Only modern forwarding is answered with the player's data and only with a secret.
+    let secret = match player.forwarding {
+        Forwarding::Modern => player.secret.as_ref(),
+        Forwarding::Legacy | Forwarding::None => None,
+    };
     tx.send(&Intention {
         protocol_version: vanillite_protocol::PROTOCOL_VERSION,
-        host: host.to_owned(),
+        host,
         port,
         intent: Intent::Login,
     })
@@ -93,7 +104,7 @@ async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend
         };
         match packet {
             ClientboundLogin::CustomQuery(q) => {
-                let payload = match &player.secret {
+                let payload = match secret {
                     Some(secret) if q.channel.as_str() == velocity::CHANNEL => {
                         answer.clear();
                         let version = velocity::answer_version(&q.payload.0);
@@ -145,7 +156,8 @@ async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend
             }
             ClientboundLogin::LoginDisconnect(d) => return Err(d.reason.0.plain()),
             ClientboundLogin::LoginFinished(f) => {
-                if f.profile.id != player.profile.id {
+                // Without forwarding an offline backend picks its own (offline) UUID.
+                if f.profile.id != player.profile.id && player.forwarding != Forwarding::None {
                     return Err("the server did not accept the forwarded identity".to_owned());
                 }
                 tx.send(&LoginAcknowledged).map_err(fail)?;
@@ -165,6 +177,39 @@ async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend
         }
         tx.flush(flush_timeout).await.map_err(io)?;
     }
+}
+
+/// BungeeCord forwarding: the handshake host carries the player's address, undashed UUID and
+/// profile properties (JSON), separated by NUL.
+fn legacy_host(host: &str, player: &Player) -> String {
+    // Written by hand in BungeeCord's field order (name, value, signature): a
+    // `serde_json::Value` map would depend on whether some other crate in the
+    // build enables serde_json's `preserve_order` feature.
+    let quote = |text: &str| serde_json::Value::from(text).to_string();
+    let properties: Vec<String> = player
+        .profile
+        .properties
+        .iter()
+        .map(|p| match &p.signature {
+            Some(sig) => format!(
+                "{{\"name\":{},\"value\":{},\"signature\":{}}}",
+                quote(&p.name),
+                quote(&p.value),
+                quote(sig)
+            ),
+            None => format!(
+                "{{\"name\":{},\"value\":{}}}",
+                quote(&p.name),
+                quote(&p.value)
+            ),
+        })
+        .collect();
+    format!(
+        "{host}\0{}\0{:032x}\0[{}]",
+        player.address,
+        player.profile.id.0,
+        properties.join(",")
+    )
 }
 
 #[cfg(test)]
@@ -291,6 +336,7 @@ mod tests {
             },
             address: [127, 0, 0, 1].into(),
             secret: Secret::new(SECRET),
+            forwarding: Forwarding::Modern,
             compression_level: 4,
             link_threshold,
         });
@@ -307,6 +353,31 @@ mod tests {
             ))
             .unwrap();
         (backend.passthrough, thread.join().unwrap())
+    }
+
+    #[test]
+    fn legacy_forwarding_host() {
+        let player = Player {
+            profile: GameProfile {
+                id: Uuid(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef),
+                name: "Alice".to_owned(),
+                properties: vec![vanillite_protocol::types::Property {
+                    name: "textures".to_owned(),
+                    value: "v".to_owned(),
+                    signature: Some("s".to_owned()),
+                }],
+            },
+            address: [10, 0, 0, 7].into(),
+            secret: None,
+            forwarding: Forwarding::Legacy,
+            compression_level: 4,
+            link_threshold: None,
+        };
+        assert_eq!(
+            legacy_host("lobby", &player),
+            "lobby\u{0}10.0.0.7\u{0}0123456789abcdef0123456789abcdef\u{0}\
+             [{\"name\":\"textures\",\"value\":\"v\",\"signature\":\"s\"}]"
+        );
     }
 
     #[test]

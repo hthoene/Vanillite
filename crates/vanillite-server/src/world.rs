@@ -9,11 +9,10 @@ use vanillite_base::hash::FxHashMap;
 use vanillite_config::{TrackingRules, WorldRules};
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
+use vanillite_game::level::tiles::TileRun;
 use vanillite_world::chunks::{Chunks, FULL_LEVEL, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
-
-use vanillite_base::random::XoroshiroRandom;
 
 use crate::blocks::LevelEffects;
 use crate::compute::Compute;
@@ -99,8 +98,6 @@ pub struct ServerWorld {
     packets: ChunkPackets,
     /// Sounds and crack progress of the player handlers.
     effects: LevelEffects,
-    /// The random of the item entities (`Entity.random`).
-    item_random: XoroshiroRandom,
     /// The counters of the world access rules at the last report ([`Self::report_rules`]).
     reported: RuleCounters,
     updates: WorldUpdates,
@@ -211,11 +208,6 @@ impl ServerWorld {
         if dimension == "minecraft:overworld" {
             mobs.init_trader_spawner(&data);
         }
-        // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as i64)
-            ^ i64::from(id.0);
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
@@ -242,7 +234,6 @@ impl ServerWorld {
             focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
-            item_random: XoroshiroRandom::new(seed),
             reported: RuleCounters::default(),
             scratch: Vec::new(),
             survival,
@@ -670,11 +661,9 @@ impl ServerWorld {
                     ctx.other_levels().collect(),
                 );
             }
-            {
-                // Command blocks run here: `execute in` continues in the other world at once.
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.level.run_scheduled_ticks();
-            }
+            // Command blocks run here: `execute in` continues in the other world at once.
+            self.lent
+                .with(ctx.other_levels(), || self.level.run_scheduled_ticks());
             // `raids.tick`.
             self.mobs.tick_raids(
                 &mut self.level,
@@ -707,14 +696,28 @@ impl ServerWorld {
             let (spawn, _) = effective_spawn(level, self.players.level.spawn);
             let spawn_point = (self.dimension == "minecraft:overworld")
                 .then(|| vanillite_base::BlockPos::containing(spawn.x, spawn.y, spawn.z));
+            // `performance.region-threading`: spawning and random ticks run per tile on the
+            // compute pool; off, both keep Vanilla's serial order.
+            let compute = ctx.compute;
+            let fork = move |n: usize, job: &(dyn Fn(usize) + Sync)| compute.for_each(n, job);
+            let region = &self.rules.region_threading;
+            let tiles = region.enabled.then(|| TileRun {
+                size: i32::from(region.tile_size),
+                min_chunks: vanillite_game::level::tiles::MIN_CHUNKS,
+                fork: &fork,
+            });
             self.mobs.spawn(
                 level,
                 &self.survival,
                 ctx.global,
                 &self.dimension,
                 spawn_point,
+                tiles.as_ref(),
             );
-            level.tick_chunks(&mut self.scratch);
+            match &tiles {
+                Some(run) => level.tick_chunks_tiled(&mut self.scratch, run),
+                None => level.tick_chunks(&mut self.scratch),
+            }
             level.run_block_events();
         }
         level.set_handling_tick(false);
@@ -723,8 +726,8 @@ impl ServerWorld {
             {
                 // Command block minecarts.
                 let global = ctx.global;
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.tick_entities(global);
+                let lent = Arc::clone(&self.lent);
+                lent.with(ctx.other_levels(), || self.tick_entities(global));
             }
             self.entity_travel(ctx);
             self.level.tick_block_entities();
@@ -771,6 +774,7 @@ impl ServerWorld {
             &self.entity_updates,
             ctx.compute,
             &mut self.fan_out,
+            ctx.global.plugins.packet_tap(),
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
         // The omen effects see the village and raids at the players (they tick without the
@@ -986,7 +990,6 @@ impl ServerWorld {
         self.mobs
             .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
         let items = crate::mobs::ItemTick {
-            random: &mut self.item_random,
             settings: crate::blocks::ItemSettings {
                 lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
                 merge_radius: self.rules.items.merge_radius,

@@ -180,6 +180,9 @@ impl Default for Sent {
 /// The survival state of a player.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Survival {
+    /// The player's own random (`Entity.random`) as the state of its legacy LCG
+    /// (`LegacyRandom::from_state`); thrown items draw from it.
+    pub own_random: i64,
     /// `DATA_HEALTH_ID`.
     pub health: f32,
     /// `DATA_PLAYER_ABSORPTION_ID`.
@@ -196,6 +199,8 @@ pub struct Survival {
     /// `lastHurt`.
     pub last_hurt: f32,
     pub death_time: i32,
+    /// `isRemoved()`: `tickDeath` removed the dead player (once, until it respawns).
+    pub removed: bool,
     pub xp: Experience,
     /// `DATA_SCORE_ID`.
     pub score: i32,
@@ -321,6 +326,7 @@ impl Default for Recorded {
 impl Default for Survival {
     fn default() -> Self {
         Survival {
+            own_random: LegacyRandom::new(crate::mob::new_unique_seed()).state(),
             health: MAX_HEALTH,
             absorption: 0.0,
             food: FoodData::default(),
@@ -331,6 +337,7 @@ impl Default for Survival {
             damage_cooldown: 0,
             last_hurt: 0.0,
             death_time: 0,
+            removed: false,
             xp: Experience::default(),
             score: 0,
             last_death: None,
@@ -491,6 +498,9 @@ pub struct MoveRecord {
     pub on_ground: bool,
     /// The target is above the last good position.
     pub moved_upwards: bool,
+    /// The move passed the collision checks; a rejected move ("moved wrongly", into a block)
+    /// sent the player back to `from` (`to == from`).
+    pub accepted: bool,
 }
 
 fn block_pos(v: Vec3) -> BlockPos {
@@ -1598,7 +1608,7 @@ fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>
     for stack in drops {
         // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
         // draws from the player's own random in Vanilla, here from the level random.
-        let (uuid, y_rot, _) = crate::mob::new_item_entity();
+        let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
         let pow = env.random.next_float() * 0.5;
         let dir = env.random.next_float() * std::f32::consts::TAU;
         let velocity = Vec3::new(
@@ -1607,6 +1617,7 @@ fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>
             f64::from(vanillite_base::math::cos(f64::from(dir)) * pow),
         );
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: from,
             velocity,
@@ -1817,7 +1828,8 @@ fn tick_after_portal(
         // `tickDeath`.
         let s = &mut player.survival;
         s.death_time += 1;
-        if s.death_time >= 20 {
+        if s.death_time >= 20 && !s.removed {
+            s.removed = true;
             env.out.push(Effect::Tracking {
                 entity: id,
                 with_self: true,
@@ -2121,8 +2133,9 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         hurt(entity, player, env, source, 1.0);
     }
     if inside.berry_bush == Some(true) {
-        // `SweetBerryBushBlock.entityInside`: the client reports the player's movement.
-        let moved = entity.as_ref().velocity();
+        // `SweetBerryBushBlock.entityInside`: the client reports the player's movement
+        // (`getKnownMovement`).
+        let moved = player.connection.movement.known_movement;
         if moved.x * moved.x + moved.z * moved.z > 0.0
             && (moved.x.abs() >= f64::from(0.003_f32) || moved.z.abs() >= f64::from(0.003_f32))
         {
@@ -2324,6 +2337,10 @@ pub fn on_move(
     }
     let dy = mv.to.y - mv.from.y;
     check_fall_damage(entity, player, env, dy, mv.on_ground, crouching);
+    if !mv.accepted {
+        // The rejected move only checks the fall damage before the player goes back.
+        return;
+    }
     if mv.moved_upwards {
         reset_fall_distance(player);
     }
@@ -3052,6 +3069,7 @@ fn simulate_move(
             was_on_ground,
             on_ground,
             moved_upwards: false,
+            accepted: true,
         };
         movement_emission(entity, player, env, mv, crouching);
     }

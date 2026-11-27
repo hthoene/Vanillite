@@ -59,9 +59,11 @@ pub enum Effect {
         player: EntityId,
         packet: Arc<SharedPacket>,
     },
-    /// A new item entity (a dropped stack): its UUID, position, motion, yaw and pickup delay.
+    /// A new item entity (a dropped stack): its UUID, position, motion, yaw, pickup delay and
+    /// the state of its own random.
     DropItem {
         uuid: u128,
+        random: i64,
         pos: Vec3,
         velocity: Vec3,
         y_rot: f32,

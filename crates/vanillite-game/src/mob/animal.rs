@@ -470,8 +470,9 @@ pub fn fill_held(
         *s = filled;
     } else if !p.inventory.add(None, &mut filled, false) {
         // `drop(filled, false)`: it falls in front of the player.
-        let (uuid, y_rot, _) = crate::mob::new_item_entity();
+        let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: pos + Vec3::new(0.0, 1.32, 0.0),
             velocity: Vec3::new(0.0, 0.1, 0.0),
@@ -932,7 +933,7 @@ fn shear_sheep(
                 return;
             };
             // `spawnAtLocation(stack, 1.0F)`: an item one block up with the default motion.
-            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+            let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
             let r = &mut m.random;
             let extra = Vec3::new(
                 f64::from((r.next_float() - r.next_float()) * 0.1),
@@ -940,6 +941,7 @@ fn shear_sheep(
                 f64::from((r.next_float() - r.next_float()) * 0.1),
             );
             env.out.push(Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos: pos + Vec3::new(0.0, 1.0, 0.0),
                 velocity: velocity + extra,
@@ -1006,8 +1008,9 @@ fn unequip_saddle(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
         return;
     };
     if let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle") {
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: pos + Vec3::new(0.0, 1.0, 0.0),
             velocity,

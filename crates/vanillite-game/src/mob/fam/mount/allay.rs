@@ -353,8 +353,9 @@ fn drop_at(env: &mut Env<'_>, pos: Vec3, stack: ItemStack) {
     if stack.is_empty() {
         return;
     }
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,
@@ -386,8 +387,9 @@ pub fn throw_item(
     // `new ItemEntity(...)`: its random motion is replaced by the throw.
     let dir = (target - pos).normalize();
     let v = Vec3::new(dir.x * velocity.x, dir.y * velocity.y, dir.z * velocity.z);
-    let (uuid, y_rot, _) = crate::mob::new_item_entity();
+    let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos: from,
         velocity: v,

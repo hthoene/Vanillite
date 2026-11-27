@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 7;
+pub const ABI_MINOR: u16 = 8;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -193,6 +193,12 @@ abi! {
             count: usize,
             stride: usize,
         ) -> Status;
+        /// A packet listener; the event is valid for the call. Since ABI 1.7.
+        pub type PacketFn =
+            unsafe extern "C" fn(user: *mut c_void, ctx: *mut Context, event: *mut PacketEvent) -> Status;
+        /// Replaces a packet's body (copied by the host before it returns); fails with
+        /// [`status::INVALID_ARGUMENT`] for an empty or oversized body. Since ABI 1.7.
+        pub type PacketSetFn = unsafe extern "C" fn(state: *mut c_void, body: Bytes) -> Status;
     }
     consts {
         /// Result codes ([`Status`]).
@@ -405,7 +411,7 @@ abi! {
             ENTITY_BREED = 49,
             /// An entity is about to travel through a portal ([`GameEvent`]: `entity`,
             /// `cause` from [`portal_kind`], `from`, `to` the destination, changeable; since
-            /// ABI 1.7 also its world, e.g. the nether of an extra world); cancellable.
+            /// ABI 1.8 also its world, e.g. the nether of an extra world); cancellable.
             /// Players too. Since ABI 1.6.
             ENTITY_PORTAL = 50,
             /// An entity is about to turn into another ([`GameEvent`]: `entity`,
@@ -490,11 +496,11 @@ abi! {
             PORTAL_CREATE = 79,
             /// A world was loaded: an extra world of `vanillite.toml` or `world_create` /
             /// `world_load` ([`GameEvent`]: `world`, `key` its dimension key, `text` its
-            /// folder). Since ABI 1.7.
+            /// folder). Since ABI 1.8.
             WORLD_LOAD = 80,
             /// An extra world is about to be unloaded ([`GameEvent`] as
             /// [`event::WORLD_LOAD`], `flags` 1 when its chunks are saved); cancellable: it
-            /// stays loaded. Since ABI 1.7.
+            /// stays loaded. Since ABI 1.8.
             WORLD_UNLOAD = 81,
             /// A player's menu opens ([`GameEvent`]: `entity` the player, `key` the menu type,
             /// e.g. `minecraft:generic_9x3`, `value` the container id, `text` the title as JSON,
@@ -1050,7 +1056,7 @@ abi! {
             END_GATEWAY = 2,
         }
         /// The environment of a world (Bukkit's `World.Environment`): its dimension type.
-        /// Since ABI 1.7.
+        /// Since ABI 1.8.
         pub mod environment: u32 {
             /// `minecraft:overworld`.
             NORMAL = 0,
@@ -1061,14 +1067,14 @@ abi! {
             /// Another dimension type (a data pack's).
             CUSTOM = 3,
         }
-        /// Flags of [`WorldCreate`]. Since ABI 1.7.
+        /// Flags of [`WorldCreate`]. Since ABI 1.8.
         pub mod world_create_flag: u32 {
             /// `seed` is set; without it the seed is random.
             SEED = 1,
             /// No structures are generated.
             NO_STRUCTURES = 2,
         }
-        /// Flags of [`WorldDetails`]. Since ABI 1.7.
+        /// Flags of [`WorldDetails`]. Since ABI 1.8.
         pub mod world_flag: u32 {
             /// The world is loaded.
             LOADED = 1,
@@ -1277,6 +1283,60 @@ abi! {
             /// After the features (trees, ores, structures' pieces), as Bukkit's
             /// `BlockPopulator`.
             AFTER_FEATURES = 2,
+        }
+        /// Protocol states of packets. Since ABI 1.7.
+        pub mod packet_state: u32 {
+            /// The first packet of a connection.
+            HANDSHAKE = 0,
+            /// The server list ping.
+            STATUS = 1,
+            /// Login, up to the client's acknowledgement.
+            LOGIN = 2,
+            /// Configuration (registries, resource packs).
+            CONFIGURATION = 3,
+            /// In a world.
+            PLAY = 4,
+        }
+        /// Packet directions. Since ABI 1.7.
+        pub mod packet_direction: u32 {
+            /// From the server to a client.
+            CLIENTBOUND = 0,
+            /// From a client to the server.
+            SERVERBOUND = 1,
+        }
+        /// Special packet ids. Since ABI 1.7.
+        pub mod packet_id: i32 {
+            /// [`PacketSpec::id`]: every packet of the state and direction.
+            ANY = -1,
+        }
+        /// Flags of a packet listener ([`PacketSpec::flags`]). Since ABI 1.7.
+        pub mod packet_listen: u32 {
+            /// Clientbound only: the listener does not depend on the receiver. The host calls
+            /// it once per encoded packet where the packet is encoded once for many receivers
+            /// (then without a player, [`packet_event::BROADCAST`]); its decision holds for all
+            /// of them, and a replacement is still one buffer shared by all. Broadcast
+            /// listeners run before the listeners per receiver.
+            BROADCAST = 1,
+            /// The listener is skipped while the packet is cancelled.
+            IGNORE_CANCELLED = 2,
+        }
+        /// Flags of a packet event ([`PacketEvent::flags`]). Since ABI 1.7.
+        pub mod packet_event: u32 {
+            /// The packet is encoded once for many receivers and this call decides for all of
+            /// them: [`PacketEvent::player`] is nil and [`PacketEvent::connection`] 0.
+            BROADCAST = 1,
+            /// An earlier listener replaced the body.
+            REPLACED = 2,
+        }
+        /// Flags of `packet_send`. Since ABI 1.7.
+        pub mod packet_send: u32 {
+            /// The packet passes no packet listener.
+            SKIP_LISTENERS = 1,
+        }
+        /// Limits of the packet interface. Since ABI 1.7.
+        pub mod packet_limits: u32 {
+            /// The longest packet body in bytes (Vanilla's limit of an uncompressed packet).
+            MAX_BODY = 1 << 23,
         }
         /// How `block_set_id` and `blocks_set` change blocks. Since ABI 1.2.
         pub mod set_mode: u32 {
@@ -1965,7 +2025,7 @@ abi! {
             /// Flags of the kind.
             pub flags: u32,
         }
-        /// A new extra world for `world_create` (Bukkit's `WorldCreator`). Since ABI 1.7.
+        /// A new extra world for `world_create` (Bukkit's `WorldCreator`). Since ABI 1.8.
         pub struct WorldCreate {
             /// Size of this record in bytes.
             pub size: u32,
@@ -1982,7 +2042,7 @@ abi! {
             /// Flags from [`world_create_flag`].
             pub flags: u32,
         }
-        /// What `world_info` tells about a world. Since ABI 1.7.
+        /// What `world_info` tells about a world. Since ABI 1.8.
         pub struct WorldDetails {
             /// Size of this record in bytes.
             pub size: u32,
@@ -2128,6 +2188,69 @@ abi! {
             pub user: *mut c_void,
             /// Populates a batch of chunks.
             pub populate: PopulateFn,
+        }
+        /// A packet listener for `packet_subscribe`. Since ABI 1.7.
+        pub struct PacketSpec {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// One of [`packet_direction`].
+            pub direction: u32,
+            /// One of [`packet_state`].
+            pub state: u32,
+            /// The packet id in that state and direction (`packet_id` resolves a name), or
+            /// [`packet_id::ANY`].
+            pub id: i32,
+            /// One of [`priority`], or any value between: listeners run from the lowest to the
+            /// highest, then the monitors.
+            pub priority: i32,
+            /// [`packet_listen`] bits.
+            pub flags: u32,
+            /// The listener. It runs where packets are written and read: on network threads,
+            /// for many connections at once (a broadcast listener also on the thread that
+            /// encodes the packet), with a context that owns no world. The packets of one
+            /// connection arrive in order.
+            pub run: PacketFn,
+            /// Frees `user` once the listener is removed and no call is running.
+            pub drop: Option<DropFn>,
+            /// Passed to `run` and `drop`.
+            pub user: *mut c_void,
+        }
+        /// Where a packet listener writes a replacement body. Since ABI 1.7.
+        pub struct PacketOut {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// Passed to `set`.
+            pub state: *mut c_void,
+            /// Replaces the body (`id` + fields; the id may differ); the last call wins.
+            pub set: PacketSetFn,
+        }
+        /// What a packet listener sees. Since ABI 1.7.
+        pub struct PacketEvent {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// One of [`packet_direction`].
+            pub direction: u32,
+            /// One of [`packet_state`].
+            pub state: u32,
+            /// The packet id the body starts with.
+            pub id: i32,
+            /// Non-zero when cancelled: a clientbound packet is not sent, a serverbound one
+            /// not handled. Listeners may set or clear it.
+            pub cancelled: u32,
+            /// [`packet_event`] bits.
+            pub flags: u32,
+            /// The protocol version the body is encoded for (the server's own; clients of
+            /// other versions are translated behind the listeners).
+            pub protocol: i32,
+            /// The connection, a number unique in this server run (0 in a broadcast call).
+            pub connection: u64,
+            /// The player the packet goes to or comes from; nil before its login finished and
+            /// in a broadcast call.
+            pub player: Uuid,
+            /// The packet body: the id as a VarInt, then the fields.
+            pub body: Bytes,
+            /// Replaces the body. Monitors must not use it.
+            pub out: *const PacketOut,
         }
         /// The host's functions for plugins.
         pub struct HostApi {
@@ -2595,29 +2718,48 @@ abi! {
                 unsafe extern "C" fn(PluginId, Str, Str, *const ByteSink) -> Status,
             /// The persistent data keys of an item, one per line. Since ABI 1.6.
             pub item_data_keys: unsafe extern "C" fn(PluginId, Str, *const ByteSink) -> Status,
+            /// Adds a packet listener; writes its handle. Allowed at any time and from any
+            /// thread. Packet types without a listener cost the server nothing. Since ABI 1.7.
+            pub packet_subscribe:
+                unsafe extern "C" fn(PluginId, *const PacketSpec, *mut u64) -> Status,
+            /// Removes a packet listener by its handle; calls that are running finish first.
+            /// Since ABI 1.7.
+            pub packet_unsubscribe: unsafe extern "C" fn(PluginId, u64) -> Status,
+            /// The id of a packet by its name in a state ([`packet_state`]) and direction
+            /// ([`packet_direction`]), e.g. `set_entity_data`. Ids change between Minecraft
+            /// versions, names rarely. Since ABI 1.7.
+            pub packet_id: unsafe extern "C" fn(PluginId, u32, u32, Str, *mut i32) -> Status,
+            /// The name of a packet by its id. Since ABI 1.7.
+            pub packet_name: unsafe extern "C" fn(PluginId, u32, u32, i32, *mut StrBuf) -> Status,
+            /// Sends a play packet body (`id` + fields, the server's protocol version) to a
+            /// player, in order with the server's packets from this thread; flags from
+            /// [`packet_send`]. Since ABI 1.7.
+            pub packet_send: unsafe extern "C" fn(PluginId, Uuid, Bytes, u32) -> Status,
+            /// The protocol version packet bodies are encoded for. Since ABI 1.7.
+            pub protocol_version: unsafe extern "C" fn(PluginId, *mut i32) -> Status,
             /// Creates an extra world, or loads it when its folder holds one (which keeps its
             /// seed and generator), and writes its world index. It loads in the next global
-            /// phase ([`event::WORLD_LOAD`]); until then it is not usable. Since ABI 1.7.
+            /// phase ([`event::WORLD_LOAD`]); until then it is not usable. Since ABI 1.8.
             pub world_create:
                 unsafe extern "C" fn(PluginId, *const WorldCreate, *mut u32) -> Status,
             /// Loads the extra world of a folder (the name) and writes its world index;
             /// [`status::NOT_FOUND`] when the folder holds none. Loads as `world_create` does.
-            /// Since ABI 1.7.
+            /// Since ABI 1.8.
             pub world_load: unsafe extern "C" fn(PluginId, Str, *mut u32) -> Status,
             /// Unloads an extra world in the next global phase, its chunks saved when `save`
             /// is non-zero. [`status::WRONG_OWNER`] for the default world's dimensions,
-            /// [`status::INVALID_ARGUMENT`] while players are in it. Since ABI 1.7.
+            /// [`status::INVALID_ARGUMENT`] while players are in it. Since ABI 1.8.
             pub world_unload: unsafe extern "C" fn(PluginId, u32, u32) -> Status,
             /// The number of world indices (loaded or not); every world is below it. Since
-            /// ABI 1.7.
+            /// ABI 1.8.
             pub world_count: unsafe extern "C" fn(PluginId, *mut u32) -> Status,
             /// What a world is and its folder (the default world's `level-name` for its
-            /// dimensions). Since ABI 1.7.
+            /// dimensions). Since ABI 1.8.
             pub world_info:
                 unsafe extern "C" fn(PluginId, u32, *mut WorldDetails, *mut StrBuf) -> Status,
             /// Moves an online player to a place in any loaded world, from any thread
             /// (between the ticks of its world; to another world like `/tp`, with the
-            /// teleport event). Since ABI 1.7.
+            /// teleport event). Since ABI 1.8.
             pub player_move: unsafe extern "C" fn(PluginId, Uuid, *const Location) -> Status,
         }
     }

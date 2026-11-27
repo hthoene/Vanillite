@@ -241,11 +241,12 @@ fn drop_item(t: &mut Tick<'_, '_>) -> bool {
         f64::from(0.3 * sx * 1.5),
         f64::from(0.3 * cy * cx + vanillite_base::math::sin(f64::from(dir)) * pow2),
     );
-    let uuid = crate::mob::random_uuid(&mut *t.env.random);
-    let y_rot = 0.0;
+    // `new ItemEntity(level, x, y, z, stack)`: UUID and yaw from the item's own random.
+    let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
     let pos = Vec3::new(p.x, t.eye_y() - f64::from(0.3_f32), p.z);
     t.env.out.push(crate::survival::Effect::DropItem {
         uuid,
+        random: item_random,
         pos,
         velocity,
         y_rot,
