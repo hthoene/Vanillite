@@ -2560,8 +2560,23 @@ impl Chunks {
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Arc<ProtoChunk>> {
         self.holders
             .get(&pos)
+            .filter(|h| h.is_full())
             .and_then(|h| h.chunk.as_ref())
-            .filter(|c| c.status == ChunkStatus::Full)
+    }
+
+    /// Prefetch hint ahead of a loop over chunks, in stages a few chunks apart: stage 0 starts
+    /// loading the chunk (its holder is read now), stage 1 its list of sections, stage 2 the
+    /// sections that may tick randomly. No effect on anything but the caches.
+    #[inline]
+    pub fn prefetch(&self, pos: ChunkPos, stage: u8) {
+        let Some(c) = self.holders.get(&pos).and_then(|h| h.chunk.as_ref()) else {
+            return;
+        };
+        match stage {
+            0 => vanillite_base::prefetch::read(&raw const c.chunk),
+            1 => c.chunk.prefetch_sections(),
+            _ => c.chunk.prefetch_ticking_sections(),
+        }
     }
 
     /// `ChunkAccess.getInhabitedTime` of a full chunk.
@@ -2604,10 +2619,7 @@ impl Chunks {
     fn tracked_block(&self, pos: BlockPos) -> Option<BlockStateId> {
         let chunk_pos = pos.chunk();
         let holder = self.holders.get(&chunk_pos)?;
-        let chunk = holder
-            .chunk
-            .as_ref()
-            .filter(|c| c.status == ChunkStatus::Full)?;
+        let chunk = holder.chunk.as_ref().filter(|_| holder.is_full())?;
         if holder.level <= FULL_LEVEL {
             self.note_read(chunk_pos, true);
         }
@@ -2639,10 +2651,7 @@ impl Chunks {
         if !holder.accessible {
             return None;
         }
-        let chunk = holder
-            .chunk
-            .as_ref()
-            .filter(|c| c.status == ChunkStatus::Full)?;
+        let chunk = holder.chunk.as_ref().filter(|_| holder.is_full())?;
         if holder.level <= FULL_LEVEL {
             self.note_read(chunk_pos, true);
         }

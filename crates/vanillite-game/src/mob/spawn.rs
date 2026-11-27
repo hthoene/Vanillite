@@ -686,7 +686,13 @@ fn tick_world(
         close: &mut spawner.close,
         state: &mut state,
     };
-    for &chunk in &chunks {
+    for (i, &chunk) in chunks.iter().enumerate() {
+        // The chunks ahead start loading into the cache while this one spawns.
+        for (ahead, stage) in [(2, 0), (1, 1)] {
+            if let Some(&next) = chunks.get(i + ahead) {
+                round.level.chunks.prefetch(next, stage);
+            }
+        }
         // `tickSpawningChunk`.
         round.level.chunks.increment_inhabited_time(chunk);
         if round.level.chunks.in_entity_ticking_range(chunk) {

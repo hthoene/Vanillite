@@ -203,6 +203,34 @@ impl Chunk {
         None
     }
 
+    /// Prefetch hint: starts loading the list of sections (the part with the sections that may
+    /// tick randomly).
+    #[inline]
+    pub fn prefetch_sections(&self) {
+        let first = self.hot.maybe_ticking.trailing_zeros() as usize;
+        let last = 63 - self.hot.maybe_ticking.leading_zeros().min(63) as usize;
+        let sections = &self.sections[..];
+        if let (Some(a), Some(b)) = (sections.get(first), sections.get(last)) {
+            vanillite_base::prefetch::read(a);
+            vanillite_base::prefetch::read(b);
+        } else {
+            vanillite_base::prefetch::read(sections.as_ptr());
+        }
+    }
+
+    /// Prefetch hint: starts loading the sections that may tick randomly.
+    #[inline]
+    pub fn prefetch_ticking_sections(&self) {
+        let mut bits = self.hot.maybe_ticking;
+        while bits != 0 {
+            let index = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            if let Some(section) = self.sections.get(index) {
+                vanillite_base::prefetch::read(Arc::as_ptr(section));
+            }
+        }
+    }
+
     /// Whether every block of section `index` is known to be a redstone conductor without
     /// visiting it (`false` = not known; read the block).
     #[inline]
