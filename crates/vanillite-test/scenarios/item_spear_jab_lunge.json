@@ -1,0 +1,107 @@
+{
+  "description": "Spear jabs of players (#230 I3-08, I4-05): a jab before full attack strength deals scaled damage, a worn spear breaks from the jab's durability; a Lunge II spear's full jab pushes the player forward, costs 8 exhaustion and durability.",
+  "tier": "fast",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 50,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        -90,
+        20
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        10.5
+      ],
+      "rot": [
+        -90,
+        20
+      ]
+    },
+    {
+      "name": "pig_a",
+      "type": "minecraft:pig",
+      "pos": [
+        7.5,
+        -60.0,
+        4.5
+      ],
+      "seed": 21,
+      "finalize": false
+    },
+    {
+      "name": "pig_b",
+      "type": "minecraft:pig",
+      "pos": [
+        7.5,
+        -60.0,
+        10.5
+      ],
+      "seed": 22,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:iron_spear",
+      "components": "{\"minecraft:damage\":249}"
+    },
+    {
+      "tick": 1,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:iron_spear",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:lunge\":2}}"
+    },
+    {
+      "tick": 3,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 3,
+      "op": "release_item",
+      "entity": "alex"
+    },
+    {
+      "tick": 17,
+      "op": "stab",
+      "entity": "steve"
+    },
+    {
+      "tick": 30,
+      "op": "stab",
+      "entity": "alex"
+    }
+  ]
+}

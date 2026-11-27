@@ -317,6 +317,48 @@ pub(crate) fn mob_arrow(effect: Option<crate::effect::EffectInstance>) -> crate:
     item
 }
 
+/// `Entity.canBeHitByProjectile` (alive and `isPickable`): living entities but marker armor
+/// stands and spectators, end crystals, shulker bullets, the `#redirectable_projectile`s,
+/// item frames, paintings and cushions, boats, minecarts, primed TNT and falling blocks.
+pub fn can_be_hit_by_projectile(ents: &Entities, id: EntityId) -> bool {
+    use super::missile::MissileKind;
+    if let Some(p) = ents.player(id) {
+        return !p.survival.is_dead_or_dying()
+            && p.game_mode != vanillite_config::GameMode::Spectator;
+    }
+    if let Some(m) = ents.mob(id) {
+        return m.is_alive()
+            && !(m.kind == super::Kind::ArmorStand && crate::decoration::stand::is_marker(m));
+    }
+    if let Some(d) = ents.missile(id) {
+        return !d.removed
+            && matches!(
+                d.kind,
+                MissileKind::Fireball
+                    | MissileKind::WindCharge
+                    | MissileKind::BreezeWindCharge
+                    | MissileKind::ShulkerBullet
+            );
+    }
+    if let Some(s) = ents.special(id) {
+        return matches!(s, super::boss::special::SpecialData::EndCrystal(c) if !c.removed);
+    }
+    if let Some(d) = ents.decor(id) {
+        use crate::decoration::DecorData;
+        return matches!(
+            d.data,
+            DecorData::Frame(_) | DecorData::Painting(_) | DecorData::Cushion(_)
+        );
+    }
+    ents.store.get(id).is_some_and(|e| {
+        let kind = e.kind();
+        crate::vehicle::BoatKind::of(kind).is_some()
+            || crate::minecart::MinecartKind::of(kind).is_some()
+            || kind == entity_ids::TNT
+            || kind == entity_ids::FALLING_BLOCK
+    })
+}
+
 /// `AbstractArrow.tick` (with `Projectile.tick`'s owner check) and `Arrow.tick`.
 pub fn tick_arrow(
     level: &Level,
@@ -440,12 +482,15 @@ pub fn tick_arrow(
             if !a.left_owner && a.owner == Some(other) {
                 return;
             }
-            let alive = ents.mob(other).is_some_and(super::MobData::is_alive)
-                || ents.player(other).is_some_and(|p| {
-                    !p.survival.is_dead_or_dying()
-                        && p.game_mode != vanillite_config::GameMode::Spectator
-                });
-            if !alive {
+            if !can_be_hit_by_projectile(ents, other) {
+                return;
+            }
+            // `AbstractArrow.canHitEntity`: a player's arrow flies through the players it may
+            // not hurt (`canHarmPlayer`).
+            if ents.player(other).is_some()
+                && let Some(owner) = a.owner.filter(|&o| ents.player(o).is_some())
+                && !super::attack::can_harm_player(ents, env, owner, other)
+            {
                 return;
             }
             let Some(oe) = ents.store.get(other) else {
@@ -489,6 +534,9 @@ pub fn tick_arrow(
                 continue;
             }
             hit_any = true;
+            // `Projectile.onHit`: a `#redirectable_projectile` it hits flies off along the
+            // owner's look (`onRedirectProjectile`).
+            super::attack::aim_deflect(ents, target, a.owner, a.owner);
             // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
             super::missile::land_event(env.out, level, id, a.owner, None, hit);
             // `onHitEntity`.
@@ -512,7 +560,25 @@ pub fn tick_arrow(
             source.projectile_motion = Some(velocity);
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
-            if hurt {
+            let living = ents.mob(target).is_some() || ents.player(target).is_some();
+            if hurt && !living {
+                // Vehicles, end crystals, shulker bullets: only the sound.
+                let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
+                play_sound(
+                    env.out,
+                    None,
+                    pos,
+                    hit_sound(&a),
+                    SoundSource::Neutral,
+                    1.0,
+                    pitch,
+                    crate::survival::sound_seed(),
+                );
+                if a.pierce_level == 0 {
+                    discard = true;
+                    break;
+                }
+            } else if hurt {
                 if a.fire {
                     super::attack::ignite(ents, target, 100);
                 }
@@ -628,13 +694,26 @@ pub fn tick_arrow(
                     discard = true;
                     break;
                 }
-            } else {
-                // Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back at half
-                // the power, turned by 170° to 190°.
+            } else if !ents
+                .mob(target)
+                .is_some_and(|m| m.kind == super::Kind::Enderman)
+            {
+                // `projectileReceivesSideEffectsOnHit(false)` (an enderman's is false: the arrow
+                // flies on). Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back
+                // at half the power, turned by 170° to 190°.
                 let turn = 170.0 + random.next_float() * 20.0;
                 velocity = velocity * -0.1;
                 rot.y_rot += turn;
                 if velocity.length_sqr() < 1.0e-7 {
+                    // Stopped: it drops as an item if it may be picked up
+                    // (`spawnAtLocation(pickupItem, 0.1F)`).
+                    if a.pickup == 1 {
+                        crate::decoration::spawn_item(
+                            env,
+                            Vec3::new(pos.x, pos.y + f64::from(0.1_f32), pos.z),
+                            a.item.clone(),
+                        );
+                    }
                     discard = true;
                 }
                 deflected = true;

@@ -585,6 +585,42 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
     discard(t);
 }
 
+/// `ShulkerBullet.hurtServer`: any hit makes the hurt sound and crit particles and destroys it
+/// (`destroy`: gone, with the `ENTITY_DAMAGE` game event).
+pub fn hurt_bullet(
+    ents: &mut Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut super::super::super::MobContext,
+    id: EntityId,
+) -> bool {
+    let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
+        return false;
+    };
+    crate::survival::play_sound(
+        env.out,
+        None,
+        pos,
+        "minecraft:entity.shulker_bullet.hurt",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+        1.0,
+        1.0,
+        crate::survival::sound_seed(),
+    );
+    let crit = crate::level::particles::simple("minecraft:crit");
+    cx.send_particles(crit, pos, 15, Vec3::new(0.2, 0.2, 0.2), 0.0);
+    if let Some(d) = ents.missile_mut(id) {
+        d.removed = true;
+    }
+    cx.discarded.push(id);
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().entity_damage,
+        pos,
+        Some(id),
+    );
+    true
+}
+
 /// `Projectile.onHitBlock`'s `onProjectileHit` of a block hit (comes first in `onHitBlock`).
 fn hit_block(t: &mut MissileTick<'_, '_>, hit: Hit) {
     if let Hit::Block(pos, at, _) = hit {

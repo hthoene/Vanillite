@@ -1970,7 +1970,7 @@ impl ServerWorld {
         let mut no_gateway = |_| false;
         let dimension = self.dimension.clone();
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = self.survival.env(
             &mut random,
             state,
