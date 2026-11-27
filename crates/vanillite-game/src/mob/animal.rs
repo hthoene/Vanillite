@@ -888,9 +888,9 @@ pub fn animal_interact(
 
 /// `playEatingSound`: sheep and pigs have one.
 pub fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
-    let sound = match ents.mob(target).map(|m| m.kind) {
-        Some(Kind::Sheep) => "minecraft:entity.sheep.eat",
-        Some(Kind::Pig) => "minecraft:entity.pig.eat",
+    let sound = match ents.mob(target) {
+        Some(m) if m.kind == Kind::Sheep => "minecraft:entity.sheep.eat",
+        Some(m) if m.kind == Kind::Pig => super::kinds::pig_eat_sound(m),
         _ => return,
     };
     combat::mob_sound(ents, env, target, sound);
