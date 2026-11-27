@@ -1,0 +1,21 @@
+{
+  "description": "Seven game days of weather and day cycle in a snowy plain: natural rain, snow and thunder with the day cycle; water freezes, snow layers build up and powder snow fills cauldrons; a daylight detector lights a lamp; random ticks on.",
+  "world": {"biome": "minecraft:snowy_plains"},
+  "rules": {"random_tick_speed": "3", "advance_time": "true", "advance_weather": "true"},
+  "time": 0,
+  "level_rng": true,
+  "region": [[0, -62, 0], [15, -55, 15]],
+  "ticks": 168000,
+  "setup": [
+    {"op": "fill", "from": [2, -61, 2], "to": [7, -61, 7], "block": "minecraft:water"},
+    {"op": "set", "pos": [10, -60, 3], "block": "minecraft:cauldron"},
+    {"op": "set", "pos": [12, -60, 3], "block": "minecraft:cauldron"},
+    {"op": "set", "pos": [14, -60, 3], "block": "minecraft:cauldron"},
+    {"op": "set", "pos": [10, -60, 6], "block": "minecraft:daylight_detector"},
+    {"op": "set", "pos": [11, -60, 6], "block": "minecraft:redstone_lamp"},
+    {"op": "fill", "from": [2, -60, 10], "to": [6, -60, 14], "block": "minecraft:short_grass"},
+    {"op": "set", "pos": [10, -60, 10], "block": "minecraft:oak_sapling"},
+    {"op": "set", "pos": [13, -60, 12], "block": "minecraft:lightning_rod"},
+    {"op": "set", "pos": [13, -61, 12], "block": "minecraft:copper_block"}
+  ]
+}

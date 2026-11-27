@@ -16,6 +16,7 @@ pub mod equipment;
 pub mod fam;
 pub mod goals;
 pub mod golem_build;
+pub mod item_components;
 pub mod kinds;
 pub mod living;
 pub mod missile;
@@ -195,6 +196,9 @@ pub struct MobData {
     pub goal_path: Option<path::Path>,
     /// Index into the `minecraft:*_variant` registry (pigs, cows, chickens); 0 = default.
     pub variant: i32,
+    /// Index into the `minecraft:{pig,cow,chicken}_sound_variant` registry (`classic` by
+    /// default, see [`kinds::classic_sound_variant`]).
+    pub sound_variant: u8,
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
@@ -341,6 +345,7 @@ impl MobData {
             goal_path: None,
             // Chickens, cows and pigs start as the temperate variant (registry index 1).
             variant: i32::from(matches!(kind, Kind::Chicken | Kind::Cow | Kind::Pig)),
+            sound_variant: kinds::classic_sound_variant(kind),
             xp_reward: 0,
             effects: crate::effect::ActiveEffects::default(),
             absorption: 0.0,
@@ -972,6 +977,9 @@ impl WorldAction {
 pub struct MobContext {
     pub finder: path::PathFinder,
     pub boxes: Vec<Aabb>,
+    /// `movementThisTick` of the mob that ticks: the moves of `Entity.move`, for the blocks
+    /// on their way (`applyEffectsFromBlocks`).
+    pub movements: Vec<crate::survival::inside::Movement>,
     pub actions: Vec<WorldAction>,
     pub env: Environment,
     pub settings: MobSettings,
@@ -1176,17 +1184,28 @@ pub fn new_uuid() -> u128 {
     crate::block::tnt::insecure_uuid()
 }
 
-/// The UUID, yaw and motion of a new item entity (`new ItemEntity(level, x, y, z, stack)`):
-/// the constructor draws `bobOffs`, the yaw and the motion from the item's own random, which takes its
-/// seed from the entity seed stream. Throws replace the motion afterwards.
-pub fn new_item_entity() -> (u128, f32, Vec3) {
+/// The UUID, yaw, motion and random state ([`crate::item_entity::ItemData::random`]) of a new
+/// item entity (`new ItemEntity(level, x, y, z, stack)`): the constructor draws `bobOffs`, the
+/// yaw and the motion from the item's own random, which takes its seed from the entity seed
+/// stream. Throws replace the motion afterwards.
+pub fn new_item_entity() -> (u128, f32, Vec3, i64) {
     let mut own = LegacyRandom::new(new_entity_seed());
     // `bobOffs`, then the yaw.
     let _bob = own.next_float();
     let y_rot = own.next_float() * 360.0;
     let x = own.next_double() * 0.2 - 0.1;
     let z = own.next_double() * 0.2 - 0.1;
-    (new_uuid(), y_rot, Vec3::new(x, 0.2, z))
+    (new_uuid(), y_rot, Vec3::new(x, 0.2, z), own.state())
+}
+
+/// The UUID, yaw and random state of a new item entity made with its motion
+/// (`new ItemEntity(level, x, y, z, stack, dx, dy, dz)`): the constructor draws only `bobOffs`
+/// and the yaw from the item's own random.
+pub fn new_item_entity_with_motion() -> (u128, f32, i64) {
+    let mut own = LegacyRandom::new(new_entity_seed());
+    let _bob = own.next_float();
+    let y_rot = own.next_float() * 360.0;
+    (new_uuid(), y_rot, own.state())
 }
 
 /// The UUID of a new entity that keeps no random of its own here (items): it still takes its

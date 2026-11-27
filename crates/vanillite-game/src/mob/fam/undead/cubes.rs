@@ -395,10 +395,9 @@ fn deals_damage(m: &MobData) -> bool {
     can_deal && m.is_alive()
 }
 
-/// `Player.touch` → `AbstractCubeMob.playerTouch` for a player the server moves itself
-/// (`Survival::simulate_movement`), at the end of its `aiStep`: the cubes in its box grown by
-/// (1, 0.5, 1) that deal damage hurt it. The cubes hurt the other players in their own tick
-/// ([`touch_damage`]).
+/// `Player.touch` → `AbstractCubeMob.playerTouch` at the end of the player's `aiStep`
+/// ([`crate::mob::living::player_ai_step_end`]): the cubes in its box grown by (1, 0.5, 1)
+/// that deal damage hurt it.
 pub fn player_touch(
     level: &Level,
     ents: &mut crate::entities::Entities,
@@ -436,17 +435,16 @@ pub fn player_touch(
     }
 }
 
-/// `playerTouch` and `push(IronGolem)`: players and iron golems touching a cube that can
-/// deal damage get hurt (`dealDamage`).
+/// `push(IronGolem)`: iron golems touching a cube that can deal damage get hurt
+/// (`dealDamage`); players in [`player_touch`].
 fn touch_damage(t: &mut Tick<'_, '_>) {
     if !deals_damage(t.mob_ref()) {
         return;
     }
     let aabb = t.aabb();
-    let area = aabb.inflate(1.0, 0.5, 1.0);
     let mut found = std::mem::take(&mut t.cx.ids);
     found.clear();
-    t.ents.store.for_each_in(&area, false, |id| found.push(id));
+    t.ents.store.for_each_in(&aabb, false, |id| found.push(id));
     for &id in &found {
         if id == t.id {
             continue;
@@ -454,16 +452,9 @@ fn touch_damage(t: &mut Tick<'_, '_>) {
         let Some(e) = t.ents.store.get(id) else {
             continue;
         };
-        let touches = if let Some(p) = t.ents.player(id) {
-            if p.survival.simulate_movement {
-                // It touches the cube in its own tick ([`player_touch`]).
-                continue;
-            }
-            // `Player.touch` uses the player's box grown by (1, 0.5, 1).
-            e.aabb().inflate(1.0, 0.5, 1.0).intersects(&aabb)
-        } else {
-            t.ents.mob(id).is_some_and(|o| o.kind == Kind::IronGolem) && e.aabb().intersects(&aabb)
-        };
+        // Players touch the cube in their own tick ([`player_touch`]).
+        let touches =
+            t.ents.mob(id).is_some_and(|o| o.kind == Kind::IronGolem) && e.aabb().intersects(&aabb);
         if touches {
             deal_damage(t, id);
         }

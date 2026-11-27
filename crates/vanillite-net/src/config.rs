@@ -92,6 +92,8 @@ pub struct NetConfig {
     pub server_links: Vec<vanillite_protocol::packets::common::ServerLink>,
     /// Codes of conduct by lower-case language (`enable-code-of-conduct`). Default none.
     pub code_of_conduct: std::collections::BTreeMap<String, String>,
+    /// The packet tap: where plugins listen on packets. Default: no listeners.
+    pub tap: std::sync::Arc<vanillite_protocol::tap::PacketTap>,
 }
 
 impl Default for NetConfig {
@@ -138,6 +140,7 @@ impl Default for NetConfig {
             resource_pack: None,
             server_links: Vec::new(),
             code_of_conduct: std::collections::BTreeMap::new(),
+            tap: std::sync::Arc::default(),
         }
     }
 }

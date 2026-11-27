@@ -9,11 +9,10 @@ use vanillite_base::hash::FxHashMap;
 use vanillite_config::{TrackingRules, WorldRules};
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
+use vanillite_game::level::tiles::TileRun;
 use vanillite_world::chunks::{Chunks, FULL_LEVEL, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
-
-use vanillite_base::random::XoroshiroRandom;
 
 use crate::blocks::LevelEffects;
 use crate::compute::Compute;
@@ -99,8 +98,6 @@ pub struct ServerWorld {
     packets: ChunkPackets,
     /// Sounds and crack progress of the player handlers.
     effects: LevelEffects,
-    /// The random of the item entities (`Entity.random`).
-    item_random: XoroshiroRandom,
     /// The counters of the world access rules at the last report ([`Self::report_rules`]).
     reported: RuleCounters,
     updates: WorldUpdates,
@@ -130,6 +127,8 @@ pub struct ServerWorld {
     kept_tickets: Vec<vanillite_nbt::Tag>,
     /// The portal tickets changed since the last save.
     tickets_dirty: bool,
+    /// [`ServerWorld::release_memory`] ran and no player has been here since.
+    memory_released: bool,
     /// Players arriving from other worlds or respawning, waiting for their destination.
     arrivals: Vec<travel::Waiting>,
     /// Entities besides players arriving through portals, waiting for their destination.
@@ -200,9 +199,10 @@ impl ServerWorld {
         survival: crate::survival::WorldSurvival,
         mut mobs: crate::mobs::WorldMobs,
         data: vanillite_storage::saved_data::SavedDataStore,
+        dragon_fight: bool,
     ) -> ServerWorld {
         // `dimensionType().hasEnderDragonFight()`.
-        if dimension == "minecraft:the_end" {
+        if dragon_fight {
             mobs.init_dragon_fight(&data, &mut level);
         }
         mobs.init_raids(&data, &mut level);
@@ -210,11 +210,6 @@ impl ServerWorld {
         if dimension == "minecraft:overworld" {
             mobs.init_trader_spawner(&data);
         }
-        // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as i64)
-            ^ i64::from(id.0);
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
@@ -241,7 +236,6 @@ impl ServerWorld {
             focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
-            item_random: XoroshiroRandom::new(seed),
             reported: RuleCounters::default(),
             scratch: Vec::new(),
             survival,
@@ -250,6 +244,7 @@ impl ServerWorld {
             data,
             kept_tickets: Vec::new(),
             tickets_dirty: false,
+            memory_released: false,
             arrivals: Vec::new(),
             entity_arrivals: Vec::new(),
             gateway_waits: Vec::new(),
@@ -571,6 +566,11 @@ impl ServerWorld {
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
         self.place_ready_spawns(ctx.global);
+        if self.memory_released && self.level.entities.players.iter().next().is_some() {
+            // Players are back: the generator is built ahead, off the tick.
+            self.memory_released = false;
+            self.level.chunks.prepare_generator();
+        }
         let plugins = ctx.global.plugins.clone();
         let positions = plugins
             .wants(vanillite_abi::event::PLAYERS_MOVED)
@@ -672,11 +672,9 @@ impl ServerWorld {
                     ctx.other_levels().collect(),
                 );
             }
-            {
-                // Command blocks run here: `execute in` continues in the other world at once.
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.level.run_scheduled_ticks();
-            }
+            // Command blocks run here: `execute in` continues in the other world at once.
+            self.lent
+                .with(ctx.other_levels(), || self.level.run_scheduled_ticks());
             // `raids.tick`.
             self.mobs.tick_raids(
                 &mut self.level,
@@ -709,14 +707,28 @@ impl ServerWorld {
             let (spawn, _) = effective_spawn(level, self.players.level.spawn);
             let spawn_point = (self.dimension == "minecraft:overworld")
                 .then(|| vanillite_base::BlockPos::containing(spawn.x, spawn.y, spawn.z));
+            // `performance.region-threading`: spawning and random ticks run per tile on the
+            // compute pool; off, both keep Vanilla's serial order.
+            let compute = ctx.compute;
+            let fork = move |n: usize, job: &(dyn Fn(usize) + Sync)| compute.for_each(n, job);
+            let region = &self.rules.region_threading;
+            let tiles = region.enabled.then(|| TileRun {
+                size: i32::from(region.tile_size),
+                min_chunks: vanillite_game::level::tiles::MIN_CHUNKS,
+                fork: &fork,
+            });
             self.mobs.spawn(
                 level,
                 &self.survival,
                 ctx.global,
                 &self.dimension,
                 spawn_point,
+                tiles.as_ref(),
             );
-            level.tick_chunks(&mut self.scratch);
+            match &tiles {
+                Some(run) => level.tick_chunks_tiled(&mut self.scratch, run),
+                None => level.tick_chunks(&mut self.scratch),
+            }
             level.run_block_events();
         }
         level.set_handling_tick(false);
@@ -725,8 +737,8 @@ impl ServerWorld {
             {
                 // Command block minecarts.
                 let global = ctx.global;
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.tick_entities(global);
+                let lent = Arc::clone(&self.lent);
+                lent.with(ctx.other_levels(), || self.tick_entities(global));
             }
             self.entity_travel(ctx);
             self.level.tick_block_entities();
@@ -773,6 +785,7 @@ impl ServerWorld {
             &self.entity_updates,
             ctx.compute,
             &mut self.fan_out,
+            ctx.global.plugins.packet_tap(),
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
         // The omen effects see the village and raids at the players (they tick without the
@@ -782,18 +795,28 @@ impl ServerWorld {
         {
             // `Player.tick`'s sleep part; the sleeping player list follows joins, leaves and
             // game mode changes.
-            let hooks = crate::plugins::Hooks::of(&ctx.global.plugins, &self.dimension);
+            let hooks = crate::plugins::Hooks::of(ctx.global, &self.dimension);
             vanillite_game::survival::sleep::update_sleeping_player_list(&mut self.level);
             vanillite_game::survival::sleep::tick_players(&mut self.level, &hooks);
         }
         self.survival.do_tick(
-            &mut self.level.entities,
-            &self.level.chunks,
-            &self.level.border,
-            &self.level.block_entities,
+            &mut self.level,
+            self.mobs.cx_mut(),
             ctx.global,
             &self.dimension,
             &mut portals,
+        );
+        self.mobs.after_player_ticks(
+            &mut self.level,
+            &mut self.survival,
+            ctx.global,
+            &self.dimension,
+        );
+        self.mobs.tick_player_items(
+            &mut self.level,
+            &mut self.survival,
+            ctx.global,
+            &self.dimension,
         );
         vanillite_game::raid::start_pending_raids(
             &mut self.level.entities,
@@ -846,7 +869,9 @@ impl ServerWorld {
         let origin = level
             .generation
             .as_ref()
-            .map_or(vanillite_base::ChunkPos::new(0, 0), |g| g.terrain.origin());
+            .map_or(vanillite_base::ChunkPos::new(0, 0), |g| {
+                g.terrain().origin()
+            });
         let min_y = level.min_y();
         let mut height =
             flat_height.map_or(64, |layers| min_y + layers.min(level.max_y() - min_y + 1));
@@ -888,7 +913,7 @@ impl ServerWorld {
     /// and rain stops (with `advance_weather`).
     fn skip_night(&mut self, global: &Global) {
         use vanillite_game::survival::rules::Rule;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, &self.dimension);
+        let hooks = crate::plugins::Hooks::of(global, &self.dimension);
         if !vanillite_game::survival::sleep::skip_night(&mut self.level, &hooks) {
             return;
         }
@@ -899,12 +924,7 @@ impl ServerWorld {
                 rules.bool(Rule::ADVANCE_WEATHER),
             )
         };
-        let clock = global
-            .level
-            .default_clocks
-            .get(self.id.index())
-            .copied()
-            .flatten();
+        let clock = global.dimensions.default_clock(self.id);
         if advance_time && let Some(clock) = clock {
             let moved = if global.plugins.wants(vanillite_abi::event::TIME_SKIP) {
                 self.time_skip(global, clock)
@@ -959,8 +979,7 @@ impl ServerWorld {
             value: skip,
             ..vanillite_game::hooks::Event::new(vanillite_abi::event::TIME_SKIP)
         };
-        let host = global.plugins.clone();
-        crate::plugins::Hooks::of(&host, &self.dimension).event_in(
+        crate::plugins::Hooks::of(global, &self.dimension).event_in(
             Some(&mut crate::plugins::PluginWorld(self, global)),
             &mut ev,
         );
@@ -993,7 +1012,6 @@ impl ServerWorld {
         self.mobs
             .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
         let items = crate::mobs::ItemTick {
-            random: &mut self.item_random,
             settings: crate::blocks::ItemSettings {
                 lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
                 merge_radius: self.rules.items.merge_radius,
@@ -1067,6 +1085,17 @@ impl ServerWorld {
         self.tracker.update(&input, &mut self.entity_updates);
         self.level.entities.store.clear_removed();
         self.level.entities.store.clear_sync_flags();
+    }
+
+    /// Frees what this world can build again (`performance.memory.release-when-empty`).
+    pub(crate) fn release_memory(&mut self) {
+        self.level.chunks.release_memory();
+        self.packets.release_memory();
+        let entities = &mut self.level.entities;
+        entities.mobs.shrink_to_fit();
+        entities.items.shrink_to_fit();
+        entities.players.shrink_to_fit();
+        self.memory_released = true;
     }
 
     /// Runs `then` once the running save round of this world is committed.
@@ -1227,8 +1256,8 @@ pub struct TickContext<'a> {
 }
 
 struct OtherWorlds<'a> {
-    before: &'a mut [ServerWorld],
-    after: &'a mut [ServerWorld],
+    before: &'a mut [Option<ServerWorld>],
+    after: &'a mut [Option<ServerWorld>],
 }
 
 impl fmt::Debug for TickContext<'_> {
@@ -1264,11 +1293,11 @@ impl<'a> TickContext<'a> {
     }
 
     /// Gives the context direct access to the other worlds (sequential mode). `before` holds
-    /// the worlds with lower ids, `after` those with higher ids.
+    /// the worlds with lower ids, `after` those with higher ids (`None` where unloaded).
     pub(crate) fn with_others(
         mut self,
-        before: &'a mut [ServerWorld],
-        after: &'a mut [ServerWorld],
+        before: &'a mut [Option<ServerWorld>],
+        after: &'a mut [Option<ServerWorld>],
     ) -> Self {
         self.others = Some(OtherWorlds { before, after });
         self
@@ -1278,8 +1307,14 @@ impl<'a> TickContext<'a> {
     /// they are at hand (sequential mode); nothing otherwise.
     pub(crate) fn other_levels(&mut self) -> impl Iterator<Item = Option<&mut Level>> {
         self.others.iter_mut().flat_map(|others| {
-            let before = others.before.iter_mut().map(|w| Some(&mut w.level));
-            let after = others.after.iter_mut().map(|w| Some(&mut w.level));
+            let before = others
+                .before
+                .iter_mut()
+                .map(|w| w.as_mut().map(|w| &mut w.level));
+            let after = others
+                .after
+                .iter_mut()
+                .map(|w| w.as_mut().map(|w| &mut w.level));
             before.chain(std::iter::once(None)).chain(after)
         })
     }
@@ -1313,6 +1348,7 @@ impl<'a> TickContext<'a> {
                     .checked_sub(current + 1)
                     .and_then(|i| others.after.get_mut(i))
             }
+            .and_then(Option::as_mut)
         });
         match world {
             Some(world) => op(world),

@@ -1,7 +1,6 @@
 //! The effect side of consuming an item (`Consumable.onConsume`): the consumable listeners of
 //! the stack (`PotionContents`, `SuspiciousStewEffects`, `OminousBottleAmplifier`), then the
-//! item's `on_consume_effects` (`Consumables`: golden apples, raw chicken, rotten flesh,
-//! pufferfish, poisonous potato, spider eye, honey bottle, milk bucket).
+//! status effects of the stack's `on_consume_effects` ([`crate::consumable`]).
 
 use vanillite_data::entity::EntityTypeId;
 
@@ -9,56 +8,7 @@ use super::potion::{self, PotionContents};
 use super::{EffectHost, EffectInstance, HurtKind, MobEffect, active};
 use crate::item::ItemStack;
 
-/// One `ConsumeEffect` that touches the effects.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ConsumeEffect {
-    /// `apply_effects` with its probability.
-    Apply(Vec<EffectInstance>, f32),
-    /// `remove_effects`.
-    Remove(&'static [MobEffect]),
-    /// `clear_all_effects`.
-    ClearAll,
-}
-
-/// The default `on_consume_effects` of an item (`Consumables`), by item name.
-pub fn default_effects(item: &str) -> Vec<ConsumeEffect> {
-    use ConsumeEffect::{Apply, ClearAll, Remove};
-    use MobEffect as M;
-    let one = |e, d, a, p| vec![Apply(vec![EffectInstance::new(e, d, a)], p)];
-    match item {
-        "minecraft:honey_bottle" => vec![Remove(&[M::POISON])],
-        "minecraft:chicken" => one(M::HUNGER, 600, 0, 0.3),
-        "minecraft:enchanted_golden_apple" => vec![Apply(
-            vec![
-                EffectInstance::new(M::REGENERATION, 400, 1),
-                EffectInstance::new(M::RESISTANCE, 6000, 0),
-                EffectInstance::new(M::FIRE_RESISTANCE, 6000, 0),
-                EffectInstance::new(M::ABSORPTION, 2400, 3),
-            ],
-            1.0,
-        )],
-        "minecraft:golden_apple" => vec![Apply(
-            vec![
-                EffectInstance::new(M::REGENERATION, 100, 1),
-                EffectInstance::new(M::ABSORPTION, 2400, 0),
-            ],
-            1.0,
-        )],
-        "minecraft:poisonous_potato" => one(M::POISON, 100, 0, 0.6),
-        "minecraft:pufferfish" => vec![Apply(
-            vec![
-                EffectInstance::new(M::POISON, 1200, 1),
-                EffectInstance::new(M::HUNGER, 300, 2),
-                EffectInstance::new(M::NAUSEA, 300, 0),
-            ],
-            1.0,
-        )],
-        "minecraft:rotten_flesh" => one(M::HUNGER, 600, 0, 0.8),
-        "minecraft:spider_eye" => one(M::POISON, 100, 0, 1.0),
-        "minecraft:milk_bucket" => vec![ClearAll],
-        _ => Vec::new(),
-    }
-}
+pub use crate::consumable::ConsumeEffect;
 
 /// `addEffect` with `canBeAffected` for the entity type `kind`.
 pub fn add_effect(kind: EntityTypeId, new: EffectInstance, host: &mut dyn EffectHost) -> bool {
@@ -83,9 +33,79 @@ pub fn apply_potion(
     }
 }
 
+/// The `ConsumableListener`s of `stack` that touch the effects, for an entity of type `kind`:
+/// potion contents, stew effects and the ominous bottle amplifier. `drinker` is the source of
+/// instant potion damage.
+pub fn listeners(
+    stack: &ItemStack,
+    kind: EntityTypeId,
+    host: &mut dyn EffectHost,
+    drinker: Option<vanillite_world::entity::EntityId>,
+) {
+    use vanillite_protocol::components::ids;
+    let contents = PotionContents::of_stack(stack);
+    let source = HurtKind::IndirectMagic {
+        direct: drinker,
+        owner: drinker,
+    };
+    apply_potion(kind, &contents, potion::duration_scale(stack), host, source);
+    for e in potion::stew_effects(stack) {
+        add_effect(kind, e, host);
+    }
+    // `OminousBottleAmplifier`: the ominous bottle has it by default (0).
+    let amplifier = match crate::consumable::patched(stack, ids::OMINOUS_BOTTLE_AMPLIFIER) {
+        crate::consumable::Patched::Value(b) => {
+            vanillite_protocol::codec::Reader::new(b).varint().ok()
+        }
+        crate::consumable::Patched::Removed => None,
+        crate::consumable::Patched::Default => (vanillite_data::registry::ITEM.name(stack.item)
+            == Some("minecraft:ominous_bottle"))
+        .then_some(0),
+    };
+    if let Some(amplifier) = amplifier {
+        add_effect(
+            kind,
+            EffectInstance::with_flags(MobEffect::BAD_OMEN, 120_000, amplifier, false, false, true),
+            host,
+        );
+    }
+}
+
+/// `ConsumeEffect.apply` of the effects that touch the status effects (`apply_effects`,
+/// `remove_effects`, `clear_all_effects`); the others need the world and do nothing here.
+/// `random` is the entity's `nextFloat` for the probability.
+pub fn apply_status(
+    effect: &ConsumeEffect,
+    kind: EntityTypeId,
+    host: &mut dyn EffectHost,
+    random: &mut dyn FnMut() -> f32,
+) {
+    match effect {
+        // `ApplyStatusEffectsConsumeEffect.apply`: one roll for the whole list.
+        ConsumeEffect::Apply(list, probability) => {
+            if random() >= *probability {
+                return;
+            }
+            for e in list {
+                add_effect(kind, e.clone(), host);
+            }
+        }
+        ConsumeEffect::Remove(list) => {
+            for &e in list {
+                host.effects().remove(e);
+            }
+        }
+        ConsumeEffect::ClearAll => {
+            host.effects().clear();
+        }
+        ConsumeEffect::Teleport(_) | ConsumeEffect::PlaySound(_) => {}
+    }
+}
+
 /// The effect side of `Consumable.onConsume` for `stack` eaten or drunk by an entity of type
-/// `kind`: the stack's listeners, then the item's consume effects. `random` is the entity's
-/// `nextFloat` for the probabilities; `drinker` is the source of instant potion damage.
+/// `kind`: the stack's listeners, then the status effects of its `on_consume_effects`.
+/// `random` is the entity's `nextFloat` for the probabilities; `drinker` is the source of
+/// instant potion damage.
 pub fn on_consume(
     stack: &ItemStack,
     kind: EntityTypeId,
@@ -93,52 +113,9 @@ pub fn on_consume(
     random: &mut dyn FnMut() -> f32,
     drinker: Option<vanillite_world::entity::EntityId>,
 ) {
-    let name = vanillite_data::registry::ITEM
-        .name(stack.item)
-        .unwrap_or("minecraft:air");
-    // `ConsumableListener`s: potion contents, stew effects, ominous bottle amplifier.
-    if name == "minecraft:potion" {
-        let contents = PotionContents::of_stack(stack);
-        let source = HurtKind::IndirectMagic {
-            direct: drinker,
-            owner: drinker,
-        };
-        apply_potion(kind, &contents, potion::duration_scale(stack), host, source);
-    }
-    for e in potion::stew_effects(stack) {
-        add_effect(kind, e, host);
-    }
-    if name == "minecraft:ominous_bottle" {
-        let amplifier = stack
-            .component(vanillite_protocol::components::ids::OMINOUS_BOTTLE_AMPLIFIER)
-            .and_then(|b| vanillite_protocol::codec::Reader::new(b).varint().ok())
-            .unwrap_or(0);
-        add_effect(
-            kind,
-            EffectInstance::with_flags(MobEffect::BAD_OMEN, 120_000, amplifier, false, false, true),
-            host,
-        );
-    }
-    for effect in default_effects(name) {
-        match effect {
-            // `ApplyStatusEffectsConsumeEffect.apply`: one roll for the whole list.
-            ConsumeEffect::Apply(list, probability) => {
-                if random() >= probability {
-                    continue;
-                }
-                for e in list {
-                    add_effect(kind, e, host);
-                }
-            }
-            ConsumeEffect::Remove(list) => {
-                for &e in list {
-                    host.effects().remove(e);
-                }
-            }
-            ConsumeEffect::ClearAll => {
-                host.effects().clear();
-            }
-        }
+    listeners(stack, kind, host, drinker);
+    for effect in crate::consumable::consumable(stack).map_or_else(Vec::new, |c| c.effects) {
+        apply_status(&effect, kind, host, random);
     }
 }
 

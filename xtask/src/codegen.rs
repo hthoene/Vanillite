@@ -675,7 +675,7 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
         .collect();
     let mut o = String::from(HEADER);
     o.push_str(
-        "\nuse crate::item::{BlockSet, FoodInfo, ItemId, ItemInfo, ItemModifier, ToolInfo, ToolRule, WeaponInfo};\n\n",
+        "\nuse crate::item::{BlockSet, BlocksAttacksInfo, ConsumableInfo, ConsumeEffectInfo, DamageReductionInfo, EffectInstanceInfo, FoodInfo, ItemId, ItemInfo, ItemModifier, KineticConditionInfo, KineticWeaponInfo, PiercingWeaponInfo, ToolInfo, ToolRule, WeaponInfo};\n\n",
     );
     let mut rarities: Vec<String> = items
         .iter()
@@ -785,13 +785,28 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
                 f["can_always_eat"].as_bool().unwrap_or(false)
             ),
         };
+        let consumable = match c.get("minecraft:consumable") {
+            None => "None".to_owned(),
+            Some(v) => consumable_info(v).map_err(|e| format!("{name}: {e}"))?,
+        };
+        let blocks_attacks = match c.get("minecraft:blocks_attacks") {
+            None => "None".to_owned(),
+            Some(v) => blocks_attacks_info(v),
+        };
+        let spear = spear_fields(c).map_err(|e| format!("{name}: {e}"))?;
         let _ = writeln!(
             item_lines,
-            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, blocks_attacks: {}, compostable: {:?}, jukebox_song: {:?}, block_transformer: {:?}, equip_sound: {:?}, equip_swappable: {}, damage_resistant: {:?} }},",
+            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, consumable: {consumable}, use_remainder: {:?}, use_cooldown: {}, use_vibrations: {}, blocks_attacks: {blocks_attacks}, {spear}, compostable: {:?}, jukebox_song: {:?}, block_transformer: {:?}, equip_sound: {:?}, equip_swappable: {}, damage_resistant: {:?} }},",
             c["minecraft:max_stack_size"].as_u64().unwrap_or(1),
             c["minecraft:max_damage"].as_u64().unwrap_or(0),
             modifiers.trim_end_matches(", "),
-            c.get("minecraft:blocks_attacks").is_some(),
+            c["minecraft:use_remainder"]["id"]
+                .as_str()
+                .unwrap_or_default(),
+            c["minecraft:use_cooldown"]
+                .get("seconds")
+                .map_or_else(|| "0.0".to_owned(), f32_of),
+            c["minecraft:use_effects"]["interact_vibrations"].as_bool() != Some(false),
             c["minecraft:compostable"]["layers"]
                 .as_str()
                 .unwrap_or_default(),
@@ -1042,6 +1057,178 @@ fn ids(regs: &Value, registry: &str) -> Result<HashMap<String, usize>> {
 }
 
 /// Shortest literal that reads back as the same `f32` (Java floats are written that way).
+/// A holder set (`"#tag"`, one id or a list of ids) as a `&[&str]` literal.
+fn holder_set(v: Option<&Value>) -> String {
+    let names: Vec<&str> = match v {
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(list)) => list.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    format!("&{names:?}")
+}
+
+/// The fields of the weapon components (`kinetic_weapon`, `piercing_weapon`, `attack_range`,
+/// `minimum_attack_charge`, `attack_animation`, `damage_type`) and of `death_protection`.
+fn spear_fields(c: &Value) -> Result<String> {
+    let float = |v: Option<&Value>, default: &str| v.map_or_else(|| default.to_owned(), f32_of);
+    let condition = |v: Option<&Value>| match v {
+        None => "None".to_owned(),
+        Some(v) => format!(
+            "Some(KineticConditionInfo {{ max_duration_ticks: {}, min_speed: {}, min_relative_speed: {} }})",
+            v["max_duration_ticks"].as_i64().unwrap_or(0),
+            float(v.get("min_speed"), "0.0"),
+            float(v.get("min_relative_speed"), "0.0"),
+        ),
+    };
+    let kinetic = match c.get("minecraft:kinetic_weapon") {
+        None => "None".to_owned(),
+        Some(k) => format!(
+            "Some(&KineticWeaponInfo {{ contact_cooldown_ticks: {}, delay_ticks: {}, dismount_conditions: {}, knockback_conditions: {}, damage_conditions: {}, forward_movement: {}, damage_multiplier: {}, sound: {:?}, hit_sound: {:?} }})",
+            k["contact_cooldown_ticks"].as_i64().unwrap_or(10),
+            k["delay_ticks"].as_i64().unwrap_or(0),
+            condition(k.get("dismount_conditions")),
+            condition(k.get("knockback_conditions")),
+            condition(k.get("damage_conditions")),
+            float(k.get("forward_movement"), "0.0"),
+            float(k.get("damage_multiplier"), "1.0"),
+            k["sound"].as_str().unwrap_or_default(),
+            k["hit_sound"].as_str().unwrap_or_default(),
+        ),
+    };
+    let piercing = match c.get("minecraft:piercing_weapon") {
+        None => "None".to_owned(),
+        Some(p) => format!(
+            "Some(&PiercingWeaponInfo {{ deals_knockback: {}, dismounts: {}, sound: {:?}, hit_sound: {:?} }})",
+            p["deals_knockback"].as_bool().unwrap_or(true),
+            p["dismounts"].as_bool().unwrap_or(false),
+            p["sound"].as_str().unwrap_or_default(),
+            p["hit_sound"].as_str().unwrap_or_default(),
+        ),
+    };
+    let range = match c.get("minecraft:attack_range") {
+        None => "None".to_owned(),
+        Some(r) => format!(
+            "Some(&[{}, {}, {}, {}, {}, {}])",
+            float(r.get("min_reach"), "0.0"),
+            float(r.get("max_reach"), "3.0"),
+            float(r.get("min_creative_reach"), "0.0"),
+            float(r.get("max_creative_reach"), "5.0"),
+            float(r.get("hitbox_margin"), "0.3"),
+            float(r.get("mob_factor"), "1.0"),
+        ),
+    };
+    let death = match c.get("minecraft:death_protection") {
+        None => "None".to_owned(),
+        Some(d) => format!("Some({})", consume_effects(&d["death_effects"])?),
+    };
+    Ok(format!(
+        "kinetic_weapon: {kinetic}, piercing_weapon: {piercing}, attack_range: {range}, minimum_attack_charge: {}, attack_animation_ticks: {}, damage_type: {:?}, death_protection: {death}",
+        float(c.get("minecraft:minimum_attack_charge"), "0.0"),
+        c["minecraft:attack_animation"]["duration"]
+            .as_u64()
+            .unwrap_or(6),
+        c["minecraft:damage_type"].as_str().unwrap_or_default(),
+    ))
+}
+
+/// A list of `ConsumeEffect`s as a `&[ConsumeEffectInfo]` literal.
+fn consume_effects(v: &Value) -> Result<String> {
+    let mut effects = String::new();
+    for e in v.as_array().into_iter().flatten() {
+        let kind = e["type"].as_str().unwrap_or_default();
+        let effect = match kind {
+            "minecraft:apply_effects" => {
+                let mut list = String::new();
+                for i in e["effects"].as_array().into_iter().flatten() {
+                    let _ = write!(
+                        list,
+                        "EffectInstanceInfo {{ id: {:?}, duration: {}, amplifier: {}, ambient: {}, show_particles: {}, show_icon: {} }}, ",
+                        i["id"].as_str().unwrap_or_default(),
+                        i["duration"].as_i64().unwrap_or(0),
+                        i["amplifier"].as_i64().unwrap_or(0),
+                        i["ambient"].as_bool().unwrap_or(false),
+                        i["show_particles"].as_bool().unwrap_or(true),
+                        i["show_icon"].as_bool().unwrap_or(true),
+                    );
+                }
+                format!(
+                    "ConsumeEffectInfo::ApplyEffects {{ effects: &[{}], probability: {} }}",
+                    list.trim_end_matches(", "),
+                    e.get("probability")
+                        .map_or_else(|| "1.0".to_owned(), f32_of)
+                )
+            }
+            "minecraft:remove_effects" => format!(
+                "ConsumeEffectInfo::RemoveEffects({})",
+                holder_set(e.get("effects"))
+            ),
+            "minecraft:clear_all_effects" => "ConsumeEffectInfo::ClearAllEffects".to_owned(),
+            "minecraft:teleport_randomly" => format!(
+                "ConsumeEffectInfo::TeleportRandomly({})",
+                e.get("diameter").map_or_else(|| "16.0".to_owned(), f32_of)
+            ),
+            "minecraft:play_sound" => format!(
+                "ConsumeEffectInfo::PlaySound({:?})",
+                e["sound"].as_str().unwrap_or_default()
+            ),
+            other => return Err(format!("unknown consume effect {other}")),
+        };
+        let _ = write!(effects, "{effect}, ");
+    }
+    Ok(format!("&[{}]", effects.trim_end_matches(", ")))
+}
+
+/// A `minecraft:consumable` component as a `Some(&ConsumableInfo { .. })` literal.
+fn consumable_info(v: &Value) -> Result<String> {
+    Ok(format!(
+        "Some(&ConsumableInfo {{ consume_seconds: {}, animation: {:?}, sound: {:?}, has_consume_particles: {}, on_consume_effects: {} }})",
+        v.get("consume_seconds")
+            .map_or_else(|| "1.6".to_owned(), f32_of),
+        v["animation"].as_str().unwrap_or("eat"),
+        v["sound"]
+            .as_str()
+            .unwrap_or("minecraft:entity.generic.eat"),
+        v["has_consume_particles"].as_bool().unwrap_or(true),
+        consume_effects(&v["on_consume_effects"])?,
+    ))
+}
+
+/// A `minecraft:blocks_attacks` component as a `Some(&BlocksAttacksInfo { .. })` literal.
+fn blocks_attacks_info(v: &Value) -> String {
+    let float = |v: Option<&Value>, default: &str| v.map_or_else(|| default.to_owned(), f32_of);
+    let reductions = match v["damage_reductions"].as_array() {
+        // `BlocksAttacks.CODEC`: one reduction of everything within 90 degrees.
+        None => "DamageReductionInfo { horizontal_blocking_angle: 90.0, types: &[], base: 0.0, factor: 1.0 }".to_owned(),
+        Some(list) => list
+            .iter()
+            .map(|r| {
+                format!(
+                    "DamageReductionInfo {{ horizontal_blocking_angle: {}, types: {}, base: {}, factor: {} }}",
+                    float(r.get("horizontal_blocking_angle"), "90.0"),
+                    holder_set(r.get("type")),
+                    float(r.get("base"), "0.0"),
+                    float(r.get("factor"), "0.0"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    // `ItemDamageFunction.DEFAULT`.
+    let damage = v.get("item_damage");
+    let part = |key: &str, default: &str| float(damage.and_then(|d| d.get(key)), default);
+    format!(
+        "Some(&BlocksAttacksInfo {{ block_delay_seconds: {}, disable_cooldown_scale: {}, damage_reductions: &[{reductions}], item_damage: [{}, {}, {}], bypassed_by: {}, block_sound: {:?}, disabled_sound: {:?} }})",
+        float(v.get("block_delay_seconds"), "0.0"),
+        float(v.get("disable_cooldown_scale"), "1.0"),
+        part("threshold", "1.0"),
+        part("base", "0.0"),
+        part("factor", "1.0"),
+        holder_set(v.get("bypassed_by")),
+        v["block_sound"].as_str().unwrap_or_default(),
+        v["disabled_sound"].as_str().unwrap_or_default(),
+    )
+}
+
 fn f32_of(v: &Value) -> String {
     #[expect(clippy::cast_possible_truncation, reason = "the value is a Java float")]
     let f = v.as_f64().unwrap_or(0.0) as f32;

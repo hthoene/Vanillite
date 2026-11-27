@@ -288,8 +288,7 @@ fn copy_properties(block: BlockId, from: BlockState) -> BlockState {
 fn transform(ctx: &mut PlayContext<'_>, click: Click, name: &str) -> Used {
     // `playerHasBlockingItemUseIntent`: a shield in the off hand is raised instead.
     let offhand = &ctx.inventory.offhand;
-    let shield = item::item_id(offhand).info().blocks_attacks
-        || offhand.component(ids::BLOCKS_ATTACKS).is_some();
+    let shield = crate::blocking::has_blocks_attacks(offhand);
     if click.hand == Hand::MainHand && shield && !ctx.actor.sneaking {
         return Used::Pass;
     }
@@ -414,13 +413,12 @@ fn pop_resource_from_face(level: &mut Level, pos: BlockPos, face: Direction, sta
     } else {
         f64::from(sz) * 0.1
     };
-    crate::block::drops::spawn_item(
+    crate::block::drops::spawn_item_with_motion(
         level,
         Vec3::new(x, y, z),
         stack,
         Vec3::new(dx, dy, dz),
         10,
-        None,
     );
 }
 
@@ -1472,7 +1470,7 @@ fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos
         crate::mob::kinds::finalize_spawn(&mut m, &mut spawn, &mut random);
         *level.entity_parts().2 = random;
     }
-    // `createDefaultStackConfig`: the custom name and the item's components.
+    // `createDefaultStackConfig`: the custom name (the other components after the spawn).
     if let Some(name) = stack.component(ids::CUSTOM_NAME) {
         m.custom_name = Some(name.into());
         m.persistent = true;
@@ -1504,6 +1502,8 @@ fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos
     let uuid = crate::mob::new_uuid();
     let (ents, network_ids, _) = level.entity_parts();
     let id = crate::mob::spawn(ents, network_ids, uuid, p, rot, m);
+    // `createDefaultStackConfig`: the variants of the bucket and its `entity_data`.
+    crate::mob::item_components::apply_spawn_item(ents, id, stack);
     if !ents.spawned(id, vanillite_abi::spawn_reason::BUCKET, 0) {
         return;
     }

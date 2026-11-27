@@ -13,6 +13,7 @@
 //!   with its golden.
 //! - [`fuzz`]: random scenarios with a packet-level player, and their shrinking (#132).
 //! - [`session`]: recorded server sessions as scenarios on their world snapshot (#152).
+//! - [`soak`]: long scenarios (game days) against Vanilla by per-tick checksums (#166).
 //! - [`golden`]: golden storage keyed by (Minecraft version, jar SHA-1, harness version,
 //!   scenario hash): small goldens in `goldens/`, bulk goldens in a cache directory.
 //!
@@ -26,5 +27,6 @@ pub mod runner;
 pub mod scenario;
 pub mod server_world;
 pub mod session;
+pub mod soak;
 pub mod trace;
 pub mod world;

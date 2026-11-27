@@ -22,6 +22,7 @@ use crate::structure::{
     GenerationContext, GenerationStub, LevelHeight, PieceBase, PieceSettings, StructureParser,
     StructurePiece, StructureType, TemplatePiece,
 };
+use crate::template::TemplateRef;
 use crate::template::rule::{BlockEntityModifier, PosRuleTest, ProcessorRule, RuleTest};
 use crate::template::transform::direction_name;
 use crate::template::{BoundingBox, Mirror, Rotation, StructureProcessor, StructureTemplate};
@@ -167,8 +168,8 @@ struct Tags {
 #[derive(Debug)]
 pub struct RuinedPortalStructure {
     pub setups: Vec<Setup>,
-    portals: Vec<Arc<StructureTemplate>>,
-    giant_portals: Vec<Arc<StructureTemplate>>,
+    portals: Vec<TemplateRef>,
+    giant_portals: Vec<TemplateRef>,
     tags: Arc<Tags>,
 }
 
@@ -181,13 +182,12 @@ impl StructureType for RuinedPortalStructure {
             .iter()
             .map(Setup::parse)
             .collect::<Result<_, _>>()?;
-        let load = |names: &[&str]| -> Result<Vec<_>, Error> {
-            names.iter().map(|id| parser.template(id)).collect()
-        };
+        let load =
+            |names: &[&str]| -> Vec<_> { names.iter().map(|id| parser.template(id)).collect() };
         Ok(Self {
             setups,
-            portals: load(&PORTALS)?,
-            giant_portals: load(&GIANT_PORTALS)?,
+            portals: load(&PORTALS),
+            giant_portals: load(&GIANT_PORTALS),
             tags: Arc::new(Tags {
                 stairs: parser.block_tag("minecraft:stairs"),
                 slabs: parser.block_tag("minecraft:slabs"),
@@ -221,10 +221,10 @@ impl StructureType for RuinedPortalStructure {
         let air_pocket = sample(random, setup.air_pocket_probability);
         let (name, template) = if random.next_float() < 0.05 {
             let index = random.next_int_bounded(GIANT_PORTALS.len() as i32) as usize;
-            (GIANT_PORTALS[index], &self.giant_portals[index])
+            (GIANT_PORTALS[index], self.giant_portals[index].get())
         } else {
             let index = random.next_int_bounded(PORTALS.len() as i32) as usize;
-            (PORTALS[index], &self.portals[index])
+            (PORTALS[index], self.portals[index].get())
         };
         let rotation = Rotation::random(random);
         let mirror = if random.next_float() < 0.5 {
@@ -274,7 +274,7 @@ impl StructureType for RuinedPortalStructure {
                 setup.placement,
                 properties,
                 name,
-                Arc::clone(template),
+                template,
                 rotation,
                 mirror,
                 pivot,

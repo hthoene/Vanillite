@@ -1,0 +1,196 @@
+{
+  "description": "Pigs, cows and chickens roll a random sound variant in finalizeSpawn from the level random; execute with an nbt selector marks each mob's sound_variant with a block, data merge sets a new one (an unknown key keeps the old) and the marks are set again.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 4,
+  "entities": [
+    {
+      "name": "pig0",
+      "type": "minecraft:pig",
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 11
+    },
+    {
+      "name": "pig1",
+      "type": "minecraft:pig",
+      "pos": [
+        6.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 12
+    },
+    {
+      "name": "pig2",
+      "type": "minecraft:pig",
+      "pos": [
+        10.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 13
+    },
+    {
+      "name": "cow0",
+      "type": "minecraft:cow",
+      "pos": [
+        2.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 14
+    },
+    {
+      "name": "cow1",
+      "type": "minecraft:cow",
+      "pos": [
+        6.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 15
+    },
+    {
+      "name": "cow2",
+      "type": "minecraft:cow",
+      "pos": [
+        10.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 16
+    },
+    {
+      "name": "chicken0",
+      "type": "minecraft:chicken",
+      "pos": [
+        2.5,
+        -60.0,
+        12.5
+      ],
+      "seed": 17
+    },
+    {
+      "name": "chicken1",
+      "type": "minecraft:chicken",
+      "pos": [
+        6.5,
+        -60.0,
+        12.5
+      ],
+      "seed": 18
+    },
+    {
+      "name": "chicken2",
+      "type": "minecraft:chicken",
+      "pos": [
+        10.5,
+        -60.0,
+        12.5
+      ],
+      "seed": 19
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:pig,nbt={sound_variant:\"minecraft:big\"}] at @s run setblock ~ -58 ~ minecraft:gold_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:pig,nbt={sound_variant:\"minecraft:classic\"}] at @s run setblock ~ -58 ~ minecraft:iron_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:pig,nbt={sound_variant:\"minecraft:mini\"}] at @s run setblock ~ -58 ~ minecraft:diamond_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:cow,nbt={sound_variant:\"minecraft:classic\"}] at @s run setblock ~ -58 ~ minecraft:iron_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:cow,nbt={sound_variant:\"minecraft:moody\"}] at @s run setblock ~ -58 ~ minecraft:emerald_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:chicken,nbt={sound_variant:\"minecraft:classic\"}] at @s run setblock ~ -58 ~ minecraft:iron_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:chicken,nbt={sound_variant:\"minecraft:picky\"}] at @s run setblock ~ -58 ~ minecraft:lapis_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:pig] run data merge entity @s {sound_variant:\"minecraft:mini\"}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:cow] run data merge entity @s {sound_variant:\"minecraft:moody\"}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:chicken] run data merge entity @s {sound_variant:\"minecraft:unknown\"}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:pig,nbt={sound_variant:\"minecraft:big\"}] at @s run setblock ~ -57 ~ minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:pig,nbt={sound_variant:\"minecraft:classic\"}] at @s run setblock ~ -57 ~ minecraft:iron_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:pig,nbt={sound_variant:\"minecraft:mini\"}] at @s run setblock ~ -57 ~ minecraft:diamond_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:cow,nbt={sound_variant:\"minecraft:classic\"}] at @s run setblock ~ -57 ~ minecraft:iron_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:cow,nbt={sound_variant:\"minecraft:moody\"}] at @s run setblock ~ -57 ~ minecraft:emerald_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:chicken,nbt={sound_variant:\"minecraft:classic\"}] at @s run setblock ~ -57 ~ minecraft:iron_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:chicken,nbt={sound_variant:\"minecraft:picky\"}] at @s run setblock ~ -57 ~ minecraft:lapis_block"
+    }
+  ]
+}

@@ -91,6 +91,26 @@ pub(super) struct YBoundsInput<'a> {
 /// No Y restriction.
 const UNBOUNDED: [i32; 2] = [i32::MIN, i32::MAX];
 
+/// What [`FoldedRules`] does at a block below its column's minimum surface level, as far as the
+/// block's Y alone decides it (see [`FoldedRules::fold_below_surface`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BelowSurface {
+    /// No block is placed.
+    Nothing,
+    /// This block is placed.
+    Place(BlockState),
+    /// The rules have to be evaluated.
+    Unknown,
+}
+
+/// [`BelowSurface`] of one Y, valid where none of the ore veins of `ores` (bit `v`: vein `v`)
+/// has a positive density: those veins come before the outcome and place their own blocks.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FoldedY {
+    pub outcome: BelowSurface,
+    pub ores: u32,
+}
+
 impl FoldedRules {
     /// Folds `rules` with `biome_folds` (per biome set: its constant value, if any); node Y
     /// ranges are derived when `bounds` is given (unbounded otherwise).
@@ -190,6 +210,67 @@ impl FoldedRules {
         }
     }
 
+    /// What the tree does at block Y `y` of a column whose minimum surface level is above
+    /// `y`, decided from the conditions that depend on Y alone (and the surface level); the
+    /// other inputs of a block (stone depth, water height, biome, noises) are then irrelevant.
+    /// Ore veins whose bit is not in `ore_present` never place a block in this chunk.
+    pub(super) fn fold_below_surface(
+        &self,
+        rules: &MaterialRules,
+        generation: &WorldGenerationContext,
+        ore_present: u32,
+        y: i32,
+    ) -> FoldedY {
+        let mut ores = 0;
+        let outcome = match self.root {
+            Some(root) => self.fold_node(rules, generation, ore_present, y, root, &mut ores),
+            None => BelowSurface::Nothing,
+        };
+        FoldedY { outcome, ores }
+    }
+
+    /// [`Self::fold_below_surface`] of `node`, following `apply`.
+    fn fold_node(
+        &self,
+        rules: &MaterialRules,
+        generation: &WorldGenerationContext,
+        ore_present: u32,
+        y: i32,
+        node: u32,
+        ores: &mut u32,
+    ) -> BelowSurface {
+        let [min, max] = self.y_bounds[node as usize];
+        if y < min || y > max {
+            return BelowSurface::Nothing;
+        }
+        match self.nodes[node as usize] {
+            Node::Block(state) => BelowSurface::Place(state),
+            Node::Bandlands => BelowSurface::Unknown,
+            Node::OreVein(vein) if vein >= 32 => BelowSurface::Unknown,
+            Node::OreVein(vein) => {
+                // Without a positive density the vein places nothing and the sequence goes on.
+                *ores |= ore_present & (1 << vein);
+                BelowSurface::Nothing
+            }
+            Node::Sequence { start, end } => {
+                for &member in &self.members[start as usize..end as usize] {
+                    match self.fold_node(rules, generation, ore_present, y, member, ores) {
+                        BelowSurface::Nothing => {}
+                        decided => return decided,
+                    }
+                }
+                BelowSurface::Nothing
+            }
+            Node::Condition { if_true, then_run } => {
+                match condition_below_surface(rules, generation, if_true, y) {
+                    Some(false) => BelowSurface::Nothing,
+                    Some(true) => self.fold_node(rules, generation, ore_present, y, then_run, ores),
+                    None => BelowSurface::Unknown,
+                }
+            }
+        }
+    }
+
     /// Whether `node` places a block wherever it is evaluated.
     fn always_places(&self, node: u32) -> bool {
         match self.nodes[node as usize] {
@@ -229,6 +310,41 @@ fn condition_y_bounds(
             add_stone_depth: false,
         } => [anchor.resolve_y(generation), i32::MAX],
         _ => UNBOUNDED,
+    }
+}
+
+/// The value of condition `id` at block Y `y` below the column's minimum surface level, when Y
+/// decides it (as `test` evaluates it).
+fn condition_below_surface(
+    rules: &MaterialRules,
+    generation: &WorldGenerationContext,
+    id: CondId,
+    y: i32,
+) -> Option<bool> {
+    match rules.conditions[id as usize] {
+        Condition::AbovePreliminarySurface => Some(false),
+        Condition::VerticalGradient {
+            true_at_and_below,
+            false_at_and_above,
+            ..
+        } => {
+            if y <= true_at_and_below.resolve_y(generation) {
+                Some(true)
+            } else if y >= false_at_and_above.resolve_y(generation) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        Condition::Y {
+            anchor,
+            surface_depth_multiplier: 0,
+            add_stone_depth: false,
+        } => Some(y >= anchor.resolve_y(generation)),
+        Condition::Not(target) => {
+            condition_below_surface(rules, generation, target, y).map(|value| !value)
+        }
+        _ => None,
     }
 }
 

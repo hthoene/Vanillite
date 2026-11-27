@@ -24,6 +24,7 @@ mod events;
 mod generator;
 mod goals;
 pub mod loader;
+mod packets;
 mod scheduler;
 
 use std::collections::HashMap;
@@ -288,6 +289,34 @@ pub struct AccessOp<'a> {
     pub change: Option<(bool, &'a str)>,
 }
 
+/// A new extra world (`world_create`, Bukkit's `WorldCreator`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldCreator<'a> {
+    /// Name and folder.
+    pub name: &'a str,
+    /// One of [`vanillite_abi::environment`].
+    pub environment: u32,
+    /// The generator name or dimension key; empty for `normal`.
+    pub generator: &'a str,
+    /// `None`: random.
+    pub seed: Option<i64>,
+    /// Whether structures are generated.
+    pub structures: bool,
+}
+
+/// What a world is (`world_info`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldDescription {
+    /// One of [`vanillite_abi::environment`].
+    pub environment: u32,
+    /// Flags from [`vanillite_abi::world_flag`].
+    pub flags: u32,
+    /// Its seed.
+    pub seed: i64,
+    /// Its folder.
+    pub folder: String,
+}
+
 /// Where an entity is.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Location {
@@ -363,6 +392,21 @@ pub trait ServerAccess: Send + Sync {
     fn send_plugin_message(&self, _player: u128, _channel: &str, _data: &[u8]) -> bool {
         false
     }
+    /// Queues a play packet body (`id` + fields) for a player, past the packet listeners with
+    /// `skip_listeners`; `false` when offline.
+    fn send_packet(&self, _player: u128, _body: Vec<u8>, _skip_listeners: bool) -> bool {
+        false
+    }
+    /// Feeds a serverbound play packet body into a player's connection as if the client sent
+    /// it, past the packet listeners with `skip_listeners`. Errors are ABI status codes.
+    fn receive_packet(
+        &self,
+        _player: u128,
+        _body: Vec<u8>,
+        _skip_listeners: bool,
+    ) -> Result<(), i32> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
     /// What the server knows about an online player.
     fn player_info(&self, _player: u128) -> Option<PlayerInfo> {
         None
@@ -430,6 +474,30 @@ pub trait ServerAccess: Send + Sync {
     }
     /// A plugin was disabled: the server drops what it holds for it (chunk tickets).
     fn plugin_disabled(&self, _plugin: &str) {}
+    /// Creates (or loads) an extra world in the next global phase; its world index.
+    fn create_world(&self, _world: &WorldCreator<'_>) -> Result<u32, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Loads the extra world of a folder in the next global phase; its world index.
+    fn load_world(&self, _name: &str) -> Result<u32, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Unloads an extra world in the next global phase.
+    fn unload_world(&self, _world: u32, _save: bool) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// The number of world indices, loaded or not.
+    fn world_count(&self) -> u32 {
+        0
+    }
+    /// What a world is.
+    fn world_info(&self, _world: u32) -> Option<WorldDescription> {
+        None
+    }
+    /// Moves an online player to a place in any loaded world.
+    fn move_player(&self, _player: u128, _to: Location) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
 }
 
 /// A plugin menu to open (`menu_open`).
@@ -992,6 +1060,7 @@ pub(crate) struct Inner {
     /// Local index + 1 of the plugin being reloaded (its registrations replace the old ones).
     reloading: AtomicU32,
     pub(crate) events: events::Events,
+    pub(crate) packets: packets::Packets,
     pub(crate) commands: commands::Commands,
     pub(crate) permission: RwLock<Option<PermissionProvider>>,
     /// Registered permission nodes with their [`abi::permission_default`].
@@ -1095,6 +1164,7 @@ impl PluginHost {
             phase: AtomicU8::new(LOADING),
             reloading: AtomicU32::new(0),
             events: events::Events::default(),
+            packets: packets::Packets::default(),
             commands: commands::Commands::default(),
             permission: RwLock::new(None),
             permission_defaults: RwLock::new(HashMap::new()),
@@ -1107,6 +1177,10 @@ impl PluginHost {
             tick: AtomicU64::new(0),
             dev_copies: AtomicU32::new(0),
         });
+        inner
+            .packets
+            .tap
+            .install(Arc::new(packets::Bridge(Arc::downgrade(&inner))));
         if index == hosts.len() {
             hosts.push(Arc::downgrade(&inner));
         } else if let Some(slot) = hosts.get_mut(index) {
@@ -1395,6 +1469,7 @@ impl PluginHost {
             *slot = Arc::clone(&new);
         }
         self.inner.events.remove_plugin(&self.inner, old.local);
+        self.inner.packets.remove(old.local, None);
         self.inner
             .services
             .write()
@@ -1479,6 +1554,7 @@ impl Inner {
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(p, _)| *p != local);
         self.events.remove_plugin(self, local);
+        self.packets.remove(local, None);
         self.tasks.drop_plugin(self, local);
         self.services
             .write()

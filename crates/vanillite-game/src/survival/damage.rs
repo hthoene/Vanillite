@@ -386,6 +386,8 @@ pub struct DamageSource {
     pub cause_name: Option<&'static str>,
     /// `getSecondsToDisableBlocking` of the attacker's weapon (axes disable shields).
     pub disable_shield_seconds: f32,
+    /// The direct entity is an arrow with a pierce level: blocking items do not stop it.
+    pub piercing_arrow: bool,
     /// The motion of the projectile that hit, which the knockback follows
     /// (`Projectile.calculateHorizontalHurtKnockbackDirection`).
     pub projectile_motion: Option<Vec3>,
@@ -402,6 +404,7 @@ impl DamageSource {
             cause_is_mob: false,
             cause_name: None,
             disable_shield_seconds: 0.0,
+            piercing_arrow: false,
             projectile_motion: None,
         }
     }

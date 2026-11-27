@@ -191,7 +191,7 @@ fn cast(ents: &mut Entities, network_ids: &NetworkIds, player: EntityId, luck: i
 
 /// `hurtAndBreak(damage, player, hand)` of the rod.
 fn hurt_rod(
-    ents: &Entities,
+    ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
     rod: &mut ItemStack,
@@ -219,22 +219,26 @@ fn hurt_rod(
         return;
     }
     let d = item::damage(rod) + points;
-    if d >= item::max_damage(rod) {
-        rod.shrink(1);
-        if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
-            play_sound(
-                env.out,
-                None,
-                pos,
-                "minecraft:entity.item.break",
-                SoundSource::Players,
-                0.8,
-                0.8 + env.random.next_float() * 0.4,
-                crate::survival::sound_seed(),
-            );
-        }
-    } else {
-        item::set_damage(rod, d);
+    let broke = match ents.player_mut(player) {
+        Some(p) => crate::advancements::view::apply_damage(
+            Some(&mut p.advancements),
+            Some(&mut p.stats),
+            rod,
+            d,
+        ),
+        None => crate::advancements::view::apply_damage(None, None, rod, d),
+    };
+    if broke && let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
+        play_sound(
+            env.out,
+            None,
+            pos,
+            "minecraft:entity.item.break",
+            SoundSource::Players,
+            0.8,
+            0.8 + env.random.next_float() * 0.4,
+            crate::survival::sound_seed(),
+        );
     }
 }
 
@@ -856,7 +860,7 @@ fn retrieve(
         }
         let mut own = LegacyRandom::from_state(d.random_state);
         for stack in items {
-            let (uuid, y_rot, _) = crate::mob::new_item_entity();
+            let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
             let (xa, ya, za) = (opos.x - bpos.x, opos.y - bpos.y, opos.z - bpos.z);
             let velocity = Vec3::new(
                 xa * 0.1,
@@ -866,6 +870,7 @@ fn retrieve(
             let fish = crate::player::play::game_data()
                 .is_some_and(|data| data.item_in_tag(stack.item, "minecraft:fishes"));
             env.out.push(crate::survival::Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos: bpos,
                 velocity,

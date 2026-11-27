@@ -41,7 +41,8 @@ impl CommandFeature {
         packs: &LoadedPacks,
         feature: &Value,
     ) -> Result<Self, Error> {
-        let mut parser = FeatureParser::new(packs, generator.biomes(), generator.random_state());
+        let mut parser = FeatureParser::new(packs, generator.biomes(), generator.random_state())
+            .with_templates(generator.templates());
         let id = parser.feature(feature)?;
         Ok(Self {
             env: FeatureEnv {
@@ -149,7 +150,8 @@ pub fn jigsaw_pieces(
         "use_expansion_hack": false,
     });
     let mut parser =
-        crate::structure::StructureParser::new(packs, generator.biomes(), generator.features());
+        crate::structure::StructureParser::new(packs, generator.biomes(), generator.features())
+            .with_templates(generator.templates());
     let structure = JigsawStructure::parse(&definition, &mut parser)?;
     let biomes = any_biome(generator);
     let mut ctx = GenerationContext::new(generator, pos.chunk(), level, &biomes);

@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
+use vanillite_abi::{Status, status};
 use vanillite_base::BlockPos;
 use vanillite_config::{Config, RuleSet};
 use vanillite_data::block::{BlockId, BlockState};
@@ -20,7 +21,6 @@ use vanillite_protocol::text::Component;
 use crate::compute::Compute;
 use crate::global::Global;
 use crate::player_list::Uuid;
-use crate::server::DIMENSIONS;
 use crate::world::ServerWorld;
 
 mod entity_api;
@@ -95,12 +95,11 @@ pub(crate) fn parse_state(text: &str) -> Option<BlockState> {
 }
 
 /// The world index of a dimension key.
-fn world_index(dimension: &str) -> u32 {
-    DIMENSIONS
-        .iter()
-        .position(|d| *d == dimension)
-        .and_then(|i| u32::try_from(i).ok())
-        .unwrap_or(0)
+fn world_index(global: &Global, dimension: &str) -> u32 {
+    global
+        .dimensions
+        .world(dimension)
+        .map_or(0, |w| u32::from(w.0))
 }
 
 fn component(text: Text<'_>) -> Component {
@@ -119,10 +118,19 @@ pub(crate) struct Services {
     pub(crate) compute: Compute,
     /// `vanillite.toml` rules as TOML text, by key (server rules and the overworld's).
     pub(crate) rules: HashMap<String, String>,
+    /// The server folder (extra worlds are folders of it).
+    pub(crate) dir: std::path::PathBuf,
+    /// `level-name`.
+    pub(crate) level_name: String,
 }
 
 impl Services {
-    pub(crate) fn new(global: &Arc<Global>, compute: &Compute, config: &Config) -> Services {
+    pub(crate) fn new(
+        global: &Arc<Global>,
+        compute: &Compute,
+        config: &Config,
+        dir: &std::path::Path,
+    ) -> Services {
         let mut rules = HashMap::new();
         let server = &config.server;
         for info in vanillite_config::ServerRules::RULES {
@@ -130,7 +138,7 @@ impl Services {
                 rules.insert(info.key.to_owned(), v.to_string());
             }
         }
-        let world = config.world_rules(DIMENSIONS[0]);
+        let world = config.world_rules(crate::server::VANILLA_DIMENSIONS[0]);
         for info in vanillite_config::WorldRules::RULES {
             if let Some(v) = world.get(info.key) {
                 rules.insert(info.key.to_owned(), v.to_string());
@@ -140,11 +148,180 @@ impl Services {
             global: Arc::downgrade(global),
             compute: compute.clone(),
             rules,
+            dir: dir.to_owned(),
+            level_name: config.properties.level_name.clone(),
         }
+    }
+
+    /// Reserves the world index of the extra world `spec` and opens it in the next global
+    /// phase; a loaded world of that name is returned as it is.
+    fn open_world(&self, spec: crate::worlds::WorldSpec, create: bool) -> Result<u32, Status> {
+        let global = self.global.upgrade().ok_or(status::WRONG_PHASE)?;
+        let key = crate::worlds::dimension_key(&spec.name).map_err(|_| status::INVALID_ARGUMENT)?;
+        if let Some(world) = global.dimensions.world(&key) {
+            return Ok(u32::from(world.0));
+        }
+        let folder = self.dir.join(&spec.name);
+        let saved =
+            crate::worlds::saved_world(&folder, &key).map_err(|_| status::INVALID_ARGUMENT)?;
+        let kind = match &saved {
+            Some(saved) => saved.kind.clone(),
+            None if !create => return Err(status::NOT_FOUND),
+            None => spec.environment.kind().to_owned(),
+        };
+        let seed = saved.as_ref().map_or(0, |s| s.world_gen.seed);
+        let world = global
+            .dimensions
+            .register(
+                &key,
+                &kind,
+                Some(spec.name.as_str()),
+                global.packs.loaded().map(|p| &**p),
+                seed,
+            )
+            .map_err(|e| {
+                log::warn!("Cannot load world {}: {e}", spec.name);
+                status::INVALID_ARGUMENT
+            })?;
+        let handle = global.handle.get().ok_or(status::WRONG_PHASE)?;
+        handle.run_global(move |server| {
+            if let Err(e) = server.open_world(&spec, create) {
+                log::error!("Cannot load the world {}: {e}", spec.name);
+            }
+        });
+        Ok(u32::from(world.0))
     }
 }
 
 impl ServerAccess for Services {
+    fn create_world(&self, world: &vanillite_plugin_host::WorldCreator<'_>) -> Result<u32, Status> {
+        let environment = match world.environment {
+            vanillite_abi::environment::NORMAL => crate::dimensions::Environment::Normal,
+            vanillite_abi::environment::NETHER => crate::dimensions::Environment::Nether,
+            vanillite_abi::environment::THE_END => crate::dimensions::Environment::TheEnd,
+            _ => return Err(status::INVALID_ARGUMENT),
+        };
+        let generator = if world.generator.is_empty() {
+            "normal"
+        } else {
+            world.generator
+        };
+        let spec = crate::worlds::WorldSpec {
+            name: world.name.to_owned(),
+            environment,
+            generator: generator.to_owned(),
+            seed: world.seed,
+            generate_structures: world.structures,
+        };
+        self.open_world(spec, true)
+    }
+
+    fn load_world(&self, name: &str) -> Result<u32, Status> {
+        let spec = crate::worlds::WorldSpec {
+            name: name.to_owned(),
+            environment: crate::dimensions::Environment::Normal,
+            generator: "normal".to_owned(),
+            seed: None,
+            generate_structures: true,
+        };
+        self.open_world(spec, false)
+    }
+
+    fn unload_world(&self, world: u32, save: bool) -> Result<(), Status> {
+        let global = self.global.upgrade().ok_or(status::WRONG_PHASE)?;
+        let id = crate::world::WorldId(u16::try_from(world).map_err(|_| status::NOT_FOUND)?);
+        if global.dimensions.name(id).is_none() {
+            return Err(status::NOT_FOUND);
+        }
+        if global.dimensions.folder(id).is_none() {
+            return Err(status::WRONG_OWNER);
+        }
+        if global.players.snapshot().iter().any(|p| p.world == id) {
+            return Err(status::INVALID_ARGUMENT);
+        }
+        let handle = global.handle.get().ok_or(status::WRONG_PHASE)?;
+        handle.run_global(move |server| {
+            if let Err(e) = server.unload_world(id, save) {
+                log::warn!("Cannot unload a world: {e}");
+            }
+        });
+        Ok(())
+    }
+
+    fn world_count(&self) -> u32 {
+        self.global
+            .upgrade()
+            .map_or(0, |g| u32::try_from(g.dimensions.len()).unwrap_or(u32::MAX))
+    }
+
+    fn world_info(&self, world: u32) -> Option<vanillite_plugin_host::WorldDescription> {
+        let global = self.global.upgrade()?;
+        let id = crate::world::WorldId(u16::try_from(world).ok()?);
+        let dims = &global.dimensions;
+        let kind = dims.kind(id)?;
+        let environment = match crate::dimensions::Environment::of_kind(kind) {
+            Some(crate::dimensions::Environment::Normal) => vanillite_abi::environment::NORMAL,
+            Some(crate::dimensions::Environment::Nether) => vanillite_abi::environment::NETHER,
+            Some(crate::dimensions::Environment::TheEnd) => vanillite_abi::environment::THE_END,
+            None => vanillite_abi::environment::CUSTOM,
+        };
+        let folder = dims.folder(id);
+        let mut flags = 0;
+        if dims.is_loaded(id) {
+            flags |= vanillite_abi::world_flag::LOADED;
+        }
+        if folder.is_some() {
+            flags |= vanillite_abi::world_flag::EXTRA;
+        }
+        Some(vanillite_plugin_host::WorldDescription {
+            environment,
+            flags,
+            seed: dims.seed(id).unwrap_or(0),
+            folder: folder.unwrap_or(&self.level_name).to_owned(),
+        })
+    }
+
+    fn move_player(&self, player: u128, to: vanillite_plugin_host::Location) -> Result<(), Status> {
+        let global = self.global.upgrade().ok_or(status::WRONG_PHASE)?;
+        let from = global
+            .players
+            .snapshot()
+            .iter()
+            .find(|p| p.uuid.0 == player)
+            .map(|p| p.world)
+            .ok_or(status::NOT_FOUND)?;
+        let dest = crate::commands::exec::plugin_world(&global, to.world)
+            .ok_or(status::INVALID_ARGUMENT)?;
+        let pos = vanillite_base::Vec3::new(to.pos[0], to.pos[1], to.pos[2]);
+        if !crate::commands::exec::in_spawnable_bounds(pos) {
+            return Err(status::INVALID_ARGUMENT);
+        }
+        let cause = vanillite_abi::teleport_cause::PLUGIN;
+        let (g, rotation) = (Arc::clone(&global), (to.yaw, to.pitch));
+        global.run_in_world(from, move |w| {
+            if dest != w.id() {
+                w.teleport_to_world(&g, player, dest, pos, Some(rotation), Some(cause));
+                return;
+            }
+            let entities = w.entities();
+            let target = crate::commands::find_uuid(entities, player)
+                .and_then(|id| crate::commands::local_target(entities, dest, id));
+            if let Some(target) = target {
+                let _ = crate::commands::exec::teleport_local(
+                    w.level_mut(),
+                    &g,
+                    &target,
+                    pos,
+                    0,
+                    rotation.0,
+                    rotation.1,
+                    cause,
+                );
+            }
+        });
+        Ok(())
+    }
+
     fn online_players(&self) -> Vec<u128> {
         self.global
             .upgrade()
@@ -227,9 +404,9 @@ impl ServerAccess for Services {
     }
 
     fn world_name(&self, world: u32) -> Option<String> {
-        DIMENSIONS
-            .get(usize::try_from(world).ok()?)
-            .map(|d| (*d).to_owned())
+        let global = self.global.upgrade()?;
+        let world = crate::world::WorldId(u16::try_from(world).ok()?);
+        global.dimensions.name(world).map(str::to_owned)
     }
 
     fn block_state_id(&self, state: &str) -> Option<u32> {
@@ -388,6 +565,30 @@ impl ServerAccess for Services {
             port: i32::from(port),
         });
         true
+    }
+
+    fn send_packet(&self, player: u128, body: Vec<u8>, skip_listeners: bool) -> bool {
+        let Some((sink, _)) = self.connection(player) else {
+            return false;
+        };
+        if skip_listeners {
+            sink.send_untapped(body)
+        } else {
+            sink.send_body(body)
+        }
+    }
+
+    fn receive_packet(&self, player: u128, body: Vec<u8>, skip_listeners: bool) -> Result<(), i32> {
+        use vanillite_abi::status;
+        let (sink, _) = self.connection(player).ok_or(status::NOT_FOUND)?;
+        if sink.is_closed() {
+            return Err(status::NOT_FOUND);
+        }
+        if sink.inject(body, skip_listeners) {
+            Ok(())
+        } else {
+            Err(status::ERROR)
+        }
     }
 
     fn send_plugin_message(&self, player: u128, channel: &str, data: &[u8]) -> bool {
@@ -1063,11 +1264,19 @@ pub(crate) struct Hooks<'a> {
 }
 
 impl<'a> Hooks<'a> {
-    /// The hooks of the world with this dimension key.
-    pub(crate) fn of(host: &'a PluginHost, dimension: &str) -> Self {
+    /// The hooks of a world by its id.
+    pub(crate) fn of_world(global: &'a Global, world: crate::world::WorldId) -> Self {
         Hooks {
-            host,
-            world: world_index(dimension),
+            host: &global.plugins,
+            world: u32::from(world.0),
+        }
+    }
+
+    /// The hooks of the world with this dimension key.
+    pub(crate) fn of(global: &'a Global, dimension: &str) -> Self {
+        Hooks {
+            host: &global.plugins,
+            world: world_index(global, dimension),
         }
     }
 }
@@ -1095,10 +1304,10 @@ pub(crate) struct WorldHooks {
 }
 
 impl WorldHooks {
-    pub(crate) fn new(host: &PluginHost, dimension: &str) -> Self {
+    pub(crate) fn new(global: &Global, world: crate::world::WorldId) -> Self {
         WorldHooks {
-            host: host.clone(),
-            world: world_index(dimension),
+            host: global.plugins.clone(),
+            world: u32::from(world.0),
         }
     }
 

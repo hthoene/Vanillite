@@ -7,7 +7,7 @@
   "exported_at": "2026-11-24T00:00:00+00:00",
   "name": "Vanillite",
   "author": "hthoene@users.noreply.github.com",
-  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". https://github.com/hthoene/Vanillite",
+  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". https://github.com/hthoene/vanillite",
   "features": [
     "eula"
   ],
@@ -662,6 +662,16 @@
       "field_type": "text"
     },
     {
+      "name": "Performance: Memory › Release When Empty",
+      "description": "Seconds without players after which the server frees what it can build again: the tables of the world generators, structure templates and caches. They come back in the background when a player joins (new chunks then start a moment later, chunks from disk do not wait). In-game behaviour does not change; disabled keeps everything in memory. Range: 1 to 86400. Also accepts disabled. Empty: the profile's value (vanilla profile: 60). vanillite.toml: performance.memory.release-when-empty.",
+      "env_variable": "VANILLITE_PERFORMANCE__MEMORY__RELEASE_WHEN_EMPTY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!disabled[0-9])(disabled)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
       "name": "Performance: Autosave › Interval",
       "description": "Ticks between autosaves. Vanilla saves every 5 minutes of game time. Range: 20 to 1728000. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.autosave.interval.",
       "env_variable": "VANILLITE_PERFORMANCE__AUTOSAVE__INTERVAL",
@@ -792,6 +802,26 @@
       "field_type": "text"
     },
     {
+      "name": "Performance: Region Threading › Enabled",
+      "description": "Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial order at no cost. Applies to every world. default: the profile's value (vanilla profile: false). vanillite.toml: performance.region-threading.enabled.",
+      "env_variable": "VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED",
+      "default_value": "default",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:default,true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Region Threading › Tile Size",
+      "description": "Edge of a tile in chunks. Smaller tiles balance better over the cores, larger ones cost less bookkeeping. Applies to every world. Range: 8 to 32. Empty: the profile's value (vanilla profile: 16). vanillite.toml: performance.region-threading.tile-size.",
+      "env_variable": "VANILLITE_PERFORMANCE__REGION_THREADING__TILE_SIZE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:8,32",
+      "field_type": "text"
+    },
+    {
       "name": "Performance: Simulation › Max Block Ticks",
       "description": "Scheduled block ticks run per tick. Applies to every world. Range: 1 to 1000000. Empty: the profile's value (vanilla profile: 65536). vanillite.toml: performance.simulation.max-block-ticks.",
       "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_BLOCK_TICKS",
@@ -823,7 +853,7 @@
     },
     {
       "name": "Performance: Simulation › Max Relights Per Tick",
-      "description": "Chunks whose light is recomputed per tick after block changes, each as one background job over its 5 × 5 area. Lower values spread bursts over more ticks. Applies to every world. Range: 1 to 65536. Empty: the profile's value (vanilla profile: 1024). vanillite.toml: performance.simulation.max-relights-per-tick.",
+      "description": "Chunks whose light is updated together after block changes, in one background job that recomputes only the cells the changes reach; the rest follows in the next job. Lower values split bursts into smaller jobs. Applies to every world. Range: 1 to 65536. Empty: the profile's value (vanilla profile: 1024). vanillite.toml: performance.simulation.max-relights-per-tick.",
       "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK",
       "default_value": "",
       "user_viewable": true,
@@ -1413,7 +1443,7 @@
     },
     {
       "name": "Movement: Wrong Movement Check",
-      "description": "Players whose movement does not match the server's collision result are teleported back (\"moved wrongly\"). Not enforced yet: it needs block collision (milestone 3). Applies to every world. default: the profile's value (vanilla profile: true). vanillite.toml: movement.wrong-movement-check.",
+      "description": "Players whose movement does not match the server's collision result (\"moved wrongly\") or that move into a block are teleported back, like Vanilla's `handleMovePlayer`. Off accepts every move that passes the other checks. Applies to every world. default: the profile's value (vanilla profile: true). vanillite.toml: movement.wrong-movement-check.",
       "env_variable": "VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK",
       "default_value": "default",
       "user_viewable": true,

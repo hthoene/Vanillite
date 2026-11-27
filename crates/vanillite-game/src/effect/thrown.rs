@@ -65,9 +65,9 @@ pub fn throw(
     infinite: bool,
 ) -> Option<EntityId> {
     let kind = kind_of(stack)?;
+    let known_movement = crate::spear::known_movement(ents, thrower);
     let e = ents.store.get(thrower)?;
     let (pos, rot, flags) = (e.pos(), e.rot(), e.flags());
-    let known_movement = pos - e.old_pos();
     let eye = f64::from(e.dims().height / 1.8 * 1.62);
     let (sound, source) = if kind == ids::SPLASH_POTION {
         ("minecraft:entity.splash_potion.throw", SoundSource::Players)

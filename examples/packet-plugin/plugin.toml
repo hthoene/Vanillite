@@ -1,0 +1,12 @@
+# The package description the server reads before it loads the library.
+id = "packets"
+name = "Packets"
+version = "0.1.0"
+# Plugin API (ABI) version the plugin needs: packet listeners came with 1.7, feeding packets
+# in with 1.8.
+api = "1.8"
+# Base name of the library: libvanillite_example_packets.so, vanillite_example_packets.dll, ...
+library = "vanillite_example_packets"
+# Packet listeners run on network threads for many players at once; a serialized plugin would
+# make every packet wait for its other handlers.
+threading = "concurrent"

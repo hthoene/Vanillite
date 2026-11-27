@@ -218,69 +218,142 @@ impl Trace {
         {
             trace.intern(s.as_str().ok_or("palette entries are strings")?);
         }
-        let volume: usize = trace.size().iter().product();
         let mut last: Vec<u32> = Vec::new();
         for f in v.get("frames").and_then(Value::as_array).ok_or("frames")? {
-            let tick = f
-                .get("tick")
-                .and_then(Value::as_u64)
-                .and_then(|t| u32::try_from(t).ok())
-                .ok_or("frame tick")?;
-            let blocks = if let Some(runs) = f.get("blocks").and_then(Value::as_array) {
-                let mut blocks = Vec::with_capacity(volume);
-                for pair in runs.chunks(2) {
-                    let count = pair[0].as_u64().ok_or("run count")? as usize;
-                    let p = pair
-                        .get(1)
-                        .and_then(Value::as_u64)
-                        .ok_or("run palette index")? as u32;
-                    blocks.extend(std::iter::repeat_n(p, count));
-                }
-                blocks
-            } else {
-                let mut blocks = last.clone();
-                for c in f
-                    .get("changes")
-                    .and_then(Value::as_array)
-                    .ok_or("changes")?
-                {
-                    let p = pos(c)?;
-                    let i = trace.index_of(p).ok_or("change outside the region")?;
-                    let state = c.get(3).and_then(Value::as_u64).ok_or("change state")?;
-                    *blocks.get_mut(i).ok_or("changes before a full frame")? = state as u32;
-                }
-                blocks
-            };
-            if blocks.len() != volume || blocks.iter().any(|&b| b as usize >= trace.palette.len()) {
-                return Err(format!("frame {tick}: blocks do not match the region"));
-            }
-            last.clone_from(&blocks);
-            let mut light = Vec::new();
-            if let Some(runs) = f.get("light").and_then(Value::as_array) {
-                for pair in runs.chunks(2) {
-                    let count = pair[0].as_u64().ok_or("light run count")? as usize;
-                    let level = pair
-                        .get(1)
-                        .and_then(Value::as_u64)
-                        .and_then(|l| u8::try_from(l).ok())
-                        .ok_or("light run level")?;
-                    light.extend(std::iter::repeat_n(level, count));
-                }
-                if light.len() != volume {
-                    return Err(format!("frame {tick}: light does not match the region"));
-                }
-            }
-            trace.frames.push(Frame {
-                tick,
-                blocks,
-                block_ticks: ticks(f.get("block_ticks"))?,
-                fluid_ticks: ticks(f.get("fluid_ticks"))?,
-                entities: entities(f.get("entities"))?,
-                light,
-                level_rng: f.get("level_rng").and_then(Value::as_i64),
-            });
+            let frame = trace.frame_of(f, &last)?;
+            last.clone_from(&frame.blocks);
+            trace.frames.push(frame);
         }
         Ok(trace)
+    }
+
+    /// A frame of the trace from its JSON object; `last` holds the blocks of the frame before.
+    fn frame_of(&self, f: &Value, last: &[u32]) -> Result<Frame, String> {
+        let trace = self;
+        let volume: usize = trace.size().iter().product();
+        let tick = f
+            .get("tick")
+            .and_then(Value::as_u64)
+            .and_then(|t| u32::try_from(t).ok())
+            .ok_or("frame tick")?;
+        let blocks = if let Some(runs) = f.get("blocks").and_then(Value::as_array) {
+            let mut blocks = Vec::with_capacity(volume);
+            for pair in runs.chunks(2) {
+                let count = pair[0].as_u64().ok_or("run count")? as usize;
+                let p = pair
+                    .get(1)
+                    .and_then(Value::as_u64)
+                    .ok_or("run palette index")? as u32;
+                blocks.extend(std::iter::repeat_n(p, count));
+            }
+            blocks
+        } else {
+            let mut blocks = last.to_vec();
+            for c in f
+                .get("changes")
+                .and_then(Value::as_array)
+                .ok_or("changes")?
+            {
+                let p = pos(c)?;
+                let i = trace.index_of(p).ok_or("change outside the region")?;
+                let state = c.get(3).and_then(Value::as_u64).ok_or("change state")?;
+                *blocks.get_mut(i).ok_or("changes before a full frame")? = state as u32;
+            }
+            blocks
+        };
+        if blocks.len() != volume || blocks.iter().any(|&b| b as usize >= trace.palette.len()) {
+            return Err(format!("frame {tick}: blocks do not match the region"));
+        }
+        let mut light = Vec::new();
+        if let Some(runs) = f.get("light").and_then(Value::as_array) {
+            for pair in runs.chunks(2) {
+                let count = pair[0].as_u64().ok_or("light run count")? as usize;
+                let level = pair
+                    .get(1)
+                    .and_then(Value::as_u64)
+                    .and_then(|l| u8::try_from(l).ok())
+                    .ok_or("light run level")?;
+                light.extend(std::iter::repeat_n(level, count));
+            }
+            if light.len() != volume {
+                return Err(format!("frame {tick}: light does not match the region"));
+            }
+        }
+        Ok(Frame {
+            tick,
+            blocks,
+            block_ticks: ticks(f.get("block_ticks"))?,
+            fluid_ticks: ticks(f.get("fluid_ticks"))?,
+            entities: entities(f.get("entities"))?,
+            light,
+            level_rng: f.get("level_rng").and_then(Value::as_i64),
+        })
+    }
+
+    /// A streamed trace (`ScenarioRecorder --stream`) from its header line, without frames.
+    pub fn stream_header(line: &str) -> Result<Self, String> {
+        let v: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+        if v.get("format").and_then(Value::as_u64) != Some(FORMAT) {
+            return Err(format!("trace format is not {FORMAT}"));
+        }
+        let region = v.get("region").ok_or("region is missing")?;
+        Ok(Self::new(pos(&region[0])?, pos(&region[1])?))
+    }
+
+    /// The next frame of a streamed trace: adds the palette entries it carries; `last` holds
+    /// the blocks of the frame before (empty before the first).
+    pub fn stream_frame(&mut self, line: &str, last: &[u32]) -> Result<Frame, String> {
+        let f: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+        if let Some(added) = f.get("palette").and_then(Value::as_array) {
+            for s in added {
+                self.intern(s.as_str().ok_or("palette entries are strings")?);
+            }
+        }
+        self.frame_of(&f, last)
+    }
+
+    /// A checksum of everything a frame of this trace observed, independent of the palette
+    /// order and of the order of the entities, so both sides' frames compare by it. `names`
+    /// caches the hash of each palette entry (start with an empty one per trace).
+    pub fn checksum(&self, frame: &Frame, names: &mut Vec<u64>) -> u64 {
+        for name in &self.palette[names.len()..] {
+            names.push(fnv(name.as_bytes()));
+        }
+        let mut h = Checksum::default();
+        h.add(u64::from(frame.tick));
+        h.add(frame.blocks.len() as u64);
+        for &b in &frame.blocks {
+            h.add(names[b as usize]);
+        }
+        for list in [&frame.block_ticks, &frame.fluid_ticks] {
+            h.add(list.len() as u64);
+            for t in list {
+                h.add(u64::from(t.pos.x as u32) << 32 | u64::from(t.pos.z as u32));
+                h.add(u64::from(t.pos.y as u32));
+                h.add(fnv(t.kind.as_bytes()));
+                h.add(t.delay as u64);
+                h.add(i64::from(t.priority) as u64);
+            }
+        }
+        let mut keys: Vec<_> = frame.entities.iter().map(EntityObs::key).collect();
+        keys.sort_unstable();
+        h.add(keys.len() as u64);
+        for (kind, bits, detail) in keys {
+            h.add(fnv(kind.as_bytes()));
+            for b in bits {
+                h.add(b);
+            }
+            h.add(fnv(detail.as_bytes()));
+        }
+        h.add(frame.light.len() as u64);
+        for chunk in frame.light.chunks(8) {
+            let mut w = [0; 8];
+            w[..chunk.len()].copy_from_slice(chunk);
+            h.add(u64::from_le_bytes(w));
+        }
+        h.add(frame.level_rng.map_or(u64::MAX, |r| r as u64));
+        h.add(u64::from(frame.level_rng.is_some()));
+        h.0
     }
 
     /// Index of a position in the block list, if it is inside the region.
@@ -637,4 +710,24 @@ fn write_ticks(s: &mut String, ticks: &[TickObs]) {
         );
     }
     s.push(']');
+}
+
+/// FNV-1a of bytes: stable across builds and platforms (checksums are stored).
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// An order-dependent 64-bit checksum of words (splitmix64 finaliser per step).
+#[derive(Default)]
+struct Checksum(u64);
+
+impl Checksum {
+    fn add(&mut self, word: u64) {
+        let mut z = (self.0 ^ word).wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        self.0 = z ^ (z >> 31);
+    }
 }

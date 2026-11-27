@@ -1,16 +1,18 @@
 //! Using an item over time (`LivingEntity.startUsingItem`, `updatingUsingItem`,
 //! `releaseUsingItem`, `completeUsingItem`) for players: eating and drinking, blocking with a
 //! shield, drawing a bow, loading and firing a crossbow, charging with a spear (its damage is
-//! [`crate::spear::tick_players`]). The per-item behaviour is the `match` in [`on_use_tick`],
-//! [`finish`] and [`release`].
+//! [`crate::spear::tick_players`]). What a stack does comes from its components
+//! ([`crate::consumable`], [`crate::blocking`]), and from the item for those with an own use
+//! ([`class_use_duration`]).
 
 use vanillite_base::Vec3;
-use vanillite_base::random::RandomSource;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_config::GameMode;
 use vanillite_protocol::packets::play::clientbound::{EntityEvent, SoundSource};
 use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::EntityId;
 
+use crate::consumable::{Consumable, ConsumeEffect};
 use crate::entities::Entities;
 use crate::item::{self, ItemStack};
 use crate::survival::play_sound;
@@ -28,10 +30,10 @@ pub struct UsingItem {
     pub duration: i32,
     /// The loading sounds a crossbow played.
     pub crossbow: crate::crossbow::UseFlags,
+    /// The used stack broke in the hand (a shield that blocked): Vanilla keeps using the
+    /// emptied stack until the hand holds something else.
+    pub emptied: bool,
 }
-
-/// Ticks a shield needs before it blocks (`block_delay_seconds` 0.25).
-const SHIELD_DELAY: i32 = 5;
 
 fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
     match hand {
@@ -47,24 +49,21 @@ fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
         .unwrap_or_default()
 }
 
-/// The `food` of an item that is eaten: only items with a `consumable` component are. The fish
-/// buckets carry `food` without `consumable` and are not edible.
-fn eaten_food(id: vanillite_data::item::ItemId) -> Option<vanillite_data::item::FoodInfo> {
-    let info = id.info();
-    info.food.filter(|_| !info.name.ends_with("_bucket"))
+/// Draws from the player's own random (`Entity.random`).
+fn random<R>(
+    ents: &mut Entities,
+    player: EntityId,
+    f: impl FnOnce(&mut LegacyRandom) -> R,
+) -> Option<R> {
+    ents.player_mut(player).map(|p| f(&mut p.survival.random))
 }
 
-/// `getUseDuration` of an item, 0 when it is not used over time.
-fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
-    let id = item::item_id(stack);
-    let info = id.info();
-    let name = id.name();
-    if info.blocks_attacks
-        || name == "minecraft:bow"
-        || name == crate::crossbow::CROSSBOW
-        || name == "minecraft:trident"
-        || crate::spear::is_kinetic(stack)
-    {
+/// `getUseDuration` of the items with their own `use` (`BowItem`, `CrossbowItem`,
+/// `TridentItem`, `BrushItem`, `BundleItem`, `SpyglassItem`, `InstrumentItem`); 0 for every
+/// other item, whose use is `Item.use` with the stack's components.
+fn class_use_duration(stack: &ItemStack) -> i32 {
+    let name = item::item_id(stack).name();
+    if name == "minecraft:bow" || name == crate::crossbow::CROSSBOW || name == "minecraft:trident" {
         return 72000;
     }
     if name == "minecraft:brush" || crate::bundle::has_contents(stack) {
@@ -79,40 +78,40 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     {
         return super::items::instrument_use_ticks(stack);
     }
-    let drink = matches!(
-        name,
-        "minecraft:milk_bucket"
-            | "minecraft:potion"
-            | "minecraft:honey_bottle"
-            | "minecraft:ominous_bottle"
-    );
-    if let Some(food) = eaten_food(id) {
-        // `canEat`: hungry, always edible, or invulnerable.
-        let can = ents.player(player).is_some_and(|p| {
-            food.can_always_eat
-                || matches!(p.game_mode, GameMode::Creative | GameMode::Spectator)
-                || p.survival.food.needs_food()
-        });
-        if !can {
-            return 0;
-        }
-    } else if !drink {
-        return 0;
+    0
+}
+
+/// `getUseDuration` of a stack, 0 when it is not used over time: the item's own, else
+/// `Item.getUseDuration` (the `consumable` ticks, or 72000 with `blocks_attacks` or
+/// `kinetic_weapon`).
+fn use_duration(stack: &ItemStack) -> i32 {
+    let class = class_use_duration(stack);
+    if class > 0 {
+        return class;
     }
-    match name {
-        "minecraft:dried_kelp" => 16,
-        "minecraft:honey_bottle" => 40,
-        _ => 32,
+    if let Some(c) = crate::consumable::consumable(stack) {
+        return c.consume_ticks();
     }
+    if crate::blocking::has_blocks_attacks(stack) || crate::spear::is_kinetic(stack) {
+        72000
+    } else {
+        0
+    }
+}
+
+/// The stack's `consumable` component as `Item.use` and `Item.finishUsingItem` see it: none
+/// for the items with their own use.
+fn item_consumable(stack: &ItemStack) -> Option<Consumable> {
+    if class_use_duration(stack) > 0 {
+        return None;
+    }
+    crate::consumable::consumable(stack)
 }
 
 /// `ItemStack.causeUseVibration`: `use_effects.interact_vibrations` of the stack (on by
 /// default, off for spears).
 pub(crate) fn use_vibrations(stack: &ItemStack) -> bool {
-    match stack.component(vanillite_protocol::components::ids::USE_EFFECTS) {
-        Some(data) => data.get(1).is_some_and(|b| *b != 0),
-        None => !item::item_id(stack).name().ends_with("_spear"),
-    }
+    crate::consumable::use_vibrations(stack)
 }
 
 /// `gameEvent(event)` of a player at its position.
@@ -151,15 +150,26 @@ pub fn start(
             return;
         }
     }
-    let duration = use_duration(ents, player, &stack);
-    if duration <= 0 {
-        return;
+    // `Item.use`: `Consumable.startConsuming` (`canConsume`: food needs `Player.canEat`).
+    if let Some(c) = item_consumable(&stack) {
+        let can = crate::consumable::food(&stack).is_none_or(|food| {
+            ents.player(player).is_some_and(|p| {
+                food.can_always_eat
+                    || matches!(p.game_mode, GameMode::Creative | GameMode::Spectator)
+                    || p.survival.food.needs_food()
+            })
+        });
+        if !can {
+            return;
+        }
+        if c.consume_ticks() <= 0 {
+            // Consumed at once.
+            consume(ents, env, player, hand, &stack, &c);
+            return;
+        }
     }
-    let cooling = ents.player(player).is_some_and(|p| {
-        item::item_id(&stack).info().blocks_attacks
-            && p.survival.tick_count < p.survival.shield_disabled_until
-    });
-    if cooling {
+    let duration = use_duration(&stack);
+    if duration <= 0 {
         return;
     }
     if crate::trident::is_trident(&stack) && !crate::trident::can_start(ents, env, player, &stack) {
@@ -174,20 +184,27 @@ pub fn start(
         }
     }
     let kinetic = crate::spear::kinetic_weapon(&stack);
-    if let Some(p) = ents.player_mut(player) {
-        p.survival.using_item = Some(UsingItem {
-            hand,
-            item: stack.item,
-            ticks: 0,
-            duration,
-            crossbow: crate::crossbow::UseFlags::default(),
-        });
-        p.survival.stabbed.clear();
-    }
-    mark(ents, player);
-    if use_vibrations(&stack) {
-        let event = crate::level::game_event::events().item_interact_start;
-        player_game_event(ents, env, player, event);
+    // `startUsingItem` does nothing while an item is in use.
+    let using = ents
+        .player(player)
+        .is_some_and(|p| p.survival.using_item.is_some());
+    if !using {
+        if let Some(p) = ents.player_mut(player) {
+            p.survival.using_item = Some(UsingItem {
+                hand,
+                item: stack.item,
+                ticks: 0,
+                duration,
+                crossbow: crate::crossbow::UseFlags::default(),
+                emptied: false,
+            });
+            p.survival.stabbed.clear();
+        }
+        mark(ents, player);
+        if use_vibrations(&stack) {
+            let event = crate::level::game_event::events().item_interact_start;
+            player_game_event(ents, env, player, event);
+        }
     }
     // `Item.use` of a kinetic weapon: `KineticWeapon.makeSound`.
     if let Some(k) = kinetic {
@@ -215,16 +232,15 @@ fn stop_quietly(ents: &mut Entities, player: EntityId) -> bool {
     was.is_some()
 }
 
-/// Whether the player blocks with a shield (`isBlocking`).
+/// Whether the player blocks with the item it uses (`isBlocking`: `getItemBlockingWith`).
 pub fn is_blocking(ents: &Entities, player: EntityId) -> bool {
-    ents.player(player)
-        .and_then(|p| p.survival.using_item)
-        .is_some_and(|u| {
-            item::item_id(&ItemStack::new(u.item, 1))
-                .info()
-                .blocks_attacks
-                && u.ticks >= SHIELD_DELAY
-        })
+    let Some(u) = ents.player(player).and_then(|p| p.survival.using_item) else {
+        return false;
+    };
+    let stack = held(ents, player, u.hand);
+    !u.emptied
+        && stack.item == u.item
+        && crate::blocking::block_delay_ticks(&stack).is_some_and(|delay| u.ticks >= delay)
 }
 
 /// The living entity flags of a player (`DATA_LIVING_ENTITY_FLAGS`): using an item and the
@@ -236,26 +252,20 @@ pub fn living_flags(u: Option<UsingItem>) -> u8 {
     }
 }
 
-/// `updatingUsingItem` of every player that uses an item; once per tick.
-pub fn tick_all(ents: &mut Entities, env: &mut Env<'_>) {
-    let users: Vec<EntityId> = ents
-        .players
-        .iter()
-        .filter(|(_, p)| p.survival.using_item.is_some())
-        .map(|(id, _)| id)
-        .collect();
-    for id in users {
-        tick(ents, env, id);
-    }
-}
-
-/// `updatingUsingItem`: stops when the hand changed, runs the per-tick behaviour and finishes
-/// consumables.
+/// `updatingUsingItem` of a player, between its base tick and `aiStep`: stops when the hand
+/// changed, runs the per-tick behaviour and finishes consumables.
 pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
     let Some(u) = ents.player(player).and_then(|p| p.survival.using_item) else {
         return;
     };
     let stack = held(ents, player, u.hand);
+    if u.emptied {
+        // The used stack is empty: it stays in use until the hand holds another item.
+        if !stack.is_empty() {
+            stop_quietly(ents, player);
+        }
+        return;
+    }
     if stack.item != u.item || stack.is_empty() {
         stop(ents, env, player, &ItemStack::new(u.item, 1));
         return;
@@ -271,7 +281,7 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
             state.ticks = ticks;
         }
     }
-    if ticks == SHIELD_DELAY && item::item_id(&stack).info().blocks_attacks {
+    if crate::blocking::block_delay_ticks(&stack) == Some(ticks) {
         // The blocking state becomes visible (`isBlocking`).
         mark(ents, player);
     }
@@ -300,7 +310,8 @@ pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
             u.duration,
         );
     }
-    on_use_tick(ents, env, player, &stack, remaining);
+    // `onUseTick` sees the remaining ticks before this tick's decrement.
+    on_use_tick(ents, env, player, &stack, remaining.saturating_add(1));
     if remaining <= 0 && u.duration < 72000 {
         finish(ents, env, player, u);
     }
@@ -310,7 +321,7 @@ fn is_brush(stack: &ItemStack) -> bool {
     item::item_id(stack).name() == "minecraft:brush"
 }
 
-/// `BrushItem.onUseTick` of every player brushing (after [`tick_all`], with the entities back
+/// `BrushItem.onUseTick` of every player brushing (after [`tick`], with the entities back
 /// in the level): the view ray must hit a block within the block interaction range, else the
 /// player stops (`releaseUsingItem`); every tenth tick (`timeElapsed % 10 == 5`) the stroke
 /// plays the brush sound and brushes a brushable block (`BrushableBlockEntity.brush`).
@@ -500,8 +511,7 @@ fn hit_face(pos: vanillite_base::BlockPos, at: Vec3, view: Vec3) -> vanillite_ba
     best.1
 }
 
-/// `Item.onUseTick`: eating and drinking sounds. Items with their own use tick (the brush of
-/// #62) get an arm here.
+/// `ItemStack.onUseTick`: the sounds and particles of a consumable while it is consumed.
 fn on_use_tick(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -509,67 +519,84 @@ fn on_use_tick(
     stack: &ItemStack,
     remaining: i32,
 ) {
-    if eaten_food(item::item_id(stack)).is_none() {
-        return;
-    }
-    // `Consumable.shouldEmitParticlesAndSounds`.
-    let total = use_duration(ents, player, stack).max(1);
-    // `(int)(consumeTicks * 0.21875F)`.
-    let threshold = total.saturating_mul(7) / 32;
-    if total.saturating_sub(remaining) > threshold && remaining % 4 == 0 {
-        let Some(pos) = ents.store.get(player).map(|e| e.pos()) else {
-            return;
-        };
-        let volume = if env.random.next_int_bounded(2) == 1 {
-            1.0
-        } else {
-            0.5
-        };
-        let pitch = (env.random.next_float() - env.random.next_float()) * 0.2 + 1.0;
-        let seed = crate::survival::sound_seed();
-        play_sound(
-            env.out,
-            Some(player),
-            pos,
-            "minecraft:entity.generic.eat",
-            SoundSource::Players,
-            volume,
-            pitch,
-            seed,
-        );
+    if let Some(c) = crate::consumable::consumable(stack)
+        && c.should_emit(remaining)
+    {
+        emit(ents, env, player, &c, 5);
     }
 }
 
-/// `completeUsingItem`: food feeds the player, the stack shrinks (or turns into its
-/// remainder), the client is told (`entity_event` 9).
-fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem) {
-    // `stopUsingItem` comes after `finishUsingItem`: its game event is posted at the end.
-    let was_using = stop_quietly(ents, player);
-    let stack = held(ents, player, u.hand);
-    let id = item::item_id(&stack);
-    let name = id.name();
-    let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
-    let consumable = eaten_food(id).is_some()
-        || matches!(
-            name,
-            "minecraft:milk_bucket"
-                | "minecraft:potion"
-                | "minecraft:honey_bottle"
-                | "minecraft:ominous_bottle"
-        );
-    if !consumable {
-        // `Item.finishUsingItem` keeps the stack; the spyglass stops zooming.
-        if name == "minecraft:spyglass" {
-            spyglass_stop(env, player, pos);
-        }
-        finished_event(ents, player);
-        // `stopUsingItem`: the kept stack vibrates.
-        if was_using && use_vibrations(&stack) {
-            let event = crate::level::game_event::events().item_interact_finish;
-            player_game_event(ents, env, player, event);
-        }
+/// `Consumable.emitParticlesAndSounds(random, user, stack, particleCount)` with the player's
+/// random: the volume and pitch draws, the draws of `spawnItemParticles` (the particles are
+/// the clients'), then the consume sound for everyone else.
+fn emit(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, c: &Consumable, particles: i32) {
+    let Some(pos) = ents.store.get(player).map(|e| e.pos()) else {
         return;
+    };
+    let drawn = random(ents, player, |r| {
+        let eat_volume = if r.next_boolean() { 0.5 } else { 1.0 };
+        let eat_pitch = 1.0 + 0.2 * (r.next_float() - r.next_float());
+        let drink_pitch = r.next_float() * (1.0 - 0.9) + 0.9;
+        if c.has_consume_particles {
+            for _ in 0..particles.saturating_mul(4) {
+                r.next_float();
+            }
+        }
+        if c.drink {
+            (0.5, drink_pitch)
+        } else {
+            (eat_volume, eat_pitch)
+        }
+    });
+    let Some((volume, pitch)) = drawn else {
+        return;
+    };
+    play_sound(
+        env.out,
+        Some(player),
+        pos,
+        &c.sound,
+        SoundSource::Players,
+        volume,
+        pitch,
+        crate::survival::sound_seed(),
+    );
+}
+
+/// Runs `f` with the player as an effect host.
+fn with_host(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    f: impl FnOnce(&mut crate::effect::living::PlayerHost<'_, '_, '_>),
+) {
+    let Entities { store, players, .. } = &mut *ents;
+    if let Some(mut entity) = store.get_mut(player)
+        && let Some(data) = players.get_mut(entity.as_ref().kind_row())
+    {
+        let mut host = crate::effect::living::PlayerHost {
+            entity: &mut entity,
+            player: data,
+            env: &mut *env,
+            players: None,
+        };
+        f(&mut host);
     }
+}
+
+/// `Consumable.onConsume` of the `stack` a player holds in `hand`, then
+/// `applyAfterUseComponentSideEffects` (`use_remainder`, `use_cooldown`): sounds, the use
+/// statistic, the listeners (`food` feeds, potion contents, stew effects, ominous bottle),
+/// the `on_consume_effects` in order, the game event; then the stack shrinks. Returns whether
+/// it was consumed (a plugin may cancel it).
+fn consume(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    hand: Hand,
+    stack: &ItemStack,
+    c: &Consumable,
+) -> bool {
     // Bukkit's `PlayerItemConsumeEvent`: cancelled, nothing is consumed and the client sees
     // its inventory again.
     if let Some(uuid) = ents.store.get(player).map(|e| e.uuid())
@@ -578,8 +605,8 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             vanillite_abi::event::PLAYER_ITEM_CONSUME,
             uuid,
             |e| {
-                e.item = crate::hooks::item_snbt(&stack);
-                e.cause = match u.hand {
+                e.item = crate::hooks::item_snbt(stack);
+                e.cause = match hand {
                     Hand::MainHand => vanillite_abi::hand::MAIN,
                     Hand::OffHand => vanillite_abi::hand::OFF,
                 };
@@ -587,98 +614,18 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
         )
         .is_some_and(|e| e.cancelled)
     {
-        finished_event(ents, player);
         if let Some(p) = ents.player_mut(player) {
             let sink = std::sync::Arc::clone(&p.connection.sink);
             p.inventory.broadcast_full_state(sink.as_ref());
         }
-        return;
+        return false;
     }
+    let kind = vanillite_data::entity::ids::PLAYER;
+    let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
-    if let Some(food) = eaten_food(id)
-        && let Some(p) = ents.player_mut(player)
-    {
-        p.survival.food.eat(&crate::survival::food::FoodProperties {
-            nutrition: food.nutrition,
-            saturation: food.saturation,
-            can_always_eat: food.can_always_eat,
-        });
-        let pitch = env.random.next_float() * 0.1 + 0.9;
-        let seed = crate::survival::sound_seed();
-        play_sound(
-            env.out,
-            None,
-            pos,
-            "minecraft:entity.player.burp",
-            SoundSource::Players,
-            0.5,
-            pitch,
-            seed,
-        );
-    }
-    // The consumable listeners and `on_consume_effects`: potions, stew effects, golden
-    // apples, milk, honey.
-    {
-        let Entities { store, players, .. } = &mut *ents;
-        if let Some(mut entity) = store.get_mut(player)
-            && let Some(data) = players.get_mut(entity.as_ref().kind_row())
-        {
-            let mut host = crate::effect::living::PlayerHost {
-                entity: &mut entity,
-                player: data,
-                env: &mut *env,
-                players: None,
-            };
-            let mut roll = || crate::experience_orb::with_entity_random(|r| r.next_float());
-            crate::effect::consume::on_consume(
-                &stack,
-                vanillite_data::entity::ids::PLAYER,
-                &mut host,
-                &mut roll,
-                Some(player),
-            );
-        }
-    }
-    if name == "minecraft:chorus_fruit" {
-        // `on_consume_effects`: `teleport_randomly`.
-        super::chorus::teleport_randomly(ents, env, player, super::chorus::DIAMETER);
-    }
-    if matches!(
-        name,
-        "minecraft:milk_bucket"
-            | "minecraft:honey_bottle"
-            | "minecraft:potion"
-            | "minecraft:ominous_bottle"
-    ) {
-        let seed = crate::survival::sound_seed();
-        play_sound(
-            env.out,
-            Some(player),
-            pos,
-            "minecraft:entity.generic.drink",
-            SoundSource::Players,
-            0.5,
-            env.random.next_float() * 0.1 + 0.9,
-            seed,
-        );
-    }
-    // `Consumable.onConsume`: the drink or eat game event.
-    let drink = matches!(
-        name,
-        "minecraft:milk_bucket"
-            | "minecraft:honey_bottle"
-            | "minecraft:potion"
-            | "minecraft:ominous_bottle"
-    );
-    let consumable = drink || eaten_food(id).is_some();
-    if consumable {
-        let events = crate::level::game_event::events();
-        let event = if drink { events.drink } else { events.eat };
-        player_game_event(ents, env, player, event);
-    }
-    // `Consumable.onConsume`: the use statistic and `consume_item`.
+    emit(ents, env, player, c, 16);
     if let Some(p) = ents.player_mut(player) {
         p.stats.award(
             crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
@@ -686,26 +633,88 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
         );
         p.advancements.trigger_item(
             crate::advancements::trigger::TriggerKind::CONSUME_ITEM,
-            &stack,
+            stack,
         );
     }
-    let remainder = match name {
-        "minecraft:mushroom_stew"
-        | "minecraft:rabbit_stew"
-        | "minecraft:beetroot_soup"
-        | "minecraft:suspicious_stew" => Some("minecraft:bowl"),
-        "minecraft:honey_bottle" | "minecraft:potion" => Some("minecraft:glass_bottle"),
-        "minecraft:milk_bucket" => Some("minecraft:bucket"),
-        _ => None,
-    };
+    // `FoodProperties.onConsume`: the consume sound for everyone, the food, the burp.
+    if let Some(food) = crate::consumable::food(stack)
+        && let Some((pitch, burp)) = random(ents, player, |r| {
+            let pitch = 1.0 + 0.4 * (r.next_float() - r.next_float());
+            (pitch, r.next_float() * (1.0 - 0.9) + 0.9)
+        })
+    {
+        play_sound(
+            env.out,
+            None,
+            pos,
+            &c.sound,
+            SoundSource::Neutral,
+            1.0,
+            pitch,
+            crate::survival::sound_seed(),
+        );
+        if let Some(p) = ents.player_mut(player) {
+            p.survival.food.eat(&food);
+        }
+        play_sound(
+            env.out,
+            None,
+            pos,
+            "minecraft:entity.player.burp",
+            SoundSource::Players,
+            0.5,
+            burp,
+            crate::survival::sound_seed(),
+        );
+    }
+    with_host(ents, env, player, |host| {
+        crate::effect::consume::listeners(stack, kind, host, Some(player));
+    });
+    for effect in &c.effects {
+        match effect {
+            ConsumeEffect::Teleport(diameter) => {
+                super::chorus::teleport_randomly(ents, env, player, f64::from(*diameter));
+            }
+            ConsumeEffect::PlaySound(sound) => {
+                // At the centre of the player's block (`playSound(null, blockPosition(), ..)`).
+                let at = ents.store.get(player).map_or(pos, |e| e.pos());
+                play_sound(
+                    env.out,
+                    None,
+                    Vec3::new(at.x.floor() + 0.5, at.y.floor() + 0.5, at.z.floor() + 0.5),
+                    sound,
+                    SoundSource::Players,
+                    1.0,
+                    1.0,
+                    crate::survival::sound_seed(),
+                );
+            }
+            status => {
+                // `apply_effects` rolls its probability with the player's random.
+                let roll = if matches!(status, ConsumeEffect::Apply(..)) {
+                    random(ents, player, |r| r.next_float()).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                with_host(ents, env, player, |host| {
+                    crate::effect::consume::apply_status(status, kind, host, &mut || roll);
+                });
+            }
+        }
+    }
+    let events = crate::level::game_event::events();
+    let event = if c.drink { events.drink } else { events.eat };
+    player_game_event(ents, env, player, event);
+    // `stack.consume(1, user)`, then `UseRemainder.convertIntoRemainder`: the remainder takes
+    // the place of a used up stack, else it goes to the inventory.
     if !creative {
-        let i = hand_index(ents, player, u.hand);
+        let remainder = crate::consumable::use_remainder(stack);
+        let i = hand_index(ents, player, hand);
         if let Some(p) = ents.player_mut(player) {
             let mut extra = None;
             if let Some(s) = p.inventory.get_mut(i) {
                 s.shrink(1);
-                if let Some(r) = remainder.and_then(|r| vanillite_data::registry::ITEM.id(r)) {
-                    let rest = ItemStack::new(r, 1);
+                if let Some(rest) = remainder {
                     if s.is_empty() {
                         *s = rest;
                     } else {
@@ -718,14 +727,44 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             }
         }
     }
-    // `applyAfterUseComponentSideEffects`: the `use_cooldown` of the used stack.
+    // The `use_cooldown` of the used stack.
     if let Some(p) = ents.player_mut(player) {
         let sink = std::sync::Arc::clone(&p.connection.sink);
         p.survival
             .cooldowns
-            .apply_use_cooldown(&stack, sink.as_ref());
+            .apply_use_cooldown(stack, sink.as_ref());
     }
+    true
+}
+
+/// `completeUsingItem`: a consumable is consumed (`Item.finishUsingItem`), the client is told
+/// (`entity_event` 9).
+fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem) {
+    // `stopUsingItem` comes after `finishUsingItem`: its game event is posted at the end.
+    let was_using = stop_quietly(ents, player);
+    let stack = held(ents, player, u.hand);
+    let Some(c) = item_consumable(&stack) else {
+        // The stack stays; the spyglass stops zooming.
+        if item::item_id(&stack).name() == "minecraft:spyglass" {
+            let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
+            spyglass_stop(env, player, pos);
+        }
+        finished_event(ents, player);
+        // `stopUsingItem`: the kept stack vibrates.
+        if was_using && use_vibrations(&stack) {
+            let event = crate::level::game_event::events().item_interact_finish;
+            player_game_event(ents, env, player, event);
+        }
+        return;
+    };
+    let creative = ents
+        .player(player)
+        .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let consumed = consume(ents, env, player, u.hand, &stack, &c);
     finished_event(ents, player);
+    if !consumed {
+        return;
+    }
     // `stopUsingItem`: the used stack vibrates unless it was used up.
     let left = creative || stack.count > 1;
     if was_using && left && use_vibrations(&stack) {
@@ -955,6 +994,18 @@ fn crossbow_shoot(
         None,
         |ents, amount| !creative && hurt_held(ents, random, player, i, amount),
     );
+    // `performShooting`: `SHOT_CROSSBOW` and the use statistic with the (maybe broken) weapon.
+    if let Some(p) = ents.player_mut(player) {
+        let weapon = p.inventory.get(i).clone();
+        p.advancements.trigger_item(
+            crate::advancements::trigger::TriggerKind::SHOT_CROSSBOW,
+            &weapon,
+        );
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, weapon.item),
+            1,
+        );
+    }
 }
 
 /// `hurtAndBreak(amount)` of the stack in inventory slot `i` with Unbreaking; whether it
@@ -986,17 +1037,14 @@ fn hurt_held(
     if points <= 0 {
         return false;
     }
-    let Some(s) = ents.player_mut(player).and_then(|p| p.inventory.get_mut(i)) else {
+    let Some(p) = ents.player_mut(player) else {
+        return false;
+    };
+    let Some(s) = p.inventory.get_mut(i) else {
         return false;
     };
     let d = item::damage(s).saturating_add(points);
-    if d >= item::max_damage(s) {
-        s.shrink(1);
-        true
-    } else {
-        item::set_damage(s, d);
-        false
-    }
+    crate::advancements::view::apply_damage(Some(&mut p.advancements), Some(&mut p.stats), s, d)
 }
 
 /// `BowItem.getPowerForTime`.
@@ -1015,6 +1063,11 @@ pub fn release(
     let Some(u) = ents.player(player).and_then(|p| p.survival.using_item) else {
         return;
     };
+    if u.emptied {
+        // `releaseUsingItem` of an empty stack only stops.
+        stop_quietly(ents, player);
+        return;
+    }
     let stack = held(ents, player, u.hand);
     if stack.item == u.item && item::item_id(&stack).name() == "minecraft:spyglass" {
         let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
@@ -1091,16 +1144,21 @@ fn shoot_bow(
     };
     let rot = e.rot();
     let p = e.pos();
+    // `new Arrow(level, shooter, ..)`: `getEyeY() - 0.1F`.
     let eye = Vec3::new(
         p.x,
-        p.y + 1.62 * f64::from(e.dims().height / 1.8) - 0.1,
+        p.y + crate::survival::player::eye_height(e.dims().height) - f64::from(0.1_f32),
         p.z,
     );
-    let (yr, xr) = (
-        f64::from(rot.y_rot) * std::f64::consts::PI / 180.0,
-        f64::from(rot.x_rot) * std::f64::consts::PI / 180.0,
+    // `shootFromRotation`: float angles through the sine table.
+    let rad = std::f32::consts::PI / 180.0;
+    let sin = |a: f32| vanillite_base::math::sin(f64::from(a));
+    let cos = |a: f32| vanillite_base::math::cos(f64::from(a));
+    let dir = Vec3::new(
+        f64::from(-sin(rot.y_rot * rad) * cos(rot.x_rot * rad)),
+        f64::from(-sin(rot.x_rot * rad)),
+        f64::from(cos(rot.y_rot * rad) * cos(rot.x_rot * rad)),
     );
-    let dir = Vec3::new(-yr.sin() * xr.cos(), -xr.sin(), yr.cos() * xr.cos());
     // Arrows that cost nothing can only be picked up in creative mode.
     let free = creative || infinity;
     let pickup = if free { 2 } else { 1 };
@@ -1191,10 +1249,17 @@ mod tests {
             ids::TROPICAL_FISH_BUCKET,
         ] {
             assert!(bucket.info().food.is_some(), "{}", bucket.name());
-            assert!(eaten_food(bucket).is_none(), "{}", bucket.name());
+            assert_eq!(
+                use_duration(&ItemStack::new(bucket.0, 1)),
+                0,
+                "{}",
+                bucket.name()
+            );
         }
-        assert!(eaten_food(ids::COD).is_some());
-        assert!(eaten_food(ids::PUFFERFISH).is_some());
+        assert_eq!(use_duration(&ItemStack::new(ids::COD.0, 1)), 32);
+        assert_eq!(use_duration(&ItemStack::new(ids::DRIED_KELP.0, 1)), 16);
+        assert_eq!(use_duration(&ItemStack::new(ids::HONEY_BOTTLE.0, 1)), 40);
+        assert_eq!(use_duration(&ItemStack::new(ids::SHIELD.0, 1)), 72000);
     }
 
     #[test]
@@ -1205,6 +1270,7 @@ mod tests {
             ticks: 0,
             duration: 32,
             crossbow: crate::crossbow::UseFlags::default(),
+            emptied: false,
         };
         assert_eq!(living_flags(Some(u)), 3);
         assert_eq!(living_flags(None), 0);

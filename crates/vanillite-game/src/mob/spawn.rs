@@ -18,6 +18,7 @@ use super::nearby::{
 use super::physics;
 use super::{Environment, MobData, max_local_raw_brightness};
 use crate::level::Level;
+use crate::level::tiles::{Phase, TilePos, TileRun, sort_chunks, tile_seed};
 use crate::survival::rules::Difficulty;
 
 /// `MobCategory` without `MISC`, in Vanilla's order.
@@ -420,6 +421,178 @@ pub struct Spawner {
     pub structures: super::structures::StructureIndex,
     /// Chunks that passed the spawn step and wait for their animals.
     pub generated: Vec<ChunkPos>,
+    /// What each busy tile keeps between ticks in tile region mode ([`tick_tiled`]).
+    tiles: FxHashMap<TilePos, TileSpawner>,
+}
+
+/// A tile's own caches in tile region mode.
+#[derive(Debug, Default)]
+struct TileSpawner {
+    structures: super::structures::StructureIndex,
+    close: CloseForSpawning,
+}
+
+/// A mob a spawn round finished: what `addFreshEntityWithPassengers` and `afterSpawn` need.
+struct NewMob {
+    mob: MobData,
+    pos: Vec3,
+    y_rot: f32,
+    extra: Vec<ExtraMob>,
+    /// The block position, with the charge of the mob's spawn cost.
+    block: BlockPos,
+    charge: f64,
+}
+
+/// Where a spawn round reads, draws its random numbers and puts its mobs: the world itself in
+/// Vanilla's order ([`WorldRound`]) or one tile of the tile region mode ([`TileRound`]). The
+/// spawn logic ([`spawn_category_for_chunk`]) is the same for both.
+trait Round {
+    /// The level, for reads.
+    fn level(&self) -> &Level;
+    /// The round's random (`level.random`).
+    fn random(&mut self) -> &mut LegacyRandom;
+    /// Runs `f` with the level next to the round's random.
+    fn with_level_random<T>(&mut self, f: impl FnOnce(&Level, &mut LegacyRandom) -> T) -> T;
+    /// The level next to the structure index.
+    fn level_structures(&mut self) -> (&Level, &mut super::structures::StructureIndex);
+    /// The seed of a new mob's own random.
+    fn entity_seed(&mut self) -> i64;
+    /// `PotentialCalculator.getPotentialEnergyChange`.
+    fn energy_change(&self, pos: BlockPos, charge: f64) -> f64;
+    /// `canSpawnForCategoryLocal`.
+    fn can_spawn_local(&self, c: Category, nearby: &NearbyPlayers, chunk: ChunkPos) -> bool;
+    /// `addFreshEntityWithPassengers` and `afterSpawn`: the mob, its charge and the counts.
+    fn spawned(&mut self, nearby: &NearbyPlayers, chunk: ChunkPos, c: Category, new: NewMob);
+}
+
+/// A spawn round on the world itself: mobs are added at once and the level's random is used
+/// in place, as in Vanilla.
+struct WorldRound<'a> {
+    level: &'a mut Level,
+    structures: &'a mut super::structures::StructureIndex,
+    potential: &'a mut Potential,
+    close: &'a mut CloseForSpawning,
+    state: &'a mut SpawnState,
+}
+
+impl Round for WorldRound<'_> {
+    #[inline]
+    fn level(&self) -> &Level {
+        self.level
+    }
+
+    #[inline]
+    fn random(&mut self) -> &mut LegacyRandom {
+        self.level.random()
+    }
+
+    #[inline]
+    fn with_level_random<T>(&mut self, f: impl FnOnce(&Level, &mut LegacyRandom) -> T) -> T {
+        with_level_random(self.level, f)
+    }
+
+    #[inline]
+    fn level_structures(&mut self) -> (&Level, &mut super::structures::StructureIndex) {
+        (self.level, self.structures)
+    }
+
+    #[inline]
+    fn entity_seed(&mut self) -> i64 {
+        crate::mob::new_entity_seed()
+    }
+
+    #[inline]
+    fn energy_change(&self, pos: BlockPos, charge: f64) -> f64 {
+        self.potential.energy_change(pos, charge)
+    }
+
+    #[inline]
+    fn can_spawn_local(&self, c: Category, nearby: &NearbyPlayers, chunk: ChunkPos) -> bool {
+        self.state.local.can_spawn(c, nearby, chunk)
+    }
+
+    fn spawned(&mut self, nearby: &NearbyPlayers, chunk: ChunkPos, c: Category, new: NewMob) {
+        add_mob_with(
+            self.level,
+            new.mob,
+            new.pos,
+            new.y_rot,
+            new.extra,
+            SpawnReason::Natural,
+        );
+        self.potential.add(new.block, new.charge);
+        self.state.counts[c.index()] += 1;
+        for &slot in self.close.get(nearby, chunk) {
+            self.state.local.add(slot, c, 1);
+        }
+    }
+}
+
+/// A spawn round of one tile in tile region mode: it only reads the level, draws from the
+/// tile's random and collects its mobs; [`tick_tiled`] adds them afterwards. The counts of
+/// the tick's start come from the world, the tile's own spawns are added on top; what other
+/// tiles spawn in the same tick is not seen.
+struct TileRound<'a> {
+    level: &'a Level,
+    random: LegacyRandom,
+    seeds: LegacyRandom,
+    structures: &'a mut super::structures::StructureIndex,
+    close: &'a mut CloseForSpawning,
+    world_potential: &'a Potential,
+    potential: Potential,
+    caps: &'a LocalCaps,
+    /// The mobs this tile spawned this tick, per player slot and category.
+    added: FxHashMap<u32, [i32; 7]>,
+    out: Vec<NewMob>,
+}
+
+impl Round for TileRound<'_> {
+    #[inline]
+    fn level(&self) -> &Level {
+        self.level
+    }
+
+    #[inline]
+    fn random(&mut self) -> &mut LegacyRandom {
+        &mut self.random
+    }
+
+    #[inline]
+    fn with_level_random<T>(&mut self, f: impl FnOnce(&Level, &mut LegacyRandom) -> T) -> T {
+        f(self.level, &mut self.random)
+    }
+
+    #[inline]
+    fn level_structures(&mut self) -> (&Level, &mut super::structures::StructureIndex) {
+        (self.level, self.structures)
+    }
+
+    #[inline]
+    fn entity_seed(&mut self) -> i64 {
+        self.seeds.next_long()
+    }
+
+    fn energy_change(&self, pos: BlockPos, charge: f64) -> f64 {
+        self.world_potential.energy_change(pos, charge) + self.potential.energy_change(pos, charge)
+    }
+
+    fn can_spawn_local(&self, c: Category, nearby: &NearbyPlayers, chunk: ChunkPos) -> bool {
+        let caps = self.caps;
+        caps.below[c.index()] > 0
+            && nearby.around(chunk).iter().any(|&s| {
+                let added = self.added.get(&s).map_or(0, |a| a[c.index()]);
+                caps.counts[s as usize][c.index()] + added < caps.caps[c.index()]
+                    && nearby.is_close_for_spawning(s, chunk)
+            })
+    }
+
+    fn spawned(&mut self, nearby: &NearbyPlayers, chunk: ChunkPos, c: Category, new: NewMob) {
+        self.potential.add(new.block, new.charge);
+        for &slot in self.close.get(nearby, chunk) {
+            self.added.entry(slot).or_insert([0; 7])[c.index()] += 1;
+        }
+        self.out.push(new);
+    }
 }
 
 /// The spawn cost of a type at a position (`getRoughBiome(pos).getMobSpawnCost(type)`).
@@ -474,6 +647,17 @@ pub fn tick(
         return;
     }
     spawner.nearby.update(input.players);
+    tick_world(level, table, spawner, input, spawn_persistent);
+}
+
+/// [`tick`] after the players were taken over: the round on the world itself.
+fn tick_world(
+    level: &mut Level,
+    table: &SpawnTable,
+    spawner: &mut Spawner,
+    input: &SpawnInput<'_>,
+    spawn_persistent: bool,
+) {
     spawner.close.clear();
     if !input.thunder.spawn_mobs || !input.natural {
         // No categories: only the shuffled chunks and their thunder.
@@ -489,6 +673,45 @@ pub fn tick(
         spawner.chunks = chunks;
         return;
     }
+    let mut state = create_state(level, table, spawner, input);
+    let categories = spawn_categories(&state, input, spawn_persistent);
+    collect_spawning_chunks(level, spawner);
+    let chunks = std::mem::take(&mut spawner.chunks);
+    let mut round = WorldRound {
+        level,
+        structures: &mut spawner.structures,
+        potential: &mut spawner.potential,
+        close: &mut spawner.close,
+        state: &mut state,
+    };
+    for &chunk in &chunks {
+        // `tickSpawningChunk`.
+        round.level.chunks.increment_inhabited_time(chunk);
+        if round.level.chunks.in_entity_ticking_range(chunk) {
+            crate::lightning::tick_thunder(round.level, chunk, input.thunder);
+        }
+        // `canSpawnEntitiesInChunk`: the chunk is ticking and inside the world border.
+        if !round.level.border.is_chunk_within_bounds(chunk) {
+            continue;
+        }
+        for &c in &categories {
+            // `canSpawnForCategoryLocal`.
+            if round.can_spawn_local(c, &spawner.nearby, chunk) {
+                spawn_category_for_chunk(&mut round, table, &spawner.nearby, input, c, chunk);
+            }
+        }
+    }
+    spawner.chunks = chunks;
+}
+
+/// `NaturalSpawner.createState`: the non-persistent mobs per category, globally and per
+/// player, and the charges of the mobs with a spawn cost.
+fn create_state(
+    level: &Level,
+    table: &SpawnTable,
+    spawner: &mut Spawner,
+    input: &SpawnInput<'_>,
+) -> SpawnState {
     let mut state = SpawnState {
         // `getNaturalSpawnChunkCount`: chunks within 8 of a player chunk.
         spawnable_chunks: i32::try_from(spawner.nearby.chunk_count()).unwrap_or(i32::MAX),
@@ -523,35 +746,148 @@ pub fn tick(
     }
     // The local counts: the sums do not depend on the order.
     state.local = LocalCaps::count(&spawner.nearby, &spawner.mob_chunks, input.limits.caps);
-    let categories: Vec<Category> = Category::ALL
+    state
+}
+
+/// The categories that spawn this tick (`getFilteredSpawningCategories`).
+fn spawn_categories(
+    state: &SpawnState,
+    input: &SpawnInput<'_>,
+    spawn_persistent: bool,
+) -> Vec<Category> {
+    Category::ALL
         .into_iter()
         .filter(|c| {
             (input.spawn_enemies || c.is_friendly())
                 && (spawn_persistent || !c.is_persistent())
                 && state.can_spawn_global(*c, &input.limits)
         })
-        .collect();
-    collect_spawning_chunks(level, spawner);
-    let chunks = std::mem::take(&mut spawner.chunks);
-    for &chunk in &chunks {
-        // `tickSpawningChunk`.
-        level.chunks.increment_inhabited_time(chunk);
-        if level.chunks.in_entity_ticking_range(chunk) {
-            crate::lightning::tick_thunder(level, chunk, input.thunder);
-        }
-        // `canSpawnEntitiesInChunk`: the chunk is ticking and inside the world border.
-        if !level.border.is_chunk_within_bounds(chunk) {
-            continue;
-        }
-        for &c in &categories {
-            // `canSpawnForCategoryLocal`.
-            if !state.local.can_spawn(c, &spawner.nearby, chunk) {
-                continue;
+        .collect()
+}
+
+/// [`tick`] in tile region mode ([`crate::level::tiles`]): the spawning chunks are grouped by
+/// tile; every tile shuffles its chunks and runs its spawn attempts in parallel on the level
+/// as it is at the start of the round, with its own random; then the tiles' chunks tick
+/// (inhabited time, thunder) and their mobs are added, tile by tile. Falls back to [`tick`]'s
+/// order when the round does not apply (see [`TileRun`]).
+pub fn tick_tiled(
+    level: &mut Level,
+    table: &SpawnTable,
+    spawner: &mut Spawner,
+    input: &SpawnInput<'_>,
+    spawn_persistent: bool,
+    run: &TileRun<'_>,
+) {
+    if input.players.is_empty() {
+        return;
+    }
+    spawner.nearby.update(input.players);
+    let mut chunks = std::mem::take(&mut spawner.chunks);
+    chunks.clear();
+    chunks.extend(spawner.nearby.chunks());
+    let chunks = chunks;
+    if !run.applies(level, &chunks) {
+        spawner.chunks = chunks;
+        spawner.tiles.clear();
+        tick_world(level, table, spawner, input, spawn_persistent);
+        return;
+    }
+    // Without categories only the chunks tick (their thunder).
+    let (state, categories) = if input.thunder.spawn_mobs && input.natural {
+        let state = create_state(level, table, spawner, input);
+        let categories = spawn_categories(&state, input, spawn_persistent);
+        (state, categories)
+    } else {
+        (SpawnState::default(), Vec::new())
+    };
+    let mut jobs = Vec::new();
+    for (tile, chunks) in run.group(&chunks) {
+        let own = spawner.tiles.remove(&tile).unwrap_or_default();
+        jobs.push((tile, (chunks, own)));
+    }
+    // Tiles that are no longer busy drop their caches.
+    spawner.tiles.clear();
+    let shared: &Level = level;
+    let nearby = &spawner.nearby;
+    let world_potential = &spawner.potential;
+    let (seed, time) = (shared.seed(), shared.game_time());
+    let caps = &state.local;
+    let categories = &categories;
+    let replies = run.map(jobs, |tile, (mut spawning, mut own)| {
+        let mut random = LegacyRandom::new(tile_seed(seed, time, tile, Phase::Spawning));
+        // `collectSpawningChunks` of the tile, shuffled with its random.
+        spawning.retain(|&c| shared.is_block_ticking(c) && nearby.any_close_for_spawning(c));
+        sort_chunks(&mut spawning);
+        shuffle(&mut spawning, &mut random);
+        own.close.clear();
+        let mut round = TileRound {
+            level: shared,
+            random,
+            seeds: LegacyRandom::new(tile_seed(seed, time, tile, Phase::SpawnSeeds)),
+            structures: &mut own.structures,
+            close: &mut own.close,
+            world_potential,
+            potential: Potential::default(),
+            caps,
+            added: FxHashMap::default(),
+            out: Vec::new(),
+        };
+        if !categories.is_empty() {
+            for &chunk in &spawning {
+                if !shared.border.is_chunk_within_bounds(chunk) {
+                    continue;
+                }
+                for &c in categories {
+                    if round.can_spawn_local(c, nearby, chunk) {
+                        spawn_category_for_chunk(&mut round, table, nearby, input, c, chunk);
+                    }
+                }
             }
-            spawn_category_for_chunk(level, table, spawner, input, &mut state, c, chunk);
+        }
+        let mobs = round.out;
+        (own, spawning, mobs)
+    });
+    for reply in replies {
+        // The tile's changes: its spawning chunks and its new mobs. Its caches stay with it.
+        let (own, spawning, mobs) = reply.changes;
+        spawner.tiles.insert(reply.tile, own);
+        for chunk in spawning {
+            // `tickSpawningChunk`.
+            level.chunks.increment_inhabited_time(chunk);
+            if level.chunks.in_entity_ticking_range(chunk) {
+                crate::lightning::tick_thunder(level, chunk, input.thunder);
+            }
+        }
+        for mut new in mobs {
+            // A mount another mob of this tick took already is not taken twice.
+            new.extra.retain(|e| match e.relation {
+                Relation::Existing(vehicle) => {
+                    level.entities.store.contains(vehicle)
+                        && level.entities.riding.passengers_of(vehicle).is_empty()
+                }
+                _ => true,
+            });
+            add_mob_with(
+                level,
+                new.mob,
+                new.pos,
+                new.y_rot,
+                new.extra,
+                SpawnReason::Natural,
+            );
         }
     }
     spawner.chunks = chunks;
+}
+
+/// `Util.shuffle`.
+fn shuffle(chunks: &mut [ChunkPos], random: &mut LegacyRandom) {
+    let n = chunks.len();
+    for i in (1..n).rev() {
+        let j = usize::try_from(random.next_int_bounded(i32::try_from(i + 1).unwrap_or(i32::MAX)))
+            .unwrap_or(0);
+        chunks.swap(i, j);
+    }
 }
 
 /// `collectSpawningChunks`: ticking chunks with a player within 128 blocks, shuffled with the
@@ -567,16 +903,7 @@ fn collect_spawning_chunks(level: &mut Level, spawner: &mut Spawner) {
         );
     }
     spawner.chunks.sort_by_key(|c| (c.x, c.z));
-    let n = spawner.chunks.len();
-    for i in (1..n).rev() {
-        let j = usize::try_from(
-            level
-                .random()
-                .next_int_bounded(i32::try_from(i + 1).unwrap_or(i32::MAX)),
-        )
-        .unwrap_or(0);
-        spawner.chunks.swap(i, j);
-    }
+    shuffle(&mut spawner.chunks, level.random());
 }
 
 /// The nether fortress enemies (`NetherFortressStructure.FORTRESS_ENEMIES`).
@@ -665,25 +992,24 @@ pub fn max_spawn_cluster_size(kind: Kind) -> i32 {
 }
 
 /// `spawnCategoryForChunk` and `spawnCategoryForPosition`.
-fn spawn_category_for_chunk(
-    level: &mut Level,
+fn spawn_category_for_chunk<R: Round>(
+    round: &mut R,
     table: &SpawnTable,
-    spawner: &mut Spawner,
+    nearby: &NearbyPlayers,
     input: &SpawnInput<'_>,
-    state: &mut SpawnState,
     category: Category,
     chunk: ChunkPos,
 ) {
-    let x0 = chunk.x * 16 + level.random().next_int_bounded(16);
-    let z0 = chunk.z * 16 + level.random().next_int_bounded(16);
-    let top = surface_y(level, HeightmapKind::WorldSurface, x0, z0) + 1;
-    let min_y = level.min_y();
-    let y = level.random().next_int_between_inclusive(min_y, top);
+    let x0 = chunk.x * 16 + round.random().next_int_bounded(16);
+    let z0 = chunk.z * 16 + round.random().next_int_bounded(16);
+    let top = surface_y(round.level(), HeightmapKind::WorldSurface, x0, z0) + 1;
+    let min_y = round.level().min_y();
+    let y = round.random().next_int_between_inclusive(min_y, top);
     if y < min_y + 1 {
         return;
     }
     let start = BlockPos::new(x0, y, z0);
-    if level.block(start).has(flags::REDSTONE_CONDUCTOR) {
+    if round.level().block(start).has(flags::REDSTONE_CONDUCTOR) {
         return;
     }
     let mut cluster = 0;
@@ -691,39 +1017,42 @@ fn spawn_category_for_chunk(
         let (mut x, mut z) = (x0, z0);
         let mut current: Option<SpawnEntry> = None;
         #[allow(clippy::cast_possible_truncation)]
-        let mut max = (level.random().next_float() * 4.0).ceil() as i32;
+        let mut max = (round.random().next_float() * 4.0).ceil() as i32;
         let mut group_index = 0u32;
         let mut group = GroupData::None;
         let mut group_size = 0;
         let mut ll = 0;
         while ll < max {
             ll += 1;
-            x += level.random().next_int_bounded(6) - level.random().next_int_bounded(6);
-            z += level.random().next_int_bounded(6) - level.random().next_int_bounded(6);
+            x += round.random().next_int_bounded(6) - round.random().next_int_bounded(6);
+            z += round.random().next_int_bounded(6) - round.random().next_int_bounded(6);
             let pos = BlockPos::new(x, y, z);
             let (xx, zz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
             let at = Vec3::new(xx, f64::from(y), zz);
             // `getNearestPlayer`: only compared with 24 (`isRightDistanceToPlayerAndSpawnPoint`
             // rejects closer positions) and the despawn distances up to 128.
-            let nearest = spawner.nearby.nearest_distance_sqr(at, 576.0);
-            if !right_distance(level, input, chunk, pos, nearest) {
+            let nearest = nearby.nearest_distance_sqr(at, 576.0);
+            if !right_distance(round.level(), input, chunk, pos, nearest) {
                 continue;
             }
             if current.is_none() {
                 // `getRandomSpawnMobAt`: most water ambient spawns fail in some biomes.
                 if category == Category::WaterAmbient
                     && table
-                        .biome(level.biome(pos))
+                        .biome(round.level().biome(pos))
                         .is_some_and(|b| b.is("minecraft:reduced_water_ambient_spawns"))
-                    && level.random().next_float() < 0.98
+                    && round.random().next_float() < 0.98
                 {
                     break;
                 }
-                let list = mobs_at(level, table, &mut spawner.structures, category, pos);
-                let Some(entry) = pick(list, level.random()) else {
+                let list = {
+                    let (level, structures) = round.level_structures();
+                    mobs_at(level, table, structures, category, pos)
+                };
+                let Some(entry) = pick(list, round.random()) else {
                     break;
                 };
-                max = level
+                max = round
                     .random()
                     .next_int_between_inclusive(entry.min, entry.max);
                 current = Some(entry);
@@ -731,14 +1060,19 @@ fn spawn_category_for_chunk(
             let Some(entry) = current else {
                 break;
             };
-            if !valid_position_for_type(level, table, spawner, input, category, entry, pos, nearest)
-            {
+            let valid = {
+                let (level, structures) = round.level_structures();
+                valid_position_for_type(
+                    level, table, structures, input, category, entry, pos, nearest,
+                )
+            };
+            if !valid {
                 continue;
             }
             // `SpawnState.canSpawn`: the spawn cost's energy budget.
-            let cost = spawn_cost(level, table, entry.type_id, pos);
+            let cost = spawn_cost(round.level(), table, entry.type_id, pos);
             if let Some((charge, budget)) = cost
-                && spawner.potential.energy_change(pos, charge) > budget
+                && round.energy_change(pos, charge) > budget
             {
                 continue;
             }
@@ -747,14 +1081,14 @@ fn spawn_category_for_chunk(
                 // creation in Vanilla.
                 return;
             };
-            let seed = crate::mob::new_entity_seed();
+            let seed = round.entity_seed();
             let mut mob = MobData::new(kind, seed);
-            let y_rot = level.random().next_float() * 360.0;
+            let y_rot = round.random().next_float() * 360.0;
             let pos_v = Vec3::new(xx, f64::from(y), zz);
-            if !valid_position_for_mob(level, input, &mob, pos_v, nearest) {
+            if !valid_position_for_mob(round.level(), input, &mob, pos_v, nearest) {
                 continue;
             }
-            let extra = with_level_random(level, |level, random| {
+            let extra = round.with_level_random(|level, random| {
                 finalize_in_group(
                     level,
                     Some(table),
@@ -772,13 +1106,20 @@ fn spawn_category_for_chunk(
             cluster += 1;
             group_size += 1;
             let group_reached = super::fam::is_max_group_size_reached(&mob, group_size);
-            add_mob_with(level, mob, pos_v, y_rot, extra, SpawnReason::Natural);
             // `afterSpawn`: the charge, the counts.
-            spawner.potential.add(pos, cost.map_or(0.0, |c| c.0));
-            state.counts[category.index()] += 1;
-            for &slot in spawner.close.get(&spawner.nearby, chunk) {
-                state.local.add(slot, category, 1);
-            }
+            round.spawned(
+                nearby,
+                chunk,
+                category,
+                NewMob {
+                    mob,
+                    pos: pos_v,
+                    y_rot,
+                    extra,
+                    block: pos,
+                    charge: cost.map_or(0.0, |c| c.0),
+                },
+            );
             if cluster >= max_spawn_cluster_size(kind) {
                 return;
             }
@@ -999,7 +1340,7 @@ fn right_distance(
 fn valid_position_for_type(
     level: &Level,
     table: &SpawnTable,
-    spawner: &mut Spawner,
+    structures: &mut super::structures::StructureIndex,
     input: &SpawnInput<'_>,
     category: Category,
     entry: SpawnEntry,
@@ -1015,7 +1356,7 @@ fn valid_position_for_type(
         return false;
     }
     // `canSpawnMobAt`: the entry is still in the list there.
-    if !mobs_at(level, table, &mut spawner.structures, category, pos).contains(&entry) {
+    if !mobs_at(level, table, structures, category, pos).contains(&entry) {
         return false;
     }
     if !spawn_position_ok(level, entry.type_id, pos) {
@@ -1777,4 +2118,164 @@ pub fn count_by_kind(level: &Level) -> FxHashMap<Kind, usize> {
         *out.entry(m.kind).or_insert(0) += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::level::tests::flat_level;
+    use crate::level::tiles::{Fork, inline_fork};
+    use vanillite_data::entity::ids as e;
+
+    /// A table whose first biome (the flat test world's plains) spawns zombies and spiders.
+    fn table() -> SpawnTable {
+        let mut plains = BiomeSpawns {
+            name: "minecraft:plains".into(),
+            ..BiomeSpawns::default()
+        };
+        let entry = |type_id, weight, min, max| SpawnEntry {
+            type_id,
+            weight,
+            min,
+            max,
+        };
+        plains.by_category[Category::Monster.index()] =
+            vec![entry(e::ZOMBIE, 100, 4, 4), entry(e::SPIDER, 100, 4, 4)];
+        plains.by_category[Category::Creature.index()] =
+            vec![entry(e::COW, 8, 4, 4), entry(e::SHEEP, 12, 4, 4)];
+        SpawnTable {
+            biomes: vec![plains],
+            structures: FxHashMap::default(),
+        }
+    }
+
+    /// Runs `ticks` spawn rounds with one player at the origin and returns every mob's type
+    /// and position in spawn order, and the next value of the level's random.
+    fn spawned(ticks: usize, run: Option<&TileRun<'_>>) -> (Vec<(EntityTypeId, [i64; 3])>, i32) {
+        let mut level = flat_level();
+        let mut ids: vanillite_base::SlotMap<EntityId, ()> = vanillite_base::SlotMap::default();
+        let players = [(ids.insert(()), Vec3::new(8.5, -60.0, 8.5))];
+        let table = table();
+        let mut spawner = Spawner::default();
+        let input = SpawnInput {
+            players: &players,
+            spawn_point: None,
+            spawn_enemies: true,
+            difficulty: Difficulty::Normal,
+            // Night: dark enough for monsters under the open sky.
+            env: Environment {
+                sky_darken: 11,
+                ..Environment::default()
+            },
+            limits: SpawnLimits::default(),
+            thunder: crate::lightning::StrikeInput {
+                spawn_mobs: true,
+                clock_time: 0,
+            },
+            natural: true,
+        };
+        crate::mob::set_entity_seed_stream(Some(7));
+        for _ in 0..ticks {
+            level.tick_time();
+            match run {
+                Some(run) => tick_tiled(&mut level, &table, &mut spawner, &input, true, run),
+                None => tick(&mut level, &table, &mut spawner, &input, true),
+            }
+        }
+        crate::mob::set_entity_seed_stream(None);
+        #[allow(clippy::cast_possible_truncation)]
+        let mobs = level
+            .entities
+            .mobs
+            .iter()
+            .filter_map(|(id, _)| level.entities.store.get(id))
+            .map(|entity| {
+                let p = entity.pos();
+                let fixed = |v: f64| (v * 16.0).round() as i64;
+                (entity.kind(), [fixed(p.x), fixed(p.y), fixed(p.z)])
+            })
+            .collect();
+        (mobs, level.random().next_int())
+    }
+
+    fn tiles<'a>(fork: &'a Fork<'a>) -> TileRun<'a> {
+        // The test world ticks the chunks around the origin: tiles of 2 × 2 chunks.
+        TileRun {
+            size: 2,
+            min_chunks: 0,
+            fork,
+        }
+    }
+
+    /// The round on the world itself draws from the level's random in Vanilla's order: the
+    /// spawns of a seeded world are those of the code without the tile region mode (the values
+    /// were taken from it; they change only when the spawn logic itself does).
+    #[test]
+    fn the_world_round_keeps_its_spawns() {
+        let (mobs, next) = spawned(60, None);
+        let digest = mobs.iter().fold(0u64, |h, (kind, p)| {
+            let mut h = h.wrapping_mul(0x100_0000_01B3) ^ u64::from(kind.0);
+            for v in p {
+                #[allow(clippy::cast_sign_loss)]
+                let v = *v as u64;
+                h = h.wrapping_mul(0x100_0000_01B3) ^ v;
+            }
+            h
+        });
+        assert_eq!((mobs.len(), digest, next), EXPECTED_WORLD_ROUND);
+    }
+
+    /// The number of mobs, the digest of their types and positions and the level random's
+    /// next value after 60 rounds.
+    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (92, 9_013_686_086_944_484_436, 260_617_355);
+
+    /// Packs wander up to 20 blocks from their start, across the 32-block tiles of this test:
+    /// the mobs land in several tiles, only in ticking chunks, and the tiles together respect
+    /// the mob cap up to one tick's spawns.
+    #[test]
+    fn tiled_spawns_cross_tile_borders_and_stay_in_ticking_chunks() {
+        let fork: &Fork<'_> = &inline_fork;
+        let (mobs, _) = spawned(60, Some(&tiles(fork)));
+        assert!(mobs.len() > 8, "{} mobs", mobs.len());
+        let level = flat_level();
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, p) in &mobs {
+            #[allow(clippy::cast_possible_truncation)]
+            let chunk = ChunkPos::new((p[0] >> 8) as i32, (p[2] >> 8) as i32);
+            assert!(level.is_block_ticking(chunk), "mob in {chunk:?}");
+            seen.insert(TilePos::of(chunk, 2));
+        }
+        assert!(seen.len() >= 3, "tiles {seen:?}");
+        // The monster cap is 70; four tiles can overshoot it by a tick's packs.
+        assert!(mobs.len() <= 70 + 4 * 12, "{} mobs", mobs.len());
+    }
+
+    /// One thread or many: the same mobs at the same places.
+    #[test]
+    fn tiled_spawns_do_not_depend_on_threads() {
+        let threaded = |n: usize, job: &(dyn Fn(usize) + Sync)| {
+            std::thread::scope(|scope| {
+                for i in 0..n {
+                    scope.spawn(move || job(i));
+                }
+            });
+        };
+        let inline: &Fork<'_> = &inline_fork;
+        let (a, _) = spawned(60, Some(&tiles(inline)));
+        let (b, _) = spawned(60, Some(&tiles(&threaded)));
+        assert_eq!(a, b);
+        assert!(!a.is_empty());
+    }
+
+    /// With everything in one tile or too few chunks the tiled round is the world round.
+    #[test]
+    fn a_tiled_round_that_does_not_apply_is_the_world_round() {
+        let fork: &Fork<'_> = &inline_fork;
+        let small = TileRun {
+            size: 2,
+            min_chunks: 1_000_000,
+            fork,
+        };
+        assert_eq!(spawned(60, Some(&small)), spawned(60, None));
+    }
 }

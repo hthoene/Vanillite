@@ -1,0 +1,68 @@
+{
+  "description": "Lightning takes one oxidation stage off a copper golem (#114, #162): an oxidized golem draws its statue chance from its random every tick; a bolt strikes it on several ticks but takes only one stage, after which it is weathered (a command reads the stage back as a gold block, and no diamond block for a second stage), draws no more and sets a new weathering time.",
+  "tier": "fast",
+  "world": {
+    "seed": 8904
+  },
+  "rules": {
+    "fire_spread_radius_around_player": "-1"
+  },
+  "weather": "thunder",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        28.5,
+        -60.0,
+        13.5
+      ]
+    },
+    {
+      "name": "golem",
+      "type": "minecraft:copper_golem",
+      "pos": [
+        6.5,
+        -60.0,
+        6.5
+      ],
+      "seed": 11,
+      "weather_state": "oxidized"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 4,
+      "op": "lightning",
+      "pos": [
+        6,
+        0,
+        6
+      ]
+    },
+    {
+      "tick": 30,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:copper_golem,nbt={weather_state:\"weathered\"}] run setblock 2 -60 1 minecraft:gold_block"
+    },
+    {
+      "tick": 30,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:copper_golem,nbt={weather_state:\"exposed\"}] run setblock 2 -60 3 minecraft:diamond_block"
+    }
+  ]
+}

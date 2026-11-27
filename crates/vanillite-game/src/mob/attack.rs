@@ -838,6 +838,8 @@ fn run_entity_effect(
             // `Mth.randomBetween(entity.getRandom(), min, max)`.
             let roll = if let Some(m) = ents.mob_mut(target) {
                 m.random.next_float()
+            } else if let Some(p) = ents.player_mut(target) {
+                p.survival.random.next_float()
             } else {
                 crate::experience_orb::with_entity_random(|r| r.next_float())
             };
@@ -884,8 +886,11 @@ fn run_entity_effect(
         }
         EntityEffect::SummonLightning => {
             if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+                let cause = item
+                    .map(|(owner, _)| owner)
+                    .filter(|&o| ents.player(o).is_some());
                 cx.actions.push(super::WorldAction::Level(
-                    super::boss::warden::LevelAction::Lightning { pos },
+                    super::boss::warden::LevelAction::Lightning { pos, cause },
                 ));
             }
         }

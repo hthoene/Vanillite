@@ -26,6 +26,24 @@ pub fn record(
     factory: WorldFactory,
     execution: Execution,
 ) -> Result<Trace, String> {
+    let mut frames = Vec::new();
+    let mut trace = stream(scenario, factory, execution, &mut |_, frame| {
+        frames.push(frame);
+        Ok(true)
+    })?;
+    trace.frames = frames;
+    Ok(trace)
+}
+
+/// Runs `scenario` in a world from `factory` and hands every frame to `sink` as it is
+/// recorded, with the trace so far (its palette; it keeps no frames); the run stops early
+/// when `sink` returns `false`. Returns the trace without frames.
+pub fn stream(
+    scenario: &Scenario,
+    factory: WorldFactory,
+    execution: Execution,
+    sink: &mut dyn FnMut(&Trace, Frame) -> Result<bool, String>,
+) -> Result<Trace, String> {
     let mut world = factory(&scenario.world, execution);
     for op in &scenario.setup {
         apply_in(world.as_mut(), scenario, op, false)?;
@@ -34,7 +52,12 @@ pub fn record(
     world.add_entities(&scenario.entities, scenario.entity_seed)?;
     world.settle_light();
     let mut trace = Trace::new(scenario.min, scenario.max);
-    observe(world.as_mut(), scenario, &mut trace, 0)?;
+    // Palette index per block state, filled as states show up.
+    let mut cache = vec![u32::MAX; 1 << 16];
+    let frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, 0)?;
+    if !sink(&trace, frame)? {
+        return Ok(trace);
+    }
     for tick in 1..=scenario.ticks {
         for (i, spec) in scenario.entities.iter().enumerate() {
             if spec.join == Some(tick) {
@@ -52,7 +75,10 @@ pub fn record(
         }
         world.client_end()?;
         world.step();
-        observe(world.as_mut(), scenario, &mut trace, tick)?;
+        let frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, tick)?;
+        if !sink(&trace, frame)? {
+            break;
+        }
     }
     Ok(trace)
 }
@@ -146,8 +172,9 @@ fn observe(
     world: &mut dyn ScenarioWorld,
     scenario: &Scenario,
     trace: &mut Trace,
+    cache: &mut [u32],
     tick: u32,
-) -> Result<(), String> {
+) -> Result<Frame, String> {
     let light = scenario.world.observe_light;
     let volume: usize = trace.size().iter().product();
     let mut frame = Frame {
@@ -157,12 +184,17 @@ fn observe(
     };
     for i in 0..volume {
         let pos = trace.pos_of(i);
-        let name = if world.is_loaded(pos) {
-            state_name(world.block(pos))
+        let index = if world.is_loaded(pos) {
+            let state = world.block(pos);
+            let slot = &mut cache[usize::from(state.0)];
+            if *slot == u32::MAX {
+                *slot = trace.intern(&state_name(state));
+            }
+            *slot
         } else {
-            crate::scenario::UNLOADED.to_owned()
+            trace.intern(crate::scenario::UNLOADED)
         };
-        frame.blocks.push(trace.intern(&name));
+        frame.blocks.push(index);
     }
     world.block_ticks(trace.min, trace.max, &mut frame.block_ticks);
     world.fluid_ticks(trace.min, trace.max, &mut frame.fluid_ticks);
@@ -178,8 +210,7 @@ fn observe(
     if !scenario.world.views.is_empty() {
         world.select_dimension(&scenario.world.dimension)?;
     }
-    trace.frames.push(frame);
-    Ok(())
+    Ok(frame)
 }
 
 /// Path of the Vanilla golden of a scenario (repository or bulk tier).

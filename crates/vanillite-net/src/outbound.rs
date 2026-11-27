@@ -8,8 +8,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use vanillite_multiversion::ClientboundHalf;
 use vanillite_protocol::compress::Codec;
-use vanillite_protocol::frame::{FrameEncoder, encode_body, encode_frame, for_each_body};
-use vanillite_protocol::{Packet, SharedPacket};
+use vanillite_protocol::frame::{
+    FrameEncoder, encode_body, encode_frame, for_each_body, for_each_id,
+};
+use vanillite_protocol::tap::{BatchMark, PacketTap, Peer, Stage, Verdict};
+use vanillite_protocol::{Direction, Packet, SharedPacket, State};
 
 /// A message to a connection's writer.
 #[derive(Debug)]
@@ -18,16 +21,35 @@ pub(crate) enum Out {
     Body(Vec<u8>),
     /// A shared packet.
     Shared(Arc<SharedPacket>),
-    /// Frames built with [`encode_frame`] for a compression threshold.
-    Batch(Vec<u8>, Option<usize>),
+    /// Frames built with [`encode_frame`] for a compression threshold, and what their
+    /// encoder knows about their packet types (for the packet tap).
+    Batch(Vec<u8>, Option<usize>, BatchMark),
+    /// An encoded packet body the listeners of the packet tap do not see.
+    Untapped(Vec<u8>),
     /// Compression on from here (sent after `login_compression`).
     Compression(i32),
     /// Encryption on from here (after the key exchange).
     Encryption([u8; 16]),
     /// Translate every packet from here for a client of an older version.
     Adapter(Box<ClientboundHalf>),
+    /// The protocol state of the packets from here (for the packet tap).
+    State(State),
+    /// The player this connection belongs to (for the packet tap).
+    Player(u128),
     /// Flush and close the connection.
     Close,
+}
+
+impl Out {
+    /// The bytes this message counts against the connection's outbound limit.
+    fn queued(&self) -> usize {
+        match self {
+            Out::Body(body) | Out::Untapped(body) => body.len(),
+            Out::Shared(packet) => packet.body().len(),
+            Out::Batch(frames, ..) => frames.len(),
+            _ => 0,
+        }
+    }
 }
 
 /// Sends packets to one connection. Cheap to clone; usable from any thread.
@@ -41,13 +63,15 @@ pub struct Outbound {
     threshold: Arc<AtomicUsize>,
     /// The last packets the writer wrote.
     sent: Arc<SentLog>,
+    /// The connection's number for the packet tap.
+    connection: u64,
 }
 
 /// [`Outbound::threshold`] value for compression off.
 const NO_COMPRESSION: usize = usize::MAX;
 
 impl Outbound {
-    pub(crate) fn new(max_bytes: usize) -> (Self, OutReceiver, Arc<AtomicUsize>) {
+    pub(crate) fn new(max_bytes: usize, connection: u64) -> (Self, OutReceiver, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
         let closed = Arc::new(AtomicBool::new(false));
@@ -63,6 +87,7 @@ impl Outbound {
                 closed,
                 threshold: Arc::new(AtomicUsize::new(NO_COMPRESSION)),
                 sent: Arc::new(SentLog::new()),
+                connection,
             },
             rx,
             queued,
@@ -98,11 +123,26 @@ impl Outbound {
         self.push(Out::Body(body), n)
     }
 
+    /// Queues an encoded body that the listeners of the packet tap do not see (a packet a
+    /// plugin sends past them).
+    pub fn send_untapped(&self, body: Vec<u8>) -> bool {
+        let n = body.len();
+        self.push(Out::Untapped(body), n)
+    }
+
+    /// The connection's number for the packet tap.
+    pub(crate) fn connection(&self) -> u64 {
+        self.connection
+    }
+
     /// Queues many packets as one entry: frames built with [`encode_frame`] for `threshold`
-    /// (best this connection's, [`Outbound::threshold`]).
-    pub fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
+    /// (best this connection's, [`Outbound::threshold`]). The packets of a batch pass the
+    /// receiver stage of the packet tap only: whoever encodes them for many receivers runs
+    /// the broadcast stage there ([`PacketTap::shared`]). `mark` lets the writer skip looking
+    /// into the batch ([`PacketTap::batch_mark`]); [`BatchMark::UNKNOWN`] is always right.
+    pub fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>, mark: BatchMark) -> bool {
         let n = frames.len();
-        self.push(Out::Batch(frames, threshold), n)
+        self.push(Out::Batch(frames, threshold, mark), n)
     }
 
     /// The compression threshold the connection's writer uses once everything queued so far
@@ -171,6 +211,209 @@ impl Drop for OutReceiver {
 /// Capacity of a writer's buffers kept after a write; larger ones are released.
 const IDLE_BUFFER_MAX: usize = 64 * 1024;
 
+/// A writer's side of the packet tap: listeners see a connection's packets in the order they
+/// are written, before any translation for other client versions.
+struct OutTap {
+    tap: Arc<PacketTap>,
+    peer: Peer,
+    state: State,
+}
+
+impl OutTap {
+    fn new(tap: Arc<PacketTap>, connection: u64) -> Self {
+        Self {
+            tap,
+            peer: Peer {
+                connection,
+                player: 0,
+            },
+            state: State::Handshake,
+        }
+    }
+
+    /// Runs the listeners on a message unless no clientbound packet type has one (one load
+    /// and branch). Returns what is left to write.
+    #[inline]
+    fn filter(&mut self, msg: Out, codec: &mut Codec) -> Option<Out> {
+        match msg {
+            Out::State(state) => {
+                self.state = state;
+                None
+            }
+            Out::Player(player) => {
+                self.peer.player = player;
+                None
+            }
+            msg if self.tap.active(Direction::Clientbound) => self.apply(msg, codec),
+            msg => Some(msg),
+        }
+    }
+
+    #[cold]
+    fn apply(&self, msg: Out, codec: &mut Codec) -> Option<Out> {
+        match msg {
+            Out::Body(body) => match self.tap.clientbound(self.peer, self.state, &body, true) {
+                Verdict::Pass => Some(Out::Body(body)),
+                Verdict::Drop => None,
+                Verdict::Replace(body) => Some(Out::Body(body)),
+            },
+            Out::Shared(packet) => {
+                let packet = match self.tap.shared(self.state, &packet) {
+                    Verdict::Pass => packet,
+                    Verdict::Drop => return None,
+                    Verdict::Replace(replaced) => replaced,
+                };
+                match self
+                    .tap
+                    .clientbound(self.peer, self.state, packet.body(), false)
+                {
+                    // Still the buffer every receiver shares.
+                    Verdict::Pass => Some(Out::Shared(packet)),
+                    Verdict::Drop => None,
+                    Verdict::Replace(body) => Some(Out::Body(body)),
+                }
+            }
+            Out::Batch(frames, threshold, mark) => self.batch(frames, threshold, mark, codec),
+            other => Some(other),
+        }
+    }
+
+    /// A batch stays as it is unless it holds a packet type with a listener per receiver;
+    /// then it is framed anew with the listeners' changes. (The broadcast stage ran where
+    /// the batch was encoded.) A batch whose encoder found no such type is not looked into.
+    fn batch(
+        &self,
+        frames: Vec<u8>,
+        threshold: Option<usize>,
+        mark: BatchMark,
+        codec: &mut Codec,
+    ) -> Option<Out> {
+        if !self.tap.listens(Stage::Receiver) || self.tap.skips(mark) {
+            return Some(Out::Batch(frames, threshold, mark));
+        }
+        let mut wanted = false;
+        let walked = for_each_id(&frames, threshold, |id| {
+            // A compressed frame hides its id: look inside.
+            wanted = id.is_none_or(|id| self.tap.wants_at(Stage::Receiver, self.state, id));
+            !wanted
+        });
+        if walked.is_err() || !wanted {
+            return Some(Out::Batch(frames, threshold, mark));
+        }
+        let mut out = Vec::with_capacity(frames.len());
+        let rebuilt = for_each_body(&frames, threshold, |body| {
+            match self.tap.clientbound(self.peer, self.state, body, false) {
+                Verdict::Pass => encode_frame(body, threshold, codec, &mut out)?,
+                Verdict::Drop => {}
+                Verdict::Replace(body) => encode_frame(&body, threshold, codec, &mut out)?,
+            }
+            Ok(true)
+        });
+        match rebuilt {
+            Ok(()) if out.is_empty() => None,
+            Ok(()) => Some(Out::Batch(out, threshold, BatchMark::UNKNOWN)),
+            Err(_) => Some(Out::Batch(frames, threshold, mark)),
+        }
+    }
+}
+
+/// The wire side of a TCP writer: framing, compression, encryption and the translation for
+/// clients of an older version.
+struct Wire {
+    encoder: FrameEncoder,
+    codec: Codec,
+    buf: Vec<u8>,
+    adapter: Option<Box<ClientboundHalf>>,
+}
+
+impl Wire {
+    /// Appends a message to the write buffer. Returns false when the connection is to close.
+    fn write(&mut self, msg: Out) -> bool {
+        let Self {
+            encoder,
+            codec,
+            buf,
+            adapter,
+        } = self;
+        match msg {
+            Out::Body(body) | Out::Untapped(body) => match adapter.as_mut() {
+                Some(a) => {
+                    let mut open = match a.translate(&body) {
+                        Ok(Some(t)) => encoder.body(t, buf).is_ok(),
+                        Ok(None) => true,
+                        Err(e) => {
+                            log::debug!("multiversion: untranslatable packet: {e}");
+                            true
+                        }
+                    };
+                    while let Some(t) = a.pending() {
+                        open &= encoder.body(t, buf).is_ok();
+                    }
+                    open
+                }
+                None => encoder.body(&body, buf).is_ok(),
+            },
+            Out::Shared(p) => match adapter.as_mut() {
+                Some(a) => {
+                    let mut open = match a.translate_shared(&p) {
+                        Some(t) => encoder.body(t, buf).is_ok(),
+                        None => true,
+                    };
+                    while let Some(t) = a.pending() {
+                        open &= encoder.body(t, buf).is_ok();
+                    }
+                    open
+                }
+                None => {
+                    let threshold = encoder.threshold();
+                    let cached = p.frame(threshold, |body| {
+                        let mut f = Vec::new();
+                        // An unencodable body yields an empty frame that is skipped below.
+                        let _ = encode_frame(body, threshold, codec, &mut f);
+                        f
+                    });
+                    match cached {
+                        Some(frame) if !frame.is_empty() => {
+                            encoder.frame(frame, buf);
+                            true
+                        }
+                        _ => encoder.body(p.body(), buf).is_ok(),
+                    }
+                }
+            },
+            Out::Batch(frames, threshold, _) => match adapter.as_mut() {
+                Some(a) => for_each_body(&frames, threshold, |body| {
+                    match a.translate(body) {
+                        Ok(Some(t)) => encoder.body(t, buf)?,
+                        Ok(None) => {}
+                        Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
+                    }
+                    while let Some(t) = a.pending() {
+                        encoder.body(t, buf)?;
+                    }
+                    Ok(true)
+                })
+                .is_ok(),
+                None => encoder.batch(&frames, threshold, buf).is_ok(),
+            },
+            Out::Compression(t) => {
+                encoder.set_compression(t);
+                true
+            }
+            Out::Encryption(secret) => {
+                encoder.enable_encryption(&secret);
+                true
+            }
+            Out::Adapter(a) => {
+                *adapter = Some(a);
+                true
+            }
+            Out::State(_) | Out::Player(_) => true,
+            Out::Close => false,
+        }
+    }
+}
+
 /// Writes to a TCP socket.
 pub(crate) async fn tcp_writer(
     mut socket: tokio::net::tcp::OwnedWriteHalf,
@@ -178,137 +421,43 @@ pub(crate) async fn tcp_writer(
     queued: Arc<AtomicUsize>,
     compression_level: i32,
     sent: Arc<SentLog>,
+    tap: Arc<PacketTap>,
+    connection: u64,
 ) {
-    let mut encoder = FrameEncoder::new();
-    let mut codec = Codec::new(compression_level);
-    let mut buf = Vec::with_capacity(8192);
+    let mut wire = Wire {
+        encoder: FrameEncoder::new(),
+        codec: Codec::new(compression_level),
+        buf: Vec::with_capacity(8192),
+        adapter: None,
+    };
+    let mut tap = OutTap::new(tap, connection);
     let mut open = true;
-    let mut adapter: Option<Box<ClientboundHalf>> = None;
     while open {
         let Some(first) = rx.recv().await else { break };
         let ms = sent.now_ms();
         let mut next = Some(first);
         while let Some(msg) = next.take() {
-            record(&sent, ms, &msg);
-            let consumed = match msg {
-                Out::Body(body) if adapter.is_some() => {
-                    if let Some(a) = adapter.as_mut() {
-                        match a.translate(&body) {
-                            Ok(Some(t)) => {
-                                if encoder.body(t, &mut buf).is_err() {
-                                    open = false;
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                log::debug!("multiversion: untranslatable packet: {e}");
-                            }
-                        }
-                        while let Some(t) = a.pending() {
-                            if encoder.body(t, &mut buf).is_err() {
-                                open = false;
-                            }
-                        }
-                    }
-                    body.len()
-                }
-                Out::Shared(p) if adapter.is_some() => {
-                    if let Some(a) = adapter.as_mut() {
-                        if let Some(t) = a.translate_shared(&p)
-                            && encoder.body(t, &mut buf).is_err()
-                        {
-                            open = false;
-                        }
-                        while let Some(t) = a.pending() {
-                            if encoder.body(t, &mut buf).is_err() {
-                                open = false;
-                            }
-                        }
-                    }
-                    p.body().len()
-                }
-                Out::Body(body) => {
-                    if encoder.body(&body, &mut buf).is_err() {
-                        open = false;
-                    }
-                    body.len()
-                }
-                Out::Batch(frames, threshold) if adapter.is_some() => {
-                    let res = for_each_body(&frames, threshold, |body| {
-                        if let Some(a) = adapter.as_mut() {
-                            match a.translate(body) {
-                                Ok(Some(t)) => encoder.body(t, &mut buf)?,
-                                Ok(None) => {}
-                                Err(e) => log::debug!("multiversion: untranslatable packet: {e}"),
-                            }
-                            while let Some(t) = a.pending() {
-                                encoder.body(t, &mut buf)?;
-                            }
-                        }
-                        Ok(true)
-                    });
-                    if res.is_err() {
-                        open = false;
-                    }
-                    frames.len()
-                }
-                Out::Batch(frames, threshold) => {
-                    if encoder.batch(&frames, threshold, &mut buf).is_err() {
-                        open = false;
-                    }
-                    frames.len()
-                }
-                Out::Shared(p) => {
-                    let threshold = encoder.threshold();
-                    let cached = p.frame(threshold, |body| {
-                        let mut f = Vec::new();
-                        // An unencodable body yields an empty frame that is skipped below.
-                        let _ = encode_frame(body, threshold, &mut codec, &mut f);
-                        f
-                    });
-                    match cached {
-                        Some(frame) if !frame.is_empty() => encoder.frame(frame, &mut buf),
-                        _ => {
-                            if encoder.body(p.body(), &mut buf).is_err() {
-                                open = false;
-                            }
-                        }
-                    }
-                    p.body().len()
-                }
-                Out::Compression(t) => {
-                    encoder.set_compression(t);
-                    0
-                }
-                Out::Encryption(secret) => {
-                    encoder.enable_encryption(&secret);
-                    0
-                }
-                Out::Adapter(a) => {
-                    adapter = Some(a);
-                    0
-                }
-                Out::Close => {
-                    open = false;
-                    0
-                }
-            };
+            let consumed = msg.queued();
+            if let Some(msg) = tap.filter(msg, &mut wire.codec) {
+                record(&sent, ms, &msg);
+                open = wire.write(msg);
+            }
             queued.fetch_sub(consumed, Ordering::Relaxed);
-            if open && buf.len() < 256 * 1024 {
+            if open && wire.buf.len() < 256 * 1024 {
                 next = rx.try_recv().ok();
             }
         }
-        if !buf.is_empty() {
-            if socket.write_all(&buf).await.is_err() {
+        if !wire.buf.is_empty() {
+            if socket.write_all(&wire.buf).await.is_err() {
                 break;
             }
-            buf.clear();
+            wire.buf.clear();
         }
         // Bursts (the chunks of a join) grow the buffers; give that memory back.
-        if buf.capacity() > IDLE_BUFFER_MAX {
-            buf = Vec::with_capacity(8192);
+        if wire.buf.capacity() > IDLE_BUFFER_MAX {
+            wire.buf = Vec::with_capacity(8192);
         }
-        encoder.trim(IDLE_BUFFER_MAX);
+        wire.encoder.trim(IDLE_BUFFER_MAX);
     }
     let _ = socket.shutdown().await;
 }
@@ -319,14 +468,21 @@ pub(crate) async fn virtual_writer(
     mut rx: OutReceiver,
     queued: Arc<AtomicUsize>,
     sent: Arc<SentLog>,
+    tap: Arc<PacketTap>,
+    connection: u64,
 ) {
     let mut adapter: Option<Box<ClientboundHalf>> = None;
+    let mut tap = OutTap::new(tap, connection);
+    let mut codec = Codec::default();
     while let Some(msg) = rx.recv().await {
+        queued.fetch_sub(msg.queued(), Ordering::Relaxed);
+        let Some(msg) = tap.filter(msg, &mut codec) else {
+            continue;
+        };
         record(&sent, sent.now_ms(), &msg);
         let mut more = Vec::new();
-        let (body, queued_len) = match msg {
-            Out::Batch(frames, threshold) => {
-                queued.fetch_sub(frames.len(), Ordering::Relaxed);
+        let body = match msg {
+            Out::Batch(frames, threshold, _) => {
                 let mut bodies = Vec::new();
                 if for_each_body(&frames, threshold, |body| {
                     match adapter.as_mut() {
@@ -355,9 +511,8 @@ pub(crate) async fn virtual_writer(
                 }
                 continue;
             }
-            Out::Body(b) => match adapter.as_mut() {
+            Out::Body(b) | Out::Untapped(b) => match adapter.as_mut() {
                 Some(a) => {
-                    let n = b.len();
                     let t = a
                         .translate(&b)
                         .unwrap_or_else(|e| {
@@ -368,12 +523,9 @@ pub(crate) async fn virtual_writer(
                     while let Some(t) = a.pending() {
                         more.push(t.to_vec());
                     }
-                    (t, n)
+                    t
                 }
-                None => {
-                    let n = b.len();
-                    (Some(b), n)
-                }
+                None => Some(b),
             },
             Out::Shared(p) => match adapter.as_mut() {
                 Some(a) => {
@@ -381,18 +533,17 @@ pub(crate) async fn virtual_writer(
                     while let Some(t) = a.pending() {
                         more.push(t.to_vec());
                     }
-                    (t, p.body().len())
+                    t
                 }
-                None => (Some(p.body().to_vec()), p.body().len()),
+                None => Some(p.body().to_vec()),
             },
             Out::Adapter(a) => {
                 adapter = Some(a);
                 continue;
             }
-            Out::Compression(_) | Out::Encryption(_) => continue,
+            Out::Compression(_) | Out::Encryption(_) | Out::State(_) | Out::Player(_) => continue,
             Out::Close => break,
         };
-        queued.fetch_sub(queued_len, Ordering::Relaxed);
         if let Some(body) = body
             && tx.send(body).await.is_err()
         {
@@ -410,9 +561,188 @@ pub(crate) async fn virtual_writer(
 /// so the names are this version's).
 fn record(sent: &SentLog, ms: u64, msg: &Out) {
     match msg {
-        Out::Body(body) => sent.body(ms, body),
+        Out::Body(body) | Out::Untapped(body) => sent.body(ms, body),
         Out::Shared(p) => sent.body(ms, p.body()),
-        Out::Batch(frames, threshold) => sent.frames(ms, frames, threshold.is_some()),
+        Out::Batch(frames, threshold, _) => sent.frames(ms, frames, threshold.is_some()),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vanillite_protocol::tap::{Interceptor, Mask};
+
+    /// Listeners on packet ids 7 (rewritten per receiver), 8 (cancelled per receiver) and 9
+    /// (rewritten per broadcast).
+    struct Listeners;
+
+    impl Interceptor for Listeners {
+        fn broadcast(&self, _: State, id: i32, body: &[u8]) -> Verdict<Vec<u8>> {
+            if id == 9 {
+                Verdict::Replace([body, &[0xbb]].concat())
+            } else {
+                Verdict::Pass
+            }
+        }
+        fn clientbound(&self, peer: Peer, state: State, id: i32, body: &[u8]) -> Verdict<Vec<u8>> {
+            assert_eq!(state, State::Play);
+            match id {
+                7 => Verdict::Replace([body, &[u8::try_from(peer.player).unwrap_or(0)]].concat()),
+                8 => Verdict::Drop,
+                _ => Verdict::Pass,
+            }
+        }
+        fn serverbound(&self, _: Peer, _: State, _: i32, _: &[u8]) -> Verdict<Vec<u8>> {
+            Verdict::Pass
+        }
+    }
+
+    fn tap(listen: bool) -> OutTap {
+        let tap = Arc::new(PacketTap::new());
+        tap.install(Arc::new(Listeners));
+        if listen {
+            let mut mask = Mask::default();
+            mask.set(Stage::Receiver, State::Play, 7);
+            mask.set(Stage::Receiver, State::Play, 8);
+            mask.set(Stage::Broadcast, State::Play, 9);
+            tap.store(&mask);
+        }
+        let mut out = OutTap::new(tap, 1);
+        let mut codec = Codec::default();
+        assert!(out.filter(Out::State(State::Play), &mut codec).is_none());
+        assert!(out.filter(Out::Player(3), &mut codec).is_none());
+        out
+    }
+
+    fn bodies(msg: Option<Out>) -> Vec<Vec<u8>> {
+        let mut bodies = Vec::new();
+        match msg {
+            Some(Out::Body(body)) => bodies.push(body),
+            Some(Out::Shared(packet)) => bodies.push(packet.body().to_vec()),
+            Some(Out::Batch(frames, threshold, _)) => {
+                let walked = for_each_body(&frames, threshold, |body| {
+                    bodies.push(body.to_vec());
+                    Ok(true)
+                });
+                assert!(walked.is_ok(), "{walked:?}");
+            }
+            Some(other) => panic!("unexpected {other:?}"),
+            None => {}
+        }
+        bodies
+    }
+
+    fn batch(packets: &[Vec<u8>], threshold: Option<usize>) -> Vec<u8> {
+        let mut codec = Codec::default();
+        let mut frames = Vec::new();
+        for body in packets {
+            let framed = encode_frame(body, threshold, &mut codec, &mut frames);
+            assert!(framed.is_ok(), "{framed:?}");
+        }
+        frames
+    }
+
+    #[test]
+    fn without_listeners_messages_pass_untouched() {
+        let mut tap = tap(false);
+        let mut codec = Codec::default();
+        let frames = batch(&[vec![7, 1], vec![8, 2]], Some(256));
+        let Some(Out::Batch(same, Some(256), _)) = tap.filter(
+            Out::Batch(frames.clone(), Some(256), BatchMark::UNKNOWN),
+            &mut codec,
+        ) else {
+            panic!("the batch passes");
+        };
+        assert_eq!(same, frames);
+        let shared = Arc::new(SharedPacket::new(vec![9, 1]));
+        let Some(Out::Shared(same)) = tap.filter(Out::Shared(Arc::clone(&shared)), &mut codec)
+        else {
+            panic!("the shared packet passes");
+        };
+        assert!(Arc::ptr_eq(&same, &shared));
+    }
+
+    #[test]
+    fn listeners_rewrite_and_cancel_single_and_shared_packets() {
+        let mut tap = tap(true);
+        let mut codec = Codec::default();
+        assert_eq!(
+            bodies(tap.filter(Out::Body(vec![7, 1]), &mut codec)),
+            [[7, 1, 3]]
+        );
+        assert!(tap.filter(Out::Body(vec![8, 1]), &mut codec).is_none());
+        assert_eq!(
+            bodies(tap.filter(Out::Body(vec![5, 1]), &mut codec)),
+            [[5, 1]]
+        );
+        // A body of its own passes the broadcast stage here.
+        assert_eq!(
+            bodies(tap.filter(Out::Body(vec![9, 1]), &mut codec)),
+            [[9, 1, 0xbb]]
+        );
+        // Packets a plugin sends past the listeners.
+        assert!(matches!(
+            tap.filter(Out::Untapped(vec![8, 1]), &mut codec),
+            Some(Out::Untapped(_))
+        ));
+
+        // A broadcast: every receiver gets the one replacement.
+        let shared = Arc::new(SharedPacket::new(vec![9, 1]));
+        let Some(Out::Shared(first)) = tap.filter(Out::Shared(Arc::clone(&shared)), &mut codec)
+        else {
+            panic!("still a shared packet");
+        };
+        let Some(Out::Shared(second)) = tap.filter(Out::Shared(Arc::clone(&shared)), &mut codec)
+        else {
+            panic!("still a shared packet");
+        };
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.body(), [9, 1, 0xbb]);
+        // Rewritten for this receiver: a copy of its own.
+        let shared = Arc::new(SharedPacket::new(vec![7, 1]));
+        assert!(matches!(
+            tap.filter(Out::Shared(shared), &mut codec),
+            Some(Out::Body(body)) if body == [7, 1, 3]
+        ));
+        let shared = Arc::new(SharedPacket::new(vec![8, 1]));
+        assert!(tap.filter(Out::Shared(shared), &mut codec).is_none());
+    }
+
+    #[test]
+    fn batches_are_framed_anew_only_around_listened_packets() {
+        let mut tap = tap(true);
+        let mut codec = Codec::default();
+        let big = [vec![5], vec![0x55; 600]].concat();
+        for threshold in [None, Some(256)] {
+            // No packet with a listener: the very same frames, also with a compressed one
+            // (inflated to look inside, but not framed anew).
+            let plain = batch(&[vec![5, 1], vec![6, 2]], threshold);
+            let Some(Out::Batch(same, ..)) = tap.filter(
+                Out::Batch(plain.clone(), threshold, BatchMark::UNKNOWN),
+                &mut codec,
+            ) else {
+                panic!("the batch passes");
+            };
+            assert_eq!(same, plain);
+
+            let mixed = batch(
+                &[vec![5, 1], vec![7, 2], big.clone(), vec![8, 3], vec![6, 4]],
+                threshold,
+            );
+            assert_eq!(
+                bodies(tap.filter(Out::Batch(mixed, threshold, BatchMark::UNKNOWN), &mut codec)),
+                [vec![5, 1], vec![7, 2, 3], big.clone(), vec![6, 4]]
+            );
+            // Everything cancelled: nothing is written.
+            let cancelled = batch(&[vec![8, 1], vec![8, 2]], threshold);
+            assert!(
+                tap.filter(
+                    Out::Batch(cancelled, threshold, BatchMark::UNKNOWN),
+                    &mut codec
+                )
+                .is_none()
+            );
+        }
     }
 }

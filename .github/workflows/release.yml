@@ -80,12 +80,22 @@ jobs:
           build=build
           [[ "${{ matrix.zig }}" == true ]] && build=zigbuild
           cargo "$build" --release --locked -p vanillite --target ${{ matrix.target }}
+          # Linux x86_64: also the x86-64-v3 build (AVX2), started by the baseline binary on
+          # CPUs that have it (crates/vanillite/src/cpu.rs).
+          if [[ "${{ matrix.target }}" == x86_64-unknown-linux-musl ]]; then
+            RUSTFLAGS="-C target-cpu=x86-64-v3" cargo "$build" --release --locked -p vanillite \
+                --target ${{ matrix.target }} --target-dir target/v3
+            mkdir -p target/extra
+            cp target/v3/${{ matrix.target }}/release/vanillite target/extra/vanillite-x86-64-v3
+          fi
       - name: Package
         run: |
           exe=vanillite
           [[ "${{ matrix.os }}" == windows ]] && exe=vanillite.exe
+          shopt -s nullglob
+          extra=(target/extra/*)
           scripts/release/package.sh "target/${{ matrix.target }}/release/$exe" \
-              ${{ matrix.os }} ${{ matrix.arch }} dist
+              ${{ matrix.os }} ${{ matrix.arch }} dist ${extra[@]+"${extra[@]}"}
       # The native binaries must at least start.
       - name: Smoke test
         if: matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'x86_64-apple-darwin'

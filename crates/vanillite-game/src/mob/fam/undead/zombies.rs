@@ -456,7 +456,10 @@ fn zombie_finalize_with(m: &mut MobData, ctx: &mut SpawnContext<'_>, roll_baby: 
         equipment::populate_default_enchantments(m, special);
     }
     kinds::halloween_head(m);
-    handle_attributes(m, special, ctx.reason);
+    // `handleAttributes` draws from the zombie's own random (`this.random`).
+    let mut own = LegacyRandom::from_state(ctx.own_state);
+    handle_attributes(m, special, ctx.reason, &mut own);
+    ctx.own_state = own.state();
 }
 
 /// `finalizeSpawn(CONVERSION, new ZombieGroupData(false, true))` of a zombie villager made
@@ -464,6 +467,7 @@ fn zombie_finalize_with(m: &mut MobData, ctx: &mut SpawnContext<'_>, roll_baby: 
 /// the level's `random`.
 pub fn finalize_converted(m: &mut MobData, ctx: &mut SpawnContext<'_>, random: &mut LegacyRandom) {
     std::mem::swap(&mut m.random, random);
+    ctx.own_state = random.state();
     let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
     m.attrs.follow_range *= 1.0 + bonus;
     m.left_handed = m.random.next_float() < 0.05;
@@ -471,6 +475,7 @@ pub fn finalize_converted(m: &mut MobData, ctx: &mut SpawnContext<'_>, random: &
         finalize_villager_type(m, ctx);
     }
     zombie_finalize_with(m, ctx, false);
+    *random = LegacyRandom::from_state(ctx.own_state);
     std::mem::swap(&mut m.random, random);
 }
 
@@ -545,24 +550,29 @@ fn populate_equipment(m: &mut MobData, difficulty: Difficulty, special: f32) {
 }
 
 /// `Zombie.handleAttributes`: reinforcements, knockback resistance, follow range and the
-/// leader bonus.
-pub fn handle_attributes(m: &mut MobData, special: f32, reason: SpawnReason) {
+/// leader bonus, drawn from the zombie's own random `random`.
+pub fn handle_attributes(
+    m: &mut MobData,
+    special: f32,
+    reason: SpawnReason,
+    random: &mut LegacyRandom,
+) {
     // `randomizeReinforcementsChance`.
     let base = if m.kind == Kind::ZombifiedPiglin {
         0.0
     } else {
-        m.random.next_double() * f64::from(0.1_f32)
+        random.next_double() * f64::from(0.1_f32)
     };
     zs_mut(m).reinforcement = base;
-    m.attrs.knockback_resistance += m.random.next_double() * f64::from(0.05_f32);
-    let follow = m.random.next_double() * 1.5 * f64::from(special);
+    m.attrs.knockback_resistance += random.next_double() * f64::from(0.05_f32);
+    let follow = random.next_double() * 1.5 * f64::from(special);
     if follow > 1.0 {
         m.attrs.follow_range *= 1.0 + follow;
     }
-    if m.random.next_float() < special * 0.05 {
-        let bonus = m.random.next_double() * 0.25 + 0.5;
+    if random.next_float() < special * 0.05 {
+        let bonus = random.next_double() * 0.25 + 0.5;
         zs_mut(m).reinforcement += bonus;
-        let health = m.random.next_double() * 3.0 + 1.0;
+        let health = random.next_double() * 3.0 + 1.0;
         m.attrs.max_health *= 1.0 + health;
         if !matches!(
             reason,
@@ -939,7 +949,9 @@ fn drown_convert(t: &mut Tick<'_, '_>) {
         true,
         vanillite_abi::transform_reason::DROWNED,
         |n| {
-            handle_attributes(n, special, SpawnReason::Conversion);
+            let mut own = n.random.clone();
+            handle_attributes(n, special, SpawnReason::Conversion, &mut own);
+            n.random = own;
         },
     ) else {
         return;
@@ -1013,6 +1025,18 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
     }
     let silent = t.mob_ref().silent;
     let pos = t.block_pos();
+    // The zombie as `CURED_ZOMBIE_VILLAGER` sees it, before it is replaced.
+    let zombie = z
+        .cure_starter
+        .and_then(|starter| t.ents.player_by_uuid(starter))
+        .filter(|&player| {
+            crate::advancements::view::listens(
+                t.ents,
+                player,
+                crate::advancements::trigger::TriggerKind::CURED_ZOMBIE_VILLAGER,
+            )
+        })
+        .and_then(|_| crate::advancements::view::snapshot(t.ents, t.id));
     let Some(id) = super::convert_to(
         t,
         Kind::Villager,
@@ -1055,6 +1079,15 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
     if let Some(starter) = z.cure_starter
         && let Some(player) = t.ents.player_by_uuid(starter)
     {
+        if let Some(zombie) = zombie
+            && let Some(villager) = crate::advancements::view::snapshot(t.ents, id)
+            && let Some(p) = t.ents.player_mut(player)
+        {
+            p.advancements
+                .trigger(crate::advancements::trigger::Event::CuredZombieVillager(
+                    zombie, villager,
+                ));
+        }
         crate::mob::fam::village::villager::reputation_event(
             t.ents,
             crate::mob::fam::village::villager::ReputationEvent::ZombieVillagerCured,

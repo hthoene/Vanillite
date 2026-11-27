@@ -464,7 +464,7 @@ pub(super) fn clone(
 ) -> Result<i32, CommandError> {
     let world_of = |name: &str| {
         if args.has(name) {
-            dimension(args, name)
+            dimension(env.global, args, name)
         } else {
             Ok(source.world)
         }

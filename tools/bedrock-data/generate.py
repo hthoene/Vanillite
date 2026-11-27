@@ -414,6 +414,9 @@ def write_release(root, mappings, resources, version, fallbacks, item_fallbacks,
         out += struct.pack('<H', count) + varuint(entry.get('damage', 0))
         out += zigzag32(block_rid(entry))
         user = struct.pack('<h', 0) + struct.pack('<I', 0) + struct.pack('<I', 0)
+        if entry['id'] == 'minecraft:shield':
+            # The shield's user data ends with its blocking tick.
+            user += struct.pack('<q', 0)
         return out + varuint(len(user)) + user
 
     categories = {'construction': 1, 'nature': 2, 'equipment': 3, 'items': 4}

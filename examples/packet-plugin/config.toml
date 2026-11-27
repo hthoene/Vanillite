@@ -1,0 +1,10 @@
+# Configuration of the Packets example plugin.
+
+[chat]
+# Put in front of every system message (empty for none). One rewrite per message, however
+# many players receive it.
+prefix = ""
+
+[signs]
+# Signs cannot be edited: the clients' sign edits are cancelled before the game sees them.
+read-only = false

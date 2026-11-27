@@ -1,0 +1,9 @@
+# Measurement plugin for `cargo xtask loadtest --plugin examples/packet-bench`.
+id = "packet-bench"
+name = "Packet bench"
+version = "0.1.0"
+# Packet listeners came with 1.7; the plugin uses nothing newer, so it also loads into servers
+# from before later ABI versions (before/after comparisons).
+api = "1.7"
+library = "vanillite_packet_bench"
+threading = "concurrent"

@@ -688,7 +688,7 @@ fn use_item_on(
                 1.0,
                 1.0,
             );
-            super::hurt_item(level, stack, 1);
+            super::hurt_item(level, stack, 1, ctx.player);
             emptied = true;
             level.game_event_at(Some(ctx.player), events().shear, pos);
         } else if item == items::GLASS_BOTTLE {
@@ -757,21 +757,26 @@ pub fn player_destroy(
             .iter()
             .any(|(e, _)| set.contains(e))
     });
-    if prevents {
-        return;
-    }
     let mut hive = (**h).clone();
-    empty_hive(
-        level,
-        pos,
-        state,
-        &mut hive,
-        Some(player),
-        ReleaseStatus::Emergency,
+    if !prevents {
+        empty_hive(
+            level,
+            pos,
+            state,
+            &mut hive,
+            Some(player),
+            ReleaseStatus::Emergency,
+        );
+        // `Containers.updateNeighboursAfterDestroy`.
+        level.update_neighbour_for_output_signal(pos, state.block());
+        anger_nearby_bees(level, pos);
+    }
+    // `BEE_NEST_DESTROYED` with the bees still inside.
+    let bees = i32::try_from(hive.stored.len()).unwrap_or(i32::MAX);
+    level.trigger(
+        player,
+        crate::advancements::trigger::Event::BeeNestDestroyed(state, tool.clone(), bees),
     );
-    // `Containers.updateNeighboursAfterDestroy`.
-    level.update_neighbour_for_output_signal(pos, state.block());
-    anger_nearby_bees(level, pos);
 }
 
 /// `BeehiveBlock.playerWillDestroy` of a player who gets no drops (creative): a hive with bees

@@ -641,10 +641,7 @@ fn waypoint(
 ) -> Result<i32, CommandError> {
     let global = env.global;
     if op == WaypointOp::List {
-        let dimension = crate::server::DIMENSIONS
-            .get(usize::from(source.world.0))
-            .copied()
-            .unwrap_or("minecraft:overworld");
+        let dimension = global.dimensions.name_or_overworld(source.world);
         let transmitters: Vec<Target> =
             select::online_players(&env.level.entities, global, source.world)
                 .into_iter()

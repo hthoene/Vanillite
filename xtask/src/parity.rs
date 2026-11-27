@@ -1,5 +1,6 @@
-//! `cargo xtask parity fuzz`: random parity scenarios against Vanilla (#132), and
-//! `cargo xtask parity replay`: recorded server sessions against Vanilla (#152).
+//! `cargo xtask parity fuzz`: random parity scenarios against Vanilla (#132); `cargo xtask
+//! parity replay`: recorded server sessions against Vanilla (#152); `cargo xtask parity
+//! soak`: long scenarios against Vanilla (#166).
 //!
 //! Compiles the Java recorder on the pinned jar (like `golden regen`) and runs the
 //! `parity_fuzz` binary of `vanillite-test` with its class path; that binary generates (or
@@ -82,18 +83,8 @@ fn fetch_recording(root: &Path, port: &str, name: &str) -> Result<std::path::Pat
     Ok(local)
 }
 
-pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
-    let adopt = args.contains(&"--adopt");
-    let pass: Vec<&str> = args.iter().copied().filter(|a| *a != "--adopt").collect();
-    driver(root, &pass)?;
-    if !adopt {
-        return Ok(());
-    }
-    adopt_found(root)
-}
-
-/// Runs the `parity_fuzz` driver with the recorder's class path.
-fn driver(root: &Path, pass: &[&str]) -> Result<()> {
+/// The compiled recorder: its classes with the class path, the agent jar and the work dir.
+fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
     let key = golden::Key::current(root)?;
     let (classes, cp, broken) = golden::harness(root, &key)?;
     let recorder_broken = broken.files.iter().any(|f| {
@@ -109,9 +100,59 @@ fn driver(root: &Path, pass: &[&str]) -> Result<()> {
     }
     let work_dir = root.join("target/vanilla").join(&key.minecraft);
     let agent = golden::agent_jar(&classes, &work_dir)?;
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    Ok((format!("{}{sep}{cp}", classes.display()), agent, work_dir))
+}
+
+/// `cargo xtask parity soak`: the soak scenarios against Vanilla (#166), see
+/// `crates/vanillite-test/src/soak.rs`. Results go to `target/parity-soak/`.
+pub fn soak(root: &Path, args: &[&str]) -> Result<()> {
+    let (classpath, agent, work_dir) = recorder(root)?;
+    let out = root.join("target/parity-soak");
+    remove_dir(&out)?;
+    run(
+        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+            .current_dir(root)
+            .args([
+                "run",
+                "-q",
+                "--profile",
+                "release-fast",
+                "-p",
+                "vanillite-test",
+                "--bin",
+                "parity_soak",
+                "--",
+            ])
+            .arg("--java")
+            .arg(java_tool("java"))
+            .arg("--agent")
+            .arg(&agent)
+            .arg("--classpath")
+            .arg(classpath)
+            .arg("--work-dir")
+            .arg(&work_dir)
+            .arg("--out")
+            .arg(&out)
+            .args(args),
+    )
+}
+
+pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
+    let adopt = args.contains(&"--adopt");
+    let pass: Vec<&str> = args.iter().copied().filter(|a| *a != "--adopt").collect();
+    driver(root, &pass)?;
+    if !adopt {
+        return Ok(());
+    }
+    adopt_found(root)
+}
+
+/// Runs the `parity_fuzz` driver with the recorder's class path.
+fn driver(root: &Path, pass: &[&str]) -> Result<()> {
+    let (classpath, agent, work_dir) = recorder(root)?;
     let out = root.join("target/parity-fuzz");
     remove_dir(&out)?;
-    let sep = if cfg!(windows) { ";" } else { ":" };
     run(
         Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .current_dir(root)
@@ -129,7 +170,7 @@ fn driver(root: &Path, pass: &[&str]) -> Result<()> {
             .arg("--agent")
             .arg(&agent)
             .arg("--classpath")
-            .arg(format!("{}{sep}{cp}", classes.display()))
+            .arg(classpath)
             .arg("--work-dir")
             .arg(&work_dir)
             .arg("--out")

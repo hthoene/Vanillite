@@ -183,7 +183,7 @@ pub fn handle_generate(level: &mut Level, p: JigsawGenerate, editor: &Editor<'_>
     else {
         return;
     };
-    let generator = std::sync::Arc::clone(&generation.terrain);
+    let generator = generation.terrain();
     if !wgp::has_entry(&packs, "minecraft:worldgen/template_pool", &pool) {
         return;
     }

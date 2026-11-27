@@ -10,18 +10,21 @@
 //!
 //! - initial light propagates one chunk's own sources through its 3 × 3 area; results of
 //!   different chunks combine by maximum, so neighbouring chunks light in parallel;
-//! - after block changes, the light of the 3 × 3 area around a changed chunk is recomputed
-//!   from all sources of its 5 × 5 area.
+//! - after block changes, only the cells a change can reach are reset and propagated again
+//!   from the sources among them and the light around them (`update`), with the same result as
+//!   recomputing the 3 × 3 area around the changed chunk from all sources of its 5 × 5 area
+//!   ([`BfsLightEngine::relight_area`], the reference).
 //!
 //! Levels are processed from 15 down in buckets, so every cell is finalised once.
 //! Not yet ported: Vanilla's exceptions for sections it keeps no light data for (huge empty
-//! areas far from any block), and the incremental Starlight-style updates of section 11.
+//! areas far from any block).
 
 mod facts;
+mod update;
 
 use std::sync::Arc;
 
-use vanillite_base::{ChunkPos, Direction};
+use vanillite_base::{BlockPos, ChunkPos, Direction};
 use vanillite_chunk::light::{ChunkLight, LightNibbles, NIBBLE_BYTES};
 use vanillite_chunk::slots::{LightEngine, LightEngineProvider, Neighbours, WorldInfo};
 use vanillite_chunk::{Chunk, ProtoChunk};
@@ -123,47 +126,54 @@ impl LightEngine for BfsLightEngine {
             || facts.shape_of(old) != facts.shape_of(new)
     }
 
-    fn relight(&self, changed: &[ChunkPos], area: &mut Neighbours<'_>) {
-        for &center in changed {
-            let origin = ChunkPos::new(center.x - 2, center.z - 2);
-            let result = {
-                let mut chunks = [None; 25];
-                for (i, slot) in chunks.iter_mut().enumerate() {
-                    *slot = area.get(grid_pos(origin, 5, i)).map(|c| &c.chunk);
-                }
-                let mut grid = Grid::new(origin, 5, &chunks);
-                grid.fill_sky_sources(self.has_sky, |_| true);
-                grid.seed_block_sources(|_| true);
-                grid.run();
-                grid.into_light()
+    fn relight(&self, changes: &[BlockPos], area: &Neighbours<'_>) -> Vec<(ChunkPos, ChunkLight)> {
+        update::update(self.has_sky, changes, area)
+    }
+}
+
+impl BfsLightEngine {
+    /// Recomputes the light of the chunks within 1 of `center` from all light sources of the
+    /// chunks within 2 (`area`), whatever light they hold. The reference [`LightEngine::relight`]
+    /// is checked against, and the way to light chunks whose stored light is not trusted.
+    pub fn relight_area(&self, center: ChunkPos, area: &mut Neighbours<'_>) {
+        let origin = ChunkPos::new(center.x - 2, center.z - 2);
+        let result = {
+            let mut chunks = [None; 25];
+            for (i, slot) in chunks.iter_mut().enumerate() {
+                *slot = area.get(grid_pos(origin, 5, i)).map(|c| &c.chunk);
+            }
+            let mut grid = Grid::new(origin, 5, &chunks);
+            grid.fill_sky_sources(self.has_sky, |_| true);
+            grid.seed_block_sources(|_| true);
+            grid.run();
+            grid.into_light()
+        };
+        for (i, light) in result.into_iter().enumerate() {
+            let pos = grid_pos(origin, 5, i);
+            if pos.chessboard_distance(center) > 1 {
+                continue;
+            }
+            let (Some(light), Some(chunk)) = (light, area.get_mut(pos)) else {
+                continue;
             };
-            for (i, light) in result.into_iter().enumerate() {
-                let pos = grid_pos(origin, 5, i);
-                if pos.chessboard_distance(center) > 1 {
-                    continue;
+            let highest = highest_filled_section(&chunk.chunk);
+            let target = chunk.chunk.light_mut();
+            for (index, layer) in light.block().iter().enumerate().skip(1) {
+                if index <= target.block().len() - 2 {
+                    target.block_mut()[index] = layer.clone();
                 }
-                let (Some(light), Some(chunk)) = (light, area.get_mut(pos)) else {
-                    continue;
-                };
-                let highest = highest_filled_section(&chunk.chunk);
-                let target = chunk.chunk.light_mut();
-                for (index, layer) in light.block().iter().enumerate().skip(1) {
-                    if index <= target.block().len() - 2 {
-                        target.block_mut()[index] = layer.clone();
+            }
+            if self.has_sky {
+                for (index, layer) in light.sky().iter().enumerate().skip(1) {
+                    if index > target.sky().len() - 2 {
+                        continue;
                     }
-                }
-                if self.has_sky {
-                    for (index, layer) in light.sky().iter().enumerate().skip(1) {
-                        if index > target.sky().len() - 2 {
-                            continue;
-                        }
-                        let above_top = highest.is_none_or(|h| index - 1 > h);
-                        target.sky_mut()[index] = if above_top {
-                            LightNibbles::Absent
-                        } else {
-                            layer.clone()
-                        };
-                    }
+                    let above_top = highest.is_none_or(|h| index - 1 > h);
+                    target.sky_mut()[index] = if above_top {
+                        LightNibbles::Absent
+                    } else {
+                        layer.clone()
+                    };
                 }
             }
         }
@@ -178,11 +188,39 @@ fn grid_pos(origin: ChunkPos, size: i32, i: usize) -> ChunkPos {
 }
 
 /// Index of the highest section with a non-air block.
-fn highest_filled_section(chunk: &Chunk) -> Option<usize> {
+pub(crate) fn highest_filled_section(chunk: &Chunk) -> Option<usize> {
     chunk
         .sections()
         .iter()
         .rposition(|section| !section.summary().is_empty())
+}
+
+/// `ChunkSkyLightSources.findLowestSourceY` of column x/z of a chunk, in cells above the bottom
+/// of the world: cells at and above it are sky sources. 0 means the whole column.
+pub(crate) fn lowest_source(facts: &LightFacts, chunk: &Chunk, lx: u32, lz: u32) -> usize {
+    let Some(top) = highest_filled_section(chunk) else {
+        return 0;
+    };
+    let air = 0u16;
+    let mut top_state = air;
+    let mut top_y = (top + 1) * 16;
+    for index in (0..=top).rev() {
+        let section = &chunk.sections()[index];
+        if section.summary().is_empty() {
+            top_state = air;
+            top_y = index * 16;
+            continue;
+        }
+        for local in (0..16u32).rev() {
+            let bottom = section.block(lx, local, lz);
+            if facts.edge_occluded(top_state, bottom) {
+                return top_y;
+            }
+            top_state = bottom;
+            top_y = index * 16 + local as usize;
+        }
+    }
+    0
 }
 
 /// Light buffers of a square of chunk columns; one byte per cell.
@@ -261,33 +299,82 @@ impl<'a> Grid<'a> {
         Some(section.block((x & 15) as u32, (y & 15) as u32, (z & 15) as u32))
     }
 
-    /// `ChunkSkyLightSources.findLowestSourceY` relative to the grid's bottom: cells at and
-    /// above it are sky sources. 0 means the whole column, `height` none.
-    fn lowest_source(&self, chunk: &Chunk, x: usize, z: usize) -> usize {
+    /// `ChunkSkyLightSources.findLowestSourceY` of every column of `chunk` (`x + z * 16`),
+    /// relative to the grid's bottom: cells at and above it are sky sources. 0 means the whole
+    /// column, `height` none.
+    ///
+    /// Every column is walked down from the highest non-air section until sky light cannot
+    /// pass from one block into the next; the walk goes section by section over all columns
+    /// at once, so each section's blocks are unpacked once.
+    fn lowest_sources(&self, chunk: &Chunk) -> [usize; 256] {
+        let mut lowest = [0; 256];
         let Some(top) = highest_filled_section(chunk) else {
-            return 0;
+            return lowest;
         };
-        let (lx, lz) = ((x & 15) as u32, (z & 15) as u32);
         let air = 0u16;
-        let mut top_state = air;
-        let mut top_y = (top + 1) * 16;
+        // Per column still open: the block above the next one and the Y it would return.
+        let mut top_state = [air; 256];
+        let mut top_y = [(top + 1) * 16; 256];
+        let mut open: Vec<u8> = (0..=255).collect();
+        // The last pair of states tested and its result: columns are long runs of one state.
+        let mut tested = (air, air, self.facts.edge_occluded(air, air));
+        let mut occluded = |above: u16, below: u16| {
+            if (above, below) != (tested.0, tested.1) {
+                tested = (above, below, self.facts.edge_occluded(above, below));
+            }
+            tested.2
+        };
+        let mut blocks = [0u16; 4096];
         for index in (0..=top).rev() {
+            if open.is_empty() {
+                break;
+            }
             let section = &chunk.sections()[index];
             if section.summary().is_empty() {
-                top_state = air;
-                top_y = index * 16;
+                for &column in &open {
+                    top_state[usize::from(column)] = air;
+                    top_y[usize::from(column)] = index * 16;
+                }
                 continue;
             }
-            for local in (0..16u32).rev() {
-                let bottom = section.block(lx, local, lz);
-                if self.facts.edge_occluded(top_state, bottom) {
-                    return top_y;
-                }
-                top_state = bottom;
-                top_y = index * 16 + local as usize;
+            if let Some(state) = section.blocks().single() {
+                // A section of one state: its top block below the column's last block, then
+                // 15 times the state below itself.
+                let within = occluded(state, state);
+                open.retain(|&column| {
+                    let column = usize::from(column);
+                    if occluded(top_state[column], state) {
+                        lowest[column] = top_y[column];
+                        false
+                    } else if within {
+                        lowest[column] = index * 16 + 15;
+                        false
+                    } else {
+                        top_state[column] = state;
+                        top_y[column] = index * 16;
+                        true
+                    }
+                });
+                continue;
             }
+            section.blocks().copy_to(&mut blocks);
+            open.retain(|&column| {
+                let column = usize::from(column);
+                for local in (0..16).rev() {
+                    // Entry `(y << 8) | (z << 4) | x`.
+                    let below = blocks[(local << 8) | column];
+                    if occluded(top_state[column], below) {
+                        lowest[column] = top_y[column];
+                        return false;
+                    }
+                    top_state[column] = below;
+                    top_y[column] = index * 16 + local;
+                }
+                true
+            });
         }
-        0
+        // Columns open down to the bottom are sources all the way: 0.
+        lowest
     }
 
     /// Sets the sky sources of all present chunks to 15 and queues those of the chunks
@@ -298,11 +385,13 @@ impl<'a> Grid<'a> {
         }
         let width = self.width;
         let mut lowest = vec![self.height; width * width];
-        for z in 0..width {
-            for x in 0..width {
-                if let Some(chunk) = self.chunk(x, z) {
-                    lowest[z * width + x] = self.lowest_source(chunk, x, z);
-                }
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            let Some(chunk) = chunk else { continue };
+            let (base_x, base_z) = ((i % self.size) * 16, (i / self.size) * 16);
+            let sources = self.lowest_sources(chunk);
+            for z in 0..16 {
+                let row = (base_z + z) * width + base_x;
+                lowest[row..row + 16].copy_from_slice(&sources[z * 16..z * 16 + 16]);
             }
         }
         for z in 0..width {
@@ -348,11 +437,10 @@ impl<'a> Grid<'a> {
                 if section.summary().is_empty() {
                     continue;
                 }
-                let mut emits = false;
-                section.blocks().for_each_count(|state, _| {
-                    emits |= LightFacts::light(state).0 > 0;
-                });
-                if !emits {
+                if !section
+                    .blocks()
+                    .may_contain(|state| LightFacts::light(state).0 > 0)
+                {
                     continue;
                 }
                 for y in 0..16u32 {
@@ -459,28 +547,33 @@ impl<'a> Grid<'a> {
     }
 
     fn layer(&self, buffer: &[u8], base_x: usize, base_z: usize, section: usize) -> LightNibbles {
+        // The 16 levels of a row as two words.
+        let row = |y: usize, z: usize| -> [u64; 2] {
+            let start = self.index(base_x, section * 16 + y, base_z + z);
+            let (halves, _) = buffer[start..start + 16].as_chunks::<8>();
+            [u64::from_le_bytes(halves[0]), u64::from_le_bytes(halves[1])]
+        };
+        // Most layers hold one level (full sky light above the terrain, none inside it).
+        let first = buffer[self.index(base_x, section * 16, base_z)];
+        let uniform = u64::from_le_bytes([first; 8]);
+        if (0..16).all(|y| (0..16).all(|z| row(y, z) == [uniform; 2])) {
+            return LightNibbles::Uniform(first);
+        }
         let mut bytes = [0u8; NIBBLE_BYTES];
-        let (mut min, mut max) = (15u8, 0u8);
         for y in 0..16 {
             for z in 0..16 {
-                let row = self.index(base_x, section * 16 + y, base_z + z);
-                let levels = &buffer[row..row + 16];
                 // Nibble `(y << 8) | (z << 4) | x`: even x in the low half of a byte.
-                let out = &mut bytes[((y << 8) | (z << 4)) >> 1..][..8];
-                for (byte, &[low, high]) in out.iter_mut().zip(levels.as_chunks::<2>().0) {
-                    *byte = low | (high << 4);
-                }
-                for &level in levels {
-                    min = min.min(level);
-                    max = max.max(level);
+                let (out, _) = bytes[((y << 8) | (z << 4)) >> 1..][..8].as_chunks_mut::<4>();
+                for (out, levels) in out.iter_mut().zip(row(y, z)) {
+                    // Each pair of levels (at most 15 each) into one byte, then the four
+                    // bytes of the pairs together.
+                    let pairs = (levels | (levels >> 4)) & 0x00FF_00FF_00FF_00FF;
+                    let pairs = (pairs | (pairs >> 8)) & 0x0000_FFFF_0000_FFFF;
+                    *out = ((pairs | (pairs >> 16)) as u32).to_le_bytes();
                 }
             }
         }
-        if min == max {
-            LightNibbles::Uniform(min)
-        } else {
-            LightNibbles::Data(Arc::new(bytes))
-        }
+        LightNibbles::Data(Arc::new(bytes))
     }
 }
 

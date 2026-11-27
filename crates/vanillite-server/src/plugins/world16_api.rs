@@ -198,12 +198,9 @@ pub(super) fn chunk_ticket(
 
 /// Drops a disabled plugin's chunk tickets in every world, each on its own thread.
 pub(super) fn plugin_disabled(global: &crate::global::Global, plugin: &str) {
-    for index in 0..crate::server::DIMENSIONS.len() {
-        let Ok(id) = u16::try_from(index) else {
-            continue;
-        };
+    for id in global.dimensions.worlds() {
         let plugin = plugin.to_owned();
-        global.run_in_world(crate::world::WorldId(id), move |w| {
+        global.run_in_world(id, move |w| {
             let mut tickets = std::mem::take(&mut w.plugin_tickets);
             tickets.drop_plugin(w.chunks_mut(), &plugin);
             w.plugin_tickets = tickets;

@@ -200,14 +200,12 @@ impl OreFeature {
                 }
                 for y in y_min..=y_max {
                     let yd = (f64::from(y) + 0.5 - yy) / r;
-                    if xd * xd + yd * yd >= 1.0 {
+                    if xd * xd + yd * yd >= 1.0 || ctx.level.is_outside_build_height(y) {
                         continue;
                     }
                     for z in z_min..=z_max {
                         let zd = (f64::from(z) + 0.5 - zz) / r;
-                        if xd * xd + yd * yd + zd * zd >= 1.0
-                            || ctx.level.is_outside_build_height(y)
-                        {
+                        if xd * xd + yd * yd + zd * zd >= 1.0 {
                             continue;
                         }
                         let index = (x - start.x)

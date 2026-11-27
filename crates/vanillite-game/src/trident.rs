@@ -253,7 +253,12 @@ fn hurt_without_breaking(ents: &mut Entities, env: &mut Env<'_>, player: EntityI
         && let Some(s) = p.inventory.get_mut(index)
     {
         let d = (item::damage(s) + 1).min(item::max_damage(s) - 1);
-        item::set_damage(s, d);
+        crate::advancements::view::apply_damage(
+            Some(&mut p.advancements),
+            Some(&mut p.stats),
+            s,
+            d,
+        );
     }
 }
 

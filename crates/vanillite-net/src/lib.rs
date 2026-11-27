@@ -28,7 +28,7 @@ pub use configuration::{ConfigurationData, json_to_nbt, network_tags};
 pub use conn::rand_bytes;
 pub use limits::{ConnectionGuard, ConnectionLimiter};
 pub use outbound::Outbound;
-pub use player::{Joined, Latency};
+pub use player::{Injector, Joined, Latency};
 pub use status::{StatusCache, StatusInfo};
 pub use vanillite_protocol::{Inbound, SharedPacket};
 
@@ -108,7 +108,10 @@ impl VirtualOpener {
     ) -> VirtualConnection {
         let (to_server, server_rx) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
         let (client_tx, from_server) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
-        let (out, out_rx, queued) = Outbound::new(self.shared.config.max_outbound_bytes);
+        let tap = Arc::clone(&self.shared.config.tap);
+        let connection = tap.next_connection();
+        let (out, out_rx, queued) =
+            Outbound::new(self.shared.config.max_outbound_bytes, connection);
         let sent = out.sent_log();
         let conn = conn::Conn::virtual_(
             Arc::clone(&self.shared),
@@ -118,8 +121,9 @@ impl VirtualOpener {
             profile,
             memory,
         );
-        self.runtime
-            .spawn(outbound::virtual_writer(client_tx, out_rx, queued, sent));
+        self.runtime.spawn(outbound::virtual_writer(
+            client_tx, out_rx, queued, sent, tap, connection,
+        ));
         self.runtime.spawn(conn.run());
         VirtualConnection {
             to_server,
@@ -270,13 +274,17 @@ async fn accept_loop(listener: tokio::net::TcpListener, shared: Arc<Shared>) {
         };
         let _ = socket.set_nodelay(true);
         let (read, write) = socket.into_split();
-        let (out, out_rx, queued) = Outbound::new(shared.config.max_outbound_bytes);
+        let tap = Arc::clone(&shared.config.tap);
+        let connection = tap.next_connection();
+        let (out, out_rx, queued) = Outbound::new(shared.config.max_outbound_bytes, connection);
         tokio::spawn(outbound::tcp_writer(
             write,
             out_rx,
             queued,
             shared.config.compression_level,
             out.sent_log(),
+            tap,
+            connection,
         ));
         tokio::spawn(conn::Conn::tcp(Arc::clone(&shared), addr, read, out, guard).run());
     }

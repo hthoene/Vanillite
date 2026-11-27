@@ -1,0 +1,37 @@
+{
+  "description": "Vehicles take damage like VehicleEntity.hurtServer, from the hurt action and from /damage: a minecart survives a weak hit and breaks with the next one (the damage decays between them), a chest minecart breaks from /damage, a furnace minecart from a player's hit, a resting TNT minecart drops as an item, a TNT minecart that fell into a pool (its splash draws from its random) is primed by fire damage with its random fuse and its explosion shakes and pushes a minecart at its edge, a TNT minecart rolling on rails is primed by the hit that would break it; boats, rafts and chest boats break from /damage.",
+  "tier": "fast",
+  "region": [[0, -62, 0], [31, -57, 23]],
+  "ticks": 80,
+  "setup": [
+    {"op": "set", "pos": [3, -61, 10], "block": "minecraft:water"},
+    {"op": "set", "pos": [4, -61, 10], "block": "minecraft:water"},
+    {"op": "fill", "from": [8, -60, 18], "to": [28, -60, 18], "block": "minecraft:rail[shape=east_west]"}
+  ],
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [29.5, -60, 8.5]},
+    {"name": "plain", "type": "minecraft:minecart", "pos": [2.5, -60, 2.5], "rot": [0, 0], "seed": 11, "motion": [0, 0, 0]},
+    {"name": "chest", "type": "minecraft:chest_minecart", "pos": [6.5, -60, 2.5], "rot": [0, 0], "seed": 12, "motion": [0, 0, 0]},
+    {"name": "furnace", "type": "minecraft:furnace_minecart", "pos": [10.5, -60, 2.5], "rot": [0, 0], "seed": 13, "motion": [0, 0, 0]},
+    {"name": "tnt_still", "type": "minecraft:tnt_minecart", "pos": [14.5, -60, 2.5], "rot": [0, 0], "seed": 14, "motion": [0, 0, 0]},
+    {"name": "tnt_water", "type": "minecraft:tnt_minecart", "pos": [3.5, -58.5, 10.5], "rot": [0, 0], "seed": 15, "motion": [0, 0, 0]},
+    {"name": "near", "type": "minecraft:minecart", "pos": [10.5, -60, 9.5], "rot": [0, 0], "seed": 16, "motion": [0, 0, 0]},
+    {"name": "tnt_moving", "type": "minecraft:tnt_minecart", "pos": [9.5, -59.9375, 18.5], "rot": [0, 0], "seed": 17, "motion": [0.2, 0, 0]}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:oak_boat 18.5 -60 2.5"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:bamboo_raft 22.5 -60 2.5"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:birch_chest_boat 26.5 -60 2.5"},
+    {"tick": 5, "op": "hurt", "entity": "plain", "amount": 2},
+    {"tick": 6, "op": "hurt", "entity": "tnt_moving", "amount": 5},
+    {"tick": 8, "op": "command", "command": "damage @e[type=minecraft:chest_minecart,limit=1] 5"},
+    {"tick": 10, "op": "hurt", "entity": "furnace", "by": "steve", "amount": 5},
+    {"tick": 10, "op": "command", "command": "damage @e[type=minecraft:oak_boat,limit=1] 2"},
+    {"tick": 12, "op": "hurt", "entity": "plain", "amount": 3},
+    {"tick": 12, "op": "command", "command": "damage @e[type=minecraft:bamboo_raft,limit=1] 5 minecraft:magic"},
+    {"tick": 14, "op": "command", "command": "damage @e[type=minecraft:oak_boat,limit=1] 3"},
+    {"tick": 15, "op": "hurt", "entity": "tnt_still", "amount": 5},
+    {"tick": 16, "op": "command", "command": "damage @e[type=minecraft:birch_chest_boat,limit=1] 4.5"},
+    {"tick": 20, "op": "command", "command": "damage @e[type=minecraft:tnt_minecart,x=3,y=-62,z=10,dx=1,dy=3,dz=1,limit=1] 1 minecraft:in_fire"}
+  ]
+}

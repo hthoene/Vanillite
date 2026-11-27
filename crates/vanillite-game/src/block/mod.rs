@@ -467,7 +467,12 @@ pub fn sound_id(name: &str) -> u16 {
 
 /// `ItemStack.hurtAndBreak(amount, …)` of a held tool: `minecraft:unbreaking` skips each point
 /// with chance `level / (level + 1)`; the stack breaks at its maximum damage.
-pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: i32) {
+pub fn hurt_item(
+    level: &mut Level,
+    stack: &mut crate::item::ItemStack,
+    amount: i32,
+    player: EntityId,
+) {
     use crate::item;
     if !item::is_damageable(stack) {
         return;
@@ -488,8 +493,15 @@ pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: 
         return;
     }
     let damage = item::damage(stack).saturating_add(taken);
+    // `applyDamage`: `ITEM_DURABILITY_CHANGED`, and `ITEM_BROKEN` when it breaks.
+    level.trigger(
+        player,
+        crate::advancements::trigger::Event::ItemDurabilityChanged(stack.clone(), damage),
+    );
     if damage >= item::max_damage(stack) {
+        let broken = crate::stats::Stat::of(crate::stats::StatType::Broken, stack.item);
         stack.shrink(1);
+        level.award_stat(player, broken, 1);
     } else {
         item::set_damage(stack, damage);
     }

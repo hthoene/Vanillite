@@ -11,7 +11,7 @@ use vanillite_data::block::BlockState;
 use vanillite_data::entity::ids;
 use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::Entities;
-use vanillite_game::level::block_entity::{BlockEntities, BlockEntity};
+use vanillite_game::level::block_entity::BlockEntity;
 use vanillite_game::player::join;
 use vanillite_game::portal::PortalKind;
 use vanillite_game::survival::Effect;
@@ -25,6 +25,7 @@ use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     ChangeDifficulty, ClockUpdate, GameEvent, RemoveEntities, SetTime,
 };
+use vanillite_protocol::tap::BatchMark;
 use vanillite_protocol::text::Component;
 use vanillite_protocol::types::VarIntList;
 use vanillite_world::chunks::Chunks;
@@ -76,6 +77,8 @@ pub(crate) struct WorldSurvival {
     /// The players by row while effects are delivered.
     receivers: Vec<Receiver>,
     scratch: Vec<EntityId>,
+    /// The players of a tick (reused).
+    ticking: Vec<EntityId>,
     /// The delivered packets per receiver.
     outgoing: Outgoing,
 }
@@ -170,7 +173,10 @@ impl Outgoing {
         }
         let frames = std::mem::take(batch);
         if let Some(player) = entities.players.get(row) {
-            player.connection.sink.send_batch(frames, self.threshold);
+            player
+                .connection
+                .sink
+                .send_batch(frames, self.threshold, BatchMark::UNKNOWN);
         }
         self.rows.retain(|&r| r != row);
     }
@@ -183,7 +189,10 @@ impl Outgoing {
             };
             let frames = std::mem::take(batch);
             if let Some(player) = entities.players.get(row) {
-                player.connection.sink.send_batch(frames, self.threshold);
+                player
+                    .connection
+                    .sink
+                    .send_batch(frames, self.threshold, BatchMark::UNKNOWN);
             }
         }
     }
@@ -316,6 +325,7 @@ impl WorldSurvival {
             grid: FxHashMap::default(),
             receivers: Vec::new(),
             scratch: Vec::new(),
+            ticking: Vec::new(),
             outgoing: Outgoing::default(),
         }
     }
@@ -425,7 +435,7 @@ impl WorldSurvival {
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut no_gateway = |_| false;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = self.env(
@@ -469,47 +479,30 @@ impl WorldSurvival {
     /// `ServerPlayer.doTick` of every player, in the connection tick. Players whose death
     /// animation ended or whose end credits started disappear for the others; players going
     /// through portals and the gateways they entered go to `portals`.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn do_tick(
         &mut self,
-        entities: &mut Entities,
-        chunks: &Chunks,
-        border: &vanillite_game::level::border::WorldBorder,
-        block_entities: &BlockEntities,
+        level: &mut vanillite_game::level::Level,
+        cx: &mut vanillite_game::mob::MobContext,
         global: &Global,
         dimension: &str,
         portals: &mut PortalRequests,
     ) {
-        self.tick_players(
-            entities,
-            chunks,
-            border,
-            block_entities,
-            global,
-            dimension,
-            portals,
-            None,
-        );
+        self.tick_players(level, cx, global, dimension, portals, None);
     }
 
     /// The rest of the tick of the player `id`, which a portal just brought to this world
-    /// (`player::finish_tick_after_portal`).
-    #[allow(clippy::too_many_arguments)]
+    /// (`player::tick_after_portal`).
     pub(crate) fn finish_portal_tick(
         &mut self,
-        entities: &mut Entities,
-        chunks: &Chunks,
-        border: &vanillite_game::level::border::WorldBorder,
-        block_entities: &BlockEntities,
+        level: &mut vanillite_game::level::Level,
+        cx: &mut vanillite_game::mob::MobContext,
         global: &Global,
         dimension: &str,
         id: EntityId,
     ) {
         self.tick_players(
-            entities,
-            chunks,
-            border,
-            block_entities,
+            level,
+            cx,
             global,
             dimension,
             &mut PortalRequests::default(),
@@ -518,13 +511,10 @@ impl WorldSurvival {
     }
 
     /// [`Self::do_tick`], or with `arrived` only the rest of that player's tick.
-    #[allow(clippy::too_many_arguments)]
     fn tick_players(
         &mut self,
-        entities: &mut Entities,
-        chunks: &Chunks,
-        border: &vanillite_game::level::border::WorldBorder,
-        block_entities: &BlockEntities,
+        world_mut: &mut vanillite_game::level::Level,
+        cx: &mut vanillite_game::mob::MobContext,
         global: &Global,
         dimension: &str,
         portals: &mut PortalRequests,
@@ -532,12 +522,19 @@ impl WorldSurvival {
     ) {
         let level = &global.level;
         let rules = level.rules().clone();
+        // The players' `pushEntities` and `touch` see the level without its entities, as the
+        // mob ticks do.
+        let mut ents = std::mem::take(&mut world_mut.entities);
+        let entities = &mut ents;
+        let world: &vanillite_game::level::Level = world_mut;
+        let (chunks, block_entities) = (&world.chunks, &world.block_entities);
         let blocks = WorldBlocks(chunks);
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut removed = std::mem::take(&mut self.scratch);
+        let mut ids = std::mem::take(&mut self.ticking);
         {
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let hooks = crate::plugins::Hooks::of(global, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             // `EndGatewayBlock.entityInside`: a gateway takes a player unless it cools down,
@@ -564,19 +561,69 @@ impl WorldSurvival {
                 &names,
                 &teams,
             );
-            env.border = Some(border);
-            let Entities { store, players, .. } = entities;
-            for (id, data) in players.iter_mut() {
-                if arrived.is_some_and(|a| a != id) {
-                    continue;
-                }
-                let Some(mut entity) = store.get_mut(id) else {
-                    continue;
+            env.border = Some(&world.border);
+            ids.clear();
+            ids.extend(
+                entities
+                    .players
+                    .iter()
+                    .map(|(id, _)| id)
+                    .filter(|&id| arrived.is_none_or(|a| a == id)),
+            );
+            for &id in &ids {
+                // The base tick with the effects.
+                let base = {
+                    let Entities { store, players, .. } = &mut *entities;
+                    let Some(mut entity) = store.get_mut(id) else {
+                        continue;
+                    };
+                    let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                        continue;
+                    };
+                    if arrived.is_some() {
+                        std::ops::ControlFlow::Continue(player::base_tick_after_portal(
+                            &mut entity,
+                            data,
+                            &mut env,
+                        ))
+                    } else {
+                        player::do_tick_base(&mut entity, data, &mut env)
+                    }
                 };
-                let result = if arrived.is_some() {
-                    player::finish_tick_after_portal(&mut entity, data, &mut env)
-                } else {
-                    player::do_tick(&mut entity, data, &mut env)
+                let result = match base {
+                    std::ops::ControlFlow::Break(result) => result,
+                    std::ops::ControlFlow::Continue(result) => {
+                        // `updatingUsingItem`, then `aiStep` and the rest of the tick.
+                        vanillite_game::player::using::tick(entities, &mut env, id);
+                        let result = {
+                            let Entities { store, players, .. } = &mut *entities;
+                            let Some(mut entity) = store.get_mut(id) else {
+                                continue;
+                            };
+                            let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                                continue;
+                            };
+                            player::do_tick_ai(&mut entity, data, &mut env, result)
+                        };
+                        // `pushEntities` and `touch` at the end of the player's `aiStep`; the
+                        // world picks up items, arrows and orbs in the connection tick.
+                        vanillite_game::mob::living::player_ai_step_end(
+                            world,
+                            entities,
+                            &mut env,
+                            cx,
+                            id,
+                            |_, _| {},
+                        );
+                        let Entities { store, players, .. } = &mut *entities;
+                        let Some(mut entity) = store.get_mut(id) else {
+                            continue;
+                        };
+                        let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                            continue;
+                        };
+                        player::do_tick_end(&mut entity, data, &mut env, result)
+                    }
                 };
                 match result {
                     TickResult::Remove | TickResult::Credits => removed.push(id),
@@ -585,6 +632,7 @@ impl WorldSurvival {
                 }
             }
         }
+        self.ticking = ids;
         for id in removed.drain(..) {
             // `remove(KILLED)`: the entity leaves the others' view; the player itself stays
             // until it respawns.
@@ -599,8 +647,9 @@ impl WorldSurvival {
             }
         }
         self.scratch = removed;
-        crate::scoreboard::update_criteria(global, entities);
-        self.deliver(entities, global);
+        world_mut.entities = ents;
+        crate::scoreboard::update_criteria(global, &mut world_mut.entities);
+        self.deliver(&mut world_mut.entities, global);
     }
 
     /// Kills a player (`/kill`) and delivers the effects at once.
@@ -672,7 +721,8 @@ impl WorldSurvival {
     ) -> R {
         let state = &global.level;
         let rules = state.rules().clone();
-        let mut random = LegacyRandom::new(state.game_time() ^ level.game_time());
+        // The level random, as in the world's tick (`level.random` of Vanilla).
+        let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
         let mut out = Vec::new();
         let mut cx = vanillite_game::mob::MobContext::default();
         let mut ents = std::mem::take(&mut level.entities);
@@ -680,7 +730,7 @@ impl WorldSurvival {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
             let mut no_gateway = |_| false;
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let hooks = crate::plugins::Hooks::of(global, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = Env {
@@ -704,13 +754,23 @@ impl WorldSurvival {
             f(level, &mut ents, &mut env, &mut cx)
         };
         level.entities = ents;
+        *level.random() = random;
         for action in std::mem::take(&mut cx.actions) {
-            action.apply_to_level(level);
+            use vanillite_game::mob::WorldAction;
+            match action {
+                // The entities an explosion hurts take the damage in the world's next tick.
+                WorldAction::Explode(e) => e.run(level, &rules),
+                WorldAction::Level(action) => action.apply(level),
+                other => {
+                    other.apply_to_level(level);
+                }
+            }
         }
         for id in std::mem::take(&mut cx.discarded) {
             level.entities.despawn(id);
         }
-        deliver_simple(&out, &mut level.entities, &mut random, global);
+        let (entities, network_ids, random) = level.entity_parts();
+        deliver_simple(&out, entities, network_ids, random, global);
         for effect in &out {
             if let Effect::GameEvent {
                 event,
@@ -757,7 +817,7 @@ impl WorldSurvival {
         };
         let raining = |_| false;
         let mut no_gateway = |_| false;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = Env {
@@ -787,7 +847,7 @@ impl WorldSurvival {
             return false;
         };
         let done = f(&mut entity, data, &mut env);
-        deliver_simple(&out, entities, &mut random, global);
+        deliver_simple(&out, entities, &global.network_ids, &mut random, global);
         collect_game_events(&out, events);
         done
     }
@@ -925,7 +985,13 @@ impl WorldSurvival {
         }
         out.flush(entities);
         self.outgoing = out;
-        spawn_drops(&effects, entities, &mut self.random, global);
+        spawn_drops(
+            &effects,
+            entities,
+            &global.network_ids,
+            &mut self.random,
+            global,
+        );
     }
 
     /// The player rows of the chunks within `range` of `pos` (all players when that is
@@ -955,6 +1021,7 @@ impl WorldSurvival {
 fn deliver_simple(
     effects: &[Effect],
     entities: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
     random: &mut LegacyRandom,
     global: &Global,
 ) {
@@ -1031,7 +1098,7 @@ fn deliver_simple(
             | Effect::RespawnShoulder { .. } => {}
         }
     }
-    spawn_drops(effects, entities, random, global);
+    spawn_drops(effects, entities, network_ids, random, global);
 }
 
 /// A game event for the world to post: the event, its position and context.
@@ -1080,6 +1147,7 @@ fn award_experience(
 fn spawn_drops(
     effects: &[Effect],
     entities: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
     random: &mut LegacyRandom,
     global: &Global,
 ) {
@@ -1090,16 +1158,13 @@ fn spawn_drops(
                 .rules()
                 .bool(vanillite_game::survival::rules::Rule::ENDER_PEARLS_VANISH_ON_DEATH)
         {
-            for i in 0..crate::server::DIMENSIONS.len() {
-                let Ok(index) = u16::try_from(i) else {
-                    continue;
-                };
+            for index in global.dimensions.worlds().map(|w| w.0) {
                 global.run_in_world(crate::world::WorldId(index), move |world| {
                     world.discard_pearls_of(uuid);
                 });
             }
         }
-        award_experience(effect, entities, &global.network_ids, random);
+        award_experience(effect, entities, network_ids, random);
         if let Effect::SpawnMob {
             kind,
             pos,
@@ -1117,8 +1182,7 @@ fn spawn_drops(
                 y_head_rot: *y_rot,
             };
             let data = vanillite_game::mob::MobData::new(kind, seed);
-            let id =
-                vanillite_game::mob::spawn(entities, &global.network_ids, uuid, *pos, rot, data);
+            let id = vanillite_game::mob::spawn(entities, network_ids, uuid, *pos, rot, data);
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);
             }
@@ -1131,7 +1195,7 @@ fn spawn_drops(
                 loaded.data.owner = Some(*owner);
                 let id = vanillite_game::mob::spawn(
                     entities,
-                    &global.network_ids,
+                    network_ids,
                     loaded.uuid,
                     *pos,
                     loaded.rot,
@@ -1144,6 +1208,7 @@ fn spawn_drops(
         }
         if let Effect::DropItem {
             uuid,
+            random: item_random,
             pos,
             velocity,
             y_rot,
@@ -1152,12 +1217,17 @@ fn spawn_drops(
         } = effect
         {
             let id = entities.spawn_item(
-                global.network_ids.next(),
+                network_ids.next(),
                 *uuid,
                 *pos,
                 *velocity,
                 *y_rot,
-                vanillite_game::item_entity::ItemData::new(stack.clone(), *pickup_delay, None),
+                vanillite_game::item_entity::ItemData::new(
+                    stack.clone(),
+                    *pickup_delay,
+                    None,
+                    *item_random,
+                ),
             );
             entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
         }
@@ -1198,7 +1268,7 @@ fn weather_change_event(global: &Global, random: &mut LegacyRandom) {
         extra: i64::from(old_code),
         ..vanillite_game::hooks::Event::new(vanillite_abi::event::WEATHER_CHANGE)
     };
-    crate::plugins::Hooks::of(&global.plugins, "minecraft:overworld").event(&mut ev);
+    crate::plugins::Hooks::of(global, "minecraft:overworld").event(&mut ev);
     if ev.cancelled {
         let mut data = global.level.weather();
         data.raining = old.0;

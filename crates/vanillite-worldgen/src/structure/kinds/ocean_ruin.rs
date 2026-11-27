@@ -24,6 +24,7 @@ use crate::structure::{
     GenerationContext, GenerationStub, PieceBase, PieceSettings, StructureParser, StructurePiece,
     StructurePiecesBuilder, StructureType, TemplatePiece,
 };
+use crate::template::TemplateRef;
 use crate::template::rule::{BlockEntityModifier, PosRuleTest, ProcessorRule, RuleTest};
 use crate::template::transform::transform;
 use crate::template::{BoundingBox, Mirror, Rotation, StructureProcessor, StructureTemplate};
@@ -100,8 +101,8 @@ const BIG_WARM_RUINS: [&str; 4] = [
     "minecraft:underwater_ruin/big_warm_7",
 ];
 
-/// A list of ruin templates, loaded at parse time.
-type Templates = Vec<(&'static str, Arc<StructureTemplate>)>;
+/// A list of ruin templates.
+type Templates = Vec<(&'static str, TemplateRef)>;
 
 /// What every ruin piece of a structure shares.
 #[derive(Debug)]
@@ -160,27 +161,20 @@ impl StructureType for OceanRuinStructure {
         };
         let large_probability = probability("large_probability")?;
         let cluster_probability = probability("cluster_probability")?;
-        let load = |names: &[&'static str]| -> Result<Templates, Error> {
-            names
-                .iter()
-                .map(|&id| Ok((id, parser.template(id)?)))
-                .collect()
+        let load = |names: &[&'static str]| -> Templates {
+            names.iter().map(|&id| (id, parser.template(id))).collect()
         };
         let (small, big) = match biome_temp {
             BiomeTemp::Warm => (
-                [load(&WARM_RUINS)?, Vec::new(), Vec::new()],
-                [load(&BIG_WARM_RUINS)?, Vec::new(), Vec::new()],
+                [load(&WARM_RUINS), Vec::new(), Vec::new()],
+                [load(&BIG_WARM_RUINS), Vec::new(), Vec::new()],
             ),
             BiomeTemp::Cold => (
+                [load(&RUINS_BRICK), load(&RUINS_CRACKED), load(&RUINS_MOSSY)],
                 [
-                    load(&RUINS_BRICK)?,
-                    load(&RUINS_CRACKED)?,
-                    load(&RUINS_MOSSY)?,
-                ],
-                [
-                    load(&BIG_RUINS_BRICK)?,
-                    load(&BIG_RUINS_CRACKED)?,
-                    load(&BIG_RUINS_MOSSY)?,
+                    load(&BIG_RUINS_BRICK),
+                    load(&BIG_RUINS_CRACKED),
+                    load(&BIG_RUINS_MOSSY),
                 ],
             ),
         };
@@ -306,10 +300,10 @@ impl OceanRuinStructure {
         base_integrity: f32,
     ) {
         let lists = if is_large { &self.big } else { &self.small };
-        let piece = |(name, template): &(&'static str, Arc<StructureTemplate>), integrity| {
+        let piece = |(name, template): &(&'static str, TemplateRef), integrity| {
             Box::new(OceanRuinPiece::new(
                 name,
-                Arc::clone(template),
+                template.get(),
                 position,
                 rotation,
                 integrity,

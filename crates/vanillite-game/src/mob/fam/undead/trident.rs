@@ -63,28 +63,10 @@ fn sound(t: &mut MissileTick<'_, '_>, pos: Vec3, s: &str, volume: f32, pitch: f3
     );
 }
 
-/// `ThrownTrident.tick` with `AbstractArrow.tick`: the trident draws from its own random.
+/// `ThrownTrident.tick` with `AbstractArrow.tick`. The trident's own random (`random_state`)
+/// draws the factors of a fall out of the ground, the turn after it hit an entity and the
+/// pitch of the hit ground sound; everything else draws from the level random.
 pub fn tick(t: &mut MissileTick<'_, '_>) {
-    let Some(state) = t
-        .ents
-        .missile(t.id)
-        .filter(|d| d.kind == MissileKind::Trident)
-        .map(|d| d.random_state)
-    else {
-        return;
-    };
-    let level = std::mem::replace(
-        &mut *t.env.random,
-        vanillite_base::random::LegacyRandom::from_state(state),
-    );
-    tick_trident(t);
-    let own = std::mem::replace(&mut *t.env.random, level);
-    if let Some(d) = t.ents.missile_mut(t.id) {
-        d.random_state = own.state();
-    }
-}
-
-fn tick_trident(t: &mut MissileTick<'_, '_>) {
     let id = t.id;
     let Some(mut d) = t.ents.missile(id).cloned() else {
         return;
@@ -92,6 +74,7 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
     if d.kind != MissileKind::Trident {
         return;
     }
+    let mut own = vanillite_base::random::LegacyRandom::from_state(d.random_state);
     let Some(e) = t.ents.store.get(id) else {
         return;
     };
@@ -118,8 +101,9 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
         if !alive {
             if d.pickup == 1 {
                 // `spawnAtLocation(getPickupItem(), 0.1)`.
-                let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+                let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
                 t.env.out.push(crate::survival::Effect::DropItem {
+                    random: item_random,
                     uuid,
                     pos: Vec3::new(pos.x, pos.y + 0.1, pos.z),
                     velocity,
@@ -164,7 +148,7 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
         let probe = Aabb::new(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z).inflate(0.06, 0.06, 0.06);
         if last != Some(state) && physics::no_collision(&t.level.view(), &probe, &mut t.cx.boxes) {
             d.in_ground = false;
-            let r = &mut *t.env.random;
+            let r = &mut own;
             velocity = velocity.multiply(
                 f64::from(r.next_float() * 0.2),
                 f64::from(r.next_float() * 0.2),
@@ -227,7 +211,7 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
                 hit_entity(t, &mut d, target, pos);
                 crate::mob::missile::land_event(t.env.out, t.level, id, None, hit);
                 velocity = velocity.multiply(-0.01, -0.1, -0.01);
-                let turn = 170.0 + t.env.random.next_float() * 20.0;
+                let turn = 170.0 + own.next_float() * 20.0;
                 rot.y_rot += turn;
             } else if let Some((hit_pos, at)) = block_hit {
                 let sign = |v: f64| {
@@ -247,7 +231,7 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
                 d.ints[1] = i32::from(t.level.block(hit_pos).0) + 1;
                 crate::mob::missile::hit_block_at_speed(t.level, t.cx, id, hit_pos, at, speed);
                 d.in_ground = true;
-                let pitch = 1.2 / (t.env.random.next_float() * 0.2 + 0.9);
+                let pitch = 1.2 / (own.next_float() * 0.2 + 0.9);
                 sound(t, pos, "minecraft:item.trident.hit_ground", 1.0, pitch);
                 hit_block_effects(t, &d, hit_pos, at);
                 crate::mob::missile::land_event(t.env.out, t.level, id, Some(hit_pos), at);
@@ -267,6 +251,7 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
         e.set_rot(Rotation { ..rot });
         e.mark_data_dirty();
     }
+    d.random_state = own.state();
     if let Some(m) = t.ents.missile_mut(id) {
         *m = d;
     }
@@ -411,16 +396,24 @@ fn hit_block_effects(t: &mut MissileTick<'_, '_>, d: &MissileData, block: BlockP
         clamp(at.z, block.z),
     );
     for (effect, _) in effects {
-        run_block_effect(t, &effect, pos);
+        run_block_effect(t, d, &effect, pos);
     }
 }
 
-fn run_block_effect(t: &mut MissileTick<'_, '_>, effect: &crate::enchant::EntityEffect, pos: Vec3) {
+fn run_block_effect(
+    t: &mut MissileTick<'_, '_>,
+    d: &MissileData,
+    effect: &crate::enchant::EntityEffect,
+    pos: Vec3,
+) {
     use crate::enchant::EntityEffect;
     match effect {
-        EntityEffect::SummonLightning => t.cx.actions.push(crate::mob::WorldAction::Level(
-            crate::mob::boss::warden::LevelAction::Lightning { pos },
-        )),
+        EntityEffect::SummonLightning => {
+            let cause = d.owner.filter(|&o| t.ents.player(o).is_some());
+            t.cx.actions.push(crate::mob::WorldAction::Level(
+                crate::mob::boss::warden::LevelAction::Lightning { pos, cause },
+            ));
+        }
         EntityEffect::PlaySound {
             sound: s,
             volume,
@@ -439,7 +432,7 @@ fn run_block_effect(t: &mut MissileTick<'_, '_>, effect: &crate::enchant::Entity
         }
         EntityEffect::AllOf(list) => {
             for e in list {
-                run_block_effect(t, e, pos);
+                run_block_effect(t, d, e, pos);
             }
         }
         _ => {}

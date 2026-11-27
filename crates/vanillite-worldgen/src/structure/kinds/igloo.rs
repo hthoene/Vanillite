@@ -19,6 +19,7 @@ use crate::structure::{
     GenerationContext, GenerationStub, PieceBase, PieceSettings, StructureParser, StructurePiece,
     StructureType, TemplatePiece,
 };
+use crate::template::TemplateRef;
 use crate::template::{
     BoundingBox, LiquidSettings, Rotation, StructureProcessor, StructureTemplate,
     StructureTemplate as Template,
@@ -81,7 +82,7 @@ impl IglooPart {
 #[derive(Debug)]
 pub struct IglooStructure {
     /// The templates by [`IglooPart`] order.
-    templates: [Arc<StructureTemplate>; 3],
+    templates: [TemplateRef; 3],
 }
 
 impl StructureType for IglooStructure {
@@ -89,9 +90,9 @@ impl StructureType for IglooStructure {
         let [a, b, c] = IglooPart::ALL;
         Ok(Self {
             templates: [
-                parser.template(a.name())?,
-                parser.template(b.name())?,
-                parser.template(c.name())?,
+                parser.template(a.name()),
+                parser.template(b.name()),
+                parser.template(c.name()),
             ],
         })
     }
@@ -108,7 +109,7 @@ impl StructureType for IglooStructure {
             // `IglooPieces.addPieces`.
             let piece = |part: IglooPart, depth: i32| {
                 Box::new(IglooPiece::new(
-                    Arc::clone(&self.templates[part as usize]),
+                    self.templates[part as usize].get(),
                     part,
                     position,
                     rotation,

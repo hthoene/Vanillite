@@ -2,8 +2,9 @@
 //! layering and reload.
 //!
 //! - `server.properties` holds Vanilla's keys only ([`ServerProperties`]).
-//! - `vanillite.toml` holds everything Vanillite-specific: the `profile`, rule overrides and
-//!   per-world sections `[worlds."minecraft:the_nether"]`.
+//! - `vanillite.toml` holds everything Vanillite-specific: the `profile`, rule overrides,
+//!   per-world sections `[worlds."minecraft:the_nether"]` and the extra worlds
+//!   `[extra-worlds.<name>]` ([`ExtraWorld`]).
 //! - Layers, lowest first: profile defaults → global keys → the world's section → environment
 //!   variables `VANILLITE_<KEY>` (dots become `__`, dashes `_`, e.g.
 //!   `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`; `VANILLITE_PROFILE` selects the profile).
@@ -49,6 +50,95 @@ pub struct Config {
     world_defaults: WorldRules,
     /// World rules of worlds with a `[worlds."<dimension>"]` section.
     worlds: BTreeMap<String, WorldRules>,
+    /// The extra worlds the server loads at startup (`[extra-worlds.<name>]`), by name.
+    pub extra_worlds: Vec<ExtraWorld>,
+}
+
+/// An extra world of `[extra-worlds.<name>]`: a world with its own folder `<name>/`, its own
+/// `level.dat`, seed and generator, besides the default world (`level-name`), like a world of
+/// Multiverse on Paper. Its dimension key is `minecraft:<name in lower case>`; its rules come
+/// from `[worlds."minecraft:<name>"]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtraWorld {
+    /// The folder and name, e.g. `lobby`.
+    pub name: String,
+    /// `environment`: `normal`, `nether` or `the_end` (its dimension type).
+    pub environment: String,
+    /// `generator`: `normal` (the environment's Vanilla terrain), `flat`, `void`,
+    /// `amplified`, `large_biomes`, or the key of a data pack dimension whose generator it
+    /// takes. Only used when the world is created.
+    pub generator: String,
+    /// `seed`: a number or a text like `level-seed`; empty for a random one. Only used when
+    /// the world is created.
+    pub seed: String,
+    /// `generate-structures`. Only used when the world is created.
+    pub generate_structures: bool,
+}
+
+impl ExtraWorld {
+    /// The environments an extra world can have.
+    pub const ENVIRONMENTS: [&str; 3] = ["normal", "nether", "the_end"];
+
+    /// The generators an extra world can name besides a data pack dimension's key.
+    pub const GENERATORS: [&str; 5] = ["normal", "flat", "void", "amplified", "large_biomes"];
+
+    /// A world with the defaults: `normal`, Vanilla terrain, random seed, structures.
+    pub fn new(name: &str) -> ExtraWorld {
+        ExtraWorld {
+            name: name.to_owned(),
+            environment: "normal".to_owned(),
+            generator: "normal".to_owned(),
+            seed: String::new(),
+            generate_structures: true,
+        }
+    }
+
+    fn from_toml(name: &str, section: &toml::Table) -> Result<ExtraWorld, String> {
+        let mut world = ExtraWorld::new(name);
+        let text = |key: &str, value: &toml::Value| match value {
+            toml::Value::String(s) => Ok(s.clone()),
+            toml::Value::Integer(i) if key == "seed" => Ok(i.to_string()),
+            other => Err(format!(
+                "extra-worlds.{name}.{key}: expected a string, found {other}"
+            )),
+        };
+        for (key, value) in section {
+            match key.as_str() {
+                "environment" => {
+                    let env = text(key, value)?.to_ascii_lowercase();
+                    if !Self::ENVIRONMENTS.contains(&env.as_str()) {
+                        return Err(format!(
+                            "extra-worlds.{name}.environment: {env:?} is none of normal, nether, the_end"
+                        ));
+                    }
+                    world.environment = env;
+                }
+                "generator" => {
+                    let generator = text(key, value)?;
+                    if !Self::GENERATORS.contains(&generator.as_str()) && !generator.contains(':') {
+                        return Err(format!(
+                            "extra-worlds.{name}.generator: {generator:?} is none of {} and no \
+                             dimension key",
+                            Self::GENERATORS.join(", ")
+                        ));
+                    }
+                    world.generator = generator;
+                }
+                "seed" => world.seed = text(key, value)?,
+                "generate-structures" => {
+                    world.generate_structures = value.as_bool().ok_or_else(|| {
+                        format!("extra-worlds.{name}.generate-structures: expected a boolean")
+                    })?;
+                }
+                other => {
+                    log::warn!(
+                        "{VANILLITE_FILE}: unknown key {other:?} in extra-worlds.{name} is ignored"
+                    );
+                }
+            }
+        }
+        Ok(world)
+    }
 }
 
 impl Config {
@@ -100,6 +190,17 @@ impl Config {
                 )
             })?,
             None => Profile::Vanilla,
+        };
+        let extra_worlds = match table.remove("extra-worlds") {
+            Some(toml::Value::Table(worlds)) => worlds
+                .iter()
+                .map(|(name, section)| match section {
+                    toml::Value::Table(section) => ExtraWorld::from_toml(name, section),
+                    _ => Err(format!("extra-worlds.{name:?}: expected a table")),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(other) => return Err(format!("extra-worlds: expected a table, found {other}")),
+            None => Vec::new(),
         };
         let world_sections = match table.remove("worlds") {
             Some(toml::Value::Table(worlds)) => worlds,
@@ -155,6 +256,7 @@ impl Config {
             server,
             world_defaults,
             worlds,
+            extra_worlds,
         })
     }
 
@@ -294,6 +396,10 @@ pub fn default_vanillite_toml() -> String {
          # performance (Vanillite's optimizations that deviate a little from Vanilla).\n\
          # Uncomment a key to override the profile. Per-world overrides go into\n\
          # [worlds.\"minecraft:the_nether\"] sections with the same keys.\n\
+         # Extra worlds besides level-name (own folder, seed and generator) go into\n\
+         # [extra-worlds.<name>] sections: environment = \"normal\" | \"nether\" |\n\
+         # \"the_end\", generator = \"normal\" | \"flat\" | \"void\" | \"amplified\" |\n\
+         # \"large_biomes\" | a data pack dimension key, seed = \"\", generate-structures.\n\
          # Environment variables VANILLITE_<KEY> override the file, e.g.\n\
          # VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false.\n\n\
          profile = \"vanilla\"\n",
