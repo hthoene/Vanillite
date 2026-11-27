@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 6;
+pub const ABI_MINOR: u16 = 7;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -704,7 +704,7 @@ abi! {
             /// An earlier listener replaced the body.
             REPLACED = 2,
         }
-        /// Flags of `packet_send`. Since ABI 1.6.
+        /// Flags of `packet_send` and `packet_receive`. Since ABI 1.6.
         pub mod packet_send: u32 {
             /// The packet passes no packet listener.
             SKIP_LISTENERS = 1,
@@ -1740,6 +1740,14 @@ abi! {
             pub packet_send: unsafe extern "C" fn(PluginId, Uuid, Bytes, u32) -> Status,
             /// The protocol version packet bodies are encoded for. Since ABI 1.6.
             pub protocol_version: unsafe extern "C" fn(PluginId, *mut i32) -> Status,
+            /// Feeds a serverbound play packet body (`id` + fields, the server's protocol
+            /// version) into a player's connection as if the client sent it: it passes the
+            /// packet listeners (unless [`packet_send::SKIP_LISTENERS`]), the validating
+            /// decoder and the player's rate limits, and is handled in order with the
+            /// client's packets. Fails with [`status::INVALID_ARGUMENT`] for a body that does
+            /// not decode, [`status::NOT_FOUND`] for a player who is offline and
+            /// [`status::ERROR`] while too many fed packets wait. Since ABI 1.7.
+            pub packet_receive: unsafe extern "C" fn(PluginId, Uuid, Bytes, u32) -> Status,
         }
     }
 }

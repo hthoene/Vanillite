@@ -123,6 +123,17 @@ impl Mask {
     }
 }
 
+/// What the encoder of a batch found out about its packets for the receiver stage
+/// ([`PacketTap::batch_mark`]): a writer passes a marked batch on without looking into it as
+/// long as the listeners are the ones the mark was made with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BatchMark(u64);
+
+impl BatchMark {
+    /// Nothing known: the writer looks for packet types with listeners in the batch.
+    pub const UNKNOWN: Self = Self(0);
+}
+
 /// The outcome of the broadcast stage, kept with a [`SharedPacket`].
 #[derive(Debug)]
 pub(crate) struct Tapped {
@@ -257,6 +268,21 @@ impl PacketTap {
 
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    /// A mark for a batch none of whose packet types has a listener per receiver: take it
+    /// before asking [`PacketTap::wants_at`] about the batch's packets, and send the batch
+    /// with [`BatchMark::UNKNOWN`] instead if one of them has.
+    pub fn batch_mark(&self) -> BatchMark {
+        BatchMark(self.generation().wrapping_add(1))
+    }
+
+    /// Whether the receiver stage can pass a batch on without looking into it: its encoder
+    /// found no packet type with a listener per receiver, and the listeners did not change
+    /// since.
+    #[inline]
+    pub fn skips(&self, mark: BatchMark) -> bool {
+        mark != BatchMark::UNKNOWN && mark.0 == self.generation().wrapping_add(1)
     }
 
     /// The broadcast stage of a shared packet: run by the first sender, kept with the packet
@@ -457,6 +483,17 @@ mod tests {
             Verdict::Replace(_)
         ));
         assert_eq!(marker.broadcasts.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_batch_mark_holds_until_the_listeners_change() {
+        let tap = PacketTap::new();
+        let mark = tap.batch_mark();
+        assert!(tap.skips(mark));
+        assert!(!tap.skips(BatchMark::UNKNOWN));
+        tap.store(&Mask::default());
+        assert!(!tap.skips(mark));
+        assert!(tap.skips(tap.batch_mark()));
     }
 
     #[test]

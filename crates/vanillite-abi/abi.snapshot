@@ -1,4 +1,4 @@
-abi 1.6
+abi 1.7
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -519,7 +519,7 @@ struct PacketEvent size=80 align=8
   player: Uuid @40
   body: Bytes @56
   out: *constPacketOut @72
-struct HostApi size=904 align=8
+struct HostApi size=912 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -635,3 +635,4 @@ struct HostApi size=904 align=8
   packet_name: unsafeextern"C"fn(PluginId,u32,u32,i32,*mutStrBuf)->Status @880
   packet_send: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @888
   protocol_version: unsafeextern"C"fn(PluginId,*muti32)->Status @896
+  packet_receive: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @904

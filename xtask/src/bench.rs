@@ -731,6 +731,8 @@ fn options(steps: &[Step], settle: u64, hold: u64) -> Options {
         profile: "release-fast",
         deploy: false,
         gate: false,
+        binary: None,
+        plugins: Vec::new(),
     }
 }
 

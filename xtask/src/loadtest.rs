@@ -9,7 +9,7 @@
 //! kept on the test server; the regression gate compares with the median of the last 5 runs.
 
 use std::io::{BufRead, BufReader, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +20,8 @@ use crate::Result;
 
 const HOST_IP: &str = "10.10.10.40";
 const RESULTS: &str = "/opt/vanillite/bench/results";
+/// Where `vanillite@30901` loads plugins from.
+const PLUGINS: &str = "/opt/vanillite/30901/plugins";
 const DEFAULT_STEPS: &[u64] = &[50, 100, 250, 500, 1000, 2000, 5000];
 /// The gate fails when a step is this much worse than the median of the history.
 const GATE_TOLERANCE: f64 = 1.10;
@@ -82,6 +84,27 @@ pub(crate) struct Options {
     pub(crate) profile: &'static str,
     pub(crate) deploy: bool,
     pub(crate) gate: bool,
+    /// Deploy this server binary instead of building `vanillite`.
+    pub(crate) binary: Option<PathBuf>,
+    /// Plugins installed on `vanillite@30901` for the run.
+    pub(crate) plugins: Vec<PluginSpec>,
+}
+
+/// A plugin folder for the run: `plugin.toml`, the library it names (from the folder, or built
+/// from the folder's crate) and `config.toml` with the `--plugin-set` lines appended.
+#[derive(Debug)]
+pub(crate) struct PluginSpec {
+    dir: PathBuf,
+    set: Vec<String>,
+}
+
+/// A plugin folder ready to copy: its name on the server and its files.
+struct StagedPlugin {
+    name: String,
+    /// The folder with exactly the files the server gets.
+    dir: PathBuf,
+    /// What the run's results say about it.
+    info: Value,
 }
 
 fn parse(args: &[&str]) -> Result<Options> {
@@ -98,6 +121,8 @@ fn parse(args: &[&str]) -> Result<Options> {
         profile: "release-fast",
         deploy: true,
         gate: true,
+        binary: None,
+        plugins: Vec::new(),
     };
     let mut movement = "random";
     let mut step_movements = vec![None; o.steps.len()];
@@ -137,6 +162,19 @@ fn parse(args: &[&str]) -> Result<Options> {
                 o.view_distance = value()?.parse().map_err(|e| format!("{arg}: {e}"))?;
             }
             "--release" => o.profile = "release",
+            "--binary" => o.binary = Some(PathBuf::from(value()?)),
+            "--plugin" => o.plugins.push(PluginSpec {
+                dir: PathBuf::from(value()?),
+                set: Vec::new(),
+            }),
+            "--plugin-set" => {
+                let line = value()?.to_owned();
+                o.plugins
+                    .last_mut()
+                    .ok_or("--plugin-set belongs to a --plugin before it")?
+                    .set
+                    .push(line);
+            }
             "--no-deploy" => o.deploy = false,
             "--no-gate" => o.gate = false,
             _ => return Err(crate::USAGE.to_owned()),
@@ -162,9 +200,15 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     let host = std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into());
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let mut build = vec!["build", "--locked", "--profile", o.profile, "-p", "loadbot"];
-    if o.deploy && o.targets.contains(&Target::Vanillite) {
+    if o.deploy && o.binary.is_none() && o.targets.contains(&Target::Vanillite) {
         build.extend(["-p", "vanillite"]);
     }
+    let packages = o
+        .plugins
+        .iter()
+        .map(|p| package_name(&p.dir))
+        .collect::<Result<Vec<_>>>()?;
+    build.extend(packages.iter().flatten().flat_map(|p| ["-p", p.as_str()]));
     crate::devenv::run(Command::new(&cargo).current_dir(root).args(&build))?;
     let bin_dir = root.join("target").join(o.profile);
     let mut specs = o.movements.clone();
@@ -180,6 +224,11 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     let dirty = !git(root, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
     let stamp = command_output(Command::new("date").args(["-u", "+%Y%m%dT%H%M%SZ"]))?;
     let out_dir = root.join("target/loadtest").join(&stamp);
+    let plugins = o
+        .plugins
+        .iter()
+        .map(|p| stage_plugin(p, &bin_dir, &out_dir.join("plugins")))
+        .collect::<Result<Vec<_>>>()?;
 
     let _lock = Lock::take(&host, &format!("xtask loadtest from {}", root.display()))?;
     let mut runs = Vec::new();
@@ -190,13 +239,19 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             target.name(),
             target.port()
         );
-        let result = deploy_or_restart(target, &o, &host, &bin_dir)
-            .and_then(|()| Session::open(&host, target, &bin_dir, &o, &[]))
-            .and_then(|mut session| {
-                let steps = ramp(&o, &mut session);
-                session.close();
-                steps
-            });
+        let with_plugins = target == Target::Vanillite && !plugins.is_empty();
+        let result = (if with_plugins {
+            install_plugins(&host, &plugins)
+        } else {
+            Ok(())
+        })
+        .and_then(|()| deploy_or_restart(target, &o, &host, &bin_dir))
+        .and_then(|()| Session::open(&host, target, &bin_dir, &o, &[]))
+        .and_then(|mut session| {
+            let steps = ramp(&o, &mut session);
+            session.close();
+            steps
+        });
         // The instance is offline mode: never leave it running.
         let stop = match target {
             Target::Vanillite => format!("systemctl disable --now {}", target.unit()),
@@ -204,6 +259,15 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         };
         if let Err(e) = ssh(&host, &stop) {
             eprintln!("warning: cannot stop {}: {e}", target.unit());
+        }
+        if with_plugins {
+            let names: Vec<&str> = plugins.iter().map(|p| p.name.as_str()).collect();
+            if let Err(e) = ssh(
+                &host,
+                &format!("cd {PLUGINS} && rm -rf -- {}", names.join(" ")),
+            ) {
+                eprintln!("warning: cannot remove the plugins from {PLUGINS}: {e}");
+            }
         }
         let steps = match result {
             Ok(steps) => steps,
@@ -231,6 +295,12 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         if o.movements.iter().any(|m| m != "random") {
             run["settings"]["movement"] = json!(o.movements);
         }
+        if with_plugins {
+            run["settings"]["plugins"] = plugins.iter().map(|p| p.info.clone()).collect();
+        }
+        if let (Target::Vanillite, Some(binary)) = (target, &o.binary) {
+            run["settings"]["binary"] = json!(binary.display().to_string());
+        }
         let file = out_dir.join(format!("{}.json", target.name()));
         let text = serde_json::to_string_pretty(&run).map_err(|e| e.to_string())?;
         crate::write(&file, &text)?;
@@ -241,7 +311,8 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
                 Err(e) => eprintln!("warning: regression gate skipped: {e}"),
             }
         }
-        if !dirty {
+        // Runs with plugins or another binary stay out of the history the gate compares with.
+        if !dirty && !with_plugins && o.binary.is_none() {
             store(
                 &host,
                 &run,
@@ -316,10 +387,137 @@ impl Collected {
     }
 }
 
+/// The package of a plugin folder that is a crate (`Cargo.toml` in it), to build its library.
+fn package_name(dir: &Path) -> Result<Option<String>> {
+    let manifest = dir.join("Cargo.toml");
+    if !manifest.is_file() {
+        return Ok(None);
+    }
+    let text =
+        std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let value: toml::Value = text
+        .parse()
+        .map_err(|e| format!("{}: {e}", manifest.display()))?;
+    value
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(|name| Some(name.to_owned()))
+        .ok_or_else(|| format!("{}: no package name", manifest.display()))
+}
+
+/// Copies a plugin's files into `<out>/<folder name>`: `plugin.toml`, the library it names
+/// (from the folder, else from `bin_dir` where cargo built it) and `config.toml` (if any)
+/// with the `--plugin-set` lines appended.
+fn stage_plugin(spec: &PluginSpec, bin_dir: &Path, out: &Path) -> Result<StagedPlugin> {
+    let dir = &spec.dir;
+    let name = dir
+        .canonicalize()
+        .ok()
+        .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .filter(|n| !n.is_empty() && !n.starts_with('.'))
+        .ok_or_else(|| format!("--plugin {}: not a plugin folder", dir.display()))?;
+    let manifest_path = dir.join("plugin.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let library = manifest
+        .parse::<toml::Value>()
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?
+        .get("library")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| format!("{}: no library", manifest_path.display()))?
+        .to_owned();
+    let file = format!("lib{library}.so");
+    let source = [dir.join(&file), bin_dir.join(&file)]
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| format!("--plugin {}: no {file} (build the plugin)", dir.display()))?;
+    let staged = out.join(&name);
+    let _ = std::fs::remove_dir_all(&staged);
+    std::fs::create_dir_all(&staged).map_err(|e| format!("{}: {e}", staged.display()))?;
+    let copy = |from: &Path, to: &str| {
+        std::fs::copy(from, staged.join(to))
+            .map(|_| ())
+            .map_err(|e| format!("{}: {e}", from.display()))
+    };
+    copy(&manifest_path, "plugin.toml")?;
+    copy(&source, &file)?;
+    let config = std::fs::read_to_string(dir.join("config.toml")).unwrap_or_default();
+    let config = spec
+        .set
+        .iter()
+        .fold(config, |config, line| set_key(&config, line));
+    if !config.is_empty() {
+        crate::write(&staged.join("config.toml"), &config)?;
+    }
+    println!("plugin {name}: {}", source.display());
+    Ok(StagedPlugin {
+        info: json!({ "name": name, "set": spec.set }),
+        name,
+        dir: staged,
+    })
+}
+
+/// `config` with its first uncommented `key = ...` line replaced by `line` (`key = value`), or
+/// with `line` put first (before any table) when the key is not there.
+fn set_key(config: &str, line: &str) -> String {
+    let key = |l: &str| l.split_once('=').map(|(k, _)| k.trim().to_owned());
+    let wanted = key(line);
+    let mut replaced = false;
+    let mut out: Vec<&str> = Vec::new();
+    for l in config.lines() {
+        if !replaced && wanted.is_some() && key(l) == wanted && !l.trim_start().starts_with('#') {
+            out.push(line);
+            replaced = true;
+        } else {
+            out.push(l);
+        }
+    }
+    if !replaced {
+        out.insert(0, line);
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+/// Puts the plugin folders into the plugins directory of `vanillite@30901` (replacing folders
+/// of the same name); the run removes them again when it stops the instance.
+fn install_plugins(host: &str, plugins: &[StagedPlugin]) -> Result<()> {
+    for plugin in plugins {
+        let parent = plugin.dir.parent().ok_or("plugin folder without parent")?;
+        let tar = Command::new("tar")
+            .arg("-C")
+            .arg(parent)
+            .args(["-cf", "-", &plugin.name])
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("tar: {e}"))?;
+        let stdout = tar.stdout.ok_or("no tar output")?;
+        crate::devenv::run(
+            Command::new("ssh")
+                .args([
+                    host,
+                    &format!(
+                        "install -d -o vanillite -g vanillite {PLUGINS} && cd {PLUGINS} \
+                         && rm -rf -- '{0}' && tar -xf - --no-same-owner \
+                         && chown -R vanillite:vanillite '{0}'",
+                        plugin.name
+                    ),
+                ])
+                .stdin(Stdio::from(stdout)),
+        )?;
+    }
+    Ok(())
+}
+
 fn deploy_or_restart(target: Target, o: &Options, host: &str, bin_dir: &Path) -> Result<()> {
     match target {
         Target::Vanillite if o.deploy => {
-            let binary = bin_dir.join("vanillite");
+            let binary = o
+                .binary
+                .clone()
+                .unwrap_or_else(|| bin_dir.join("vanillite"));
             let file =
                 std::fs::File::open(&binary).map_err(|e| format!("{}: {e}", binary.display()))?;
             crate::devenv::run(

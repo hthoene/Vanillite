@@ -357,6 +357,16 @@ pub trait ServerAccess: Send + Sync {
     fn send_packet(&self, _player: u128, _body: Vec<u8>, _skip_listeners: bool) -> bool {
         false
     }
+    /// Feeds a serverbound play packet body into a player's connection as if the client sent
+    /// it, past the packet listeners with `skip_listeners`. Errors are ABI status codes.
+    fn receive_packet(
+        &self,
+        _player: u128,
+        _body: Vec<u8>,
+        _skip_listeners: bool,
+    ) -> Result<(), i32> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
     /// What the server knows about an online player.
     fn player_info(&self, _player: u128) -> Option<PlayerInfo> {
         None

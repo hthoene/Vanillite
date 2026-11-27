@@ -5,7 +5,7 @@ use crate::Shared;
 use crate::auth::{AuthResult, is_valid_player_name, server_hash};
 use crate::limits::{ConnectionGuard, RateLimiter};
 use crate::outbound::{Out, Outbound};
-use crate::player::{Joined, Latency};
+use crate::player::{Injected, Joined, Latency};
 use crate::velocity;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -129,6 +129,8 @@ pub(crate) struct Conn {
     joined: Option<(Instant, String)>,
     /// This connection for the packet tap.
     peer: Peer,
+    /// Packets plugins feed in as if the client sent them (play only).
+    injected: Option<Arc<Injected>>,
 }
 
 /// The packet tap's verdict on a received body: one load and branch without listeners.
@@ -152,6 +154,14 @@ macro_rules! deliver {
             Verdict::Drop => {}
         }
     }};
+}
+
+/// Resolves when a plugin fed a packet into the connection; never without an injector.
+async fn injected_ready(injected: Option<&Injected>) {
+    match injected {
+        Some(injected) => injected.ready.notified().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// A connection the client drops this soon after joining logs the last packets it was sent:
@@ -231,6 +241,7 @@ impl Conn {
                 connection,
                 player: 0,
             },
+            injected: None,
         }
     }
 
@@ -399,6 +410,15 @@ impl Conn {
         decode: fn(&[u8]) -> vanillite_protocol::Result<T>,
     ) -> Result<T> {
         loop {
+            // Packets a plugin fed in: validated and counted like the client's own.
+            if let Some((body, skip_listeners)) = self.injected.as_ref().and_then(|i| i.take()) {
+                if skip_listeners {
+                    return Ok(decode(&body)?);
+                }
+                deliver!(self, decode, &body);
+                self.cancelled()?;
+                continue;
+            }
             // Packets the multi-version layer added to the last one come first.
             if let Some(t) = self.adapter.as_mut().and_then(|a| a.pending()) {
                 deliver!(self, decode, t);
@@ -451,6 +471,7 @@ impl Conn {
                     }
                 }
                 () = tokio::time::sleep_until(wake) => self.tick()?,
+                () = injected_ready(self.injected.as_deref()) => {}
             }
         }
     }
@@ -906,6 +927,7 @@ impl Conn {
         self.enter(State::Play, None);
         self.joined = Some((Instant::now(), profile.name.clone()));
         let (tx, rx) = vanillite_protocol::inbound_queue(self.shared.config.max_inbound_packets);
+        let injected = Injected::new(self.shared.config.max_inbound_packets);
         let joined = Joined {
             profile,
             client_info,
@@ -915,7 +937,9 @@ impl Conn {
             inbound: rx,
             outbound: self.out.clone(),
             latency: self.keepalive.latency.clone(),
+            injector: injected.injector(),
         };
+        self.injected = Some(injected);
         if self.shared.joins.try_send(joined).is_err() {
             return Err(kick(Component::translatable(
                 "multiplayer.disconnect.server_full",

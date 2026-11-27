@@ -1,0 +1,9 @@
+# Configuration of the packet bench plugin.
+
+# Which listeners the plugin adds; every listener only counts calls and bytes:
+# - "off": none;
+# - "broadcast": per broadcast on the entity movement packets (once per encoded packet);
+# - "receiver": per receiver on the entity movement packets (once per packet and viewer);
+# - "rewrite": like "receiver", and every packet is replaced by a copy of itself;
+# - "unrelated": per receiver on `set_player_team`, a type that is not in the tick batches.
+mode = "receiver"

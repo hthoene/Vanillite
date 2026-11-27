@@ -1582,6 +1582,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vanillite-packet-bench"
+version = "0.1.0-beta.1"
+dependencies = [
+ "vanillite-plugin",
+]
+
+[[package]]
 name = "vanillite-plugin"
 version = "0.1.0-beta.1"
 dependencies = [

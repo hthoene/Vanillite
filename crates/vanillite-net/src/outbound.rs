@@ -11,7 +11,7 @@ use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::{
     FrameEncoder, encode_body, encode_frame, for_each_body, for_each_id,
 };
-use vanillite_protocol::tap::{PacketTap, Peer, Stage, Verdict};
+use vanillite_protocol::tap::{BatchMark, PacketTap, Peer, Stage, Verdict};
 use vanillite_protocol::{Direction, Packet, SharedPacket, State};
 
 /// A message to a connection's writer.
@@ -21,8 +21,9 @@ pub(crate) enum Out {
     Body(Vec<u8>),
     /// A shared packet.
     Shared(Arc<SharedPacket>),
-    /// Frames built with [`encode_frame`] for a compression threshold.
-    Batch(Vec<u8>, Option<usize>),
+    /// Frames built with [`encode_frame`] for a compression threshold, and what their
+    /// encoder knows about their packet types (for the packet tap).
+    Batch(Vec<u8>, Option<usize>, BatchMark),
     /// An encoded packet body the listeners of the packet tap do not see.
     Untapped(Vec<u8>),
     /// Compression on from here (sent after `login_compression`).
@@ -45,7 +46,7 @@ impl Out {
         match self {
             Out::Body(body) | Out::Untapped(body) => body.len(),
             Out::Shared(packet) => packet.body().len(),
-            Out::Batch(frames, _) => frames.len(),
+            Out::Batch(frames, ..) => frames.len(),
             _ => 0,
         }
     }
@@ -135,10 +136,11 @@ impl Outbound {
     /// Queues many packets as one entry: frames built with [`encode_frame`] for `threshold`
     /// (best this connection's, [`Outbound::threshold`]). The packets of a batch pass the
     /// receiver stage of the packet tap only: whoever encodes them for many receivers runs
-    /// the broadcast stage there ([`PacketTap::shared`]).
-    pub fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
+    /// the broadcast stage there ([`PacketTap::shared`]). `mark` lets the writer skip looking
+    /// into the batch ([`PacketTap::batch_mark`]); [`BatchMark::UNKNOWN`] is always right.
+    pub fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>, mark: BatchMark) -> bool {
         let n = frames.len();
-        self.push(Out::Batch(frames, threshold), n)
+        self.push(Out::Batch(frames, threshold, mark), n)
     }
 
     /// The compression threshold the connection's writer uses once everything queued so far
@@ -244,17 +246,23 @@ impl OutTap {
                     Verdict::Replace(body) => Some(Out::Body(body)),
                 }
             }
-            Out::Batch(frames, threshold) => self.batch(frames, threshold, codec),
+            Out::Batch(frames, threshold, mark) => self.batch(frames, threshold, mark, codec),
             other => Some(other),
         }
     }
 
     /// A batch stays as it is unless it holds a packet type with a listener per receiver;
     /// then it is framed anew with the listeners' changes. (The broadcast stage ran where
-    /// the batch was encoded.)
-    fn batch(&self, frames: Vec<u8>, threshold: Option<usize>, codec: &mut Codec) -> Option<Out> {
-        if !self.tap.listens(Stage::Receiver) {
-            return Some(Out::Batch(frames, threshold));
+    /// the batch was encoded.) A batch whose encoder found no such type is not looked into.
+    fn batch(
+        &self,
+        frames: Vec<u8>,
+        threshold: Option<usize>,
+        mark: BatchMark,
+        codec: &mut Codec,
+    ) -> Option<Out> {
+        if !self.tap.listens(Stage::Receiver) || self.tap.skips(mark) {
+            return Some(Out::Batch(frames, threshold, mark));
         }
         let mut wanted = false;
         let walked = for_each_id(&frames, threshold, |id| {
@@ -263,7 +271,7 @@ impl OutTap {
             !wanted
         });
         if walked.is_err() || !wanted {
-            return Some(Out::Batch(frames, threshold));
+            return Some(Out::Batch(frames, threshold, mark));
         }
         let mut out = Vec::with_capacity(frames.len());
         let rebuilt = for_each_body(&frames, threshold, |body| {
@@ -276,8 +284,8 @@ impl OutTap {
         });
         match rebuilt {
             Ok(()) if out.is_empty() => None,
-            Ok(()) => Some(Out::Batch(out, threshold)),
-            Err(_) => Some(Out::Batch(frames, threshold)),
+            Ok(()) => Some(Out::Batch(out, threshold, BatchMark::UNKNOWN)),
+            Err(_) => Some(Out::Batch(frames, threshold, mark)),
         }
     }
 }
@@ -346,7 +354,7 @@ impl Wire {
                     }
                 }
             },
-            Out::Batch(frames, threshold) => match adapter.as_mut() {
+            Out::Batch(frames, threshold, _) => match adapter.as_mut() {
                 Some(a) => for_each_body(&frames, threshold, |body| {
                     match a.translate(body) {
                         Ok(Some(t)) => encoder.body(t, buf)?,
@@ -447,7 +455,7 @@ pub(crate) async fn virtual_writer(
         record(&sent, sent.now_ms(), &msg);
         let mut more = Vec::new();
         let body = match msg {
-            Out::Batch(frames, threshold) => {
+            Out::Batch(frames, threshold, _) => {
                 let mut bodies = Vec::new();
                 if for_each_body(&frames, threshold, |body| {
                     match adapter.as_mut() {
@@ -528,7 +536,7 @@ fn record(sent: &SentLog, ms: u64, msg: &Out) {
     match msg {
         Out::Body(body) | Out::Untapped(body) => sent.body(ms, body),
         Out::Shared(p) => sent.body(ms, p.body()),
-        Out::Batch(frames, threshold) => sent.frames(ms, frames, threshold.is_some()),
+        Out::Batch(frames, threshold, _) => sent.frames(ms, frames, threshold.is_some()),
         _ => {}
     }
 }
@@ -585,7 +593,7 @@ mod tests {
         match msg {
             Some(Out::Body(body)) => bodies.push(body),
             Some(Out::Shared(packet)) => bodies.push(packet.body().to_vec()),
-            Some(Out::Batch(frames, threshold)) => {
+            Some(Out::Batch(frames, threshold, _)) => {
                 let walked = for_each_body(&frames, threshold, |body| {
                     bodies.push(body.to_vec());
                     Ok(true)
@@ -613,9 +621,10 @@ mod tests {
         let mut tap = tap(false);
         let mut codec = Codec::default();
         let frames = batch(&[vec![7, 1], vec![8, 2]], Some(256));
-        let Some(Out::Batch(same, Some(256))) =
-            tap.filter(Out::Batch(frames.clone(), Some(256)), &mut codec)
-        else {
+        let Some(Out::Batch(same, Some(256), _)) = tap.filter(
+            Out::Batch(frames.clone(), Some(256), BatchMark::UNKNOWN),
+            &mut codec,
+        ) else {
             panic!("the batch passes");
         };
         assert_eq!(same, frames);
@@ -682,9 +691,10 @@ mod tests {
             // No packet with a listener: the very same frames, also with a compressed one
             // (inflated to look inside, but not framed anew).
             let plain = batch(&[vec![5, 1], vec![6, 2]], threshold);
-            let Some(Out::Batch(same, _)) =
-                tap.filter(Out::Batch(plain.clone(), threshold), &mut codec)
-            else {
+            let Some(Out::Batch(same, ..)) = tap.filter(
+                Out::Batch(plain.clone(), threshold, BatchMark::UNKNOWN),
+                &mut codec,
+            ) else {
                 panic!("the batch passes");
             };
             assert_eq!(same, plain);
@@ -694,14 +704,17 @@ mod tests {
                 threshold,
             );
             assert_eq!(
-                bodies(tap.filter(Out::Batch(mixed, threshold), &mut codec)),
+                bodies(tap.filter(Out::Batch(mixed, threshold, BatchMark::UNKNOWN), &mut codec)),
                 [vec![5, 1], vec![7, 2, 3], big.clone(), vec![6, 4]]
             );
             // Everything cancelled: nothing is written.
             let cancelled = batch(&[vec![8, 1], vec![8, 2]], threshold);
             assert!(
-                tap.filter(Out::Batch(cancelled, threshold), &mut codec)
-                    .is_none()
+                tap.filter(
+                    Out::Batch(cancelled, threshold, BatchMark::UNKNOWN),
+                    &mut codec
+                )
+                .is_none()
             );
         }
     }

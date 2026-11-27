@@ -392,6 +392,19 @@ impl ServerAccess for Services {
         }
     }
 
+    fn receive_packet(&self, player: u128, body: Vec<u8>, skip_listeners: bool) -> Result<(), i32> {
+        use vanillite_abi::status;
+        let (sink, _) = self.connection(player).ok_or(status::NOT_FOUND)?;
+        if sink.is_closed() {
+            return Err(status::NOT_FOUND);
+        }
+        if sink.inject(body, skip_listeners) {
+            Ok(())
+        } else {
+            Err(status::ERROR)
+        }
+    }
+
     fn send_plugin_message(&self, player: u128, channel: &str, data: &[u8]) -> bool {
         let Ok(channel) = vanillite_protocol::types::Identifier::new(channel) else {
             return false;

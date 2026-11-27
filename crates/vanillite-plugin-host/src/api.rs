@@ -135,6 +135,7 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     packet_name,
     packet_send,
     protocol_version,
+    packet_receive,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -2596,6 +2597,31 @@ unsafe extern "C" fn packet_send(
             status::OK
         } else {
             status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn packet_receive(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    body: abi::Bytes,
+    flags: u32,
+) -> Status {
+    with(id, |inner, _| {
+        if flags & !abi::packet_send::SKIP_LISTENERS != 0 {
+            return status::UNSUPPORTED;
+        }
+        // SAFETY: the plugin passes bytes valid for the call.
+        let Some(body) = (unsafe { bytes(body) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if !crate::packets::receivable(body) {
+            return status::INVALID_ARGUMENT;
+        }
+        let skip = flags & abi::packet_send::SKIP_LISTENERS != 0;
+        match server!(inner).receive_packet(player.to_u128(), body.to_vec(), skip) {
+            Ok(()) => status::OK,
+            Err(s) => s,
         }
     })
 }

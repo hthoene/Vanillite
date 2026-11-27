@@ -3,7 +3,7 @@
 //! the bit mask follows the listeners (also added and removed at run time), a listener per
 //! receiver copies the packet for that receiver only, a listener per broadcast runs once and
 //! keeps one shared buffer, a serverbound packet is cancelled, and packets the plugin sends
-//! reach the server.
+//! or feeds in as if a client sent them reach the server.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,6 +16,7 @@ use vanillite_protocol::frame::encode_body;
 use vanillite_protocol::packets::play::clientbound::{
     KeepAlive, SetPlayerTeam, SystemChat, TeamAction, TeamParameters,
 };
+use vanillite_protocol::packets::play::serverbound::Punch;
 use vanillite_protocol::tap::{Peer, Verdict};
 use vanillite_protocol::text::Component;
 use vanillite_protocol::{Direction, Packet, Reader, SharedPacket, State};
@@ -28,6 +29,8 @@ struct FakeServer {
     messages: Mutex<Vec<String>>,
     /// Packets plugins sent: receiver, body, past the listeners.
     packets: Mutex<Vec<(u128, Vec<u8>, bool)>>,
+    /// Packets plugins fed in: sender, body, past the listeners.
+    received: Mutex<Vec<(u128, Vec<u8>, bool)>>,
 }
 
 impl ServerAccess for FakeServer {
@@ -84,6 +87,13 @@ impl ServerAccess for FakeServer {
             .unwrap()
             .push((player, body, skip_listeners));
         true
+    }
+    fn receive_packet(&self, player: u128, body: Vec<u8>, skip_listeners: bool) -> Result<(), i32> {
+        self.received
+            .lock()
+            .unwrap()
+            .push((player, body, skip_listeners));
+        Ok(())
     }
 }
 
@@ -214,6 +224,10 @@ fn packet_plugin_listens_rewrites_and_cancels() {
         let node = dispatcher.child(root, name).unwrap();
         dispatcher.node(node).unwrap().command.unwrap()
     };
+    let punch = dispatcher
+        .find(&["punch"])
+        .and_then(|node| dispatcher.node(node).unwrap().command)
+        .expect("/punch exists");
     host.enable_all();
     let tap = Arc::clone(host.packet_tap());
     let sign_update = vanillite_data::packets::play::serverbound::SIGN_UPDATE;
@@ -381,6 +395,16 @@ fn packet_plugin_listens_rewrites_and_cancels() {
     assert_eq!(
         tap.clientbound(peer(ALEX), State::Play, red.body(), false),
         Verdict::Pass
+    );
+
+    // `/punch`: an arm swing fed in as if Alex's client sent it, through the listeners.
+    assert_eq!(
+        host.execute_command(punch, &alex, "punch", &[], None),
+        Some(1)
+    );
+    assert_eq!(
+        server.received.lock().unwrap().as_slice(),
+        [(ALEX, encode_body(&Punch), false)]
     );
 
     host.disable_all();
