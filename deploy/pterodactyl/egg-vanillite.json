@@ -1853,7 +1853,7 @@
     },
     {
       "name": "Bedrock: Port",
-      "description": "UDP port. Bedrock's default is 19132. Range: 1 to 65535. Empty: the profile's value (vanilla profile: 19132). vanillite.toml: bedrock.port.",
+      "description": "UDP and TCP port (Bedrock 1.26.60 and newer join over NetherNet, which needs both). Bedrock's default is 19132. Range: 1 to 65535. Empty: the profile's value (vanilla profile: 19132). vanillite.toml: bedrock.port.",
       "env_variable": "VANILLITE_BEDROCK__PORT",
       "default_value": "",
       "user_viewable": true,

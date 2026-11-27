@@ -243,7 +243,7 @@ These apply to the whole server.
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
 | `enabled` | setting | yes | `false` | `false` | `false` | `false` | `false` | Accept Bedrock players. Environment: `VANILLITE_BEDROCK__ENABLED`. |
-| `port` | setting | yes | `19132` | `19132` | `19132` | `19132` | `19132` | UDP port. Bedrock's default is 19132. Integer from 1 to 65535. Environment: `VANILLITE_BEDROCK__PORT`. |
+| `port` | setting | yes | `19132` | `19132` | `19132` | `19132` | `19132` | UDP and TCP port (Bedrock 1.26.60 and newer join over NetherNet, which needs both). Bedrock's default is 19132. Integer from 1 to 65535. Environment: `VANILLITE_BEDROCK__PORT`. |
 | `online-mode` | security | yes | `true` | `true` | `true` | `true` | `true` | Require an Xbox Live login. Off accepts any identity a client claims: only for tests on closed networks. Environment: `VANILLITE_BEDROCK__ONLINE_MODE`. |
 | `min-protocol` | setting | yes | `0` | `0` | `0` | `0` | `0` | Oldest Bedrock network protocol that may join. 0 accepts every Bedrock version this build supports (listed at startup); e.g. 2225 admits only Bedrock 1.26.60 and newer. Integer from 0 to 100000. Environment: `VANILLITE_BEDROCK__MIN_PROTOCOL`. |
 | `name-prefix` | setting | yes | `"."` | `"."` | `"."` | `"."` | `"."` | Prefix of Bedrock players' Java names, so they never collide with Java accounts. Bedrock players get the UUID `00000000-0000-0000-xxxx-xxxxxxxxxxxx` of their XUID (like Floodgate); whitelist and operators use that UUID. Environment: `VANILLITE_BEDROCK__NAME_PREFIX`. |
