@@ -17,7 +17,7 @@
 //! cargo xtask egg [--check] | egg smoke [--image <ref>]
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
-//! cargo xtask bench list | report | nightly [--no-push]
+//! cargo xtask bench list | report | publish <time|latest|results.json> | nightly [--no-push]
 //! cargo xtask setup [--global] | regen
 //! ```
 
@@ -140,8 +140,12 @@ pub const USAGE: &str = "usage:
       TNT, fluids, light) use console commands and one observer bot. A server that lacks a
       command is reported as n/a. Writes target/bench/<time>/results.json and keeps the raw
       results under /opt/vanillite/bench/suite on the test server; --publish also updates
-      benchmarks/results/latest.json and history.json and regenerates benchmarks/README.md.
+      benchmarks/results/ (latest.json, history.json, runs/<time>.json) and regenerates
+      benchmarks/README.md with regressions and improvements against the previous run.
       --servers limits the run to these servers; --no-deploy uses the binaries installed there.
+  cargo xtask bench publish <time|latest|results.json>
+      Publishes a finished run like --publish: a local results.json or the suite directory
+      /opt/vanillite/bench/suite/<time>/ on the test server (latest: the newest).
   cargo xtask bench report
       Regenerates benchmarks/README.md from benchmarks/results/.
   cargo xtask bench nightly [--no-push]

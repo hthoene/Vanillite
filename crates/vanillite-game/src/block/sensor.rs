@@ -32,6 +32,43 @@ fn own_power(_level: &Level, state: BlockState, _pos: BlockPos, _direction: Dire
 
 // --- TargetBlock -------------------------------------------------------------------------
 
+/// `BlockState.onProjectileHit` of the block at `pos` that `projectile` hit at `at` (from
+/// `Projectile.onHitBlock`, as a world action after the projectile's tick): target blocks.
+pub fn projectile_hit_block(level: &mut Level, pos: BlockPos, at: Vec3, projectile: EntityId) {
+    if !level.block(pos).is(ids::TARGET) {
+        return;
+    }
+    let ents = &level.entities;
+    let Some(kind) = ents.store.get(projectile).map(|e| e.kind()) else {
+        return;
+    };
+    // `projectile instanceof AbstractArrow`: arrows, spectral arrows and tridents.
+    let arrow =
+        crate::mob::projectile::is_arrow_kind(kind) || kind == vanillite_data::entity::ids::TRIDENT;
+    let owner = ents
+        .arrow(projectile)
+        .and_then(|a| a.owner)
+        .or_else(|| ents.missile(projectile).and_then(|m| m.owner))
+        .or_else(|| match ents.special(projectile) {
+            Some(crate::mob::boss::special::SpecialData::ThrownPotion(p)) => p.owner,
+            _ => None,
+        });
+    // The face the hit point lies on (the target is a full cube).
+    let local = at - Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let face = [
+        (local.x.abs(), Direction::West),
+        ((1.0 - local.x).abs(), Direction::East),
+        (local.y.abs(), Direction::Down),
+        ((1.0 - local.y).abs(), Direction::Up),
+        (local.z.abs(), Direction::North),
+        ((1.0 - local.z).abs(), Direction::South),
+    ]
+    .into_iter()
+    .min_by(|a, b| a.0.total_cmp(&b.0))
+    .map_or(Direction::Up, |f| f.1);
+    target_projectile_hit(level, pos, face, at, arrow, projectile, owner);
+}
+
 /// `onProjectileHit`: the projectile code calls this when `projectile` hits a target block at
 /// `hit` on `face`; `arrow` is `projectile instanceof AbstractArrow`. A player owner gets the
 /// `target_hit` statistic and trigger. Returns the output strength.
@@ -188,4 +225,33 @@ pub fn daylight_detector_tick(level: &mut Level, pos: BlockPos, state: BlockStat
 fn mth_cos(value: f32) -> f32 {
     let index = ((value * 10430.378 + 16384.0) as i32) & 65535;
     (f64::from(index) * std::f64::consts::PI * 2.0 / 65536.0).sin() as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use vanillite_world::entity::NewEntity;
+
+    use super::*;
+    use crate::level::tests::flat_level;
+
+    /// A projectile hitting a target block powers it by how close to the centre of the face it
+    /// hit, for 8 ticks (20 for arrows) (`TargetBlock.onProjectileHit`, #119).
+    #[test]
+    fn projectiles_power_target_blocks() {
+        use vanillite_data::entity::ids as entities;
+        for (kind, at, strength) in [
+            (entities::SNOWBALL, Vec3::new(0.5, -59.0, 0.5), 15),
+            (entities::ARROW, Vec3::new(0.0, -59.75, 0.5), 8),
+        ] {
+            let mut level = flat_level();
+            let pos = BlockPos::new(0, -60, 0);
+            assert!(level.set_block(pos, ids::TARGET.default_state(), update::ALL));
+            let network_id = level.network_ids().next();
+            let new = NewEntity::new(kind, network_id, 1, at);
+            let id = level.entities.store.spawn(new, |_| 0);
+            projectile_hit_block(&mut level, pos, at, id);
+            assert_eq!(power(level.block(pos)), strength, "{}", kind.name());
+            assert!(level.chunks.has_block_tick(pos, ids::TARGET.0));
+        }
+    }
 }

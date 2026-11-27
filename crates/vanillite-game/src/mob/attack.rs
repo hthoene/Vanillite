@@ -38,7 +38,7 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
     let sheep = ents
         .mob(id)
         .filter(|m| m.kind == super::Kind::Sheep)
-        .map(|m| (m.sheep_color & 15, m.sheared));
+        .map(|m| (crate::mob::fam::classic::sheep(m).color & 15, m.sheared));
     let (on_fire, baby) = if let Some(m) = ents.mob(id) {
         (m.is_on_fire(), m.baby)
     } else if let Some(p) = ents.player(id) {

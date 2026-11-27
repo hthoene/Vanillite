@@ -196,6 +196,9 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
                     let source = thrown_source(t, owner_id);
                     crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 0.0);
                 }
+                if let Some(block) = block {
+                    crate::mob::missile::hit_block(t.level, t.cx, t.id, block, at);
+                }
                 crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
                 on_hit(t, owner);
             }

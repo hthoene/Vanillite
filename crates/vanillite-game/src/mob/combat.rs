@@ -673,7 +673,8 @@ fn die(
                 m.saddled = false;
                 loot.push(crate::item::ItemStack::new(saddle, 1));
             }
-            if let Some(block) = m.carried.take()
+            if let Some(block) =
+                super::fam::classic::try_enderman_mut(m).and_then(|e| e.carried.take())
                 && let Some(item) = vanillite_data::registry::ITEM.id(block.block().info().name)
             {
                 loot.push(crate::item::ItemStack::new(item, 1));
