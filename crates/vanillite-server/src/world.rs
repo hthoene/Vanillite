@@ -654,11 +654,9 @@ impl ServerWorld {
                     ctx.other_levels().collect(),
                 );
             }
-            {
-                // Command blocks run here: `execute in` continues in the other world at once.
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.level.run_scheduled_ticks();
-            }
+            // Command blocks run here: `execute in` continues in the other world at once.
+            self.lent
+                .with(ctx.other_levels(), || self.level.run_scheduled_ticks());
             // `raids.tick`.
             self.mobs.tick_raids(
                 &mut self.level,
@@ -707,8 +705,8 @@ impl ServerWorld {
             {
                 // Command block minecarts.
                 let global = ctx.global;
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.tick_entities(global);
+                let lent = Arc::clone(&self.lent);
+                lent.with(ctx.other_levels(), || self.tick_entities(global));
             }
             self.entity_travel(ctx);
             self.level.tick_block_entities();

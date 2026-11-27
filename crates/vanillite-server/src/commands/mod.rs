@@ -151,19 +151,16 @@ impl<'a> Env<'a> {
 
 /// The other worlds' levels lent to a world's command blocks while a phase of its tick runs:
 /// the blocks run inside the level, which cannot carry the borrows itself.
+///
+/// The slot holds the levels only inside [`LentLevels::with`], and a command reads them only
+/// under the lock, which the lender takes again before it has the levels back.
 #[derive(Default)]
 pub(crate) struct LentLevels(std::sync::Mutex<Vec<Option<LevelPtr>>>);
 
 struct LevelPtr(std::ptr::NonNull<vanillite_game::level::Level>);
 
-// SAFETY: a `LevelPtr` stands for a `&mut Level` (see `LentLevels::lend`), which is `Send`.
+// SAFETY: a `LevelPtr` stands for a `&mut Level` (see `LentLevels::with`), which is `Send`.
 unsafe impl Send for LevelPtr {}
-
-/// A loan of [`LentLevels`]: it keeps the levels borrowed and takes them back when dropped.
-pub(crate) struct Loan<'a> {
-    slot: Arc<LentLevels>,
-    levels: std::marker::PhantomData<&'a mut vanillite_game::level::Level>,
-}
 
 impl LentLevels {
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Option<LevelPtr>>> {
@@ -172,24 +169,38 @@ impl LentLevels {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Lends `levels` (as [`OtherLevels`]) until the loan is dropped.
-    pub(crate) fn lend<'a>(
-        self: &Arc<Self>,
+    /// Lends `levels` (as [`OtherLevels`]) to the command blocks that run inside `f`.
+    pub(crate) fn with<'a, R>(
+        &self,
         levels: impl Iterator<Item = Option<&'a mut vanillite_game::level::Level>>,
-    ) -> Loan<'a> {
-        let mut slot = self.lock();
-        slot.clear();
-        slot.extend(levels.map(|l| l.map(|l| LevelPtr(std::ptr::NonNull::from(l)))));
-        Loan {
-            slot: Arc::clone(self),
-            levels: std::marker::PhantomData,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        struct TakeBack<'s>(&'s LentLevels);
+        impl Drop for TakeBack<'_> {
+            fn drop(&mut self) {
+                // Waits for a command that still runs on the levels.
+                self.0.lock().clear();
+            }
         }
+        let take_back = TakeBack(self);
+        {
+            let mut slot = self.lock();
+            slot.clear();
+            slot.extend(levels.map(|l| l.map(|l| LevelPtr(std::ptr::NonNull::from(l)))));
+        }
+        let result = f();
+        drop(take_back);
+        result
     }
-}
 
-impl Drop for Loan<'_> {
-    fn drop(&mut self) {
-        self.slot.lock().clear();
+    /// The slot for one command, or nothing while another command has it (a command block
+    /// run from inside a command sees no other worlds).
+    fn hold(&self) -> Option<std::sync::MutexGuard<'_, Vec<Option<LevelPtr>>>> {
+        match self.0.try_lock() {
+            Ok(slot) => Some(slot),
+            Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 }
 
@@ -697,18 +708,22 @@ impl vanillite_game::block::technical::command_block::CommandRunner for BlockCom
         .with_callback(engine::Callback::Count(Arc::clone(&successes)));
         // `performPrefixedCommand`: one leading `/` is optional.
         let command = run.command.strip_prefix('/').unwrap_or(run.command);
-        // Out of the slot while the command runs: nothing else reaches the levels meanwhile.
-        let lent = std::mem::take(&mut *self.lent.lock());
+        // Held while the command runs: nothing else reaches the levels meanwhile, and the
+        // lender waits for the command before it takes them back.
+        let lent = self.lent.hold();
         let mut env = Env {
             level,
             global: &global,
             world: self.world,
             others: lent
                 .iter()
+                .flat_map(|slot| slot.iter())
                 .map(|l| {
-                    // SAFETY: the loan holds the exclusive borrow of the level until it is
-                    // dropped and empties the slot then, so the pointer is valid; taken out
-                    // of the slot, this is the only reference made of it.
+                    // SAFETY: the slot holds a level only inside `LentLevels::with`, which
+                    // has the exclusive borrow of it and empties the slot under the lock
+                    // before it returns, so the pointer is valid while `lent` is held; `env`
+                    // is dropped before `lent`, and holding the lock makes this the only
+                    // reference made of it.
                     l.as_ref().map(|l| unsafe { &mut *l.0.as_ptr() })
                 })
                 .collect(),
@@ -725,7 +740,7 @@ impl vanillite_game::block::technical::command_block::CommandRunner for BlockCom
             Err(e) => send_error(&source, &global, &e, command),
         }
         drop(env);
-        *self.lent.lock() = lent;
+        drop(lent);
         vanillite_game::block::technical::command_block::CommandOutcome {
             successes: successes.load(std::sync::atomic::Ordering::Relaxed),
             last_message: output.take(),
