@@ -1,0 +1,31 @@
+{
+  "description": "Death with a container open (#233): a client player opens a barrel, picks a hotbar stack onto its cursor in the barrel menu (container_click PICKUP) and dies (/kill at tick 10). Inventory.dropAll throws the inventory; the barrel menu stays open (the barrel counts its viewer) until the client asks to respawn (client_command at tick 20): Player.remove of the dead player closes the menu, the barrel closes and the cursor stack drops.",
+  "dimensions": true,
+  "player_state": true,
+  "rules": {"spawn_monsters": "false", "respawn_radius": "0"},
+  "region": [[-2, -62, -2], [12, -55, 12]],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [4.5, -60.0, 4.5],
+      "rot": [180, 30],
+      "inventory": [
+        [1, "minecraft:cobblestone", 16],
+        [9, "minecraft:oak_planks", 16],
+        [40, "minecraft:shield", 1]
+      ]
+    }
+  ],
+  "setup": [
+    {"op": "set", "pos": [4, -60, 2], "block": "minecraft:barrel[facing=south,open=false]"}
+  ],
+  "actions": [
+    {"tick": 2, "op": "use", "entity": "steve", "pos": [4, -60, 2], "face": "south", "item": "minecraft:air"},
+    {"tick": 4, "op": "packet", "entity": "steve", "packet": "container_click", "data": "0100003700000000", "what": "ContainerClick { container_id: 1, state_id: 0, slot: 55, button: 0, input: Pickup, changed: [], carried: HashedStack { item: None } }"},
+    {"tick": 10, "op": "command", "command": "kill steve"},
+    {"tick": 20, "op": "packet", "entity": "steve", "packet": "client_command", "data": "00", "what": "ClientCommand { action: PerformRespawn }"}
+  ]
+}

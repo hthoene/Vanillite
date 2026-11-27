@@ -2022,9 +2022,15 @@ pub(crate) fn info_entry(arrival: &Arrival) -> InfoEntry {
     }
 }
 
-/// `Player.remove` for a player that leaves: open menus close, what they held drops.
-fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
-    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+/// `Player.remove` for a player that leaves or a dead player that respawns: open menus close,
+/// the carried stack and the crafting grid drop (`player.drop(stack, false)`).
+pub(crate) fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
+    let Some((pos, rot, height)) = level
+        .entities
+        .store
+        .get(id)
+        .map(|e| (e.pos(), e.rot(), e.dims().height))
+    else {
         return;
     };
     let Some(player) = level.entities.player_mut(id) else {
@@ -2034,19 +2040,25 @@ fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
     let mut inv = std::mem::take(&mut player.inventory);
     let mut drops = Vec::new();
     vanillite_game::menu::container::close_on_leave(&mut inv, level, spectator, &mut drops);
-    if let Some(player) = level.entities.player_mut(id) {
-        player.inventory = inv;
-    }
-    let eye = vanillite_base::Vec3::new(pos.x, pos.y + 1.62 - 0.3, pos.z);
-    for drop in drops {
-        vanillite_game::block::drops::spawn_item(
-            level,
-            eye,
-            drop.stack,
-            vanillite_base::Vec3::new(0.0, 0.1, 0.0),
-            40,
-            None,
-        );
+    let Some(player) = level.entities.player_mut(id) else {
+        return;
+    };
+    player.inventory = inv;
+    let eye = vanillite_game::survival::player::eye_height(height);
+    // The entity's random, which the death drops (`Inventory.dropAll`) drew from before.
+    let mut state = player.survival.random.state();
+    let throws: Vec<_> = drops
+        .into_iter()
+        .map(|drop| {
+            let (from, velocity) = vanillite_game::player::play::throw_motion(
+                pos, eye, rot.y_rot, rot.x_rot, &mut state,
+            );
+            (from, velocity, drop.stack)
+        })
+        .collect();
+    player.survival.random = vanillite_base::random::LegacyRandom::from_state(state);
+    for (from, velocity, stack) in throws {
+        vanillite_game::block::drops::spawn_item(level, from, stack, velocity, 40, None);
     }
 }
 
