@@ -217,6 +217,7 @@ pub const USAGE: &str = "usage:
   cargo xtask loadtest report <run.json>...
       Writes report.md and chart.svg for earlier runs next to the first file.
   cargo xtask bench all|<scenario>... [--servers <server,...>] [--publish] [--no-deploy]
+                                     [--limits 4c8g|1c1g]
       Benchmark suite (`bench list` shows the scenarios): every scenario against Vanillite
       (vanillite@30901, deployed from this checkout; also with the paper rule profile), Paper,
       Vanilla and Pumpkin (taking turns on 30900), or the proxies Velocity and vanillite-proxy,
@@ -230,6 +231,8 @@ pub const USAGE: &str = "usage:
       benchmarks/results/ (latest.json, history.json, runs/<time>.json) and regenerates
       benchmarks/README.md with regressions and improvements against the previous run.
       --servers limits the run to these servers; --no-deploy uses the binaries installed there.
+      --limits runs every scenario under that hardware profile instead (e.g. 1c1g for the weak
+      hardware numbers of startup, redstone, mobs, flight); such runs cannot be published.
       Every server runs under the same fixed hardware profile (4c8g; the weak scenario 1c1g),
       and the run records the test server's hardware and the host load per server.
   cargo xtask bench publish <time|latest|results.json>

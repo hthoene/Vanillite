@@ -19,7 +19,7 @@ pub mod bookshelf;
 pub mod break_hooks;
 pub mod brewing;
 pub mod brushable;
-mod bubble;
+pub(crate) mod bubble;
 pub mod cake;
 pub mod campfire;
 pub mod cauldron;

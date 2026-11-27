@@ -239,6 +239,13 @@ pub fn is_diode(state: BlockState) -> bool {
 /// `state.getValue(RedstoneWireBlock.POWER)`.
 #[inline]
 pub fn wire_power(state: BlockState) -> i32 {
+    if state.is(ids::REDSTONE_WIRE) {
+        return i32::from(
+            vanillite_worldgen::behaviour::wire_properties()
+                .power
+                .index(state),
+        );
+    }
     i32::from(state.value_index("power").unwrap_or(0))
 }
 
@@ -252,6 +259,10 @@ pub fn power(state: BlockState) -> i32 {
 /// `state.setValue(POWER, power)`.
 #[inline]
 pub fn with_power(state: BlockState, power: i32) -> BlockState {
+    if state.is(ids::REDSTONE_WIRE) {
+        let property = vanillite_worldgen::behaviour::wire_properties().power;
+        return property.with_index(state, power.clamp(0, 15) as u16);
+    }
     state
         .with_index("power", power.clamp(0, 15) as u16)
         .unwrap_or(state)

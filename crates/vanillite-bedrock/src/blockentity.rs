@@ -1,6 +1,7 @@
 //! Java block entities as Bedrock block actor data: sign texts, bed and banner colours (one
-//! Bedrock block for all colours, the colour lives in the block actor), banner patterns and the
-//! halves of double chests.
+//! Bedrock block for all colours, the colour lives in the block actor), banner patterns, the
+//! halves of double chests, skull rotations and the plants of flower pots (Bedrock keeps them in
+//! the block actor; Java pots are blocks without a block entity).
 
 use vanillite_data::block::BlockState;
 use vanillite_nbt::{Compound as JCompound, Tag};
@@ -79,6 +80,52 @@ const PATTERNS: &[(&str, &str)] = &[
     ("flow", "flw"),
     ("guster", "gus"),
 ];
+
+/// Bedrock `SkullType` by Java skull block name prefix (floor and wall variants).
+const SKULLS: [(&str, u8); 7] = [
+    ("skeleton_", 0),
+    ("wither_skeleton_", 1),
+    ("zombie_", 2),
+    ("player_", 3),
+    ("creeper_", 4),
+    ("dragon_", 5),
+    ("piglin_", 6),
+];
+
+/// The Bedrock skull type of a Java skull or head block (floor or wall).
+fn skull_type(block: &str) -> Option<u8> {
+    let name = block.strip_prefix("minecraft:")?;
+    let base = name
+        .strip_suffix("wall_skull")
+        .or_else(|| name.strip_suffix("wall_head"))
+        .or_else(|| name.strip_suffix("skull"))
+        .or_else(|| name.strip_suffix("head"))?;
+    // The longest prefix wins (wither_skeleton_ before skeleton_).
+    SKULLS
+        .iter()
+        .filter(|(p, _)| *p == base)
+        .map(|(_, t)| *t)
+        .next()
+}
+
+/// Whether a Java block is a flower pot (empty or with a plant).
+fn is_pot(block: &str) -> bool {
+    block == "minecraft:flower_pot" || block.starts_with("minecraft:potted_")
+}
+
+/// The Java banner pattern (`minecraft:creeper`) of a Bedrock pattern code (`cre`).
+pub fn java_pattern(code: &str) -> Option<String> {
+    PATTERNS
+        .iter()
+        .find(|(_, b)| *b == code)
+        .map(|(j, _)| format!("minecraft:{j}"))
+}
+
+/// The dye id of a Java dye item (`minecraft:red_dye` -> 14).
+pub fn dye_of_item(item: &str) -> Option<usize> {
+    let name = item.strip_prefix("minecraft:")?.strip_suffix("_dye")?;
+    dye(name)
+}
 
 /// Most banner layers sent.
 const MAX_LAYERS: usize = 16;
@@ -173,7 +220,12 @@ fn chest_pair(state: BlockState) -> Option<([i32; 2], bool)> {
 
 /// The Bedrock block actor data (a root compound) for a Java block entity at `pos` with block
 /// state `state` and its client NBT (`None` when only the block changed).
-pub fn translate(pos: [i32; 3], state: u32, nbt: Option<&JCompound>) -> Option<Vec<u8>> {
+pub fn translate(
+    pos: [i32; 3],
+    state: u32,
+    nbt: Option<&JCompound>,
+    palette: &crate::data::Palette,
+) -> Option<Vec<u8>> {
     let state = BlockState(u16::try_from(state).ok()?);
     if !state.is_valid() {
         return None;
@@ -233,12 +285,39 @@ pub fn translate(pos: [i32; 3], state: u32, nbt: Option<&JCompound>) -> Option<V
             )
             .int("Type", 0)
             .compounds("Patterns", &layers);
+    } else if name == "minecraft:beacon" {
+        let effect = |k: &str| {
+            nbt.and_then(|n| n.get(k))
+                .and_then(Tag::as_str)
+                .and_then(crate::entity::effect_id)
+                .unwrap_or(0)
+        };
+        c.string("id", "Beacon")
+            .int("primary", effect("primary_effect"))
+            .int("secondary", effect("secondary_effect"));
     } else if name == "minecraft:chest" || name == "minecraft:trapped_chest" {
         let ([dx, dz], lead) = chest_pair(state)?;
         c.string("id", "Chest")
             .int("pairx", x.saturating_add(dx))
             .int("pairz", z.saturating_add(dz))
             .byte("pairlead", u8::from(lead));
+    } else if let Some(kind) = skull_type(name) {
+        // Floor skulls turn in 16 steps; wall skulls face their wall (the block state).
+        let rotation = state
+            .value("rotation")
+            .and_then(|r| r.parse::<u8>().ok())
+            .map_or(0.0, |r| f32::from(r) * 22.5);
+        c.string("id", "Skull")
+            .float("Rotation", rotation)
+            .byte("SkullType", kind)
+            .byte("MouthMoving", 0)
+            .int("MouthTickCount", 0)
+            .byte("DoingAnimation", 0);
+    } else if is_pot(name) {
+        c.string("id", "FlowerPot");
+        if let Some(plant) = palette.potted_plant(u32::from(state.0)) {
+            c.raw_compound("PlantBlock", plant);
+        }
     } else {
         return None;
     }
@@ -253,13 +332,13 @@ pub fn needs_nbt(state: u32) -> bool {
         let s = BlockState(s);
         s.is_valid() && {
             let name = s.block().name();
-            name.ends_with("_sign") || name.ends_with("_banner")
+            name.ends_with("_sign") || name.ends_with("_banner") || name == "minecraft:beacon"
         }
     })
 }
 
 /// Whether a Java block state has Bedrock block actor data from its state alone (beds,
-/// banners, double chests): a block update must send it.
+/// banners, double chests, skulls, flower pots): a block update must send it.
 pub fn from_state(state: u32) -> bool {
     let Ok(s) = u16::try_from(state) else {
         return false;
@@ -271,6 +350,8 @@ pub fn from_state(state: u32) -> bool {
     let name = s.block().name();
     name.ends_with("_bed")
         || name.ends_with("_banner")
+        || is_pot(name)
+        || skull_type(name).is_some()
         || ((name == "minecraft:chest" || name == "minecraft:trapped_chest")
             && chest_pair(s).is_some())
 }
@@ -284,6 +365,21 @@ mod tests {
         assert_eq!(dye_prefix("minecraft:light_blue_bed"), Some(3));
         assert_eq!(dye_prefix("minecraft:blue_bed"), Some(11));
         assert_eq!(dye_prefix("minecraft:light_gray_wall_banner"), Some(8));
+    }
+
+    #[test]
+    fn skulls_and_pots() {
+        assert_eq!(skull_type("minecraft:wither_skeleton_wall_skull"), Some(1));
+        assert_eq!(skull_type("minecraft:skeleton_skull"), Some(0));
+        assert_eq!(skull_type("minecraft:piglin_head"), Some(6));
+        assert_eq!(skull_type("minecraft:piston_head"), None);
+        let pot = vanillite_data::block::BlockId::by_name("minecraft:potted_poppy")
+            .map(|b| u32::from(b.default_state().0))
+            .unwrap_or(0);
+        let plant = crate::data::V26_60.potted_plant(pot).unwrap_or_default();
+        assert!(plant.windows(5).any(|w| w == b"poppy"));
+        let actor = translate([0, 64, 0], pot, None, &crate::data::V26_60).unwrap_or_default();
+        assert!(actor.windows(10).any(|w| w == b"PlantBlock"));
     }
 
     #[test]

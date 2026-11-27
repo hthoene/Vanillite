@@ -40,10 +40,13 @@
 //! they are live; they go back into the chunk when it is saved or unloaded. Simulation tickets
 //! (Vanilla's `SimulationChunkTracker`) decide which chunks tick.
 
+mod holders;
 pub mod levels;
 pub mod simulation;
 
 use std::collections::BTreeSet;
+
+use holders::Holders;
 use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -448,7 +451,7 @@ enum Check {
 /// alive only by [`Chunks::block`].
 #[derive(Clone, Copy)]
 pub struct ChunkView<'a> {
-    holders: &'a FxHashMap<ChunkPos, Holder>,
+    holders: &'a Holders,
 }
 
 const _: () = {
@@ -463,15 +466,9 @@ const _: () = {
 
 impl ChunkView<'_> {
     /// The block state at `pos`, `None` outside full chunks and the build height.
-    #[inline]
+    #[inline(always)]
     pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
-        let chunk = self.holders.get(&pos.chunk())?.chunk.as_ref()?;
-        if chunk.status != ChunkStatus::Full {
-            return None;
-        }
-        chunk
-            .chunk
-            .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+        self.holders.full_block(pos).map(|(state, _)| state)
     }
 
     /// Whether the chunk is loaded as a full chunk.
@@ -497,7 +494,7 @@ pub struct Chunks {
     info: WorldInfo,
     settings: ChunkSettings,
     slots: ChunkSlots,
-    holders: FxHashMap<ChunkPos, Holder>,
+    holders: Holders,
     /// Levels of the tickets, up to [`MAX_TICKET_LEVEL`].
     levels: TicketLevels,
     tickets: FxHashMap<TicketId, (ChunkPos, u8)>,
@@ -666,7 +663,7 @@ impl Chunks {
                 ..settings
             },
             slots,
-            holders: FxHashMap::default(),
+            holders: Holders::new(),
             levels: TicketLevels::with_max(MAX_TICKET_LEVEL),
             tickets: FxHashMap::default(),
             generation: TicketLevels::default(),
@@ -893,7 +890,7 @@ impl Chunks {
 
     /// Marks the stored entities of a loaded chunk live or not (`ChunkLoadStatus`).
     pub fn set_entities_loaded(&mut self, pos: ChunkPos, loaded: bool) {
-        if let Some(holder) = self.holders.get_mut(&pos) {
+        if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.entities_loaded = loaded;
         }
     }
@@ -968,7 +965,7 @@ impl Chunks {
                 return;
             }
             let visibility = &self.visibility;
-            let holder = self.holders.entry(pos).or_insert_with(|| Holder {
+            let holder = self.holders.map_mut().entry(pos).or_insert_with(|| Holder {
                 accessible: visibility.contains_key(&pos),
                 ..Holder::default()
             });
@@ -988,7 +985,7 @@ impl Chunks {
             if new < old && required_status(new) != required_status(old) {
                 self.enqueue(pos);
             }
-        } else if let Some(holder) = self.holders.get_mut(&pos) {
+        } else if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             if holder.queued {
                 let job = !holder.queued_inline;
                 self.check.remove(&(job, holder.level, holder.rank, pos));
@@ -1030,7 +1027,7 @@ impl Chunks {
 
     fn enqueue(&mut self, pos: ChunkPos) {
         let rank = self.rank(pos);
-        if let Some(holder) = self.holders.get_mut(&pos)
+        if let Some(holder) = self.holders.map_mut().get_mut(&pos)
             && !holder.queued
             && holder.level <= MAX_LEVEL
         {
@@ -1303,7 +1300,7 @@ impl Chunks {
                 self.visibility.insert(pos, new)
             }
             .unwrap_or(Visibility::Hidden);
-            if let Some(holder) = self.holders.get_mut(&pos) {
+            if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                 holder.accessible = new != Visibility::Hidden;
             }
             if old != new {
@@ -1417,7 +1414,7 @@ impl Chunks {
                 else {
                     return;
                 };
-                if let Some(holder) = self.holders.get_mut(&pos) {
+                if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                     holder.loading = None;
                 }
                 if matches!(chunk, StoreResult::Cancelled)
@@ -1425,7 +1422,7 @@ impl Chunks {
                     || matches!(poi, StoreResult::Cancelled)
                 {
                     self.in_flight -= 1;
-                    if let Some(holder) = self.holders.get_mut(&pos) {
+                    if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                         holder.busy = false;
                     }
                     self.wake(pos);
@@ -1544,7 +1541,7 @@ impl Chunks {
             chunk.status = ChunkStatus::Features;
             dirty = true;
         }
-        if let Some(holder) = self.holders.get_mut(&pos) {
+        if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.chunk = Some(Arc::new(chunk));
             holder.busy = false;
             holder.entities_stored = entities_stored;
@@ -1572,7 +1569,7 @@ impl Chunks {
                     target.status = status;
                     let pos = target.pos;
                     self.put_back(pos, Arc::new(target));
-                    if let Some(holder) = self.holders.get_mut(&pos) {
+                    if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                         holder.busy = false;
                         holder.unneeded = None;
                     }
@@ -1581,7 +1578,7 @@ impl Chunks {
                 for chunk in written {
                     let pos = chunk.pos;
                     self.put_back(pos, chunk);
-                    if let Some(holder) = self.holders.get_mut(&pos) {
+                    if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                         holder.busy = false;
                     }
                     self.wake(pos);
@@ -1594,7 +1591,7 @@ impl Chunks {
                 self.in_flight -= 1;
                 for target in targets {
                     let pos = target.pos;
-                    if let Some(holder) = self.holders.get_mut(&pos)
+                    if let Some(holder) = self.holders.map_mut().get_mut(&pos)
                         && let Some(current) = holder.chunk.as_mut()
                     {
                         let current = Arc::make_mut(current);
@@ -1613,7 +1610,7 @@ impl Chunks {
             Done::Skipped { target, written } => {
                 self.in_flight -= 1;
                 for pos in std::iter::once(target).chain(written) {
-                    if let Some(holder) = self.holders.get_mut(&pos) {
+                    if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                         holder.busy = false;
                         if pos == target {
                             holder.unneeded = None;
@@ -1662,7 +1659,7 @@ impl Chunks {
 
     /// Puts a chunk a job wrote back into its holder.
     fn put_back(&mut self, pos: ChunkPos, chunk: Arc<ProtoChunk>) {
-        if let Some(holder) = self.holders.get_mut(&pos) {
+        if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.chunk = Some(chunk);
             holder.touch(pos, &mut self.changed);
         }
@@ -1698,7 +1695,7 @@ impl Chunks {
             return;
         }
         for (pos, light) in light {
-            let Some(holder) = self.holders.get_mut(&pos) else {
+            let Some(holder) = self.holders.map_mut().get_mut(&pos) else {
                 continue;
             };
             let Some(current) = holder.chunk.as_mut() else {
@@ -1720,7 +1717,7 @@ impl Chunks {
 
     fn merge_light(&mut self, from: &ProtoChunk) {
         let pos = from.pos;
-        let Some(holder) = self.holders.get_mut(&pos) else {
+        let Some(holder) = self.holders.map_mut().get_mut(&pos) else {
             return;
         };
         let Some(current) = holder.chunk.as_mut() else {
@@ -1747,7 +1744,7 @@ impl Chunks {
                 break;
             }
             self.check.remove(&(job, level, rank, pos));
-            if let Some(holder) = self.holders.get_mut(&pos) {
+            if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                 holder.queued = false;
             }
             match self.check_chunk(pos) {
@@ -1824,7 +1821,7 @@ impl Chunks {
                 blocked.get_or_insert(other);
             }
         }
-        if let Some(holder) = self.holders.get_mut(&pos) {
+        if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.planned = Some(next);
         }
         if let Some(other) = blocked {
@@ -1860,7 +1857,7 @@ impl Chunks {
         if level > MAX_LEVEL {
             return;
         }
-        self.holders.insert(
+        self.holders.map_mut().insert(
             pos,
             Holder {
                 level,
@@ -1875,7 +1872,7 @@ impl Chunks {
         if self.in_flight >= self.settings.max_jobs {
             return Check::Full;
         }
-        let Some(holder) = self.holders.get_mut(&pos) else {
+        let Some(holder) = self.holders.map_mut().get_mut(&pos) else {
             return Check::Done;
         };
         if let Some(encoding) = self.encoding.get(&pos) {
@@ -1918,7 +1915,7 @@ impl Chunks {
     fn run_step(&mut self, pos: ChunkPos, next: ChunkStatus, radius: i32, write: i32) {
         match next {
             ChunkStatus::Spawn | ChunkStatus::Full => {
-                if let Some(holder) = self.holders.get_mut(&pos)
+                if let Some(holder) = self.holders.map_mut().get_mut(&pos)
                     && let Some(chunk) = holder.chunk.as_mut()
                 {
                     let chunk = Arc::make_mut(chunk);
@@ -1938,7 +1935,7 @@ impl Chunks {
             }
             _ => {}
         }
-        let Some(holder) = self.holders.get_mut(&pos) else {
+        let Some(holder) = self.holders.map_mut().get_mut(&pos) else {
             return;
         };
         let level = holder.level;
@@ -1957,7 +1954,7 @@ impl Chunks {
                     continue;
                 }
                 let other = ChunkPos::new(pos.x + dx, pos.z + dz);
-                let Some(holder) = self.holders.get_mut(&other) else {
+                let Some(holder) = self.holders.map_mut().get_mut(&other) else {
                     continue;
                 };
                 let Some(chunk) = holder.chunk.as_ref() else {
@@ -2007,7 +2004,7 @@ impl Chunks {
             _ => {
                 let generator = Arc::clone(&self.slots.generator);
                 let unneeded = Arc::new(AtomicBool::new(false));
-                if let Some(holder) = self.holders.get_mut(&pos) {
+                if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                     holder.unneeded = Some(Arc::clone(&unneeded));
                 }
                 self.slots.executor.spawn(
@@ -2046,7 +2043,12 @@ impl Chunks {
     /// queues (and the chunk is saved again for them) and its post-processing marks wait for
     /// its neighbours.
     fn promote(&mut self, pos: ChunkPos) {
-        let Some(chunk) = self.holders.get_mut(&pos).and_then(|h| h.chunk.as_mut()) else {
+        let Some(chunk) = self
+            .holders
+            .map_mut()
+            .get_mut(&pos)
+            .and_then(|h| h.chunk.as_mut())
+        else {
             return;
         };
         if chunk.status != ChunkStatus::Full {
@@ -2107,7 +2109,7 @@ impl Chunks {
         &mut self,
         pos: ChunkPos,
     ) -> Option<&mut Vec<vanillite_chunk::slots::BlockEntityData>> {
-        let holder = self.holders.get_mut(&pos)?;
+        let holder = self.holders.map_mut().get_mut(&pos)?;
         if holder.busy {
             return None;
         }
@@ -2132,7 +2134,7 @@ impl Chunks {
     /// Replaces the stored POI of a full chunk (the game writes its POI back before saving and
     /// unloading); the chunk's POI count as changed if they differ.
     pub fn set_stored_poi(&mut self, pos: ChunkPos, poi: Option<Arc<[u8]>>) {
-        let Some(holder) = self.holders.get_mut(&pos) else {
+        let Some(holder) = self.holders.map_mut().get_mut(&pos) else {
             return;
         };
         if holder.busy || holder.status() != Some(ChunkStatus::Full) {
@@ -2151,7 +2153,7 @@ impl Chunks {
     /// Replaces the stored entities of a full chunk (the game writes its live entities back
     /// before saving and unloading); the chunk's entities count as changed if they differ.
     pub fn set_stored_entities(&mut self, pos: ChunkPos, entities: Vec<Arc<[u8]>>) {
-        let Some(holder) = self.holders.get_mut(&pos) else {
+        let Some(holder) = self.holders.map_mut().get_mut(&pos) else {
             return;
         };
         if holder.busy || holder.status() != Some(ChunkStatus::Full) {
@@ -2170,7 +2172,7 @@ impl Chunks {
     /// Replaces the rest of the stored data of a full chunk ([`ProtoChunk::extra`]); the chunk
     /// counts as changed.
     pub fn set_stored_extra(&mut self, pos: ChunkPos, extra: Option<Arc<[u8]>>) {
-        let Some(holder) = self.holders.get_mut(&pos) else {
+        let Some(holder) = self.holders.map_mut().get_mut(&pos) else {
             return;
         };
         if holder.busy || holder.status() != Some(ChunkStatus::Full) {
@@ -2210,7 +2212,7 @@ impl Chunks {
         let mut save = Vec::new();
         for pos in ready {
             self.unload_candidates.remove(&pos);
-            let Some(mut holder) = self.holders.remove(&pos) else {
+            let Some(mut holder) = self.holders.map_mut().remove(&pos) else {
                 continue;
             };
             if let Some(chunk) = holder
@@ -2334,7 +2336,7 @@ impl Chunks {
     /// Takes the snapshot of a changed chunk for saving; `None` if it is unchanged or a job
     /// works on it (it is then saved in the next round).
     fn capture(&mut self, pos: ChunkPos) -> Option<Snapshot> {
-        let holder = self.holders.get_mut(&pos)?;
+        let holder = self.holders.map_mut().get_mut(&pos)?;
         if !holder.unsaved() {
             return None;
         }
@@ -2445,7 +2447,7 @@ impl Chunks {
         self.generation.shrink_to_fit();
         self.block_ticks.shrink_to_fit();
         self.fluid_ticks.shrink_to_fit();
-        self.holders.shrink_to_fit();
+        self.holders.map_mut().shrink_to_fit();
         self.tickets.shrink_to_fit();
         self.generation_tickets.shrink_to_fit();
         self.waiters.shrink_to_fit();
@@ -2554,7 +2556,7 @@ impl Chunks {
     /// `ChunkAccess.incrementInhabitedTime` of a full chunk. Like Vanilla it does not mark the
     /// chunk unsaved.
     pub fn increment_inhabited_time(&mut self, pos: ChunkPos) {
-        if let Some(holder) = self.holders.get_mut(&pos)
+        if let Some(holder) = self.holders.map_mut().get_mut(&pos)
             && holder
                 .chunk
                 .as_ref()
@@ -2568,7 +2570,19 @@ impl Chunks {
     /// the world thread's read (`getBlockState`): it goes through Vanilla's chunk cache and
     /// keeps a synchronous load's `unknown` ticket alive. Reads that Vanilla does without
     /// tickets (collisions, path finding) and reads from other threads use [`Chunks::view`].
+    #[inline(always)]
     pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
+        if self.unknown.is_empty() {
+            return self.holders.full_block(pos).map(|(state, _)| state);
+        }
+        self.tracked_block(pos)
+    }
+
+    /// [`Chunks::block`] while `unknown` tickets exist: every read goes through the chunk
+    /// cache.
+    #[cold]
+    #[inline(never)]
+    fn tracked_block(&self, pos: BlockPos) -> Option<BlockStateId> {
         let chunk_pos = pos.chunk();
         let holder = self.holders.get(&chunk_pos)?;
         let chunk = holder
@@ -2581,6 +2595,20 @@ impl Chunks {
         chunk
             .chunk
             .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+    }
+
+    /// [`Chunks::load_now`] and [`Chunks::block`] in one read: the block state at `pos` if
+    /// its chunk needs no load (full, level up to full) and no `unknown` ticket exists, so
+    /// both have no side effects; `None` otherwise (also outside the build height).
+    #[inline]
+    pub fn loaded_now_block(&self, pos: BlockPos) -> Option<BlockStateId> {
+        if !self.unknown.is_empty() {
+            return None;
+        }
+        match self.holders.full_block(pos) {
+            Some((state, true)) => Some(state),
+            _ => None,
+        }
     }
 
     /// [`Chunks::block`] of an accessible chunk ([`Chunks::is_accessible`]) with one map
@@ -2618,7 +2646,7 @@ impl Chunks {
     /// changed or the chunk is not loaded. No neighbour or shape updates: those are gameplay.
     pub fn set_block(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
         let chunk_pos = pos.chunk();
-        let holder = self.holders.get_mut(&chunk_pos)?;
+        let holder = self.holders.map_mut().get_mut(&chunk_pos)?;
         if holder.busy {
             return None;
         }
@@ -2670,7 +2698,7 @@ impl Chunks {
                 continue;
             }
             self.post_process.swap_remove(index);
-            if let Some(holder) = self.holders.get_mut(&pos)
+            if let Some(holder) = self.holders.map_mut().get_mut(&pos)
                 && let Some(chunk) = holder.chunk.as_mut()
             {
                 let marks = std::mem::take(&mut Arc::make_mut(chunk).post_processing);
@@ -2711,7 +2739,7 @@ impl Chunks {
     }
 
     fn mark_dirty(&mut self, chunk: ChunkPos) {
-        if let Some(holder) = self.holders.get_mut(&chunk) {
+        if let Some(holder) = self.holders.map_mut().get_mut(&chunk) {
             holder.touch(chunk, &mut self.changed);
         }
     }
@@ -2772,7 +2800,7 @@ impl Chunks {
         pos: ChunkPos,
         f: impl FnOnce(&mut ProtoChunk) -> R,
     ) -> Option<R> {
-        let holder = self.holders.get_mut(&pos)?;
+        let holder = self.holders.map_mut().get_mut(&pos)?;
         if holder.busy {
             return None;
         }

@@ -456,7 +456,12 @@ impl ServerBuilder {
         let store_settings = StoreSettings {
             sync: config.properties.sync_chunk_writes,
             read_ahead: storage_rules.read_ahead,
-            read_cache: (storage_rules.read_cache as usize) << 20,
+            // Under a memory limit at most 1/32 of it per dimension (32 MiB at 1 GiB).
+            read_cache: budget.cache_bytes(
+                1.0 / 32.0,
+                0,
+                (storage_rules.read_cache as usize) << 20,
+            ),
             max_open_files: storage_rules.max_open_files as usize,
         };
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
@@ -691,6 +696,10 @@ impl ServerBuilder {
             self.network,
             global.chat.enforce_secure,
             Arc::clone(global.plugins.packet_tap()),
+            match config.server.threads.network {
+                0 => budget.limits().default_network_threads(),
+                n => usize::from(n),
+            },
         )?;
         if !config.properties.online_mode {
             log::warn!("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");

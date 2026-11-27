@@ -1,0 +1,1027 @@
+{
+  "description": "Waterlogged blocks as water sources: stairs, bottom and top slabs, a fence, leaves, scaffolding, closed and open trapdoors, a chest, a lantern, iron bars, a wall, a chain, a sign, a copper grate and a rail placed waterlogged, each in a walled basin; once a neighbour changes, the water flows out through the faces their shapes leave open (canPassThroughWall), and dries up when they are dry again. Flowing water does not enter dry waterloggable blocks.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      24,
+      -59,
+      19
+    ]
+  ],
+  "ticks": 70,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        4,
+        -59,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        3,
+        -59,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        0
+      ],
+      "to": [
+        9,
+        -59,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        1
+      ],
+      "to": [
+        8,
+        -59,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        0
+      ],
+      "to": [
+        14,
+        -59,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        1
+      ],
+      "to": [
+        13,
+        -59,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        19,
+        -59,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        16,
+        -60,
+        1
+      ],
+      "to": [
+        18,
+        -59,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        5
+      ],
+      "to": [
+        4,
+        -59,
+        9
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        6
+      ],
+      "to": [
+        3,
+        -59,
+        8
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        5
+      ],
+      "to": [
+        9,
+        -59,
+        9
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        6
+      ],
+      "to": [
+        8,
+        -59,
+        8
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        5
+      ],
+      "to": [
+        14,
+        -59,
+        9
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        6
+      ],
+      "to": [
+        13,
+        -59,
+        8
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        5
+      ],
+      "to": [
+        19,
+        -59,
+        9
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        16,
+        -60,
+        6
+      ],
+      "to": [
+        18,
+        -59,
+        8
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        10
+      ],
+      "to": [
+        4,
+        -59,
+        14
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        11
+      ],
+      "to": [
+        3,
+        -59,
+        13
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        10
+      ],
+      "to": [
+        9,
+        -59,
+        14
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        11
+      ],
+      "to": [
+        8,
+        -59,
+        13
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        10
+      ],
+      "to": [
+        14,
+        -59,
+        14
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        11
+      ],
+      "to": [
+        13,
+        -59,
+        13
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        10
+      ],
+      "to": [
+        19,
+        -59,
+        14
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        16,
+        -60,
+        11
+      ],
+      "to": [
+        18,
+        -59,
+        13
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        4,
+        -59,
+        19
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        16
+      ],
+      "to": [
+        3,
+        -59,
+        18
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        15
+      ],
+      "to": [
+        9,
+        -59,
+        19
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        16
+      ],
+      "to": [
+        8,
+        -59,
+        18
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        15
+      ],
+      "to": [
+        14,
+        -59,
+        19
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        16
+      ],
+      "to": [
+        13,
+        -59,
+        18
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        15
+      ],
+      "to": [
+        19,
+        -59,
+        19
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        16,
+        -60,
+        16
+      ],
+      "to": [
+        18,
+        -59,
+        18
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        20,
+        -60,
+        0
+      ],
+      "to": [
+        24,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        21,
+        -60,
+        1
+      ],
+      "to": [
+        23,
+        -60,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        22,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -60,
+        3
+      ],
+      "block": "minecraft:oak_fence[waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        23,
+        -60,
+        3
+      ],
+      "block": "minecraft:oak_slab[type=bottom,waterlogged=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        2,
+        -59,
+        2
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_slab[type=bottom,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        7,
+        -59,
+        2
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_slab[type=bottom,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_slab[type=top,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        12,
+        -59,
+        2
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_slab[type=top,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_fence[waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        17,
+        -59,
+        2
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        2
+      ],
+      "block": "minecraft:oak_fence[waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        7
+      ],
+      "block": "minecraft:oak_leaves[distance=1,persistent=true,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        2,
+        -59,
+        7
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        7
+      ],
+      "block": "minecraft:oak_leaves[distance=1,persistent=true,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:scaffolding[bottom=false,distance=0,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        7,
+        -59,
+        7
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        7
+      ],
+      "block": "minecraft:oak_trapdoor[facing=north,half=bottom,open=false,powered=false,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        12,
+        -59,
+        7
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        7
+      ],
+      "block": "minecraft:oak_trapdoor[facing=north,half=bottom,open=false,powered=false,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        7
+      ],
+      "block": "minecraft:oak_trapdoor[facing=north,half=bottom,open=true,powered=false,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        17,
+        -59,
+        7
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        7
+      ],
+      "block": "minecraft:oak_trapdoor[facing=north,half=bottom,open=true,powered=false,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        12
+      ],
+      "block": "minecraft:chest[facing=north,type=single,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        2,
+        -59,
+        12
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        12
+      ],
+      "block": "minecraft:chest[facing=north,type=single,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        12
+      ],
+      "block": "minecraft:lantern[hanging=false,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        7,
+        -59,
+        12
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        12
+      ],
+      "block": "minecraft:lantern[hanging=false,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        12
+      ],
+      "block": "minecraft:iron_bars[waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        12,
+        -59,
+        12
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        12
+      ],
+      "block": "minecraft:iron_bars[waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        12
+      ],
+      "block": "minecraft:cobblestone_wall[waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        17,
+        -59,
+        12
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        12
+      ],
+      "block": "minecraft:cobblestone_wall[waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        17
+      ],
+      "block": "minecraft:iron_chain[axis=y,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        2,
+        -59,
+        17
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        2,
+        -60,
+        17
+      ],
+      "block": "minecraft:iron_chain[axis=y,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        17
+      ],
+      "block": "minecraft:oak_sign[rotation=0,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        7,
+        -59,
+        17
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        17
+      ],
+      "block": "minecraft:oak_sign[rotation=0,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        17
+      ],
+      "block": "minecraft:copper_grate[waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        12,
+        -59,
+        17
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        12,
+        -60,
+        17
+      ],
+      "block": "minecraft:copper_grate[waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        17
+      ],
+      "block": "minecraft:rail[shape=north_south,waterlogged=true]"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        17,
+        -59,
+        17
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "tick": 40,
+      "op": "place",
+      "pos": [
+        17,
+        -60,
+        17
+      ],
+      "block": "minecraft:rail[shape=north_south,waterlogged=false]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        21,
+        -60,
+        1
+      ],
+      "block": "minecraft:water"
+    }
+  ]
+}

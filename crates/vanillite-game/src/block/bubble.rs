@@ -101,3 +101,92 @@ pub fn update_column(level: &mut Level, pos: BlockPos, occupy: BlockState, below
         p = p.above();
     }
 }
+
+/// `BubbleColumnBlock.entityInside` for an entity inside the column at `pos` (`isPrecise`):
+/// whether it is at the column's top (nothing collides and no fluid above: `onAboveBubbleColumn`)
+/// and the vertical speed the column gives it (`handleOnAboveBubbleColumn` /
+/// `handleOnInsideBubbleColumn`).
+pub fn drag(above: BlockState, state: BlockState, y: f64) -> (bool, f64) {
+    let top = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+    let drag_down = state.value("drag") == Some("true");
+    let y = match (top, drag_down) {
+        (true, true) => (y - 0.03).max(-0.9),
+        (true, false) => (y + 0.1).min(1.8),
+        (false, true) => (y - 0.03).max(-0.3),
+        (false, false) => (y + 0.06).min(0.7),
+    };
+    (top, y)
+}
+
+/// `Entity.sendBubbleColumnParticles`: splashes and bubbles at random spots on the top of the
+/// column at `pos`, drawn from the level random.
+pub fn send_particles(level: &mut Level, pos: BlockPos) {
+    use crate::level::particles::simple;
+    use vanillite_base::Vec3;
+    use vanillite_base::random::RandomSource;
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y + 1), f64::from(pos.z));
+    for _ in 0..2 {
+        let at = Vec3::new(
+            x + level.random().next_double(),
+            y,
+            z + level.random().next_double(),
+        );
+        level.send_particles(simple("minecraft:splash"), at, 1, Vec3::ZERO, 1.0);
+        let at = Vec3::new(
+            x + level.random().next_double(),
+            y,
+            z + level.random().next_double(),
+        );
+        level.send_particles(
+            simple("minecraft:bubble"),
+            at,
+            1,
+            Vec3::new(0.0, 0.01, 0.0),
+            0.2,
+        );
+    }
+}
+
+/// The bubble columns on the way of an entity of `dims` that end inside it (`entityInside`
+/// with `isPrecise`), applied to its speed `v`: the particles of the column tops it is above,
+/// and whether it was inside a column below its top (which resets the fall distance).
+pub fn along(
+    level: &mut Level,
+    dims: vanillite_world::entity::Dimensions,
+    movements: &[crate::survival::inside::Movement],
+    v: &mut vanillite_base::Vec3,
+) -> bool {
+    let mut cells = [None; 4];
+    let mut count = 0;
+    {
+        let view = level.view();
+        let walker = crate::survival::inside::Walker {
+            blocks: &view,
+            facts: None,
+            dims,
+            fast_fall: false,
+        };
+        walker.walk(movements, |cell| {
+            if cell.in_block
+                && cell.precise
+                && cell.state.is(ids::BUBBLE_COLUMN)
+                && let Some(slot) = cells.get_mut(count)
+            {
+                *slot = Some((cell.pos, cell.state));
+                count += 1;
+            }
+            true
+        });
+    }
+    let mut inside = false;
+    for (pos, state) in cells.into_iter().flatten() {
+        let (top, y) = drag(level.block(pos.above()), state, v.y);
+        v.y = y;
+        if top {
+            send_particles(level, pos);
+        } else {
+            inside = true;
+        }
+    }
+    inside
+}
