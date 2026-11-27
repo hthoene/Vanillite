@@ -117,10 +117,19 @@ pub fn init(m: &mut MobData) {
     golem_mut(m);
     // `setRequiredPathLength(48)`, `setCanOpenDoors(true)`, `setPersistenceRequired`.
     m.nav.can_open_doors = true;
+    let follow = m.attrs.follow_range;
+    m.nav.set_required_path_length(48.0, follow);
     m.persistent = true;
+    // The brain (its sensors roll their start delay) comes first, then the cooldown roll.
+    super::ai::copper_golem_brain(m);
     let cooldown = m.random.next_int_between_inclusive(60, 99);
     golem_mut(m).transport_cooldown = cooldown;
-    super::ai::copper_golem_brain(m);
+    if let Some(b) = m.brain.as_deref_mut() {
+        b.set(
+            crate::mob::brain::MemoryType::TransportItemsCooldownTicks,
+            crate::mob::brain::MemValue::Int(cooldown),
+        );
+    }
 }
 
 /// The sounds by oxidation (`CopperGolemOxidationLevels`).

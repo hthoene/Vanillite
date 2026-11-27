@@ -33,6 +33,9 @@ import java.security.ProtectionDomain;
  *   <li>the {@code ShufflingList} constructors take their random from {@link
  *       ParityHooks#shuffleRandom()}: in a scenario every shuffled behaviour list starts from the
  *       same seed, as in Vanillite's scenario world.
+ *   <li>{@code Collections.shuffle(list)} in {@code LongJumpToRandomPos} and {@code
+ *       InsideBrownianWalk} (a JVM wide unseeded random) becomes {@link ParityHooks#shuffle}: in
+ *       a scenario every such shuffle starts from the same seed.
  * </ul>
  *
  * <p>Only Vanilla's randomness changes; no game logic does.
@@ -57,6 +60,9 @@ public final class ParityAgent {
                 case "net/minecraft/world/level/levelgen/RandomSupport" -> uniqueSeed(bytes);
                 case "net/minecraft/world/entity/Entity" -> entityCreated(bytes);
                 case "net/minecraft/world/entity/ai/behavior/ShufflingList" -> shuffleRandom(bytes);
+                case "net/minecraft/world/entity/ai/behavior/LongJumpToRandomPos",
+                    "net/minecraft/world/entity/ai/behavior/InsideBrownianWalk" ->
+                    collectionsShuffle(bytes);
                 default -> null;
               };
             } catch (RuntimeException e) {
@@ -94,6 +100,28 @@ public final class ParityAgent {
                             b.with(e);
                           }
                         })));
+    return cf.transformClass(model, t);
+  }
+
+  /** Every {@code Collections.shuffle(list)} of the class → {@code ParityHooks.shuffle(list)}. */
+  private static byte[] collectionsShuffle(byte[] bytes) {
+    ClassFile cf = ClassFile.of();
+    ClassModel model = cf.parse(bytes);
+    ClassDesc collections = ClassDesc.of("java.util.Collections");
+    MethodTypeDesc type = MethodTypeDesc.of(ConstantDescs.CD_void, ConstantDescs.CD_List);
+    ClassTransform t =
+        ClassTransform.transformingMethodBodies(
+            (b, e) -> {
+              if (e instanceof InvokeInstruction i
+                  && i.opcode() == Opcode.INVOKESTATIC
+                  && i.owner().asSymbol().equals(collections)
+                  && i.name().equalsString("shuffle")
+                  && i.typeSymbol().equals(type)) {
+                b.invokestatic(HOOKS, "shuffle", type);
+              } else {
+                b.with(e);
+              }
+            });
     return cf.transformClass(model, t);
   }
 

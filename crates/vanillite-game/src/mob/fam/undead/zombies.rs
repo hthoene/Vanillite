@@ -45,11 +45,10 @@ pub struct ZombieState {
     /// `ZombieVillager.gossips` and `tradeOffers` of the villager it was.
     pub gossips: Option<crate::mob::fam::village::gossip::Gossips>,
     pub offers: Option<crate::trading::MerchantOffers>,
-    /// `ZombifiedPiglin`: the first anger sound, the alert interval, whether it had a
-    /// target last tick and whether the attacking speed bonus is on.
+    /// `ZombifiedPiglin`: the first anger sound, the alert interval and whether the
+    /// attacking speed bonus is on.
     pub first_anger_sound_in: i32,
     pub next_alert: i32,
-    pub had_target: bool,
     pub speed_bonus: bool,
     /// `Drowned.searchingForLand`.
     pub searching_for_land: bool,
@@ -1214,17 +1213,17 @@ fn beach_target(t: &Tick<'_, '_>, pos: BlockPos) -> bool {
 
 /// `ZombifiedPiglin.customServerAiStep` (with `setTarget`'s anger sound and alert timers,
 /// sampled when a target appears).
+/// `ZombifiedPiglin.setTarget` for a first target: `FIRST_ANGER_SOUND_DELAY` and
+/// `ALERT_INTERVAL`.
+pub(crate) fn piglin_first_target(m: &mut MobData) {
+    let first = m.random.next_int_between_inclusive(0, 20);
+    let alert = m.random.next_int_between_inclusive(80, 120);
+    let z = zs_mut(m);
+    z.first_anger_sound_in = first;
+    z.next_alert = alert;
+}
+
 fn piglin_server_ai_step(t: &mut Tick<'_, '_>) {
-    let has_target = t.mob_ref().target.is_some();
-    if has_target && !zs(t.mob_ref()).is_some_and(|z| z.had_target) {
-        let r = &mut t.mob().random;
-        let first = r.next_int_between_inclusive(0, 20);
-        let alert = r.next_int_between_inclusive(80, 120);
-        let z = zs_mut(t.mob());
-        z.first_anger_sound_in = first;
-        z.next_alert = alert;
-    }
-    zs_mut(t.mob()).had_target = has_target;
     let game_time = t.env.game_time;
     if common::is_angry(t.mob_ref(), game_time) {
         let m = t.mob();
@@ -1291,7 +1290,7 @@ fn alert_others(t: &mut Tick<'_, '_>, target: EntityId) {
             && m.kind == Kind::ZombifiedPiglin
             && m.target.is_none()
         {
-            m.target = Some(target);
+            crate::mob::goals::assign_target(m, Some(target));
         }
     }
     t.cx.ids = ids;
@@ -1401,7 +1400,7 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
         if player_within(h, at, 7.0) || !super::box_free(h.level, kind, at, kind == Kind::Drowned) {
             continue;
         }
-        new.target = Some(target);
+        crate::mob::goals::assign_target(&mut new, Some(target));
         let mut ctx = SpawnContext::at(h.level, spawn, SpawnReason::Reinforcement);
         kinds::finalize_spawn(&mut new, &mut ctx, h.env.random);
         zs_mut(&mut new).reinforcement -= 0.05;

@@ -67,9 +67,13 @@ fn ps(m: &MobData) -> PhantomState {
     }
 }
 
-/// `setPhantomSize`: the size sets the attack damage.
+/// `setPhantomSize`: a changed size sets the attack damage (`onSyncedDataUpdated` only fires
+/// when the value changes, so a size 0 phantom keeps the attribute's default of 2).
 pub fn set_size(m: &mut MobData, size: i32) {
     let size = size.clamp(0, 64);
+    if ps(m).size == size {
+        return;
+    }
     ps_mut(m).size = size;
     m.attrs.attack_damage = f64::from(6 + size);
 }
@@ -216,11 +220,13 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
     rot.x_rot = x_rot;
     t.core_mut().set_rot(rot);
     let move_angle = (rot.y_rot + 90.0) * (std::f32::consts::PI / 180.0);
-    let s = f64::from(speed);
-    let txd = s * f64::from(vanillite_base::math::cos(f64::from(move_angle))) * (tdx / sd2).abs();
-    let tzd = s * f64::from(vanillite_base::math::sin(f64::from(move_angle))) * (tdz / sd2).abs();
+    // `speed * Mth.cos(..)` is a float product; only then it widens to double.
+    let cos = vanillite_base::math::cos(f64::from(move_angle));
+    let sin = vanillite_base::math::sin(f64::from(move_angle));
+    let txd = f64::from(speed * cos) * (tdx / sd2).abs();
+    let tzd = f64::from(speed * sin) * (tdz / sd2).abs();
     let x_rad = f64::from(x_rot * (std::f32::consts::PI / 180.0));
-    let tyd = s * f64::from(vanillite_base::math::sin(x_rad)) * (tdy / sd2).abs();
+    let tyd = f64::from(speed * vanillite_base::math::sin(x_rad)) * (tdy / sd2).abs();
     let v = t.velocity();
     let want = Vec3::new(txd, tyd, tzd);
     t.set_velocity(v + (want - v) * 0.2);
@@ -690,7 +696,7 @@ mod tests {
         let m = MobData::new(Kind::Phantom, 1);
         assert_eq!(m.nav.kind, NavKind::None);
         assert_eq!(m.move_ctl.kind, MoveKind::Custom);
-        assert_eq!(m.attrs.attack_damage, 6.0);
+        assert_eq!(m.attrs.attack_damage, 2.0);
         assert_eq!(m.goals.slots.len(), 3);
     }
 

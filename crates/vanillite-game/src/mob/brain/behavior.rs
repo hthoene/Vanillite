@@ -2091,7 +2091,13 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
                     }
                     swim_pos(t)
                 }
-                StrollMode::Fly => randompos::default_pos(t, *h, *v),
+                StrollMode::Fly => {
+                    // `getTargetFlyPos`: within a quarter turn of the view direction.
+                    let rot = t.core().rot();
+                    let dir = randompos::view_vector(rot.x_rot, rot.y_head_rot);
+                    let half = f64::from(std::f32::consts::FRAC_PI_2);
+                    randompos::air_and_water_pos(t, *h, *v, -2, dir.x, dir.z, half)
+                }
             };
             brain(t).set_opt(
                 M::WalkTarget,

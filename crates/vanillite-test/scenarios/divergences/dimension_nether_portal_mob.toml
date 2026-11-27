@@ -1,4 +1,0 @@
-# Across dimensions (#131): a mob after it changed dimension.
-tick = 2
-cause = "the chicken arrives where Vanilla's does, but its random runs a different number of draws per tick in the Nether from its first tick there (the states match one tick shifted): the goal ticks of a mob loaded through teleportCrossDimension (new entity, stored data, portal process) differ"
-owner = "gameplay-developer"

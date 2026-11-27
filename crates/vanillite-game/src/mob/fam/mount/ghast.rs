@@ -102,6 +102,8 @@ fn setup_for_age(m: &mut MobData) {
         m.nav.kind = NavKind::Flying;
         m.nav.can_float = true;
         m.nav.can_open_doors = false;
+        let follow = m.attrs.follow_range;
+        m.nav.set_required_path_length(48.0, follow);
         if m.brain.is_none() {
             super::ai::happy_ghast_brain(m);
         }
@@ -109,6 +111,8 @@ fn setup_for_age(m: &mut MobData) {
         m.move_ctl.kind = MoveKind::Custom;
         m.look.kind = LookKind::Custom;
         m.nav.kind = NavKind::Flying;
+        let follow = m.attrs.follow_range;
+        m.nav.set_required_path_length(16.0, follow);
         m.brain = None;
     }
 }

@@ -46,6 +46,19 @@ public final class ParityHooks {
     return RandomSource.create(scenario ? SHUFFLE_SEED : seed);
   }
 
+  /**
+   * Replaces {@code Collections.shuffle(list)}, which draws from an unseeded JVM wide random:
+   * while a scenario runs, every such shuffle uses a new {@code java.util.Random} seeded with
+   * {@link #SHUFFLE_SEED}, as Vanillite's scenario world does.
+   */
+  public static synchronized void shuffle(java.util.List<?> list) {
+    if (scenario) {
+      java.util.Collections.shuffle(list, new java.util.Random(SHUFFLE_SEED));
+    } else {
+      java.util.Collections.shuffle(list);
+    }
+  }
+
   /** Starts a scenario: unique seeds from the start, no entity stream yet. */
   public static synchronized void reset() {
     scenario = true;
