@@ -424,7 +424,12 @@ public final class ScenarioRecorder {
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
       boolean levelRng = scenario.has("level_rng") && scenario.get("level_rng").getAsBoolean();
-      boolean clientView = scenario.has("client_view") && scenario.get("client_view").getAsBoolean();
+      // "client_view": true, or "events" (the Rust side also compares level and entity events).
+      boolean clientView =
+          scenario.has("client_view")
+              && (scenario.get("client_view").getAsJsonPrimitive().isBoolean()
+                  ? scenario.get("client_view").getAsBoolean()
+                  : "events".equals(scenario.get("client_view").getAsString()));
       if (clientView && !dimensions) {
         throw new IllegalArgumentException("\"client_view\" needs \"dimensions\"");
       }

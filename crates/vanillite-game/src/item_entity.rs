@@ -45,6 +45,8 @@ pub struct ItemData {
     /// `finalMovementsThisTick`: the way of the last move, walked again while the item rests
     /// (`applyEffectsFromBlocksForLastMovements`; not saved).
     pub last_movement: Option<crate::survival::inside::Movement>,
+    /// `fallDistance` (not saved).
+    pub fall_distance: f64,
 }
 
 impl ItemData {
@@ -70,6 +72,7 @@ impl ItemData {
             in_water: false,
             stuck: Vec3::ZERO,
             last_movement: None,
+            fall_distance: 0.0,
         }
     }
 
@@ -152,6 +155,19 @@ pub struct Burn {
     pub destroyed: bool,
     /// The blocks with an `entityInside` of their own the item is in, in Vanilla's order.
     pub inside: [Option<BlockPos>; 4],
+    /// The tops of bubble columns the item is at: their particles draw the level random.
+    pub bubble_tops: [Option<BlockPos>; 2],
+    /// The block whose `stepOn` changes the world (redstone ore, sculk) the item rests on.
+    pub step_on: Option<BlockPos>,
+    /// The item landed on farmland after a fall (`FarmlandBlock.fallOn` draws its chance).
+    pub farmland_fall: bool,
+    /// The item bounced on a block (`bounce` game event).
+    pub bounced: bool,
+    /// The moving item is in powder snow at this block: the snowflake draws the level random.
+    pub snowflake: Option<BlockPos>,
+    /// The burning item melts this powder snow (with `mob_griefing`) or lowers this cauldron.
+    pub melt_snow: Option<BlockPos>,
+    pub cauldron_fire: Option<BlockPos>,
 }
 
 impl Burn {
@@ -159,6 +175,13 @@ impl Burn {
     pub fn is_none(&self) -> bool {
         self.hurts == 0
             && self.inside[0].is_none()
+            && self.bubble_tops[0].is_none()
+            && self.step_on.is_none()
+            && !self.farmland_fall
+            && !self.bounced
+            && self.snowflake.is_none()
+            && self.melt_snow.is_none()
+            && self.cauldron_fire.is_none()
             && self.splash_before.is_none()
             && self.splash_after.is_none()
             && self.extinguished.is_none()
@@ -252,15 +275,34 @@ fn inside_blocks_fire(
     data: &mut ItemData,
     movement: crate::survival::inside::Movement,
     pos: Vec3,
+    on_ground: bool,
+    v: &mut Vec3,
     world: &FireWorld<'_>,
     burn: &mut Burn,
 ) {
+    // `stepOn` of the block below (`getOnPosLegacy`).
+    if on_ground {
+        let on = BlockPos::containing(pos.x, pos.y - f64::from(0.2_f32), pos.z);
+        let state = world.blocks.block_state(on).unwrap_or(BlockState::AIR);
+        if state.block() == vanillite_data::block::ids::SLIME_BLOCK {
+            // `SlimeBlock.stepOn`.
+            let dy = v.y.abs();
+            if dy < 0.1 {
+                let factor = 0.4 + dy * 0.2;
+                *v = Vec3::new(v.x * factor, v.y, v.z * factor);
+            }
+        } else if crate::block::contact::has_step_on(state.block()) {
+            burn.step_on = Some(on);
+        }
+    }
     let dims = vanillite_world::entity::Dimensions {
         width: 0.25,
         height: 0.25,
     };
     let mut cacti = 0_u8;
     let mut reacting = 0;
+    let mut bubbles = [None; 4];
+    let mut bubble_count = 0;
     let inside = crate::survival::blocks::inside_blocks(
         world.blocks,
         world.facts,
@@ -270,6 +312,14 @@ fn inside_blocks_fire(
         |cell| {
             if cell.state.block() == vanillite_data::block::ids::CACTUS {
                 cacti = cacti.saturating_add(1);
+            } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN {
+                // `BubbleColumnBlock.entityInside`: only where the item ends up.
+                if cell.precise
+                    && let Some(slot) = bubbles.get_mut(bubble_count)
+                {
+                    *slot = Some((cell.pos, cell.state.value("drag") == Some("true")));
+                    bubble_count += 1;
+                }
             } else if (world.reacts)(cell.state)
                 && let Some(slot) = burn.inside.get_mut(reacting)
             {
@@ -278,6 +328,25 @@ fn inside_blocks_fire(
             }
         },
     );
+    // `onAboveBubbleColumn` / `onInsideBubbleColumn`.
+    let mut tops = 0;
+    for (column, drag_down) in bubbles.into_iter().flatten() {
+        let above = world
+            .blocks
+            .block_state(BlockPos::new(column.x, column.y + 1, column.z))
+            .unwrap_or(BlockState::AIR);
+        let nothing_above = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+        v.y = match (nothing_above, drag_down) {
+            (true, true) => (v.y - 0.03).max(-0.9),
+            (true, false) => (v.y + 0.1).min(1.8),
+            (false, true) => (v.y - 0.03).max(-0.3),
+            (false, false) => (v.y + 0.06).min(0.7),
+        };
+        if nothing_above && let Some(slot) = burn.bubble_tops.get_mut(tops) {
+            *slot = Some(column);
+            tops += 1;
+        }
+    }
     // `CactusBlock.entityInside`: one point of damage per cactus touched.
     for _ in 0..cacti {
         hurt(data, world.types, world.types.cactus, 1.0, burn);
@@ -286,9 +355,12 @@ fn inside_blocks_fire(
         // `WebBlock.entityInside`.
         data.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
     }
-    if inside.powder_snow.is_some() {
-        // `PowderSnowBlock.entityInside`.
+    if let Some(snow) = inside.powder_snow {
+        // `PowderSnowBlock.entityInside`, with the snowflake of a moving item.
         data.stuck = Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+        if v.x != 0.0 || v.z != 0.0 {
+            burn.snowflake = Some(snow);
+        }
     }
     if !inside.burns() && data.fire_ticks == 0 {
         return;
@@ -316,6 +388,16 @@ fn inside_blocks_fire(
             // `shouldPlayLavaHurtSound`: every tenth tick, and when the item is destroyed.
             if burn.hurts > before && (data.health <= 0 || data.tick_count.is_multiple_of(10)) {
                 burn.lava_sound = Some(2.0 + data.next_float() * 0.4);
+            }
+        }
+        if data.fire_ticks > 0 {
+            // `runBefore(EXTINGUISH)` of powder snow and cauldrons: a burning item melts the
+            // snow and lowers the cauldron.
+            if let Some(snow) = step.melt_snow {
+                burn.melt_snow.get_or_insert(snow);
+            }
+            if let Some(cauldron) = step.cauldron {
+                burn.cauldron_fire.get_or_insert(cauldron);
             }
         }
         if step.extinguish && data.fire_ticks > 0 {
@@ -369,6 +451,51 @@ pub fn burn_effects(level: &mut crate::level::Level, id: EntityId, burn: Burn) {
         return;
     };
     let pos = e.pos();
+    // `FarmlandBlock.fallOn`: the trample chance is drawn for every entity.
+    if burn.farmland_fall {
+        let _ = vanillite_base::random::RandomSource::next_float(level.random());
+    }
+    if burn.bounced {
+        level.game_event(
+            crate::level::game_event::events().bounce,
+            pos,
+            crate::level::game_event::GameEventContext::of(Some(id)),
+        );
+    }
+    // `stepOn` of the block below: redstone ore lights up, sculk sensors hear the item.
+    if let Some(on) = burn.step_on {
+        crate::block::contact::step_on(level, on, id);
+        if !level.entities.store.contains(id) {
+            return;
+        }
+    }
+    if let Some(snow) = burn.snowflake {
+        use vanillite_base::random::RandomSource;
+        let r = level.random();
+        if r.next_boolean() {
+            let vx = f64::from((r.next_float() * 2.0 - 1.0) * 0.083_333_336);
+            let vz = f64::from((r.next_float() * 2.0 - 1.0) * 0.083_333_336);
+            level.send_particles(
+                crate::level::particles::simple("minecraft:snowflake"),
+                Vec3::new(pos.x, f64::from(snow.y + 1), pos.z),
+                0,
+                Vec3::new(vx, f64::from(0.05_f32), vz),
+                1.0,
+            );
+        }
+    }
+    if let Some(snow) = burn.melt_snow
+        && level.settings.mob_griefing
+    {
+        level.destroy_block(snow, false, None);
+    }
+    if let Some(cauldron) = burn.cauldron_fire {
+        crate::block::cauldron::burning_inside(level, cauldron);
+    }
+    // `Entity.sendBubbleColumnParticles` at the tops of bubble columns.
+    for column in burn.bubble_tops.into_iter().flatten() {
+        crate::level::particles::bubble_column_particles(level, column);
+    }
     // `entityInside` of pressure plates, tripwire and kin, in the order the item met them.
     for block in burn.inside.into_iter().flatten() {
         if !level.entities.store.contains(id) {
@@ -813,8 +940,24 @@ pub fn tick(
         };
         out.pos = moved.pos;
         out.on_ground = moved.hit_y && delta.y < 0.0;
-        // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps Java's signed
-        // zeros.
+        if !no_physics {
+            // `Entity.checkFallDamage` (items take no damage; farmland draws its chance).
+            if !data.in_water && moved.movement.y < 0.0 {
+                data.fall_distance -= moved.movement.y;
+            }
+            if out.on_ground {
+                if data.fall_distance > 0.0 {
+                    let on =
+                        BlockPos::containing(out.pos.x, out.pos.y - f64::from(0.2_f32), out.pos.z);
+                    burn.farmland_fall =
+                        block.state(on).block() == vanillite_data::block::ids::FARMLAND;
+                }
+                data.fall_distance = 0.0;
+            }
+        }
+        // `restituteMovementAfterCollisions` without bounciness of its own: `-v * 0.0` keeps
+        // Java's signed zeros; landing fast on a bouncy block (slime, beds, shelf mushrooms)
+        // bounces it with 0.8 of the block's restitution.
         if moved.hit_x {
             v.x = -v.x * 0.0;
         }
@@ -822,7 +965,36 @@ pub fn tick(
             v.z = -v.z * 0.0;
         }
         if moved.hit_y {
-            v.y = -v.y * 0.0;
+            let gravity = 0.04;
+            let effect = block.state(BlockPos::containing(
+                moved.pos.x,
+                moved.pos.y - f64::from(0.2_f32),
+                moved.pos.z,
+            ));
+            let restitution = if delta.y < 0.0
+                && -v.y > gravity
+                && !crate::block::block_tags()
+                    .suppresses_bounce
+                    .contains(effect)
+            {
+                crate::block::tnt::block_bounciness(effect.block())
+            } else {
+                0.0
+            };
+            v.y = if restitution > 0.0 {
+                let portion = moved.movement.y / v.y;
+                let drag = 1.0 + portion * (f64::from(0.98_f32) - 1.0);
+                burn.bounced = true;
+                (portion * gravity - v.y) * drag * restitution
+            } else {
+                // `(0 - y) * 1 * 0`: a resting 0.0 stays positive.
+                (0.0 - v.y) * 0.0
+            };
+        }
+        // `applyEffectsFromBlocks` on the way of the move, before the drag.
+        if !no_physics && let Some(movement) = data.last_movement {
+            let on_ground = out.on_ground;
+            inside_blocks_fire(data, movement, out.pos, on_ground, &mut v, fire, burn);
         }
         // `getAirDrag()` and the ground friction are floats, widened to double.
         let air_drag = 0.98_f32;
@@ -841,10 +1013,12 @@ pub fn tick(
             v.y *= -0.5;
         }
     }
-    // `applyEffectsFromBlocks` on the way of the move, for a resting item on the way of its
-    // last one (`isAffectedByBlocks`).
-    if !no_physics && let Some(movement) = data.last_movement {
-        inside_blocks_fire(data, movement, out.pos, fire, burn);
+    // `applyEffectsFromBlocksForLastMovements`: a resting item on the way of its last move.
+    if skip_move
+        && !no_physics
+        && let Some(movement) = data.last_movement
+    {
+        inside_blocks_fire(data, movement, out.pos, out.on_ground, &mut v, fire, burn);
     }
     out.moved_block = floor(old.x) != floor(out.pos.x)
         || floor(old.y) != floor(out.pos.y)

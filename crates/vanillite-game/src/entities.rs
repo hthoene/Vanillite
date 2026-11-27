@@ -36,6 +36,8 @@ pub struct FallingBlockData {
     pub cancel_drop: bool,
     /// `fallDistance`.
     pub fall_distance: f64,
+    /// `stuckSpeedMultiplier`: cobwebs and powder snow slow the next move.
+    pub stuck: vanillite_base::Vec3,
     /// The seed of the entity's own random (`Entity.random`), drawn once by an anvil's chip
     /// roll.
     pub seed: i64,
@@ -54,6 +56,7 @@ impl FallingBlockData {
             fall_hurt_max: 40,
             cancel_drop: false,
             fall_distance: 0.0,
+            stuck: vanillite_base::Vec3::ZERO,
             seed,
         }
     }

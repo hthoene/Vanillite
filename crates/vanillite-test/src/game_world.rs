@@ -452,6 +452,10 @@ impl GameWorld {
                     .filter(|r| r.dimension == "minecraft:overworld")
                     .map(|r| r.pos),
                 leads_mobs: self.level.entities.leashes.values().any(|&h| h == id),
+                ranges: vanillite_game::player::play::interaction_ranges(
+                    &player.inventory,
+                    player.game_mode,
+                ),
             };
             let mut effects = vanillite_server::LevelEffects::default();
             let spectators = vanillite_base::hash::FxHashSet::default();
@@ -2742,6 +2746,7 @@ impl GameWorld {
                 &entity,
                 player.game_mode,
                 &player.survival.effects,
+                &player.inventory,
                 0,
                 &self.level.chunks,
             );
@@ -2951,6 +2956,7 @@ impl GameWorld {
                 &entity,
                 player.game_mode,
                 &player.survival.effects,
+                &player.inventory,
                 0,
                 &self.level.chunks,
             );

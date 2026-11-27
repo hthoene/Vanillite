@@ -174,7 +174,7 @@ fn signal_strength(level: &Level, state: BlockState, pos: BlockPos) -> i32 {
 fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let signal = signal_for_state(state);
     if signal > 0 {
-        check_pressed(level, pos, state, signal);
+        check_pressed(level, None, pos, state, signal);
     }
 }
 
@@ -183,7 +183,7 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
 fn entity_inside(level: &mut Level, state: BlockState, pos: BlockPos, entity: EntityId) {
     let signal = signal_for_state(state);
     if signal == 0 && !super::contact::physical_cancelled(level, pos, entity) {
-        check_pressed(level, pos, state, signal);
+        check_pressed(level, Some(entity), pos, state, signal);
     }
 }
 
@@ -213,8 +213,15 @@ fn concat_into<'a>(buf: &'a mut [u8; 64], parts: &[&str]) -> &'a str {
     std::str::from_utf8(&buf[..len]).unwrap_or_default()
 }
 
-/// `checkPressed(sourceEntity, level, pos, state, oldSignal)`.
-fn check_pressed(level: &mut Level, pos: BlockPos, state: BlockState, old_signal: i32) {
+/// `checkPressed(sourceEntity, level, pos, state, oldSignal)`: the entity that pressed the plate
+/// is the source of the game events (`None` from `tick`).
+fn check_pressed(
+    level: &mut Level,
+    source: Option<EntityId>,
+    pos: BlockPos,
+    state: BlockState,
+    old_signal: i32,
+) {
     let signal = signal_strength(level, state, pos);
     let was_pressed = old_signal > 0;
     let is_pressed = signal > 0;
@@ -226,13 +233,17 @@ fn check_pressed(level: &mut Level, pos: BlockPos, state: BlockState, old_signal
     if !is_pressed && was_pressed {
         level.play_block_sound(None, pos, click_sound(state, false), SOUND_BLOCKS, 1.0, 1.0);
         level.game_event_at(
-            None,
+            source,
             crate::level::game_event::events().block_deactivate,
             pos,
         );
     } else if is_pressed && !was_pressed {
         level.play_block_sound(None, pos, click_sound(state, true), SOUND_BLOCKS, 1.0, 1.0);
-        level.game_event_at(None, crate::level::game_event::events().block_activate, pos);
+        level.game_event_at(
+            source,
+            crate::level::game_event::events().block_activate,
+            pos,
+        );
     }
     if is_pressed {
         level.schedule_block_tick(pos, state.block(), pressed_time(state));

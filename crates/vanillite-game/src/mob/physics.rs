@@ -579,16 +579,35 @@ fn shape_clip(from: Vec3, to: Vec3, pos: BlockPos, boxes: &[[f64; 6]]) -> Option
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.NONE`: the first block whose
 /// collision shape the segment hits (`BlockGetter.traverseBlocks`), with the hit point.
 pub fn clip(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, false)
+    clip_with(blocks, from, to, Fluids::None)
+}
+
+/// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.SOURCE_ONLY`: also stops at the
+/// surfaces of source fluids.
+pub fn clip_source_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
+    clip_with(blocks, from, to, Fluids::Source)
+}
+
+/// `ClipContext.Fluid`.
+#[derive(Clone, Copy, PartialEq)]
+enum Fluids {
+    None,
+    Source,
+    Any,
 }
 
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.ANY`: also stops at fluid
 /// surfaces (a fluid's shape is its height in the block).
 pub fn clip_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, true)
+    clip_with(blocks, from, to, Fluids::Any)
 }
 
-fn clip_with(blocks: &dyn Blocks, from: Vec3, to: Vec3, fluids: bool) -> Option<(BlockPos, Vec3)> {
+fn clip_with(
+    blocks: &dyn Blocks,
+    from: Vec3,
+    to: Vec3,
+    fluids: Fluids,
+) -> Option<(BlockPos, Vec3)> {
     if from == to {
         return None;
     }
@@ -606,7 +625,12 @@ fn clip_with(blocks: &dyn Blocks, from: Vec3, to: Vec3, fluids: bool) -> Option<
         let state = blocks.state(pos);
         let block = shape_clip(from, to, pos, state.collision_shape());
         let fluid = state.fluid_state();
-        let liquid = if fluids && !fluid.is_empty() {
+        let takes = match fluids {
+            Fluids::None => false,
+            Fluids::Any => !fluid.is_empty(),
+            Fluids::Source => !fluid.is_empty() && fluid.info().source,
+        };
+        let liquid = if takes {
             let above = blocks
                 .state(BlockPos::new(pos.x, pos.y + 1, pos.z))
                 .fluid_state();

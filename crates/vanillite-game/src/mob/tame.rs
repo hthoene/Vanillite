@@ -80,7 +80,8 @@ pub fn set_in_sitting_pose(t: &mut Tick<'_, '_>, on: bool) {
 /// `SitWhenOrderedToGoal.canUse`.
 pub fn sit_can_use(t: &mut Tick<'_, '_>) -> bool {
     let m = t.mob_ref();
-    if !m.tame || m.fluids.in_water() || !t.on_ground() {
+    // An untamed mob ordered to sit (`Sitting` loaded or merged) sits too.
+    if (!m.order_to_sit && !m.tame) || m.fluids.in_water() || !t.on_ground() {
         return false;
     }
     let ordered = m.order_to_sit;

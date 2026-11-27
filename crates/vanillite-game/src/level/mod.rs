@@ -1392,8 +1392,11 @@ impl Level {
         if state.is_air() {
             return false;
         }
-        // `spawnDestroyParticles`: `LevelEvent.PARTICLES_DESTROY_BLOCK`.
-        if !block::is_fire(state) {
+        // `spawnDestroyParticles`: `LevelEvent.PARTICLES_DESTROY_BLOCK` (none for fire; the
+        // straw bed sends its particles without the break sound).
+        if state.is(vanillite_data::block::ids::STRAW_BED) {
+            self.level_event(None, 2014, pos, i32::from(state.0));
+        } else if !block::is_fire(state) {
             self.level_event(None, 2001, pos, i32::from(state.0));
         }
         if drop {

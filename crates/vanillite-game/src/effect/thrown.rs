@@ -418,9 +418,23 @@ fn douse_fire(t: &mut SpecialTick<'_, '_>, pos: BlockPos, owner: Option<EntityId
             seed,
         );
     } else if lit && blocks.campfires.contains(state) {
-        // `CampfireBlock.douse`: the extinguish level event, then unlit.
-        let _ = owner;
+        // The extinguish level event, `CampfireBlock.douse` (a `block_change` game event by
+        // the owner), then unlit.
         t.cx.actions.push(WorldAction::LevelEvent(1009, pos, 0));
+        t.cx.actions.push(WorldAction::Level(
+            crate::mob::boss::warden::LevelAction::GameEvent {
+                event: crate::level::game_event::events().block_change,
+                pos: Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                context: crate::level::game_event::GameEventContext {
+                    source: owner,
+                    affected: None,
+                },
+            },
+        ));
         if let Some(off) = state.with("lit", "false") {
             t.cx.actions
                 .push(WorldAction::SetBlock(pos, off, crate::level::update::ALL));

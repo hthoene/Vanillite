@@ -384,7 +384,7 @@ impl LootTables {
     }
 
     /// Drops of breaking `ctx.state` (table `minecraft:blocks/<block path>`; no table → nothing).
-    /// Appends to `out`.
+    /// Appends to `out`, with emptied stacks as empty stacks.
     pub fn block_drops(
         &self,
         ctx: &BlockLootContext<'_>,
@@ -411,7 +411,9 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
-            keep_empty: false,
+            // `Block.getDrops` keeps stacks a function emptied: `popResource` still draws
+            // their position.
+            keep_empty: true,
         };
         eval.table(table);
     }

@@ -2070,8 +2070,15 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     let mut honey_count = 0;
     let mut bubbles = [(BlockPos::new(0, 0, 0), false); 4];
     let mut bubble_count = 0;
+    let mut eyeblossom = false;
     let dims = t.core().dims();
     let fast_fall = t.mob_ref().fall_distance > 2.5;
+    // `WebBlock.entityInside`: Weaving halves the slowdown.
+    let web = if t.mob_ref().effects.has(crate::effect::MobEffect::WEAVING) {
+        Vec3::new(0.5, 0.25, 0.5)
+    } else {
+        Vec3::new(0.25, f64::from(0.05_f32), 0.25)
+    };
     let (id, actions, level) = (t.id, &mut t.cx.actions, t.level);
     // `Spider.makeStuckInBlock`: spiders and cave spiders pass cobwebs.
     let spider = matches!(kind, super::Kind::Spider | super::Kind::CaveSpider);
@@ -2086,7 +2093,7 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         }
         if block == ids::COBWEB {
             if !spider {
-                stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
+                stuck = Some(web);
             }
         } else if block == ids::SWEET_BERRY_BUSH {
             if !matches!(kind, super::Kind::Fox | super::Kind::Bee) {
@@ -2101,6 +2108,9 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
                 *slot = pos;
                 honey_count += 1;
             }
+        } else if block == ids::OPEN_EYEBLOSSOM {
+            // `EyeblossomBlock.entityInside` (in `#bee_attractive`).
+            eyeblossom |= kind == super::Kind::Bee;
         } else if block == ids::BUBBLE_COLUMN {
             // `BubbleColumnBlock.entityInside`: only where the mob ends up.
             if cell.precise
@@ -2153,6 +2163,20 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     {
         // `WitherRoseBlock.entityInside`.
         let effect = crate::effect::EffectInstance::new(crate::effect::MobEffect::WITHER, 40, 0);
+        let type_id = kind.type_id();
+        crate::effect::consume::add_effect(
+            type_id,
+            effect,
+            &mut crate::effect::living::MobHost { t },
+        );
+    }
+    if eyeblossom
+        && t.exists()
+        && t.env.difficulty != crate::survival::rules::Difficulty::Peaceful
+        && !t.mob_ref().effects.has(crate::effect::MobEffect::POISON)
+    {
+        // `EyeblossomBlock.entityInside`: a bee in an open eyeblossom is poisoned.
+        let effect = crate::effect::EffectInstance::new(crate::effect::MobEffect::POISON, 25, 0);
         let type_id = kind.type_id();
         crate::effect::consume::add_effect(
             type_id,

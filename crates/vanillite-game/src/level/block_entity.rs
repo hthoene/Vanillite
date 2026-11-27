@@ -695,16 +695,21 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         _ => None,
     };
     if state.is(ids::MOVING_PISTON) {
-        let moved = match nbt.get("blockState") {
-            Some(Tag::Compound(c)) => read_block_state(c),
-            _ => BlockState::AIR,
-        };
+        let moved = nbt
+            .get("blockState")
+            .and_then(read_state_codec)
+            .unwrap_or(BlockState::AIR);
         let flag = |name| matches!(nbt.get(name), Some(Tag::Byte(v)) if *v != 0);
         let progress = match nbt.get("progress") {
             Some(Tag::Float(v)) => *v,
             _ => 0.0,
         };
-        let direction = direction_from_3d(int("facing").unwrap_or(0));
+        // `Direction.LEGACY_ID_CODEC`: a byte (older saves of Vanillite: an int).
+        let facing = match nbt.get("facing") {
+            Some(Tag::Byte(v)) => i32::from(*v),
+            _ => int("facing").unwrap_or(0),
+        };
+        let direction = direction_from_3d(facing);
         let mut piston = MovingPiston::new(moved, direction, flag("extending"), flag("source"));
         piston.progress = progress;
         piston.progress_o = progress;
@@ -794,11 +799,11 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
     match entity {
         BlockEntity::Comparator { output } => nbt.insert("OutputSignal", Tag::Int(*output)),
         BlockEntity::MovingPiston(piston) => {
+            nbt.insert("blockState", write_state_codec(piston.moved_state));
             nbt.insert(
-                "blockState",
-                Tag::Compound(write_block_state(piston.moved_state)),
+                "facing",
+                Tag::Byte(i8::try_from(direction_to_3d(piston.direction)).unwrap_or(0)),
             );
-            nbt.insert("facing", Tag::Int(direction_to_3d(piston.direction)));
             nbt.insert("progress", Tag::Float(piston.progress_o));
             nbt.insert("extending", Tag::Byte(i8::from(piston.extending)));
             nbt.insert("source", Tag::Byte(i8::from(piston.source)));
@@ -901,18 +906,47 @@ pub fn read_block_state(c: &Compound) -> BlockState {
     state
 }
 
-/// `NbtUtils.writeBlockState`.
-pub(crate) fn write_block_state(state: BlockState) -> Compound {
+/// `BlockState.CODEC` (`CONSTANT_OR_DISPATCH_CODEC`): the block id of a default state, else
+/// `{id, properties}`; the `{Name, Properties}` of `NbtUtils` reads too. `None` for anything
+/// else.
+pub fn read_state_codec(tag: &Tag) -> Option<BlockState> {
+    match tag {
+        Tag::String(name) => vanillite_data::block::BlockId::by_name(name)
+            .map(vanillite_data::block::BlockId::default_state),
+        Tag::Compound(c) => match c.get("id") {
+            Some(Tag::String(name)) => {
+                let block = vanillite_data::block::BlockId::by_name(name)?;
+                let mut state = block.default_state();
+                if let Some(Tag::Compound(props)) = c.get("properties") {
+                    for (key, value) in props.iter() {
+                        if let Tag::String(value) = value {
+                            state = state.with(key, value).unwrap_or(state);
+                        }
+                    }
+                }
+                Some(state)
+            }
+            _ => c.get("Name").is_some().then(|| read_block_state(c)),
+        },
+        _ => None,
+    }
+}
+
+/// `BlockState.CODEC` of `state`: the block id for its default state, else
+/// `{id, properties}` with every property.
+pub fn write_state_codec(state: BlockState) -> Tag {
+    let name = state.block().name().to_owned();
+    if state == state.block().default_state() {
+        return Tag::String(name);
+    }
     let mut c = Compound::new();
-    c.insert("Name", Tag::String(state.block().name().to_owned()));
+    c.insert("id", Tag::String(name));
     let mut props = Compound::new();
     for (key, value) in state.properties() {
         props.insert(key, Tag::String(value.to_owned()));
     }
-    if !props.is_empty() {
-        c.insert("Properties", Tag::Compound(props));
-    }
-    c
+    c.insert("properties", Tag::Compound(props));
+    Tag::Compound(c)
 }
 
 impl Level {

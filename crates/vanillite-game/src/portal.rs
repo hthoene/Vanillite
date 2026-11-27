@@ -249,7 +249,12 @@ pub fn can_use_portal(ents: &Entities, id: EntityId) -> bool {
         return false;
     }
     if let Some(m) = ents.mob(id) {
-        return m.is_alive();
+        // `LivingEntity.canUsePortal`: not while sleeping; `Creaking`: not while bound to a
+        // creaking heart.
+        return m.is_alive()
+            && e.pose() != vanillite_world::entity::Pose::Sleeping
+            && !(m.kind == crate::mob::Kind::Creaking
+                && crate::mob::fam::mount::creaking::heart_bound(m));
     }
     if let Some(d) = ents.missile(id) {
         return !d.removed;
@@ -535,9 +540,9 @@ pub fn relative_position(
         HorizontalAxis::X => v.x,
         HorizontalAxis::Z => v.z,
     };
-    // `axis1Size - width` is int minus float: a float.
-    let free_width = f64::from(rect.width as f32 - width);
-    let free_height = f64::from(rect.height as f32 - height);
+    // `(double) axis1Size - width`: a double subtraction.
+    let free_width = f64::from(rect.width) - f64::from(width);
+    let free_height = f64::from(rect.height) - f64::from(height);
     let bottom = rect.min_corner;
     let right = if free_width > 0.0 {
         let start = f64::from(axis.coord(bottom)) + f64::from(width) / 2.0;
@@ -590,9 +595,10 @@ pub fn exit_position(
     height: f32,
 ) -> (Vec3, f32) {
     let rotation = if entry.axis == exit_axis { 0.0 } else { 90.0 };
-    // `width - dimensions.width()` is int minus float: a float.
-    let right = f64::from(width) / 2.0 + f64::from(exit.width as f32 - width) * entry.offset.x;
-    let up = f64::from(exit.height as f32 - height) * entry.offset.y;
+    // `width - dimensions.width()` with the double `width`.
+    let right =
+        f64::from(width) / 2.0 + (f64::from(exit.width) - f64::from(width)) * entry.offset.x;
+    let up = (f64::from(exit.height) - f64::from(height)) * entry.offset.y;
     let forward = 0.5 + entry.offset.z;
     let b = exit.min_corner;
     let x_aligned = exit_axis == HorizontalAxis::X;

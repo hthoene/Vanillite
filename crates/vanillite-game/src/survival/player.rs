@@ -976,7 +976,7 @@ pub fn hurt_with(
 ) -> bool {
     let types = env.types;
     let kind = source.kind;
-    if is_invulnerable_to(player, env, kind) {
+    if is_invulnerable_to(player, env, kind) || immune_to_damage(entity, player, env, &source) {
         return false;
     }
     if Abilities::of(player.game_mode).invulnerable
@@ -1205,7 +1205,7 @@ fn actually_hurt(
 ) {
     let types = env.types;
     let kind = source.kind;
-    if is_invulnerable_to(player, env, kind) {
+    if is_invulnerable_to(player, env, kind) || immune_to_damage(entity, player, env, &source) {
         return;
     }
     let mut damage = damage;
@@ -1344,9 +1344,48 @@ fn protection(
     env: &mut Env<'_>,
     source: &DamageSource,
 ) -> f32 {
-    let Some(data) = crate::player::play::game_data() else {
-        return 0.0;
-    };
+    with_damage_context(
+        entity,
+        player,
+        env,
+        source,
+        |enchants, equipment, cx, random| enchants.damage_protection(equipment, cx, random),
+    )
+    .unwrap_or(0.0)
+}
+
+/// `EnchantmentHelper.isImmuneToDamage` of a player's equipment (Frost Walker on magma).
+fn immune_to_damage(
+    entity: &EntityMut<'_>,
+    player: &PlayerData,
+    env: &mut Env<'_>,
+    source: &DamageSource,
+) -> bool {
+    with_damage_context(
+        entity,
+        player,
+        env,
+        source,
+        |enchants, equipment, cx, random| enchants.immune_to_damage(equipment, cx, random),
+    )
+    .unwrap_or(false)
+}
+
+/// Runs `f` with the enchantment context of `source` hurting the player and its non-empty
+/// equipment; `None` without equipment.
+fn with_damage_context<R>(
+    entity: &EntityMut<'_>,
+    player: &PlayerData,
+    env: &mut Env<'_>,
+    source: &DamageSource,
+    f: impl FnOnce(
+        &crate::enchant::Enchantments,
+        &[(crate::item::EquipmentSlot, &crate::item::ItemStack)],
+        &crate::enchant::EnchantContext<'_>,
+        &mut dyn crate::enchant::FloatRandom,
+    ) -> R,
+) -> Option<R> {
+    let data = crate::player::play::game_data()?;
     let equipment: Vec<(crate::item::EquipmentSlot, &crate::item::ItemStack)> =
         crate::player::encode::EQUIPMENT_SLOTS
             .iter()
@@ -1354,7 +1393,7 @@ fn protection(
             .filter(|(_, s)| !s.is_empty())
             .collect();
     if equipment.is_empty() {
-        return 0.0;
+        return None;
     }
     let flags = entity.as_ref().flags();
     let this = crate::predicate::EntityFacts {
@@ -1388,7 +1427,7 @@ fn protection(
         thundering: false,
         location: None,
     };
-    data.enchants.damage_protection(&equipment, &cx, env.random)
+    Some(f(&data.enchants, &equipment, &cx, env.random))
 }
 
 /// `applyItemBlocking`: the item a player blocks with (`blocks_attacks`, raised for its block
@@ -2318,6 +2357,7 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     let mut path = std::mem::take(&mut player.connection.movement.path);
     crate::survival::inside::finish(&mut path, pos, pos);
     let mut honey = Vec::new();
+    let mut bubbles = Vec::new();
     let inside = blocks::inside_blocks(
         env.blocks,
         env.facts,
@@ -2327,9 +2367,31 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         |cell| {
             if cell.state.block() == vanillite_data::block::ids::HONEY_BLOCK {
                 honey.push((cell.pos, cell.state));
+            } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
+                && cell.precise
+            {
+                bubbles.push(cell.pos);
             }
         },
     );
+    // `BubbleColumnBlock.entityInside` of a player that does not fly: the particles at the
+    // top of the column (the drag is the client's), the fall distance reset inside it.
+    if !player.survival.flying {
+        for column in bubbles {
+            let above = env
+                .blocks
+                .block_state(BlockPos::new(column.x, column.y + 1, column.z))
+                .unwrap_or(vanillite_data::block::BlockState::AIR);
+            if above.collision_shape().is_empty() && above.fluid_state().is_empty() {
+                player
+                    .survival
+                    .world_actions
+                    .push(crate::mob::WorldAction::BubbleColumnParticles(column));
+            } else {
+                crate::advancements::tracking::reset_fall_distance(player);
+            }
+        }
+    }
     path.clear();
     player.connection.movement.path = path;
     for (block, state) in honey {
@@ -2829,13 +2891,27 @@ fn check_fall_damage(
                 pos,
                 Some(on_state),
             ));
+            // `TurtleEggBlock.fallOn`: one egg breaks with chance 1/3 (spawn protection is not
+            // checked).
+            if on_state.block() == vanillite_data::block::ids::TURTLE_EGG {
+                player
+                    .survival
+                    .world_actions
+                    .push(crate::mob::WorldAction::TrampleTurtleEgg {
+                        pos: on_pos,
+                        can_destroy: true,
+                        randomness: 3,
+                    });
+            }
             match env.facts.landing(on_state) {
                 Landing::Fall(multiplier) => {
                     cause_fall_damage(entity, player, env, fall, multiplier, env.types.fall);
                 }
                 Landing::Slime => {
-                    let multiplier = if crouching { 1.0 } else { 0.0 };
-                    cause_fall_damage(entity, player, env, fall, multiplier, env.types.fall);
+                    // `SlimeBlock.fallOn`: a sneaking player neither bounces nor takes damage.
+                    if !crouching {
+                        cause_fall_damage(entity, player, env, fall, 0.0, env.types.fall);
+                    }
                 }
                 Landing::Honey => {
                     let id = entity.as_ref().id();
@@ -3453,6 +3529,26 @@ fn simulate_move(
                 -current.y * 0.0
             };
             if restitution > 0.0 {
+                // `ShelfMushroomBlock.bounceOn`: the bounce sound at the block below.
+                let block = pos_below_affecting_movement(below);
+                if effect_state
+                    .is_some_and(|s| s.block() == vanillite_data::block::ids::SHELF_MUSHROOM)
+                {
+                    crate::survival::play_sound(
+                        env.out,
+                        None,
+                        Vec3::new(
+                            f64::from(block.x) + 0.5,
+                            f64::from(block.y) + 0.5,
+                            f64::from(block.z) + 0.5,
+                        ),
+                        "minecraft:block.shelf_mushroom.bounce",
+                        SoundSource::Blocks,
+                        1.0,
+                        1.0,
+                        crate::survival::sound_seed(),
+                    );
+                }
                 player.survival.game_events.push((
                     crate::level::game_event::events().bounce,
                     below,

@@ -369,6 +369,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     }
     if block == ids::LILY_PAD {
         b.entity_inside = Some(contact::lily_pad_entity_inside);
+    } else if block == ids::FROGSPAWN {
+        b.entity_inside = Some(falling::frogspawn_entity_inside);
     }
     if decor::is_skull(block) {
         b.neighbor_changed = Some(decor::skull_neighbor_changed);

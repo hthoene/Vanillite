@@ -679,6 +679,8 @@ pub struct Enchantment {
     pub damage: Vec<Conditional<ValueEffect>>,
     pub knockback: Vec<Conditional<ValueEffect>>,
     pub damage_protection: Vec<Conditional<ValueEffect>>,
+    /// `minecraft:damage_immunity` (Frost Walker against `#burn_from_stepping`).
+    pub damage_immunity: Vec<Conditional<()>>,
     pub armor_effectiveness: Vec<Conditional<ValueEffect>>,
     pub smash_damage_per_fallen_block: Vec<Conditional<ValueEffect>>,
     pub post_attack: Vec<PostAttack>,
@@ -801,6 +803,7 @@ impl Enchantment {
             damage: values("minecraft:damage"),
             knockback: values("minecraft:knockback"),
             damage_protection: values("minecraft:damage_protection"),
+            damage_immunity: conditionals(get("minecraft:damage_immunity"), |_| Some(())),
             armor_effectiveness: values("minecraft:armor_effectiveness"),
             smash_damage_per_fallen_block: values("minecraft:smash_damage_per_fallen_block"),
             post_attack,
@@ -1179,6 +1182,32 @@ impl Enchantments {
             }
         }
         value
+    }
+
+    /// `EnchantmentHelper.isImmuneToDamage`: an enchantment of the equipment, in a slot it
+    /// works in, has a `damage_immunity` effect whose requirements hold.
+    pub fn immune_to_damage(
+        &self,
+        equipment: &[(EquipmentSlot, &ItemStack)],
+        cx: &EnchantContext<'_>,
+        random: &mut dyn FloatRandom,
+    ) -> bool {
+        for &(slot, stack) in equipment {
+            for (e, level) in self.of(stack) {
+                if !e.works_in(slot) {
+                    continue;
+                }
+                for c in &e.damage_immunity {
+                    if c.requirements
+                        .as_ref()
+                        .is_none_or(|r| r.test(cx, level, random))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// `Enchantment.doPostAttack` of every enchantment of `stack` for `party`: the post

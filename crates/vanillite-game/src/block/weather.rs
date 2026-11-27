@@ -75,11 +75,19 @@ pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1);
             if layers < max_height.min(8) {
-                // `Block.pushEntitiesUp` moves entities in the way; scenario worlds have none.
                 let grown = state
                     .with("layers", &(layers + 1).to_string())
                     .unwrap_or(state);
-                he::set_block_and_update(level, BLOCK_FORM, top, grown);
+                if he::allows(level, BLOCK_FORM, top, grown) {
+                    // `Block.pushEntitiesUp`: the collision grows by one layer.
+                    let (x, y, z) = (f64::from(top.x), f64::from(top.y), f64::from(top.z));
+                    let (low, high) = (f64::from(layers - 1) / 8.0, f64::from(layers) / 8.0);
+                    super::contact::push_entities_up_from(
+                        level,
+                        vanillite_base::Aabb::new(x, y + low, z, x + 1.0, y + high, z + 1.0),
+                    );
+                    level.set_block_and_update(top, grown);
+                }
             }
         } else {
             he::set_block_and_update(level, BLOCK_FORM, top, ids::SNOW.default_state());
@@ -237,8 +245,12 @@ pub(super) fn frosted_ice_on_place(
 pub(super) fn frosted_ice_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let block = state.block();
     if level.random().next_int_bounded(3) == 0 || fewer_frosted_neighbours(level, pos, block, 4) {
-        // `getMaxLocalRawBrightness`; the End would use block light (no frosted ice there).
-        let brightness = level.max_local_raw_brightness(pos);
+        // `getMaxLocalRawBrightness`; block light only in the End.
+        let brightness = if level.settings.dimension == "minecraft:the_end" {
+            level.light(pos).1
+        } else {
+            level.max_local_raw_brightness(pos)
+        };
         let age = state.int("age").unwrap_or(0);
         if brightness > 11 - age - i32::from(state.light_dampening())
             && slightly_melt(level, state, pos)
@@ -301,6 +313,11 @@ pub(super) fn snow_random_tick(level: &mut Level, state: BlockState, pos: BlockP
     if level.light(pos).1 > 11 && he::allows(level, BLOCK_FADE, pos, BlockState::AIR) {
         drops::drop_resources(level, pos, state, None);
         level.remove_block(pos, false);
+        level.game_event_block(
+            crate::level::game_event::events().block_destroy,
+            pos,
+            crate::level::game_event::GameEventContext::with_state(None, state),
+        );
     }
 }
 

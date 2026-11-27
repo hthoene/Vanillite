@@ -206,10 +206,57 @@ impl ResolvedRule {
 }
 
 /// The default `minecraft:tool` components with their block tags resolved (built once at
-/// start from the loaded tags).
+/// start from the loaded tags), and the block tags for tool components a stack's patch sets.
 #[derive(Debug, Clone, Default)]
 pub struct ToolTable {
     tools: Vec<Vec<ResolvedRule>>,
+    /// Block tags by id (sorted block ids), for patched tool rules.
+    tags: std::sync::Arc<std::collections::HashMap<String, Vec<u16>>>,
+}
+
+/// A `minecraft:tool` component set by a stack's patch (`Tool.STREAM_CODEC`).
+struct PatchedTool {
+    rules: Vec<(crate::consumable::HolderSet, Option<f32>, Option<bool>)>,
+    default_mining_speed: f32,
+    damage_per_block: u32,
+    can_destroy_blocks_in_creative: bool,
+}
+
+impl PatchedTool {
+    fn read(data: &[u8]) -> Option<PatchedTool> {
+        let mut r = Reader::new(data);
+        let n = usize::try_from(r.varint().ok()?).ok()?;
+        let mut rules = Vec::with_capacity(n.min(64));
+        for _ in 0..n {
+            let blocks = crate::consumable::read_holder_set(&mut r)?;
+            let speed = if crate::consumable::read_bool(&mut r)? {
+                Some(r.f32().ok()?)
+            } else {
+                None
+            };
+            let correct = if crate::consumable::read_bool(&mut r)? {
+                Some(crate::consumable::read_bool(&mut r)?)
+            } else {
+                None
+            };
+            rules.push((blocks, speed, correct));
+        }
+        let default_mining_speed = r.f32().ok()?;
+        let damage_per_block = u32::try_from(r.varint().ok()?.max(0)).ok()?;
+        let can_destroy_blocks_in_creative = crate::consumable::read_bool(&mut r)?;
+        Some(PatchedTool {
+            rules,
+            default_mining_speed,
+            damage_per_block,
+            can_destroy_blocks_in_creative,
+        })
+    }
+}
+
+/// The tool component a stack uses.
+enum ToolRef<'a> {
+    Default(&'static ToolInfo, &'a [ResolvedRule]),
+    Patched(PatchedTool),
 }
 
 impl ToolTable {
@@ -242,43 +289,78 @@ impl ToolTable {
                     .collect()
             })
             .collect();
-        ToolTable { tools }
+        ToolTable {
+            tools,
+            tags: std::sync::Arc::default(),
+        }
     }
 
-    fn tool(&self, stack: &ItemStack) -> Option<(&'static ToolInfo, &[ResolvedRule])> {
+    /// Sets the block tags (sorted block ids by tag id) patched tool rules are resolved with.
+    pub fn set_block_tags(
+        &mut self,
+        tags: std::sync::Arc<std::collections::HashMap<String, Vec<u16>>>,
+    ) {
+        self.tags = tags;
+    }
+
+    fn tool(&self, stack: &ItemStack) -> Option<ToolRef<'_>> {
         if stack.is_empty() {
             return None;
         }
-        if stack
-            .patch()
-            .is_some_and(|p| p.is_removed(ids::TOOL) || p.get(ids::TOOL).is_some())
-        {
-            // Patched tool components are not interpreted yet: the stack mines like a hand.
-            return None;
+        if let Some(patch) = stack.patch() {
+            if patch.is_removed(ids::TOOL) {
+                return None;
+            }
+            if let Some(data) = patch.get(ids::TOOL) {
+                return PatchedTool::read(data).map(ToolRef::Patched);
+            }
         }
         let index = usize::from(item_id(stack).info().tool);
-        Some((TOOLS.get(index)?, self.tools.get(index)?))
+        Some(ToolRef::Default(TOOLS.get(index)?, self.tools.get(index)?))
+    }
+
+    /// Whether a patched rule's block set holds `state`.
+    fn patched_contains(&self, blocks: &crate::consumable::HolderSet, state: BlockState) -> bool {
+        let block = state.block().0;
+        match blocks {
+            crate::consumable::HolderSet::Tag(t) => self
+                .tags
+                .get(t.as_str())
+                .is_some_and(|v| v.binary_search(&block).is_ok()),
+            crate::consumable::HolderSet::Ids(ids) => ids.contains(&block),
+        }
     }
 
     /// `ItemStack.getDestroySpeed`.
     pub fn destroy_speed(&self, stack: &ItemStack, state: BlockState) -> f32 {
         match self.tool(stack) {
-            Some((info, rules)) => rules
+            Some(ToolRef::Default(info, rules)) => rules
                 .iter()
                 .find_map(|r| r.speed.filter(|_| r.contains(state)))
                 .unwrap_or(info.default_mining_speed),
+            Some(ToolRef::Patched(tool)) => tool
+                .rules
+                .iter()
+                .find_map(|(b, speed, _)| speed.filter(|_| self.patched_contains(b, state)))
+                .unwrap_or(tool.default_mining_speed),
             None => 1.0,
         }
     }
 
     /// `ItemStack.isCorrectToolForDrops`.
     pub fn is_correct_for_drops(&self, stack: &ItemStack, state: BlockState) -> bool {
-        self.tool(stack).is_some_and(|(_, rules)| {
-            rules
+        match self.tool(stack) {
+            Some(ToolRef::Default(_, rules)) => rules
                 .iter()
                 .find_map(|r| r.correct_for_drops.filter(|_| r.contains(state)))
-                .unwrap_or(false)
-        })
+                .unwrap_or(false),
+            Some(ToolRef::Patched(tool)) => tool
+                .rules
+                .iter()
+                .find_map(|(b, _, correct)| correct.filter(|_| self.patched_contains(b, state)))
+                .unwrap_or(false),
+            None => false,
+        }
     }
 
     /// Whether the stack has a `minecraft:tool` component.
@@ -288,15 +370,21 @@ impl ToolTable {
 
     /// `Tool.damagePerBlock`, 0 without a tool.
     pub fn damage_per_block(&self, stack: &ItemStack) -> u32 {
-        self.tool(stack)
-            .map_or(0, |(info, _)| info.damage_per_block)
+        match self.tool(stack) {
+            Some(ToolRef::Default(info, _)) => info.damage_per_block,
+            Some(ToolRef::Patched(tool)) => tool.damage_per_block,
+            None => 0,
+        }
     }
 
     /// `Item.canDestroyBlock`: tools that cannot destroy blocks in creative (swords, maces,
     /// tridents) cannot.
     pub fn can_destroy_in_creative(&self, stack: &ItemStack) -> bool {
-        self.tool(stack)
-            .is_none_or(|(info, _)| info.can_destroy_blocks_in_creative)
+        match self.tool(stack) {
+            Some(ToolRef::Default(info, _)) => info.can_destroy_blocks_in_creative,
+            Some(ToolRef::Patched(tool)) => tool.can_destroy_blocks_in_creative,
+            None => true,
+        }
     }
 }
 

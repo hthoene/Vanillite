@@ -1,0 +1,209 @@
+{
+  "description": "Entities and blocks (#217): a bee in an open eyeblossom is poisoned (C2-16); a husk with Weaving is slowed less in a cobweb (C2-03); a husk a dispenser puts Frost Walker boots on stops taking damage on magma, one without keeps taking it (damage_immunity, C2-15); an ender eye pushes an item on the portal frame up (B2-66).",
+  "tier": "fast",
+  "level_rng": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      20,
+      -54,
+      10
+    ]
+  ],
+  "ticks": 34,
+  "entities": [
+    {
+      "name": "bee",
+      "type": "minecraft:bee",
+      "pos": [
+        1.5,
+        -60.0,
+        1.5
+      ],
+      "seed": 1,
+      "finalize": false
+    },
+    {
+      "name": "weaver",
+      "type": "minecraft:husk",
+      "pos": [
+        4.5,
+        -60.0,
+        1.5
+      ],
+      "seed": 2,
+      "finalize": false
+    },
+    {
+      "name": "husk",
+      "type": "minecraft:husk",
+      "pos": [
+        7.5,
+        -60.0,
+        1.5
+      ],
+      "seed": 3,
+      "finalize": false
+    },
+    {
+      "name": "walker",
+      "type": "minecraft:husk",
+      "pos": [
+        10.5,
+        -60.0,
+        1.5
+      ],
+      "seed": 4,
+      "finalize": false
+    },
+    {
+      "name": "r",
+      "type": "minecraft:player",
+      "pos": [
+        10.5,
+        -60.0,
+        7.5
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:open_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -61,
+        1
+      ],
+      "block": "minecraft:grass_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -60,
+        1
+      ],
+      "to": [
+        4,
+        -59,
+        1
+      ],
+      "block": "minecraft:cobweb"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -61,
+        1
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -61,
+        1
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        0
+      ],
+      "to": [
+        11,
+        -59,
+        0
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        2
+      ],
+      "to": [
+        11,
+        -59,
+        2
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        7
+      ],
+      "block": "minecraft:end_portal_frame[facing=north,eye=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        0
+      ],
+      "block": "minecraft:dispenser[facing=south]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 10 -60 0 {Items:[{Slot:0b,id:\"minecraft:diamond_boots\",count:1,components:{\"minecraft:enchantments\":{\"minecraft:frost_walker\":2}}}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 10 -60 -1 minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "weaver",
+      "effect": "minecraft:weaving",
+      "duration": 600,
+      "amplifier": 0
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 6.5 -58.8 7.5 {Item:{id:\"minecraft:dirt\",count:1},PickupDelay:100}"
+    },
+    {
+      "tick": 14,
+      "op": "use",
+      "entity": "r",
+      "pos": [
+        6,
+        -60,
+        7
+      ],
+      "face": "up",
+      "item": "minecraft:ender_eye"
+    }
+  ]
+}

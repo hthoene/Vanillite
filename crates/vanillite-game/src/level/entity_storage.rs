@@ -22,7 +22,6 @@ use vanillite_world::chunks::Visibility;
 use vanillite_world::entity::{EntityFlags, EntityId, NewEntity, Rotation};
 
 use super::Level;
-use super::block_entity::{read_block_state, write_block_state};
 use crate::entities::PERSISTENT_DATA;
 use crate::entities::{FallingBlockData, PrimedTntData};
 use crate::item_entity::ItemData;
@@ -374,10 +373,10 @@ impl Level {
             let items = &mut self.entities.items;
             self.entities.store.spawn(new, |id| items.push(id, data))
         } else if kind == ids::FALLING_BLOCK {
-            let state = match nbt.get("BlockState") {
-                Some(Tag::Compound(c)) => read_block_state(c),
-                _ => vanillite_data::block::ids::SAND.default_state(),
-            };
+            let state = nbt
+                .get("BlockState")
+                .and_then(super::block_entity::read_state_codec)
+                .unwrap_or_else(|| vanillite_data::block::ids::SAND.default_state());
             let mut data = FallingBlockData::new(
                 state,
                 flag(&nbt, "DropItem").unwrap_or(true),
@@ -399,10 +398,10 @@ impl Level {
             };
             self.entities.spawn_falling_block(new, data)
         } else {
-            let state = match nbt.get("block_state") {
-                Some(Tag::Compound(c)) => read_block_state(c),
-                _ => vanillite_data::block::ids::TNT.default_state(),
-            };
+            let state = nbt
+                .get("block_state")
+                .and_then(super::block_entity::read_state_codec)
+                .unwrap_or_else(|| vanillite_data::block::ids::TNT.default_state());
             let power = match nbt.get("explosion_power") {
                 Some(Tag::Float(v)) => v.clamp(0.0, 128.0),
                 _ => 4.0,
@@ -762,7 +761,10 @@ impl Level {
             }
         } else if kind == ids::FALLING_BLOCK {
             let data = self.entities.falling_block(id)?;
-            nbt.insert("BlockState", write_block_state(data.state));
+            nbt.insert(
+                "BlockState",
+                super::block_entity::write_state_codec(data.state),
+            );
             nbt.insert("Time", data.time);
             nbt.insert("DropItem", data.drop_item);
             nbt.insert("HurtEntities", data.hurt_entities);
@@ -773,7 +775,10 @@ impl Level {
         } else {
             let data = self.entities.primed_tnt(id)?;
             nbt.insert("fuse", data.fuse as i16);
-            nbt.insert("block_state", write_block_state(data.state));
+            nbt.insert(
+                "block_state",
+                super::block_entity::write_state_codec(data.state),
+            );
             if data.explosion_power != 4.0 {
                 nbt.insert("explosion_power", data.explosion_power);
             } else {

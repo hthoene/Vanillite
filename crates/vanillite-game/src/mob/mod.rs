@@ -804,6 +804,8 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// `stepOn` of the block at the position for the entity standing on it.
     StepOn(BlockPos, EntityId),
+    /// `Entity.sendBubbleColumnParticles` at the top of the bubble column at the position.
+    BubbleColumnParticles(BlockPos),
     /// `onProjectileHit` of the block at the position, hit by the projectile at the point
     /// with the speed.
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
@@ -880,6 +882,9 @@ impl WorldAction {
                 if level.entities.store.contains(id) {
                     crate::block::contact::step_on(level, pos, id);
                 }
+            }
+            WorldAction::BubbleColumnParticles(pos) => {
+                crate::level::particles::bubble_column_particles(level, pos);
             }
             WorldAction::TrampleFarmland(pos, id) => {
                 crate::block::contact::trample_farmland(level, pos, Some(id));

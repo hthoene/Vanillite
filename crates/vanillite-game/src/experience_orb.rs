@@ -250,7 +250,13 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     let colliding = collides(level, &aabb);
     if eye_in_water(level, pos) {
         // `setUnderwaterMovement`.
-        v = Vec3::new(v.x * 0.99, (v.y + 5.0e-4).min(0.06), v.z * 0.99);
+        // Float constants widened to double.
+        let drag = f64::from(0.99_f32);
+        v = Vec3::new(
+            v.x * drag,
+            (v.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32)),
+            v.z * drag,
+        );
     } else if !colliding {
         v.y -= GRAVITY;
     }
@@ -310,6 +316,88 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         // `Block.updateEntityMovementAfterFallOn`.
         v.y = 0.0;
     }
+    if let Some(mut e) = level.entities.store.get_mut(id) {
+        e.set_pos(new_pos);
+        if fall_speed != 0.0 {
+            e.set_flags(EntityFlags::ON_GROUND, below);
+        }
+        if needs_sync {
+            e.set_flags(EntityFlags::HAS_IMPULSE, true);
+        }
+    }
+    // `applyEffectsFromBlocks`: `stepOn` of the block below (slime slows the orb, redstone
+    // ore lights up), then cacti hurt the orb, bubble columns drag it, plates and tripwire
+    // react.
+    if below {
+        let on = BlockPos::containing(new_pos.x, new_pos.y - f64::from(0.2_f32), new_pos.z);
+        let block = level.block(on).block();
+        if block == vanillite_data::block::ids::SLIME_BLOCK {
+            let dy = v.y.abs();
+            if dy < 0.1 {
+                let factor = 0.4 + dy * 0.2;
+                v = Vec3::new(v.x * factor, v.y, v.z * factor);
+            }
+        } else if crate::block::contact::has_step_on(block) {
+            crate::block::contact::step_on(level, on, id);
+            if !level.entities.store.contains(id) {
+                return;
+            }
+        }
+    }
+    let dims = level.entities.store.get(id).map(|e| e.dims());
+    if let Some(dims) = dims {
+        enum Hit {
+            Cactus,
+            Bubble(BlockPos),
+            Hook(BlockPos),
+        }
+        let way = [crate::survival::inside::Movement::plain(pos, new_pos)];
+        let mut hits = Vec::new();
+        let view = level.view();
+        let walker = crate::survival::inside::Walker {
+            blocks: &view,
+            facts: None,
+            dims,
+            fast_fall: false,
+        };
+        walker.walk(&way, |cell| {
+            let block = cell.state.block();
+            if block == vanillite_data::block::ids::BUBBLE_COLUMN {
+                if cell.precise {
+                    hits.push(Hit::Bubble(cell.pos));
+                }
+            } else if cell.in_block {
+                if block == vanillite_data::block::ids::CACTUS {
+                    hits.push(Hit::Cactus);
+                } else if level.has_entity_inside(cell.state) {
+                    hits.push(Hit::Hook(cell.pos));
+                }
+            }
+            true
+        });
+        for hit in hits {
+            if !level.entities.store.contains(id) {
+                return;
+            }
+            match hit {
+                Hit::Bubble(column) => {
+                    v = crate::level::particles::bubble_column_drag(level, column, v).0;
+                }
+                Hit::Hook(block) => level.entity_inside(block, id),
+                // `CactusBlock.entityInside` -> `ExperienceOrb.hurtServer`.
+                Hit::Cactus => {
+                    let Some(d) = level.entities.experience_orb_mut(id) else {
+                        return;
+                    };
+                    d.health -= 1;
+                    if d.health <= 0 {
+                        level.entities.despawn(id);
+                        return;
+                    }
+                }
+            }
+        }
+    }
     // `getAirDrag()` (0.98F) times the block friction, in float.
     let mut friction: f32 = 0.98;
     if below {
@@ -331,55 +419,7 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     d.age = d.age.saturating_add(1);
     let expired = d.age >= LIFETIME;
     if let Some(mut e) = level.entities.store.get_mut(id) {
-        e.set_pos(new_pos);
         e.set_velocity(v);
-        if fall_speed != 0.0 {
-            e.set_flags(EntityFlags::ON_GROUND, below);
-        }
-        if needs_sync {
-            e.set_flags(EntityFlags::HAS_IMPULSE, true);
-        }
-    }
-    // `applyEffectsFromBlocks`: cacti hurt the orb, plates and tripwire react.
-    let dims = level.entities.store.get(id).map(|e| e.dims());
-    if let Some(dims) = dims {
-        let way = [crate::survival::inside::Movement::plain(pos, new_pos)];
-        let mut cacti = 0;
-        let mut reacting = Vec::new();
-        let view = level.view();
-        let walker = crate::survival::inside::Walker {
-            blocks: &view,
-            facts: None,
-            dims,
-            fast_fall: false,
-        };
-        walker.walk(&way, |cell| {
-            if cell.in_block {
-                if cell.state.block() == vanillite_data::block::ids::CACTUS {
-                    cacti += 1;
-                } else if level.has_entity_inside(cell.state) {
-                    reacting.push(cell.pos);
-                }
-            }
-            true
-        });
-        for block in reacting {
-            if !level.entities.store.contains(id) {
-                return;
-            }
-            level.entity_inside(block, id);
-        }
-        // `CactusBlock.entityInside` -> `ExperienceOrb.hurtServer`.
-        for _ in 0..cacti {
-            let Some(d) = level.entities.experience_orb_mut(id) else {
-                return;
-            };
-            d.health -= 1;
-            if d.health <= 0 {
-                level.entities.despawn(id);
-                return;
-            }
-        }
     }
     if expired {
         level.entities.despawn(id);
