@@ -10,7 +10,8 @@
 #   taking turns on 30900, Paper (/opt/paper-loadtest), Vanilla (/opt/vanilla-loadtest),
 #   Pumpkin (/opt/pumpkin-loadtest) and the proxies Velocity (/opt/velocity-loadtest) and
 #   vanillite-proxy (/opt/vanillite/bench/proxy) in front of 30901. Controlled with
-#   /usr/local/bin/vanillite-bench.
+#   /usr/local/bin/vanillite-bench; every run pins them to a fixed hardware profile
+#   (`vanillite-bench limit`: 4c8g or 1c1g) so results stay comparable when this machine changes.
 # - Docker engine for `cargo xtask docker` (image builds over SSH).
 # - vanillite-proxy on 30010 (/opt/vanillite-proxy, vanillite-proxy.service, deployed with
 #   `ssh <host> vanillite-proxy-deploy < target/release-fast/vanillite-proxy`) in front of
@@ -20,7 +21,8 @@
 #   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
 # - vanillite-autodeploy (timer, every 30 minutes): builds the newest green dev commit in
 #   /opt/vanillite-build and deploys it to 30001, 30002, 30030 and the proxy on 30010, with a chat
-#   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Manual deploys of a
+#   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Skips a round while a
+#   benchmark holds the lock of `vanillite-bench lock`. Manual deploys of a
 #   branch go to 30003-30099.
 # - Vanillite 30030: chunk generation test server (own world, flight allowed, all server-side
 #   movement checks off so fast flying is never teleported back; drop-in chunk-test.conf).
@@ -748,8 +750,16 @@ write_if_changed /usr/local/bin/vanillite-bench 755 <<'EOF'
 #   props <target>                 write the shared benchmark settings into server.properties
 #   reset <target>                 stop it, delete its world (fresh world with the shared seed) and
 #                                  drop its hardware limits
-#   limit <target> <cpu %> <MiB>   hardware limits for its next start (cgroup CPUQuota, MemoryMax),
-#                                  like a small container; `reset` drops them
+#   limit <target> <profile>       fixed hardware limits for its next start, the same for every
+#                                  server: 4c8g (4 CPUs, 8 GiB) or 1c1g (1 CPU, 1 GiB) pins the
+#                                  first CPUs of this machine (AllowedCPUs) with a CPUQuota of
+#                                  100 % per CPU, MemoryMax and no swap; prints them as JSON.
+#                                  `limit <target> <cpu %> <MiB>` sets only quota and memory.
+#                                  `reset` drops them
+#   hw                             prints the hardware as JSON: CPU model, CPUs of this machine
+#                                  and of the host, RAM of both, kernel, virtualisation
+#   load                           prints the host load averages and this machine's CPU pressure
+#                                  counter (/proc/pressure/cpu) as JSON
 #   start <target> [<profile>]     start it (Vanillite: rule profile) and wait for a status ping;
 #                                  prints {"ready_s", "version", "protocol"}
 #   stop <target>                  clean stop (saves); prints {"stop_s"}
@@ -767,7 +777,9 @@ write_if_changed /usr/local/bin/vanillite-bench 755 <<'EOF'
 #                                  "busy <owner>" while another run holds it, then "locked", and
 #                                  holds it until stdin closes (xtask bench and loadtest take it)
 #   pregen <radius> <threads> <repetitions>
-#                                  runs bin/chunk_bench (generate, save, load) and prints its JSON
+#                                  runs bin/chunk_bench (generate, save, load) under the hardware
+#                                  profile 4c8g and prints its JSON
+#   profile <profile>              prints a hardware profile as JSON (like `limit`, not applied)
 # Installed by scripts/testserver/provision.sh.
 set -euo pipefail
 seed=-578941029922802438
@@ -894,6 +906,31 @@ print(json.dumps({"sent": sent, "failed": len(errors), "errors": errors[:5]}))
              | {sent: $sent, failed: ($e | length), errors: ($e[:5] | map(.[:200]))}'
 }
 
+# Named hardware profile $1: sets cpus (the first CPUs of this machine's cpuset, in the host's
+# numbering), quota, mib and profile_json. The numbers stay the same when the machine changes.
+hw_profile() {
+    local n
+    case $1 in
+        4c8g) n=4 mib=8192 ;;
+        1c1g) n=1 mib=1024 ;;
+        *) echo "unknown hardware profile $1 (4c8g, 1c1g)" >&2; exit 2 ;;
+    esac
+    cpus=$(python3 -c '
+import sys
+cpus = []
+for part in open("/sys/fs/cgroup/cpuset.cpus.effective").read().strip().split(","):
+    a, _, b = part.partition("-")
+    cpus += range(int(a), int(b or a) + 1)
+n = int(sys.argv[1])
+if len(cpus) < n:
+    sys.exit(f"the profile needs {n} CPUs, this machine has {len(cpus)}")
+print(",".join(map(str, cpus[:n])))
+' "$n")
+    quota=$((n * 100))
+    profile_json=$(jq -n -c --arg p "$1" --arg cpus "$cpus" --argjson n "$n" --argjson mib "$mib" \
+        '{profile: $p, cpus: $n, cpu_list: $cpus, cpu_quota_percent: ($n * 100), memory_max_mib: $mib, swap: false}')
+}
+
 case $cmd in
     props)
         case $target in
@@ -975,8 +1012,58 @@ print(json.dumps({"version": v.get("name"), "protocol": v.get("protocol")}))
         # Sorts after the unit's other drop-ins (loadtest.conf sets MemoryMax), so it wins.
         dropin=/run/systemd/system/$(unit_of "$target").d/zz-bench-limit.conf
         install -d "$(dirname "$dropin")"
-        printf '[Service]\nCPUQuota=%s%%\nMemoryMax=%sM\nMemorySwapMax=0\n' "${2:?cpu %}" "${3:?MiB}" > "$dropin"
+        if [ -n "${3:-}" ]; then
+            printf '[Service]\nCPUQuota=%s%%\nMemoryMax=%sM\nMemorySwapMax=0\n' "${2:?cpu %}" "$3" > "$dropin"
+            systemctl daemon-reload
+            exit 0
+        fi
+        hw_profile "${2:?profile}"
+        printf '[Service]\nAllowedCPUs=%s\nCPUQuota=%s%%\nMemoryMax=%sM\nMemorySwapMax=0\n' \
+            "$cpus" "$quota" "$mib" > "$dropin"
         systemctl daemon-reload
+        echo "$profile_json"
+        ;;
+    profile)
+        hw_profile "${1:?profile}"
+        echo "$profile_json"
+        ;;
+    hw)
+        python3 -c '
+import json, os, platform
+def first(path, key):
+    for line in open(path):
+        if line.startswith(key):
+            return line.split(":", 1)[1].strip()
+def count(spec):
+    n = 0
+    for part in spec.strip().split(","):
+        a, _, b = part.partition("-")
+        n += int(b or a) - int(a) + 1
+    return n
+node_kib = 0
+for node in os.listdir("/sys/devices/system/node"):
+    if node.startswith("node"):
+        node_kib += int(first(f"/sys/devices/system/node/{node}/meminfo", f"Node {node[4:]} MemTotal").split()[0])
+virt = os.popen("systemd-detect-virt 2> /dev/null").read().strip() or "none"
+print(json.dumps({
+    "cpu_model": first("/proc/cpuinfo", "model name"),
+    "cpus": count(open("/sys/fs/cgroup/cpuset.cpus.effective").read()),
+    "cpu_list": open("/sys/fs/cgroup/cpuset.cpus.effective").read().strip(),
+    "host_cpus": count(open("/sys/devices/system/cpu/online").read()) if virt == "none" else count(open("/sys/devices/system/cpu/possible").read()),
+    "mem_mib": int(first("/proc/meminfo", "MemTotal").split()[0]) // 1024,
+    "host_mem_mib": node_kib // 1024,
+    "kernel": platform.release(),
+    "virtualisation": virt,
+}))
+'
+        ;;
+    load)
+        # In the container /proc/loadavg is the host's, /proc/pressure/cpu this machine's.
+        read -r l1 l5 l15 _ < /proc/loadavg
+        some=$(awk '/^some/ { sub("total=", "", $5); print $5 }' /proc/pressure/cpu)
+        jq -n -c --argjson t "$(now)" --argjson l1 "$l1" --argjson l5 "$l5" --argjson l15 "$l15" \
+            --argjson some "$some" \
+            '{t: $t, load1: $l1, load5: $l5, load15: $l15, cpu_pressure_some_us: $some}'
         ;;
     stop)
         t0=$(now)
@@ -1105,8 +1192,12 @@ print(json.dumps({"chunks": n}))
         reps=${3:-1}
         work=/opt/vanillite/bench/pregen
         install -d -o vanillite -g vanillite "$work"
+        # The same hardware profile as the servers (4c8g).
+        hw_profile 4c8g
         for _ in $(seq "$reps"); do
-            runuser -u vanillite -- env VANILLITE_CACHE=/opt/vanillite/30901/cache \
+            systemd-run --quiet --wait --pipe --collect --uid=vanillite --gid=vanillite \
+                -p AllowedCPUs="$cpus" -p CPUQuota="$quota%" -p MemoryMax="${mib}M" \
+                -p MemorySwapMax=0 -E VANILLITE_CACHE=/opt/vanillite/30901/cache \
                 /opt/vanillite/bench/bin/chunk_bench --radius "$radius" --threads "$threads" \
                 --pump --load --dir "$work/world" 2> /dev/null
         done
@@ -1369,6 +1460,11 @@ esac
 install -d "$state"
 exec 9> "$state/lock"
 flock -n 9 || exit 0
+# Never builds or restarts during a benchmark (`vanillite-bench lock`): that would disturb its
+# numbers. Skips this round while a run holds the lock and holds it while building and deploying.
+exec 8>> /run/vanillite-bench.lock
+flock -n 8 || exit 0
+echo "vanillite-autodeploy since $(date -u '+%Y-%m-%d %H:%M UTC')" > /run/vanillite-bench.owner
 
 as_build() {
     runuser -u vanillite-build -- env HOME="$build" PATH="$build/.cargo/bin:/usr/bin:/bin" "$@"
