@@ -66,7 +66,11 @@ impl EffectHost for PlayerHost<'_, '_, '_> {
         player::heal(self.entity, self.player, amount);
     }
     fn hurt(&mut self, kind: HurtKind, amount: f32) -> bool {
-        let source = source_of(self.env, kind);
+        let mut source = source_of(self.env, kind);
+        // `resolvePlayerResponsibleForDamage`: a causing player.
+        source.responsible_player = source
+            .cause
+            .filter(|c| self.players.is_some_and(|ps| ps.values().any(|p| p == c)));
         // `ServerPlayer.hurtServer`: `canHarmPlayer` of a causing player (the pvp rule).
         if !self.env.rules.bool(crate::survival::rules::Rule::PVP)
             && let (Some(cause), Some(players)) = (source.cause, self.players)

@@ -1312,6 +1312,9 @@ impl WorldMobs {
         }
         level.entities = ents;
         level.restore_random(random);
+        // What the victims dropped (`dropAllDeathLoot`: items and experience orbs) comes
+        // before the blocks' drops of `interactWithBlocks`.
+        survival.deliver(level, global);
         // `interactWithBlocks` after `hurtEntities`.
         level.finish_explosion();
         self.finish_removals(level);

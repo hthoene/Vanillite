@@ -104,7 +104,16 @@ pub fn hurt(
     if ents.player(target).is_none() {
         return false;
     }
-    let source = with_blocking_facts(ents, source);
+    let mut source = with_blocking_facts(ents, source);
+    // `resolvePlayerResponsibleForDamage`: the causing player, or a tame wolf's owner.
+    source.responsible_player = source.cause.and_then(|c| {
+        if ents.player(c).is_some() {
+            return Some(c);
+        }
+        ents.mob(c)
+            .filter(|m| m.kind == Kind::Wolf && m.tame)
+            .and_then(|m| super::tame::owner_of(ents, m))
+    });
     // `ServerPlayer.hurtServer`: a player-caused hit (also through projectiles, potions and
     // arrows of a player) fails `canHarmPlayer` without the pvp rule.
     if !env.rules.bool(Rule::PVP)
@@ -143,6 +152,22 @@ pub fn hurt(
         attackers,
     );
     let died = was_alive && data.survival.is_dead_or_dying();
+    // The killer's type while it is still there (`ENTITY_KILLED_BY`).
+    if died {
+        for effect in env.out.iter_mut().rev() {
+            if let Effect::Died {
+                victim,
+                killer,
+                killer_kind,
+                ..
+            } = effect
+                && *victim == target
+            {
+                *killer_kind = killer.and_then(|k| ents.store.get(k)).map(|e| e.kind());
+                break;
+            }
+        }
+    }
     view::resolve_combat(ents, env.types, target);
     // `ServerPlayer.die` → `tellNeutralMobsThatIDied`: at once, so an attacker calms down
     // within its own tick.
@@ -986,6 +1011,7 @@ fn die(
     env.out.push(Effect::Died {
         victim: target,
         killer: credit.or(source.cause),
+        killer_kind: None,
         message: None,
     });
     env.out.push(Effect::Tracking {

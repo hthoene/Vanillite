@@ -1,0 +1,75 @@
+{
+  "description": "A creeper at night swells next to a client player, explodes and kills it (#211): the whole death path of ServerPlayer.die runs from the explosion damage applied after the creeper's tick: drops of inventory and armour with the player's random, the XP orbs, the death statistics (deaths, killed_by creeper via the kill credit) and entity_killed_player of the data pack. All chunks in the player's simulation distance are forced (no asynchronous loads in Vanilla), and spawn_monsters is off (no phantom spawner draws).",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_triggers",
+  "progress_state": true,
+  "player_state": true,
+  "time": 18000,
+  "region": [
+    [
+      -16,
+      -62,
+      -16
+    ],
+    [
+      31,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 50,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        6.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "inventory": [
+        [
+          0,
+          "minecraft:cobblestone",
+          16
+        ],
+        [
+          38,
+          "minecraft:leather_chestplate",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "creeper",
+      "type": "minecraft:creeper",
+      "pos": [
+        6.5,
+        -60.0,
+        6.0
+      ],
+      "rot": [
+        180,
+        0
+      ],
+      "seed": 3,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "xp add steve 3 levels"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

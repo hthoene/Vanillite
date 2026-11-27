@@ -53,6 +53,9 @@ pub enum Effect {
     Died {
         victim: EntityId,
         killer: Option<EntityId>,
+        /// The killer's type when the killer may be gone before the effect is delivered (a
+        /// creeper that exploded): `ENTITY_KILLED_BY`.
+        killer_kind: Option<vanillite_data::entity::EntityTypeId>,
         message: Option<Component>,
     },
     /// To one player.

@@ -647,10 +647,13 @@ impl WorldSurvival {
         self.deliver(world_mut, global);
     }
 
-    /// Kills a player (`/kill`) and delivers the effects at once.
+    /// Kills a player (`/kill`) and delivers the effects at once; `random` is the level
+    /// random.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn kill(
         entities: &mut Entities,
         chunks: Option<&Chunks>,
+        random: &mut LegacyRandom,
         global: &Global,
         dimension: &str,
         id: EntityId,
@@ -659,6 +662,7 @@ impl WorldSurvival {
         Self::on_player(
             entities,
             chunks,
+            random,
             global,
             dimension,
             id,
@@ -672,6 +676,7 @@ impl WorldSurvival {
     pub(crate) fn hurt(
         entities: &mut Entities,
         chunks: Option<&Chunks>,
+        random: &mut LegacyRandom,
         global: &Global,
         dimension: &str,
         id: EntityId,
@@ -692,6 +697,7 @@ impl WorldSurvival {
         Self::on_player(
             entities,
             chunks,
+            random,
             global,
             dimension,
             id,
@@ -783,9 +789,11 @@ impl WorldSurvival {
 
     /// Runs `f` on a player with a survival environment outside the tick (commands) and
     /// delivers its effects at once; its game events go to `events` for the caller to post.
+    #[allow(clippy::too_many_arguments)]
     fn on_player(
         entities: &mut Entities,
         chunks: Option<&Chunks>,
+        random: &mut LegacyRandom,
         global: &Global,
         dimension: &str,
         id: EntityId,
@@ -804,7 +812,6 @@ impl WorldSurvival {
         }
         let level = &global.level;
         let rules = level.rules().clone();
-        let mut random = LegacyRandom::new(level.game_time());
         let mut out = Vec::new();
         let no_blocks = NoBlocks;
         let world_blocks = chunks.map(WorldBlocks);
@@ -832,7 +839,7 @@ impl WorldSurvival {
             raining_at: &raining,
             border: None,
             enter_gateway: &mut no_gateway,
-            random: &mut random,
+            random,
             out: &mut out,
         };
         let Entities { store, players, .. } = entities;
@@ -844,7 +851,7 @@ impl WorldSurvival {
             return false;
         };
         let done = f(&mut entity, data, &mut env);
-        deliver_simple(&out, entities, &global.network_ids, &mut random, global);
+        deliver_simple(&out, entities, &global.network_ids, random, global);
         collect_game_events(&out, events);
         done
     }
@@ -956,6 +963,7 @@ impl WorldSurvival {
                 Effect::Died {
                     victim,
                     killer,
+                    killer_kind,
                     message,
                 } => {
                     out.flush(entities);
@@ -967,7 +975,14 @@ impl WorldSurvival {
                             entities, *victim,
                         );
                     }
-                    crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
+                    crate::scoreboard::died(
+                        global,
+                        entities,
+                        *victim,
+                        *killer,
+                        *killer_kind,
+                        message.as_ref(),
+                    );
                 }
                 Effect::To { player, packet } => {
                     if entities.player(*player).is_none() {
@@ -1071,6 +1086,7 @@ fn deliver_simple(
             Effect::Died {
                 victim,
                 killer,
+                killer_kind,
                 message,
             } => {
                 // `ServerPlayer.die`: `tellNeutralMobsThatIDied` with `forgive_dead_players`.
@@ -1079,7 +1095,14 @@ fn deliver_simple(
                 {
                     vanillite_game::mob::common::tell_neutral_mobs_player_died(entities, *victim);
                 }
-                crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
+                crate::scoreboard::died(
+                    global,
+                    entities,
+                    *victim,
+                    *killer,
+                    *killer_kind,
+                    message.as_ref(),
+                );
             }
             Effect::To { player, packet } => {
                 if let Some(p) = entities.player(*player) {

@@ -341,6 +341,7 @@ pub(crate) fn died(
     entities: &mut Entities,
     victim: EntityId,
     killer: Option<EntityId>,
+    killer_kind: Option<vanillite_data::entity::EntityTypeId>,
     message: Option<&Component>,
 ) {
     let Some((name, uuid, victim_player)) = holder_name(entities, victim) else {
@@ -387,7 +388,8 @@ pub(crate) fn died(
     let killer = killer.filter(|k| *k != victim);
     // `Player.die`: `ENTITY_KILLED_BY` of the killer's type.
     if victim_player
-        && let Some(kind) = killer.and_then(|k| entities.store.get(k)).map(|e| e.kind())
+        && let Some(kind) =
+            killer.and_then(|k| killer_kind.or_else(|| entities.store.get(k).map(|e| e.kind())))
         && let Some(p) = entities.player_mut(victim)
     {
         p.stats.award(

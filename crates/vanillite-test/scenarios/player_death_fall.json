@@ -1,0 +1,118 @@
+{
+  "description": "A client player hit once by a zombie falls 30 blocks by its moves and dies of fall damage (#211): the fall damage of the move handler runs ServerPlayer.die, and the zombie that hurt it within 100 ticks gets the kill credit (killed_by zombie, entity_killed_player). All chunks in the players' simulation distance are forced (no asynchronous loads in Vanilla).",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_triggers",
+  "progress_state": true,
+  "player_state": true,
+  "time": 6000,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -62,
+      -16
+    ],
+    [
+      31,
+      -28,
+      31
+    ]
+  ],
+  "ticks": 27,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        4.5,
+        -30.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "inventory": [
+        [
+          0,
+          "minecraft:cobblestone",
+          16
+        ]
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        12.5,
+        -60.0,
+        14.5
+      ],
+      "rot": [
+        180,
+        0
+      ],
+      "seed": 5,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "damage steve 1 minecraft:mob_attack by @e[type=minecraft:zombie,limit=1]"
+    },
+    {
+      "tick": 4,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c041800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -35.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 5,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c044000000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -40.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 6,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c046800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -45.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 7,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c049000000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -50.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 8,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04b800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -55.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 9,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04e000000000000401200000000000001",
+      "what": "MovePlayerPos { x: 4.5, y: -60.0, z: 4.5, flags: MoveFlags { on_ground: true, horizontal_collision: false } }"
+    }
+  ]
+}

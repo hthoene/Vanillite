@@ -498,10 +498,16 @@ pub(crate) fn hurt_any(
             vanillite_game::mob::combat::hurt(level, ents, e, cx, id, source, amount)
         });
     }
+    // `resolvePlayerResponsibleForDamage`: a causing player.
+    let mut source = source;
+    source.responsible_player = source.cause.filter(|&c| level.entities.player(c).is_some());
     let mut events = Vec::new();
+    // The level random, as in the world's tick.
+    let mut random = level.lend_random();
     let hurt = WorldSurvival::hurt(
         &mut level.entities,
         Some(&level.chunks),
+        &mut random,
         global,
         dimension,
         id,
@@ -509,6 +515,7 @@ pub(crate) fn hurt_any(
         amount,
         &mut events,
     );
+    level.restore_random(random);
     for (event, pos, context) in events {
         level.game_event(event, pos, context);
     }
@@ -525,14 +532,17 @@ pub(crate) fn kill_any(
 ) {
     if level.entities.player(id).is_some() {
         let mut events = Vec::new();
+        let mut random = level.lend_random();
         WorldSurvival::kill(
             &mut level.entities,
             Some(&level.chunks),
+            &mut random,
             global,
             dimension,
             id,
             &mut events,
         );
+        level.restore_random(random);
         for (event, pos, context) in events {
             level.game_event(event, pos, context);
         }
@@ -796,22 +806,27 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
         None => None,
     };
     let local = |t: &Option<Target>| t.as_ref().and_then(|t| t.entity);
+    // The causing mob's kind (difficulty scaling, the death message's killer).
+    let cause_kind = cause
+        .as_ref()
+        .or(entity.as_ref())
+        .and_then(|t| vanillite_game::mob::Kind::by_name(t.kind.name()));
     let damage_source = DamageSource {
         kind,
         // `new DamageSource(type, direct)` makes the direct entity the cause too.
         cause: local(&cause).or(local(&entity)),
         direct: local(&entity),
+        // `getSourcePosition`: the location, else the direct entity's position.
         position: args
             .coordinates("location")
-            .map(|c| resolve_position(source, c)),
-        cause_is_mob: cause
-            .as_ref()
-            .or(entity.as_ref())
-            .is_some_and(|t| vanillite_game::mob::Kind::by_name(t.kind.name()).is_some()),
-        cause_name: None,
+            .map(|c| resolve_position(source, c))
+            .or_else(|| entity.as_ref().and_then(|t| t.place).map(|(pos, _, _)| pos)),
+        cause_is_mob: cause_kind.is_some(),
+        cause_name: cause_kind.map(vanillite_game::mob::Kind::translation_key),
         disable_shield_seconds: 0.0,
         piercing_arrow: false,
         projectile_motion: None,
+        responsible_player: None,
     };
     let hurt = match target.entity {
         Some(id) => {

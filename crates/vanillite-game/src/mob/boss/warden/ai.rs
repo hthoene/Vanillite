@@ -624,6 +624,7 @@ fn sonic_boom_tick(t: &mut Tick<'_, '_>) {
         disable_shield_seconds: 0.0,
         piercing_arrow: false,
         projectile_motion: None,
+        responsible_player: None,
     };
     let hurt = combat::hurt(t.level, t.ents, t.env, t.cx, target, damage, 10.0);
     if hurt {

@@ -553,6 +553,16 @@ impl ServerWorld {
         if let Some(p) = overworld.entities.player_mut(id) {
             // A client player moves by its packets.
             p.survival.simulate_movement = !spec.client;
+            for (slot, item, count) in &spec.inventory {
+                let item = vanillite_data::item::ItemId::by_name(item)
+                    .ok_or_else(|| format!("unknown item {item}"))?;
+                if let Some(s) = p.inventory.get_mut(*slot) {
+                    *s = vanillite_game::item::ItemStack::new(item.0, *count);
+                }
+            }
+            if let Some(food) = spec.food {
+                p.survival.food.food_level = food;
+            }
             if let Some(Some(mut body)) = body {
                 let (pos, y_rot, x_rot) = (body.pos, body.y_rot, body.x_rot);
                 p.connection
@@ -732,6 +742,13 @@ impl ScenarioWorld for ServerWorld {
                 pos.z.floor() as i32,
             );
             if !inside(block, min, max) {
+                continue;
+            }
+            // `tickDeath` removed a dead player from the level (its connection still ticks it).
+            if ents
+                .player(core.id[row])
+                .is_some_and(|p| p.survival.removed)
+            {
                 continue;
             }
             // A player moves by its client: its server-side motion is not part of the trace.

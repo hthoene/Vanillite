@@ -259,6 +259,8 @@ pub struct Survival {
     pub last_hurt_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// `lastHurtByMob` with the tick it hit (`lastHurtByMobTimestamp`).
     pub last_hurt_by_mob: Option<(vanillite_world::entity::EntityId, i32)>,
+    /// `lastHurtByPlayer` with the ticks it is still remembered (`lastHurtByPlayerMemoryTime`).
+    pub last_hurt_by_player: Option<(vanillite_world::entity::EntityId, i32)>,
     /// The item in use (`useItem`): its hand and the ticks it has been used.
     pub using_item: Option<crate::player::using::UsingItem>,
     /// `recentKineticEnemies`: the entities the spear in use hit, with the game time.
@@ -375,6 +377,7 @@ impl Default for Survival {
             in_powder_snow: false,
             last_hurt_mob: None,
             last_hurt_by_mob: None,
+            last_hurt_by_player: None,
             using_item: None,
             stabbed: Vec::new(),
             random: LegacyRandom::new(crate::mob::new_unique_seed()),
@@ -1055,6 +1058,12 @@ pub fn hurt_with(
     {
         player.survival.last_hurt_by_mob = Some((cause, player.survival.tick_count));
     }
+    // `resolvePlayerResponsibleForDamage`: remembered for 100 ticks.
+    if let Some(by) = source.responsible_player
+        && by != id
+    {
+        player.survival.last_hurt_by_player = Some((by, LAST_HURT_BY_PLAYER_MEMORY));
+    }
     if took_full
         && blocked
         && let Some(block_sound) = blocker
@@ -1532,6 +1541,17 @@ fn fall_location(s: &Survival) -> Option<FallLocation> {
     }
 }
 
+/// How long a player remembers the player that hurt it last (`lastHurtByPlayerMemoryTime`).
+const LAST_HURT_BY_PLAYER_MEMORY: i32 = 100;
+
+/// `LivingEntity.getKillCredit`: the player that hurt it last, else the last attacker, while
+/// remembered (`baseTick` forgets them).
+pub fn kill_credit(s: &Survival) -> Option<vanillite_world::entity::EntityId> {
+    s.last_hurt_by_player
+        .map(|(by, _)| by)
+        .or(s.last_hurt_by_mob.map(|(by, _)| by))
+}
+
 /// `ServerPlayer.die`; `killer` is the UUID of the source's causing entity (the kill credit)
 /// for the plugins' death event, when the caller resolved it.
 pub fn die(
@@ -1610,8 +1630,9 @@ pub fn die(
             env.out.push(Effect::Experience { pos, amount });
         }
     }
-    // The kill credit is the damage's causing entity: nothing else credits kills yet.
-    if let Some(killer) = source.cause {
+    // `getKillCredit`: `ENTITY_KILLED_BY`, `awardKillScore` (`entity_killed_player`).
+    let credit = kill_credit(&player.survival).filter(|&k| k != id);
+    if let Some(killer) = credit {
         player
             .advancements
             .combat
@@ -1619,7 +1640,8 @@ pub fn die(
     }
     env.out.push(Effect::Died {
         victim: id,
-        killer: source.cause,
+        killer: credit,
+        killer_kind: None,
         message: broadcast,
     });
     env.out.push(Effect::Tracking {
@@ -1637,6 +1659,7 @@ pub fn die(
         s.wake = true;
     }
     s.fire_ticks = s.fire_ticks.min(0);
+    s.ticks_frozen = 0;
     entity.set_flags(EntityFlags::ON_FIRE, false);
     let alive = s.health > 0.0;
     s.combat.recheck_status(s.tick_count, alive);
@@ -1908,7 +1931,17 @@ pub fn base_tick_after_portal(
         }
     }
     {
+        // `baseTick`: `lastHurtByPlayer` and `lastHurtByMob` are forgotten after 100 ticks.
         let s = &mut player.survival;
+        s.last_hurt_by_player = match s.last_hurt_by_player {
+            Some((by, time)) if time > 0 => Some((by, time - 1)),
+            _ => None,
+        };
+        if s.last_hurt_by_mob
+            .is_some_and(|(_, at)| s.tick_count.wrapping_sub(at) > 100)
+        {
+            s.last_hurt_by_mob = None;
+        }
         let alive = s.health > 0.0;
         s.combat.recheck_status(s.tick_count, alive);
     }

@@ -57,13 +57,42 @@ pub(crate) fn add_experience(level: &mut Level, id: EntityId, amount: i32, level
         return;
     }
     let s = &mut player.survival;
-    if levels {
+    let volume = if levels {
         s.xp.give_levels(amount);
+        // `giveExperienceLevels`: the level-up sound every fifth level, at most once per 100
+        // ticks.
+        #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+        let due = amount > 0
+            && s.xp.level % 5 == 0
+            && (s.last_level_up_time as f32) < s.tick_count as f32 - 100.0;
+        due.then(|| {
+            s.last_level_up_time = s.tick_count;
+            #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+            let v = if s.xp.level > 30 {
+                1.0
+            } else {
+                s.xp.level as f32 / 30.0
+            };
+            v * 0.75
+        })
     } else {
-        s.score = s.score.wrapping_add(amount);
-        s.xp.give_points(amount);
-    }
+        s.give_experience_points(amount)
+    };
     s.resend_experience();
+    if let Some(volume) = volume
+        && let Some(pos) = level.entities.store.get(id).map(|e| e.pos())
+    {
+        level.play_sound(
+            None,
+            pos.x,
+            pos.y,
+            pos.z,
+            vanillite_game::block::sound_id("entity.player.levelup"),
+            vanillite_game::level::SOUND_PLAYERS,
+            volume,
+            1.0,
+        );
+    }
 }
 
 /// `ExperienceCommand.Type.set`: points must stay below the next level.
