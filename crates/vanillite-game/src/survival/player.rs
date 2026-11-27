@@ -201,6 +201,10 @@ pub struct Survival {
     pub death_time: i32,
     /// `isRemoved()`: `tickDeath` removed the dead player (once, until it respawns).
     pub removed: bool,
+    /// `skipDropExperience` (`wasExperienceConsumed`): a sculk catalyst took the experience
+    /// reward (an armor stand the player broke next to one); the player drops no orbs and
+    /// feeds no catalyst until it respawns.
+    pub experience_consumed: bool,
     pub xp: Experience,
     /// `DATA_SCORE_ID`.
     pub score: i32,
@@ -347,6 +351,7 @@ impl Default for Survival {
             last_hurt: 0.0,
             death_time: 0,
             removed: false,
+            experience_consumed: false,
             xp: Experience::default(),
             score: 0,
             last_death: None,
@@ -1572,9 +1577,10 @@ pub fn die(
     );
     // `CatalystListener.handleGameEvent(ENTITY_DIE)`: the nearest sculk catalyst takes the
     // experience reward as charge (`skipDropExperience`: no orbs) and blooms.
-    let consumed =
-        crate::block::sculk_catalyst::catalyst_block_near(env.blocks, entity.as_ref().pos());
-    if consumed {
+    let consumed_before = player.survival.experience_consumed;
+    let consumed = consumed_before
+        || crate::block::sculk_catalyst::catalyst_block_near(env.blocks, entity.as_ref().pos());
+    if consumed && !consumed_before {
         // `Player.getBaseExperienceReward`.
         let reward =
             if env.rules.bool(Rule::KEEP_INVENTORY) || player.game_mode == GameMode::Spectator {
@@ -1589,6 +1595,7 @@ pub fn die(
                 crate::mob::boss::warden::LevelAction::SculkDeath {
                     pos: entity.as_ref().pos(),
                     experience: reward,
+                    player: None,
                 },
             ));
     }
@@ -2122,7 +2129,7 @@ pub fn do_tick_end(
 
 /// `updateFluidInteraction`: the fluids around the player; touching water resets the fall
 /// distance, and entering it splashes.
-fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+fn update_fluids(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
     let e = entity.as_ref();
     let pos = e.pos();
     let eye = Vec3::new(pos.x, pos.y + eye_height(e.dims().height), pos.z);
@@ -2134,7 +2141,59 @@ fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<
         if !was_in_water && !player.survival.first_tick && player.game_mode != GameMode::Spectator {
             water_splash(entity, env);
         }
+        // `isPushedByFluid` (not flying): `applyCurrentTo(WATER, 0.014)`.
+        if !player.survival.flying && player.game_mode != GameMode::Spectator {
+            push_by_water(entity, env);
+        }
     }
+}
+
+/// `EntityFluidInteraction.update` and `applyCurrentTo(WATER, entity, 0.014)` for a player:
+/// the flows of the water the box touches (scaled by the height of the water so far below
+/// 0.4), averaged (other entities take the direction instead).
+fn push_by_water(entity: &mut EntityMut<'_>, env: &Env<'_>) {
+    let e = entity.as_ref();
+    let aabb = e.aabb();
+    let b = aabb.inflate(-0.001, -0.001, -0.001);
+    let ceil = vanillite_base::math::ceil;
+    let floor = vanillite_base::math::floor;
+    let flows = MoveBlocks(env.blocks, env.border);
+    let (mut sum, mut count, mut height) = (Vec3::ZERO, 0_u32, 0.0_f64);
+    for x in floor(b.min_x)..ceil(b.max_x) {
+        for y in floor(b.min_y)..ceil(b.max_y) {
+            for z in floor(b.min_z)..ceil(b.max_z) {
+                let pos = BlockPos::new(x, y, z);
+                let Some(state) = env.blocks.block_state(pos) else {
+                    return;
+                };
+                let fluid = state.fluid_state();
+                if !env.facts.is_water(fluid) {
+                    continue;
+                }
+                let top =
+                    f64::from(y) + f64::from(blocks::fluid_height(env.blocks, env.facts, pos, fluid));
+                if top < b.min_y {
+                    continue;
+                }
+                height = height.max(top - aabb.min_y);
+                let mut flow = crate::mob::living::fluid_flow(&flows, env.facts, pos, fluid, true);
+                if height < 0.4 {
+                    flow = flow * height;
+                }
+                sum = sum + flow;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 || sum.length_sqr() < f64::from(1.0e-5_f32) {
+        return;
+    }
+    let old = e.velocity();
+    let mut impulse = sum * (1.0 / f64::from(count)) * 0.014;
+    if old.x.abs() < 0.003 && old.z.abs() < 0.003 && impulse.length() < 0.004_500_000_000_000_000_5 {
+        impulse = impulse.normalize() * 0.004_500_000_000_000_000_5;
+    }
+    entity.set_velocity(old + impulse);
 }
 
 /// `Player.doWaterSplashEffect`: the splash sound and the `splash` game event (the bubble and

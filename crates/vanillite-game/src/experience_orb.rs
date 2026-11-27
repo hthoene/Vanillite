@@ -30,7 +30,7 @@ const DEFAULT_HEALTH: i32 = 5;
 pub const TAKE_XP_DELAY: i32 = 2;
 
 /// The kind data of an experience orb.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExperienceOrbData {
     /// `DATA_VALUE`: experience per orb.
     pub value: i32,
@@ -44,6 +44,8 @@ pub struct ExperienceOrbData {
     pub following: Option<EntityId>,
     /// `tickCount`.
     pub tick_count: u32,
+    /// `fallDistance`.
+    pub fall_distance: f64,
 }
 
 impl ExperienceOrbData {
@@ -56,6 +58,7 @@ impl ExperienceOrbData {
             health: DEFAULT_HEALTH,
             following: None,
             tick_count: 0,
+            fall_distance: 0.0,
         }
     }
 }
@@ -247,6 +250,11 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         level.entities.despawn(id);
         return;
     }
+    // `baseTick`: water resets the fall distance.
+    let in_water = touching_water(level, &aabb);
+    if in_water {
+        data.fall_distance = 0.0;
+    }
     let colliding = collides(level, &aabb);
     if eye_in_water(level, pos) {
         // `setUnderwaterMovement`.
@@ -310,6 +318,36 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         // `Block.updateEntityMovementAfterFallOn`.
         v.y = 0.0;
     }
+    // `checkFallDamage`: the fall distance of the move, the landing.
+    let mut fall_distance = data.fall_distance;
+    if !in_water && movement.y < 0.0 {
+        #[allow(clippy::cast_possible_truncation)]
+        let ya = f64::from(movement.y as f32);
+        fall_distance -= ya;
+    }
+    let on_ground = if fall_speed != 0.0 {
+        below
+    } else {
+        level
+            .entities
+            .store
+            .get(id)
+            .is_some_and(|e| e.flags().contains(EntityFlags::ON_GROUND))
+    };
+    let landed = on_ground && fall_distance > 0.0;
+    if on_ground {
+        fall_distance = 0.0;
+    }
+    // `applyEffectsFromBlocks`: `stepOn` of the block below (`getOnPosLegacy`).
+    let on = BlockPos::new(
+        floor(new_pos.x),
+        floor(new_pos.y - f64::from(0.2_f32)),
+        floor(new_pos.z),
+    );
+    let on_block = level.block(on).block();
+    if on_ground && on_block == vanillite_data::block::ids::SLIME_BLOCK {
+        v = crate::block::contact::slime_step_on(v);
+    }
     // `getAirDrag()` (0.98F) times the block friction, in float.
     let mut friction: f32 = 0.98;
     if below {
@@ -329,6 +367,7 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         return;
     };
     d.age = d.age.saturating_add(1);
+    d.fall_distance = fall_distance;
     let expired = d.age >= LIFETIME;
     if let Some(mut e) = level.entities.store.get_mut(id) {
         e.set_pos(new_pos);
@@ -339,6 +378,15 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         if needs_sync {
             e.set_flags(EntityFlags::HAS_IMPULSE, true);
         }
+    }
+    if landed {
+        crate::block::contact::non_living_land(level, id, new_pos, on);
+    }
+    if on_ground
+        && crate::block::contact::has_step_on(on_block)
+        && level.entities.store.contains(id)
+    {
+        crate::block::contact::step_on(level, on, id);
     }
     // `applyEffectsFromBlocks`: cacti hurt the orb, plates and tripwire react.
     let dims = level.entities.store.get(id).map(|e| e.dims());
@@ -384,6 +432,27 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     if expired {
         level.entities.despawn(id);
     }
+}
+
+/// `isInWater()` (`wasTouchingWater`): water reaches into the box shrunk by 0.001.
+pub(crate) fn touching_water(level: &Level, b: &Aabb) -> bool {
+    use vanillite_base::math::ceil;
+    let min_y = b.min_y + 0.001;
+    for x in floor(b.min_x + 0.001)..ceil(b.max_x - 0.001) {
+        for y in floor(min_y)..ceil(b.max_y - 0.001) {
+            for z in floor(b.min_z + 0.001)..ceil(b.max_z - 0.001) {
+                let at = BlockPos::new(x, y, z);
+                let fluid = level.fluid(at);
+                if crate::block::fluid::is_water(fluid)
+                    && f64::from(y) + f64::from(crate::block::fluid::height(level, fluid, at))
+                        >= min_y
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// `isEyeInFluid(FluidTags.WATER)`: the fluid at the eye (0.425 above the feet, less

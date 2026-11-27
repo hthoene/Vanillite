@@ -879,6 +879,13 @@ pub fn tick(
         if moved.hit_y {
             v.y = -v.y * 0.0;
         }
+        // `applyEffectsFromBlocks`: `SlimeBlock.stepOn` slows a resting item.
+        if !no_physics
+            && out.on_ground
+            && block.state(on_pos_legacy(out.pos)).block() == vanillite_data::block::ids::SLIME_BLOCK
+        {
+            v = crate::block::contact::slime_step_on(v);
+        }
         // `getAirDrag()` and the ground friction are floats, widened to double.
         let air_drag = 0.98_f32;
         let mut ground = air_drag;
@@ -895,6 +902,12 @@ pub fn tick(
         if out.on_ground && v.y < 0.0 {
             v.y *= -0.5;
         }
+    } else if !no_physics
+        && out.on_ground
+        && block.state(on_pos_legacy(out.pos)).block() == vanillite_data::block::ids::SLIME_BLOCK
+    {
+        // `applyEffectsFromBlocksForLastMovements`: `SlimeBlock.stepOn` of a resting item.
+        v = crate::block::contact::slime_step_on(v);
     }
     // `applyEffectsFromBlocks` on the way of the move, for a resting item on the way of its
     // last one (`isAffectedByBlocks`): `stepOn` of the block below, then `entityInside`.

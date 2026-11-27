@@ -542,7 +542,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
 pub fn save_orb(core: &EntityRef<'_>, o: &ExperienceOrbData) -> Compound {
     let mut out = Compound::new();
     save_entity(core, &mut out);
-    out.insert("fall_distance", 0.0_f64);
+    out.insert("fall_distance", o.fall_distance);
     out.insert("Fire", -1_i16);
     out.insert("Air", 300_i16);
     #[allow(clippy::cast_possible_truncation)]
@@ -574,6 +574,10 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)>
             health: int(tag, "Health").unwrap_or(5),
             following: None,
             tick_count: 0,
+            fall_distance: match tag.get("fall_distance") {
+                Some(Tag::Double(v)) => *v,
+                _ => 0.0,
+            },
         },
     ))
 }

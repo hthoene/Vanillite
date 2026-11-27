@@ -794,19 +794,36 @@ fn kill(
         by,
     );
     // `CatalystListener` takes the source as the dying entity: a player's experience reward
-    // becomes charge at the stand (`Player.getBaseExperienceReward`), the stand's is 0; the
-    // nearest catalyst blooms.
+    // becomes charge at the stand (`Player.getBaseExperienceReward`) once
+    // (`wasExperienceConsumed`), the stand's is 0; the nearest catalyst blooms. A source that
+    // is not living reaches no catalyst.
     if let Some(pos) = ents.store.get(id).map(|e| e.pos()) {
-        let experience = by
-            .and_then(|p| ents.player(p))
-            .filter(|p| {
-                p.game_mode != vanillite_config::GameMode::Spectator
-                    && !env.rules.bool(crate::survival::rules::Rule::KEEP_INVENTORY)
-            })
-            .map_or(0, |p| p.survival.xp.level.saturating_mul(7).min(100));
-        cx.actions.push(crate::mob::WorldAction::Level(
-            crate::mob::boss::warden::LevelAction::SculkDeath { pos, experience },
-        ));
+        let action = match by {
+            Some(p) if ents.player(p).is_some() => ents
+                .player(p)
+                .filter(|d| !d.survival.experience_consumed)
+                .map(|d| {
+                    let experience = if d.game_mode == vanillite_config::GameMode::Spectator
+                        || env.rules.bool(crate::survival::rules::Rule::KEEP_INVENTORY)
+                    {
+                        0
+                    } else {
+                        d.survival.xp.level.saturating_mul(7).min(100)
+                    };
+                    (experience, Some(p))
+                }),
+            Some(m) if ents.mob(m).is_none() => None,
+            _ => Some((0, None)),
+        };
+        if let Some((experience, player)) = action {
+            cx.actions.push(crate::mob::WorldAction::Level(
+                crate::mob::boss::warden::LevelAction::SculkDeath {
+                    pos,
+                    experience,
+                    player,
+                },
+            ));
+        }
     }
     cx.discarded.push(id);
 }

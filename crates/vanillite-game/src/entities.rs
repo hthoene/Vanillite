@@ -70,6 +70,8 @@ pub struct PrimedTntData {
     pub owner: Option<EntityId>,
     /// `explosionPower`.
     pub explosion_power: f32,
+    /// `fallDistance`.
+    pub fall_distance: f64,
 }
 
 /// The key of the plugins' persistent data in an entity's NBT (Paper's `BukkitValues`).

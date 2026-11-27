@@ -1,0 +1,59 @@
+{
+  "description": "A player the server moves (no client) stands next to a water source placed on flat ground: the flowing water pushes it (EntityFluidInteraction.update and applyCurrentTo(WATER, 0.014): a player takes the average flow, scaled by the water height below 0.4). All chunks in the player's simulation distance are forced.",
+  "tier": "fast",
+  "player_state": true,
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -61,
+      -16
+    ],
+    [
+      31,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        5.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        3,
+        -60,
+        4
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        8,
+        -60,
+        9
+      ],
+      "block": "minecraft:water"
+    }
+  ]
+}
