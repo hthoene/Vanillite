@@ -2611,6 +2611,46 @@ impl Chunks {
         }
     }
 
+    /// [`Chunks::block`] of every position in the box from `min` to `max` (inclusive), in X,
+    /// then Z, then Y order (Y varies fastest), passed to `f`: one chunk lookup per chunk
+    /// instead of one per block (collisions read boxes of blocks, which span several
+    /// sections and chunks).
+    pub fn blocks_in(&self, min: BlockPos, max: BlockPos, mut f: impl FnMut(Option<BlockStateId>)) {
+        if !self.unknown.is_empty() {
+            for x in min.x..=max.x {
+                for z in min.z..=max.z {
+                    for y in min.y..=max.y {
+                        f(self.tracked_block(BlockPos::new(x, y, z)));
+                    }
+                }
+            }
+            return;
+        }
+        let mut last: Option<(ChunkPos, Option<&ProtoChunk>)> = None;
+        for x in min.x..=max.x {
+            for z in min.z..=max.z {
+                let chunk_pos = ChunkPos::new(x >> 4, z >> 4);
+                let chunk = match last {
+                    Some((pos, chunk)) if pos == chunk_pos => chunk,
+                    _ => {
+                        let chunk = self.holders.get(&chunk_pos).and_then(|holder| {
+                            let chunk = holder
+                                .chunk
+                                .as_ref()
+                                .filter(|c| c.status == ChunkStatus::Full)?;
+                            Some(&**chunk)
+                        });
+                        last = Some((chunk_pos, chunk));
+                        chunk
+                    }
+                };
+                for y in min.y..=max.y {
+                    f(chunk.and_then(|c| c.chunk.block((x & 15) as u32, y, (z & 15) as u32)));
+                }
+            }
+        }
+    }
+
     /// [`Chunks::block`] of an accessible chunk ([`Chunks::is_accessible`]) with one map
     /// lookup; `None` if the chunk is not accessible or `pos` is outside the build height.
     #[inline]

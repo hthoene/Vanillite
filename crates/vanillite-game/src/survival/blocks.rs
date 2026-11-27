@@ -10,6 +10,17 @@ use vanillite_worldgen::behaviour::StateExt;
 pub trait BlockAccess {
     /// The block state at `pos`.
     fn block_state(&self, pos: BlockPos) -> Option<BlockState>;
+    /// [`BlockAccess::block_state`] of every position in the box from `min` to `max`
+    /// (inclusive) in X, then Z, then Y order (Y varies fastest).
+    fn block_states_in(&self, min: BlockPos, max: BlockPos, f: &mut dyn FnMut(Option<BlockState>)) {
+        for x in min.x..=max.x {
+            for z in min.z..=max.z {
+                for y in min.y..=max.y {
+                    f(self.block_state(BlockPos::new(x, y, z)));
+                }
+            }
+        }
+    }
 }
 
 /// Per-block facts from the data packs' block tags and special blocks.

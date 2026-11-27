@@ -396,6 +396,10 @@ impl PacketSink for NetSink {
         self.out.threshold()
     }
 
+    fn flush(&self) {
+        self.out.flush();
+    }
+
     fn close(&self) {
         self.out.close();
     }
