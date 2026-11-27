@@ -1,5 +1,5 @@
 {
-  "description": "Patched item components (#265): a stick with its own attribute_modifiers (+3 attack damage) hits a pig harder, a stick with an equippable component goes to the head slot on use while a leather helmet without its equippable component stays in the hand, and stacks whose component equals the item default (rockets with flight_duration 1, ominous bottles with amplifier 0) stack with plain ones.",
+  "description": "Patched item components (#265): a stick with its own attribute_modifiers (+3 attack damage) hits a pig harder, a stick with an equippable component goes to the head slot on use while a leather helmet without its equippable component stays in the hand, and stacks whose component equals the item default (rockets with flight_duration 1, ominous bottles with amplifier 0) picked up from the ground stack with plain ones.",
   "tier": "fast",
   "player_state": true,
   "rules": {
@@ -50,12 +50,14 @@
   ],
   "actions": [
     {
-      "tick": 1,
-      "op": "command",
-      "command": "give @a minecraft:stick[minecraft:attribute_modifiers=[{type:\"minecraft:attack_damage\",id:\"minecraft:test\",amount:3.0,operation:\"add_value\",slot:\"mainhand\"}]] 1"
+      "tick": 10,
+      "op": "use_item",
+      "entity": "p",
+      "item": "minecraft:stick",
+      "components": "{\"minecraft:attribute_modifiers\":[{\"type\":\"minecraft:attack_damage\",\"id\":\"minecraft:test\",\"amount\":3.0,\"operation\":\"add_value\",\"slot\":\"mainhand\"}]}"
     },
     {
-      "tick": 20,
+      "tick": 25,
       "op": "attack_entity",
       "entity": "p",
       "target": "pig"
@@ -77,22 +79,22 @@
     {
       "tick": 38,
       "op": "command",
-      "command": "give @a minecraft:firework_rocket[minecraft:fireworks={flight_duration:1}] 2"
-    },
-    {
-      "tick": 39,
-      "op": "command",
-      "command": "give @a minecraft:firework_rocket 3"
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:firework_rocket\",count:3}}"
     },
     {
       "tick": 40,
       "op": "command",
-      "command": "give @a minecraft:ominous_bottle[minecraft:ominous_bottle_amplifier=0] 1"
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:firework_rocket\",count:2,components:{\"minecraft:fireworks\":{flight_duration:1b}}}}"
     },
     {
-      "tick": 41,
+      "tick": 42,
       "op": "command",
-      "command": "give @a minecraft:ominous_bottle 1"
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:ominous_bottle\",count:1}}"
+    },
+    {
+      "tick": 44,
+      "op": "command",
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:ominous_bottle\",count:1,components:{\"minecraft:ominous_bottle_amplifier\":0}}}"
     }
   ]
 }

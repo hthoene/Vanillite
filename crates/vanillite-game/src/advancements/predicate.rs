@@ -1892,6 +1892,35 @@ mod tests {
     }
 
     #[test]
+    fn movement_tick_and_type_specific_sub_predicates() {
+        let p = EntityPredicate::parse(&json!({
+            "movement": {"horizontal_speed": {"min": 4.0}, "fall_distance": {"max": 1.0}},
+            "periodic_tick": 10,
+            "type_specific/sheep": {"sheared": false},
+            "movement_affected_by": {"block": {"blocks": "minecraft:stone"}}
+        }));
+        let p = p.unwrap();
+        assert!(p.is_supported());
+        let mut v = EntityView::new("minecraft:sheep", Vec3::new(0.5, 0.0, 0.5));
+        v.movement = Vec3::new(3.0, 0.0, 3.0);
+        v.tick_count = 20;
+        v.sheared = Some(false);
+        assert!(p.matches(&v, &Flat, None));
+        v.tick_count = 21;
+        assert!(!p.matches(&v, &Flat, None));
+        v.tick_count = 30;
+        v.sheared = Some(true);
+        assert!(!p.matches(&v, &Flat, None));
+        v.sheared = Some(false);
+        v.movement = Vec3::new(1.0, 0.0, 1.0);
+        assert!(!p.matches(&v, &Flat, None));
+        // On a block above the stone, the block below that affects movement is air.
+        v.movement = Vec3::new(3.0, 0.0, 3.0);
+        v.pos = Vec3::new(0.5, 5.0, 0.5);
+        assert!(!p.matches(&v, &Flat, None));
+    }
+
+    #[test]
     fn location_conditions() {
         let c = Condition::parse(&json!({
             "type": "minecraft:location_check",
