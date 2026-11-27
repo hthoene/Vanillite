@@ -13,7 +13,7 @@ use crate::item::ItemStack;
 use crate::level::game_event::{GameEventContext, events};
 use crate::level::{BlockEntity, Level, SOUND_BLOCKS};
 
-const PART: &str = "side_chain_part";
+const PART: &str = "side_chain";
 /// `getMaxChainLength`.
 const MAX_CHAIN: usize = 3;
 

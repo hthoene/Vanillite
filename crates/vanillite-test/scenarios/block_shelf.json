@@ -1,0 +1,343 @@
+{
+  "description": "Shelves: single swaps with the selected hotbar slot by the hit slot (place, swap, take, an empty slot passes, the top face passes) with a comparator reading the filled slots; three shelves powered one after another chain up, swap the whole hotbar with the chain, and disconnect when the middle one loses power.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 16,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:oak_shelf[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        9
+      ],
+      "block": "minecraft:comparator[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        10
+      ],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        4
+      ],
+      "block": "minecraft:oak_shelf[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        4
+      ],
+      "block": "minecraft:oak_shelf[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:oak_shelf[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        5
+      ],
+      "block": "minecraft:comparator[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        6
+      ],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        5
+      ],
+      "block": "minecraft:comparator[facing=north]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "block": "minecraft:redstone_wire"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        5.5,
+        -60,
+        5.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "face": "north",
+      "hit": [
+        0.2,
+        0.5,
+        0.0
+      ],
+      "item": "minecraft:diamond",
+      "count": 3
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "face": "north",
+      "hit": [
+        0.8,
+        0.5,
+        0.0
+      ],
+      "item": "minecraft:emerald",
+      "count": 1
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "face": "north",
+      "hit": [
+        0.2,
+        0.5,
+        0.0
+      ],
+      "item": "minecraft:gold_ingot",
+      "count": 2
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "face": "north",
+      "hit": [
+        0.5,
+        0.5,
+        0.0
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "face": "north",
+      "hit": [
+        0.8,
+        0.5,
+        0.0
+      ]
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "face": "up",
+      "hit": [
+        0.5,
+        1.0,
+        0.5
+      ],
+      "item": "minecraft:apple",
+      "count": 1
+    },
+    {
+      "tick": 7,
+      "op": "place",
+      "pos": [
+        3,
+        -61,
+        4
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 8,
+      "op": "place",
+      "pos": [
+        2,
+        -61,
+        4
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 9,
+      "op": "place",
+      "pos": [
+        4,
+        -61,
+        4
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 10,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        3,
+        -60,
+        4
+      ],
+      "face": "north",
+      "hit": [
+        0.5,
+        0.5,
+        0.0
+      ],
+      "item": "minecraft:stick",
+      "count": 5
+    },
+    {
+      "tick": 11,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        3,
+        -60,
+        4
+      ],
+      "face": "north",
+      "hit": [
+        0.5,
+        0.5,
+        0.0
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 12,
+      "op": "place",
+      "pos": [
+        3,
+        -61,
+        4
+      ],
+      "block": "minecraft:grass_block"
+    },
+    {
+      "tick": 13,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        2,
+        -60,
+        4
+      ],
+      "face": "north",
+      "hit": [
+        0.5,
+        0.5,
+        0.0
+      ],
+      "item": "minecraft:apple",
+      "count": 1
+    },
+    {
+      "tick": 14,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "face": "north",
+      "hit": [
+        0.8,
+        0.5,
+        0.0
+      ]
+    }
+  ]
+}
