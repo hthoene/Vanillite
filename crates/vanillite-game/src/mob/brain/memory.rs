@@ -41,7 +41,8 @@ pub enum MemoryStatus {
 /// A position in a dimension (`GlobalPos`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalPos {
-    pub dimension: Box<str>,
+    /// Shared, so that reading a remembered position does not copy the name.
+    pub dimension: std::sync::Arc<str>,
     pub pos: BlockPos,
 }
 
