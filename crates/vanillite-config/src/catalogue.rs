@@ -400,9 +400,9 @@ rules! {
             /// The "moved too quickly" check also applies while gliding with an elytra.
             /// Vanilla's `elytraMovementCheck` game rule.
             elytra_too_fast_check: bool = "elytra-too-fast-check", Security, vanilla = true;
-            /// Players whose movement does not match the server's collision result are
-            /// teleported back ("moved wrongly"). Not enforced yet: it needs block collision
-            /// (milestone 3).
+            /// Players whose movement does not match the server's collision result ("moved
+            /// wrongly") or that move into a block are teleported back, like Vanilla's
+            /// `handleMovePlayer`. Off accepts every move that passes the other checks.
             wrong_movement_check: bool = "wrong-movement-check", Security, vanilla = true;
             /// Players floating in the air longer than Vanilla allows are kicked unless
             /// `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3).
@@ -416,6 +416,33 @@ rules! {
             /// Background chunk jobs (loads, generation steps, light) in flight per world. Higher
             /// values load faster with many players at the cost of memory for queued work.
             max_jobs: u16 = "max-jobs", Performance, range = [1, 4096], vanilla = 64;
+        }
+        /// Tile region mode: one world on several cores. The world is cut into fixed square
+        /// tiles; the tiles' natural mob spawning and random ticks are worked out in parallel
+        /// on the world as it is at the start of the phase, each tile with its own random
+        /// numbers, and then applied tile by tile. Helps when players are spread out (every
+        /// player loads own chunks); a crowd in one place lies in one tile and gains nothing.
+        /// The result is deterministic: it does not depend on the number of threads.
+        /// Deviations (see `docs/architecture/region-threading.md`): random ticks, spawn
+        /// attempts and the shuffled chunk order draw from a random stream per tile and tick
+        /// instead of the world's one stream (same rates, other positions than a seeded
+        /// Vanilla run); tiles tick in tile order instead of the world's chunk order; a tile
+        /// does not see the mobs other tiles spawn in the same tick, so a player's mob cap can
+        /// be exceeded by one tick's spawns at a tile border; thunder and inhabited time of a
+        /// tile's chunks run after its spawn attempts. While all ticking chunks lie in one
+        /// tile or are fewer than 512, the world ticks in Vanilla's exact order.
+        region_threading: RegionThreadingRules = "performance.region-threading" {
+            /// Turns the tile region mode on: natural mob spawning and random ticks of a world
+            /// are worked out per tile (a fixed square of chunks) on several cores. Faster when
+            /// players are spread out; no gain for a crowd in one place. Deviation: these
+            /// phases draw their random numbers per tile, so a seeded world differs from
+            /// Vanilla (same rates), and a player's mob cap can be exceeded by one tick's
+            /// spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial
+            /// order at no cost.
+            enabled: bool = "enabled", Performance, vanilla = false;
+            /// Edge of a tile in chunks. Smaller tiles balance better over the cores, larger
+            /// ones cost less bookkeeping.
+            tile_size: u8 = "tile-size", Performance, range = [8, 32], vanilla = 16;
         }
         /// World simulation: scheduled ticks, neighbour updates and light after block changes.
         /// Work over a budget waits for the next tick.

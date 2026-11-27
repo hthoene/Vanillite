@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
 authors = ["Hannes Thöne"]
-repository = "https://github.com/hthoene/Vanillite"
+repository = "https://github.com/hthoene/vanillite"
 
 [workspace.dependencies]
 # Internal crates.

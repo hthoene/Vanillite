@@ -82,6 +82,9 @@ pub(crate) struct Options {
     pub(crate) profile: &'static str,
     pub(crate) deploy: bool,
     pub(crate) gate: bool,
+    /// Rules of `vanillite.toml` set for this run (`key=value`), as environment variables of
+    /// the Vanillite instance.
+    pub(crate) rules: Vec<(String, String)>,
 }
 
 fn parse(args: &[&str]) -> Result<Options> {
@@ -98,6 +101,7 @@ fn parse(args: &[&str]) -> Result<Options> {
         profile: "release-fast",
         deploy: true,
         gate: true,
+        rules: Vec::new(),
     };
     let mut movement = "random";
     let mut step_movements = vec![None; o.steps.len()];
@@ -131,6 +135,7 @@ fn parse(args: &[&str]) -> Result<Options> {
             }
             "--movement" => movement = value()?,
             "--hold" => o.hold = Duration::from_secs_f64(num(value()?)?),
+            "--settle" => o.settle = Duration::from_secs_f64(num(value()?)?),
             "--join-rate" => o.join_rate = num(value()?)?,
             "--chat" => o.chat_interval = num(value()?)?,
             "--view-distance" => {
@@ -139,6 +144,20 @@ fn parse(args: &[&str]) -> Result<Options> {
             "--release" => o.profile = "release",
             "--no-deploy" => o.deploy = false,
             "--no-gate" => o.gate = false,
+            "--rule" => {
+                let (key, rule) = value()?.split_once('=').ok_or(
+                    "--rule needs <key>=<value>, e.g. performance.tick.parallel-dimensions=true",
+                )?;
+                let plain = |s: &str| {
+                    !s.is_empty()
+                        && s.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+                };
+                if !plain(key) || !plain(rule) {
+                    return Err(format!("--rule: unsupported characters in {key}={rule}"));
+                }
+                o.rules.push((key.to_owned(), rule.to_owned()));
+            }
             _ => return Err(crate::USAGE.to_owned()),
         }
     }
@@ -205,6 +224,12 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         if let Err(e) = ssh(&host, &stop) {
             eprintln!("warning: cannot stop {}: {e}", target.unit());
         }
+        if target == Target::Vanillite
+            && !o.rules.is_empty()
+            && let Err(e) = set_rules(&host, &[])
+        {
+            eprintln!("warning: cannot remove {RULES_DROPIN}: {e}");
+        }
         let steps = match result {
             Ok(steps) => steps,
             Err(e) => {
@@ -231,17 +256,27 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         if o.movements.iter().any(|m| m != "random") {
             run["settings"]["movement"] = json!(o.movements);
         }
+        // Runs with rules set are experiments: they neither gate nor become a baseline.
+        let with_rules = target == Target::Vanillite && !o.rules.is_empty();
+        if with_rules {
+            run["settings"]["rules"] = json!(
+                o.rules
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>()
+            );
+        }
         let file = out_dir.join(format!("{}.json", target.name()));
         let text = serde_json::to_string_pretty(&run).map_err(|e| e.to_string())?;
         crate::write(&file, &text)?;
         println!("wrote {}", file.display());
-        if o.gate {
+        if o.gate && !with_rules {
             match gate(&host, &run) {
                 Ok(problems) => failures.extend(problems),
                 Err(e) => eprintln!("warning: regression gate skipped: {e}"),
             }
         }
-        if !dirty {
+        if !dirty && !with_rules {
             store(
                 &host,
                 &run,
@@ -316,7 +351,29 @@ impl Collected {
     }
 }
 
+/// The systemd drop-in with the rules of this run (`--rule`), gone again after the run.
+const RULES_DROPIN: &str = "/run/systemd/system/vanillite@30901.service.d/loadtest-rules.conf";
+
+/// Writes the run's rules as `VANILLITE_<KEY>` variables of the Vanillite instance (dots
+/// become `__`, dashes `_`), or removes the drop-in of an earlier run.
+fn set_rules(host: &str, rules: &[(String, String)]) -> Result<()> {
+    let mut script = format!("rm -f {RULES_DROPIN}");
+    if !rules.is_empty() {
+        let dir = RULES_DROPIN.rsplit_once('/').map_or("", |d| d.0);
+        script = format!("install -d {dir} && printf '[Service]\\n");
+        for (key, value) in rules {
+            let name = key.to_uppercase().replace('.', "__").replace('-', "_");
+            script.push_str(&format!("Environment=VANILLITE_{name}={value}\\n"));
+        }
+        script.push_str(&format!("' > {RULES_DROPIN}"));
+    }
+    ssh(host, &format!("{script} && systemctl daemon-reload"))
+}
+
 fn deploy_or_restart(target: Target, o: &Options, host: &str, bin_dir: &Path) -> Result<()> {
+    if target == Target::Vanillite {
+        set_rules(host, &o.rules)?;
+    }
     match target {
         Target::Vanillite if o.deploy => {
             let binary = bin_dir.join("vanillite");

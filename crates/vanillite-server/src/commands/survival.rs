@@ -10,7 +10,6 @@ use super::Env;
 use super::select::Target;
 use super::source::CommandSource;
 use crate::global::Global;
-use crate::server::DIMENSIONS;
 use crate::survival::{broadcast_all, clock_update, full_time_sync};
 
 fn error(key: &'static str, args: Vec<ErrArg>) -> CommandError {
@@ -53,10 +52,7 @@ pub(crate) fn clock(
         }
         None => {
             let index = source.world.index();
-            let dimension = DIMENSIONS
-                .get(index)
-                .copied()
-                .unwrap_or("minecraft:overworld");
+            let dimension = global.dimensions.name_or_overworld(source.world);
             let clock = level.default_clocks.get(index).copied().flatten();
             match clock {
                 Some(i) => {
@@ -422,10 +418,7 @@ pub(crate) fn on_game_rule_changed(global: &Global, rule: Rule, value: i32) {
     if rule == Rule::REDUCED_DEBUG_INFO {
         // Entity event 22 or 23 to every player about itself.
         let event: i8 = if value != 0 { 22 } else { 23 };
-        for index in 0..crate::server::DIMENSIONS.len() {
-            let Ok(index) = u16::try_from(index) else {
-                continue;
-            };
+        for index in global.dimensions.worlds().map(|w| w.0) {
             global.run_in_world(crate::world::WorldId(index), move |w| {
                 let entities = w.entities();
                 for (id, player) in entities.players.iter() {
@@ -464,10 +457,7 @@ pub(crate) fn kill(source: &CommandSource, env: &mut Env<'_>, victims: &[Target]
     for victim in victims {
         match victim.entity {
             Some(id) if victim.world == env.world => {
-                let dimension = DIMENSIONS
-                    .get(victim.world.index())
-                    .copied()
-                    .unwrap_or("minecraft:overworld");
+                let dimension = global.dimensions.name_or_overworld(victim.world);
                 super::entities_cmd::kill_any(env.level, global, dimension, id);
             }
             _ => {

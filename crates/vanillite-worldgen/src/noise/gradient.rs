@@ -33,6 +33,10 @@ const HALF_ROUND_OFF: f64 = 16_777_216.0_f64.next_down();
 #[derive(Clone, Debug)]
 pub(super) struct GradientNoise {
     pub perms: [u8; 256],
+    /// Per index `i`: `perms[i]`, `perms[i + 1]` and the gradient indices of both (`& 15`), one
+    /// byte each from the lowest. Perlin noise always reads the permutations of `i` and
+    /// `i + 1` together, so one entry answers both (see [`Pair`]).
+    pairs: [u32; 256],
     pub offset_x: f64,
     pub offset_y: f64,
     pub offset_z: f64,
@@ -52,8 +56,14 @@ impl GradientNoise {
             let offset = random.next_int_bounded(256 - i as i32) as usize;
             perms.swap(i, offset + i);
         }
+        let mut pairs = [0_u32; 256];
+        for (i, pair) in pairs.iter_mut().enumerate() {
+            let (a, b) = (u32::from(perms[i]), u32::from(perms[(i + 1) & 0xFF]));
+            *pair = a | (b << 8) | ((a & 15) << 16) | ((b & 15) << 24);
+        }
         Self {
             perms,
+            pairs,
             offset_x,
             offset_y,
             offset_z,
@@ -66,17 +76,47 @@ impl GradientNoise {
         i32::from(self.perms[(x & 0xFF) as usize])
     }
 
-    /// `permuteToGrad(x)`.
+    /// `permute(x)` and `permute(x + 1)` with their gradients.
     #[inline(always)]
-    pub fn permute_to_grad(&self, x: i32) -> &'static [f32; 3] {
-        &GRADIENT[(self.permute(x) & 15) as usize]
+    pub fn pair(&self, x: i32) -> Pair {
+        Pair(self.pairs[(x & 0xFF) as usize])
     }
 }
 
-/// `GradientNoise.gradDot(hash, x, y, z)`: `Gradient.dot(float, float, float)`.
+/// The permutations of an index and of the next one, with their gradients
+/// ([`GradientNoise::pair`]).
+#[derive(Clone, Copy)]
+pub(super) struct Pair(u32);
+
+impl Pair {
+    /// `permute(x)`.
+    #[inline(always)]
+    pub fn first(self) -> i32 {
+        (self.0 & 0xFF) as i32
+    }
+
+    /// `permute(x + 1)`.
+    #[inline(always)]
+    pub fn second(self) -> i32 {
+        ((self.0 >> 8) & 0xFF) as i32
+    }
+
+    /// `permuteToGrad(x)`.
+    #[inline(always)]
+    pub fn first_grad(self) -> &'static [f32; 3] {
+        &GRADIENT[((self.0 >> 16) & 15) as usize]
+    }
+
+    /// `permuteToGrad(x + 1)`.
+    #[inline(always)]
+    pub fn second_grad(self) -> &'static [f32; 3] {
+        &GRADIENT[((self.0 >> 24) & 15) as usize]
+    }
+}
+
+/// `Gradient.dot(x, y, z)` of a gradient.
 #[inline(always)]
-pub(super) fn grad_dot(hash: i32, x: f32, y: f32, z: f32) -> f32 {
-    let g = &GRADIENT[(hash & 15) as usize];
+pub(super) fn dot(g: &[f32; 3], x: f32, y: f32, z: f32) -> f32 {
     g[0] * x + g[1] * y + g[2] * z
 }
 

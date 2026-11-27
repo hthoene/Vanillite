@@ -464,8 +464,9 @@ pub fn on_die(h: &mut Hurt<'_, '_>) {
 
 /// An item entity at `pos` with the default random motion (`spawnAtLocation`).
 pub fn drop_item(env: &mut crate::survival::player::Env<'_>, pos: Vec3, stack: ItemStack) {
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,

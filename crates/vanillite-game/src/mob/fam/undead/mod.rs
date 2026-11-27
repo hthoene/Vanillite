@@ -454,8 +454,9 @@ pub fn drop_item(env: &mut Env<'_>, pos: Vec3, stack: crate::item::ItemStack) {
     if stack.is_empty() {
         return;
     }
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(crate::survival::Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,

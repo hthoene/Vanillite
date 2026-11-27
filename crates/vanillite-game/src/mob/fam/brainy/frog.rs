@@ -815,8 +815,9 @@ fn eat_entity(t: &mut Tick<'_, '_>) {
                 _ => "minecraft:ochre_froglight",
             };
             if let Some(p) = bh::entity_pos(t, target) {
-                let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+                let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
                 t.env.out.push(crate::survival::Effect::DropItem {
+                    random: item_random,
                     uuid,
                     pos: p,
                     velocity,

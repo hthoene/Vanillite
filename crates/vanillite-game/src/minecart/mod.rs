@@ -374,19 +374,43 @@ pub fn tick(
     }
 }
 
-/// `updateFluidInteraction`: whether the minecart touches water or lava now.
+/// `updateFluidInteraction`: whether the minecart touches water or lava now; falling into
+/// water splashes (`doWaterSplashEffect`, with draws from the minecart's random).
 fn update_fluids(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
     let Some(e) = ents.store.get(id) else {
         return;
     };
-    let eye = e.pos() + Vec3::new(0.0, f64::from(e.kind().info().eye_height), 0.0);
+    let (pos, velocity) = (e.pos(), e.velocity());
+    let info = e.kind().info();
+    let eye = pos + Vec3::new(0.0, f64::from(info.eye_height), 0.0);
     let contact = crate::survival::blocks::fluid_contact(env.blocks, env.facts, e.aabb(), eye);
-    if let Some(m) = ents.minecart_mut(id) {
-        m.in_water = contact.in_water();
-        m.in_lava = contact.in_lava();
-        if m.in_water {
-            m.fall_distance = 0.0;
-        }
+    let Some(m) = ents.minecart_mut(id) else {
+        return;
+    };
+    let splash = (contact.in_water() && !m.in_water && !m.first_tick)
+        .then(|| crate::mob::living::water_splash_draws(&mut m.random, velocity, info.width, 0.2));
+    m.in_water = contact.in_water();
+    m.in_lava = contact.in_lava();
+    if m.in_water {
+        m.fall_distance = 0.0;
+    }
+    if let Some((volume, pitch)) = splash {
+        crate::survival::play_sound(
+            env.out,
+            None,
+            pos,
+            "minecraft:entity.generic.splash",
+            SoundSource::Neutral,
+            volume,
+            pitch,
+            crate::survival::sound_seed(),
+        );
+        crate::survival::game_event(
+            env.out,
+            crate::level::game_event::events().splash,
+            pos,
+            Some(id),
+        );
     }
 }
 
@@ -749,8 +773,9 @@ pub fn destroy_with_loot(level: &mut Level, d: LootVehicleDrop) {
 /// `spawnAtLocation(stack)`: an item at the entity's position with the default pickup delay
 /// (the item draws its yaw and motion from its own random).
 pub(crate) fn spawn_at_location(env: &mut Env<'_>, pos: Vec3, stack: ItemStack) {
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,
@@ -785,8 +810,9 @@ pub(crate) fn drop_contents(env: &mut Env<'_>, pos: Vec3, items: &[ItemStack]) {
             let velocity = Vec3::new(triangle(0.0), triangle(0.2), triangle(0.0));
             // `new ItemEntity(level, x, y, z, stack)` draws its yaw and first motion from the
             // item's own random.
-            let (uuid, y_rot, _) = crate::mob::new_item_entity();
+            let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
             env.out.push(Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos: Vec3::new(xo, yo, zo),
                 velocity,

@@ -128,12 +128,8 @@ impl TestDef {
         }
     }
 
-    fn world(&self) -> Option<WorldId> {
-        crate::server::DIMENSIONS
-            .iter()
-            .position(|d| *d == self.dimension)
-            .and_then(|i| u16::try_from(i).ok())
-            .map(WorldId)
+    fn world(&self, global: &Global) -> Option<WorldId> {
+        global.dimensions.world(&self.dimension)
     }
 
     /// `describe`: the rows of the test instance screen.
@@ -2085,11 +2081,8 @@ fn test_position_around(env: &Env<'_>, source: &CommandSource) -> BlockPos {
     BlockPos::new(pos.x, surface, pos.z + 3)
 }
 
-fn dimension_name(world: WorldId) -> &'static str {
-    crate::server::DIMENSIONS
-        .get(usize::from(world.0))
-        .copied()
-        .unwrap_or("minecraft:overworld")
+fn dimension_name(global: &Global, world: WorldId) -> &str {
+    global.dimensions.name_or_overworld(world)
 }
 
 /// `isPlayerInCurrentTestDimension`.
@@ -2109,7 +2102,7 @@ fn output_player_coordinates(source: &CommandSource, env: &Env<'_>, dimensions: 
     let Some((_, y_rot, x_rot)) = player else {
         return;
     };
-    let dimension = dimension_name(source.world);
+    let dimension = dimension_name(env.global, source.world);
     let short = dimension.split_once(':').map_or(dimension, |(_, p)| p);
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     let (yr, xr) = (y_rot.floor() as i32, x_rot.floor() as i32);
@@ -2143,7 +2136,7 @@ fn output_test_coordinates(source: &CommandSource, env: &Env<'_>, dimensions: &[
             return;
         }
         let (_, pos, surface) = player_and_surface(env, source);
-        let dimension = dimension_name(world);
+        let dimension = dimension_name(env.global, world);
         let short = dimension.split_once(':').map_or(dimension, |(_, p)| p);
         let text = Component::text("[")
             .append(Component::translatable_args(
@@ -2430,7 +2423,7 @@ fn infos_of(
         if !structure_exists(source, env, &test.structure) {
             continue;
         }
-        let Some(world) = test.world() else {
+        let Some(world) = test.world(env.global) else {
             source.send_failure(
                 env.global,
                 Component::text(format!(
@@ -2614,7 +2607,7 @@ pub(crate) fn locate(
         }
     }
     let source_pos = BlockPos::containing(source.pos.x, source.pos.y, source.pos.z);
-    let dimension = dimension_name(env.world);
+    let dimension = dimension_name(env.global, env.world);
     let mut count = 0;
     for p in found {
         let Some(block) = test_instance::get(env.level, p) else {

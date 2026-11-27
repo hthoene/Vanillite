@@ -157,8 +157,9 @@ pub fn drop_from_player(
             .award(Stat::of(StatType::Dropped, stack.item), stack.count);
         p.stats.award(crate::stats::custom::DROP, 1);
     }
-    let (uuid, y_rot, _) = crate::mob::new_item_entity();
+    let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos: Vec3::new(pos.x, eye_y, pos.z),
         velocity,

@@ -24,6 +24,7 @@ mod events;
 mod generator;
 mod goals;
 pub mod loader;
+mod packets;
 mod scheduler;
 
 use std::collections::HashMap;
@@ -361,6 +362,11 @@ pub trait ServerAccess: Send + Sync {
     }
     /// Sends a plugin message to a player; `false` when offline.
     fn send_plugin_message(&self, _player: u128, _channel: &str, _data: &[u8]) -> bool {
+        false
+    }
+    /// Queues a play packet body (`id` + fields) for a player, past the packet listeners with
+    /// `skip_listeners`; `false` when offline.
+    fn send_packet(&self, _player: u128, _body: Vec<u8>, _skip_listeners: bool) -> bool {
         false
     }
     /// What the server knows about an online player.
@@ -992,6 +998,7 @@ pub(crate) struct Inner {
     /// Local index + 1 of the plugin being reloaded (its registrations replace the old ones).
     reloading: AtomicU32,
     pub(crate) events: events::Events,
+    pub(crate) packets: packets::Packets,
     pub(crate) commands: commands::Commands,
     pub(crate) permission: RwLock<Option<PermissionProvider>>,
     /// Registered permission nodes with their [`abi::permission_default`].
@@ -1095,6 +1102,7 @@ impl PluginHost {
             phase: AtomicU8::new(LOADING),
             reloading: AtomicU32::new(0),
             events: events::Events::default(),
+            packets: packets::Packets::default(),
             commands: commands::Commands::default(),
             permission: RwLock::new(None),
             permission_defaults: RwLock::new(HashMap::new()),
@@ -1107,6 +1115,10 @@ impl PluginHost {
             tick: AtomicU64::new(0),
             dev_copies: AtomicU32::new(0),
         });
+        inner
+            .packets
+            .tap
+            .install(Arc::new(packets::Bridge(Arc::downgrade(&inner))));
         if index == hosts.len() {
             hosts.push(Arc::downgrade(&inner));
         } else if let Some(slot) = hosts.get_mut(index) {
@@ -1395,6 +1407,7 @@ impl PluginHost {
             *slot = Arc::clone(&new);
         }
         self.inner.events.remove_plugin(&self.inner, old.local);
+        self.inner.packets.remove(old.local, None);
         self.inner
             .services
             .write()
@@ -1479,6 +1492,7 @@ impl Inner {
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(p, _)| *p != local);
         self.events.remove_plugin(self, local);
+        self.packets.remove(local, None);
         self.tasks.drop_plugin(self, local);
         self.services
             .write()

@@ -43,13 +43,12 @@
 pub mod levels;
 pub mod simulation;
 
-use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use vanillite_base::hash::{FxHashMap, FxHashSet};
@@ -76,6 +75,52 @@ pub const MAX_FOCUS: usize = 16;
 
 /// An empty slot of the chunk cache (`ChunkPos.INVALID_CHUNK_POS`).
 const NO_CHUNK: ChunkPos = ChunkPos::new(i32::MAX, i32::MAX);
+
+/// Vanilla's `ServerChunkCache` cache of the last four chunks read, newest first. Atomics
+/// (plain loads and stores) keep [`Chunks`] shareable between threads for read-only phases;
+/// those only run while no `unknown` ticket exists, so nothing writes here then.
+#[derive(Debug)]
+struct ChunkCache([AtomicU64; 4]);
+
+impl Default for ChunkCache {
+    fn default() -> ChunkCache {
+        ChunkCache(std::array::from_fn(|_| {
+            AtomicU64::new(ChunkCache::key(NO_CHUNK))
+        }))
+    }
+}
+
+impl ChunkCache {
+    #[allow(clippy::cast_sign_loss)]
+    const fn key(pos: ChunkPos) -> u64 {
+        ((pos.x as u32 as u64) << 32) | pos.z as u32 as u64
+    }
+
+    fn clear(&self) {
+        for slot in &self.0 {
+            slot.store(ChunkCache::key(NO_CHUNK), Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the cache holds `pos`; if not, it goes in as the newest entry.
+    #[inline]
+    fn note(&self, pos: ChunkPos) -> bool {
+        let key = ChunkCache::key(pos);
+        let mut cache = [0u64; 4];
+        for (value, slot) in cache.iter_mut().zip(&self.0) {
+            *value = slot.load(Ordering::Relaxed);
+        }
+        if cache.contains(&key) {
+            return true;
+        }
+        cache.copy_within(0..3, 1);
+        cache[0] = key;
+        for (value, slot) in cache.iter().zip(&self.0) {
+            slot.store(*value, Ordering::Relaxed);
+        }
+        false
+    }
+}
 
 /// Runs background jobs; the server's compute pool, or inline in tests.
 pub trait Executor: Send + Sync {
@@ -208,7 +253,7 @@ impl Default for SaveSettings {
 }
 
 /// Runs once a save round is committed.
-pub type SavedCallback = Box<dyn FnOnce() + Send>;
+pub type SavedCallback = Box<dyn FnOnce() + Send + Sync>;
 
 impl Default for ChunkSettings {
     fn default() -> Self {
@@ -397,6 +442,11 @@ const _: () = {
     shareable::<ChunkView<'static>>();
 };
 
+const _: () = {
+    const fn shareable<T: Sync>() {}
+    shareable::<Chunks>();
+};
+
 impl ChunkView<'_> {
     /// The block state at `pos`, `None` outside full chunks and the build height.
     #[inline]
@@ -452,10 +502,10 @@ pub struct Chunks {
     waiters: FxHashMap<ChunkPos, Vec<ChunkPos>>,
     in_flight: usize,
     done_tx: DoneSender,
-    done_rx: Receiver<Done>,
+    done_rx: Mutex<Receiver<Done>>,
     /// This world's inbox for store results.
     inbox_tx: CompletionTarget,
-    inbox: Receiver<Completion>,
+    inbox: Mutex<Receiver<Completion>>,
     next_token: u64,
     /// Loads waiting for the store, by token.
     loads: FxHashMap<Token, PendingLoad>,
@@ -526,11 +576,11 @@ pub struct Chunks {
     visibility_changes: Vec<VisibilityChange>,
     /// The `unknown` tickets of synchronous loads ([`Chunks::load_now`]) with their ticks
     /// left (`TicketType.UNKNOWN`: level 33, timeout 1).
-    unknown: FxHashMap<ChunkPos, (TicketId, Cell<i64>)>,
+    unknown: FxHashMap<ChunkPos, (TicketId, AtomicI64)>,
     /// `ServerChunkCache.lastChunkPos`: the world thread's cache of the last four accessible
     /// chunks it read, newest first. A read that hits it does not reset an `unknown` ticket.
     /// Only kept while `unknown` tickets exist: a new one clears it.
-    chunk_cache: Cell<[ChunkPos; 4]>,
+    chunk_cache: ChunkCache,
     /// Synchronous loads that blocked the tick ([`Chunks::load_now`]).
     sync_loads: SyncLoads,
 }
@@ -612,9 +662,9 @@ impl Chunks {
             waiters: FxHashMap::default(),
             in_flight: 0,
             done_tx: DoneSender { tx: done_tx, wake },
-            done_rx,
+            done_rx: Mutex::new(done_rx),
             inbox_tx,
-            inbox,
+            inbox: Mutex::new(inbox),
             next_token: 0,
             loads: FxHashMap::default(),
             encoding: FxHashMap::default(),
@@ -651,7 +701,7 @@ impl Chunks {
             visibility_check: Vec::new(),
             visibility_changes: Vec::new(),
             unknown: FxHashMap::default(),
-            chunk_cache: Cell::new([NO_CHUNK; 4]),
+            chunk_cache: ChunkCache::default(),
             sync_loads: SyncLoads::default(),
         }
     }
@@ -829,10 +879,27 @@ impl Chunks {
         );
     }
 
+    /// The chunks [`Self::random_ticking_chunks`] chooses from, by simulation level only;
+    /// [`Self::is_random_ticking`] is the rest of its check. For phases that check the chunks
+    /// on several threads (tile region mode).
+    pub fn random_ticking_candidates(&self, out: &mut Vec<ChunkPos>) {
+        out.extend(
+            self.simulation
+                .iter()
+                .filter(|&(_, level)| level <= ENTITY_TICKING_LEVEL)
+                .map(|(pos, _)| pos),
+        );
+    }
+
+    /// Whether a chunk of [`Self::random_ticking_candidates`] ticks randomly.
+    pub fn is_random_ticking(&self, pos: ChunkPos) -> bool {
+        self.is_ticking_chunk(pos)
+    }
+
     fn apply_level_changes(&mut self) {
         if !self.level_changes.is_empty() {
             // `runDistanceManagerUpdates` clears the chunk cache after level changes.
-            self.chunk_cache.set([NO_CHUNK; 4]);
+            self.chunk_cache.clear();
         }
         // Moving a generation ticket reports more changes; apply them too.
         while !self.level_changes.is_empty() {
@@ -984,16 +1051,19 @@ impl Chunks {
         if self.unknown.is_empty() {
             return;
         }
-        let mut cache = self.chunk_cache.get();
-        if cache.contains(&pos) {
+        if self.chunk_cache.note(pos) {
             return;
         }
-        cache.copy_within(0..3, 1);
-        cache[0] = pos;
-        self.chunk_cache.set(cache);
         if reset && let Some((_, left)) = self.unknown.get(&pos) {
-            left.set(1);
+            left.store(1, Ordering::Relaxed);
         }
+    }
+
+    /// Whether reads through `&self` are pure right now: no `unknown` ticket of a synchronous
+    /// load exists, so [`Chunks::block`] touches neither the chunk cache nor a ticket. Phases
+    /// that share the chunks between threads (tile region mode) only run then.
+    pub fn reads_are_pure(&self) -> bool {
+        self.unknown.is_empty()
     }
 
     /// Whether a chunk is accessible as a full chunk, without touching the chunk cache.
@@ -1049,10 +1119,10 @@ impl Chunks {
     #[cold]
     fn load_blocking(&mut self, pos: ChunkPos) {
         match self.unknown.get(&pos) {
-            Some((_, left)) => left.set(1),
+            Some((_, left)) => left.store(1, Ordering::Relaxed),
             None => {
                 let id = self.insert_ticket(pos, FULL_LEVEL);
-                self.unknown.insert(pos, (id, Cell::new(1)));
+                self.unknown.insert(pos, (id, AtomicI64::new(1)));
             }
         }
         if !self.run_blocking(|c| c.is_full_at(pos)) {
@@ -1092,7 +1162,12 @@ impl Chunks {
             if self.in_flight == 0 && self.check.is_empty() {
                 break false;
             }
-            match self.done_rx.recv_timeout(Duration::from_millis(1)) {
+            match self
+                .done_rx
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(Duration::from_millis(1))
+            {
                 Ok(job) => self.apply_done(job),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break false,
@@ -1101,7 +1176,7 @@ impl Chunks {
         self.slots.executor.blocked(false);
         self.check_visibility();
         // The tickets changed levels, which cleared the cache.
-        self.chunk_cache.set([NO_CHUNK; 4]);
+        self.chunk_cache.clear();
         done
     }
 
@@ -1114,8 +1189,8 @@ impl Chunks {
         }
         let mut expired = Vec::new();
         self.unknown.retain(|_, (id, left)| {
-            left.set(left.get() - 1);
-            if left.get() < 0 {
+            *left.get_mut() -= 1;
+            if *left.get_mut() < 0 {
                 expired.push(*id);
                 false
             } else {
@@ -1153,7 +1228,7 @@ impl Chunks {
         self.unload();
         self.check_visibility();
         // `ServerChunkCache.tick` ends with `clearCache`.
-        self.chunk_cache.set([NO_CHUNK; 4]);
+        self.chunk_cache.clear();
     }
 
     /// The visibility of a chunk (`ChunkMap.onFullChunkStatusChange`): hidden unless it is
@@ -1230,7 +1305,12 @@ impl Chunks {
 
     fn drain_done(&mut self) -> bool {
         let mut any = false;
-        while let Ok(done) = self.done_rx.try_recv() {
+        while let Ok(done) = self
+            .done_rx
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_recv()
+        {
             any = true;
             match done {
                 Done::Loaded(pos, Ok(Some(chunk)), entities)
@@ -1245,7 +1325,12 @@ impl Chunks {
                 done => self.apply_done(done),
             }
         }
-        while let Ok(completion) = self.inbox.try_recv() {
+        while let Ok(completion) = self
+            .inbox
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_recv()
+        {
             any = true;
             self.apply_completion(completion);
         }
@@ -2300,7 +2385,12 @@ impl Chunks {
             if done(self) {
                 break;
             }
-            match self.done_rx.recv_timeout(Duration::from_millis(1)) {
+            match self
+                .done_rx
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(Duration::from_millis(1))
+            {
                 Ok(job) => self.apply_done(job),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,

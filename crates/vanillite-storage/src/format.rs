@@ -21,7 +21,7 @@
 //! chunk) is resumed by running it again: verified files whose source did not change since are
 //! kept, the others are converted again. A committed one is finished ([`finish_interrupted`])
 //! before the world is opened. Dimension folders that are not among the converted dimensions
-//! (custom dimensions of data packs) stop a conversion instead of being left behind.
+//! (those of a removed data pack) stop a conversion instead of being left behind.
 
 use std::fs;
 use std::io;
@@ -266,8 +266,8 @@ fn finish(
 }
 
 /// Dimension folders of the worlds `level_dirs` (`<level>/dimensions/<namespace>/<path>/`)
-/// with region files of `format` that are not among `dimensions`: custom dimensions of data
-/// packs, which a conversion cannot leave behind in the old format.
+/// with region files of `format` that are not among `dimensions`: dimensions of data packs that
+/// are no longer enabled, which a conversion cannot leave behind in the old format.
 fn unknown_dimensions(
     level_dirs: &[PathBuf],
     dimensions: &[WorldInfo],

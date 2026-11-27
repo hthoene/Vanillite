@@ -25,7 +25,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The SDK of the server version you build for (a release tag, or a path to a checkout).
-vanillite-plugin = { git = "https://github.com/hthoene/Vanillite", tag = "v0.1.0-beta.1+mc26.3" }
+vanillite-plugin = { git = "https://github.com/hthoene/vanillite", tag = "v0.1.0-beta.1+mc26.3" }
 ```
 
 `src/lib.rs`:

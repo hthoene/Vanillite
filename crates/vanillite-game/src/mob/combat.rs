@@ -874,8 +874,9 @@ fn die(
     }
     for stack in drops {
         // `spawnAtLocation`: an item entity with the default random motion.
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos,
             velocity,
@@ -963,8 +964,9 @@ pub fn create_wither_rose(
     let Some(item) = vanillite_data::registry::ITEM.id("minecraft:wither_rose") else {
         return;
     };
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,

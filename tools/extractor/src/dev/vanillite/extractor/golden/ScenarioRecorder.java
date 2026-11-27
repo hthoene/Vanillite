@@ -149,7 +149,10 @@ public final class ScenarioRecorder {
       Path scenario = Path.of(args[i]);
       Path out = Path.of(args[i + 1]);
       long start = System.nanoTime();
-      String trace = record(JsonParser.parseString(Files.readString(scenario)).getAsJsonObject());
+      String trace =
+          record(
+              JsonParser.parseString(Files.readString(scenario)).getAsJsonObject(),
+              scenario.toAbsolutePath().getParent());
       Files.createDirectories(out.toAbsolutePath().getParent());
       Files.writeString(out, trace, StandardCharsets.UTF_8);
       System.out.printf(
@@ -192,6 +195,14 @@ public final class ScenarioRecorder {
   }
 
   static String record(JsonObject scenario) throws Exception {
+    return record(scenario, null);
+  }
+
+  /**
+   * Records a scenario; its {@code datapack} is {@code ../datapacks/<name>} of {@code
+   * scenarioDir}.
+   */
+  static String record(JsonObject scenario, Path scenarioDir) throws Exception {
     JsonObject world = scenario.has("world") ? scenario.getAsJsonObject("world") : new JsonObject();
     long seed = world.has("seed") ? world.get("seed").getAsLong() : 0;
     String biome = world.has("biome") ? world.get("biome").getAsString() : "minecraft:plains";
@@ -211,7 +222,15 @@ public final class ScenarioRecorder {
     Path dir = Files.createTempDirectory("vanillite-parity");
     // Across dimensions: the Nether and the End are flat too, and players load chunks.
     boolean dimensions = scenario.has("dimensions") && scenario.get("dimensions").getAsBoolean();
-    ParityServer server = ParityServer.start(dir, seed, layers, biome, dimensions);
+    Path datapack = null;
+    if (scenario.has("datapack")) {
+      if (!dimensions || scenarioDir == null) {
+        throw new IllegalArgumentException("a data pack needs \"dimensions\"");
+      }
+      datapack =
+          scenarioDir.getParent().resolve("datapacks").resolve(scenario.get("datapack").getAsString());
+    }
+    ParityServer server = ParityServer.start(dir, seed, layers, biome, dimensions, datapack);
     ScenarioEntities entities = null;
     try {
       rules(server, scenario);

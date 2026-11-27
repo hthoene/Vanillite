@@ -364,8 +364,9 @@ pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_it
         && let Some(pos) = ents.store.get(mob).map(|e| e.pos())
         && let Some(lead) = vanillite_data::registry::ITEM.id("minecraft:lead")
     {
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos,
             velocity,

@@ -1,0 +1,19 @@
+{
+  "description": "A data pack dimension like Vanilla: vanillite_test:flatland (flat, its own dimension type with height 0 to 128 and coordinate scale 4) is loaded with the pack; /tp and execute in move a player there, back to the overworld at the position scaled by the two dimension types' coordinate scales (1.5 in the flatland is 6.0 in the overworld) and there again; a block set there stays on its layers.",
+  "dimensions": true,
+  "datapack": "custom_dimension",
+  "dimension": "vanillite_test:flatland",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-2, 0, -2], [5, 10, 5]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[2, -61, 2], [10, -57, 10]]}],
+  "ticks": 25,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [8.5, -60.0, 8.5], "rot": [0, 0]}
+  ],
+  "actions": [
+    {"tick": 5, "op": "command", "command": "execute in vanillite_test:flatland run tp steve 1.5 4.0 1.5"},
+    {"tick": 8, "op": "command", "command": "execute in vanillite_test:flatland run setblock 3 4 3 minecraft:stone"},
+    {"tick": 12, "op": "command", "command": "execute in vanillite_test:flatland positioned 1.5 4.0 1.5 in minecraft:overworld run tp steve ~ -60 ~"},
+    {"tick": 20, "op": "command", "command": "execute in vanillite_test:flatland run tp steve 2.5 4.0 2.5"}
+  ]
+}

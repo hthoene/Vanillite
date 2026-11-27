@@ -1,0 +1,22 @@
+{
+  "type": "vanillite_test:low_sky",
+  "generator": {
+    "type": "minecraft:flat",
+    "settings": {
+      "biome": "minecraft:plains",
+      "features": false,
+      "lakes": false,
+      "layers": [
+        {
+          "block": "minecraft:bedrock",
+          "height": 1
+        },
+        {
+          "block": "minecraft:stone",
+          "height": 3
+        }
+      ],
+      "structure_overrides": []
+    }
+  }
+}
