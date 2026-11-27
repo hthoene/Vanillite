@@ -20,6 +20,8 @@ use crate::Result;
 
 const HOST_IP: &str = "10.10.10.40";
 const RESULTS: &str = "/opt/vanillite/bench/results";
+/// Where `vanillite@30901` saves its players (`--fresh-players`).
+const PLAYERS: &str = "/opt/vanillite/30901/world/players";
 /// Where `vanillite@30901` loads plugins from.
 const PLUGINS: &str = "/opt/vanillite/30901/plugins";
 const DEFAULT_STEPS: &[u64] = &[50, 100, 250, 500, 1000, 2000, 5000];
@@ -88,6 +90,8 @@ pub(crate) struct Options {
     pub(crate) binary: Option<PathBuf>,
     /// Plugins installed on `vanillite@30901` for the run.
     pub(crate) plugins: Vec<PluginSpec>,
+    /// Delete the saved players of `vanillite@30901` first, so the bots start at the spawn.
+    pub(crate) fresh_players: bool,
 }
 
 /// A plugin folder for the run: `plugin.toml`, the library it names (from the folder, or built
@@ -123,6 +127,7 @@ fn parse(args: &[&str]) -> Result<Options> {
         gate: true,
         binary: None,
         plugins: Vec::new(),
+        fresh_players: false,
     };
     let mut movement = "random";
     let mut step_movements = vec![None; o.steps.len()];
@@ -162,6 +167,7 @@ fn parse(args: &[&str]) -> Result<Options> {
                 o.view_distance = value()?.parse().map_err(|e| format!("{arg}: {e}"))?;
             }
             "--release" => o.profile = "release",
+            "--fresh-players" => o.fresh_players = true,
             "--binary" => o.binary = Some(PathBuf::from(value()?)),
             "--plugin" => o.plugins.push(PluginSpec {
                 dir: PathBuf::from(value()?),
@@ -240,10 +246,20 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             target.port()
         );
         let with_plugins = target == Target::Vanillite && !plugins.is_empty();
-        let result = (if with_plugins {
-            install_plugins(&host, &plugins)
+        let result = (if target == Target::Vanillite && o.fresh_players {
+            ssh(
+                &host,
+                &format!("systemctl stop {} && rm -rf {PLAYERS}", target.unit()),
+            )
         } else {
             Ok(())
+        })
+        .and_then(|()| {
+            if with_plugins {
+                install_plugins(&host, &plugins)
+            } else {
+                Ok(())
+            }
         })
         .and_then(|()| deploy_or_restart(target, &o, &host, &bin_dir))
         .and_then(|()| Session::open(&host, target, &bin_dir, &o, &[]))
