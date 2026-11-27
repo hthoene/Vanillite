@@ -1,5 +1,6 @@
 //! The Vanillite server binary: a thin CLI over `vanillite-server`.
 
+mod cpu;
 mod health;
 mod logger;
 
@@ -102,7 +103,12 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             }
         }
     }
+    let baseline = cpu::dispatch();
     logger::init();
+    match baseline {
+        Some(why) => log::info!("CPU build: {} ({why})", cpu::level()),
+        None => log::info!("CPU build: {}", cpu::level()),
+    }
 
     // The tick loop runs on a thread named like Vanilla's, so log lines show "Server thread".
     let server_thread = std::thread::Builder::new()

@@ -2,12 +2,15 @@
 # Packs a release archive: the server binary, LICENSE, NOTICE and README.txt in a folder named
 # like the archive. Windows gets a .zip, the others a .tar.gz.
 #
-#   scripts/release/package.sh <binary> <os> <arch> <out dir>
+#   scripts/release/package.sh <binary> <os> <arch> <out dir> [<extra binary>...]
 #
+# Extra binaries keep their file names (Linux x86_64: vanillite-x86-64-v3, which the server
+# starts in its place on CPUs with AVX2).
 # The archive is <out dir>/vanillite-<version>-mc<minecraft>-<os>-<arch>.<zip|tar.gz>.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 binary="$1" os="$2" arch="$3" out="$4"
+shift 4
 
 eval "$("$root/scripts/release/meta.sh")"
 stem="${name}-${os}-${arch}"
@@ -20,6 +23,9 @@ exe=vanillite
 [[ "$os" == windows ]] && exe=vanillite.exe
 cp "$binary" "$stage/$stem/$exe"
 chmod 755 "$stage/$stem/$exe"
+for extra in "$@"; do
+    install -m 755 "$extra" "$stage/$stem/"
+done
 cp "$root/LICENSE" "$root/NOTICE" "$stage/$stem/"
 start='./vanillite'
 [[ "$os" == windows ]] && start='vanillite.exe'
