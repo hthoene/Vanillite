@@ -1,0 +1,132 @@
+{
+  "description": "Dispensers build golems (CarvedPumpkinBlock.canSpawnGolem): a carved pumpkin goes onto a snow golem body and an iron golem body and the golems spawn; a pumpkin dispenser in front of plain stone only clicks.",
+  "tier": "fast",
+  "level_rng": true,
+  "difficulty": "normal",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      20,
+      -54,
+      12
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        4
+      ],
+      "to": [
+        2,
+        -59,
+        4
+      ],
+      "block": "minecraft:snow_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -57,
+        4
+      ],
+      "block": "minecraft:dispenser[facing=down,triggered=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        7,
+        -60,
+        4
+      ],
+      "to": [
+        7,
+        -59,
+        4
+      ],
+      "block": "minecraft:iron_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -59,
+        4
+      ],
+      "to": [
+        8,
+        -59,
+        4
+      ],
+      "block": "minecraft:iron_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -57,
+        4
+      ],
+      "block": "minecraft:dispenser[facing=down,triggered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        18,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        18,
+        -58,
+        4
+      ],
+      "block": "minecraft:dispenser[facing=down,triggered=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 2 -57 4 {Items:[{Slot:0b,id:\"minecraft:carved_pumpkin\",count:1}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 7 -57 4 {Items:[{Slot:0b,id:\"minecraft:carved_pumpkin\",count:1}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 18 -58 4 {Items:[{Slot:0b,id:\"minecraft:carved_pumpkin\",count:1}]}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 2 -56 4 minecraft:redstone_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 7 -56 4 minecraft:redstone_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 18 -57 4 minecraft:redstone_block"
+    }
+  ]
+}
