@@ -94,6 +94,41 @@ these ports by hand: landing on dev is enough. For a test before landing, use a 
 | `cargo xtask testserver logs [<port>]` | Follow the log. |
 | `cargo xtask testserver start\|stop\|restart [<port>]` | Control a server; stop also disables it. |
 
+## Benchmarks
+
+`cargo xtask bench all|<scenario>...` runs the benchmark suite on the test server against
+Vanillite (vanillite@30901), Paper, Vanilla and Pumpkin (`cargo xtask bench list` shows the
+scenarios; the test server is locked with `vanillite-bench lock` while it runs, about 3.5 h for
+`all`). Raw results stay on the test server under `/opt/vanillite/bench/suite/<time>/`
+(`<scenario>-<server>.json` plus `run.json`, the whole run).
+
+**The repository is the source of truth for the published numbers** (the documentation site
+reads them from there). Nobody copies numbers by hand:
+
+| File | What |
+|---|---|
+| `benchmarks/README.md` | Generated summary: regressions and improvements of Vanillite against the previous run at the top, then per scenario tables and mermaid charts, with date, dev commit, versions and hardware. Never edit it. |
+| `benchmarks/results/latest.json` | The newest result of every scenario (each with its own date and commit). |
+| `benchmarks/results/history.json` | One line per run: the numbers the regression check compares. |
+| `benchmarks/results/runs/<time>.json` | Every published run as measured, one line per scenario. |
+
+Values that a server cannot measure are marked n/a (with the reason), broken runs error and
+servers that did not reach the load failed; nothing is filled in. A change counts as a
+regression or improvement when it exceeds 10 % and a small absolute step per unit (0.5 ms,
+0.3 s, 16 MiB, 2 %), or three robust deviations (MAD) of the last 10 runs where the number
+scatters more. Changes of the reference servers are listed separately as an indicator of the
+machine's own noise.
+
+- `cargo xtask bench <scenarios> --publish` (clean checkout only) or, for a finished run,
+  `cargo xtask bench publish <time|latest|path/to/results.json>` writes these files.
+  `cargo xtask bench report` regenerates the README from them.
+- **Nightly, unattended:** PlainBoard schedule 29 starts the Tooling Developer agent at 03:00
+  CET. It runs `cargo xtask bench nightly`: when origin/dev has code newer than the published
+  results, it runs `bench all --publish` in the worktree `target/bench/tree`, commits
+  `benchmarks/` on the branch `bench/results-<date>` and pushes it. The agent hands that branch
+  to `merge_when_green`, which lands it on dev like any other branch. When a run breaks
+  half-way, `cargo xtask bench publish <time>` publishes what it measured.
+
 ## Docker image
 
 `Dockerfile` builds a static (musl, mimalloc) binary on an empty base for linux/amd64 and

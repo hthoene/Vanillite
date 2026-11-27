@@ -1031,16 +1031,21 @@ print(json.dumps({"version": v.get("name"), "protocol": v.get("protocol")}))
         sed 's/^.*) //' "/proc/$pid/stat" | awk -v hz="$(getconf CLK_TCK)" '{ printf "{\"cpu_s\": %.2f}\n", ($12 + $13) / hz }'
         ;;
     chunks)
-        # Chunks stored in the overworld region files (header entries in use).
+        # Chunks stored in the overworld region files: Anvil header entries in use, or entries
+        # with data in the newer index copy of Vanillite's own format (.vwr, see vwr.rs).
         python3 -c '
-import glob, json, sys
+import glob, json, struct, sys
 n = 0
-for f in glob.glob(sys.argv[1] + "/world*/**/region/r.*.mca", recursive=True):
+for f in glob.glob(sys.argv[1] + "/world*/**/region/r.*.*", recursive=True):
     if "nether" in f or "the_end" in f or "DIM" in f:
         continue
     with open(f, "rb") as h:
-        head = h.read(4096)
-    n += sum(1 for i in range(0, len(head), 4) if head[i:i + 4] != b"\0\0\0\0")
+        head = h.read(4096 + 2 * 24832)
+    if f.endswith(".mca"):
+        n += sum(1 for i in range(0, 4096, 4) if head[i:i + 4] != b"\0\0\0\0")
+    elif f.endswith(".vwr") and len(head) == 4096 + 2 * 24832:
+        index = max((4096, 4096 + 24832), key=lambda o: struct.unpack_from("<Q", head, o)[0])
+        n += sum(1 for i in range(1024) if struct.unpack_from("<I", head, index + 16 + 24 * i + 6)[0])
 print(json.dumps({"chunks": n}))
 ' "$(dir_of "$target")"
         ;;
