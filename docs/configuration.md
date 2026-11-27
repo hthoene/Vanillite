@@ -207,6 +207,8 @@ These apply to the whole server.
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
 | `test-bots` | setting | yes | `0` | `0` | `0` | `0` | `0` | In-process fake players (`TestBot`, `TestBot2`, ...) that join over virtual connections, walk in a circle around the spawn and sneak now and then, so a single tester sees other players. Virtual connections need no authentication, so keep this at 0 outside test servers. Integer from 0 to 16. Environment: `VANILLITE_DEBUG__TEST_BOTS`. |
+| `session-recording` | setting | yes | `false` | `false` | `false` | `false` | `false` | Records the players' sessions in the overworld for `cargo xtask parity replay`, which plays them again in Vanilla and Vanillite and compares both tick by tick. When the first player joins, the world is saved and the overworld's chunks are copied (the overworld tick waits for the copy); then every tick the players' serverbound play packets are written, until the last player has left. Chat, commands, signs, books and plugin messages are left out, and players get anonymous ids instead of their names, addresses and UUIDs. For test servers. Environment: `VANILLITE_DEBUG__SESSION_RECORDING`. |
+| `session-recording-dir` | setting | yes | `"recordings"` | `"recordings"` | `"recordings"` | `"recordings"` | `"recordings"` | Folder of the session recordings, relative to the server folder: one folder per session (`<start time>/` with `world/`, `meta.json`, `packets.jsonl`). Environment: `VANILLITE_DEBUG__SESSION_RECORDING_DIR`. |
 
 #### `[proxy]`
 
