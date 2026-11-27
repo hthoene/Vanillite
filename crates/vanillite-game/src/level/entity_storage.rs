@@ -492,11 +492,16 @@ impl Level {
             Some(Tag::Compound(c)) => Some(c.clone()),
             _ => None,
         };
+        let custom_data = match nbt.get("data") {
+            Some(Tag::Compound(c)) => Some(c.clone()),
+            _ => None,
+        };
         let Some(vehicle) = self.create_entity(nbt)? else {
             return Some(None);
         };
         self.entities.set_tags(vehicle, tags);
         self.entities.set_persistent_data(vehicle, persistent);
+        self.entities.set_custom_data(vehicle, custom_data);
         loaded.push(vehicle);
         for tag in passengers {
             let Tag::Compound(c) = tag else {
@@ -661,6 +666,13 @@ impl Level {
             Some(data) => nbt.insert(PERSISTENT_DATA, data.clone()),
             None => {
                 nbt.remove(PERSISTENT_DATA);
+            }
+        }
+        // `Entity.saveWithoutId`: `data` only when the custom data is not empty.
+        match self.entities.custom_data(id) {
+            Some(data) => nbt.insert("data", data.clone()),
+            None => {
+                nbt.remove("data");
             }
         }
         Some(nbt)

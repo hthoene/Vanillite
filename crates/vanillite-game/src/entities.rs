@@ -114,6 +114,8 @@ pub struct Entities {
     /// Plugins' persistent data (`BukkitValues`, as Paper saves it) of the entities that have
     /// any.
     persistent: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
+    /// `Entity.customData` (saved as `data`) of the entities that have any.
+    custom_data: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
     /// Area effect cloud kind data.
     pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
@@ -655,6 +657,24 @@ impl Entities {
         Some(self.persistent.entry(id).or_default())
     }
 
+    /// `Entity.customData` of an entity (NBT `data`), if it has any.
+    pub fn custom_data(&self, id: EntityId) -> Option<&vanillite_nbt::Compound> {
+        self.custom_data.get(&id).filter(|d| !d.is_empty())
+    }
+
+    /// Replaces `Entity.customData` of an entity (loading, `custom_data` of the item it was
+    /// made from).
+    pub fn set_custom_data(&mut self, id: EntityId, data: Option<vanillite_nbt::Compound>) {
+        match data.filter(|d| !d.is_empty()) {
+            Some(data) if self.store.contains(id) => {
+                self.custom_data.insert(id, data);
+            }
+            _ => {
+                self.custom_data.remove(&id);
+            }
+        }
+    }
+
     /// Replaces the plugins' persistent data of an entity (loading, travelling).
     pub fn set_persistent_data(&mut self, id: EntityId, data: Option<vanillite_nbt::Compound>) {
         match data.filter(|d| !d.is_empty()) {
@@ -804,6 +824,7 @@ impl Entities {
         }
         self.tags.remove(&id);
         self.persistent.remove(&id);
+        self.custom_data.remove(&id);
         if !self.plugin_goals.is_empty() {
             // Dropping them frees the plugins' data.
             self.plugin_goals.remove_mob(id);
@@ -835,6 +856,7 @@ impl Entities {
         let removed = self.store.despawn(id)?;
         self.tags.remove(&id);
         self.persistent.remove(&id);
+        self.custom_data.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
         }

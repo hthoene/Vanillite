@@ -196,6 +196,9 @@ pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> 
                 Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
             );
         }
+        if let Some(data) = entities.custom_data(id) {
+            full.insert("data", data.clone());
+        }
         return Some(full);
     }
     let mut out = Compound::new();
@@ -327,6 +330,10 @@ pub(crate) fn apply_entity_nbt(
         _ => Vec::new(),
     };
     entities.set_tags(id, tags);
+    // `Entity.load`: the custom data (`data`).
+    if let Some(Tag::Compound(c)) = data.get("data") {
+        entities.set_custom_data(id, Some(c.clone()));
+    }
     if vanillite_game::decoration::apply_nbt(entities, id, data) {
         return Ok(());
     }

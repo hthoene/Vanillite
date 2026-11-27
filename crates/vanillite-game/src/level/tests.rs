@@ -613,3 +613,18 @@ fn dispenser_triggers_and_fails_empty_and_hopper_locks() {
     assert_eq!(events.len(), 1);
     assert_eq!((events[0].event, events[0].pos), (1001, dispenser));
 }
+
+/// `Entity.customData` (`data`) of a mob survives loading and saving (#242).
+#[test]
+fn entity_custom_data_round_trips() {
+    let mut level = flat_level();
+    let nbt = vanillite_nbt::snbt::parse_compound(
+        "{id:\"minecraft:pig\",Pos:[4.5d,-60.0d,4.5d],data:{quest:\"apple\",n:3b}}",
+    )
+    .expect("snbt");
+    assert!(level.load_entity(nbt));
+    let pig = level.entities.mobs.iter().map(|(id, _)| id).next().expect("pig");
+    let saved = level.save_entity(pig).expect("saved");
+    let data = vanillite_nbt::snbt::parse_compound("{quest:\"apple\",n:3b}").expect("data");
+    assert_eq!(saved.get("data"), Some(&vanillite_nbt::Tag::Compound(data)));
+}
