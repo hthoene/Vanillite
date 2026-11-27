@@ -972,6 +972,10 @@ impl WorldSurvival {
                     crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
                 }
                 Effect::To { player, packet } => {
+                    if entities.player(*player).is_none() {
+                        send_departed(entities, global, *player, packet);
+                        continue;
+                    }
                     out.packet(packet);
                     out.send(entities, *player, packet);
                 }
@@ -1088,6 +1092,8 @@ fn deliver_simple(
             Effect::To { player, packet } => {
                 if let Some(p) = entities.player(*player) {
                     p.connection.sink.send_shared(packet);
+                } else {
+                    send_departed(entities, global, *player, packet);
                 }
             }
             Effect::DropItem { .. }
@@ -1139,6 +1145,21 @@ fn award_experience(
             Vec3::default(),
             amount,
         );
+    }
+}
+
+/// [`Effect::To`] for a player that left the world: it reaches the player in its new world
+/// (the boss bars' removal once they notice it is gone).
+fn send_departed(
+    entities: &Entities,
+    global: &Global,
+    player: EntityId,
+    packet: &Arc<SharedPacket>,
+) {
+    if let Some(uuid) = entities.departed_uuid(player)
+        && let Some((sink, _)) = global.players.connection(crate::player_list::Uuid(uuid))
+    {
+        sink.send_shared(packet);
     }
 }
 

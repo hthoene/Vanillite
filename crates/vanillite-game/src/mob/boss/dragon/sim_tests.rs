@@ -310,3 +310,84 @@ fn respawn_stages_take_604_ticks() {
     // The four respawn crystals exploded; the ten pillars got new ones.
     assert_eq!(crystals, 10);
 }
+
+impl World {
+    /// One `EnderDragonFight.tick` with the level as it is.
+    fn tick_fight(&mut self, fight: &mut DragonFight) {
+        let World {
+            level,
+            types,
+            facts,
+            rules,
+            random,
+            out,
+            cx,
+        } = self;
+        let raining = |_| false;
+        let mut no_gateway = |_| false;
+        let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
+        let mut env = Env {
+            hooks: &crate::hooks::NoHooks,
+            types,
+            facts,
+            blocks: &NoBlocks,
+            rules,
+            difficulty: Difficulty::Normal,
+            game_time: 0,
+            min_y: -64,
+            dimension: "minecraft:the_end",
+            raining_at: &raining,
+            border: None,
+            enter_gateway: &mut no_gateway,
+            display_name: &names,
+            entity_team: &|_| None,
+            random,
+            out,
+        };
+        fight.tick(level, &mut env, cx);
+    }
+}
+
+#[test]
+fn a_player_in_a_new_end_starts_the_fight_and_leaves_its_bar() {
+    let mut w = World::new();
+    let mut fight = DragonFight::new(None, 0, &mut LegacyRandom::new(1));
+    let player = crate::block::spawner_tests::add_player(
+        &mut w.level,
+        Vec3::new(8.5, -60.0, 8.5),
+        vanillite_config::GameMode::Survival,
+    );
+    let dragons = |level: &Level| {
+        level
+            .entities
+            .mobs
+            .iter()
+            .filter(|(_, m)| m.kind == Kind::EnderDragon)
+            .count()
+    };
+    // The fight's ticket loads and simulates the arena (no entities stored in it), then the
+    // fight scans it: no exit portal and no dragon, so it builds the portal and a dragon.
+    for _ in 0..40 {
+        w.tick_fight(&mut fight);
+        crate::level::tests::tick(&mut w.level);
+        if dragons(&w.level) > 0 {
+            break;
+        }
+    }
+    assert!(!fight.needs_state_scanning);
+    assert_eq!(dragons(&w.level), 1);
+    assert_eq!(fight.bar().players(), [player]);
+    // The player leaves for another world: the next player scan sends it the bar's removal.
+    w.level.entities.despawn_player(player);
+    w.out.clear();
+    for _ in 0..20 {
+        w.tick_fight(&mut fight);
+    }
+    assert!(fight.bar().players().is_empty());
+    assert!(
+        w.out
+            .iter()
+            .any(|e| matches!(e, Effect::To { player: p, .. } if *p == player))
+    );
+    assert_eq!(w.level.entities.departed_uuid(player), Some(0xABCD));
+}

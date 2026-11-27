@@ -1052,6 +1052,7 @@ impl Level {
             let mut promoted = Vec::new();
             self.chunks.take_promoted(&mut promoted);
             for &chunk in &promoted {
+                self.take_generation_entities(chunk);
                 self.load_block_entities(chunk);
             }
             self.chunks_loaded_event(&promoted);

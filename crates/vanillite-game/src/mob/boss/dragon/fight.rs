@@ -107,7 +107,8 @@ pub struct DragonFight {
     alive_crystals: i32,
     ticks_since_crystals_scanned: i32,
     ticks_since_last_player_scan: i32,
-    ticket: Option<TicketId>,
+    /// The `DRAGON` ticket: a loading and a simulation ticket.
+    ticket: Option<[TicketId; 2]>,
     dirty: bool,
 }
 
@@ -297,14 +298,19 @@ impl DragonFight {
             self.ticks_since_last_player_scan = 0;
         }
         if self.bar.players().is_empty() {
-            if let Some(t) = self.ticket.take() {
-                level.chunks.remove_ticket(t);
+            if let Some([load, simulation]) = self.ticket.take() {
+                level.chunks.remove_ticket(load);
+                level.chunks.remove_simulation_ticket(simulation);
             }
             return;
         }
         if self.ticket.is_none() {
-            // `addTicketWithRadius(DRAGON, (0, 0), 9)`.
-            self.ticket = Some(level.chunks.add_ticket(ChunkPos::new(0, 0), 33 - 9));
+            // `addTicketWithRadius(DRAGON, (0, 0), 9)`; the ticket type loads and simulates.
+            let center = ChunkPos::new(0, 0);
+            self.ticket = Some([
+                level.chunks.add_ticket(center, 33 - 9),
+                level.chunks.add_simulation_ticket(center, 33 - 9),
+            ]);
         }
         if !self.arena_loaded(level) {
             return;

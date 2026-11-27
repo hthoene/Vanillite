@@ -65,7 +65,7 @@ pub mod shelf;
 pub mod sign;
 pub mod spawner;
 #[cfg(test)]
-mod spawner_tests;
+pub(crate) mod spawner_tests;
 mod spread;
 pub mod technical;
 pub mod tnt;
