@@ -701,8 +701,7 @@ impl Digging {
             DigAction::ChangeDestroyDirection => self.destroy_direction = direction % 6,
             DigAction::StopDestroyBlock => {
                 // Fast-break check: only a running dig can be finished.
-                if self.fast_break_check && !(self.is_destroying && Some(pos) == self.destroy_pos)
-                {
+                if self.fast_break_check && !(self.is_destroying && Some(pos) == self.destroy_pos) {
                     block_update(sink, ctx.level, pos);
                     return;
                 }

@@ -226,10 +226,16 @@ fn fast_break_check_rejects_start_stop() {
     });
     let sent = sink.0.lock().unwrap().len();
     tick(&mut level, &mut digging, 30);
-    assert!(level.block(FLOOR).is(blocks::STONE), "start-stop broke the block");
+    assert!(
+        level.block(FLOOR).is(blocks::STONE),
+        "start-stop broke the block"
+    );
     assert!(sink.0.lock().unwrap().len() > sent, "block not sent again");
     tick(&mut level, &mut digging, 200);
-    assert!(level.block(FLOOR).is(blocks::STONE), "rejected dig finished later");
+    assert!(
+        level.block(FLOOR).is(blocks::STONE),
+        "rejected dig finished later"
+    );
     // Stone by hand takes 150 ticks; the server saw 80 of them before the stop.
     with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
         digging.handle_action(ctx, DigAction::StartDestroyBlock, FLOOR, 1, 3, &sink);
@@ -240,7 +246,10 @@ fn fast_break_check_rejects_start_stop() {
     });
     assert!(level.block(FLOOR).is(blocks::STONE), "not with the stop");
     tick(&mut level, &mut digging, 70);
-    assert!(level.block(FLOOR).is_air(), "lagged legit dig did not finish");
+    assert!(
+        level.block(FLOOR).is_air(),
+        "lagged legit dig did not finish"
+    );
 }
 
 /// Reach hacks: blocks beyond the interaction range can be neither broken nor used.
