@@ -15,6 +15,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::{cmp, fmt, io};
 
+use crate::budget::Budget;
+
 /// A unit of work.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -216,6 +218,8 @@ impl fmt::Debug for ComputePool {
 struct Shared {
     queues: Mutex<Queues>,
     available: Condvar,
+    /// Decides when background jobs may start ([`Budget::background_wait`]).
+    budget: Option<Arc<Budget>>,
 }
 
 #[derive(Default)]
@@ -260,17 +264,43 @@ impl Shared {
 impl ComputePool {
     /// Starts a pool with `workers` threads (at least one).
     pub fn new(workers: usize) -> io::Result<ComputePool> {
+        Self::start(workers, None)
+    }
+
+    /// Starts a pool whose background jobs wait for `budget` ([`Budget::background_wait`]).
+    pub fn with_budget(workers: usize, budget: Arc<Budget>) -> io::Result<ComputePool> {
+        Self::start(workers, Some(budget))
+    }
+
+    fn start(workers: usize, budget: Option<Arc<Budget>>) -> io::Result<ComputePool> {
         let count = workers.max(1);
         let shared = Arc::new(Shared {
             queues: Mutex::new(Queues::default()),
             available: Condvar::new(),
+            budget,
         });
+        if let Some(budget) = &shared.budget {
+            let weak = Arc::downgrade(&shared);
+            budget.set_wake(Box::new(move || {
+                if let Some(shared) = weak.upgrade() {
+                    // Under the lock: a worker that just found the budget closed is waiting
+                    // before this notification can happen.
+                    let _queues = shared.lock();
+                    shared.available.notify_all();
+                }
+            }));
+        }
         let mut handles = Vec::with_capacity(count);
         for index in 0..count {
             let shared = Arc::clone(&shared);
             let handle = thread::Builder::new()
                 .name(format!("Compute #{index}"))
-                .spawn(move || worker(&shared))?;
+                .spawn(move || {
+                    if let Some(budget) = &shared.budget {
+                        budget.worker_started();
+                    }
+                    worker(&shared)
+                })?;
             handles.push(handle);
         }
         Ok(ComputePool {
@@ -286,6 +316,16 @@ fn worker(shared: &Shared) {
     loop {
         let job = match queues.urgent.pop_front() {
             Some(job) => job,
+            None if !queues.background.is_empty()
+                && let Some(wait) = shared.budget.as_ref().and_then(|b| b.background_wait()) =>
+            {
+                queues = shared
+                    .available
+                    .wait_timeout(queues, wait)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+                continue;
+            }
             None => match queues.background.pop() {
                 Some(background) => background.job,
                 None if queues.stopping => return,

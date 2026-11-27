@@ -31,6 +31,7 @@ use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, SaveSettings};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
 
+use crate::budget::{Budget, Limits};
 use crate::clock::Clock;
 use crate::compute::{Compute, ComputePool, Scheduler};
 use crate::global::Global;
@@ -51,6 +52,10 @@ pub const DIMENSIONS: [&str; 3] = [
 
 /// How far behind the server must be before "Can't keep up!" (plus 20 ticks).
 const OVERLOADED_THRESHOLD: u64 = NANOS_PER_SECOND;
+/// Ticks between the hand-backs of freed memory to the system ([`Budget::release_memory`]).
+const MEMORY_RELEASE_TICKS: u64 = 600;
+/// `performance.chunks.max-jobs` at most on scarce hardware ([`Budget::scarce`]).
+const SCARCE_MAX_JOBS: usize = 16;
 /// Minimum time between two "Can't keep up!" warnings (plus 100 ticks).
 const OVERLOADED_WARNING_INTERVAL: u64 = 10 * NANOS_PER_SECOND;
 /// Vanilla's autosave period in seconds of game time.
@@ -144,6 +149,7 @@ pub struct ServerBuilder {
     vanilla_pack: VanillaPack,
     network: bool,
     version: String,
+    memory_release: Option<fn()>,
 }
 
 impl ServerBuilder {
@@ -158,12 +164,20 @@ impl ServerBuilder {
             light_engine: Slot::new("light-engine"),
             vanilla_pack: VanillaPack::default(),
             network: true,
+            memory_release: None,
             version: format!(
                 "Vanillite {} (Minecraft {})",
                 env!("CARGO_PKG_VERSION"),
                 vanillite_data::version::VERSION_ID
             ),
         }
+    }
+
+    /// The allocator's way to return freed memory to the system (`malloc_trim`, `mi_collect`):
+    /// the server calls it after bursts of work ([`crate::budget::Budget::release_memory`]).
+    pub fn memory_release(&mut self, release: fn()) -> &mut Self {
+        self.memory_release = Some(release);
+        self
     }
 
     /// The version shown in the startup log (default: `Vanillite <version> (Minecraft <id>)`);
@@ -246,17 +260,23 @@ impl ServerBuilder {
         let parallel = config.server.tick.parallel_dimensions;
         // One core stays with the tick threads: dimensions without players sleep between their
         // ticks, so they do not take a core each (Vanilla: cores minus the server thread).
+        let budget = Arc::new(Budget::new(Limits::detect(
+            config.server.budget.cpu,
+            config.server.budget.memory,
+        )));
+        if let Some(release) = self.memory_release {
+            budget.set_memory_release(release);
+        }
+        log::info!("Hardware budget: {}", budget.describe());
         let workers = match config.server.threads.compute {
-            0 => std::thread::available_parallelism()
-                .map_or(1, usize::from)
-                .saturating_sub(1)
-                .max(1),
+            0 => budget.limits().default_workers(),
             n => usize::from(n),
         };
         let (scheduler, origin) = match self.scheduler.take() {
             Some(filled) => filled,
             None => {
-                let pool = ComputePool::new(workers).map_err(|e| StartError::io(&dir, e))?;
+                let pool = ComputePool::with_budget(workers, Arc::clone(&budget))
+                    .map_err(|e| StartError::io(&dir, e))?;
                 (Box::new(pool) as Box<dyn Scheduler>, Origin::BuiltIn)
             }
         };
@@ -425,7 +445,10 @@ impl ServerBuilder {
             .take()
             .unwrap_or_else(|| (Box::new(BfsLightEngineProvider), Origin::BuiltIn));
         slot("light-engine", &origin);
-        let executor = Arc::new(crate::world_setup::ComputeExecutor(compute.clone()));
+        let executor = Arc::new(crate::world_setup::ComputeExecutor(
+            compute.clone(),
+            Arc::clone(&budget),
+        ));
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
@@ -565,7 +588,13 @@ impl ServerBuilder {
             let settings = ChunkSettings {
                 view_distance: i32::from(view_distance),
                 unload_delay: u64::from(rules.chunks.unload_delay),
-                max_jobs: usize::from(rules.chunks.max_jobs),
+                // On scarce hardware fewer jobs wait in the queue, so the newest priorities
+                // (the chunks around the players now) come first.
+                max_jobs: if budget.scarce() {
+                    usize::from(rules.chunks.max_jobs).min(SCARCE_MAX_JOBS)
+                } else {
+                    usize::from(rules.chunks.max_jobs)
+                },
                 simulation_distance: i32::from(rules.distances.simulation_distance.or(
                     u8::try_from(config.properties.simulation_distance.clamp(2, 32)).unwrap_or(10),
                 )),
@@ -693,6 +722,7 @@ impl ServerBuilder {
             dir,
             config,
             compute,
+            budget,
             global,
             worlds,
             routes,
@@ -955,6 +985,7 @@ pub struct Server {
     dir: PathBuf,
     config: Config,
     compute: Compute,
+    budget: Arc<Budget>,
     global: Arc<Global>,
     worlds: Worlds,
     routes: Arc<[Route]>,
@@ -1122,6 +1153,7 @@ impl Server {
     fn tick_server(&mut self) {
         let clock = self.global.clock;
         let started = clock.now();
+        self.budget.enter_tick();
         self.heartbeat.enter(&clock);
         self.watch.progress.store(started, Ordering::Relaxed);
 
@@ -1144,6 +1176,7 @@ impl Server {
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
                 self.heartbeat.leave();
+                self.budget.leave_tick(clock.now().saturating_sub(started));
                 self.watch.progress.store(clock.now(), Ordering::Relaxed);
                 return;
             }
@@ -1172,6 +1205,12 @@ impl Server {
             }
         }
         self.heartbeat.leave();
+        self.budget.leave_tick(elapsed_nanos);
+        if self.tick_count.is_multiple_of(MEMORY_RELEASE_TICKS) {
+            let budget = Arc::clone(&self.budget);
+            self.compute
+                .spawn_background(u32::MAX, move || budget.release_memory());
+        }
         self.watch.progress.store(clock.now(), Ordering::Relaxed);
     }
 

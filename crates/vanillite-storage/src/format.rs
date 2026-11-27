@@ -240,7 +240,9 @@ fn write_id_table(level_dir: &Path) -> io::Result<()> {
     }
     files::write_atomic(
         &path,
-        &zstd_compress(id_table_text().as_bytes(), 19)?,
+        // A one-shot context: the per-thread one of `zstd_compress` would keep the level-19
+        // context (about 50 MiB) alive for the server's lifetime.
+        &zstd::bulk::compress(id_table_text().as_bytes(), 19)?,
         false,
     )
 }

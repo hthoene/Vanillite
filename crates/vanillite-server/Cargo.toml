@@ -31,6 +31,9 @@ vanillite-storage.workspace = true
 vanillite-plugin-host.workspace = true
 vanillite-abi.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 
 [lints]

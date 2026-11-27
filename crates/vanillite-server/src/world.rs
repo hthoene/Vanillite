@@ -9,7 +9,7 @@ use vanillite_base::hash::FxHashMap;
 use vanillite_config::{TrackingRules, WorldRules};
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
-use vanillite_world::chunks::{Chunks, TicketId};
+use vanillite_world::chunks::{Chunks, FULL_LEVEL, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
 
@@ -21,6 +21,10 @@ use crate::global::Global;
 use crate::players::{FanOut, WorldBlocks, WorldPlayers};
 use crate::world_setup::ChunkPackets;
 use crate::world_updates::WorldUpdates;
+
+/// `PrepareSpawnTask.PREPARE_CHUNK_RADIUS`: chunks around the spawn that are full before a
+/// joining player is placed.
+const PREPARE_CHUNK_RADIUS: u8 = 3;
 
 mod travel;
 
@@ -100,6 +104,9 @@ pub struct ServerWorld {
     updates: WorldUpdates,
     /// The centre chunk of every player with tickets.
     player_tickets: FxHashMap<EntityId, ChunkPos>,
+    /// Joins waiting for the chunks around their spawn (`PrepareSpawnTask`), with the ticket
+    /// that loads them.
+    spawn_waiting: Vec<(TicketId, ChunkPos, crate::players::Arrival)>,
     /// The players' chunk ticket and simulation ticket at each centre chunk with the number
     /// of players there: equal tickets at one chunk give the same levels as one, so dense
     /// players crossing chunks do not recompute the levels of their whole view.
@@ -217,6 +224,7 @@ impl ServerWorld {
             packets,
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            spawn_waiting: Vec::new(),
             focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
@@ -348,8 +356,54 @@ impl ServerWorld {
         &self.entity_updates
     }
 
-    /// Places a player that joined the server into this world.
+    /// Takes a player that joined the server into this world once the chunks within
+    /// [`PREPARE_CHUNK_RADIUS`] of its spawn position are full (`PrepareSpawnTask`: a
+    /// `player_spawn` ticket loads them and the player is placed when they are ready, so it
+    /// never stands above chunks that are not there).
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
+        let pos = arrival
+            .saved
+            .as_ref()
+            .map_or(self.players.level.spawn.0, |saved| {
+                vanillite_base::Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2])
+            });
+        let chunk = ChunkPos::new(
+            vanillite_base::math::floor(pos.x) >> 4,
+            vanillite_base::math::floor(pos.z) >> 4,
+        );
+        let ticket = self
+            .level
+            .chunks
+            .add_ticket(chunk, FULL_LEVEL - PREPARE_CHUNK_RADIUS);
+        self.spawn_waiting.push((ticket, chunk, arrival));
+        self.place_ready_spawns(global);
+    }
+
+    /// Places the waiting joins whose spawn chunks are full.
+    fn place_ready_spawns(&mut self, global: &Global) {
+        if self.spawn_waiting.is_empty() {
+            return;
+        }
+        let radius = i32::from(PREPARE_CHUNK_RADIUS);
+        let chunks = &self.level.chunks;
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.spawn_waiting)
+            .into_iter()
+            .partition(|(_, center, _)| {
+                (-radius..=radius).all(|dz| {
+                    (-radius..=radius)
+                        .all(|dx| chunks.is_full(ChunkPos::new(center.x + dx, center.z + dz)))
+                })
+            });
+        self.spawn_waiting = waiting;
+        for (ticket, _, arrival) in ready {
+            self.place_player(global, arrival);
+            // The player's own tickets hold the chunks now.
+            self.level.chunks.remove_ticket(ticket);
+        }
+    }
+
+    /// `PrepareSpawnTask.Ready.spawn`: places a player whose spawn chunks are ready.
+    fn place_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
         let (uuid, name) = (arrival.uuid, arrival.profile.name.clone());
         let vehicle = arrival
@@ -452,6 +506,7 @@ impl ServerWorld {
     /// connection tick.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
+        self.place_ready_spawns(ctx.global);
         let plugins = ctx.global.plugins.clone();
         let positions = plugins
             .wants(vanillite_abi::event::PLAYERS_MOVED)
