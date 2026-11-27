@@ -89,7 +89,13 @@ fn dried_ghast_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     };
     let network_ids = std::sync::Arc::clone(level.network_ids_arc());
     let uuid = crate::mob::new_uuid();
-    crate::mob::spawn(&mut level.entities, &network_ids, uuid, at, rot, ghastling);
+    let id = crate::mob::spawn(&mut level.entities, &network_ids, uuid, at, rot, ghastling);
+    if !level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, 0)
+    {
+        return;
+    }
     let sound = sound_id("entity.ghastling.spawn");
     level.play_sound(None, at.x, at.y, at.z, sound, SOUND_BLOCKS, 1.0, 1.0);
 }
@@ -121,7 +127,11 @@ fn add_hatchling(level: &mut Level, mob: MobData, pos: Vec3, y_rot: f32) -> Enti
     };
     let network_ids = std::sync::Arc::clone(level.network_ids_arc());
     let uuid = crate::mob::new_uuid();
-    crate::mob::spawn(&mut level.entities, &network_ids, uuid, pos, rot, mob)
+    let id = crate::mob::spawn(&mut level.entities, &network_ids, uuid, pos, rot, mob);
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, 0);
+    id
 }
 
 // --- Turtle eggs ------------------------------------------------------------------------

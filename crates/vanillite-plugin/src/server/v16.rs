@@ -171,7 +171,11 @@ impl Server {
     /// The item with its lore lines set. Since ABI 1.6.
     pub fn item_with_lore(&self, item: &str, lines: &[Text]) -> Result<String, Error> {
         let list: Vec<String> = lines.iter().map(text_snbt).collect();
-        self.item_with_component(item, "minecraft:lore", Some(&format!("[{}]", list.join(","))))
+        self.item_with_component(
+            item,
+            "minecraft:lore",
+            Some(&format!("[{}]", list.join(","))),
+        )
     }
 
     /// The item with its damage set. Since ABI 1.6.
@@ -210,13 +214,7 @@ impl Server {
         let mut kind = 0;
         // SAFETY: valid host function, strings, output and sink.
         let r = collect_with(|sink| unsafe {
-            (api.item_data_get)(
-                id,
-                abi::Str::new(item),
-                abi::Str::new(key),
-                &mut kind,
-                sink,
-            )
+            (api.item_data_get)(id, abi::Str::new(item), abi::Str::new(key), &mut kind, sink)
         });
         match r {
             Ok(bytes) => Ok(Some(
@@ -228,7 +226,12 @@ impl Server {
     }
 
     /// The item (SNBT) with a persistent data value set. Since ABI 1.6.
-    pub fn item_with_data(&self, item: &str, key: &str, value: &DataValue) -> Result<String, Error> {
+    pub fn item_with_data(
+        &self,
+        item: &str,
+        key: &str,
+        value: &DataValue,
+    ) -> Result<String, Error> {
         let (api, id) = (self.api(), self.host.id);
         let (kind, bytes) = value.encode();
         // SAFETY: valid host function, strings, bytes and sink.
@@ -535,7 +538,9 @@ impl Ctx<'_> {
     ) -> Result<(), Error> {
         let target = target.map_or(abi::Uuid::NIL, Uuid::to_abi);
         // SAFETY: valid host function and context of this call.
-        Error::check(unsafe { (self.api().mob_set_target)(self.raw, world.0, mob.to_abi(), target) })
+        Error::check(unsafe {
+            (self.api().mob_set_target)(self.raw, world.0, mob.to_abi(), target)
+        })
     }
 
     /// Lets a mob walk to a position by its path finding (speed modifier 1 normal; 0 stops).
@@ -591,7 +596,9 @@ impl Ctx<'_> {
     /// Removes a mob's Vanilla goals ([`abi::goal_clear`] bits). Since ABI 1.6.
     pub fn clear_goals(&mut self, world: World, mob: Uuid, which: u32) -> Result<(), Error> {
         // SAFETY: valid host function and context of this call.
-        Error::check(unsafe { (self.api().mob_goals_clear)(self.raw, world.0, mob.to_abi(), which) })
+        Error::check(unsafe {
+            (self.api().mob_goals_clear)(self.raw, world.0, mob.to_abi(), which)
+        })
     }
 
     /// The biome at a position, e.g. `minecraft:plains`. Since ABI 1.6.
@@ -739,7 +746,9 @@ impl Ctx<'_> {
         })?;
         let pos = Vec3::from_abi(out.pos);
         Ok(match out.kind {
-            abi::ray_hit::BLOCK => Some(RayHit::Block(pos, BlockPos::from_abi(out.block), out.face)),
+            abi::ray_hit::BLOCK => {
+                Some(RayHit::Block(pos, BlockPos::from_abi(out.block), out.face))
+            }
             abi::ray_hit::ENTITY => Some(RayHit::Entity(pos, Uuid::from_abi(out.entity))),
             _ => None,
         })
@@ -793,7 +802,13 @@ impl Ctx<'_> {
     ) -> Result<(), Error> {
         // SAFETY: valid host function, context of this call and string.
         Error::check(unsafe {
-            (self.api().menu_set_item)(self.raw, world.0, player.to_abi(), slot, abi::Str::new(item))
+            (self.api().menu_set_item)(
+                self.raw,
+                world.0,
+                player.to_abi(),
+                slot,
+                abi::Str::new(item),
+            )
         })
     }
 

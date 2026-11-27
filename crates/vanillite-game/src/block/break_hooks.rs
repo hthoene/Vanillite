@@ -180,7 +180,7 @@ fn spawn_infestation(level: &mut Level, pos: BlockPos) {
         f64::from(pos.y),
         f64::from(pos.z) + 0.5,
     );
-    crate::mob::spawn::add_mob(level, mob, at, 0.0);
+    crate::mob::spawn::add_mob(level, mob, at, 0.0, crate::mob::fam::SpawnReason::Triggered);
 }
 
 /// `IceBlock.playerDestroy` after the drops: without a melting-preventing enchantment, the ice

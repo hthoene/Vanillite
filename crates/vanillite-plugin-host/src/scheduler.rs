@@ -77,7 +77,9 @@ impl Tasks {
             entity: (spec.owner.kind == abi::owner::ENTITY).then(|| spec.owner.entity.to_u128()),
             background,
             run: spec.run,
-            retired: spec.retired.filter(|_| spec.owner.kind == abi::owner::ENTITY),
+            retired: spec
+                .retired
+                .filter(|_| spec.owner.kind == abi::owner::ENTITY),
             drop: spec.drop,
             user: SendPtr(spec.user),
         };

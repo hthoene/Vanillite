@@ -323,9 +323,16 @@ pub fn freezing_tick(t: &mut Tick<'_, '_>) {
         if s.converting {
             s.conversion_time -= 1;
             if s.conversion_time < 0
-                && let Some(id) = super::convert_to(t, Kind::Stray, true, true, |n| {
-                    ss_mut(n).reassess = true;
-                })
+                && let Some(id) = super::convert_to(
+                    t,
+                    Kind::Stray,
+                    true,
+                    true,
+                    vanillite_abi::transform_reason::FROZEN,
+                    |n| {
+                        ss_mut(n).reassess = true;
+                    },
+                )
                 && !t.ents.mob(id).is_some_and(|m| m.silent)
                 && let Some(p) = t.ents.store.get(id).map(|e| e.pos())
             {

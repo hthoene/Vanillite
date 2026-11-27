@@ -203,12 +203,16 @@ pub fn spawn_item_moving(
     let (uuid, y_rot, motion) = crate::mob::new_item_entity();
     let velocity = velocity.unwrap_or(motion);
     let network_id = level.network_ids().next();
-    Some(level.entities.spawn_item(
+    let id = level.entities.spawn_item(
         network_id,
         uuid,
         pos,
         velocity,
         y_rot,
         ItemData::new(stack, pickup_delay, thrower),
-    ))
+    );
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+        .then_some(id)
 }

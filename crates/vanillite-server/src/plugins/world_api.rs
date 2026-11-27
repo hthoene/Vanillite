@@ -334,9 +334,16 @@ pub(super) fn spawn_entity(
 ) -> Result<u128> {
     let pos = position(pos)?;
     let source = server_source(w, pos)?;
-    crate::commands::summon(&mut env(w), &source, &qualified(kind), pos, nbt)
-        .map(|target| target.uuid)
-        .map_err(|_| status::INVALID_ARGUMENT)
+    crate::commands::summon_for(
+        &mut env(w),
+        &source,
+        &qualified(kind),
+        pos,
+        nbt,
+        vanillite_abi::spawn_reason::PLUGIN,
+    )
+    .map(|target| target.uuid)
+    .map_err(|_| status::INVALID_ARGUMENT)
 }
 
 /// `Entity.discard`; players cannot be removed.

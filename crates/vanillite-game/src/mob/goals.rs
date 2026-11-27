@@ -902,8 +902,68 @@ pub(super) fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
     }
 }
 
+/// `Mob.setTarget` without a known reason (forgetting it: `FORGET`).
 pub(crate) fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
+    let reason = if target.is_none() {
+        vanillite_abi::target_reason::FORGET
+    } else {
+        vanillite_abi::target_reason::UNKNOWN
+    };
+    set_target_why(t, target, reason);
+}
+
+/// `Mob.setTarget` for a reason of `vanillite_abi::target_reason`; a plugin may cancel the
+/// change (the mob keeps its target). Returns whether the target is `target` now.
+pub(crate) fn set_target_why(t: &mut Tick<'_, '_>, target: Option<EntityId>, reason: u32) -> bool {
+    let old = t.mob_ref().target;
+    if !target_event(t.ents, t.id, old, target, reason) {
+        return false;
+    }
     assign_target(t.mob(), target);
+    true
+}
+
+/// The plugins' target event (`vanillite_abi::event::ENTITY_TARGET`) of the mob `id` about
+/// to change its target from `old` to `new` for `reason`: whether it may. Without listeners
+/// (or without a change) one branch.
+pub(crate) fn target_event(
+    ents: &crate::entities::Entities,
+    id: EntityId,
+    old: Option<EntityId>,
+    new: Option<EntityId>,
+    reason: u32,
+) -> bool {
+    if old == new {
+        return true;
+    }
+    let Some(hooks) = ents.hooks_for(vanillite_abi::event::ENTITY_TARGET) else {
+        return true;
+    };
+    let Some(e) = ents.store.get(id) else {
+        return true;
+    };
+    let target = new.and_then(|n| ents.store.get(n));
+    let mut ev = crate::hooks::Event {
+        entity: e.uuid(),
+        entity_type: e.kind().name().to_owned(),
+        other: target.as_ref().map_or(0, |t| t.uuid()),
+        other_type: target
+            .as_ref()
+            .map_or_else(String::new, |t| t.kind().name().to_owned()),
+        cause: reason,
+        ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TARGET)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// `NearestAttackableTargetGoal`'s reason: the closest player or the closest other entity.
+pub(crate) fn closest_reason(t: &Tick<'_, '_>, found: Option<EntityId>) -> u32 {
+    if found.is_some_and(|f| t.ents.player(f).is_some()) {
+        vanillite_abi::target_reason::CLOSEST_PLAYER
+    } else {
+        vanillite_abi::target_reason::CLOSEST_ENTITY
+    }
 }
 
 /// `Mob.setTarget` with the kinds' overrides: a zombified piglin rolls its anger sound delay
@@ -1410,7 +1470,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             timestamp,
             found,
         } => {
-            set_target(t, *found);
+            set_target_why(t, *found, vanillite_abi::target_reason::OWNER);
             state.unseen_ticks = 0;
             *timestamp = super::tame::owner_hurt_stamp(t, true);
         }
@@ -1419,12 +1479,13 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             timestamp,
             found,
         } => {
-            set_target(t, *found);
+            set_target_why(t, *found, vanillite_abi::target_reason::OWNER);
             state.unseen_ticks = 0;
             *timestamp = super::tame::owner_hurt_stamp(t, false);
         }
         Goal::NearestTarget { state, found, .. } => {
-            set_target(t, *found);
+            let reason = closest_reason(t, *found);
+            set_target_why(t, *found, reason);
             state.unseen_ticks = 0;
         }
         Goal::HurtBy {
@@ -1433,7 +1494,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             alert,
         } => {
             let by = t.mob_ref().last_hurt_by_mob;
-            set_target(t, by);
+            set_target_why(t, by, vanillite_abi::target_reason::RETALIATE);
             state.target_mob = by;
             *timestamp = t.mob_ref().last_hurt_by_mob_time;
             state.unseen_memory = 300;
@@ -1473,10 +1534,19 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
         if id == t.id {
             continue;
         }
-        if let Some(m) = t.ents.mob_mut(id)
-            && m.kind == kind
-            && m.target.is_none()
-            && m.is_alive()
+        let alerted = t
+            .ents
+            .mob(id)
+            .is_some_and(|m| m.kind == kind && m.target.is_none() && m.is_alive());
+        if alerted
+            && target_event(
+                t.ents,
+                id,
+                None,
+                Some(by),
+                vanillite_abi::target_reason::RETALIATE,
+            )
+            && let Some(m) = t.ents.mob_mut(id)
         {
             assign_target(m, Some(by));
         }
@@ -1666,7 +1736,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 *aggro_time -= 1;
                 if *aggro_time <= 0 {
                     // Screams and takes the player as its target.
-                    set_target(t, Some(id));
+                    set_target_why(t, Some(id), vanillite_abi::target_reason::CLOSEST_PLAYER);
                     state.target_mob = Some(id);
                     *pending = None;
                     kinds::play_sound(t, "minecraft:entity.enderman.stare", 2.5, 1.0);

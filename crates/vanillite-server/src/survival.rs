@@ -919,6 +919,7 @@ fn spawn_drops(
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);
             }
+            entities.spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
         }
         if let Effect::RespawnShoulder { tag, pos, owner } = effect {
             // `EntityType.create(tag, LOAD)`, `setOwner`, `setPos`, `addWithUUID`.
@@ -947,7 +948,7 @@ fn spawn_drops(
             stack,
         } = effect
         {
-            entities.spawn_item(
+            let id = entities.spawn_item(
                 global.network_ids.next(),
                 *uuid,
                 *pos,
@@ -955,6 +956,7 @@ fn spawn_drops(
                 *y_rot,
                 vanillite_game::item_entity::ItemData::new(stack.clone(), *pickup_delay, None),
             );
+            entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
         }
     }
 }

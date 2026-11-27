@@ -1425,13 +1425,26 @@ pub fn die(
             _ => 1.62,
         };
         let eye_y = pos.y + f64::from(eye);
-        drop_all(
-            &mut player.inventory,
-            Vec3::new(pos.x, eye_y - 0.3, pos.z),
-            env,
-        );
+        let mut drops = take_drops(&mut player.inventory);
         // `getBaseExperienceReward`.
-        let amount = player.survival.xp.level.saturating_mul(7).min(100);
+        let mut amount = player.survival.xp.level.saturating_mul(7).min(100);
+        if env.hooks.wants(vanillite_abi::event::ENTITY_DROPS) {
+            let mut ev = crate::hooks::Event {
+                entity: uuid,
+                entity_type: vanillite_data::entity::ids::PLAYER.name().to_owned(),
+                key: env.types.get(source.kind).id.clone(),
+                item: crate::hooks::items_snbt(&drops),
+                value: i64::from(amount),
+                to: crate::hooks::Place::at(pos),
+                ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
+            };
+            env.hooks.event(&mut ev);
+            if let Some(new) = crate::hooks::drops_out(&ev) {
+                drops = new;
+            }
+            amount = crate::hooks::experience_value(ev.value);
+        }
+        throw_drops(drops, Vec3::new(pos.x, eye_y - 0.3, pos.z), env);
         if amount > 0 {
             env.out.push(Effect::Experience { pos, amount });
         }
@@ -1473,9 +1486,9 @@ pub fn die(
     player.connection.movement.mark_client_unloaded();
 }
 
-/// `destroyVanishingCursedItems` + `Inventory.dropAll`: every stack is thrown in a random
-/// direction from `from` (`createItemStackToDrop(stack, true, false)`).
-fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: &mut Env<'_>) {
+/// `destroyVanishingCursedItems` + `Inventory.dropAll`: the stacks that drop, taken out of the
+/// inventory, in drop order.
+fn take_drops(inventory: &mut crate::inventory::PlayerInventory) -> Vec<crate::item::ItemStack> {
     let vanishing = |stack: &crate::item::ItemStack| {
         crate::player::play::game_data()
             .is_some_and(|d| d.enchantment_level(stack, "minecraft:vanishing_curse") > 0)
@@ -1487,11 +1500,16 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
         .iter_mut()
         .chain(std::iter::once(&mut inv.offhand))
         .chain(inv.armor.iter_mut());
-    for slot in slots {
-        let stack = std::mem::replace(slot, crate::item::ItemStack::EMPTY);
-        if stack.is_empty() || vanishing(&stack) {
-            continue;
-        }
+    slots
+        .map(|slot| std::mem::replace(slot, crate::item::ItemStack::EMPTY))
+        .filter(|stack| !stack.is_empty() && !vanishing(stack))
+        .collect()
+}
+
+/// `Inventory.dropAll`'s throws: every stack in a random direction from `from`
+/// (`createItemStackToDrop(stack, true, false)`).
+fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>) {
+    for stack in drops {
         // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
         // draws from the player's own random in Vanilla, here from the level random.
         let (uuid, y_rot, _) = crate::mob::new_item_entity();

@@ -124,7 +124,11 @@ pub fn fall(level: &mut Level, pos: BlockPos, state: BlockState, drop_item: bool
         data.hurt_entities = true;
         data.fall_hurt_amount = 2.0;
     }
-    level.entities.spawn_falling_block(new, data)
+    let id = level.entities.spawn_falling_block(new, data);
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
+    id
 }
 
 /// `state.is(BlockTags.ANVIL)`.

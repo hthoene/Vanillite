@@ -1503,7 +1503,10 @@ fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos
     let source = m.kind.sound_source() as u8;
     let uuid = crate::mob::new_uuid();
     let (ents, network_ids, _) = level.entity_parts();
-    crate::mob::spawn(ents, network_ids, uuid, p, rot, m);
+    let id = crate::mob::spawn(ents, network_ids, uuid, p, rot, m);
+    if !ents.spawned(id, vanillite_abi::spawn_reason::BUCKET, 0) {
+        return;
+    }
     if let Some(sound) = sound {
         let id = vanillite_data::registry::SOUND_EVENT.id(sound).unwrap_or(0);
         level.play_sound(None, p.x, p.y, p.z, id, source, volume, pitch);

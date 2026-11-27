@@ -246,6 +246,9 @@ fn spawn_golem(level: &mut Level, m: &Match, golem: MobData, spawn: BlockPos) ->
         Rotation::default(),
         golem,
     );
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
     // `updatePatternBlocks`.
     for x in 0..m.width {
         for y in 0..m.height {

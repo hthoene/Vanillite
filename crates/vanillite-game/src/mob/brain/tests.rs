@@ -78,7 +78,13 @@ pub(crate) fn with_tick<R>(
 pub(crate) fn level_with(kind: Kind, seed: i64) -> (Level, EntityId) {
     let mut level = crate::level::tests::flat_level();
     let m = MobData::new(kind, seed);
-    let id = crate::mob::spawn::add_mob(&mut level, m, Vec3::new(0.5, -60.0, 0.5), 0.0);
+    let id = crate::mob::spawn::add_mob(
+        &mut level,
+        m,
+        Vec3::new(0.5, -60.0, 0.5),
+        0.0,
+        crate::mob::fam::SpawnReason::Command,
+    );
     (level, id)
 }
 

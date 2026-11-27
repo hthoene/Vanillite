@@ -181,6 +181,36 @@ pub fn breed(
     child.age = -24000;
     child.baby = true;
     let uuid = crate::mob::new_uuid();
+    // The breed event (`vanillite_abi::event::ENTITY_BREED`): the experience is drawn from
+    // the parent's random first, which nothing else draws from in between.
+    let mut experience = None;
+    if let Some(hooks) = ents.hooks_for(vanillite_abi::event::ENTITY_BREED) {
+        let xp = if env.rules.bool(Rule::MOB_DROPS) {
+            ents.mob_mut(parent)
+                .map_or(1, |m| m.random.next_int_bounded(7) + 1)
+        } else {
+            0
+        };
+        let Some(xp) = breed_event(
+            &*hooks,
+            ents,
+            (uuid, child.kind),
+            parent,
+            partner,
+            cause.unwrap_or(0),
+            xp,
+        ) else {
+            // The attempt fails: the parents lose their love.
+            for id in [parent, partner] {
+                if let Some(m) = ents.mob_mut(id) {
+                    m.in_love = 0;
+                    m.love_cause = None;
+                }
+            }
+            return;
+        };
+        experience = Some(xp);
+    }
     let child = super::spawn(
         ents,
         level.network_ids(),
@@ -189,6 +219,8 @@ pub fn breed(
         Rotation::default(),
         child,
     );
+    let parent_uuid = ents.store.get(parent).map_or(0, |e| e.uuid());
+    ents.spawned(child, vanillite_abi::spawn_reason::BREEDING, parent_uuid);
     award_breeding(ents, parent, partner, Some(child));
     for id in [parent, partner] {
         if let Some(m) = ents.mob_mut(id) {
@@ -197,14 +229,44 @@ pub fn breed(
             m.love_cause = None;
         }
     }
-    let _ = cause;
     entity_event(ents, env, parent, 18);
-    if env.rules.bool(Rule::MOB_DROPS) {
+    if let Some(xp) = experience {
+        if xp > 0 {
+            env.out.push(Effect::Experience { pos, amount: xp });
+        }
+    } else if env.rules.bool(Rule::MOB_DROPS) {
         let xp = ents
             .mob_mut(parent)
             .map_or(1, |m| m.random.next_int_bounded(7) + 1);
         env.out.push(Effect::Experience { pos, amount: xp });
     }
+}
+
+/// The plugins' breed event (`vanillite_abi::event::ENTITY_BREED`) of `parent` and `partner`
+/// about to make the child `child` (its UUID and kind, not added yet) for the player
+/// `breeder` (its UUID or 0): `None` when a plugin cancelled it, else the experience
+/// (`experience` or a handler's).
+pub fn breed_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    ents: &Entities,
+    child: (u128, Kind),
+    parent: EntityId,
+    partner: EntityId,
+    breeder: u128,
+    experience: i32,
+) -> Option<i32> {
+    let uuid_of = |id| ents.store.get(id).map_or(0, |e| e.uuid());
+    let mut ev = crate::hooks::Event {
+        entity: child.0,
+        entity_type: child.1.type_id().name().to_owned(),
+        other: uuid_of(parent),
+        source: uuid_of(partner),
+        player: breeder,
+        value: i64::from(experience),
+        ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_BREED)
+    };
+    hooks.event(&mut ev);
+    (!ev.cancelled).then(|| crate::hooks::experience_value(ev.value))
 }
 
 /// The player of a UUID in this world (`level.getPlayerByUUID`).
@@ -1026,7 +1088,7 @@ fn spawn_offspring(
         child.custom_name = Some(name.into());
     }
     let uuid = crate::mob::new_uuid();
-    super::spawn(
+    let id = super::spawn(
         ents,
         level.network_ids(),
         uuid,
@@ -1034,6 +1096,10 @@ fn spawn_offspring(
         Rotation::default(),
         child,
     );
+    let parent = ents.store.get(target).map_or(0, |e| e.uuid());
+    if !ents.spawned(id, vanillite_abi::spawn_reason::SPAWN_ITEM_USE, parent) {
+        return;
+    }
     use_item(ents, player, hand);
 }
 
@@ -1095,7 +1161,10 @@ pub fn use_spawn_egg_on(
     };
     let uuid = crate::mob::new_uuid();
     m.y_body_rot = yaw;
-    super::spawn(ents, network_ids, uuid, p, rot, m);
+    let id = super::spawn(ents, network_ids, uuid, p, rot, m);
+    if !ents.spawned(id, vanillite_abi::spawn_reason::SPAWN_ITEM_USE, 0) {
+        return true;
+    }
     if !infinite {
         stack.shrink(1);
     }

@@ -112,6 +112,10 @@ pub fn throw(
         },
         data,
     );
+    if !ents.launched(id, Some(player)) {
+        // Bukkit's cancelled launch: the pearl stays in the hand, no cooldown.
+        return true;
+    }
     if let Some(mut e) = ents.store.get_mut(id) {
         e.set_flags(EntityFlags::HAS_IMPULSE, true);
     }

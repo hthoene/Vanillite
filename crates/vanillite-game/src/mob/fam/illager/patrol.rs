@@ -161,6 +161,6 @@ fn spawn_member(level: &mut Level, input: &PatrolInput<'_>, pos: BlockPos, leade
         )
     });
     let y_rot = level.random().next_float() * 360.0;
-    spawn::add_mob_with(level, mob, at, y_rot, extra);
+    spawn::add_mob_with(level, mob, at, y_rot, extra, SpawnReason::Patrol);
     true
 }

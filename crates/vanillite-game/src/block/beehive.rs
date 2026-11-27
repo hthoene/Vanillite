@@ -438,7 +438,8 @@ fn release_occupant(
         1.0,
         1.0,
     );
-    let id = crate::mob::spawn::add_mob(level, mob, at, 0.0);
+    // `EntityType.loadEntityRecursive(..., LOAD)`, then `addFreshEntity`.
+    let id = crate::mob::spawn::add_mob(level, mob, at, 0.0, crate::mob::fam::SpawnReason::Load);
     if let Some(mut e) = level.entities.store.get_mut(id) {
         e.set_flags(EntityFlags::NO_GRAVITY, true);
     }
