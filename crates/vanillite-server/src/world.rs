@@ -770,6 +770,7 @@ impl ServerWorld {
             &self.entity_updates,
             ctx.compute,
             &mut self.fan_out,
+            ctx.global.plugins.packet_tap(),
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
         // The omen effects see the village and raids at the players (they tick without the

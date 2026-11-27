@@ -29,14 +29,15 @@ use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_nbt::{List, Tag};
 use vanillite_net::{Latency, Outbound};
-use vanillite_protocol::SharedPacket;
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
 };
 use vanillite_protocol::packets::play::serverbound::Hand;
+use vanillite_protocol::tap::{PacketTap, Verdict};
 use vanillite_protocol::text::Component;
+use vanillite_protocol::{Direction, SharedPacket, State};
 use vanillite_storage::player_data::{self, JsonFile, PlayerDataStore};
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityFlags, EntityId, EntityRef, Pose, Rotation};
@@ -87,7 +88,13 @@ pub(crate) struct FanOut {
 }
 
 impl FanOut {
-    fn run(&mut self, entities: &Entities, updates: &TrackerOutput, compute: &Compute) {
+    fn run(
+        &mut self,
+        entities: &Entities,
+        updates: &TrackerOutput,
+        compute: &Compute,
+        tap: &PacketTap,
+    ) {
         let messages = updates.messages();
         if messages.is_empty() {
             return;
@@ -124,6 +131,10 @@ impl FanOut {
             }
         };
 
+        // Packet listeners: the broadcast stage runs here, once per encoded packet; the
+        // viewers' writers run the stage per receiver on their batches.
+        let tapped = tap.active(Direction::Clientbound);
+
         // Encode once into runs.
         self.arena.clear();
         self.runs.clear();
@@ -135,6 +146,19 @@ impl FanOut {
             };
             let start = self.arena.len();
             for packet in &packets {
+                let replaced;
+                let packet = if tapped {
+                    match tap.shared(State::Play, packet) {
+                        Verdict::Pass => packet,
+                        Verdict::Drop => continue,
+                        Verdict::Replace(other) => {
+                            replaced = other;
+                            &replaced
+                        }
+                    }
+                } else {
+                    packet
+                };
                 let before = self.arena.len();
                 if encode_frame(packet.body(), threshold, &mut self.codec, &mut self.arena).is_err()
                 {
@@ -305,6 +329,10 @@ impl PacketSink for NetSink {
 
     fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
         self.out.send_batch(frames, threshold)
+    }
+
+    fn send_untapped(&self, body: Vec<u8>) -> bool {
+        self.out.send_untapped(body)
     }
 
     fn frame_threshold(&self) -> Option<usize> {
@@ -972,8 +1000,9 @@ impl WorldPlayers {
         updates: &TrackerOutput,
         compute: &Compute,
         fan_out: &mut FanOut,
+        tap: &PacketTap,
     ) {
-        fan_out.run(entities, updates, compute);
+        fan_out.run(entities, updates, compute, tap);
     }
 
     /// The connection tick (`ServerGamePacketListenerImpl.tick`) after the world tick.

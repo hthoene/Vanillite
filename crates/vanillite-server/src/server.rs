@@ -728,6 +728,7 @@ impl ServerBuilder {
             prepared.configuration,
             self.network,
             global.chat.enforce_secure,
+            Arc::clone(global.plugins.packet_tap()),
         )?;
         if !config.properties.online_mode {
             log::warn!("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");

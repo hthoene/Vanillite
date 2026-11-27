@@ -17,7 +17,9 @@ pub trait PacketSink: Send + Sync {
     fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool;
     /// Queues many packets as one entry: frames built with
     /// [`vanillite_protocol::frame::encode_frame`] for `threshold`, best the one of
-    /// [`PacketSink::frame_threshold`]. The default queues the bodies one by one.
+    /// [`PacketSink::frame_threshold`]. The default queues the bodies one by one. Packet
+    /// listeners of plugins see a batch's packets per receiver only: whoever encodes them for
+    /// many receivers runs the broadcast stage ([`vanillite_protocol::tap::PacketTap::shared`]).
     fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
         let mut open = true;
         let _ = for_each_body(&frames, threshold, |body| {
@@ -25,6 +27,12 @@ pub trait PacketSink: Send + Sync {
             Ok(open)
         });
         open
+    }
+
+    /// Queues an encoded packet body past the packet listeners of plugins (a packet a plugin
+    /// sends itself). The default has no listeners to pass.
+    fn send_untapped(&self, body: Vec<u8>) -> bool {
+        self.send_body(body)
     }
 
     /// The compression threshold batches for this sink are best framed with: then they are

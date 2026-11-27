@@ -8,9 +8,16 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-# No dependencies besides the ABI: plugins build fast and do not share crates with the server.
+# By default no dependencies besides the ABI: plugins build fast and do not share crates with
+# the server.
 [dependencies]
 vanillite-abi.workspace = true
+vanillite-protocol = { workspace = true, optional = true }
+
+[features]
+# Typed packets for packet listeners: the packet types and codecs of `vanillite-protocol`,
+# built into the plugin (and tied to that Minecraft version).
+packets = ["dep:vanillite-protocol"]
 
 [lints]
 workspace = true

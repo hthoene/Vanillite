@@ -1491,6 +1491,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vanillite-example-packets"
+version = "0.1.0-beta.1"
+dependencies = [
+ "vanillite-plugin",
+]
+
+[[package]]
 name = "vanillite-game"
 version = "0.1.0-beta.1"
 dependencies = [
@@ -1581,6 +1588,7 @@ name = "vanillite-plugin"
 version = "0.1.0-beta.1"
 dependencies = [
  "vanillite-abi",
+ "vanillite-protocol",
 ]
 
 [[package]]
@@ -1598,6 +1606,7 @@ dependencies = [
  "vanillite-command",
  "vanillite-data",
  "vanillite-nbt",
+ "vanillite-protocol",
  "zip",
 ]
 
