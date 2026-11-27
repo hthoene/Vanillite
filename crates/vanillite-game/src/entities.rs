@@ -17,7 +17,7 @@ use crate::mob::projectile::ArrowData;
 use crate::player::PlayerData;
 
 /// The kind data of a `falling_block` (`FallingBlockEntity`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FallingBlockData {
     /// The falling block.
     pub state: BlockState,
@@ -27,6 +27,36 @@ pub struct FallingBlockData {
     pub drop_item: bool,
     /// Where it started falling (`DATA_START_POS`).
     pub start: BlockPos,
+    /// `hurtEntities`, `fallDamagePerDistance` and `fallDamageMax`: anvils and falling
+    /// stalactite tips hurt the entities they land on.
+    pub hurt_entities: bool,
+    pub fall_hurt_amount: f32,
+    pub fall_hurt_max: i32,
+    /// `cancelDrop`: an anvil broke on landing.
+    pub cancel_drop: bool,
+    /// `fallDistance`.
+    pub fall_distance: f64,
+    /// The seed of the entity's own random (`Entity.random`), drawn once by an anvil's chip
+    /// roll.
+    pub seed: i64,
+}
+
+impl FallingBlockData {
+    /// A falling block that hurts nobody (`new FallingBlockEntity(level, x, y, z, state)`).
+    pub fn new(state: BlockState, drop_item: bool, start: BlockPos, seed: i64) -> Self {
+        FallingBlockData {
+            state,
+            time: 0,
+            drop_item,
+            start,
+            hurt_entities: false,
+            fall_hurt_amount: 0.0,
+            fall_hurt_max: 40,
+            cancel_drop: false,
+            fall_distance: 0.0,
+            seed,
+        }
+    }
 }
 
 /// The kind data of a `tnt` entity (`PrimedTnt`).

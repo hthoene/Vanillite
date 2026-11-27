@@ -24,6 +24,7 @@ pub mod campfire;
 pub mod cauldron;
 pub mod chest_loot;
 pub mod composter;
+pub mod contact;
 pub mod container;
 pub mod crafter;
 pub mod creaking_heart;
