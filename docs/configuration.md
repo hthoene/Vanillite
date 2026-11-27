@@ -107,6 +107,7 @@ These apply to the whole server.
 |---|---|---|---|---|---|---|---|---|
 | `compute` | setting | yes | `0` | `0` | `0` | `0` | `0` | Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus one (the tick threads), at least 1. Integer from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__THREADS__COMPUTE`. |
 | `network` | setting | yes | `0` | `0` | `0` | `0` | `0` | I/O threads of the network (connections, encryption, compression of outgoing packets). 0 = 2, or 1 with less than two cores, so the tick keeps the only core. Integer from 0 to 64. Environment: `VANILLITE_PERFORMANCE__THREADS__NETWORK`. |
+| `tick-phases` | setting | yes | `0` | `0` | `0` | `0` | `0` | Threads that share a parallel phase of a world's tick (in crowds: the entity packets, the delivery of sounds and particles, the advancement checks), the tick thread included. 0 = the compute workers plus the tick thread; 1 = the tick thread alone. The result is the same with any number, only the speed differs. Integer from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__THREADS__TICK_PHASES`. |
 
 #### `[performance.budget]`
 

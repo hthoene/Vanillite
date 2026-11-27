@@ -292,7 +292,7 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
 /// `Wolf.aiStep`: starts shaking when wet on the ground; the anger.
 pub fn ai_step(t: &mut Tick<'_, '_>) {
     let s = st(t.mob_ref());
-    if s.wet && !s.shaking && t.mob_ref().nav.is_done() && t.on_ground() {
+    if s.wet && !s.shaking && t.nav_ref().is_done() && t.on_ground() {
         let s = st_mut(t.mob());
         s.shaking = true;
         s.shake_anim = 0.0;

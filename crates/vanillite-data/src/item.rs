@@ -71,6 +71,9 @@ pub struct ItemInfo {
     /// Whether the default `minecraft:equippable` component is `swappable` by players (and
     /// allows every entity).
     pub equip_swappable: bool,
+    /// Whether the item has a default `minecraft:equippable` component with `damage_on_hurt`
+    /// (armour wears when its wearer is hurt; false for elytra and non-equippable items).
+    pub equip_damage_on_hurt: bool,
     /// The damage type tag of the default `minecraft:damage_resistant` component (e.g.
     /// `minecraft:is_fire`), empty without one.
     pub damage_resistant: &'static str,

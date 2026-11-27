@@ -308,6 +308,22 @@ impl Kind {
         if self.is_monster() { 80 } else { 120 }
     }
 
+    /// `instanceof AbstractHorse` (horses, donkeys, mules, llamas, camels).
+    pub fn is_abstract_horse(self) -> bool {
+        matches!(
+            self,
+            Kind::Horse
+                | Kind::Donkey
+                | Kind::Mule
+                | Kind::SkeletonHorse
+                | Kind::ZombieHorse
+                | Kind::Llama
+                | Kind::TraderLlama
+                | Kind::Camel
+                | Kind::CamelHusk
+        )
+    }
+
     /// `#burn_in_daylight`.
     pub fn burns_in_daylight(self) -> bool {
         if matches!(self, Kind::ZombieHorse | Kind::ZombieNautilus) {

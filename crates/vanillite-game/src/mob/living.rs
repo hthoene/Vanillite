@@ -102,7 +102,26 @@ pub fn tick(t: &mut Tick<'_, '_>) {
             m.health = max;
         }
     }
+    if t.mob_ref().tick_count % 5 == 0 {
+        update_control_flags(t);
+    }
     kinds::after_tick(t);
+}
+
+/// `Mob.updateControlFlags`: a mob a mob rider steers runs no move or look goals of its own;
+/// a mob in a boat does not jump.
+fn update_control_flags(t: &mut Tick<'_, '_>) {
+    use super::goals::flag;
+    let no_controller = super::controlling_mob_passenger(t.ents, t.id).is_none();
+    let not_in_boat = t.ents.vehicle_of(t.id).is_none_or(|v| {
+        t.ents
+            .store
+            .get(v)
+            .is_none_or(|e| crate::vehicle::BoatKind::of(e.kind()).is_none())
+    });
+    let goals = &mut t.mob().goals;
+    goals.set_control_flags(flag::MOVE | flag::LOOK, no_controller);
+    goals.set_control_flags(flag::JUMP, no_controller && not_in_boat);
 }
 
 /// `Entity.baseTick` + `LivingEntity.baseTick` + `Mob.baseTick`.
@@ -441,6 +460,22 @@ pub fn fluid_currents(
         (x1 + 1, z0 - 1),
     ] {
         if !level.is_loaded(BlockPos::new(x, y0, z)) {
+            return (contact, currents);
+        }
+    }
+    // Sections without a fluid add nothing; skipping their blocks only drops reads, which have
+    // no effect while reads are pure.
+    if level.chunks.reads_are_pure() {
+        let view = level.view().chunks();
+        let dry = (x0 >> 4..=x1 >> 4).all(|cx| {
+            (z0 >> 4..=z1 >> 4).all(|cz| {
+                (y0 >> 4..=y1 >> 4).all(|sy| {
+                    view.section_summary(vanillite_base::ChunkPos::new(cx, cz), sy)
+                        .is_none_or(|summary| summary.fluids == 0)
+                })
+            })
+        });
+        if dry {
             return (contact, currents);
         }
     }
@@ -2625,10 +2660,12 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         }
     });
     ids.retain(|&o| {
-        t.ents
-            .mob(o)
-            .is_some_and(|m| m.is_alive() && crate::decoration::stand::pushable(m))
-            || t.ents.minecart(o).is_some()
+        t.ents.mob(o).is_some_and(|m| {
+            m.is_alive()
+                && crate::decoration::stand::pushable(m)
+                // `AbstractHorse.isPushable`: not while carrying someone.
+                && !(m.kind.is_abstract_horse() && !t.ents.riding.passengers_of(o).is_empty())
+        }) || t.ents.minecart(o).is_some()
             || t.ents.boat(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
@@ -2640,9 +2677,16 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         return;
     }
     let max_cramming = t.env.rules.get(Rule::MAX_ENTITY_CRAMMING);
+    let cramming_limit = usize::try_from(max_cramming - 1).unwrap_or(usize::MAX);
     if max_cramming > 0
-        && ids.len() > usize::try_from(max_cramming - 1).unwrap_or(usize::MAX)
+        && ids.len() > cramming_limit
         && t.mob().random.next_int_bounded(4) == 0
+        // Passengers do not count.
+        && ids
+            .iter()
+            .filter(|&&o| t.ents.vehicle_of(o).is_none())
+            .count()
+            > cramming_limit
     {
         let source = DamageSource::of(t.env.types.cramming);
         hurt_self(t, source, 6.0);
@@ -2658,6 +2702,7 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         return;
     }
     let climbing = on_climbable(t);
+    let root = super::root_vehicle(t.ents, id);
     // `max-entity-collisions`: only the first ones push.
     let limit =
         t.cx.settings
@@ -2690,6 +2735,14 @@ fn push_entities(t: &mut Tick<'_, '_>) {
                 crate::vehicle::push_apart(t.ents, other, id);
             }
             sulfur_contact(t, other);
+            continue;
+        }
+        // `Entity.push`: nothing between passengers of the same vehicle.
+        if super::root_vehicle(t.ents, other) == root {
+            sulfur_contact(t, other);
+            if !t.exists() {
+                break;
+            }
             continue;
         }
         let Some(o) = t.ents.store.get(other) else {

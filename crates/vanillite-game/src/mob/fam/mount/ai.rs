@@ -667,7 +667,7 @@ pub fn tick(t: &mut Tick<'_, '_>) {
 /// `SlideToTargetSink.start`/`stop`: slides while walking to a walk target.
 fn breeze_slide_pose(t: &mut Tick<'_, '_>) {
     let pose = t.core().pose();
-    let walking = brain_ref(t).has(M::WalkTarget) && !t.mob_ref().nav.is_done();
+    let walking = brain_ref(t).has(M::WalkTarget) && !t.nav_ref().is_done();
     if walking && pose == Pose::Standing && brain_ref(t).is_active(Activity::Idle) {
         crate::mob::kinds::play_sound(t, "minecraft:entity.breeze.slide", 1.0, 1.0);
         set_pose(t, Pose::Sliding);

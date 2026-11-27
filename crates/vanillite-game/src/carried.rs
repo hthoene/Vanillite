@@ -117,7 +117,6 @@ pub fn tick(level: &Level, owner: Owner<'_>, player: &mut PlayerData) {
     // The carrier is built at the first map (no allocation for players without maps).
     let mut carrier: Option<Carrier> = None;
     let game_time = level.game_time();
-    let filled_map = vanillite_data::item::ids::FILLED_MAP.0;
     let mut carried: Vec<i32> = Vec::new();
     // `Inventory.tick`: the items (the selected one in the main hand), then the equipment.
     let selected = player.inventory.selected;
@@ -135,7 +134,7 @@ pub fn tick(level: &Level, owner: Owner<'_>, player: &mut PlayerData) {
         if stack.component(ids::LODESTONE_TRACKER).is_some() {
             tick_lodestone(level, owner.dimension, stack);
         }
-        if stack.item != filled_map {
+        if !map::is_map_item(stack.item) {
             continue;
         }
         let Some(id) = map::map_id(stack) else {
@@ -180,7 +179,7 @@ pub fn tick(level: &Level, owner: Owner<'_>, player: &mut PlayerData) {
     // `synchronizeSpecialItemUpdates` for every slot.
     for i in 0..=crate::inventory::OFFHAND {
         let stack = player.inventory.get(i);
-        if stack.item != filled_map || stack.is_empty() {
+        if stack.is_empty() || !map::is_map_item(stack.item) {
             continue;
         }
         let Some(id) = map::map_id(stack) else {

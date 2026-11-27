@@ -115,7 +115,7 @@ pub fn update_fall_flying(entity: &mut EntityMut<'_>, player: &mut PlayerData, e
 
 /// `ItemStack.hurtAndBreak(1, player, slot)` of a worn glider: Unbreaking may save the point
 /// (2·level / (5·level + 5) for armour enchantables); creative players' items keep it.
-fn hurt_slot(
+pub(crate) fn hurt_slot(
     entity: &EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,

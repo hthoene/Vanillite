@@ -3068,19 +3068,25 @@ impl<'t> Eval<'t, '_> {
                 }
             }
             FuncKind::ExplorationMap(request) => {
-                // `ExplorationMapFunction.run`: the stack becomes a map to the structure; a
-                // `*_map` trade item keeps its own item.
+                // `ExplorationMapFunction.run`: any stack (the explorer map items of 26.3) gets
+                // new map data to the structure (`applyNewSavedData`: its type is kept).
                 if stack.is_empty() {
                     return;
                 }
                 if let (Some(origin), Some(explore)) = (self.ctx.origin, self.ctx.exploration_map)
                     && let Some(map) = explore(request, origin)
                 {
-                    let (item, count) = (stack.item, stack.count);
-                    *stack = map;
-                    if item != items::MAP.0 {
-                        stack.item = item;
-                        stack.count = count;
+                    if stack.item == items::MAP.0 {
+                        *stack = map;
+                    } else {
+                        for id in [
+                            vanillite_protocol::components::ids::MAP_ID,
+                            vanillite_protocol::components::ids::MAP_DECORATIONS,
+                        ] {
+                            if let Some(value) = map.component(id) {
+                                stack.patch_mut().set(id, value.into());
+                            }
+                        }
                     }
                 }
             }

@@ -634,7 +634,7 @@ fn ground_food_nearby(t: &Tick<'_, '_>, r: f64) -> Option<Vec3> {
 fn try_to_sit(t: &mut Tick<'_, '_>) {
     if !t.mob_ref().fluids.in_water() {
         t.mob().zza = 0.0;
-        t.mob().nav.stop();
+        t.nav().stop();
         set(t, SITTING, true);
     }
 }
@@ -738,10 +738,10 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::Panic { .. } => {
             if has(t.mob_ref(), SITTING) {
-                t.mob().nav.stop();
+                t.nav().stop();
                 return false;
             }
-            !t.mob_ref().nav.is_done()
+            !t.nav_ref().is_done()
         }
         Goal::Avoid(cg) => crate::mob::common::can_continue(t, cg),
         Goal::Sit { .. } | Goal::LieOnBack { .. } => {
@@ -813,7 +813,7 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             set(t, ON_BACK, false);
             *cooldown = t.mob_ref().tick_count + 200;
         }
-        Goal::Panic { .. } => t.mob().nav.stop(),
+        Goal::Panic { .. } => t.nav().stop(),
         _ => {}
     }
 }

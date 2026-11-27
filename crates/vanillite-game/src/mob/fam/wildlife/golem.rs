@@ -408,7 +408,7 @@ pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::GolemStroll { .. } => {
-            return !t.mob_ref().nav.is_done() && !has_controlling_passenger(t);
+            return !t.nav_ref().is_done() && !has_controlling_passenger(t);
         }
         Goal::OfferFlower { tick, .. } => return *tick > 0,
         Goal::DefendVillage { state, .. } => {
@@ -420,7 +420,7 @@ pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         return false;
     };
     let w = f64::from(*within);
-    !t.mob_ref().nav.is_done()
+    !t.nav_ref().is_done()
         && target
             .and_then(|id| t.other(id))
             .is_some_and(|o| o.pos.distance_to_sqr(t.pos()) < w * w)
@@ -450,7 +450,7 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 pub(super) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
-        Goal::GolemStroll { .. } => t.mob().nav.stop(),
+        Goal::GolemStroll { .. } => t.nav().stop(),
         Goal::OfferFlower { target, tick } => {
             offer_flower(t, false);
             if *tick == 0
@@ -483,11 +483,7 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
 
 /// `hasControllingPassenger`.
 fn has_controlling_passenger(t: &Tick<'_, '_>) -> bool {
-    t.ents
-        .riding
-        .passengers_of(t.id)
-        .first()
-        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id))
+    crate::mob::has_controlling_passenger(t.ents, t.id)
 }
 
 /// `Villager.wantsToSpawnGolem(gameTime)`: slept within a day and saw no golem recently.

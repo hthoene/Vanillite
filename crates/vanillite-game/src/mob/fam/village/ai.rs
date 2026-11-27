@@ -2740,7 +2740,7 @@ pub(crate) fn door(
     let Some((prev, next)) = path_nodes(t, me) else {
         return false;
     };
-    let started = t.mob_ref().nav.path.as_ref().is_some_and(|p| p.next > 0);
+    let started = t.nav_ref().path.as_ref().is_some_and(|p| p.next > 0);
     if !started {
         return false;
     }

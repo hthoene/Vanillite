@@ -48,6 +48,9 @@ pub struct State {
     pub eating_counter: i32,
     pub mouth_counter: i32,
     pub stand_counter: i32,
+    /// `standAnim` and `standAnimO`: the rearing animation, which lifts and moves the rider.
+    pub stand_anim: f32,
+    pub stand_anim_o: f32,
     pub sprint_counter: i32,
     /// `AbstractHorse.gallopSoundCounter`.
     pub gallop_counter: i32,
@@ -832,6 +835,12 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn after_tick(t: &mut Tick<'_, '_>) {
+        if is_horse(t.mob_ref().kind) {
+            horse::after_tick(t.mob());
+        }
+    }
+
     fn is_immobile(m: &MobData) -> bool {
         is_horse(m.kind) && horse::is_immobile(m)
     }
@@ -1176,7 +1185,7 @@ impl FamilyHooks for Hooks {
         match g {
             Goal::Idle => false,
             Goal::Guard(c, cg) => cond_holds(t, *c) && crate::mob::common::can_continue(t, cg),
-            Goal::TamePanic { .. } => !t.mob_ref().nav.is_done(),
+            Goal::TamePanic { .. } => !t.nav_ref().is_done(),
             Goal::Horse(g) => horse::can_continue(t, g),
             Goal::Llama(g) => llama::can_continue(t, g),
             Goal::Wolf(g) => wolf::can_continue(t, g),

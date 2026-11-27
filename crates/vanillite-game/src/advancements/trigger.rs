@@ -690,6 +690,66 @@ impl<'a> TriggerContext<'a> {
     }
 }
 
+impl<'a> TriggerContext<'a> {
+    /// The same context over another view of the world.
+    pub fn with_world<'b>(&self, world: &'b dyn World) -> TriggerContext<'b>
+    where
+        'a: 'b,
+    {
+        TriggerContext {
+            world,
+            player: self.player,
+            inventory: self.inventory,
+            counts: self.counts.clone(),
+        }
+    }
+}
+
+/// The world with the progress of the player whose triggers run ([`World::progress`]).
+pub struct WithProgress<'a> {
+    pub world: &'a dyn World,
+    pub progress: &'a super::PlayerAdvancements,
+}
+
+impl std::fmt::Debug for WithProgress<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WithProgress").finish_non_exhaustive()
+    }
+}
+
+impl World for WithProgress<'_> {
+    fn dimension(&self) -> &str {
+        self.world.dimension()
+    }
+    fn block(&self, pos: BlockPos) -> Option<BlockState> {
+        self.world.block(pos)
+    }
+    fn biome(&self, pos: BlockPos) -> Option<String> {
+        self.world.biome(pos)
+    }
+    fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
+        self.world.in_tag(registry, tag, id)
+    }
+    fn structure_at(&self, pos: BlockPos, structures: &IdSet) -> bool {
+        self.world.structure_at(pos, structures)
+    }
+    fn smokey(&self, pos: BlockPos) -> bool {
+        self.world.smokey(pos)
+    }
+    fn light(&self, pos: BlockPos) -> i32 {
+        self.world.light(pos)
+    }
+    fn can_see_sky(&self, pos: BlockPos) -> bool {
+        self.world.can_see_sky(pos)
+    }
+    fn progress(&self) -> Option<&super::PlayerAdvancements> {
+        Some(self.progress)
+    }
+    fn looking_at(&self) -> Option<&EntityView<'static>> {
+        self.world.looking_at()
+    }
+}
+
 impl std::fmt::Debug for TriggerContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TriggerContext")

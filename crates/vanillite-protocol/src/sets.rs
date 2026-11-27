@@ -293,6 +293,8 @@ packet_set! {
         OpenBook(play::clientbound::OpenBook),
         MapItemData(play::clientbound::MapItemData),
         Cooldown(play::clientbound::Cooldown),
+        Waypoint(play::clientbound::Waypoint),
+        ServerData(play::clientbound::ServerData),
     }
     unhandled Unhandled
 }

@@ -529,11 +529,11 @@ impl Level {
         destroys: bool,
     ) -> Vec<(EntityId, Vec3)> {
         let mut hit_players = Vec::new();
-        let wind = source
+        let source_kind = source
             .and_then(|s| self.entities.store.get(s))
-            .is_some_and(|e| {
-                e.kind() == entity_ids::WIND_CHARGE || e.kind() == entity_ids::BREEZE_WIND_CHARGE
-            });
+            .map(|e| e.kind());
+        let player_wind_charge = source_kind == Some(entity_ids::WIND_CHARGE);
+        let wind = player_wind_charge || source_kind == Some(entity_ids::BREEZE_WIND_CHARGE);
         if radius < 1.0e-5 {
             return hit_players;
         }
@@ -690,24 +690,30 @@ impl Level {
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
-            // `onExplosionHit`: where the explosion hit the player and what caused it.
-            // `setIgnoreFallDamageFromCurrentImpulse(cause is a wind charge, position())`.
-            let wind_jump = source
-                .and_then(|s| self.entities.store.get(s))
-                .is_some_and(|e| e.kind() == vanillite_data::entity::ids::WIND_CHARGE);
-            let at = self.entities.store.get(id).map(|e| e.pos());
-            if let Some(p) = self.entities.player_mut(id) {
-                crate::advancements::tracking::explosion_hit(p, pos, source);
-                if wind_jump && let Some(at) = at {
-                    p.survival.impulse_grace = p.survival.impulse_grace.max(40);
-                    p.survival.impulse_impact = Some(at);
-                } else {
-                    p.survival.impulse_grace = 0;
+            // `onExplosionHit`: where the explosion hit the player and what caused it; a
+            // player's wind charge spares the fall back to that height
+            // (`setIgnoreFallDamageFromCurrentImpulse`), other explosions end the grace.
+            let at = self.entities.store.get(id).map_or(pos, |e| e.pos());
+            if self.entities.player(id).is_some() {
+                let cause =
+                    source.and_then(|s| crate::advancements::view::snapshot(&self.entities, s));
+                if let Some(p) = self.entities.player_mut(id) {
+                    crate::advancements::tracking::explosion_hit(p, pos, cause);
+                    let s = &mut p.survival;
+                    if player_wind_charge {
+                        s.impulse_grace = s.impulse_grace.max(40);
+                        s.impulse_impact = Some(at);
+                    } else {
+                        s.impulse_grace = 0;
+                    }
                 }
             }
             let player = self.entities.player(id);
             if let Some(p) = player {
-                hit_players.push((id, knockback));
+                // `hitPlayers`: not a creative player who flies.
+                if !(p.game_mode == vanillite_config::GameMode::Creative && p.survival.flying) {
+                    hit_players.push((id, knockback));
+                }
                 // A client moves the player by the packet, unless the server moves it itself.
                 if !p.survival.simulate_movement {
                     continue;

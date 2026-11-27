@@ -99,6 +99,22 @@ impl Holders {
         ))
     }
 
+    /// The section at `section_y` of a full chunk; `None` outside full chunks and the build
+    /// height. Shares the per-thread cache of [`Holders::full_block`].
+    #[inline]
+    pub(super) fn full_section(&self, chunk: ChunkPos, section_y: i32) -> Option<&Section> {
+        let last = LAST.get();
+        if last.id == self.id
+            && last.epoch == self.epoch
+            && last.chunk == chunk
+            && last.section_y == section_y
+        {
+            // SAFETY: as in [`Holders::full_block`].
+            return Some(unsafe { &*last.section });
+        }
+        self.lookup(chunk, section_y).map(|(section, _)| section)
+    }
+
     /// [`Holders::full_block`] through the map; caches the section for the next read.
     #[inline(never)]
     fn lookup(&self, chunk: ChunkPos, section_y: i32) -> Option<(&Section, bool)> {

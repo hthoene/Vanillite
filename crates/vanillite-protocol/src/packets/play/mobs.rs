@@ -107,7 +107,7 @@ pub struct MoveVehicleBack {
     pub x_rot: f32,
 }
 
-/// `animate`: an entity animation (4 = critical hit, 5 = magic critical hit).
+/// `animate`: an entity animation (0 = wake up, 1 = critical hit, 2 = magic critical hit).
 #[derive(Debug, Clone, PartialEq, Eq, Packet)]
 #[packet(state = Play, dir = Clientbound, name = "animate")]
 pub struct Animate {

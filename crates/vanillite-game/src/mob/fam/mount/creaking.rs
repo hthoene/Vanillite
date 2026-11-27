@@ -247,7 +247,7 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             super::make_sound(t, "minecraft:entity.creaking.unfreeze");
         } else {
             // `stopInPlace`.
-            t.mob().nav.stop();
+            t.nav().stop();
             let m = t.mob();
             m.xxa = 0.0;
             m.zza = 0.0;

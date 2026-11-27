@@ -307,7 +307,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         // The fight has the whole level and draws `level.getRandom()` from it; its `Env`
         // random is the unseeded `RandomSource.create()` of the spikes and gateways.
         let mut random = LegacyRandom::new(vanillite_game::mob::new_unique_seed());
@@ -365,7 +365,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         // As in `tick_dragon_fight`: the fight draws the level random from the level.
         let mut random = LegacyRandom::new(vanillite_game::mob::new_unique_seed());
         let mut env = survival.env(
@@ -445,7 +445,7 @@ impl WorldMobs {
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = survival.env(
                 &mut random,
                 state,
@@ -746,7 +746,7 @@ impl WorldMobs {
                 let raining = |_| false;
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+                let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
                 let mut env = survival.env(
                     &mut random,
                     state,
@@ -963,7 +963,7 @@ impl WorldMobs {
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+                let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
                 let mut env = survival.env(
                     &mut random,
                     state,
@@ -1040,7 +1040,7 @@ impl WorldMobs {
             let raining = |_| false;
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = survival.env(
                 &mut random,
                 state,
@@ -1229,7 +1229,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut random = level.lend_random();
         let mut env = survival.env(
             &mut random,
@@ -1357,7 +1357,7 @@ impl WorldMobs {
             let raining = |_| false;
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = survival.env(
                 &mut random,
                 state,
@@ -1399,7 +1399,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut random = level.lend_random();
         let mut env = survival.env(
             &mut random,
@@ -1455,7 +1455,7 @@ impl WorldMobs {
                 let hooks = crate::plugins::Hooks::of(global, dimension);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+                let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
                 let mut env = survival.env(
                     &mut random,
                     state,

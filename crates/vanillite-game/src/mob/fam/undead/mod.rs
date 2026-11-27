@@ -852,13 +852,14 @@ pub fn living_cause(h: &Hurt<'_, '_>, source: &DamageSource) -> Option<EntityId>
         .filter(|&c| h.ents.mob(c).is_some() || h.ents.player(c).is_some())
 }
 
-/// Adds an effect to a living target (mob or player).
+/// Adds an effect to a living target (mob or player) from `source`.
 pub fn add_effect(
     ents: &mut crate::entities::Entities,
     target: EntityId,
     effect: crate::effect::EffectInstance,
+    source: Option<EntityId>,
 ) {
-    crate::effect::living::add_detached(ents, target, effect);
+    crate::effect::living::add_detached_from(ents, target, effect, source);
 }
 
 /// The rotation of a freshly spawned mob looking along `y_rot`.

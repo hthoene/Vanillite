@@ -793,7 +793,7 @@ pub fn tick_framed_map(level: &Level, ents: &mut Entities, env: &Env<'_>, id: En
     let Some(DecorData::Frame(f)) = ents.decor(id).map(|d| &d.data) else {
         return;
     };
-    if f.item.item != vanillite_data::item::ids::FILLED_MAP.0 {
+    if !crate::map::is_map_item(f.item.item) {
         return;
     }
     let Some(map) = crate::map::map_id(&f.item) else {

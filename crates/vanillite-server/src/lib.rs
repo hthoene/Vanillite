@@ -39,6 +39,7 @@ mod systems;
 mod test_bot;
 mod tick_rate;
 mod watchdog;
+mod waypoints;
 mod world;
 mod world_format;
 mod world_setup;

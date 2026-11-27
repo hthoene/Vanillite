@@ -809,7 +809,7 @@ fn spear_start(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
 }
 
 fn spear_stop(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
-    t.mob().nav.stop();
+    t.nav().stop();
     goals::set_aggressive(t, false);
     s.active = false;
     crate::mob::projectile::stop_using_item(t);
@@ -831,15 +831,11 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
     while let Some(v) = t.ents.vehicle_of(root) {
         root = v;
     }
-    // `chargeSpeedModifier` of the mob the zombie rides (zombie horses charge faster).
-    let speed = if root != t.id
-        && t.ents
-            .mob(root)
-            .is_some_and(|m| m.kind == Kind::ZombieHorse)
-    {
-        1.4_f32
-    } else {
-        1.0
+    // `chargeSpeedModifier` of the mob at the bottom of the stack the zombie rides.
+    let speed = match t.ents.mob(root).map(|m| m.kind) {
+        Some(Kind::ZombieHorse) if root != t.id => 1.4_f32,
+        Some(Kind::CamelHusk) if root != t.id => 4.0,
+        _ => 1.0,
     };
     let speed = f64::from(speed);
     let mount = if t.ents.vehicle_of(t.id).is_some() {
@@ -853,7 +849,7 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
         .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 30.0, 30.0);
     if s.engage_time < 0 {
         if dist_sqr > f64::from(s.approach_sqr) {
-            nav::move_to_entity(t, o.pos, 0, speed * s.reposition_speed);
+            nav::move_to_entity(t, o.pos, 1, speed * s.reposition_speed);
             return;
         }
         s.engage_time = goals::reduced(crate::spear::mob_use_duration(t.mob_ref()));
@@ -885,7 +881,7 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
     }
     if let Some(away) = s.away {
         nav::move_to_pos(t, away, speed * s.reposition_speed);
-        if t.mob_ref().nav.is_done() {
+        if t.nav_ref().is_done() {
             if s.fleeing_time > 0 {
                 s.done = true;
                 return;
@@ -893,8 +889,8 @@ fn spear_tick(t: &mut Tick<'_, '_>, s: &mut SpearUse) {
             s.away = None;
         }
     } else {
-        nav::move_to_entity(t, o.pos, 0, speed * s.charge_speed);
-        if dist_sqr < f64::from(s.in_range_sqr) || t.mob_ref().nav.is_done() {
+        nav::move_to_entity(t, o.pos, 1, speed * s.charge_speed);
+        if dist_sqr < f64::from(s.in_range_sqr) || t.nav_ref().is_done() {
             let d = dist_sqr.sqrt();
             s.away = randompos::land_pos_away(t, 6.0 + mount - d, 7.0 + mount - d, 7, o.pos);
         }
@@ -1224,7 +1220,7 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
             t.set_velocity(Vec3::new(v.x, v.y + 0.002, v.z));
         }
         let ctl = t.mob_ref().move_ctl;
-        if ctl.operation != nav::Operation::MoveTo || t.mob_ref().nav.is_done() {
+        if ctl.operation != nav::Operation::MoveTo || t.nav_ref().is_done() {
             // `setSpeed(0)`: also the forward input.
             let m = t.mob();
             m.speed = 0.0;
@@ -1320,7 +1316,7 @@ pub fn drowned_throw_trident(t: &mut Tick<'_, '_>, target: EntityId, _power: f32
 
 /// `closeToNextPos`: the path's target is within 2 blocks.
 fn close_to_next_pos(t: &Tick<'_, '_>) -> bool {
-    let Some(path) = t.mob_ref().nav.path.as_ref() else {
+    let Some(path) = t.nav_ref().path.as_ref() else {
         return false;
     };
     let target = path.target;
@@ -1456,10 +1452,12 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
     if kind == Kind::Husk && empty {
         #[allow(clippy::cast_possible_truncation)]
         let ticks = 140 * diff as i32;
+        let me = t.id;
         super::add_effect(
             t.ents,
             target,
             effects::EffectInstance::new(effects::MobEffect::HUNGER, ticks, 0),
+            Some(me),
         );
     }
     Some(true)
@@ -2140,7 +2138,7 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                     .is_some_and(|id| drowned_ok_target(t, id))
         }
         Goal::DrownedTrident(c) => common::can_continue(t, c),
-        Goal::DrownedGoToWater { .. } => !t.mob_ref().nav.is_done(),
+        Goal::DrownedGoToWater { .. } => !t.nav_ref().is_done(),
         Goal::DrownedGoToBeach(mtb) => mtb.can_continue(t, beach_target),
         Goal::DrownedSwimUp { stuck, .. } => {
             !*stuck
@@ -2214,8 +2212,7 @@ pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         }
         Goal::DrownedSwimUp { speed, stuck } => {
             let sea = t.cx.env.sea_level;
-            if t.pos().y < f64::from(sea - 1) && (t.mob_ref().nav.is_done() || close_to_next_pos(t))
-            {
+            if t.pos().y < f64::from(sea - 1) && (t.nav_ref().is_done() || close_to_next_pos(t)) {
                 let p = t.pos();
                 let towards = Vec3::new(p.x, f64::from(sea - 1), p.z);
                 match randompos::default_pos_towards(t, 4, 8, towards, randompos::half_pi()) {
