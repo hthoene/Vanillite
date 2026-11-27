@@ -83,6 +83,11 @@ import net.minecraft.world.ticks.ScheduledTick;
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
+ *
+ * <p>{@code --stream <scenario.json> [<ticks>]} (soak runs, {@code cargo xtask parity soak}): the
+ * trace goes to standard output while it is recorded, one JSON line per frame after a header line
+ * {@code {"format":1,"region":[...]}}; a frame carries the palette entries it adds first as {@code
+ * "palette":[...]}. {@code <ticks>} records only that many ticks of the scenario.
  */
 public final class ScenarioRecorder {
   /** Trace format version; the Rust reader rejects other versions. */
@@ -137,6 +142,10 @@ public final class ScenarioRecorder {
   public static void main(String[] args) throws Exception {
     if (args.length == 1 && args[0].equals("--serve")) {
       serve();
+      return;
+    }
+    if ((args.length == 2 || args.length == 3) && args[0].equals("--stream")) {
+      stream(Path.of(args[1]), args.length == 3 ? Integer.parseInt(args[2]) : -1);
       return;
     }
     if (args.length == 0 || args.length % 2 != 0) {
@@ -194,15 +203,50 @@ public final class ScenarioRecorder {
     System.exit(0);
   }
 
+  /** {@code --stream}: the trace of one scenario to standard output, frame by frame. */
+  private static void stream(Path scenarioFile, int ticks) throws Exception {
+    // The bootstrap sends System.out to the log; the trace goes to the real output.
+    java.io.PrintStream out =
+        new java.io.PrintStream(
+            new java.io.BufferedOutputStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), 1 << 16),
+            false,
+            StandardCharsets.UTF_8);
+    // Logging that writes to the standard output (the console appender) goes to the error
+    // output instead.
+    System.setOut(System.err);
+    SharedConstants.tryDetectVersion();
+    Bootstrap.bootStrap();
+    JsonObject scenario = JsonParser.parseString(Files.readString(scenarioFile)).getAsJsonObject();
+    if (ticks >= 0) {
+      scenario.addProperty("ticks", ticks);
+    }
+    int status = 0;
+    try {
+      record(scenario, scenarioFile.toAbsolutePath().getParent(), out);
+    } catch (Exception | AssertionError e) {
+      e.printStackTrace();
+      status = 1;
+    }
+    out.flush();
+    // The server leaves worker threads behind.
+    System.exit(out.checkError() ? 1 : status);
+  }
+
   static String record(JsonObject scenario) throws Exception {
     return record(scenario, null);
   }
 
+  static String record(JsonObject scenario, Path scenarioDir) throws Exception {
+    return record(scenario, scenarioDir, null);
+  }
+
   /**
    * Records a scenario; its {@code datapack} is {@code ../datapacks/<name>} of {@code
-   * scenarioDir}.
+   * scenarioDir}. With {@code stream} the frames go there as they are recorded (see {@code
+   * --stream}) and the result is empty.
    */
-  static String record(JsonObject scenario, Path scenarioDir) throws Exception {
+  static String record(JsonObject scenario, Path scenarioDir, java.io.PrintStream stream)
+      throws Exception {
     JsonObject world = scenario.has("world") ? scenario.getAsJsonObject("world") : new JsonObject();
     long seed = world.has("seed") ? world.get("seed").getAsLong() : 0;
     String biome = world.has("biome") ? world.get("biome").getAsString() : "minecraft:plains";
@@ -314,7 +358,7 @@ public final class ScenarioRecorder {
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
       boolean levelRng = scenario.has("level_rng") && scenario.get("level_rng").getAsBoolean();
-      Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views);
+      Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views, stream);
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
@@ -646,6 +690,11 @@ public final class ScenarioRecorder {
     private final Map<String, Integer> palette = new HashMap<>();
     private final List<String> paletteOrder = new ArrayList<>();
     private final List<String> frames = new ArrayList<>();
+    /** Palette index per block state (states are canonical objects). */
+    private final Map<BlockState, Integer> stateIndex = new java.util.IdentityHashMap<>();
+    /** Streamed traces: where the frames go, and how many palette entries went out. */
+    private final java.io.PrintStream stream;
+    private int streamedPalette;
     private final boolean light;
     private final boolean levelRng;
     private int[] last;
@@ -661,7 +710,9 @@ public final class ScenarioRecorder {
         boolean light,
         boolean levelRng,
         String dimension,
-        List<View> views) {
+        List<View> views,
+        java.io.PrintStream stream) {
+      this.stream = stream;
       this.min = min;
       this.max = max;
       this.names = names;
@@ -669,6 +720,24 @@ public final class ScenarioRecorder {
       this.levelRng = levelRng;
       this.dimension = dimension;
       this.views = views;
+      if (stream != null) {
+        stream.print("{\"format\":" + FORMAT + ",\"region\":");
+        stream.println(region() + "}");
+      }
+    }
+
+    private String region() {
+      return "[[" + min.getX() + ',' + min.getY() + ',' + min.getZ() + "],["
+          + max.getX() + ',' + max.getY() + ',' + max.getZ() + "]]";
+    }
+
+    private int index(BlockState state) {
+      Integer i = stateIndex.get(state);
+      if (i == null) {
+        i = index(stateName(state));
+        stateIndex.put(state, i);
+      }
+      return i;
     }
 
     private int index(String state) {
@@ -693,11 +762,19 @@ public final class ScenarioRecorder {
             p.set(min.getX() + x, min.getY() + y, min.getZ() + z);
             // Reading a position of a chunk that is not accessible would load it.
             boolean loaded = level.getChunkSource().getChunkNow(p.getX() >> 4, p.getZ() >> 4) != null;
-            blocks[i++] = index(loaded ? stateName(level.getBlockState(p)) : UNLOADED);
+            blocks[i++] = loaded ? index(level.getBlockState(p)) : index(UNLOADED);
           }
         }
       }
       StringBuilder sb = new StringBuilder("{\"tick\":").append(tick);
+      if (stream != null && streamedPalette < paletteOrder.size()) {
+        sb.append(",\"palette\":[");
+        for (int j = streamedPalette; j < paletteOrder.size(); j++) {
+          sb.append(j == streamedPalette ? "" : ",").append('"').append(paletteOrder.get(j)).append('"');
+        }
+        sb.append(']');
+        streamedPalette = paletteOrder.size();
+      }
       if (full) {
         // Run-length pairs (count, palette index) in y, z, x order.
         sb.append(",\"blocks\":[");
@@ -748,7 +825,14 @@ public final class ScenarioRecorder {
       if (names.hasEntities() || levelRng) {
         sb.append(",\"level_rng\":").append(ScenarioEntities.state(level.getRandom()));
       }
-      frames.add(sb.append('}').toString());
+      if (stream != null) {
+        stream.println(sb.append('}'));
+        if (stream.checkError()) {
+          throw new IOException("the trace stream is closed");
+        }
+      } else {
+        frames.add(sb.append('}').toString());
+      }
     }
 
     /**
@@ -913,19 +997,10 @@ public final class ScenarioRecorder {
 
     String finish() {
       StringBuilder sb = new StringBuilder("{\"format\":").append(FORMAT);
-      sb.append(",\n\"region\":[[")
-          .append(min.getX())
-          .append(',')
-          .append(min.getY())
-          .append(',')
-          .append(min.getZ())
-          .append("],[")
-          .append(max.getX())
-          .append(',')
-          .append(max.getY())
-          .append(',')
-          .append(max.getZ())
-          .append("]],\n\"palette\":[");
+      if (stream != null) {
+        return "";
+      }
+      sb.append(",\n\"region\":").append(region()).append(",\n\"palette\":[");
       for (int i = 0; i < paletteOrder.size(); i++) {
         sb.append(i == 0 ? "\n" : ",\n").append('"').append(paletteOrder.get(i)).append('"');
       }

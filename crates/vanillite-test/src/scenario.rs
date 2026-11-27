@@ -552,8 +552,17 @@ impl Scenario {
 
     /// Every scenario, sorted by name.
     pub fn all() -> Result<Vec<Self>, String> {
-        let dir = Self::dir();
-        let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        Self::all_in(&Self::dir())
+    }
+
+    /// Directory of the soak scenarios (`cargo xtask parity soak`, [`crate::soak`]).
+    pub fn soak_dir() -> std::path::PathBuf {
+        Self::dir().join("soak")
+    }
+
+    /// Every scenario of a directory, sorted by name.
+    pub fn all_in(dir: &Path) -> Result<Vec<Self>, String> {
+        let mut paths: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|e| e == "json"))

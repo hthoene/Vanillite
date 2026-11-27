@@ -10,6 +10,7 @@
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
 //! cargo xtask golden bless <scenario>...
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
+//! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--host <host>] [--port <port>] [--release]
 //! cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
@@ -90,6 +91,13 @@ pub const USAGE: &str = "usage:
       and summary.md. --adopt copies the found scenarios into crates/vanillite-test/scenarios/
       and records their goldens (then add scenarios/divergences/<name>.toml with the cause).
       Also: --replay <scenario.json> runs given scenarios without generating.
+  cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+      Soak parity runs (#166): the long scenarios of crates/vanillite-test/scenarios/soak/
+      (game days with random ticks, mob spawning, day cycle and weather) against Vanilla.
+      Vanilla's per-tick checksums are recorded once per golden key into $VANILLITE_GOLDENS/
+      <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
+      tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
+      Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
   cargo xtask golden bless <scenario>...|all
       Run the scenarios in Vanillite and store their traces as the expected goldens in
       crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
@@ -226,6 +234,7 @@ fn main() -> ExitCode {
         ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
         ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
+        ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),
