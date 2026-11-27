@@ -1688,6 +1688,19 @@ const DYE_FIREWORK: [i32; 16] = [
     8073150, 2437522, 5320730, 3887386, 11743532, 1973019,
 ];
 
+/// `CelebrateVillagersSurvivedRaid.getFirework`: a rocket of `flight` with one burst of the
+/// dye colour `dye`.
+pub(crate) fn celebration_rocket(dye: i32, flight: i32) -> ItemStack {
+    let mut bytes = Vec::new();
+    write_varint(&mut bytes, flight);
+    write_varint(&mut bytes, 1);
+    write_explosion(&mut bytes, 4, &[firework_color(dye)], &[], false, false);
+    let mut out = ItemStack::new(vanillite_data::item::ids::FIREWORK_ROCKET.0, 1);
+    out.patch_mut()
+        .set(components::FIREWORKS, bytes.into_boxed_slice());
+    out
+}
+
 fn firework_color(dye: i32) -> i32 {
     usize::try_from(dye)
         .ok()

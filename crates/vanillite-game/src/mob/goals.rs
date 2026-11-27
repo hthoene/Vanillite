@@ -740,6 +740,17 @@ pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
             return false;
         }
     }
+    // `AbstractIllager.canAttack`: never a baby villager.
+    if matches!(
+        me.kind,
+        Kind::Pillager | Kind::Vindicator | Kind::Evoker | Kind::Illusioner
+    ) && t
+        .ents
+        .mob(target)
+        .is_some_and(|o| o.kind == Kind::Villager && o.baby)
+    {
+        return false;
+    }
     // `Mob.canAttack`: never a ghast.
     if t.ents.mob(target).is_some_and(|o| o.kind == Kind::Ghast) {
         return false;
@@ -895,7 +906,29 @@ pub(super) fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
         return false;
     };
     let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
-    t.aabb().inflate(reach, 0.0, reach).intersects(&o.aabb)
+    // `getAttackBoundingBox`: a mounted mob reaches from its vehicle's edge too.
+    let mut b = t.aabb();
+    if let Some(v) = t
+        .ents
+        .vehicle_of(t.id)
+        .and_then(|v| t.ents.store.get(v))
+        .map(|e| e.aabb())
+    {
+        b = Aabb::new(
+            b.min_x.min(v.min_x),
+            b.min_y,
+            b.min_z.min(v.min_z),
+            b.max_x.max(v.max_x),
+            b.max_y,
+            b.max_z.max(v.max_z),
+        );
+    }
+    let mut b = b.inflate(reach, 0.0, reach);
+    // `Ravager.getAttackBoundingBox`.
+    if t.mob_ref().kind == Kind::Ravager {
+        b = b.inflate(-0.05, 0.0, -0.05);
+    }
+    b.intersects(&o.aabb)
 }
 
 fn is_creative_or_spectator(t: &Tick<'_, '_>, id: EntityId) -> bool {

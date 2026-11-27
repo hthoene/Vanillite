@@ -1,0 +1,117 @@
+{
+  "description": "A guardian and a squid in a pool: Guardian.GuardianAttackSelector also targets squids (and axolotls) more than 3 blocks away, so the guardian beams the squid.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -53,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -54,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -54,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -54,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -54,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -55,
+        14
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "guardian",
+      "type": "minecraft:guardian",
+      "pos": [
+        4.5,
+        -58.0,
+        4.5
+      ],
+      "seed": 21,
+      "finalize": false
+    },
+    {
+      "name": "squid",
+      "type": "minecraft:squid",
+      "pos": [
+        11.5,
+        -58.0,
+        11.5
+      ],
+      "seed": 22,
+      "finalize": false
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

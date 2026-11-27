@@ -413,36 +413,28 @@ fn attack_tick(t: &mut Tick<'_, '_>, attack_time: &mut i32) {
     }
 }
 
-/// `GuardianAttackSelector` with `NearestAttackableTargetGoal.findTarget`: the nearest player
-/// more than 3 blocks away (squids and axolotls have no behaviour yet).
+/// `GuardianAttackSelector` with `NearestAttackableTargetGoal.findTarget`: the nearest player,
+/// squid, glow squid or axolotl more than 3 blocks away.
 fn find_target(t: &mut Tick<'_, '_>) -> Option<EntityId> {
     let range = t.mob_ref().attrs.follow_range;
     let area = t.aabb().inflate(range, range, range);
-    let p = t.pos();
-    let at = Vec3::new(p.x, t.eye_y(), p.z);
-    let mut candidates = std::mem::take(&mut t.cx.ids);
-    candidates.clear();
-    t.ents
+    crate::mob::common::find_nearest(t, is_prey, range, true, false, area)
+}
+
+/// `GuardianAttackSelector.test`.
+fn is_prey(t: &Tick<'_, '_>, id: EntityId) -> bool {
+    let prey = t.ents.player(id).is_some()
+        || t.ents.mob(id).is_some_and(|m| {
+            matches!(
+                m.kind,
+                crate::mob::Kind::Squid | crate::mob::Kind::GlowSquid | crate::mob::Kind::Axolotl
+            )
+        });
+    prey && t
+        .ents
         .store
-        .for_each_in(&area, true, |id| candidates.push(id));
-    let mut best: Option<(EntityId, f64)> = None;
-    for &id in &candidates {
-        let Some(pos) = t.ents.store.get(id).map(|e| e.pos()) else {
-            continue;
-        };
-        if p.distance_to_sqr(pos) <= 9.0 {
-            continue;
-        }
-        if !goals::test_player(t, id, true, range, true) {
-            continue;
-        }
-        let d = pos.distance_to_sqr(at);
-        if best.is_none_or(|(_, b)| d < b) {
-            best = Some((id, d));
-        }
-    }
-    t.cx.ids = candidates;
-    best.map(|(id, _)| id)
+        .get(id)
+        .is_some_and(|e| e.pos().distance_to_sqr(t.pos()) > 9.0)
 }
 
 /// `getNearestEntity(getEntitiesOfClass(Guardian.class, box.inflate(d, 3, d)), forNonCombat

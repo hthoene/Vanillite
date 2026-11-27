@@ -1109,6 +1109,25 @@ pub fn tick_leash(t: &mut Tick<'_, '_>) {
         m.restrict_center = BlockPos::containing(hpos.x, hpos.y, hpos.z);
         m.restrict_radius = 5;
     }
+    // `leashHolder.notifyLeashHolder(this)`: a happy ghast holding a mob with a four-point
+    // leash (`supportQuadLeash`) shows it for 5 ticks (`IS_LEASH_HOLDER`).
+    let quad = matches!(
+        t.mob_ref().kind,
+        Kind::Horse
+            | Kind::Donkey
+            | Kind::Mule
+            | Kind::SkeletonHorse
+            | Kind::ZombieHorse
+            | Kind::Camel
+            | Kind::CamelHusk
+            | Kind::Sniffer
+    );
+    if quad
+        && let Some(h) = t.ents.mob_mut(holder)
+        && h.kind == Kind::HappyGhast
+    {
+        super::fam::mount::ghast::notify_leash_holder(h);
+    }
     if distance > 12.0 {
         let seed = crate::survival::sound_seed();
         play_sound(
@@ -1139,6 +1158,10 @@ pub fn tick_leash(t: &mut Tick<'_, '_>) {
             let rel = holder_motion - velocity;
             let add = force.multiply(0.8, 0.2, 0.8) + rel * 0.11;
             t.set_velocity(velocity + add);
+            // `HappyGhast.onElasticLeashPull`: `moveControl.setWait()`.
+            if t.mob_ref().kind == Kind::HappyGhast {
+                t.mob().move_ctl.operation = super::nav::Operation::Wait;
+            }
         }
     } else if !super::animal::is_panicking(t.mob_ref()) {
         // `PathfinderMob.closeRangeLeashBehaviour`: stay within 2 blocks of the holder.

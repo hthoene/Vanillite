@@ -411,6 +411,10 @@ impl MobData {
             Kind::Rabbit => {
                 let _ = mob.random.next_int_bounded(40);
             }
+            // `Guardian`: `clientSideTailAnimation = random.nextFloat()`.
+            Kind::Guardian | Kind::ElderGuardian => {
+                let _ = mob.random.next_float();
+            }
             _ => {}
         }
         kinds::register_goals(&mut mob);
@@ -861,6 +865,9 @@ pub enum WorldAction {
     TrampleFarmland(BlockPos, EntityId),
     /// `destroyBlock(pos, drop, breaker)` (ravagers in crops).
     DestroyBlockBy(BlockPos, bool, EntityId),
+    /// `PiglinAi.angerNearbyPiglins(player, true)` of a chest vehicle the player opened or
+    /// broke: queued like the block containers' ([`crate::level::LevelOutput::piglin_anger`]).
+    PiglinAnger(EntityId),
 }
 
 impl WorldAction {
@@ -897,6 +904,9 @@ impl WorldAction {
             }
             WorldAction::DestroyBlockBy(pos, drop, id) => {
                 level.destroy_block(pos, drop, Some(id));
+            }
+            WorldAction::PiglinAnger(player) => {
+                level.output().piglin_anger.push((player, true));
             }
             WorldAction::ProjectileHitBlock(pos, at, id, speed) => {
                 crate::block::projectile_hit::projectile_hit_block(level, pos, at, id, speed);
