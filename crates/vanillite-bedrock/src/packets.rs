@@ -31,6 +31,7 @@ pub mod id {
     pub const ANIMATE: u32 = 44;
     pub const LEVEL_CHUNK: u32 = 58;
     pub const SET_COMMANDS_ENABLED: u32 = 59;
+    pub const UPDATE_SOFT_ENUM: u32 = 114;
     pub const SET_PLAYER_GAME_TYPE: u32 = 62;
     pub const PLAYER_LIST: u32 = 63;
     pub const REQUEST_CHUNK_RADIUS: u32 = 69;
@@ -96,6 +97,10 @@ pub mod id {
     pub const PLAYER_ENCHANT_OPTIONS: u32 = 146;
     pub const LECTERN_UPDATE: u32 = 125;
     pub const PLAYER_TOGGLE_CRAFTER_SLOT_REQUEST: u32 = 306;
+    pub const TRANSFER: u32 = 85;
+    pub const STOP_SOUND: u32 = 87;
+    pub const TOAST_REQUEST: u32 = 186;
+    pub const CLIENTBOUND_CLOSE_FORM: u32 = 310;
 }
 
 /// Inventory window ids.
@@ -649,6 +654,9 @@ pub struct AddPlayer<'a> {
     pub head_yaw: f32,
     pub game_mode: i32,
     pub sneaking: bool,
+    /// A player head block's model: tiny bounding box, no name, a little larger than a player's
+    /// head like Java's skull.
+    pub skull: bool,
 }
 
 /// `add_player`.
@@ -665,14 +673,25 @@ pub fn add_player(p: &AddPlayer<'_>, v: &Version) -> Vec<u8> {
     }
     write_empty_item(&mut out);
     io::write_vari32(&mut out, p.game_mode);
-    Metadata::default()
-        .long(meta::FLAGS, entity_flags(p.sneaking, false))
-        .string(meta::NAME, p.name)
-        .float(meta::SCALE, 1.0)
-        .float(meta::WIDTH, 0.6)
-        .float(meta::HEIGHT, 1.8)
-        .byte(meta::ALWAYS_SHOW_NAME, 1)
-        .write(&mut out);
+    if p.skull {
+        Metadata::default()
+            .long(meta::FLAGS, 0)
+            .string(meta::NAME, "")
+            .float(meta::SCALE, 1.08)
+            .float(meta::WIDTH, 0.001)
+            .float(meta::HEIGHT, 0.001)
+            .byte(meta::ALWAYS_SHOW_NAME, 0)
+            .write(&mut out);
+    } else {
+        Metadata::default()
+            .long(meta::FLAGS, entity_flags(p.sneaking, false))
+            .string(meta::NAME, p.name)
+            .float(meta::SCALE, 1.0)
+            .float(meta::WIDTH, 0.6)
+            .float(meta::HEIGHT, 1.8)
+            .byte(meta::ALWAYS_SHOW_NAME, 1)
+            .write(&mut out);
+    }
     out.extend_from_slice(&[0, 0]); // no entity properties
     // Ability data: unique id, permissions and the base layer the client expects.
     out.extend_from_slice(&p.entity_id.to_le_bytes());
@@ -1856,6 +1875,33 @@ pub fn actor_event(runtime_id: u64, event: u8, data: i32) -> Vec<u8> {
     out.push(event);
     io::write_vari32(&mut out, data);
     out.push(0);
+    out
+}
+
+/// `stop_sound`: one sound by name, or all.
+pub fn stop_sound(name: &str, all: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_str(&mut out, name);
+    out.push(u8::from(all));
+    out.push(0); // not the legacy music
+    out
+}
+
+/// `toast_request`.
+pub fn toast_request(title: &str, message: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_str(&mut out, title);
+    io::write_str(&mut out, message);
+    out
+}
+
+/// `transfer` to another server.
+pub fn transfer(host: &str, port: u16) -> Vec<u8> {
+    let mut out = Vec::new();
+    io::write_str(&mut out, host);
+    out.extend_from_slice(&port.to_le_bytes());
+    out.push(0); // no world reload
+    out.push(0); // no gathering
     out
 }
 

@@ -61,7 +61,7 @@ pub struct Global {
     /// Uptime, CPU samples and the profiler of `/vanillite`.
     pub(crate) diagnostics: crate::diagnostics::Diagnostics,
     /// Vanilla's English translations, for texts of the console and RCON.
-    pub(crate) language: std::collections::HashMap<String, String>,
+    pub(crate) language: Arc<std::collections::HashMap<String, String>>,
     /// `broadcast-console-to-ops`.
     pub(crate) broadcast_console_to_ops: bool,
     /// `broadcast-rcon-to-ops`.

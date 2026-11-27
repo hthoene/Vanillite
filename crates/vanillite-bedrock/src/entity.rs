@@ -41,7 +41,13 @@ const RENAMED: &[(&str, &str)] = &[
 
 /// The Bedrock identifier of a Java entity type, if the client knows one.
 pub fn bedrock_identifier(java: &str, known: &FxHashSet<String>) -> Option<String> {
-    let name = RENAMED
+    let name = bedrock_name(java)?;
+    known.contains(&name).then_some(name)
+}
+
+/// The Bedrock identifier a Java entity type would have.
+pub fn bedrock_name(java: &str) -> Option<String> {
+    RENAMED
         .iter()
         .find(|(j, _)| *j == java)
         .map(|(_, b)| (*b).to_owned())
@@ -54,8 +60,7 @@ pub fn bedrock_identifier(java: &str, known: &FxHashSet<String>) -> Option<Strin
             } else {
                 Some(java.to_owned())
             }
-        })?;
-    known.contains(&name).then_some(name)
+        })
 }
 
 /// Java's shared entity flags (data index 0).

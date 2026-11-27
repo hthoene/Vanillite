@@ -810,6 +810,11 @@ impl Session {
                 self.survival_action(a)
             };
             if r.is_err() {
+                log::debug!(
+                    "Bedrock {}: item stack request {} refused at {a:?}",
+                    self.peer,
+                    req.id
+                );
                 ok = false;
                 break;
             }
