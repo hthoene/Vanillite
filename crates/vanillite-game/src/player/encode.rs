@@ -294,6 +294,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
         effect_data(&mut out, &player.survival.effects, all);
+        arrow_count(&mut out, player.survival.arrows.count, all);
         DataWriter::new(&mut out, all).optional_block_pos(14, player.survival.sleeping_pos);
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
@@ -602,6 +603,13 @@ impl<'a> DataWriter<'a> {
     }
 }
 
+/// `DATA_ARROW_COUNT_ID` of a living entity.
+fn arrow_count(out: &mut Vec<u8>, count: i32, all: bool) {
+    if all || count != 0 {
+        item(out, 12, serializer::INT, |o| write_varint(o, count));
+    }
+}
+
 /// `DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` of a living entity.
 fn effect_data(out: &mut Vec<u8>, fx: &crate::effect::ActiveEffects, all: bool) {
     let any_visible = fx.iter().any(|e| e.visible);
@@ -635,6 +643,7 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
         });
     }
     effect_data(out, &mob.effects, all);
+    arrow_count(out, mob.arrows.count, all);
     let flags =
         u8::from(mob.no_ai) | (u8::from(mob.left_handed) << 1) | (u8::from(mob.aggressive) << 2);
     // Armor stands and mannequins are no `Mob`: their own data starts at 15.

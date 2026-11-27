@@ -202,6 +202,9 @@ fn base_tick(t: &mut Tick<'_, '_>) {
         if m.damage_cooldown > 0 {
             m.damage_cooldown -= 1;
         }
+        if m.arrows.tick() {
+            t.core_mut().mark_data_dirty();
+        }
     }
     if t.mob_ref().is_dead_or_dying() {
         tick_death(t);

@@ -677,7 +677,7 @@ pub fn save_arrow(
     let mut out = Compound::new();
     save_entity(core, &mut out);
     out.insert("fall_distance", 0.0_f64);
-    out.insert("Fire", if a.fire { 2000_i16 } else { -1_i16 });
+    out.insert("Fire", i16::try_from(a.fire_ticks).unwrap_or(i16::MAX));
     out.insert("Air", 300_i16);
     #[allow(clippy::cast_possible_truncation)]
     {
@@ -757,7 +757,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
             random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
             knockback: 0.0,
-            fire: int(tag, "Fire").is_some_and(|f| f > 0),
+            fire_ticks: int(tag, "Fire").unwrap_or(0),
             item,
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),

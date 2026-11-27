@@ -307,7 +307,7 @@ fn powered_wither_ignores_arrows() {
             pickup: 0,
             random_state: 0,
             knockback: 0.0,
-            fire: false,
+            fire_ticks: -1,
             item: crate::item::ItemStack::default(),
             in_ground_time: 0,
             spectral_duration: 200,

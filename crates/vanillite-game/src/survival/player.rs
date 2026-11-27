@@ -194,6 +194,8 @@ pub struct Survival {
     pub fire_ticks: i32,
     pub fall_distance: f64,
     pub hurt_time: i32,
+    /// `DATA_ARROW_COUNT_ID`, `removeArrowTime`.
+    pub arrows: crate::mob::projectile::StuckArrows,
     /// `damageCooldownTime`.
     pub damage_cooldown: i32,
     /// `lastHurt`.
@@ -354,6 +356,7 @@ impl Default for Survival {
             fire_ticks: 0,
             fall_distance: 0.0,
             hurt_time: 0,
+            arrows: crate::mob::projectile::StuckArrows::default(),
             damage_cooldown: 0,
             last_hurt: 0.0,
             death_time: 0,
@@ -1053,6 +1056,12 @@ pub fn hurt_with(
     let (blocked_amount, blocker) = apply_item_blocking(entity, player, env, &source, damage);
     damage -= blocked_amount;
     let blocked = blocked_amount > 0.0;
+    // `#damages_helmet` (falling anvils, blocks, stalactites) with a helmet on: `hurtHelmet`
+    // (`doHurtEquipment(HEAD)`) and three quarters of the damage.
+    if types.is(kind, tag::DAMAGES_HELMET) && !player.inventory.get(39).is_empty() {
+        hurt_armor(player, env, &source, damage, 39..40);
+        damage *= 0.75;
+    }
     if !damage.is_finite() {
         damage = f32::MAX;
     }
@@ -1234,7 +1243,7 @@ fn actually_hurt(
     let mut damage = damage;
     if !types.is(kind, tag::BYPASSES_ARMOR) {
         // `hurtArmor`, then `getDamageAfterArmorAbsorb` with the equipment's armour.
-        hurt_armor(player, env, &source, damage);
+        hurt_armor(player, env, &source, damage, 36..40);
         let (armor, toughness) = armor_values(player);
         damage = combat::damage_after_absorb_with(damage, armor, toughness, armor_effectiveness);
     }
@@ -1314,13 +1323,19 @@ pub fn armor_values(player: &PlayerData) -> (f32, f32) {
 }
 
 /// `hurtArmor` → `doHurtEquipment`: each armour piece loses `max(1, damage / 4)` durability.
-fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource, damage: f32) {
+fn hurt_armor(
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    source: &DamageSource,
+    damage: f32,
+    slots: std::ops::Range<usize>,
+) {
     if damage <= 0.0 || player.game_mode == GameMode::Creative {
         return;
     }
     #[allow(clippy::cast_possible_truncation)]
     let amount = (damage / 4.0).max(1.0) as i32;
-    for index in 36..40 {
+    for index in slots {
         let unbreaking = crate::player::play::game_data().map_or(0, |d| {
             d.enchantment_level(player.inventory.get(index), "minecraft:unbreaking")
         });
@@ -2002,6 +2017,9 @@ pub fn base_tick_after_portal(
         if s.hurt_time > 0 {
             s.hurt_time -= 1;
         }
+        if s.arrows.tick() {
+            entity.mark_data_dirty();
+        }
     }
     if player.survival.is_dead_or_dying() {
         // `tickDeath`.
@@ -2061,8 +2079,14 @@ pub fn do_tick_ai(
     }
     // `Player.aiStep`: peaceful regeneration (`ServerPlayer.tickRegeneration`).
     if env.difficulty == Difficulty::Peaceful && env.rules.bool(Rule::NATURAL_HEALTH_REGENERATION) {
-        if player.survival.tick_count % 20 == 0 && player.survival.is_hurt() {
-            heal(entity, player, 1.0);
+        if player.survival.tick_count % 20 == 0 {
+            if player.survival.is_hurt() {
+                heal(entity, player, 1.0);
+            }
+            let food = &mut player.survival.food;
+            if food.saturation < 20.0 {
+                food.saturation += 1.0;
+            }
         }
         let s = &mut player.survival;
         if s.food.needs_food() && s.tick_count % 10 == 0 {

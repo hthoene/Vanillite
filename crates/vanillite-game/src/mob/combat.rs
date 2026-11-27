@@ -356,6 +356,12 @@ pub fn hurt_mob(
     };
     m.no_action_time = 0;
     let mut damage = amount.max(0.0);
+    // `#damages_helmet` with a helmet on: three quarters (`hurtHelmet` wears only players').
+    if types.is(kind, tag::DAMAGES_HELMET)
+        && !m.equipment.get(crate::item::EquipmentSlot::Head).is_empty()
+    {
+        damage *= 0.75;
+    }
     if !damage.is_finite() {
         damage = f32::MAX;
     }
