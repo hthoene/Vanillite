@@ -284,11 +284,19 @@ fn soak(
              run is not reproducible, the difference below may not be Vanillite's."
         );
     }
-    let _ = writeln!(text, "\n```");
-    for line in expected.diff(&actual, DIFF_LIMIT) {
-        let _ = writeln!(text, "{line}");
+    let diff = expected.diff(&actual, DIFF_LIMIT);
+    if diff.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nVanillite's frame equals the one of Vanilla's re-run at this tick."
+        );
+    } else {
+        let _ = writeln!(text, "\n```");
+        for line in diff {
+            let _ = writeln!(text, "{line}");
+        }
+        let _ = writeln!(text, "```");
     }
-    let _ = writeln!(text, "```");
     for (side, trace) in [("vanilla", &expected), ("vanillite", &actual)] {
         let path = dir.join(format!("{side}-{tick}.json"));
         std::fs::write(&path, trace.to_json()).map_err(|e| format!("{}: {e}", path.display()))?;
