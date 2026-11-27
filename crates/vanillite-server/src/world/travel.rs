@@ -1269,13 +1269,17 @@ impl ServerWorld {
         }
         if finish_tick {
             self.survival.finish_portal_tick(
-                &mut self.level.entities,
-                &self.level.chunks,
-                &self.level.border,
-                &self.level.block_entities,
+                &mut self.level,
+                self.mobs.cx_mut(),
                 global,
                 &self.dimension,
                 id,
+            );
+            self.mobs.after_player_ticks(
+                &mut self.level,
+                &mut self.survival,
+                global,
+                &self.dimension,
             );
         }
         // Plugins see the player in its place: a respawn, or the arrival in another world.

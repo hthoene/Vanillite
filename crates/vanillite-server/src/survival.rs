@@ -11,7 +11,7 @@ use vanillite_data::block::BlockState;
 use vanillite_data::entity::ids;
 use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::Entities;
-use vanillite_game::level::block_entity::{BlockEntities, BlockEntity};
+use vanillite_game::level::block_entity::BlockEntity;
 use vanillite_game::player::join;
 use vanillite_game::portal::PortalKind;
 use vanillite_game::survival::Effect;
@@ -472,50 +472,30 @@ impl WorldSurvival {
     /// `ServerPlayer.doTick` of every player, in the connection tick. Players whose death
     /// animation ended or whose end credits started disappear for the others; players going
     /// through portals and the gateways they entered go to `portals`.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn do_tick(
         &mut self,
-        entities: &mut Entities,
-        chunks: &Chunks,
-        border: &vanillite_game::level::border::WorldBorder,
-        block_entities: &BlockEntities,
+        level: &mut vanillite_game::level::Level,
+        cx: &mut vanillite_game::mob::MobContext,
         global: &Global,
         dimension: &str,
         portals: &mut PortalRequests,
     ) {
-        // `pushEntities` in the players' `aiStep`: after the entity tick, like Vanilla's
-        // connection tick.
-        vanillite_game::minecart::players_push(entities);
-        self.tick_players(
-            entities,
-            chunks,
-            border,
-            block_entities,
-            global,
-            dimension,
-            portals,
-            None,
-        );
+        self.tick_players(level, cx, global, dimension, portals, None);
     }
 
     /// The rest of the tick of the player `id`, which a portal just brought to this world
-    /// (`player::finish_tick_after_portal`).
-    #[allow(clippy::too_many_arguments)]
+    /// (`player::tick_after_portal`).
     pub(crate) fn finish_portal_tick(
         &mut self,
-        entities: &mut Entities,
-        chunks: &Chunks,
-        border: &vanillite_game::level::border::WorldBorder,
-        block_entities: &BlockEntities,
+        level: &mut vanillite_game::level::Level,
+        cx: &mut vanillite_game::mob::MobContext,
         global: &Global,
         dimension: &str,
         id: EntityId,
     ) {
         self.tick_players(
-            entities,
-            chunks,
-            border,
-            block_entities,
+            level,
+            cx,
             global,
             dimension,
             &mut PortalRequests::default(),
@@ -524,13 +504,10 @@ impl WorldSurvival {
     }
 
     /// [`Self::do_tick`], or with `arrived` only the rest of that player's tick.
-    #[allow(clippy::too_many_arguments)]
     fn tick_players(
         &mut self,
-        entities: &mut Entities,
-        chunks: &Chunks,
-        border: &vanillite_game::level::border::WorldBorder,
-        block_entities: &BlockEntities,
+        world_mut: &mut vanillite_game::level::Level,
+        cx: &mut vanillite_game::mob::MobContext,
         global: &Global,
         dimension: &str,
         portals: &mut PortalRequests,
@@ -538,6 +515,12 @@ impl WorldSurvival {
     ) {
         let level = &global.level;
         let rules = level.rules().clone();
+        // The players' `pushEntities` and `touch` see the level without its entities, as the
+        // mob ticks do.
+        let mut ents = std::mem::take(&mut world_mut.entities);
+        let entities = &mut ents;
+        let world: &vanillite_game::level::Level = world_mut;
+        let (chunks, block_entities) = (&world.chunks, &world.block_entities);
         let blocks = WorldBlocks(chunks);
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
@@ -571,7 +554,7 @@ impl WorldSurvival {
                 &names,
                 &teams,
             );
-            env.border = Some(border);
+            env.border = Some(&world.border);
             ids.clear();
             ids.extend(
                 entities
@@ -605,6 +588,26 @@ impl WorldSurvival {
                     std::ops::ControlFlow::Continue(result) => {
                         // `updatingUsingItem`, then `aiStep` and the rest of the tick.
                         vanillite_game::player::using::tick(entities, &mut env, id);
+                        let result = {
+                            let Entities { store, players, .. } = &mut *entities;
+                            let Some(mut entity) = store.get_mut(id) else {
+                                continue;
+                            };
+                            let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                                continue;
+                            };
+                            player::do_tick_ai(&mut entity, data, &mut env, result)
+                        };
+                        // `pushEntities` and `touch` at the end of the player's `aiStep`; the
+                        // world picks up items, arrows and orbs in the connection tick.
+                        vanillite_game::mob::living::player_ai_step_end(
+                            world,
+                            entities,
+                            &mut env,
+                            cx,
+                            id,
+                            |_, _| {},
+                        );
                         let Entities { store, players, .. } = &mut *entities;
                         let Some(mut entity) = store.get_mut(id) else {
                             continue;
@@ -612,7 +615,6 @@ impl WorldSurvival {
                         let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
                             continue;
                         };
-                        let result = player::do_tick_ai(&mut entity, data, &mut env, result);
                         player::do_tick_end(&mut entity, data, &mut env, result)
                     }
                 };
@@ -638,8 +640,9 @@ impl WorldSurvival {
             }
         }
         self.scratch = removed;
-        crate::scoreboard::update_criteria(global, entities);
-        self.deliver(entities, global);
+        world_mut.entities = ents;
+        crate::scoreboard::update_criteria(global, &mut world_mut.entities);
+        self.deliver(&mut world_mut.entities, global);
     }
 
     /// Kills a player (`/kill`) and delivers the effects at once.

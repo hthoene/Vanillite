@@ -165,6 +165,8 @@ pub enum GroupData {
     Axolotl(i32, i32),
     /// `TropicalFish.TropicalFishGroupData`: the packed variant.
     TropicalFish(i32),
+    /// `Spider.SpiderEffectsGroupData`: the effect of the group, if any.
+    Spider(Option<crate::effect::MobEffect>),
 }
 
 /// What `finalizeSpawn` gets (`DifficultyInstance`, the spawn reason, the biome) and the mobs

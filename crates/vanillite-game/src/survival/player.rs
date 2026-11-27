@@ -290,6 +290,10 @@ pub struct Survival {
     pub impulse_grace: i32,
     /// `autoSpinAttackTicks`, `autoSpinAttackDmg` and `autoSpinAttackItemStack` of a riptide.
     pub spin_attack: Option<crate::trident::SpinAttack>,
+    /// How far `Player.travel` moves a player its client moves in this tick's `aiStep`
+    /// ([`do_tick_ai`]): Vanilla pushes and touches the entities from there, then
+    /// `tickPlayer` puts the player back where its client has it.
+    pub server_step: Vec3,
     /// A plugin decided at the last death whether the inventory stays (else the game rule at
     /// the respawn decides, as in Vanilla).
     pub keep_inventory_override: Option<bool>,
@@ -382,6 +386,7 @@ impl Default for Survival {
             impulse_impact: None,
             impulse_grace: 0,
             spin_attack: None,
+            server_step: Vec3::ZERO,
             keep_inventory_override: None,
             first_tick: true,
             sent: Sent::default(),
@@ -1593,7 +1598,7 @@ pub fn die(
         throw_drops(
             drops,
             &mut player.survival.random,
-            Vec3::new(pos.x, eye_y - 0.3, pos.z),
+            Vec3::new(pos.x, eye_y - f64::from(0.3_f32), pos.z),
             env,
         );
         if amount > 0 {
@@ -1940,10 +1945,12 @@ pub fn do_tick_ai(
         crate::elytra::update_fall_flying(entity, player, env);
     }
     let before_travel = entity.as_ref().aabb();
+    player.survival.server_step = Vec3::ZERO;
     if result == TickResult::Alive {
         if player.survival.simulate_movement {
             simulate_travel(entity, player, env);
         } else {
+            player.survival.server_step = server_step(entity, env);
             travel_motion(entity, player, env);
         }
     }
@@ -2785,6 +2792,36 @@ fn simulate_travel(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
         travel_fall_flying(entity, player, env);
     } else {
         travel_in_air(entity, player, env);
+    }
+}
+
+/// The `Entity.move(MoverType.SELF, deltaMovement)` of `Player.travel` for a player its client
+/// moves: how far the motion takes it past the blocks in the way (after the small motion
+/// cut-off of `aiStep`).
+fn server_step(entity: &EntityMut<'_>, env: &Env<'_>) -> Vec3 {
+    let v = entity.as_ref().velocity();
+    let (x, z) = if v.x * v.x + v.z * v.z < 9.0e-6 {
+        (0.0, 0.0)
+    } else {
+        (v.x, v.z)
+    };
+    let y = if v.y.abs() < 0.003 { 0.0 } else { v.y };
+    let delta = Vec3::new(x, y, z);
+    let blocks = MoveBlocks(env.blocks, env.border);
+    let mut scratch = Vec::new();
+    let movement = crate::mob::physics::collide(
+        &blocks,
+        entity.as_ref().aabb(),
+        delta,
+        0.6,
+        entity.as_ref().flags().contains(EntityFlags::ON_GROUND),
+        &mut scratch,
+    );
+    let length = movement.length_sqr();
+    if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
+        movement
+    } else {
+        Vec3::ZERO
     }
 }
 

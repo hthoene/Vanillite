@@ -974,6 +974,30 @@ impl WorldMobs {
         survival.deliver(&mut level.entities, global);
     }
 
+    /// The mob context of the players' ticks (their `pushEntities` and `touch`); afterwards
+    /// [`Self::after_player_ticks`].
+    pub(crate) fn cx_mut(&mut self) -> &mut MobContext {
+        &mut self.cx
+    }
+
+    /// Applies what the players' ticks queued in the mob context (a cube they touched).
+    pub(crate) fn after_player_ticks(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        if self.cx.actions.is_empty()
+            && self.cx.dragon_events.is_empty()
+            && self.cx.discarded.is_empty()
+        {
+            return;
+        }
+        self.apply_actions(level, survival, global, dimension);
+        survival.deliver(&mut level.entities, global);
+    }
+
     /// Applies what the last mob tick queued: explosions and block changes.
     fn apply_actions(
         &mut self,
@@ -1080,6 +1104,7 @@ impl WorldMobs {
         dimension: &str,
     ) {
         if level.output().explosion_hurts.is_empty() && level.output().falling_hurts.is_empty() {
+            level.finish_explosion();
             return;
         }
         let state = &global.level;
@@ -1178,6 +1203,8 @@ impl WorldMobs {
             );
         }
         level.entities = ents;
+        // `interactWithBlocks` after `hurtEntities`.
+        level.finish_explosion();
         self.finish_removals(level);
     }
 

@@ -2286,15 +2286,18 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             // `Warden.doPush`.
             super::boss::warden::do_push(t, other);
         }
-        // Players the server moves itself take the push too (a client moves the others).
-        let pushed = t.ents.mob(other).is_some()
-            || t.ents
-                .player(other)
-                .is_some_and(|p| p.survival.simulate_movement);
-        if pushed && let Some(mut e) = t.ents.store.get_mut(other) {
+        // Players take the push in their server-side motion too; only one the server moves
+        // itself is synced (a client moves the others).
+        let synced = t
+            .ents
+            .player(other)
+            .is_none_or(|p| p.survival.simulate_movement);
+        if let Some(mut e) = t.ents.store.get_mut(other) {
             let v = e.as_ref().velocity();
             e.set_velocity(Vec3::new(v.x - xa, v.y, v.z - za));
-            e.set_flags(EntityFlags::HAS_IMPULSE, true);
+            if synced {
+                e.set_flags(EntityFlags::HAS_IMPULSE, true);
+            }
         }
         if !climbing {
             let v = t.velocity();
@@ -2305,10 +2308,56 @@ fn push_entities(t: &mut Tick<'_, '_>) {
     t.cx.ids = ids;
 }
 
-/// `LivingEntity.pushEntities` of a player the server moves itself
-/// (`survival::player::Survival::simulate_movement`): it pushes and is pushed by the mobs,
-/// minecarts and players in its box. Players moved by their clients push in
-/// [`crate::minecart::players_push`].
+/// The end of `Player.aiStep` after [`crate::survival::player::do_tick_ai`]: `pushEntities`
+/// and `touch` (the cubes, then what `touch_more` touches) from where the player's
+/// server-side travel took it ([`crate::survival::player::Survival::server_step`]), then the
+/// player goes back where it was (`ServerGamePacketListenerImpl.tickPlayer` puts it back
+/// where its client's validated movement has it).
+pub fn player_ai_step_end(
+    level: &crate::level::Level,
+    ents: &mut super::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut super::MobContext,
+    player: EntityId,
+    touch_more: impl FnOnce(&mut super::Entities, &vanillite_base::Aabb),
+) {
+    let Some(p) = ents.player(player) else {
+        return;
+    };
+    let spectator = p.game_mode == vanillite_config::GameMode::Spectator;
+    let step = p.survival.server_step;
+    let Some(home) = ents.store.get(player).map(|e| e.pos()) else {
+        return;
+    };
+    if step != Vec3::ZERO
+        && let Some(mut e) = ents.store.get_mut(player)
+    {
+        e.set_pos(home + step);
+    }
+    // `Entity.push` does nothing for a spectator (`noPhysics`).
+    if !spectator {
+        player_push_entities(ents, player);
+    }
+    let touches = !spectator && ents.player(player).is_some_and(|p| p.survival.health > 0.0);
+    if touches {
+        super::fam::undead::cubes::player_touch(level, ents, env, cx, player);
+        if let Some(reach) = ents
+            .store
+            .get(player)
+            .map(|e| e.aabb().inflate(1.0, 0.5, 1.0))
+        {
+            touch_more(ents, &reach);
+        }
+    }
+    if step != Vec3::ZERO
+        && let Some(mut e) = ents.store.get_mut(player)
+    {
+        e.set_pos(home);
+    }
+}
+
+/// `LivingEntity.pushEntities` of a player ([`player_ai_step_end`]): it pushes and is pushed
+/// by the mobs, minecarts and players in its box.
 pub fn player_push_entities(ents: &mut super::Entities, player: EntityId) {
     let Some(aabb) = ents.store.get(player).map(|e| e.aabb()) else {
         return;
@@ -2351,15 +2400,18 @@ pub fn player_push_entities(ents: &mut super::Entities, player: EntityId) {
         // `xa *= pow; xa *= 0.05F`: two roundings.
         xa = xa * pow * f64::from(0.05_f32);
         za = za * pow * f64::from(0.05_f32);
-        let pushed = ents.mob(other).is_some()
-            || ents
-                .player(other)
-                .is_some_and(|p| p.survival.simulate_movement);
-        for (id, x, z, on) in [(other, -xa, -za, pushed), (player, xa, za, true)] {
-            if on && let Some(mut e) = ents.store.get_mut(id) {
+        // A player its client moves takes the push in its server-side motion; only one the
+        // server moves itself is synced.
+        let synced = ents
+            .player(other)
+            .is_none_or(|p| p.survival.simulate_movement);
+        for (id, x, z, sync) in [(other, -xa, -za, synced), (player, xa, za, true)] {
+            if let Some(mut e) = ents.store.get_mut(id) {
                 let v = e.as_ref().velocity();
                 e.set_velocity(Vec3::new(v.x + x, v.y, v.z + z));
-                e.set_flags(EntityFlags::HAS_IMPULSE, true);
+                if sync {
+                    e.set_flags(EntityFlags::HAS_IMPULSE, true);
+                }
             }
         }
     }

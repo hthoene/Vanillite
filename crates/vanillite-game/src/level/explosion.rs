@@ -7,7 +7,10 @@
 //! destroyed in random order and their drops spawn after all of them.
 //!
 //! The damage of the living entities hit is queued in [`super::LevelOutput::explosion_hurts`]
-//! for the mob system, which applies it right after the explosion's tick step.
+//! for the mob system, which applies it right after the explosion's tick step. As in Vanilla
+//! the entities take their damage (and die and drop) before the blocks are destroyed: while
+//! damage is queued, the block phase waits for [`Level::finish_explosion`], which the mob
+//! system calls after the damage.
 //!
 //! Items lose health and are destroyed, boats take damage like living entities.
 //!
@@ -58,6 +61,19 @@ pub enum BlockResistance {
     WindCharge,
     /// `RespawnAnchorBlock.explode` in water: the anchor's position resists like water.
     WaterAt(BlockPos),
+}
+
+/// The block phase of an explosion that waits for the damage of the entities it hit
+/// (`interactWithBlocks` and `createFire` after `hurtEntities`).
+#[derive(Debug)]
+pub(super) struct PendingBlast {
+    targets: Vec<BlockPos>,
+    source: Option<EntityId>,
+    indirect: Option<EntityId>,
+    interaction: BlockInteraction,
+    radius: f32,
+    center: Vec3,
+    fire: bool,
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -204,6 +220,8 @@ impl Level {
         style: ExplosionStyle,
         block: Option<(BlockPos, BlockState)>,
     ) -> usize {
+        // The blocks of an earlier explosion nobody applied the damage of.
+        self.finish_explosion();
         let (mut radius, mut interaction, mut style) = (radius, interaction, style);
         if let Some(hooks) = self.hooks_for(vanillite_abi::event::ENTITY_EXPLODE) {
             let Some((r, i, fire)) =
@@ -215,18 +233,13 @@ impl Level {
         }
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
-        let mut targets = self.exploded_positions(center, radius, style.resistance);
+        let targets = self.exploded_positions(center, radius, style.resistance);
         let destroys = matches!(
             interaction,
             BlockInteraction::Destroy | BlockInteraction::DestroyWithDecay
         );
+        let queued = self.output.explosion_hurts.len();
         let hit_players = self.hurt_entities(source, indirect, center, radius, style, destroys);
-        if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, source, indirect, interaction, radius, center);
-        }
-        if style.fire {
-            self.create_fire(&targets);
-        }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
             center,
@@ -236,6 +249,19 @@ impl Level {
             hit_players,
             wind_sound: style.wind_sound,
         });
+        self.pending_blast = Some(PendingBlast {
+            targets,
+            source,
+            indirect,
+            interaction,
+            radius,
+            center,
+            fire: style.fire,
+        });
+        // `hurtEntities` comes before `interactWithBlocks`: the blocks wait for the damage.
+        if self.output.explosion_hurts.len() == queued {
+            self.finish_explosion();
+        }
         count
     }
 
@@ -294,6 +320,27 @@ impl Level {
             _ => interaction,
         };
         Some((radius, interaction, ev.flags & explode_flag::FIRE != 0))
+    }
+
+    /// The block phase of the last explosion (`interactWithBlocks`, `createFire`), once the
+    /// entities it hit took their damage. Does nothing when no explosion waits.
+    pub fn finish_explosion(&mut self) {
+        let Some(mut blast) = self.pending_blast.take() else {
+            return;
+        };
+        if blast.interaction != BlockInteraction::Keep {
+            self.interact_with_blocks(
+                &mut blast.targets,
+                blast.source,
+                blast.indirect,
+                blast.interaction,
+                blast.radius,
+                blast.center,
+            );
+        }
+        if blast.fire {
+            self.create_fire(&blast.targets);
+        }
     }
 
     /// `calculateExplodedPositions`: the blocks the rays reach, in the iteration order of
