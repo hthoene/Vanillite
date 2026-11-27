@@ -32,8 +32,8 @@ use vanillite_protocol::{Error, State};
 pub(crate) enum End {
     /// Malformed or unexpected input (SEC-05/07).
     Protocol(Error),
-    /// The peer closed or the socket failed.
-    Closed,
+    /// The peer closed the connection, or the socket failed with this error.
+    Closed(Option<std::io::ErrorKind>),
     /// A state deadline or the read timeout passed.
     Timeout,
     /// Disconnect with a message to the client.
@@ -65,20 +65,22 @@ enum Source {
 enum Read {
     Bytes,
     Frame(Vec<u8>),
-    Eof,
+    /// Closed by the peer, or the read error.
+    Eof(Option<std::io::ErrorKind>),
 }
 
 impl Source {
     async fn read(&mut self) -> Read {
         match self {
             Self::Tcp { read, decoder, buf } => match read.read(buf).await {
-                Ok(0) | Err(_) => Read::Eof,
+                Ok(0) => Read::Eof(None),
+                Err(e) => Read::Eof(Some(e.kind())),
                 Ok(n) => {
                     decoder.push(buf.get(..n).unwrap_or_default());
                     Read::Bytes
                 }
             },
-            Self::Virtual { rx, .. } => rx.recv().await.map_or(Read::Eof, Read::Frame),
+            Self::Virtual { rx, .. } => rx.recv().await.map_or(Read::Eof(None), Read::Frame),
         }
     }
 
@@ -122,7 +124,13 @@ pub(crate) struct Conn {
     /// Translates the packets of a client of an older version (multi-version layer).
     adapter: Option<vanillite_multiversion::ServerboundHalf>,
     packet_rate: PacketRate,
+    /// When the connection entered play, and the player's name.
+    joined: Option<(Instant, String)>,
 }
+
+/// A connection the client drops this soon after joining logs the last packets it was sent:
+/// the client most likely failed on one of them.
+const EARLY_DROP: Duration = Duration::from_secs(10);
 
 impl Conn {
     pub(crate) fn tcp(
@@ -191,6 +199,7 @@ impl Conn {
                 received: 0,
                 average: 0.0,
             },
+            joined: None,
         }
     }
 
@@ -200,8 +209,9 @@ impl Conn {
             Ok(()) => End::Done,
             Err(e) => e,
         };
+        self.report_drop(&end);
         match end {
-            End::Done | End::Closed => {}
+            End::Done | End::Closed(_) => {}
             End::Kick(reason) => {
                 let reason = *reason;
                 log::debug!(
@@ -225,6 +235,38 @@ impl Conn {
             }
         }
         self.out.close();
+    }
+
+    /// Logs the last packets sent when the client dropped the connection soon after joining
+    /// (warn) or the connection failed (debug). A Java client sends no reason when it gives up
+    /// on a packet it cannot handle, so these are the best hint (#135).
+    fn report_drop(&self, end: &End) {
+        let why = match end {
+            End::Done | End::Kick(_) => return,
+            // The server closed the connection first (a kick from the world).
+            End::Closed(None) if self.out.is_closed() => return,
+            End::Closed(None) => "closed by the client".to_owned(),
+            End::Closed(Some(kind)) => format!("connection error: {kind}"),
+            End::Timeout => "timed out".to_owned(),
+            End::Protocol(e) => format!("invalid packet: {e}"),
+        };
+        match &self.joined {
+            Some((at, name)) if at.elapsed() < EARLY_DROP => log::warn!(
+                "{name} ({}) dropped {:.1}s after joining: {why}; last packets sent: {}",
+                self.addr,
+                at.elapsed().as_secs_f32(),
+                self.out.sent_log().dump()
+            ),
+            _ if log::log_enabled!(log::Level::Debug) && !matches!(end, End::Closed(None)) => {
+                log::debug!(
+                    "{} ({:?}): {why}; last packets sent: {}",
+                    self.addr,
+                    self.state,
+                    self.out.sent_log().dump()
+                );
+            }
+            _ => {}
+        }
     }
 
     fn send_disconnect(&self, reason: &Component) {
@@ -251,12 +293,20 @@ impl Conn {
     fn enter(&mut self, state: State, timeout: Option<Duration>) {
         self.state = state;
         self.source.set_state(state);
+        self.out.sent_log().set_state(state);
         self.deadline = timeout.and_then(|t| Instant::now().checked_add(t));
         self.keepalive.enabled = matches!(state, State::Configuration | State::Play);
         // Like Vanilla's new packet listener per state: a keepalive of the previous state is
-        // not waited for any more.
+        // not waited for any more, and the first one goes out one interval after entering
+        // (`ServerCommonPacketListenerImpl.keepAliveTime`). The client answers a keepalive on
+        // its network thread; one sent at once can arrive before the client switched its
+        // outbound protocol, and the client then disconnects with "Pipeline has no outbound
+        // protocol configured" (#135).
         self.keepalive.pending = None;
-        self.keepalive.next = Instant::now();
+        let now = Instant::now();
+        self.keepalive.next = now
+            .checked_add(self.shared.config.keepalive_interval)
+            .unwrap_or(now);
     }
 
     /// Receives and decodes the next packet and counts it for `rate-limit`.
@@ -340,7 +390,7 @@ impl Conn {
                     self.last_read = Instant::now();
                     match r {
                         Read::Bytes => {}
-                        Read::Eof => return Err(End::Closed),
+                        Read::Eof(e) => return Err(End::Closed(e)),
                         Read::Frame(f) => {
                             let max = match &self.source { Source::Virtual { max, .. } => *max, Source::Tcp { .. } => 0 };
                             if f.len() > max {
@@ -657,7 +707,7 @@ impl Conn {
             .auth_permits
             .acquire()
             .await
-            .map_err(|_| End::Closed)?;
+            .map_err(|_| End::Closed(None))?;
         let auth = Arc::clone(&self.shared.authenticator);
         let ip = self
             .shared
@@ -668,7 +718,7 @@ impl Conn {
             let r = auth.authenticate(&name, &hash, ip);
             (name, r)
         });
-        let (name, result) = task.await.map_err(|_| End::Closed)?;
+        let (name, result) = task.await.map_err(|_| End::Closed(None))?;
         match result {
             AuthResult::Verified(p) if p.name.eq_ignore_ascii_case(&name) => Ok(p),
             AuthResult::Verified(_) | AuthResult::Unverified => Err(kick(Component::translatable(
@@ -807,6 +857,7 @@ impl Conn {
 
     async fn play(&mut self, profile: GameProfile, client_info: ClientInfo) -> Result<()> {
         self.enter(State::Play, None);
+        self.joined = Some((Instant::now(), profile.name.clone()));
         let (tx, rx) = vanillite_protocol::inbound_queue(self.shared.config.max_inbound_packets);
         let joined = Joined {
             profile,
@@ -831,7 +882,7 @@ impl Conn {
         loop {
             let packet = self.recv(ServerboundPlay::decode).await?;
             if self.out.is_closed() {
-                return Err(End::Closed);
+                return Err(End::Closed(None));
             }
             self.rate(packet.cost())?;
             match packet {
