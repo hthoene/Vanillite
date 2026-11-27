@@ -163,6 +163,11 @@ impl PlayerChunks {
         }
     }
 
+    /// Whether the player is an in-process client (test bots).
+    pub fn is_memory_connection(&self) -> bool {
+        self.memory_connection
+    }
+
     /// Where a moving view heads: its centre moved ahead in the direction of its last step
     /// (by up to a third of the view distance). `None` for a view that stands still or jumped.
     /// Chunks nearer to it are sent (and generated) first; Vanilla orders by the centre only,

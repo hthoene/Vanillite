@@ -595,8 +595,73 @@ pub struct PathFinder {
     types: FxHashMap<i64, PathType>,
     collisions: FxHashMap<[u64; 6], bool>,
     boxes: Vec<Aabb>,
+    /// The block states the running search has read.
+    states: StateCache,
     /// Nodes visited by searches since the last [`Self::take_visited`] (for budgets).
     visited: u64,
+}
+
+/// The block states one search has read, by position. A search asks for most blocks many
+/// times (every walkable block looks at its 26 neighbours); the world does not change while
+/// it runs. Vanilla's `PathTypeCache` plays this part.
+#[derive(Debug, Default)]
+struct StateCache {
+    slots: Vec<std::cell::Cell<StateSlot>>,
+    /// The running search; slots of earlier searches do not count.
+    stamp: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StateSlot {
+    pos: BlockPos,
+    stamp: u32,
+    state: u16,
+}
+
+impl StateCache {
+    /// Slots, a power of two (`PathTypeCache.SIZE`).
+    const SIZE: usize = 4096;
+
+    /// Starts a search: everything cached so far is forgotten.
+    fn begin(&mut self) {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.slots.is_empty() || self.stamp == 0 {
+            self.slots.clear();
+            self.slots.resize_with(Self::SIZE, Default::default);
+            self.stamp = 1;
+        }
+    }
+}
+
+/// The blocks of a search: `inner` read once per position.
+struct SearchBlocks<'a> {
+    inner: &'a dyn Blocks,
+    cache: &'a StateCache,
+}
+
+impl Blocks for SearchBlocks<'_> {
+    #[inline]
+    fn state(&self, pos: BlockPos) -> BlockState {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let index = ((pos.as_long() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52) as usize;
+        let slot = &self.cache.slots[index];
+        let cached = slot.get();
+        if cached.stamp == self.cache.stamp && cached.pos == pos {
+            return BlockState(cached.state);
+        }
+        let state = self.inner.state(pos);
+        slot.set(StateSlot {
+            pos,
+            stamp: self.cache.stamp,
+            state: state.0,
+        });
+        state
+    }
+
+    #[inline]
+    fn border(&self) -> Option<&crate::level::border::WorldBorder> {
+        self.inner.border()
+    }
 }
 
 /// One target of a search (`Target`).
@@ -753,7 +818,29 @@ impl PathFinder {
 
     /// `PathFinder.findPath` to the nearest of `targets`: `None` without a start node.
     /// `random` is the mob's random (the flying start node candidates of small mobs).
+    ///
+    /// `blocks` is read once per position, so it must be a read without side effects (the
+    /// level's read view, as Vanilla's `PathNavigationRegion`), never the tick view.
     pub fn find_path(
+        &mut self,
+        blocks: &dyn Blocks,
+        mob: &PathMob,
+        targets: &[BlockPos],
+        search: Search<'_>,
+        random: &mut LegacyRandom,
+    ) -> Option<Path> {
+        let mut states = std::mem::take(&mut self.states);
+        states.begin();
+        let cached = SearchBlocks {
+            inner: blocks,
+            cache: &states,
+        };
+        let path = self.find_path_in(&cached, mob, targets, search, random);
+        self.states = states;
+        path
+    }
+
+    fn find_path_in(
         &mut self,
         blocks: &dyn Blocks,
         mob: &PathMob,

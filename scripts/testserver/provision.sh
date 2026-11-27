@@ -26,6 +26,10 @@
 #   branch go to 30003-30099.
 # - Vanillite 30030: chunk generation test server (own world, flight allowed, all server-side
 #   movement checks off so fast flying is never teleported back; drop-in chunk-test.conf).
+# - Session recording on Vanillite 30001 (drop-in session-recording.conf, #152): every player
+#   session goes to /opt/vanillite/30001/recordings/<start>/ for `cargo xtask parity replay
+#   30001:latest`; vanillite-recordings-prune (at every start and daily) keeps 7 days, at most
+#   40 sessions.
 # - vanillite-incidents (service): saves every crash and suspicious disconnect of the Vanillite
 #   instances and the proxy as a bundle in /var/lib/vanillite-incidents (`vanillite-incidents
 #   list|show`, `cargo xtask testserver incidents`).
@@ -1493,6 +1497,48 @@ systemctl restart vanillite-proxy.service
 sleep 1
 systemctl --no-pager --lines=10 status vanillite-proxy.service || true
 EOF
+
+echo "== session recording (Vanillite 30001, #152)"
+# Every session of the players on 30001 is recorded (world snapshot + packets) for replays
+# against Vanilla (`cargo xtask parity replay 30001:latest`). Old sessions are pruned.
+write_if_changed /usr/local/bin/vanillite-recordings-prune 755 <<'EOF'
+#!/usr/bin/env bash
+# Prunes the session recordings of the Vanillite test servers: older than 7 days, and all but
+# the newest 40 per server.
+set -euo pipefail
+for dir in /opt/vanillite/*/recordings; do
+    [ -d "$dir" ] || continue
+    find "$dir" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} +
+    ls -1d "$dir"/*/ 2>/dev/null | sort -r | tail -n +41 | xargs -r rm -rf
+done
+EOF
+install -d /etc/systemd/system/vanillite@30001.service.d
+write_if_changed /etc/systemd/system/vanillite@30001.service.d/session-recording.conf <<'EOF'
+[Service]
+Environment=VANILLITE_DEBUG__SESSION_RECORDING=true
+ExecStartPre=-/usr/local/bin/vanillite-recordings-prune
+EOF
+write_if_changed /etc/systemd/system/vanillite-recordings-prune.service <<'EOF'
+[Unit]
+Description=Prune the session recordings of the Vanillite test servers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vanillite-recordings-prune
+EOF
+write_if_changed /etc/systemd/system/vanillite-recordings-prune.timer <<'EOF'
+[Unit]
+Description=Prune the session recordings of the Vanillite test servers daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --quiet --now vanillite-recordings-prune.timer
 
 echo "== chunk generation test server (Vanillite 30030: flight, no movement checks)"
 # Players fly fast through new terrain to test chunk generation and loading: the server never
