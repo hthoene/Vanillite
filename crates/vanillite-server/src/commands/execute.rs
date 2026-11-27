@@ -785,7 +785,8 @@ pub(crate) fn summon_for(
                 .and_then(Tag::as_i64)
                 .is_none_or(|v| v != 0),
             BlockPos::new(0, 0, 0),
-            vanillite_game::mob::new_entity_seed(),
+            // The seed the fresh UUID's entity took: one draw of the seed stream per entity.
+            fresh_seed.unwrap_or_else(vanillite_game::mob::new_entity_seed),
         );
         data.time = nbt
             .get("Time")

@@ -19,6 +19,18 @@ fn is_redstone_ore(block: BlockId) -> bool {
     block == ids::REDSTONE_ORE || block == ids::DEEPSLATE_REDSTONE_ORE
 }
 
+/// `LilyPadBlock.entityInside`: a boat breaks the pad.
+pub(super) fn lily_pad_entity_inside(
+    level: &mut Level,
+    _state: vanillite_data::block::BlockState,
+    pos: BlockPos,
+    entity: EntityId,
+) {
+    if level.entities.boat(entity).is_some() {
+        level.destroy_block(pos, true, Some(entity));
+    }
+}
+
 /// `Block.stepOn` of the block at `pos` for an entity standing on it (`applyEffectsFromBlocks`;
 /// the entity is not stepping carefully).
 pub fn step_on(level: &mut Level, pos: BlockPos, entity: EntityId) {

@@ -92,17 +92,34 @@ fn touch_box(pos: BlockPos) -> Aabb {
     Aabb::new(x + 0.0625, y, z + 0.0625, x + 0.9375, y + 0.25, z + 0.9375)
 }
 
-/// `entity instanceof LivingEntity` by type.
+/// `entity instanceof LivingEntity` by type: exactly the types with attributes (players,
+/// armor stands, mannequins, every mob, also the `misc` ones like villagers and golems).
 pub fn is_living(kind: EntityTypeId) -> bool {
-    kind == entity_ids::PLAYER || kind == entity_ids::ARMOR_STAND || kind.info().category != "misc"
+    !kind.info().attributes.is_empty()
 }
 
-/// `entity.isIgnoringBlockTriggers()` together with `EntitySelector.NO_SPECTATORS`.
+/// `entity.isIgnoringBlockTriggers()` together with `EntitySelector.NO_SPECTATORS`: spectators,
+/// bats, markers, displays, interactions, ominous item spawners and marker armor stands.
 pub fn ignores_block_triggers(level: &Level, id: EntityId) -> bool {
-    level
-        .entities
-        .player(id)
-        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator)
+    let ents = &level.entities;
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    match kind {
+        entity_ids::BAT
+        | entity_ids::MARKER
+        | entity_ids::BLOCK_DISPLAY
+        | entity_ids::ITEM_DISPLAY
+        | entity_ids::TEXT_DISPLAY
+        | entity_ids::INTERACTION
+        | entity_ids::OMINOUS_ITEM_SPAWNER => true,
+        entity_ids::ARMOR_STAND => ents
+            .mob(id)
+            .is_some_and(crate::decoration::stand::is_marker),
+        _ => ents
+            .player(id)
+            .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator),
+    }
 }
 
 /// `getEntitiesOfClass(class, box, NO_SPECTATORS && !isIgnoringBlockTriggers).size()`.

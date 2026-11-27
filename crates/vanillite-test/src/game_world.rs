@@ -711,6 +711,7 @@ impl GameWorld {
                             facts,
                             types,
                             raining_at: &raining,
+                            reacts: &|s| level.has_entity_inside(s),
                         },
                     )
                 };

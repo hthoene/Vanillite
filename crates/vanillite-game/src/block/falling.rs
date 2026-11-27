@@ -431,9 +431,17 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
         // `Block.updateEntityMovementAfterFallOn`.
         velocity.y = 0.0;
     }
-    // `applyEffectsFromBlocks`: `stepOn` of the block below (redstone ore lights up).
+    // `applyEffectsFromBlocks`: `stepOn` of the block below (redstone ore lights up), then
+    // `entityInside` of the plates, tripwire and kin on the way.
     if on_ground && super::contact::has_step_on(level.block(on_pos).block()) {
         super::contact::step_on(level, on_pos, id);
+    }
+    if let Some(dims) = level.entities.store.get(id).map(|e| e.dims()) {
+        let way = [crate::survival::inside::Movement::plain(
+            new_pos - moved,
+            new_pos,
+        )];
+        super::plate::entity_inside_along(level, id, dims, &way);
     }
     let Some(data) = level.entities.falling_block(id).copied() else {
         return;

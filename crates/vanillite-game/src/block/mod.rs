@@ -362,6 +362,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     } else if weather::weathers(block) {
         b.random_tick = Some(weather::copper_random_tick);
     }
+    if block == ids::LILY_PAD {
+        b.entity_inside = Some(contact::lily_pad_entity_inside);
+    }
     redstone::fill(block, &mut b);
     piston::fill(block, &mut b);
     rail::fill(block, &mut b);
