@@ -81,6 +81,10 @@ const NO_CHUNK: ChunkPos = ChunkPos::new(i32::MAX, i32::MAX);
 pub trait Executor: Send + Sync {
     /// Queues a job; lower `priority` runs first.
     fn spawn(&self, priority: u32, job: Box<dyn FnOnce() + Send>);
+
+    /// The owner thread starts (`true`) or stops (`false`) waiting for jobs (a synchronous
+    /// load): an executor that holds background work back during ticks must run it now.
+    fn blocked(&self, _blocked: bool) {}
 }
 
 /// Runs every job at once on the calling thread (deterministic tests, `World::headless`).
@@ -473,6 +477,8 @@ pub struct Chunks {
     /// chunks it read, newest first. A read that hits it does not reset an `unknown` ticket.
     /// Only kept while `unknown` tickets exist: a new one clears it.
     chunk_cache: Cell<[ChunkPos; 4]>,
+    /// Synchronous loads that had to wait, and the time the world thread waited for them.
+    sync_loads: (u64, Duration),
 }
 
 /// What the entities of a chunk do (Vanilla's `Visibility`, from the chunk's full status).
@@ -581,6 +587,7 @@ impl Chunks {
             visibility_changes: Vec::new(),
             unknown: FxHashMap::default(),
             chunk_cache: Cell::new([NO_CHUNK; 4]),
+            sync_loads: (0, Duration::ZERO),
         }
     }
 
@@ -705,14 +712,15 @@ impl Chunks {
         (ENTITY_TICKING_LEVEL as i32 - self.settings.simulation_distance).max(0) as u8
     }
 
-    /// Whether a chunk is full and loaded to block ticking (Vanilla's ticking chunk).
+    /// Whether a chunk is full and loaded to block ticking (Vanilla's ticking chunk: its
+    /// ticking future completes once the 3 × 3 chunks around it are full).
     fn is_ticking_chunk(&self, pos: ChunkPos) -> bool {
         self.holders.get(&pos).is_some_and(|h| {
             h.level <= BLOCK_TICKING_LEVEL
                 && h.chunk
                     .as_ref()
                     .is_some_and(|c| c.status == ChunkStatus::Full)
-        })
+        }) && neighbours_full(&self.holders, pos)
     }
 
     /// Whether scheduled ticks run in a chunk (`isPositionTickingWithEntitiesLoaded`).
@@ -910,6 +918,11 @@ impl Chunks {
         }
     }
 
+    /// Whether a chunk is accessible as a full chunk, without touching the chunk cache.
+    pub fn is_full(&self, pos: ChunkPos) -> bool {
+        self.is_full_at(pos)
+    }
+
     /// `ServerChunkCache.getChunkNow(x, z) != null`: whether the chunk is accessible, which
     /// puts it into the chunk cache without touching tickets.
     pub fn chunk_now(&self, pos: ChunkPos) -> bool {
@@ -935,8 +948,14 @@ impl Chunks {
         true
     }
 
+    /// Synchronous loads that had to wait since the start, and the time waited in total.
+    pub fn sync_loads(&self) -> (u64, Duration) {
+        self.sync_loads
+    }
+
     #[cold]
     fn load_blocking(&mut self, pos: ChunkPos) {
+        let start = Instant::now();
         match self.unknown.get(&pos) {
             Some((_, left)) => left.set(1),
             None => {
@@ -951,6 +970,7 @@ impl Chunks {
         for at in std::mem::take(&mut self.due_next_tick) {
             self.enqueue(at);
         }
+        self.slots.executor.blocked(true);
         loop {
             let mut progress = self.drain_done();
             self.apply_level_changes();
@@ -976,10 +996,24 @@ impl Chunks {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
+        self.slots.executor.blocked(false);
         self.check_visibility();
         // The ticket changed levels, which cleared the cache; the chunk goes in.
         self.chunk_cache.set([NO_CHUNK; 4]);
         self.note_read(pos, false);
+        let waited = start.elapsed();
+        self.sync_loads.0 += 1;
+        self.sync_loads.1 += waited;
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "Loaded chunk {}, {} in {} synchronously in {:.1} ms from\n{}",
+                pos.x,
+                pos.z,
+                self.info.dimension,
+                waited.as_secs_f64() * 1000.0,
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
     }
 
     /// `TicketStorage.purgeStaleTickets` for the `unknown` tickets of synchronous loads: each
@@ -2162,17 +2196,19 @@ impl Chunks {
 
     /// Applies results until `done` holds (blocking; flush and shutdown only).
     fn wait_until(&mut self, mut done: impl FnMut(&Self) -> bool) {
+        self.slots.executor.blocked(true);
         loop {
             self.drain_done();
             if done(self) {
-                return;
+                break;
             }
             match self.done_rx.recv_timeout(Duration::from_millis(1)) {
                 Ok(job) => self.apply_done(job),
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
+        self.slots.executor.blocked(false);
     }
 
     // --- Chunk and block access ----------------------------------------------------------
@@ -2603,6 +2639,21 @@ fn tick_check(
                     .as_ref()
                     .is_some_and(|c| c.status == ChunkStatus::Full)
         })
+        && neighbours_full(holders, pos)
+}
+
+/// Whether the eight chunks around `pos` are full (`ChunkMap.prepareTickingChunk` waits for
+/// the 3 × 3 area at `FULL` before a chunk ticks). A ticking chunk's neighbours are within the
+/// accessible level, so a block change next to it never has to load a chunk synchronously.
+fn neighbours_full(holders: &FxHashMap<ChunkPos, Holder>, pos: ChunkPos) -> bool {
+    (-1..=1).all(|dz| {
+        (-1..=1).all(|dx| {
+            (dx == 0 && dz == 0)
+                || holders
+                    .get(&ChunkPos::new(pos.x + dx, pos.z + dz))
+                    .is_some_and(|h| h.status() == Some(ChunkStatus::Full))
+        })
+    })
 }
 
 /// The light sections of a chunk that changed: bit `i` is light section `i` (one below the
