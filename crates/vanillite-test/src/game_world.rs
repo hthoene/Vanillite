@@ -409,6 +409,7 @@ impl GameWorld {
         };
         let mut players = std::mem::take(&mut self.level.entities.players);
         let mut bind_fence = None;
+        let mut start_using = None;
         let result = (|| {
             let player = players.get_mut(row).ok_or("no player data")?;
             if let Some(food) = click.food {
@@ -541,6 +542,7 @@ impl GameWorld {
                     .play
                     .use_item_on(&mut ctx, &packet, &NoSink);
                 bind_fence = player.connection.play.bind_fence.take();
+                start_using = player.connection.play.start_using.take();
             }
             Ok::<bool, String>(false)
         })();
@@ -551,6 +553,13 @@ impl GameWorld {
             &vanillite_game::hooks::NoHooks,
         );
         self.explosion_hurts();
+        // `EntityAction::StartUsing`: the consumable that could not be placed is used.
+        if let Some(hand) = start_using {
+            let network_ids = Arc::clone(&self.network_ids);
+            self.with_env(|_, ents, env, _| {
+                vanillite_game::player::using::start(ents, env, &network_ids, id, hand);
+            });
+        }
         // `EntityAction::BindToFence`: the fence ties the player's leashed mobs.
         if let Some(fence) = bind_fence {
             let network_ids = Arc::clone(&self.network_ids);
