@@ -1025,6 +1025,18 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
     }
     let silent = t.mob_ref().silent;
     let pos = t.block_pos();
+    // The zombie as `CURED_ZOMBIE_VILLAGER` sees it, before it is replaced.
+    let zombie = z
+        .cure_starter
+        .and_then(|starter| t.ents.player_by_uuid(starter))
+        .filter(|&player| {
+            crate::advancements::view::listens(
+                t.ents,
+                player,
+                crate::advancements::trigger::TriggerKind::CURED_ZOMBIE_VILLAGER,
+            )
+        })
+        .and_then(|_| crate::advancements::view::snapshot(t.ents, t.id));
     let Some(id) = super::convert_to(
         t,
         Kind::Villager,
@@ -1067,6 +1079,15 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
     if let Some(starter) = z.cure_starter
         && let Some(player) = t.ents.player_by_uuid(starter)
     {
+        if let Some(zombie) = zombie
+            && let Some(villager) = crate::advancements::view::snapshot(t.ents, id)
+            && let Some(p) = t.ents.player_mut(player)
+        {
+            p.advancements
+                .trigger(crate::advancements::trigger::Event::CuredZombieVillager(
+                    zombie, villager,
+                ));
+        }
         crate::mob::fam::village::villager::reputation_event(
             t.ents,
             crate::mob::fam::village::villager::ReputationEvent::ZombieVillagerCured,

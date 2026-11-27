@@ -44,6 +44,8 @@ pub struct LightningData {
     pub blocks_set_on_fire: i32,
     /// `hitEntities`: every entity a flash struck.
     pub hit_entities: Vec<EntityId>,
+    /// `cause`: the player whose Channeling summoned the bolt.
+    pub cause: Option<EntityId>,
 }
 
 /// What a strike needs to know about the world besides the level.
@@ -119,6 +121,7 @@ pub fn spawn(level: &mut Level, pos: Vec3, visual_only: bool) -> EntityId {
             random,
             blocks_set_on_fire: 0,
             hit_entities: Vec::new(),
+            cause: None,
         },
     )
 }
@@ -326,12 +329,23 @@ pub fn tick(level: &mut Level, id: EntityId, hits: &mut Vec<EntityId>) {
             hits.push(other);
         }
     });
+    let mut cause = None;
     if let Some(bolt) = level.entities.bolt_mut(id) {
         for &h in hits.iter() {
             if !bolt.hit_entities.contains(&h) {
                 bolt.hit_entities.push(h);
             }
         }
+        cause = bolt.cause;
+    }
+    // `CHANNELED_LIGHTNING` of the player who caused the bolt, with the entities of this flash.
+    if let Some(player) = cause {
+        let kind = crate::advancements::trigger::TriggerKind::CHANNELED_LIGHTNING;
+        crate::advancements::view::fire(&mut level.entities, player, kind, |ents| {
+            crate::advancements::trigger::Event::ChanneledLightning(
+                crate::advancements::view::snapshots(ents, hits.as_slice()),
+            )
+        });
     }
 }
 

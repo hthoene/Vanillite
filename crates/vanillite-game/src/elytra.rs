@@ -158,8 +158,12 @@ fn hurt_slot(
         return;
     };
     let d = item::damage(s).saturating_add(1);
-    if d >= item::max_damage(s) {
-        s.shrink(1);
+    if crate::advancements::view::apply_damage(
+        Some(&mut player.advancements),
+        Some(&mut player.stats),
+        s,
+        d,
+    ) {
         play_sound(
             env.out,
             None,
@@ -170,8 +174,6 @@ fn hurt_slot(
             0.8 + env.random.next_float() * 0.4,
             crate::survival::sound_seed(),
         );
-    } else {
-        item::set_damage(s, d);
     }
 }
 
