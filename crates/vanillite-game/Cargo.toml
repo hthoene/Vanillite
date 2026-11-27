@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+vanillite-abi.workspace = true
 vanillite-base.workspace = true
 vanillite-chunk.workspace = true
 vanillite-config.workspace = true
