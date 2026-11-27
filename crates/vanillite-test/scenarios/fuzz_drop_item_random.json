@@ -1,0 +1,88 @@
+{
+  "actions": [
+    {
+      "data": "0000002601040000",
+      "entity": "p",
+      "op": "packet",
+      "packet": "container_click",
+      "tick": 75,
+      "what": "ContainerClick { container_id: 0, state_id: 0, slot: 38, button: 1, input: Throw, changed: [], carried: HashedStack { item: None } }"
+    }
+  ],
+  "description": "A client player throws a stack out of its inventory (container_click THROW). Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "hard",
+  "entities": [
+    {
+      "client": true,
+      "inventory": [
+        [
+          0,
+          "minecraft:bucket",
+          1
+        ],
+        [
+          1,
+          "minecraft:bread",
+          8
+        ],
+        [
+          2,
+          "minecraft:shield",
+          1
+        ],
+        [
+          3,
+          "minecraft:shears",
+          1
+        ],
+        [
+          4,
+          "minecraft:oak_planks",
+          16
+        ],
+        [
+          9,
+          "minecraft:arrow",
+          16
+        ],
+        [
+          10,
+          "minecraft:oak_planks",
+          16
+        ],
+        [
+          15,
+          "minecraft:rail",
+          8
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        3.5,
+        -57.0,
+        8.5
+      ],
+      "rot": [
+        135.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 75,
+  "tier": "fast",
+  "time": 18000
+}

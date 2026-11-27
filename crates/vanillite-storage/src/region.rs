@@ -320,8 +320,12 @@ impl RegionFile {
                     Ok(()) => {
                         let at = (start - run_start) * SECTOR;
                         let pos = Self::pos_of(slot, region);
-                        self.parse(pos, &buffer[at..at + count * SECTOR], count)
-                            .map(Some)
+                        let sectors = &buffer[at..at + count * SECTOR];
+                        let record = self.parse(pos, sectors, count).map(Some);
+                        if record.is_err() && !ahead {
+                            crate::unreadable::keep_raw(&self.dir, pos, sectors);
+                        }
+                        record
                     }
                     Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
                 };

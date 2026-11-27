@@ -513,6 +513,9 @@ pub struct Chunks {
     generated: Vec<ChunkPos>,
     /// Chunks that became live since the last [`Chunks::take_promoted`].
     promoted: Vec<ChunkPos>,
+    /// Chunks whose generation finished since the start of the last [`Chunks::tick`]
+    /// ([`Chunks::generated_now`]).
+    generated_full: Vec<ChunkPos>,
     /// `ServerLevel.noSave` (`/save-off`): unneeded chunks are not unloaded.
     no_save: bool,
     /// The visibility of every chunk that is not hidden.
@@ -642,6 +645,7 @@ impl Chunks {
             post_process: Vec::new(),
             generated: Vec::new(),
             promoted: Vec::new(),
+            generated_full: Vec::new(),
             no_save: false,
             visibility: FxHashMap::default(),
             visibility_check: Vec::new(),
@@ -1129,6 +1133,7 @@ impl Chunks {
     /// With an inline executor this runs until nothing can make progress.
     pub fn tick(&mut self) {
         self.tick += 1;
+        self.generated_full.clear();
         for (pos, chunk, entities) in std::mem::take(&mut self.loaded_between_ticks) {
             self.apply_loaded(pos, Ok(Some(chunk)), entities);
         }
@@ -1143,6 +1148,7 @@ impl Chunks {
                 break;
             }
         }
+        // What changed since the last tick ended (tasks between ticks).
         self.start_relights();
         self.unload();
         self.check_visibility();
@@ -1747,6 +1753,7 @@ impl Chunks {
                     chunk.status = next;
                     if next == ChunkStatus::Full {
                         chunk.generation = None;
+                        self.generated_full.push(pos);
                     }
                     holder.touch(pos, &mut self.changed);
                     if next == ChunkStatus::Spawn {
@@ -1889,6 +1896,12 @@ impl Chunks {
         if ticks {
             self.mark_dirty(pos);
         }
+    }
+
+    /// Whether a chunk that became live since the start of the last [`Chunks::tick`] was
+    /// generated then rather than loaded (plugins' `ChunkLoadEvent.isNewChunk`).
+    pub fn generated_now(&self, pos: ChunkPos) -> bool {
+        self.generated_full.contains(&pos)
     }
 
     /// Chunks that became live since the last call (the game loads their block entities).
@@ -2644,6 +2657,14 @@ impl Chunks {
         self.drain_done();
         self.start_relights();
         self.drain_done();
+    }
+
+    /// Starts the light recomputation around the chunks changed in a tick, at its end: the
+    /// results are applied between ticks ([`Chunks::pump`]) or by the next [`Chunks::tick`],
+    /// so the next tick sees the new light. Vanilla's light thread works the same way: the tick
+    /// loop starts it while it waits for the next tick (`ServerChunkCache.pollTask`).
+    pub fn end_tick(&mut self) {
+        self.start_relights();
     }
 
     /// Starts light recomputation around changed chunks whose 5 × 5 area is loaded.

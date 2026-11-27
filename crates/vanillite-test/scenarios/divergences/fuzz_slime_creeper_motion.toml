@@ -1,0 +1,3 @@
+tick = 9
+cause = "the slime's jump direction at tick 9 differs (its look rotation or target)"
+owner = "gameplay-developer #132"

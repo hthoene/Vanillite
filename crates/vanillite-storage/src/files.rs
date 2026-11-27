@@ -28,10 +28,15 @@ pub fn write_atomic(path: &Path, bytes: &[u8], keep_old: bool) -> io::Result<()>
         fs::create_dir_all(parent)?;
     }
     let tmp = with_suffix(path, ".tmp");
-    let mut file = File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
+    let written = File::create(&tmp).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    if let Err(e) = written {
+        // A full disk leaves a partial temp file; the old file is untouched.
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     if keep_old && path.exists() {
         let old = with_suffix(path, "_old");
         match fs::remove_file(&old) {
@@ -53,22 +58,52 @@ pub fn write_gzip_nbt(path: &Path, root: &Compound, keep_old: bool) -> io::Resul
     write_atomic(path, &Compression::Gzip.compress(&raw)?, keep_old)
 }
 
-/// Reads a gzip-compressed named NBT file; `None` if it does not exist.
+/// Copies a file that cannot be read to `<name>.corrupted-<hash of its bytes>` next to it
+/// (once per content), so a later save over it loses nothing (#167). Vanilla does the same for
+/// player files only (`<uuid>_corrupted_<time>.dat`).
+pub fn keep_damaged(path: &Path, bytes: &[u8]) {
+    let hash = twox_hash::XxHash3_64::oneshot(bytes);
+    let copy = with_suffix(path, &format!(".corrupted-{hash:016x}"));
+    if copy.exists() {
+        return;
+    }
+    match write_atomic(&copy, bytes, false) {
+        Ok(()) => log::warn!(
+            "{} is damaged; a copy is kept as {}",
+            path.display(),
+            copy.display()
+        ),
+        Err(e) => log::error!(
+            "{} is damaged and couldn't be copied to {}: {e}",
+            path.display(),
+            copy.display()
+        ),
+    }
+}
+
+/// Reads a gzip-compressed named NBT file; `None` if it does not exist. A damaged file is an
+/// error and is kept as a copy ([`keep_damaged`]).
 pub fn read_gzip_nbt(path: &Path) -> io::Result<Option<Compound>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let raw = Compression::Gzip.decompress(&bytes)?;
-    vanillite_nbt::read::read_named(&mut raw.as_slice(), &mut Budget::file())
-        .map(Some)
-        .map_err(|e| {
+    let root = Compression::Gzip.decompress(&bytes).and_then(|raw| {
+        vanillite_nbt::read::read_named(&mut raw.as_slice(), &mut Budget::file()).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{}: {e:?}", path.display()),
             )
         })
+    });
+    match root {
+        Ok(root) => Ok(Some(root)),
+        Err(e) => {
+            keep_damaged(path, &bytes);
+            Err(e)
+        }
+    }
 }
 
 /// Reads `path` like [`read_gzip_nbt`], falling back to `<path>_old` when `path` is missing or
@@ -121,6 +156,15 @@ mod tests {
             read_gzip_nbt_or_old(&path).unwrap(),
             Some(Compound::new().with("n", 1))
         );
+        // ... and kept aside once, so the next save over it loses nothing.
+        assert!(read_gzip_nbt(&path).is_err());
+        let kept: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with("level.dat.corrupted-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(fs::read(dir.join(&kept[0])).unwrap(), b"garbage");
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(read_gzip_nbt_or_old(&path).unwrap(), None);
     }

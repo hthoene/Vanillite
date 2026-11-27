@@ -1,10 +1,12 @@
 //! Keeps records that cannot be decoded (#142). The world generates such a chunk again and
 //! later saves it over the old record, so the original bytes are copied aside first:
 //! `<dimension>/unreadable/<stream>.<x>.<z>.<unix ms>.bin`, exactly as stored (Anvil: the
-//! compression byte and the compressed NBT; own format: the zstd frame).
+//! compression byte and the compressed NBT; own format: the zstd frame). Records the region
+//! file itself cannot read (a bad length, a failed checksum) are kept the same way by the file,
+//! as `.raw` with the bytes found on disk ([`keep_raw`]).
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +15,40 @@ use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::store::{ChunkCodec, RecordMeta};
 
 use crate::files;
+
+/// Copies the bytes of a record that the region file in `folder` (`<dimension>/region`,
+/// `entities` or `poi`) cannot read into `<dimension>/unreadable/`, before the chunk is
+/// generated again and saved over it.
+pub fn keep_raw(folder: &Path, pos: ChunkPos, bytes: &[u8]) {
+    let stream = match folder.file_name().and_then(|n| n.to_str()) {
+        Some("region") => "chunk",
+        Some(name) => name,
+        None => "chunk",
+    };
+    let dir = folder.parent().unwrap_or(folder).join("unreadable");
+    write_kept(&dir, stream, pos, bytes, "raw");
+}
+
+fn write_kept(dir: &Path, stream: &str, pos: ChunkPos, bytes: &[u8], extension: &str) {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let path = dir.join(format!("{stream}.{}.{}.{millis}.{extension}", pos.x, pos.z));
+    match files::write_atomic(&path, bytes, false) {
+        Ok(()) => log::warn!(
+            "Kept the unreadable {stream} record of chunk {}, {} in {}",
+            pos.x,
+            pos.z,
+            path.display()
+        ),
+        Err(e) => log::error!(
+            "Couldn't keep the unreadable {stream} record of chunk {}, {} in {}: {e}",
+            pos.x,
+            pos.z,
+            path.display()
+        ),
+    }
+}
 
 /// A codec that copies every record it cannot decode into `dir` before it returns the error.
 #[derive(Debug)]
@@ -35,26 +71,7 @@ impl<C: ChunkCodec> KeepUnreadable<C> {
         result: io::Result<T>,
     ) -> io::Result<T> {
         if result.is_err() {
-            let millis = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis());
-            let path = self
-                .dir
-                .join(format!("{stream}.{}.{}.{millis}.bin", pos.x, pos.z));
-            match files::write_atomic(&path, bytes, false) {
-                Ok(()) => log::warn!(
-                    "Kept the unreadable {stream} record of chunk {}, {} in {}",
-                    pos.x,
-                    pos.z,
-                    path.display()
-                ),
-                Err(e) => log::error!(
-                    "Couldn't keep the unreadable {stream} record of chunk {}, {} in {}: {e}",
-                    pos.x,
-                    pos.z,
-                    path.display()
-                ),
-            }
+            write_kept(&self.dir, stream, pos, bytes, "bin");
         }
         result
     }

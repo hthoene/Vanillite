@@ -138,6 +138,30 @@
 //!   "count": ..., "components": ...}]`) puts stacks into inventory slots first (0-35 the
 //!   items, 36-39 the armour, 40 the off hand).
 //!   `interact`: like `use_item`, but on the entity `target` (`Player.interactOn`).
+//!
+//! Packet-level players (`"client": true` on a player entity) are driven by the serverbound
+//! play packets a real client sends, handled by the real packet handlers on both sides
+//! (Vanilla: `ServerGamePacketListenerImpl`; Vanillite: `Connection::handle_packets`, then the
+//! moves and entity actions like the server world). The harness plays the client's part of the
+//! protocol that does not depend on the scenario: the join (the server teleports the player to
+//! `pos`; the client accepts and sends `player_loaded`), accepting every later server teleport
+//! at the start of a tick, and `client_tick_end` after the packets of each tick. Frames of
+//! client players hold their inventory (`inv`: `[slot, item, count]` of the non-empty slots in
+//! Vanilla's `Inventory` order) and food.
+//!
+//! ```json
+//! {"tick": 3, "op": "packet", "entity": "steve", "packet": "attack", "data": "00",
+//!  "target": "zombie", "what": "Attack { entity_id: 0 }"}
+//! ```
+//!
+//! - Client players may start with `"inventory": [[slot, item, count], ...]` (Vanilla
+//!   `Inventory` indices: 0–8 hotbar, 9–35 main, 36–39 armor, 40 off hand) and a `"food"`
+//!   level.
+//! - `packet`: the Vanilla packet name (play state, serverbound), `data`: its body in hex
+//!   without the packet id. With `target`, the leading VarInt of the body (the entity id of
+//!   `attack`, `interact`, `player_command`, `pick_item_from_entity`) is replaced by the
+//!   network id of the scenario entity `target` when the packet is sent. `what` is a readable
+//!   form for people; nobody reads it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -248,6 +272,58 @@ pub enum OpKind {
     Use,
     /// A player starts to break a block ([`Op::player_use`]).
     Attack,
+    /// A serverbound play packet of a client player ([`Op::packet`]).
+    Packet,
+}
+
+/// A serverbound play packet of a packet-level player (`packet` action).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PacketOp {
+    /// Name of the client player.
+    pub entity: String,
+    /// Vanilla packet name without namespace, e.g. `move_player_pos`.
+    pub packet: String,
+    /// The packet body without its id.
+    pub data: Vec<u8>,
+    /// The scenario entity whose network id replaces the leading VarInt of the body.
+    pub target: Option<String>,
+}
+
+impl PacketOp {
+    /// The body with the network id of the target (if any) in place of its leading VarInt.
+    pub fn body(&self, target_id: Option<i32>) -> Result<Vec<u8>, String> {
+        let Some(id) = target_id else {
+            return Ok(self.data.clone());
+        };
+        let skip = self
+            .data
+            .iter()
+            .position(|b| b & 0x80 == 0)
+            .filter(|&i| i < 5)
+            .ok_or("a packet with a target starts with a VarInt")?;
+        let mut out = Vec::with_capacity(self.data.len() + 4);
+        vanillite_protocol::codec::write_varint(&mut out, id);
+        out.extend_from_slice(&self.data[skip + 1..]);
+        Ok(out)
+    }
+}
+
+/// Hex text of bytes (`data` of packet actions).
+pub fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn from_hex(text: &str) -> Result<Vec<u8>, String> {
+    if !text.len().is_multiple_of(2) {
+        return Err("packet data needs an even number of hex digits".to_owned());
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(text.get(i..i + 2).unwrap_or("x"), 16)
+                .map_err(|_| format!("bad packet data `{text}`"))
+        })
+        .collect()
 }
 
 /// The item use of a `use_item`, `release_item` or `attack_entity` action.
@@ -359,6 +435,13 @@ pub struct EntitySpec {
     pub motion: Option<[f64; 3]>,
     /// The oxidation of a copper golem (`weather_state`), set after spawning.
     pub weather_state: Option<String>,
+    /// A player driven by client packets (`"client": true`).
+    pub client: bool,
+    /// The player's stacks at the start: inventory slot (Vanilla `Inventory` index), item,
+    /// count (`"inventory": [[0, "minecraft:stone", 64]]`).
+    pub inventory: Vec<(usize, String, i32)>,
+    /// The player's food level at the start (`"food"`).
+    pub food: Option<i32>,
 }
 
 impl EntitySpec {
@@ -403,6 +486,8 @@ pub struct Op {
     pub player_use: Option<PlayerUse>,
     /// The dimension of a block op (`None`: the overworld).
     pub dimension: Option<String>,
+    /// The packet of a `packet` action.
+    pub packet: Option<PacketOp>,
 }
 
 /// A `use` action (`ServerPlayerGameMode.useItemOn` with the stack put into the hand) or an
@@ -733,6 +818,30 @@ fn entity(v: &Value) -> Result<EntitySpec, String> {
             .get("weather_state")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        client: v.get("client").and_then(Value::as_bool).unwrap_or(false),
+        inventory: match v.get("inventory").and_then(Value::as_array) {
+            Some(list) => list
+                .iter()
+                .map(|e| {
+                    let slot = e.get(0).and_then(Value::as_u64);
+                    let item = e.get(1).and_then(Value::as_str);
+                    let count = e.get(2).and_then(Value::as_i64);
+                    match (slot, item, count) {
+                        (Some(s), Some(i), Some(c)) if s <= 40 => Ok((
+                            usize::try_from(s).unwrap_or(0),
+                            i.to_owned(),
+                            i32::try_from(c).unwrap_or(1),
+                        )),
+                        _ => Err(format!("bad inventory entry {e}")),
+                    }
+                })
+                .collect::<Result<_, _>>()?,
+            None => Vec::new(),
+        },
+        food: v
+            .get("food")
+            .and_then(Value::as_i64)
+            .and_then(|f| i32::try_from(f).ok()),
         kind,
     })
 }
@@ -755,8 +864,29 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("use") if action => OpKind::Use,
         Some("attack") if action => OpKind::Attack,
         Some("bonemeal") if action => OpKind::Bonemeal,
+        Some("packet") if action => OpKind::Packet,
         o => return Err(format!("unknown op {o:?}")),
     };
+    if kind == OpKind::Packet {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        let tick = v
+            .get("tick")
+            .and_then(Value::as_u64)
+            .and_then(|t| u32::try_from(t).ok())
+            .filter(|&t| t >= 1)
+            .ok_or("an action needs a tick >= 1")?;
+        return Ok(Op {
+            tick,
+            kind,
+            packet: Some(PacketOp {
+                entity: s("entity").ok_or("packet needs an entity")?,
+                packet: s("packet").ok_or("packet needs a packet name")?,
+                data: from_hex(&s("data").unwrap_or_default())?,
+                target: s("target"),
+            }),
+            ..Op::default()
+        });
+    }
     if matches!(kind, OpKind::Use | OpKind::Attack) {
         let tick = v
             .get("tick")

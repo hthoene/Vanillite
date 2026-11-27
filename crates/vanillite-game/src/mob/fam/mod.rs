@@ -90,6 +90,34 @@ pub enum SpawnReason {
     DimensionTravel,
 }
 
+impl SpawnReason {
+    /// The plugin code (`vanillite_abi::spawn_reason`; `LOAD` never fires an event).
+    pub fn abi(self) -> u32 {
+        use vanillite_abi::spawn_reason as r;
+        match self {
+            SpawnReason::Natural => r::NATURAL,
+            SpawnReason::ChunkGeneration => r::CHUNK_GENERATION,
+            SpawnReason::Spawner => r::SPAWNER,
+            SpawnReason::Structure => r::STRUCTURE,
+            SpawnReason::Breeding => r::BREEDING,
+            SpawnReason::MobSummoned => r::MOB_SUMMONED,
+            SpawnReason::Jockey => r::JOCKEY,
+            SpawnReason::Event => r::EVENT,
+            SpawnReason::Conversion => r::CONVERSION,
+            SpawnReason::Reinforcement => r::REINFORCEMENT,
+            SpawnReason::Triggered => r::TRIGGERED,
+            SpawnReason::Bucket => r::BUCKET,
+            SpawnReason::SpawnItemUse => r::SPAWN_ITEM_USE,
+            SpawnReason::Command => r::COMMAND,
+            SpawnReason::Dispenser => r::DISPENSER,
+            SpawnReason::Patrol => r::PATROL,
+            SpawnReason::TrialSpawner => r::TRIAL_SPAWNER,
+            SpawnReason::Load => r::DEFAULT,
+            SpawnReason::DimensionTravel => r::DIMENSION_TRAVEL,
+        }
+    }
+}
+
 /// How a mob that spawns together with another one relates to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Relation {
@@ -425,6 +453,9 @@ pub trait FamilyHooks {
     fn init(_m: &mut MobData) {}
     /// `registerGoals`.
     fn register_goals(_m: &mut MobData) {}
+    /// What the constructor reads of its level: the mob joins a level at this game time and
+    /// time of the overworld day.
+    fn created(_m: &mut MobData, _game_time: i64, _day_time: i64) {}
     /// `finalizeSpawn` (after `Mob.finalizeSpawn`'s follow range bonus and handedness).
     fn finalize_spawn(_m: &mut MobData, _ctx: &mut SpawnContext<'_>) {}
     /// The draws of the kind's `finalizeSpawn` from the mob's own random (`this.random`;
@@ -779,6 +810,10 @@ pub fn init(m: &mut MobData) {
 pub fn register_goals(m: &mut MobData) {
     let kind = m.kind;
     by_family!(kind, (), register_goals(m));
+}
+pub fn created(m: &mut MobData, game_time: i64, day_time: i64) {
+    let kind = m.kind;
+    by_family!(kind, (), created(m, game_time, day_time));
 }
 /// Whether the kind's `finalizeSpawn` makes its own draws before `super.finalizeSpawn`, so
 /// `Mob.finalizeSpawn` (follow range, left-handedness) comes last: the horses

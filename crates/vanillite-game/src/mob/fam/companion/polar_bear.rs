@@ -160,11 +160,18 @@ fn alert_adults(t: &mut Tick<'_, '_>, by: EntityId) {
         if id == t.id {
             continue;
         }
-        if let Some(m) = t.ents.mob_mut(id)
-            && m.kind == Kind::PolarBear
-            && !m.baby
-            && m.target.is_none()
-            && m.is_alive()
+        let alerted = t.ents.mob(id).is_some_and(|m| {
+            m.kind == Kind::PolarBear && !m.baby && m.target.is_none() && m.is_alive()
+        });
+        if alerted
+            && crate::mob::goals::target_event(
+                t.ents,
+                id,
+                None,
+                Some(by),
+                vanillite_abi::target_reason::RETALIATE,
+            )
+            && let Some(m) = t.ents.mob_mut(id)
         {
             m.target = Some(by);
         }

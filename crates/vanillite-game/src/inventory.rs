@@ -212,6 +212,36 @@ impl PlayerInventory {
             && slot.count < item::max_stack_size(slot).min(menu::CONTAINER_MAX)
     }
 
+    /// How many of `stack` [`PlayerInventory::add`] would take (Bukkit's `canHold`).
+    pub fn room_for(&self, stack: &ItemStack) -> i32 {
+        if stack.is_empty() {
+            return 0;
+        }
+        if item::is_damageable(stack) && item::damage(stack) > 0 {
+            return if self.free_slot().is_some() {
+                stack.count
+            } else {
+                0
+            };
+        }
+        let max = item::max_stack_size(stack).min(menu::CONTAINER_MAX);
+        let mut room: i32 = 0;
+        // The off hand only takes more of what it holds (`getSlotWithRemainingSpace`).
+        let offhand = (!self.offhand.is_empty()).then_some(&self.offhand);
+        for slot in self.items.iter().chain(offhand) {
+            if slot.is_empty() {
+                room = room.saturating_add(max);
+            } else if Self::has_remaining_space(slot, stack) {
+                let max = item::max_stack_size(slot).min(menu::CONTAINER_MAX);
+                room = room.saturating_add(max.saturating_sub(slot.count));
+            }
+            if room >= stack.count {
+                return stack.count;
+            }
+        }
+        room
+    }
+
     /// `getFreeSlot`.
     pub fn free_slot(&self) -> Option<usize> {
         self.items.iter().position(ItemStack::is_empty)
@@ -433,6 +463,52 @@ impl PlayerInventory {
         self.craft_result = result.clone();
         self.menu.set_remote(0, &result);
         self.result_updates.push(result);
+    }
+
+    /// The plugin events of a click on the inventory menu before it runs
+    /// (`INVENTORY_CLICK`, `INVENTORY_DRAG`, `CRAFT_ITEM` on the result slot). `false` when
+    /// a plugin cancelled it: the caller skips the click and resends the menu.
+    pub fn click_events(
+        &mut self,
+        hooks: &dyn crate::hooks::GameHooks,
+        player: u128,
+        slot: i16,
+        button: i8,
+        input: ContainerInput,
+    ) -> bool {
+        let info = menu::MenuEventInfo {
+            player,
+            key: "minecraft:inventory",
+            flags: 0,
+        };
+        menu::click_event(self, hooks, info, slot, button, input)
+            && (slot != 0
+                || menu::craft_item_event(
+                    hooks,
+                    info,
+                    &self.craft_result,
+                    &self.menu.carried,
+                    (&self.craft, 2, 2),
+                    slot,
+                    button,
+                    input,
+                ))
+    }
+
+    /// `CRAFT_PREPARE` for a 2 × 2 crafting result computed since the last
+    /// [`Self::flush_result_updates`]: plugins may replace it before it is sent.
+    pub fn craft_prepare_event(&mut self, hooks: &dyn crate::hooks::GameHooks, player: u128) {
+        if self.result_updates.is_empty() {
+            return;
+        }
+        let grid = (&self.craft[..], 2, 2);
+        if let Some(new) = menu::craft_prepare_event(hooks, player, &self.craft_result, grid) {
+            self.menu.set_remote(0, &new);
+            if let Some(last) = self.result_updates.last_mut() {
+                *last = new.clone();
+            }
+            self.craft_result = new;
+        }
     }
 
     /// Sends the crafting results [`Self::craft_changed`] computed

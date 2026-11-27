@@ -7,6 +7,8 @@
 //! `VANILLITE_BLESS=<scenario>,...` (or `all`; set by `cargo xtask golden bless`) writes the
 //! traces of those scenarios as their blessed goldens instead of comparing them.
 //! `VANILLITE_SCENARIO=<scenario>,...` runs only those scenarios.
+//! `VANILLITE_SCENARIO_SHARD=<k>/<n>` runs only part k of n (CI jobs side by side): the
+//! scenarios in name order, every n-th from the k-th on, so the parts together run all of them.
 
 use std::path::PathBuf;
 
@@ -28,13 +30,22 @@ pub fn record(
     for op in &scenario.setup {
         apply_in(world.as_mut(), scenario, op, false)?;
     }
+    world.settle_light();
     world.add_entities(&scenario.entities, scenario.entity_seed)?;
+    world.settle_light();
     let mut trace = Trace::new(scenario.min, scenario.max);
     observe(world.as_mut(), scenario, &mut trace, 0)?;
     for tick in 1..=scenario.ticks {
+        world.client_begin()?;
+        let mut acted = false;
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
             apply_in(world.as_mut(), scenario, op, true)?;
+            acted = true;
         }
+        if acted {
+            world.settle_light();
+        }
+        world.client_end()?;
         world.step();
         observe(world.as_mut(), scenario, &mut trace, tick)?;
     }
@@ -85,6 +96,9 @@ fn apply(
     if let Some(click) = &op.player_use {
         return world.player_use(click);
     }
+    if let Some(packet) = &op.packet {
+        return world.packet(packet);
+    }
     let updates = match op.kind {
         OpKind::Set => false,
         OpKind::Place => true,
@@ -98,6 +112,7 @@ fn apply(
         OpKind::Use | OpKind::Attack => {
             return Err("use without its click".to_owned());
         }
+        OpKind::Packet => return Err("packet without its packet".to_owned()),
         OpKind::Force | OpKind::Unforce => {
             return world.set_forced(&op.chunks, op.kind == OpKind::Force);
         }
@@ -289,6 +304,13 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
     }
 }
 
+/// Parses a `VANILLITE_SCENARIO_SHARD` value `<k>/<n>` into (k, n).
+fn shard(v: &str) -> Option<(usize, usize)> {
+    let (k, n) = v.trim().split_once('/')?;
+    let (k, n) = (k.trim().parse().ok()?, n.trim().parse().ok()?);
+    (1 <= k && k <= n).then_some((k, n))
+}
+
 /// Checks every scenario of a tier; returns one message per failing scenario.
 pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
     let scenarios = match Scenario::all() {
@@ -296,6 +318,17 @@ pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
         Err(e) => return vec![e],
     };
     let only = std::env::var("VANILLITE_SCENARIO").ok();
+    let (part, parts) = match std::env::var("VANILLITE_SCENARIO_SHARD") {
+        Ok(v) => match shard(&v) {
+            Some(s) => s,
+            None => {
+                return vec![format!(
+                    "VANILLITE_SCENARIO_SHARD={v}: expected <k>/<n>, 1 <= k <= n"
+                )];
+            }
+        },
+        Err(_) => (1, 1),
+    };
     let todo: Vec<&Scenario> = scenarios
         .iter()
         .filter(|s| s.tier == tier)
@@ -303,6 +336,9 @@ pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
             only.as_deref()
                 .is_none_or(|o| o.split(',').any(|n| n.trim() == s.name))
         })
+        .enumerate()
+        .filter(|(i, _)| i % parts == part - 1)
+        .map(|(_, s)| s)
         .collect();
     // Scenarios are independent: run them on all cores, report in name order.
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);

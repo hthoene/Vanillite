@@ -141,7 +141,7 @@ impl PlaceArea {
                 }
             }
             for entity in chunk.entities() {
-                level.load_entity(entity.clone());
+                level.load_new_entity(entity.clone(), vanillite_abi::spawn_reason::STRUCTURE);
             }
             for tick in chunk.block_ticks().ticks() {
                 level.schedule_block_tick(tick.pos, tick.kind, 0);

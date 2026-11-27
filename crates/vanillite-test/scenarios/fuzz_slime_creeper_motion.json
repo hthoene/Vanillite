@@ -1,0 +1,87 @@
+{
+  "actions": [
+    {
+      "data": "4009e7c498fe578ac04dcfc720953f254027860ed9c06a1e00",
+      "entity": "p",
+      "op": "packet",
+      "packet": "move_player_pos",
+      "tick": 9,
+      "what": "MovePlayerPos { x: 3.238167948972607, y: -59.62326438224253, z: 11.761832051027394, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    }
+  ],
+  "description": "A slime and a creeper near a client player that moves at tick 9. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "hard",
+  "entities": [
+    {
+      "client": true,
+      "food": 17,
+      "inventory": [
+        [
+          0,
+          "minecraft:leather_boots",
+          1
+        ],
+        [
+          1,
+          "minecraft:bread",
+          8
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        4.5,
+        -60.0,
+        10.5
+      ],
+      "rot": [
+        315.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    },
+    {
+      "name": "m0",
+      "pos": [
+        5.5,
+        -60,
+        7.5
+      ],
+      "rot": [
+        270.0,
+        0.0
+      ],
+      "seed": 530544,
+      "type": "minecraft:creeper"
+    },
+    {
+      "name": "m1",
+      "pos": [
+        1.5,
+        -60,
+        12.5
+      ],
+      "rot": [
+        0.0,
+        0.0
+      ],
+      "seed": 348128,
+      "type": "minecraft:slime"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 9,
+  "tier": "fast",
+  "time": 6000
+}

@@ -30,14 +30,14 @@ const GOLDEN_SRC: &str = "tools/extractor/src/dev/vanillite/extractor/golden";
 /// The key parts shared by all goldens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Key {
-    minecraft: String,
+    pub(crate) minecraft: String,
     jar_sha1: String,
     jar_url: String,
     harness: u32,
 }
 
 impl Key {
-    fn current(root: &Path) -> Result<Self> {
+    pub(crate) fn current(root: &Path) -> Result<Self> {
         let version: toml::Table = read(&root.join("data/vanilla/version.toml"))?
             .parse()
             .map_err(|e| format!("version.toml: {e}"))?;
@@ -504,7 +504,7 @@ pub fn regen(root: &Path, args: &[&str]) -> Result<()> {
 
 /// Packs the recorder's Java agent (`golden/ParityAgent.java`, makes Vanilla's random seeds
 /// reproducible) into a jar with its manifest.
-fn agent_jar(classes: &Path, work_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn agent_jar(classes: &Path, work_dir: &Path) -> Result<PathBuf> {
     let package = "dev/vanillite/extractor/golden";
     let dir = classes.join(package);
     let mut files: Vec<String> = std::fs::read_dir(&dir)
@@ -535,16 +535,16 @@ fn agent_jar(classes: &Path, work_dir: &Path) -> Result<PathBuf> {
 
 /// Harness sources left out because they do not compile against the jar, with javac's output.
 #[derive(Default)]
-struct Broken {
-    files: Vec<PathBuf>,
-    errors: String,
+pub(crate) struct Broken {
+    pub(crate) files: Vec<PathBuf>,
+    pub(crate) errors: String,
 }
 
 /// Compiles the extractor against the pinned jar (downloaded and unpacked if needed); returns
 /// the class directory, the jar class path and the sources left out. A source that does not
 /// compile (a new version changed the API it uses) is left out with everything that needs it,
 /// so the other goldens can still be recorded.
-fn harness(root: &Path, key: &Key) -> Result<(PathBuf, String, Broken)> {
+pub(crate) fn harness(root: &Path, key: &Key) -> Result<(PathBuf, String, Broken)> {
     let work = root.join("target/vanilla").join(&key.minecraft);
     let inner = work
         .join("versions")

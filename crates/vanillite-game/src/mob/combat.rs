@@ -111,6 +111,12 @@ pub fn hurt(
         return false;
     }
     let armor = super::attack::armor_effectiveness(ents, env.types, target, &source);
+    let attackers = if player::wants_attackers(env.hooks) {
+        let uuid_of = |id: Option<EntityId>| id.and_then(|i| ents.store.get(i)).map(|e| e.uuid());
+        (uuid_of(source.cause), uuid_of(source.direct))
+    } else {
+        (None, None)
+    };
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -120,7 +126,15 @@ pub fn hurt(
         return false;
     };
     let was_alive = !data.survival.is_dead_or_dying();
-    let hurt = player::hurt_with(&mut entity, data, env, source, amount, armor.as_deref());
+    let hurt = player::hurt_with(
+        &mut entity,
+        data,
+        env,
+        source,
+        amount,
+        armor.as_deref(),
+        attackers,
+    );
     let died = was_alive && data.survival.is_dead_or_dying();
     view::resolve_combat(ents, env.types, target);
     // `ServerPlayer.die` → `tellNeutralMobsThatIDied`: at once, so an attacker calms down
@@ -273,10 +287,15 @@ pub fn hurt_mob(
     }
     // Plugins see the damage after the kind's own filters.
     if let Some(e) = ents.store.get(target) {
-        match env
-            .hooks
-            .entity_damage(e.uuid(), e.kind().name(), &types.get(kind).id, amount)
-        {
+        let uuid_of = |id: Option<EntityId>| id.and_then(|i| ents.store.get(i)).map(|e| e.uuid());
+        match env.hooks.entity_damage(
+            e.uuid(),
+            e.kind().name(),
+            &types.get(kind).id,
+            amount,
+            uuid_of(source.cause),
+            uuid_of(source.direct),
+        ) {
             Some(changed) => amount = changed,
             None => return false,
         }
@@ -750,7 +769,7 @@ fn die(
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
-    let mut reward = if consumed { reward_of(ents) } else { 0 };
+    let reward = if consumed { reward_of(ents) } else { 0 };
     if consumed && reward > 0 {
         // `CatalystListener.tryAwardItSpreadsAdvancement`: the player that hurt it last, with
         // the damage source before the killing blow (else a player attack).
@@ -793,6 +812,7 @@ fn die(
         },
     ));
     // `dropAllDeathLoot`: the loot table, then the experience.
+    let mut drops = Vec::new();
     if !baby && env.rules.bool(Rule::MOB_DROPS) {
         let mut loot = table_loot(level, ents, env, target, &source)
             .or_else(|| {
@@ -821,24 +841,51 @@ fn die(
                 loot.push(crate::item::ItemStack::new(item, 1));
             }
         }
-        for stack in loot {
-            // `spawnAtLocation`: an item entity with the default random motion.
-            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
-            env.out.push(Effect::DropItem {
-                uuid,
-                pos,
-                velocity,
-                y_rot,
-                pickup_delay: 10,
-                stack,
-            });
-        }
+        drops = loot;
     }
-    if !consumed && killed_by_player && !baby && env.rules.bool(Rule::MOB_DROPS) {
-        reward = reward_of(ents);
-        if reward > 0 {
-            award_experience(env, pos, reward);
+    // `dropExperience`: the reward is drawn after the loot (item entities use their own random).
+    let mut experience =
+        if !consumed && killed_by_player && !baby && env.rules.bool(Rule::MOB_DROPS) {
+            reward_of(ents)
+        } else {
+            0
+        };
+    if let Some(hooks) = ents.hooks_for(vanillite_abi::event::ENTITY_DROPS)
+        && let Some(e) = ents.store.get(target)
+    {
+        let mut ev = crate::hooks::Event {
+            entity: e.uuid(),
+            entity_type: e.kind().name().to_owned(),
+            other: source
+                .cause
+                .and_then(|c| ents.store.get(c))
+                .map_or(0, |c| c.uuid()),
+            key: env.types.get(source.kind).id.clone(),
+            item: crate::hooks::items_snbt(&drops),
+            value: i64::from(experience),
+            to: crate::hooks::Place::at(pos),
+            ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
+        };
+        hooks.event(&mut ev);
+        if let Some(new) = crate::hooks::drops_out(&ev) {
+            drops = new;
         }
+        experience = crate::hooks::experience_value(ev.value);
+    }
+    for stack in drops {
+        // `spawnAtLocation`: an item entity with the default random motion.
+        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        env.out.push(Effect::DropItem {
+            uuid,
+            pos,
+            velocity,
+            y_rot,
+            pickup_delay: 10,
+            stack,
+        });
+    }
+    if experience > 0 {
+        award_experience(env, pos, experience);
     }
     // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
     // last attacking mob.

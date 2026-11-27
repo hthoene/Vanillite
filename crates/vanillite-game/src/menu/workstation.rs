@@ -274,8 +274,34 @@ impl ContainerView<'_> {
         true
     }
 
-    /// `AnvilMenu.createResult`.
+    /// `AnvilMenu.createResult` with `ANVIL_PREPARE` (Bukkit's `PrepareAnvilEvent`): plugins
+    /// may replace the result and change the level cost.
     fn anvil_result(&mut self) {
+        self.anvil_create_result();
+        if self.menu.plugin {
+            return;
+        }
+        let Some(hooks) = self.level.hooks_for(vanillite_abi::event::ANVIL_PREPARE) else {
+            return;
+        };
+        /// The highest level cost a plugin may set.
+        const MAX_COST: i64 = 32767;
+        let mut ev = crate::hooks::Event {
+            entity: self.menu.player,
+            item: crate::hooks::item_snbt(&self.local(2)),
+            value: i64::from(self.menu.data.first().copied().unwrap_or(0)),
+            text: self.menu.item_name.clone().unwrap_or_default(),
+            ..crate::hooks::Event::new(vanillite_abi::event::ANVIL_PREPARE)
+        };
+        hooks.event(&mut ev);
+        if let Some(result) = ev.item_out.as_deref().and_then(crate::hooks::parse_item) {
+            self.set_local(2, result);
+        }
+        self.set_data(0, i32::try_from(ev.value.clamp(0, MAX_COST)).unwrap_or(0));
+    }
+
+    /// `AnvilMenu.createResult`.
+    fn anvil_create_result(&mut self) {
         let Some(d) = data() else {
             return;
         };
@@ -1020,6 +1046,29 @@ impl ContainerView<'_> {
         );
         if list.is_empty() {
             return true;
+        }
+        // Bukkit's `EnchantItemEvent`: a cancelled enchantment takes nothing.
+        if !self.menu.plugin
+            && let Some(hooks) = self.level.hooks_for(vanillite_abi::event::ENCHANT_ITEM)
+        {
+            let mut chosen = vanillite_nbt::Compound::new();
+            for &(id, level) in &list {
+                if let Some(e) = d.enchanting.get(id) {
+                    chosen.insert(e.name.clone(), vanillite_nbt::Tag::Int(level));
+                }
+            }
+            let mut ev = crate::hooks::Event {
+                entity: self.menu.player,
+                pos: self.menu.pos,
+                item: crate::hooks::item_snbt(&item),
+                value: i64::from(option_cost),
+                text: vanillite_nbt::snbt::to_string(&vanillite_nbt::Tag::Compound(chosen)),
+                ..crate::hooks::Event::new(vanillite_abi::event::ENCHANT_ITEM)
+            };
+            hooks.event(&mut ev);
+            if ev.cancelled {
+                return false;
+            }
         }
         // `onEnchantmentPerformed`: levels and a new seed.
         let new_seed = self.level.random().next_int();

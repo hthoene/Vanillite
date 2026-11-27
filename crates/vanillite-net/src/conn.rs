@@ -893,8 +893,12 @@ impl Conn {
                         .send(&play::clientbound::PongResponse { time: p.time });
                 }
                 ServerboundPlay::Unhandled { .. } => {}
-                ServerboundPlay::ResourcePack(p) => self.resource_pack_answer(p.action)?,
                 packet => {
+                    // Resource pack statuses are answered here; the world still gets them
+                    // for the plugins' resource pack events.
+                    if let ServerboundPlay::ResourcePack(p) = &packet {
+                        self.resource_pack_answer(p.action)?;
+                    }
                     seq = seq.wrapping_add(1);
                     if !tx.try_send(Inbound { seq, packet }) {
                         // The world is not draining this connection fast enough (SEC-17).

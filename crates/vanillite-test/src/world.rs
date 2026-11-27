@@ -77,6 +77,13 @@ pub trait ScenarioWorld {
         Err("this world has no bone meal".to_owned())
     }
 
+    /// Recomputes the light of the block changes so far. The runner calls it wherever the
+    /// recorder waits for Vanilla's light thread (`ParityServer.settleLight`): after the setup,
+    /// the entities and the actions of a tick; [`ScenarioWorld::step`] does it for the changes
+    /// of its tick. Not across dimensions: there the recorder does not wait either (chunks
+    /// load meanwhile).
+    fn settle_light(&mut self) {}
+
     /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
     /// a client sees. Worlds without a light engine leave `out` empty.
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
@@ -119,6 +126,23 @@ pub trait ScenarioWorld {
     /// Runs a `throw_potion` action.
     fn player_use(&mut self, _click: &crate::scenario::PlayerUse) -> Result<(), String> {
         Err("this world has no players".to_owned())
+    }
+
+    /// Sends a serverbound play packet of a client player (handled before the next tick).
+    fn packet(&mut self, op: &crate::scenario::PacketOp) -> Result<(), String> {
+        Err(format!(
+            "this world has no client players (`{}`)",
+            op.entity
+        ))
+    }
+    /// The start of a client tick of every client player: accepts pending server teleports.
+    fn client_begin(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    /// The end of a client tick of every client player (`client_tick_end`); the packets of
+    /// the tick are handled.
+    fn client_end(&mut self) -> Result<(), String> {
+        Ok(())
     }
 
     fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {

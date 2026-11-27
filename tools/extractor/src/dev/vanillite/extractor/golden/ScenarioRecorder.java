@@ -135,8 +135,12 @@ public final class ScenarioRecorder {
   }
 
   public static void main(String[] args) throws Exception {
+    if (args.length == 1 && args[0].equals("--serve")) {
+      serve();
+      return;
+    }
     if (args.length == 0 || args.length % 2 != 0) {
-      System.err.println("usage: ScenarioRecorder (<scenario.json> <trace.json>)...");
+      System.err.println("usage: ScenarioRecorder (<scenario.json> <trace.json>)... | --serve");
       System.exit(2);
     }
     SharedConstants.tryDetectVersion();
@@ -152,6 +156,38 @@ public final class ScenarioRecorder {
           "scenario: %s -> %s (%d ms)%n", scenario, out, (System.nanoTime() - start) / 1_000_000);
     }
     // The server leaves worker threads behind; the recording is complete.
+    System.exit(0);
+  }
+
+  /**
+   * {@code --serve} (random scenarios, {@code cargo xtask parity fuzz}): one JVM records many
+   * scenarios. Each input line is {@code <scenario.json>\t<trace.json>}; a failure goes to
+   * {@code <trace.json>.error}; every scenario is answered with {@code @@done <trace.json>}.
+   */
+  private static void serve() throws Exception {
+    // The bootstrap sends System.out to the log; the replies go to the real output.
+    java.io.PrintStream reply = System.out;
+    SharedConstants.tryDetectVersion();
+    Bootstrap.bootStrap();
+    java.io.BufferedReader in =
+        new java.io.BufferedReader(new java.io.InputStreamReader(System.in, StandardCharsets.UTF_8));
+    String line;
+    while ((line = in.readLine()) != null) {
+      String[] parts = line.split("\t");
+      if (parts.length != 2) {
+        continue;
+      }
+      Path out = Path.of(parts[1]);
+      try {
+        String trace =
+            record(JsonParser.parseString(Files.readString(Path.of(parts[0]))).getAsJsonObject());
+        Files.writeString(out, trace, StandardCharsets.UTF_8);
+      } catch (Exception | AssertionError e) {
+        Files.writeString(Path.of(out + ".error"), String.valueOf(e), StandardCharsets.UTF_8);
+      }
+      reply.println("@@done " + out);
+      reply.flush();
+    }
     System.exit(0);
   }
 
@@ -220,6 +256,13 @@ public final class ScenarioRecorder {
           apply(levelOf(server, op.getAsJsonObject()), op.getAsJsonObject(), false);
         }
       }
+      // Light is settled whenever a tick starts (see `ParityServer.settleLight`): after the
+      // setup, the entities, the actions of a tick and the tick. Not across dimensions: chunks
+      // generate there meanwhile, and waiting for their light would let more of them load.
+      boolean settleLight = !dimensions;
+      if (settleLight) {
+        server.settleLight();
+      }
 
       timeAndDifficulty(server, level, scenario);
       entities = new ScenarioEntities(server, server.overworld());
@@ -245,6 +288,9 @@ public final class ScenarioRecorder {
           entities.mob(spec, i);
         }
       }
+      if (settleLight) {
+        server.settleLight();
+      }
       ParityHooks.startStream(scenario.has("entity_seed") ? scenario.get("entity_seed").getAsLong() : seed);
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
@@ -254,10 +300,13 @@ public final class ScenarioRecorder {
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
       for (int tick = 1; tick <= ticks; tick++) {
+        entities.clientBegin();
         if (actions != null) {
+          boolean acted = false;
           for (JsonElement a : actions) {
             JsonObject action = a.getAsJsonObject();
             if (action.get("tick").getAsInt() == tick) {
+              acted = true;
               String op = action.get("op").getAsString();
               if (op.equals("force") || op.equals("unforce")) {
                 for (JsonElement c : action.getAsJsonArray("chunks")) {
@@ -307,13 +356,22 @@ public final class ScenarioRecorder {
                 entities.throwPotion(action);
               } else if (op.equals("use") || op.equals("attack")) {
                 entities.use(action, op.equals("attack"));
+              } else if (op.equals("packet")) {
+                entities.packet(action);
               } else {
                 apply(levelOf(server, action), action, true);
               }
             }
           }
+          if (acted && settleLight) {
+            server.settleLight();
+          }
         }
+        entities.clientEnd();
         server.step();
+        if (settleLight) {
+          server.settleLight();
+        }
         // The connection tick of the players (`ServerGamePacketListenerImpl.tick`), which the
         // server runs after the levels.
         entities.tickPlayers();

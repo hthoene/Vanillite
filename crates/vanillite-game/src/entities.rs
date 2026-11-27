@@ -78,6 +78,12 @@ pub const PERSISTENT_DATA: &str = "BukkitValues";
 /// All entities of a world. Kinds without own data yet only live in the core store.
 #[derive(Debug, Default)]
 pub struct Entities {
+    /// The level's game time now, for what a mob reads of its level when it is created
+    /// (`Villager.registerBrainGoals`); the level keeps it current.
+    pub game_time: i64,
+    /// The time of the overworld day now, like [`Entities::game_time`]; the world sets it with
+    /// each tick's environment.
+    pub day_time: i64,
     /// Core columns, tick order and section index.
     pub store: EntityStore,
     /// Player kind data.
@@ -135,6 +141,22 @@ pub struct Entities {
     /// Decoration kind data: item frames, paintings, cushions, markers, interactions and
     /// displays (see [`crate::decoration`]).
     pub decor: Dense<crate::decoration::Decor>,
+    /// The goals plugins added to mobs, out of line: mobs without any keep Vanilla's goals
+    /// (see [`crate::mob::goals::plugin`]).
+    pub plugin_goals: crate::mob::goals::plugin::PluginGoals,
+    /// The plugin hooks of the world (a copy of the level's), so the code that only holds the
+    /// entities (mob ticks, spawning) reaches them; `None` without plugins.
+    hooks: EntityHooks,
+}
+
+/// The plugin hooks [`Entities`] keeps ([`Entities::hooks_for`]).
+#[derive(Clone, Default)]
+struct EntityHooks(Option<std::sync::Arc<dyn crate::hooks::GameHooks + Send>>);
+
+impl std::fmt::Debug for EntityHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "Hooks" } else { "NoHooks" })
+    }
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -193,6 +215,116 @@ impl Entities {
     /// No entities.
     pub fn new() -> Entities {
         Entities::default()
+    }
+
+    /// Installs the plugin hooks of the world ([`crate::level::Level::set_hooks`]).
+    pub(crate) fn set_hooks(&mut self, hooks: std::sync::Arc<dyn crate::hooks::GameHooks + Send>) {
+        self.hooks = EntityHooks(Some(hooks));
+    }
+
+    /// The plugin hooks when a plugin listens to `kind`, like
+    /// [`crate::level::Level::hooks_for`] for code that only holds the entities.
+    #[inline]
+    pub fn hooks_for(
+        &self,
+        kind: u32,
+    ) -> Option<std::sync::Arc<dyn crate::hooks::GameHooks + Send>> {
+        match &self.hooks.0 {
+            Some(h) if h.wants(kind) => Some(std::sync::Arc::clone(h)),
+            _ => None,
+        }
+    }
+
+    /// `addFreshEntity`'s spawn event (`vanillite_abi::event::ENTITY_SPAWN`) of an entity just
+    /// added with a reason of `vanillite_abi::spawn_reason`; `parent` is the parent or spawner
+    /// entity (0 for none). A cancelled spawn removes the entity again (it was never sent to a
+    /// client). Returns whether the entity stays. Without listeners one branch.
+    pub fn spawned(&mut self, id: EntityId, reason: u32, parent: u128) -> bool {
+        let Some(hooks) = self.hooks_for(vanillite_abi::event::ENTITY_SPAWN) else {
+            return true;
+        };
+        let Some(e) = self.store.get(id) else {
+            return false;
+        };
+        if e.kind() == ids::PLAYER {
+            return true;
+        }
+        let r = e.rot();
+        let mut ev = crate::hooks::Event {
+            entity: e.uuid(),
+            entity_type: e.kind().name().to_owned(),
+            cause: reason,
+            other: parent,
+            to: crate::hooks::Place::looking(e.pos(), r.y_rot, r.x_rot),
+            ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_SPAWN)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            self.despawn(id);
+            return false;
+        }
+        true
+    }
+
+    /// A projectile just added by `shooter` (`Projectile.spawnProjectile`): the spawn event
+    /// (`vanillite_abi::spawn_reason::DEFAULT`), then the launch event
+    /// (`vanillite_abi::event::PROJECTILE_LAUNCH`). Either cancelled removes the projectile
+    /// again. Returns whether it stays. Without listeners two branches.
+    pub fn launched(&mut self, id: EntityId, shooter: Option<EntityId>) -> bool {
+        let shooter = shooter
+            .and_then(|s| self.store.get(s))
+            .map_or(0, |e| e.uuid());
+        if !self.spawned(id, vanillite_abi::spawn_reason::DEFAULT, shooter) {
+            return false;
+        }
+        let Some(hooks) = self.hooks_for(vanillite_abi::event::PROJECTILE_LAUNCH) else {
+            return true;
+        };
+        let Some(e) = self.store.get(id) else {
+            return false;
+        };
+        let mut ev = crate::hooks::Event {
+            entity: e.uuid(),
+            entity_type: e.kind().name().to_owned(),
+            other: shooter,
+            to: crate::hooks::Place::at(e.pos()),
+            ..crate::hooks::Event::new(vanillite_abi::event::PROJECTILE_LAUNCH)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            self.despawn(id);
+            return false;
+        }
+        true
+    }
+
+    /// The transform event (`vanillite_abi::event::ENTITY_TRANSFORM`, `convertTo`) of `id`
+    /// about to become an entity of `into` with the UUID `new_uuid`, for a reason of
+    /// `vanillite_abi::transform_reason`. Returns whether it may (`false`: it stays as it is).
+    /// Without listeners one branch.
+    pub fn transforming(
+        &self,
+        id: EntityId,
+        into: EntityTypeId,
+        new_uuid: u128,
+        reason: u32,
+    ) -> bool {
+        let Some(hooks) = self.hooks_for(vanillite_abi::event::ENTITY_TRANSFORM) else {
+            return true;
+        };
+        let Some(e) = self.store.get(id) else {
+            return true;
+        };
+        let mut ev = crate::hooks::Event {
+            entity: e.uuid(),
+            entity_type: e.kind().name().to_owned(),
+            key: into.name().to_owned(),
+            other: new_uuid,
+            cause: reason,
+            ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TRANSFORM)
+        };
+        hooks.event(&mut ev);
+        !ev.cancelled
     }
 
     /// Adds a player entity.
@@ -654,6 +786,10 @@ impl Entities {
         }
         self.tags.remove(&id);
         self.persistent.remove(&id);
+        if !self.plugin_goals.is_empty() {
+            // Dropping them frees the plugins' data.
+            self.plugin_goals.remove_mob(id);
+        }
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
             if removed.kind == ids::ENDER_DRAGON {

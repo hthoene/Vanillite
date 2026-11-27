@@ -1,0 +1,3 @@
+tick = 131
+cause = "Vanilla breaks the grass block at STOP_DESTROY_BLOCK (dirt drops), Vanillite keeps it (destroy progress of the player)"
+owner = "gameplay-developer #132"

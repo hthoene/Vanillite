@@ -5,6 +5,8 @@
 
 use std::sync::OnceLock;
 
+use vanillite_abi::event::{BLOCK_BURN, BLOCK_FADE, BLOCK_SPREAD};
+use vanillite_abi::ignite_cause;
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_config::GameMode;
@@ -12,6 +14,7 @@ use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState, flags, ids};
 use vanillite_data::fluid::FluidState;
 use vanillite_worldgen::behaviour::{PosExt, StateExt, fire_state_with_age, tags};
 
+use super::hook_events as he;
 use crate::level::{Level, update};
 
 /// Which `#infiniburn_*` tag a dimension's `infiniburn` names: blocks fire burns on forever.
@@ -383,7 +386,9 @@ pub(super) fn tick(level: &mut Level, mut state: BlockState, pos: BlockPos) {
         && is_near_rain(level, pos)
         && level.random().next_float() < 0.2 + age as f32 * 0.03
     {
-        level.remove_block(pos, false);
+        if he::allows(level, BLOCK_FADE, pos, BlockState::AIR) {
+            level.remove_block(pos, false);
+        }
         return;
     }
     let new_age = (age + level.random().next_int_bounded(3) / 2).min(15);
@@ -397,7 +402,9 @@ pub(super) fn tick(level: &mut Level, mut state: BlockState, pos: BlockPos) {
     }
     if !infiniburn {
         if !is_valid_fire_location(level, pos) {
-            if !sturdy_below(level, pos) || age > 3 {
+            if (!sturdy_below(level, pos) || age > 3)
+                && he::allows(level, BLOCK_FADE, pos, BlockState::AIR)
+            {
                 level.remove_block(pos, false);
             }
             return;
@@ -406,7 +413,9 @@ pub(super) fn tick(level: &mut Level, mut state: BlockState, pos: BlockPos) {
             && level.random().next_int_bounded(4) == 0
             && !can_burn(level.block(pos.below()))
         {
-            level.remove_block(pos, false);
+            if he::allows(level, BLOCK_FADE, pos, BlockState::AIR) {
+                level.remove_block(pos, false);
+            }
             return;
         }
     }
@@ -441,8 +450,11 @@ pub(super) fn tick(level: &mut Level, mut state: BlockState, pos: BlockPos) {
                     && (!level.is_raining() || !is_near_rain(level, test))
                 {
                     let spread_age = (age + level.random().next_int_bounded(5) / 4).min(15);
+                    if !he::may_ignite(level, test, ignite_cause::SPREAD, 0, 0) {
+                        continue;
+                    }
                     let fire = fire_state_with_age(&*level, test, spread_age);
-                    level.set_block_and_update(test, fire);
+                    he::set_block_and_update(level, BLOCK_SPREAD, test, fire);
                 }
             }
         }
@@ -455,6 +467,18 @@ fn check_burn_out(level: &mut Level, pos: BlockPos, chance: i32, age: i32) {
     let odds = burn_odds(old);
     if level.random().next_int_bounded(chance) >= odds {
         return;
+    }
+    if let Some(hooks) = level.hooks_for(BLOCK_BURN) {
+        let mut ev = crate::hooks::Event {
+            pos,
+            key: he::state_text(old),
+            state: Some(old),
+            ..crate::hooks::Event::new(BLOCK_BURN)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return;
+        }
     }
     if level.random().next_int_bounded(age + 10) < 5 && !level.is_raining_at(pos) {
         let new_age = (age + level.random().next_int_bounded(5) / 4).min(15);
@@ -489,8 +513,10 @@ pub fn lava_random_tick(level: &mut Level, pos: BlockPos, _fluid: FluidState) {
                     .into_iter()
                     .any(|d| ignited_by_lava(level, test.relative(d)))
                 {
-                    let fire = base_fire_state(level, test);
-                    level.set_block_and_update(test, fire);
+                    if he::may_ignite(level, test, ignite_cause::LAVA, 0, 0) {
+                        let fire = base_fire_state(level, test);
+                        level.set_block_and_update(test, fire);
+                    }
                     return;
                 }
             } else if tags().blocks.blocks_lava_fire_spread.contains(state) {
@@ -505,7 +531,10 @@ pub fn lava_random_tick(level: &mut Level, pos: BlockPos, _fluid: FluidState) {
             if !lava_loaded(level, test) {
                 return;
             }
-            if level.block(test.above()).is_air() && ignited_by_lava(level, test) {
+            if level.block(test.above()).is_air()
+                && ignited_by_lava(level, test)
+                && he::may_ignite(level, test.above(), ignite_cause::LAVA, 0, 0)
+            {
                 // Vanilla computes the fire for `test`, not for the block above it.
                 let fire = base_fire_state(level, test);
                 level.set_block_and_update(test.above(), fire);

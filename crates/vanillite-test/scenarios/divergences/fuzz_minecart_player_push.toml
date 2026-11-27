@@ -1,0 +1,3 @@
+tick = 27
+cause = "the minecart gets half of Vanilla's push from the player (motion 0.024 instead of 0.048 in x)"
+owner = "gameplay-developer #132"

@@ -229,6 +229,9 @@ impl FamilyHooks for Hooks {
     fn register_goals(m: &mut MobData) {
         by_kind!(m.kind, register_goals(m))
     }
+    fn created(m: &mut MobData, game_time: i64, day_time: i64) {
+        by_kind!(m.kind, created(m, game_time, day_time))
+    }
     fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         by_kind!(m.kind, finalize_spawn(m, ctx))
     }

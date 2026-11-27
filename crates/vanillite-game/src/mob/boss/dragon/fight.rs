@@ -493,6 +493,12 @@ impl DragonFight {
             },
             mob,
         );
+        if !level
+            .entities
+            .spawned(id, vanillite_abi::spawn_reason::EVENT, 0)
+        {
+            return None;
+        }
         self.dragon_uuid = Some(uuid);
         self.dirty = true;
         Some(id)
@@ -894,13 +900,19 @@ pub fn use_end_crystal(level: &mut Level, uuid: u128, on: BlockPos) -> bool {
         Vec3::new(x + 0.5, y, z + 0.5),
     );
     new.rot = Rotation::default();
-    level.entities.spawn_special(
+    let id = level.entities.spawn_special(
         new,
         SpecialData::EndCrystal(Box::new(super::Crystal {
             show_bottom: false,
             ..super::Crystal::default()
         })),
     );
+    if !level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+    {
+        return false;
+    }
     let place = crate::level::game_event::events().entity_place;
     level.game_event_at(None, place, above);
     level.output().try_dragon_respawn = true;

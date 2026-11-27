@@ -63,6 +63,19 @@ pub(crate) fn plan(
         .collect();
     let wanted = configured(config);
     let error = |e: std::io::Error| StartError::Io(format!("world \"{level_name}\": {e}"));
+    let backup = convert_settings(config, dir, 1).backup;
+    if let format::Interrupted::Pending(to) =
+        format::finish_interrupted(dir, &level_dir, &dimension_dirs, backup.as_deref())
+            .map_err(error)?
+    {
+        log::warn!(
+            "An interrupted conversion of world \"{level_name}\" to the {} format is \
+             unfinished; the world stays in its format until `vanillite convert --to {}` (or \
+             storage.convert-world) runs it again",
+            to.name(),
+            to.name()
+        );
+    }
     let found = format::detect(&level_dir, &dimension_dirs).map_err(error)?;
     if found == Some(WorldFormat::Vanillite) {
         // An own-format world of an older version: records are upgraded as they are saved.
@@ -180,6 +193,13 @@ fn open_offline(dir: &Path) -> Result<Offline, StartError> {
     let packs = crate::net::load_packs(&crate::net::VanillaPack::Download, dir)?;
     crate::world_setup::install_facts(packs.as_ref())?;
     let layout = layout(&config);
+    let dimension_dirs: Vec<PathBuf> = DIMENSIONS
+        .iter()
+        .map(|d| layout.dimension_dir(dir, &level_name, d))
+        .collect();
+    let backup = convert_settings(&config, dir, 1).backup;
+    format::finish_interrupted(dir, &level_dir, &dimension_dirs, backup.as_deref())
+        .map_err(|e| StartError::Io(format!("world \"{level_name}\": {e}")))?;
     let infos = DIMENSIONS
         .iter()
         .map(|d| {
@@ -223,18 +243,23 @@ pub fn convert_world(dir: &Path, to: Option<WorldFormat>) -> Result<ConvertStats
     format::convert_world(dir, &level_dir, &offline.infos, to, &settings).map_err(error)
 }
 
-/// `vanillite export <target>`: writes a Vanilla (Anvil) copy of an own-format world into
-/// `target`. The server must not run.
-pub fn export_world(dir: &Path, target: &Path) -> Result<ConvertStats, StartError> {
+/// `vanillite export <target> [--to <format>]`: writes a copy of the world in `to` (default
+/// Anvil, Vanilla's format) into `target`. The server must not run.
+pub fn export_world(
+    dir: &Path,
+    target: &Path,
+    to: WorldFormat,
+) -> Result<ConvertStats, StartError> {
     let offline = open_offline(dir)?;
     let level_dir = dir.join(&offline.level_name);
     let dirs: Vec<PathBuf> = offline.infos.iter().map(|i| i.dir.clone()).collect();
     let error =
         |e: std::io::Error| StartError::Io(format!("world \"{}\": {e}", offline.level_name));
-    if format::detect(&level_dir, &dirs).map_err(error)? != Some(WorldFormat::Vanillite) {
+    if format::detect(&level_dir, &dirs).map_err(error)? == Some(to) {
         return Err(StartError::Io(format!(
-            "world \"{}\" is an Anvil world already; copy its folder",
-            offline.level_name
+            "world \"{}\" is in the {} format already; copy its folder",
+            offline.level_name,
+            to.name()
         )));
     }
     let mut levels = vec![level_dir];
@@ -254,7 +279,7 @@ pub fn export_world(dir: &Path, target: &Path) -> Result<ConvertStats, StartErro
     let mut settings = convert_settings(&offline.config, dir, threads());
     settings.anvil_compression = Compression::Deflate;
     settings.backup = None;
-    format::export_world(dir, &levels, &offline.infos, target, &settings).map_err(error)
+    format::export_world(dir, &levels, &offline.infos, target, to, &settings).map_err(error)
 }
 
 /// `vanillite upgrade-world`: rewrites every chunk of an own-format world written by an older

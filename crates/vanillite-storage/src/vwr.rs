@@ -23,7 +23,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use vanillite_base::ChunkPos;
 use vanillite_chunk::store::RecordMeta;
@@ -134,6 +134,8 @@ pub struct VwrFile {
     file: File,
     /// The file name, for the backup lock ([`gate`]).
     name: String,
+    /// The folder of the file, for records kept when they are unreadable.
+    dir: PathBuf,
     entries: Vec<Entry>,
     /// Generation of the newest valid index copy on disk and which copy it is.
     generation: u64,
@@ -173,6 +175,7 @@ impl VwrFile {
         let mut region = VwrFile {
             file,
             name,
+            dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
             entries: vec![Entry::default(); ENTRIES],
             generation: 0,
             active: 1,
@@ -205,10 +208,10 @@ impl VwrFile {
         }
         let version = u32::from_le_bytes(head[4..8].try_into().unwrap());
         if version != FORMAT_VERSION {
-            return Err(invalid(format!(
-                "{}: format version {version} is not supported",
-                region.name
-            )));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("{}: format version {version} is not supported", region.name),
+            ));
         }
         let copies = [0, 1].map(|copy| {
             let at = index_offset(copy) as usize;
@@ -499,7 +502,18 @@ impl VwrFile {
                         if checksum(record) == entry.meta.checksum {
                             Ok((entry.meta, record.to_vec()))
                         } else {
-                            self.older_version(slot, region)
+                            let older = self.older_version(slot, region);
+                            if older.is_err() && !ahead {
+                                crate::unreadable::keep_raw(
+                                    &self.dir,
+                                    ChunkPos::new(
+                                        region.0 * 32 + (slot & 31) as i32,
+                                        region.1 * 32 + (slot / 32) as i32,
+                                    ),
+                                    record,
+                                );
+                            }
+                            older
                         }
                     }
                     Err(e) => Err(io::Error::new(e.kind(), e.to_string())),

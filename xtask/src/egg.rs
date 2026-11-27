@@ -1,10 +1,14 @@
-//! `cargo xtask egg`: the Pterodactyl egg `deploy/pterodactyl/egg-vanillite.json`, generated
-//! from the typed configuration schema of `vanillite-config`.
+//! `cargo xtask egg`: the two Pterodactyl eggs, generated from the typed configuration schema of
+//! `vanillite-config`: the advanced egg `deploy/pterodactyl/egg-vanillite.json` with every
+//! setting and the simple egg `deploy/pterodactyl/egg-vanillite-simple.json` with only
+//! [`SIMPLE`]. Both start the same images the same way and name a setting with the same
+//! variable, so a server can switch between them.
 //!
 //! Every `server.properties` key marked for panels and every rule of `vanillite.toml` (except
 //! the `debug` helpers) becomes an egg variable named like its `VANILLITE_<KEY>` override. The
 //! curated [`ESSENTIALS`] come first, in their order and with plain names; every other variable
-//! follows, grouped by area ([`AREAS`]) with the area as name prefix. Rule variables keep the
+//! follows, grouped by area ([`AREAS`]) with the area as name prefix. The simple egg holds only
+//! [`SIMPLE`]; what it leaves out keeps the profile's value. Rule variables keep the
 //! profile's value until a value is entered in the panel: text fields stay empty, dropdowns of
 //! booleans and enumerations offer `default` (both are ignored by the server).
 //!
@@ -24,8 +28,30 @@ use vanillite_config::{
 
 use crate::Result;
 
-/// The egg, relative to the repository root.
+/// The egg with every setting, relative to the repository root.
 pub const EGG_PATH: &str = "deploy/pterodactyl/egg-vanillite.json";
+/// The egg with only the basic settings, relative to the repository root.
+pub const SIMPLE_EGG_PATH: &str = "deploy/pterodactyl/egg-vanillite-simple.json";
+
+/// Which of the two eggs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Egg {
+    /// Every setting ([`EGG_PATH`]).
+    Advanced,
+    /// Only [`SIMPLE`] ([`SIMPLE_EGG_PATH`]).
+    Simple,
+}
+
+impl Egg {
+    pub const ALL: [Egg; 2] = [Egg::Advanced, Egg::Simple];
+
+    pub fn path(self) -> &'static str {
+        match self {
+            Egg::Advanced => EGG_PATH,
+            Egg::Simple => SIMPLE_EGG_PATH,
+        }
+    }
+}
 /// The image repository on Docker Hub (published by `.github/workflows/docker.yml`).
 const REPOSITORY: &str = "thoenehannes/vanillite";
 /// The generated Minecraft version, relative to the repository root.
@@ -126,6 +152,87 @@ const ESSENTIALS: &[Essential] = &[
     },
 ];
 
+/// The settings of the simple egg, in the order the panel shows them, with descriptions for
+/// admins without technical background. The variables are the same as in the advanced egg.
+const SIMPLE: &[Essential] = &[
+    Essential {
+        key: "eula",
+        name: "Accept the Minecraft EULA",
+        description: "Switch on to accept the Minecraft EULA (https://aka.ms/MinecraftEULA). \
+                      The server only starts after you accept it.",
+    },
+    Essential {
+        key: "profile",
+        name: "Server Type (Profile)",
+        description: "How the server plays. vanilla: exactly like the official Minecraft server \
+                      (recommended). performance: faster with many players, a few small \
+                      differences to Vanilla. paper or spigot: behaves like a Paper or Spigot \
+                      server. technical: like Vanilla, with extras for technical players.",
+    },
+    Essential {
+        key: "motd",
+        name: "Server Name (MOTD)",
+        description: "The text players see below your server in their multiplayer list.",
+    },
+    Essential {
+        key: "max-players",
+        name: "Max Players",
+        description: "How many players can play at the same time.",
+    },
+    Essential {
+        key: "gamemode",
+        name: "Game Mode",
+        description: "The game mode of new players: survival, creative, adventure or spectator.",
+    },
+    Essential {
+        key: "difficulty",
+        name: "Difficulty",
+        description: "How hard the game is: peaceful (no monsters), easy, normal or hard.",
+    },
+    Essential {
+        key: "hardcore",
+        name: "Hardcore",
+        description: "Switch on for hardcore: always hard, and players have only one life.",
+    },
+    Essential {
+        key: "white-list",
+        name: "Whitelist",
+        description: "Switch on so that only players you add with /whitelist add <name> in the \
+                      console can join.",
+    },
+    Essential {
+        key: "online-mode",
+        name: "Online Mode",
+        description: "Keep on: only players with a real Minecraft account can join. Switch off \
+                      only if your server runs behind a proxy such as Velocity.",
+    },
+    Essential {
+        key: "level-seed",
+        name: "World Seed",
+        description: "The seed of a new world. Leave empty for a random world. Has no effect \
+                      once the world exists.",
+    },
+    Essential {
+        key: "view-distance",
+        name: "View Distance",
+        description: "How far players can see, in chunks (2 to 32). 10 is the Minecraft \
+                      default; lower values save memory and CPU.",
+    },
+    Essential {
+        key: "storage.world-format",
+        name: "World Format",
+        description: "How the world is saved for new worlds. vanillite: smaller and faster \
+                      (recommended). anvil: the files of the official Minecraft server. An \
+                      existing world keeps its format.",
+    },
+    Essential {
+        key: "bedrock.enabled",
+        name: "Bedrock Players",
+        description: "Switch on to let players of Minecraft Bedrock Edition (phones, consoles, \
+                      Windows) join on the same port.",
+    },
+];
+
 /// The order of the areas after the essentials; areas not listed follow in catalogue order.
 const AREAS: &[&str] = &[
     "Server",
@@ -169,10 +276,12 @@ echo \"Nothing to install.\"
 pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     match args {
         [] => {
-            let egg = render(root)?;
-            check_format(&egg)?;
-            crate::write(&root.join(EGG_PATH), &egg)?;
-            println!("wrote {EGG_PATH}");
+            for kind in Egg::ALL {
+                let egg = render(root, kind)?;
+                check_format(&egg)?;
+                crate::write(&root.join(kind.path()), &egg)?;
+                println!("wrote {}", kind.path());
+            }
             // The configuration reference comes from the same schema.
             crate::configdoc::run(root, &[])
         }
@@ -183,17 +292,47 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     }
 }
 
-/// Fails if the committed egg differs from the generated one or breaks the egg format, or if
-/// the configuration reference is stale.
+/// Fails if a committed egg differs from the generated one or breaks the egg format, if the
+/// eggs differ in what they share, or if the configuration reference is stale.
 pub fn check(root: &Path) -> Result<()> {
     crate::configdoc::check(root)?;
-    let egg = render(root)?;
-    check_format(&egg)?;
-    let committed = crate::read(&root.join(EGG_PATH)).unwrap_or_default();
-    if committed != egg {
-        return Err(format!(
-            "{EGG_PATH} is out of date with the configuration schema; run `cargo xtask egg`"
-        ));
+    let mut eggs = Vec::new();
+    for kind in Egg::ALL {
+        let egg = render(root, kind)?;
+        check_format(&egg)?;
+        let path = kind.path();
+        let committed = crate::read(&root.join(path)).unwrap_or_default();
+        if committed != egg {
+            return Err(format!(
+                "{path} is out of date with the configuration schema; run `cargo xtask egg`"
+            ));
+        }
+        eggs.push(serde_json::from_str::<Value>(&egg).map_err(|e| e.to_string())?);
+    }
+    check_switchable(&eggs[0], &eggs[1])
+}
+
+/// A server switches between the eggs without changes: the same images, startup and stop, and
+/// every variable of the simple egg exists in the advanced one, which accepts its default.
+fn check_switchable(advanced: &Value, simple: &Value) -> Result<()> {
+    for pointer in ["/docker_images", "/startup", "/config", "/features"] {
+        if advanced.pointer(pointer) != simple.pointer(pointer) {
+            return Err(format!("eggs: {pointer} differs between the two eggs"));
+        }
+    }
+    let vars =
+        |egg: &Value| -> Vec<Value> { egg["variables"].as_array().cloned().unwrap_or_default() };
+    let advanced = vars(advanced);
+    for var in vars(simple) {
+        let env = &var["env_variable"];
+        let other = advanced
+            .iter()
+            .find(|v| v["env_variable"] == *env)
+            .ok_or_else(|| format!("eggs: {env} is only in the simple egg"))?;
+        let default = var["default_value"].as_str().unwrap_or_default();
+        validate(other["rules"].as_str().unwrap_or_default(), default).map_err(|e| {
+            format!("eggs: the simple egg's default {default:?} of {env}: advanced egg {e}")
+        })?;
     }
     Ok(())
 }
@@ -215,7 +354,7 @@ struct Entry {
 }
 
 /// The egg as pretty JSON with a trailing newline.
-pub fn render(root: &Path) -> Result<String> {
+pub fn render(root: &Path, kind: Egg) -> Result<String> {
     let mut entries = vec![
         Entry {
             key: "eula".to_owned(),
@@ -291,8 +430,12 @@ pub fn render(root: &Path) -> Result<String> {
     rule_entries::<ServerRules>(&mut entries, "");
     rule_entries::<WorldRules>(&mut entries, " Applies to every world.");
 
+    let essentials = match kind {
+        Egg::Advanced => ESSENTIALS,
+        Egg::Simple => SIMPLE,
+    };
     let mut variables = Vec::with_capacity(entries.len());
-    for essential in ESSENTIALS {
+    for essential in essentials {
         let i = entries
             .iter()
             .position(|e| e.key == essential.key)
@@ -314,6 +457,9 @@ pub fn render(root: &Path) -> Result<String> {
     // Stable: the catalogue order stays inside an area.
     let rank = |area: &str| AREAS.iter().position(|a| *a == area).unwrap_or(AREAS.len());
     entries.sort_by_key(|e| rank(&e.area));
+    if kind == Egg::Simple {
+        entries.clear();
+    }
     for entry in &entries {
         variables.push(variable(
             &format!("{}: {}", entry.area, entry.name),
@@ -324,18 +470,32 @@ pub fn render(root: &Path) -> Result<String> {
         ));
     }
 
+    let (name, description) = match kind {
+        Egg::Advanced => (
+            "Vanillite",
+            "Vanillite: a Minecraft Java Edition server written in Rust that behaves like \
+             Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the \
+             essential settings first, then every server.properties and vanillite.toml \
+             setting, grouped by area. For only the basic settings use the egg \
+             \"Vanillite (Simple)\". https://github.com/hthoene/Vanillite",
+        ),
+        Egg::Simple => (
+            "Vanillite (Simple)",
+            "Vanillite: a Minecraft Java Edition server that plays exactly like the official \
+             one, but is faster and needs less memory. This egg shows only the basic \
+             settings; everything else uses the defaults of the chosen server type. For every \
+             setting use the egg \"Vanillite\" (servers can switch between the two). \
+             https://github.com/hthoene/Vanillite",
+        ),
+    };
     let config = |value: Value| Value::String(serde_json::to_string(&value).unwrap_or_default());
     let egg = json!({
         "_comment": "DO NOT EDIT: generated from the vanillite-config schema by `cargo xtask egg`",
         "meta": { "version": "PTDL_v2", "update_url": null },
         "exported_at": "2026-11-24T00:00:00+00:00",
-        "name": "Vanillite",
+        "name": name,
         "author": "hthoene@users.noreply.github.com",
-        "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves \
-                        like Vanilla in game; fast, multithreaded and low on RAM. The startup \
-                        page shows the essential settings first, then every server.properties \
-                        and vanillite.toml setting, grouped by area. \
-                        https://github.com/hthoene/Vanillite",
+        "description": description,
         "features": ["eula"],
         "docker_images": docker_images(root)?,
         "file_denylist": [],
@@ -703,7 +863,8 @@ fn default_image() -> String {
 fn smoke(root: &Path, image: &str) -> Result<()> {
     const NAME: &str = "vanillite-egg-smoke";
     const PORT: &str = "30950";
-    let egg: Value = serde_json::from_str(&render(root)?).map_err(|e| e.to_string())?;
+    let egg: Value =
+        serde_json::from_str(&render(root, Egg::Advanced)?).map_err(|e| e.to_string())?;
     let host = crate::docker::docker_host();
     let docker = || crate::docker::docker(host.as_deref());
     let _ = docker()

@@ -685,6 +685,26 @@ pub const ACTIVITIES: [Activity; 26] = [
     Activity::Dig,
 ];
 
+/// `getTargetFromBrain`: the ticking mob's target is about to follow `ATTACK_TARGET` to
+/// `target`. A plugin may cancel the change (`vanillite_abi::event::ENTITY_TARGET`): the
+/// memory then goes back to the old target. Returns whether the target follows.
+pub fn target_changed(t: &mut Tick<'_, '_>, target: Option<EntityId>) -> bool {
+    let old = t.mob_ref().target;
+    let reason = if target.is_none() {
+        vanillite_abi::target_reason::FORGET
+    } else {
+        vanillite_abi::target_reason::UNKNOWN
+    };
+    if crate::mob::goals::target_event(t.ents, t.id, old, target, reason) {
+        return true;
+    }
+    match old {
+        Some(o) => brain(t).set(MemoryType::AttackTarget, MemValue::Entity(o)),
+        None => brain(t).erase(MemoryType::AttackTarget),
+    }
+    false
+}
+
 /// The ticking mob's brain. Panics are impossible for brain mobs; callers use it only for
 /// mobs whose family built one.
 pub fn brain<'a>(t: &'a mut Tick<'_, '_>) -> &'a mut Brain {

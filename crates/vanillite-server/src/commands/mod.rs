@@ -53,11 +53,12 @@ use vanillite_world::entity::EntityId;
 
 pub(crate) use advancement_cmd::perform_on as perform_advancement;
 pub(crate) use bans::ban_reason;
+pub(crate) use blocks_cmd::fill_biome_box;
 pub(crate) use data::{apply_entity_nbt, entity_nbt};
 pub(crate) use data_cmd::merge_compound;
-pub(crate) use entities_cmd::kill_any;
+pub(crate) use entities_cmd::{dismount, kill_any, mount, mount_refusal};
 pub(crate) use exec::{find_player, permission_event};
-pub(crate) use execute::summon;
+pub(crate) use execute::summon_for;
 pub(crate) use operator::handle as handle_admin;
 pub(crate) use particle::particle;
 pub(crate) use player_data::add_experience;
@@ -519,9 +520,14 @@ pub(crate) fn run_player_command(
             }
         }
     };
-    if !global.plugins.player_command(uuid, &name, command) {
+    let decision = global.plugins.player_command(uuid, &name, command);
+    if decision.cancelled {
         return None;
     }
+    let replaced = decision.text.map(|t| match t {
+        vanillite_plugin_host::NewText::Plain(s) | vanillite_plugin_host::NewText::Json(s) => s,
+    });
+    let command = replaced.as_deref().unwrap_or(command);
     log::info!("{name} issued server command: /{command}");
     let mut env = Env {
         level,

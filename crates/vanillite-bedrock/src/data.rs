@@ -82,8 +82,14 @@ impl Palette {
 
     /// The item tables.
     pub fn items(&self) -> &Items {
-        self.items
-            .get_or_init(|| Items::parse(self.items_bin, self.creative_java, self.blocks()))
+        self.items.get_or_init(|| {
+            Items::parse(
+                self.items_bin,
+                self.creative_java,
+                self.item_registry,
+                self.blocks(),
+            )
+        })
     }
 }
 

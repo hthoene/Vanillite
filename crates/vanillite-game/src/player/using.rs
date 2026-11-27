@@ -587,7 +587,8 @@ fn with_host(
 /// `Consumable.onConsume` of the `stack` a player holds in `hand`, then
 /// `applyAfterUseComponentSideEffects` (`use_remainder`, `use_cooldown`): sounds, the use
 /// statistic, the listeners (`food` feeds, potion contents, stew effects, ominous bottle),
-/// the `on_consume_effects` in order, the game event; then the stack shrinks.
+/// the `on_consume_effects` in order, the game event; then the stack shrinks. Returns whether
+/// it was consumed (a plugin may cancel it).
 fn consume(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -595,7 +596,30 @@ fn consume(
     hand: Hand,
     stack: &ItemStack,
     c: &Consumable,
-) {
+) -> bool {
+    // Bukkit's `PlayerItemConsumeEvent`: cancelled, nothing is consumed and the client sees
+    // its inventory again.
+    if let Some(uuid) = ents.store.get(player).map(|e| e.uuid())
+        && super::player_event(
+            env.hooks,
+            vanillite_abi::event::PLAYER_ITEM_CONSUME,
+            uuid,
+            |e| {
+                e.item = crate::hooks::item_snbt(stack);
+                e.cause = match hand {
+                    Hand::MainHand => vanillite_abi::hand::MAIN,
+                    Hand::OffHand => vanillite_abi::hand::OFF,
+                };
+            },
+        )
+        .is_some_and(|e| e.cancelled)
+    {
+        if let Some(p) = ents.player_mut(player) {
+            let sink = std::sync::Arc::clone(&p.connection.sink);
+            p.inventory.broadcast_full_state(sink.as_ref());
+        }
+        return false;
+    }
     let kind = vanillite_data::entity::ids::PLAYER;
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
     let creative = ents
@@ -710,6 +734,7 @@ fn consume(
             .cooldowns
             .apply_use_cooldown(stack, sink.as_ref());
     }
+    true
 }
 
 /// `completeUsingItem`: a consumable is consumed (`Item.finishUsingItem`), the client is told
@@ -735,8 +760,11 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
-    consume(ents, env, player, u.hand, &stack, &c);
+    let consumed = consume(ents, env, player, u.hand, &stack, &c);
     finished_event(ents, player);
+    if !consumed {
+        return;
+    }
     // `stopUsingItem`: the used stack vibrates unless it was used up.
     let left = creative || stack.count > 1;
     if was_using && left && use_vibrations(&stack) {

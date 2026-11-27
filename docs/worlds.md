@@ -25,13 +25,18 @@ the file as of its last completed save.
 |---|---|
 | `vanillite convert [--to vanillite\|anvil]` | Converts a stopped world into the given format (default: `storage.world-format`). |
 | `storage.convert-world = true` | The same at startup, before the world loads. |
-| `vanillite export <folder>` | Writes a Vanilla (Anvil) copy of an own-format world into `<folder>`; the world itself stays unchanged. |
+| `vanillite export <folder> [--to anvil\|vanillite]` | Writes a copy of the world in the other format into `<folder>`: by default a Vanilla (Anvil) copy of an own-format world, with `--to vanillite` an own-format copy of an Anvil world. Every file is copied, every record verified; the world itself stays unchanged. |
 | `vanillite upgrade-world` | Rewrites every chunk of an own-format world that an older Minecraft version wrote (otherwise chunks are upgraded when they are saved). |
 
 A conversion never risks the original: the new files are written next to the old ones, read
 back and compared record by record before the switch. Then the originals are moved into
 `world-format-backup/<time>/` (`storage.keep-converted-files`, on by default) or deleted. If the
 check fails, the world stays as it was and the server starts with it.
+
+A conversion that stopped (killed, disk full, an unreadable chunk) is resumed by running it
+again: files that were already verified and whose original did not change since are kept. One
+that stopped after every file was verified is finished at the next start. Worlds with
+dimensions this server does not load (custom dimensions of data packs) are not converted.
 
 An own-format world written by an older Minecraft version is read by newer servers (block and
 entity ids are mapped by name); a world of a newer version is refused.
@@ -64,6 +69,13 @@ between Vanillite and Paper or Spigot without manual moving (Anvil format, or af
   as in Vanilla.
 - `save-all flush`, `stop`, Ctrl+C and SIGTERM save every world completely before the server
   exits. `session.lock` keeps a second server from opening the same world.
+- **Full disk or read-only file system:** chunks that cannot be written stay in memory, the
+  server keeps running and logs the error, and every save tries them again until the disk takes
+  them. Records written before stay intact.
+- **Damaged files** are never saved over without a copy: an unreadable chunk, entity or POI
+  record goes to `<dimension>/unreadable/` before the chunk is generated again, a damaged
+  own-format region file is kept as `<file>.damaged-<time>`, and a damaged `level.dat`, player,
+  statistics, advancements or saved data file as `<file>.corrupted-<hash>`.
 
 ## Backups
 
