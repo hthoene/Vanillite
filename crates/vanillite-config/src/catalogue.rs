@@ -27,6 +27,9 @@ rules! {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
             /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
+            /// I/O threads of the network (connections, encryption, compression of outgoing
+            /// packets). 0 = 2, or 1 with less than two cores, so the tick keeps the only core.
+            network: u16 = "network", Setting, range = [0, 64], restart = true, vanilla = 0;
         }
         /// What the hardware allows. With less than two cores, background work (generation,
         /// light, saving) runs only between ticks and below the CPU quota, so the tick stays
@@ -96,7 +99,8 @@ rules! {
             /// next to it in the file, and keeps them for a short time: fewer disk reads for
             /// moving players.
             read_ahead: bool = "read-ahead", Performance, restart = true, vanilla = true;
-            /// MiB of chunk records read ahead kept per dimension.
+            /// MiB of chunk records read ahead kept per dimension; under a memory limit
+            /// (`performance.budget.memory`) at most 1/32 of it.
             read_cache: u32 = "read-cache", Performance, range = [0, 65_536], restart = true,
                 vanilla = 64;
             /// Region files kept open per dimension while unused; files in use always stay

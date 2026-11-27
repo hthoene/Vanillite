@@ -39,6 +39,8 @@ pub struct Container {
     pub loot_seed: i64,
     /// Players that have it open (`ContainerOpenersCounter.openCount`).
     pub openers: i32,
+    /// `lock` (`LockCode`).
+    pub lock: Option<vanillite_nbt::Tag>,
 }
 
 impl Container {
@@ -50,6 +52,7 @@ impl Container {
             loot_table: None,
             loot_seed: 0,
             openers: 0,
+            lock: None,
         }
     }
 }
@@ -282,6 +285,7 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
             Some(BlockEntity::Furnace(f)) => f.custom_name.clone(),
             Some(BlockEntity::BrewingStand(b)) => b.custom_name.clone(),
             Some(BlockEntity::Beacon(b)) => b.custom_name.clone(),
+            Some(BlockEntity::EnchantingTable(name)) => name.as_deref().cloned(),
             _ => None,
         }
         .unwrap_or_else(|| title(default))
@@ -403,7 +407,7 @@ pub fn menu_provider(level: &Level, state: BlockState, pos: BlockPos) -> Option<
         Kind::EnchantingTable => Some(request(
             MenuKind::Enchantment,
             Storage::Local,
-            title("container.enchant"),
+            named("container.enchant"),
         )),
         Kind::BrewingStand => Some(request(
             MenuKind::BrewingStand,
@@ -504,6 +508,7 @@ pub fn double_chest_partner(level: &Level, state: BlockState, pos: BlockPos) -> 
     (other_state.block() == state.block()
         && other_state.value("type") != Some("single")
         && other_state.value("type") != Some(kind)
+        && other_state.value("facing") == state.value("facing")
         && matches!(level.block_entity(other), Some(BlockEntity::Container(_))))
     .then_some(other)
 }
@@ -1329,6 +1334,8 @@ pub fn component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
         BlockEntity::Hopper(h) => (&h.custom_name, &h.items),
         BlockEntity::Furnace(f) => (&f.custom_name, &f.items),
         BlockEntity::BrewingStand(b) => (&b.custom_name, &b.items),
+        // `BeaconBlockEntity.collectImplicitComponents`: its custom name.
+        BlockEntity::Beacon(b) => (&b.custom_name, &[]),
         _ => return None,
     };
     if id == ids::CONTAINER_LOOT {
@@ -1382,6 +1389,7 @@ pub fn apply_item_components(level: &mut Level, pos: BlockPos, stack: &ItemStack
             Some(BlockEntity::Hopper(h)) => (&mut h.custom_name, &mut h.items),
             Some(BlockEntity::Furnace(f)) => (&mut f.custom_name, &mut f.items),
             Some(BlockEntity::BrewingStand(b)) => (&mut b.custom_name, &mut b.items),
+            Some(BlockEntity::Beacon(b)) => (&mut b.custom_name, &mut []),
             _ => return,
         };
     if name.is_some() {
@@ -1414,8 +1422,8 @@ pub fn creative_shulker_drop(
         return;
     }
     let mut stack = ItemStack::new(item, 1);
-    for id in [ids::CUSTOM_NAME, ids::CONTAINER] {
-        if let Some(value) = component(entity, id) {
+    for id in [ids::CUSTOM_NAME, ids::LOCK, ids::CONTAINER] {
+        if let Some(value) = crate::level::block_entity::collect_component(entity, id) {
             stack.patch_mut().set(id, value);
         }
     }
@@ -1483,17 +1491,24 @@ impl Container {
     /// stacks (`tryLoadLootTable`, else `loadAllItems`).
     pub fn load(&mut self, nbt: &Compound) {
         self.custom_name = load_name(nbt);
+        self.lock = super::lock::load(nbt);
         (self.loot_table, self.loot_seed) = super::chest_loot::load(nbt);
         if self.loot_table.is_none() {
             load_items(nbt, &mut self.items);
         }
     }
 
-    /// Saves the stored fields (`trySaveLootTable`, else `saveAllItems`).
-    pub fn save(&self, out: &mut Compound) {
+    /// Saves the stored fields (`trySaveLootTable`, else `saveAllItems`): `Items` also when
+    /// empty, except for shulker boxes (`also_when_empty` false).
+    pub fn save(&self, out: &mut Compound, also_when_empty: bool) {
+        super::lock::save(&self.lock, out);
         save_name(&self.custom_name, out);
         if !super::chest_loot::save(self.loot_table.as_deref(), self.loot_seed, out) {
-            save_items(&self.items, out);
+            if also_when_empty {
+                save_items_always(&self.items, out);
+            } else {
+                save_items(&self.items, out);
+            }
         }
     }
 }

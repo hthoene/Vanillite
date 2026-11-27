@@ -276,6 +276,8 @@ pub(crate) struct Session {
     java: JavaState,
     biome_names: Vec<String>,
     dimension_types: Vec<String>,
+    /// Java enchantment ids -> Bedrock ids (`minecraft:enchantment` of the server).
+    enchantments: crate::items::Enchantments,
     world: Option<World>,
     chunk_radius: i32,
     scratch: Vec<Vec<u8>>,
@@ -348,6 +350,7 @@ impl Session {
             java: JavaState::Login,
             biome_names: Vec::new(),
             dimension_types: Vec::new(),
+            enchantments: crate::items::Enchantments::default(),
             world: None,
             chunk_radius,
             scratch: Vec::new(),
@@ -1023,6 +1026,9 @@ impl Session {
                 match r.registry.as_str() {
                     "minecraft:worldgen/biome" => self.biome_names = names,
                     "minecraft:dimension_type" => self.dimension_types = names,
+                    "minecraft:enchantment" => {
+                        self.enchantments = crate::items::Enchantments::from_names(&names);
+                    }
                     "minecraft:world_clock" => self.world_clocks = names,
                     _ => {}
                 }

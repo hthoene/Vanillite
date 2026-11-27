@@ -24,7 +24,7 @@ use vanillite_protocol::types::Vec3;
 const OLD: i32 = 776;
 
 fn json(path: &str) -> Value {
-    let p = format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"));
+    let p = vanillite_multiversion::data_paths::file(path);
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 

@@ -55,7 +55,7 @@ impl Egg {
 /// The image repository on Docker Hub (published by `.github/workflows/docker.yml`).
 const REPOSITORY: &str = "thoenehannes/vanillite";
 /// The generated Minecraft version, relative to the repository root.
-const MC_VERSION_PATH: &str = "crates/vanillite-data/src/generated/version.rs";
+const MC_VERSION_PATH: &str = "data/vanilla/version.toml";
 /// The startup command; the image's entrypoint replaces `{{VAR}}` with the variable. Bedrock
 /// listens on the allocation's port (UDP) unless `Bedrock: Port` is set.
 const STARTUP: &str = "env VANILLITE_SERVER_PORT={{SERVER_PORT}} \
@@ -593,9 +593,9 @@ fn current_version(root: &Path) -> Result<McVersion> {
     let source = crate::read(&root.join(MC_VERSION_PATH))?;
     let id = source
         .lines()
-        .find_map(|l| l.strip_prefix("pub const VERSION_ID: &str = \""))
-        .and_then(|l| l.strip_suffix("\";"))
-        .ok_or_else(|| format!("{MC_VERSION_PATH}: no VERSION_ID"))?;
+        .find_map(|l| l.strip_prefix("id = \""))
+        .and_then(|l| l.strip_suffix('"'))
+        .ok_or_else(|| format!("{MC_VERSION_PATH}: no id"))?;
     let channel = match env!("CARGO_PKG_VERSION").split_once('-') {
         Some((_, pre)) => pre.split('.').next().unwrap_or(pre),
         None => STABLE,

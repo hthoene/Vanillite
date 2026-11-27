@@ -48,10 +48,11 @@ impl Brushable {
             (None, Some(Tag::Compound(c))) => crate::inventory::stack_from_nbt(c),
             _ => ItemStack::EMPTY,
         };
-        self.hit_direction = match nbt.get("hit_direction") {
-            Some(Tag::Int(v)) => Some(direction_from_3d(*v)),
-            _ => None,
-        };
+        // `Direction.LEGACY_ID_CODEC`: a byte, read from any numeric tag.
+        self.hit_direction = nbt
+            .get("hit_direction")
+            .and_then(Tag::as_i64)
+            .map(|v| direction_from_3d(i32::from(v.to_le_bytes()[0].cast_signed())));
     }
 
     /// `saveAdditional`.
@@ -70,7 +71,10 @@ impl Brushable {
     pub fn update_tag(&self) -> Compound {
         let mut out = Compound::new();
         if let Some(d) = self.hit_direction {
-            out.insert("hit_direction", Tag::Int(direction_to_3d(d)));
+            out.insert(
+                "hit_direction",
+                Tag::Byte(i8::try_from(direction_to_3d(d)).unwrap_or(0)),
+            );
         }
         if !self.item.is_empty() {
             out.insert("item", crate::inventory::stack_to_nbt(&self.item));

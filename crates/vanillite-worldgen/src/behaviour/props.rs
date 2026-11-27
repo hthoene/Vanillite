@@ -232,3 +232,68 @@ mod tests {
         }
     }
 }
+
+/// The properties of `minecraft:redstone_wire`, resolved once: the wire's shape and signal code
+/// reads and writes them on every update.
+#[derive(Debug)]
+pub struct WireProperties {
+    /// `power` (0..=15).
+    pub power: vanillite_data::block::StateProperty,
+    /// The side properties in [`HORIZONTAL`] order.
+    sides: [vanillite_data::block::StateProperty; 4],
+    /// Value indices of the side values.
+    pub up: u16,
+    pub side: u16,
+    pub none: u16,
+}
+
+impl WireProperties {
+    /// The side property facing `direction` (horizontal).
+    #[inline]
+    pub fn side_of(&self, direction: Direction) -> vanillite_data::block::StateProperty {
+        self.sides[match direction {
+            Direction::North => 0,
+            Direction::East => 1,
+            Direction::South => 2,
+            _ => 3,
+        }]
+    }
+
+    /// The value index of a side value name (`up`, `side`, `none`).
+    #[inline]
+    pub fn side_index(&self, value: &str) -> u16 {
+        match value {
+            "up" => self.up,
+            "side" => self.side,
+            _ => self.none,
+        }
+    }
+
+    /// Whether the wire state is connected towards `direction` (its side is not `none`).
+    #[inline]
+    pub fn connected(&self, state: BlockState, direction: Direction) -> bool {
+        self.side_of(direction).index(state) != self.none
+    }
+}
+
+/// The redstone wire's properties.
+#[inline]
+pub fn wire_properties() -> &'static WireProperties {
+    static PROPERTIES: std::sync::OnceLock<WireProperties> = std::sync::OnceLock::new();
+    PROPERTIES.get_or_init(|| {
+        let wire = vanillite_data::block::ids::REDSTONE_WIRE;
+        let property = |name| {
+            vanillite_data::block::StateProperty::of(wire, name)
+                .expect("redstone wire has its properties")
+        };
+        let north = property("north");
+        let value = |v| north.value_index(v).expect("wire side values");
+        WireProperties {
+            power: property("power"),
+            sides: HORIZONTAL.map(|d| property(direction_name(d))),
+            up: value("up"),
+            side: value("side"),
+            none: value("none"),
+        }
+    })
+}

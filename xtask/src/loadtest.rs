@@ -453,8 +453,8 @@ pub(crate) enum Sample {
     Stats(f64, [u64; 7]),
     /// A tick in nanoseconds (Vanillite).
     Tick(f64, u64),
-    /// `/tick query` P50, P95, P99 and mean in milliseconds (Paper and Vanilla, 100-tick
-    /// windows).
+    /// `/tick query` P50, P95, P99 and mean in milliseconds (Paper, Vanilla and Pumpkin,
+    /// 100-tick windows).
     Query(f64, [f64; 4]),
 }
 
@@ -963,7 +963,7 @@ fn aggregate(
                 "max": round(ticks.last().copied()),
             })
         }
-        Target::Paper | Target::Vanilla => {
+        Target::Paper | Target::Vanilla | Target::Pumpkin => {
             let windows: Vec<[f64; 4]> = d
                 .server
                 .iter()
@@ -989,7 +989,7 @@ fn aggregate(
                 "max": round(col(2).into_iter().reduce(f64::max)),
             })
         }
-        // Pumpkin reports no tick times; proxies do not tick.
+        // Proxies do not tick.
         _ => json!({ "source": "none" }),
     };
 

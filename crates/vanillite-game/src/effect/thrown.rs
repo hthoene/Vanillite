@@ -356,7 +356,7 @@ fn on_hit(
         crate::mob::missile::hit_block(t.level, t.cx, id, pos, at);
     }
     // `super.onHit`: the land game event comes first.
-    crate::mob::missile::land_event(t.env.out, t.level, id, block.map(|(b, _)| b), at);
+    crate::mob::missile::land_event(t.env.out, t.level, id, owner, block.map(|(b, _)| b), at);
     if let Some((pos, face)) = block
         && PotionContents::of_stack(&stack).is_water()
     {
@@ -418,8 +418,8 @@ fn douse_fire(t: &mut SpecialTick<'_, '_>, pos: BlockPos, owner: Option<EntityId
             seed,
         );
     } else if lit && blocks.campfires.contains(state) {
-        // The extinguish level event, `CampfireBlock.douse` (a `block_change` game event by
-        // the owner), then unlit.
+        // The extinguish level event, `CampfireBlock.douse` (`BLOCK_CHANGE` by the owner),
+        // then unlit.
         t.cx.actions.push(WorldAction::LevelEvent(1009, pos, 0));
         t.cx.actions.push(WorldAction::Level(
             crate::mob::boss::warden::LevelAction::GameEvent {
@@ -429,10 +429,7 @@ fn douse_fire(t: &mut SpecialTick<'_, '_>, pos: BlockPos, owner: Option<EntityId
                     f64::from(pos.y) + 0.5,
                     f64::from(pos.z) + 0.5,
                 ),
-                context: crate::level::game_event::GameEventContext {
-                    source: owner,
-                    affected: None,
-                },
+                context: crate::level::game_event::GameEventContext::of(owner),
             },
         ));
         if let Some(off) = state.with("lit", "false") {

@@ -32,7 +32,13 @@ impl Lectern {
         } else {
             1.0
         };
-        (progress * 14.0).floor() as i32 + i32::from(!self.book.is_empty())
+        // `hasBook()`: the stack holds writable or written book content.
+        let has_book = crate::book::has_writable_content(&self.book)
+            || self
+                .book
+                .component(vanillite_protocol::components::ids::WRITTEN_BOOK_CONTENT)
+                .is_some();
+        (progress * 14.0).floor() as i32 + i32::from(has_book)
     }
 
     /// `loadAdditional`.

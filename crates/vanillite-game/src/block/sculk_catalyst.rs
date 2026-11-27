@@ -124,9 +124,16 @@ impl Catalyst {
             .map(|c| {
                 let mut t = Compound::new();
                 t.insert("pos", Tag::IntArray(vec![c.pos.x, c.pos.y, c.pos.z]));
-                t.insert("charge", Tag::Int(c.charge));
-                t.insert("decay_delay", Tag::Int(c.decay_delay));
-                t.insert("update_delay", Tag::Int(c.update_delay));
+                // `optionalFieldOf` with a default: omitted when it holds the default.
+                if c.charge != 0 {
+                    t.insert("charge", Tag::Int(c.charge));
+                }
+                if c.decay_delay != 1 {
+                    t.insert("decay_delay", Tag::Int(c.decay_delay));
+                }
+                if c.update_delay != 0 {
+                    t.insert("update_delay", Tag::Int(c.update_delay));
+                }
                 if let Some(f) = c.facings {
                     t.insert(
                         "facings",
@@ -165,6 +172,26 @@ pub fn catalyst_near(level: &Level, position: Vec3) -> bool {
     let mut found = Vec::new();
     nearest_catalysts(level, position, &mut found);
     !found.is_empty()
+}
+
+/// [`catalyst_near`] from the blocks alone, for a player's death in the player tick: a
+/// catalyst block within the listener radius (every catalyst block has its listener).
+pub fn catalyst_block_near(
+    blocks: &dyn crate::survival::blocks::BlockAccess,
+    position: Vec3,
+) -> bool {
+    let c = containing(position);
+    let r = LISTENER_RADIUS;
+    (-r..=r).any(|dx| {
+        (-r..=r).any(|dy| {
+            (-r..=r).any(|dz| {
+                dx * dx + dy * dy + dz * dz <= r * r
+                    && blocks
+                        .block_state(BlockPos::new(c.x + dx, c.y + dy, c.z + dz))
+                        .is_some_and(|s| s.is(ids::SCULK_CATALYST))
+            })
+        })
+    })
 }
 
 fn nearest_catalysts(level: &Level, position: Vec3, out: &mut Vec<(BlockPos, f64)>) {
@@ -394,8 +421,9 @@ fn attempt_spread_vein(
     spread_all(level, false, state, pos) > 0
 }
 
+/// `getFluidState().is(Fluids.WATER)`: still (source) water only, not flowing water.
 pub(super) fn is_water(state: BlockState) -> bool {
-    crate::mob::is_water(state)
+    crate::mob::is_water(state) && state.fluid_state().info().source
 }
 
 /// `SculkBehaviour.attemptUseCharge`.
@@ -529,6 +557,8 @@ fn attempt_place_sculk(level: &mut Level, pos: BlockPos) -> bool {
         if !super::hook_events::allows(level, BLOCK_SPREAD, support_pos, sculk) {
             return false;
         }
+        let old = level.block(support_pos);
+        super::contact::push_entities_up_states(level, support_pos, old, sculk);
         level.set_block_and_update(support_pos, sculk);
         let sound = sound_id("block.sculk.spread");
         level.play_block_sound(None, support_pos, sound, SOUND_BLOCKS, 1.0, 1.0);

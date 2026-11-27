@@ -26,7 +26,10 @@ ARG TARGETARCH
 # The commit shown by `vanillite --version` (the build context has no .git).
 ARG VANILLITE_COMMIT=
 ENV VANILLITE_COMMIT=${VANILLITE_COMMIT}
+# The build extracts the Vanilla data from Mojang's server jars (and downloads a JDK for that)
+# into ~/.cache/vanillite; the cache mount keeps both between builds.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cache/vanillite,id=vanillite-data,sharing=locked \
     --mount=type=cache,target=/src/target,id=vanillite-target-${TARGETARCH} \
     case "${TARGETARCH}" in \
       amd64) triple=x86_64-unknown-linux-musl ;; \

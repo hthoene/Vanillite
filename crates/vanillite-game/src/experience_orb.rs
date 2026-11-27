@@ -30,7 +30,7 @@ const DEFAULT_HEALTH: i32 = 5;
 pub const TAKE_XP_DELAY: i32 = 2;
 
 /// The kind data of an experience orb.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExperienceOrbData {
     /// `DATA_VALUE`: experience per orb.
     pub value: i32,
@@ -44,6 +44,8 @@ pub struct ExperienceOrbData {
     pub following: Option<EntityId>,
     /// `tickCount`.
     pub tick_count: u32,
+    /// `fallDistance`.
+    pub fall_distance: f64,
 }
 
 impl ExperienceOrbData {
@@ -56,6 +58,7 @@ impl ExperienceOrbData {
             health: DEFAULT_HEALTH,
             following: None,
             tick_count: 0,
+            fall_distance: 0.0,
         }
     }
 }
@@ -247,16 +250,33 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         level.entities.despawn(id);
         return;
     }
+    // `baseTick`: `updateFluidInteraction` (water resets the fall distance, flowing water and
+    // lava push the orb), then `ExperienceOrb.tick` swims up with its eyes in water.
+    let eye = Vec3::new(pos.x, pos.y + f64::from(0.425_f32), pos.z);
+    let (contact, currents) = crate::mob::living::fluid_currents(
+        level,
+        crate::survival::blocks::BlockFacts::fluids_only(),
+        aabb,
+        eye,
+    );
+    let in_water = contact.in_water();
+    if in_water {
+        data.fall_distance = 0.0;
+        if let Some(pushed) = currents.water.push(v, 0.014) {
+            v = pushed;
+        }
+    }
+    if contact.in_lava()
+        && let Some(pushed) = currents.lava.push(v, lava_current_scale(level))
+    {
+        v = pushed;
+    }
     let colliding = collides(level, &aabb);
-    if eye_in_water(level, pos) {
-        // `setUnderwaterMovement`.
-        // Float constants widened to double.
+    if contact.eye_in_water {
+        // `setUnderwaterMovement` (float constants).
         let drag = f64::from(0.99_f32);
-        v = Vec3::new(
-            v.x * drag,
-            (v.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32)),
-            v.z * drag,
-        );
+        let rise = (v.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32));
+        v = Vec3::new(v.x * drag, rise, v.z * drag);
     } else if !colliding {
         v.y -= GRAVITY;
     }
@@ -316,43 +336,44 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         // `Block.updateEntityMovementAfterFallOn`.
         v.y = 0.0;
     }
-    if let Some(mut e) = level.entities.store.get_mut(id) {
-        e.set_pos(new_pos);
-        if fall_speed != 0.0 {
-            e.set_flags(EntityFlags::ON_GROUND, below);
-        }
-        if needs_sync {
-            e.set_flags(EntityFlags::HAS_IMPULSE, true);
-        }
+    // `checkFallDamage`: the fall distance of the move, the landing.
+    let mut fall_distance = data.fall_distance;
+    if !in_water && movement.y < 0.0 {
+        #[allow(clippy::cast_possible_truncation)]
+        let ya = f64::from(movement.y as f32);
+        fall_distance -= ya;
     }
-    // `applyEffectsFromBlocks`: `stepOn` of the block below (slime slows the orb, redstone
-    // ore lights up), then cacti hurt the orb, bubble columns drag it, plates and tripwire
-    // react.
-    if below {
-        let on = BlockPos::containing(new_pos.x, new_pos.y - f64::from(0.2_f32), new_pos.z);
-        let block = level.block(on).block();
-        if block == vanillite_data::block::ids::SLIME_BLOCK {
-            let dy = v.y.abs();
-            if dy < 0.1 {
-                let factor = 0.4 + dy * 0.2;
-                v = Vec3::new(v.x * factor, v.y, v.z * factor);
-            }
-        } else if crate::block::contact::has_step_on(block) {
-            crate::block::contact::step_on(level, on, id);
-            if !level.entities.store.contains(id) {
-                return;
-            }
-        }
+    let on_ground = if fall_speed != 0.0 {
+        below
+    } else {
+        level
+            .entities
+            .store
+            .get(id)
+            .is_some_and(|e| e.flags().contains(EntityFlags::ON_GROUND))
+    };
+    let landed = on_ground && fall_distance > 0.0;
+    if on_ground {
+        fall_distance = 0.0;
     }
+    // `applyEffectsFromBlocks`: `stepOn` of the block below (`getOnPosLegacy`).
+    let on = BlockPos::new(
+        floor(new_pos.x),
+        floor(new_pos.y - f64::from(0.2_f32)),
+        floor(new_pos.z),
+    );
+    let on_block = level.block(on).block();
+    if on_ground && on_block == vanillite_data::block::ids::SLIME_BLOCK {
+        v = crate::block::contact::slime_step_on(v);
+    }
+    // `applyEffectsFromBlocks`: the blocks on the way (one walk; bubble columns act at once,
+    // cacti, plates and tripwire after the move is stored).
     let dims = level.entities.store.get(id).map(|e| e.dims());
+    let mut cacti = 0;
+    let mut reacting = Vec::new();
+    let mut bubbles = [None; 4];
     if let Some(dims) = dims {
-        enum Hit {
-            Cactus,
-            Bubble(BlockPos),
-            Hook(BlockPos),
-        }
         let way = [crate::survival::inside::Movement::plain(pos, new_pos)];
-        let mut hits = Vec::new();
         let view = level.view();
         let walker = crate::survival::inside::Walker {
             blocks: &view,
@@ -360,42 +381,33 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
             dims,
             fast_fall: false,
         };
+        let mut count = 0;
         walker.walk(&way, |cell| {
-            let block = cell.state.block();
-            if block == vanillite_data::block::ids::BUBBLE_COLUMN {
-                if cell.precise {
-                    hits.push(Hit::Bubble(cell.pos));
-                }
-            } else if cell.in_block {
-                if block == vanillite_data::block::ids::CACTUS {
-                    hits.push(Hit::Cactus);
+            if cell.in_block {
+                if cell.state.block() == vanillite_data::block::ids::CACTUS {
+                    cacti += 1;
+                } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN {
+                    if cell.precise
+                        && let Some(slot) = bubbles.get_mut(count)
+                    {
+                        *slot = Some((cell.pos, cell.state));
+                        count += 1;
+                    }
                 } else if level.has_entity_inside(cell.state) {
-                    hits.push(Hit::Hook(cell.pos));
+                    reacting.push(cell.pos);
                 }
             }
             true
         });
-        for hit in hits {
-            if !level.entities.store.contains(id) {
-                return;
-            }
-            match hit {
-                Hit::Bubble(column) => {
-                    v = crate::level::particles::bubble_column_drag(level, column, v).0;
-                }
-                Hit::Hook(block) => level.entity_inside(block, id),
-                // `CactusBlock.entityInside` -> `ExperienceOrb.hurtServer`.
-                Hit::Cactus => {
-                    let Some(d) = level.entities.experience_orb_mut(id) else {
-                        return;
-                    };
-                    d.health -= 1;
-                    if d.health <= 0 {
-                        level.entities.despawn(id);
-                        return;
-                    }
-                }
-            }
+    }
+    for (at, state) in bubbles.into_iter().flatten() {
+        let above = BlockPos::new(at.x, at.y + 1, at.z);
+        let (top, y) = crate::block::bubble::drag(level.block(above), state, v.y);
+        v.y = y;
+        if top {
+            crate::block::bubble::send_particles(level, at);
+        } else {
+            fall_distance = 0.0;
         }
     }
     // `getAirDrag()` (0.98F) times the block friction, in float.
@@ -417,23 +429,80 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         return;
     };
     d.age = d.age.saturating_add(1);
+    d.fall_distance = fall_distance;
     let expired = d.age >= LIFETIME;
     if let Some(mut e) = level.entities.store.get_mut(id) {
+        e.set_pos(new_pos);
         e.set_velocity(v);
+        if fall_speed != 0.0 {
+            e.set_flags(EntityFlags::ON_GROUND, below);
+        }
+        if needs_sync {
+            e.set_flags(EntityFlags::HAS_IMPULSE, true);
+        }
+    }
+    if landed {
+        crate::block::contact::non_living_land(level, id, new_pos, on);
+    }
+    if on_ground
+        && crate::block::contact::has_step_on(on_block)
+        && level.entities.store.contains(id)
+    {
+        crate::block::contact::step_on(level, on, id);
+    }
+    // `applyEffectsFromBlocks`: cacti hurt the orb, plates and tripwire react.
+    if dims.is_some() {
+        for block in reacting {
+            if !level.entities.store.contains(id) {
+                return;
+            }
+            level.entity_inside(block, id);
+        }
+        // `CactusBlock.entityInside` -> `ExperienceOrb.hurtServer`.
+        for _ in 0..cacti {
+            let Some(d) = level.entities.experience_orb_mut(id) else {
+                return;
+            };
+            d.health -= 1;
+            if d.health <= 0 {
+                level.entities.despawn(id);
+                return;
+            }
+        }
     }
     if expired {
         level.entities.despawn(id);
     }
 }
 
-/// `isEyeInFluid(FluidTags.WATER)`: the fluid at the eye (0.425 above the feet, less
-/// `0.11111111`) is water that reaches above it.
-fn eye_in_water(level: &Level, pos: Vec3) -> bool {
-    let eye_y = pos.y + 0.425 - 0.111_111_11;
-    let at = BlockPos::new(floor(pos.x), floor(eye_y), floor(pos.z));
-    let fluid = level.fluid(at);
-    crate::block::fluid::is_water(fluid)
-        && eye_y < f64::from(at.y) + f64::from(crate::block::fluid::height(level, fluid, at))
+/// `isInWater()` (`wasTouchingWater`): water reaches into the box shrunk by 0.001.
+pub(crate) fn touching_water(level: &Level, b: &Aabb) -> bool {
+    use vanillite_base::math::ceil;
+    let min_y = b.min_y + 0.001;
+    for x in floor(b.min_x + 0.001)..ceil(b.max_x - 0.001) {
+        for y in floor(min_y)..ceil(b.max_y - 0.001) {
+            for z in floor(b.min_z + 0.001)..ceil(b.max_z - 0.001) {
+                let at = BlockPos::new(x, y, z);
+                let fluid = level.fluid(at);
+                if crate::block::fluid::is_water(fluid)
+                    && f64::from(y) + f64::from(crate::block::fluid::height(level, fluid, at))
+                        >= min_y
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The scale of the lava current (`applyCurrentTo(LAVA, ...)`): faster where lava is fast.
+pub(crate) fn lava_current_scale(level: &Level) -> f64 {
+    if level.settings.fast_lava {
+        0.007
+    } else {
+        0.002_333_333_333_333_333_5
+    }
 }
 
 /// `scanForMerges`: orbs of the same value and merge group within `radius` (Vanilla half a

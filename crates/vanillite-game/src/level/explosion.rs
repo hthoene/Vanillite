@@ -351,78 +351,158 @@ impl Level {
         radius: f32,
         override_resistance: BlockResistance,
     ) -> Vec<BlockPos> {
-        let mut seen = FxHashSet::default();
         let mut positions = Vec::new();
-        for xx in 0..16 {
-            for yy in 0..16 {
-                for zz in 0..16 {
-                    if !(xx == 0 || xx == 15 || yy == 0 || yy == 15 || zz == 0 || zz == 15) {
-                        continue;
-                    }
-                    // Float arithmetic, widened to double.
-                    let mut xd = f64::from(xx as f32 / 15.0 * 2.0 - 1.0);
-                    let mut yd = f64::from(yy as f32 / 15.0 * 2.0 - 1.0);
-                    let mut zd = f64::from(zz as f32 / 15.0 * 2.0 - 1.0);
-                    let d = (xd * xd + yd * yd + zd * zd).sqrt();
-                    xd /= d;
-                    yd /= d;
-                    zd /= d;
-                    let mut power = radius * (0.7 + self.random.next_float() * 0.6);
-                    let (mut xp, mut yp, mut zp) = (center.x, center.y, center.z);
-                    let step = f64::from(0.3_f32);
-                    while power > 0.0 {
-                        let pos = BlockPos::containing(xp, yp, zp);
-                        if !self.in_height(pos.y) || !in_world_bounds_horizontal(pos) {
-                            break;
-                        }
-                        let state = self.block(pos);
-                        let fluid = state.fluid_state();
-                        // `ExplosionDamageCalculator.getBlockExplosionResistance`.
-                        let rail_protected = override_resistance == BlockResistance::TntMinecart
-                            && (crate::block::is_rail(state.block())
-                                || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
-                        if override_resistance == BlockResistance::WindCharge {
-                            // `SimpleExplosionDamageCalculator` with immune blocks: only those
-                            // resist, everything else lets the ray through.
-                            if crate::block::block_tags()
-                                .blocks_wind_charge_explosions
-                                .contains(state)
-                            {
-                                power -= (3_600_000.0 + 0.3) * 0.3;
-                            }
-                        } else if override_resistance == BlockResistance::WaterAt(pos) {
-                            let water = vanillite_data::block::ids::WATER.default_state();
-                            power -= (water.block().info().blast_resistance + 0.3) * 0.3;
-                        } else if !(state.is_air() && fluid.is_empty()) {
-                            let mut resistance = if rail_protected {
-                                0.0
-                            } else {
-                                state
-                                    .block()
-                                    .info()
-                                    .blast_resistance
-                                    .max(fluid.info().explosion_resistance)
-                            };
-                            if override_resistance == BlockResistance::DangerousWitherSkull {
-                                resistance = crate::mob::boss::wither::skull_block_resistance(
-                                    true, state, resistance,
-                                );
-                            }
-                            power -= (resistance + 0.3) * 0.3;
-                        }
-                        if power > 0.0 && !rail_protected && seen.insert(pos) {
-                            positions.push(pos);
-                        }
-                        xp += xd * step;
-                        yp += yd * step;
-                        zp += zd * step;
-                        power -= 0.225_000_01;
-                    }
-                }
-            }
+        match Cube::new(center, radius, override_resistance) {
+            Some(mut cube) => self.cube_rays(
+                &mut cube,
+                center,
+                radius,
+                override_resistance,
+                &mut positions,
+            ),
+            None => self.set_rays(center, radius, override_resistance, &mut positions),
         }
         java_hash_set_order(&mut positions);
         positions
+    }
+
+    /// The rays of [`Self::exploded_positions`] with the reached blocks and their losses in a
+    /// [`Cube`] around the centre.
+    fn cube_rays(
+        &mut self,
+        cube: &mut Cube,
+        center: Vec3,
+        radius: f32,
+        override_resistance: BlockResistance,
+        positions: &mut Vec<BlockPos>,
+    ) {
+        let (min, side) = (cube.min, cube.side);
+        let max = min.offset(side - 1, side - 1, side - 1);
+        // Rays only leave the world through the cube's sides.
+        let checked = !(self.in_height(min.y)
+            && self.in_height(max.y)
+            && in_world_bounds_horizontal(min)
+            && in_world_bounds_horizontal(max));
+        let step = f64::from(0.3_f32);
+        for &(xd, yd, zd) in ray_directions() {
+            let mut power = radius * (0.7 + self.random.next_float() * 0.6);
+            let (mut xp, mut yp, mut zp) = (center.x, center.y, center.z);
+            while power > 0.0 {
+                let pos = BlockPos::containing(xp, yp, zp);
+                if checked && (!self.in_height(pos.y) || !in_world_bounds_horizontal(pos)) {
+                    break;
+                }
+                let (x, y, z) = (pos.x - min.x, pos.y - min.y, pos.z - min.z);
+                if (x | y | z) < 0 || x >= side || y >= side || z >= side {
+                    // Outside the cube (the cube holds every ray): as without one.
+                    let (loss, _) = self.ray_loss(pos, override_resistance);
+                    if let Some(loss) = loss {
+                        power -= loss;
+                    }
+                    if power > 0.0 && cube.outside.insert(pos) {
+                        positions.push(pos);
+                    }
+                } else {
+                    let cell = ((y * side + z) * side + x) as usize;
+                    let mut loss = cube.losses[cell];
+                    if loss == Cube::UNKNOWN {
+                        loss = self
+                            .ray_loss(pos, override_resistance)
+                            .0
+                            .unwrap_or(f32::NAN);
+                        cube.losses[cell] = loss;
+                    }
+                    if !loss.is_nan() {
+                        power -= loss;
+                    }
+                    if power > 0.0 {
+                        let (word, bit) = (cell >> 6, 1u64 << (cell & 63));
+                        if cube.reached[word] & bit == 0 {
+                            cube.reached[word] |= bit;
+                            positions.push(pos);
+                        }
+                    }
+                }
+                xp += xd * step;
+                yp += yd * step;
+                zp += zd * step;
+                power -= 0.225_000_01;
+            }
+        }
+    }
+
+    /// The rays of [`Self::exploded_positions`] with a hash set of the reached blocks (large
+    /// radii and rail protection).
+    fn set_rays(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        override_resistance: BlockResistance,
+        positions: &mut Vec<BlockPos>,
+    ) {
+        let mut seen = FxHashSet::default();
+        let step = f64::from(0.3_f32);
+        for &(xd, yd, zd) in ray_directions() {
+            let mut power = radius * (0.7 + self.random.next_float() * 0.6);
+            let (mut xp, mut yp, mut zp) = (center.x, center.y, center.z);
+            while power > 0.0 {
+                let pos = BlockPos::containing(xp, yp, zp);
+                if !self.in_height(pos.y) || !in_world_bounds_horizontal(pos) {
+                    break;
+                }
+                let (loss, rail_protected) = self.ray_loss(pos, override_resistance);
+                if let Some(loss) = loss {
+                    power -= loss;
+                }
+                if power > 0.0 && !rail_protected && seen.insert(pos) {
+                    positions.push(pos);
+                }
+                xp += xd * step;
+                yp += yd * step;
+                zp += zd * step;
+                power -= 0.225_000_01;
+            }
+        }
+    }
+
+    /// What a ray loses in the block at `pos` (`None`: nothing, for air without fluid) and
+    /// whether the block is rail protected (`ExplosionDamageCalculator`).
+    fn ray_loss(&self, pos: BlockPos, override_resistance: BlockResistance) -> (Option<f32>, bool) {
+        let state = self.block(pos);
+        let fluid = state.fluid_state();
+        // `ExplosionDamageCalculator.getBlockExplosionResistance`.
+        let rail_protected = override_resistance == BlockResistance::TntMinecart
+            && (crate::block::is_rail(state.block())
+                || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
+        let loss = if override_resistance == BlockResistance::WindCharge {
+            // `SimpleExplosionDamageCalculator` with immune blocks: only those resist,
+            // everything else lets the ray through.
+            crate::block::block_tags()
+                .blocks_wind_charge_explosions
+                .contains(state)
+                .then_some((3_600_000.0 + 0.3) * 0.3)
+        } else if override_resistance == BlockResistance::WaterAt(pos) {
+            let water = vanillite_data::block::ids::WATER.default_state();
+            Some((water.block().info().blast_resistance + 0.3) * 0.3)
+        } else if !(state.is_air() && fluid.is_empty()) {
+            let mut resistance = if rail_protected {
+                0.0
+            } else {
+                state
+                    .block()
+                    .info()
+                    .blast_resistance
+                    .max(fluid.info().explosion_resistance)
+            };
+            if override_resistance == BlockResistance::DangerousWitherSkull {
+                resistance =
+                    crate::mob::boss::wither::skull_block_resistance(true, state, resistance);
+            }
+            Some((resistance + 0.3) * 0.3)
+        } else {
+            None
+        };
+        (loss, rail_protected)
     }
 
     /// `hurtEntities`: queues the damage of the living entities in range and pushes the
@@ -880,6 +960,74 @@ impl Level {
     }
 }
 
+/// The ray directions of `calculateExplodedPositions` (the 16 × 16 × 16 grid's surface), in
+/// Vanilla's order: float arithmetic, widened to double, normalised.
+fn ray_directions() -> &'static [(f64, f64, f64)] {
+    static RAYS: std::sync::OnceLock<Vec<(f64, f64, f64)>> = std::sync::OnceLock::new();
+    RAYS.get_or_init(|| {
+        let mut rays = Vec::with_capacity(1352);
+        for xx in 0..16 {
+            for yy in 0..16 {
+                for zz in 0..16 {
+                    if !(xx == 0 || xx == 15 || yy == 0 || yy == 15 || zz == 0 || zz == 15) {
+                        continue;
+                    }
+                    let xd = f64::from(xx as f32 / 15.0 * 2.0 - 1.0);
+                    let yd = f64::from(yy as f32 / 15.0 * 2.0 - 1.0);
+                    let zd = f64::from(zz as f32 / 15.0 * 2.0 - 1.0);
+                    let d = (xd * xd + yd * yd + zd * zd).sqrt();
+                    rays.push((xd / d, yd / d, zd / d));
+                }
+            }
+        }
+        rays
+    })
+}
+
+/// The blocks an explosion's rays can reach (rays cross the blocks near the centre many
+/// times): which of them a ray reached and what a ray loses in each, looked up once.
+struct Cube {
+    min: BlockPos,
+    side: i32,
+    /// A bit per block.
+    reached: Vec<u64>,
+    /// Per block: [`Cube::UNKNOWN`], `NaN` for no loss, else the loss.
+    losses: Vec<f32>,
+    /// Reached positions outside the cube (cannot happen; kept for safety).
+    outside: FxHashSet<BlockPos>,
+}
+
+impl Cube {
+    /// Cubes up to this side are used.
+    const MAX_SIDE: i32 = 64;
+    const UNKNOWN: f32 = f32::NEG_INFINITY;
+
+    /// The cube around `center`; `None` for radii too large for one and for rail protection
+    /// (a block's loss depends on the one above it there, and it hides blocks).
+    fn new(center: Vec3, radius: f32, override_resistance: BlockResistance) -> Option<Self> {
+        if override_resistance == BlockResistance::TntMinecart {
+            return None;
+        }
+        // The longest ray: power `radius * 1.3`, 0.225 per 0.3-block step, plus the block
+        // around the start and rounding.
+        let reach = f64::from(radius) * 1.3 / 0.225 * 0.3 + 2.0;
+        if !(reach.is_finite() && reach * 2.0 + 1.0 <= f64::from(Self::MAX_SIDE)) {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let reach = reach.ceil() as i32;
+        let side = reach * 2 + 1;
+        let cells = (side * side * side) as usize;
+        Some(Self {
+            min: BlockPos::containing(center.x, center.y, center.z).offset(-reach, -reach, -reach),
+            side,
+            reached: vec![0; (cells >> 6) + 1],
+            losses: vec![Self::UNKNOWN; cells],
+            outside: FxHashSet::default(),
+        })
+    }
+}
+
 /// `Level.isInWorldBoundsHorizontal(pos)`.
 fn in_world_bounds_horizontal(pos: BlockPos) -> bool {
     pos.x >= -30_000_000 && pos.z >= -30_000_000 && pos.x < 30_000_000 && pos.z < 30_000_000
@@ -895,15 +1043,25 @@ fn java_hash_set_order(positions: &mut [BlockPos]) {
         capacity *= 2;
     }
     let mask = capacity - 1;
-    positions.sort_by_key(|pos| {
-        let h = pos
-            .y
-            .wrapping_add(pos.z.wrapping_mul(31))
-            .wrapping_mul(31)
-            .wrapping_add(pos.x);
-        let spread = h ^ ((h as u32) >> 16) as i32;
-        (spread as u32 as usize) & mask
-    });
+    // Bucket, then insertion order: unique keys, so an unstable sort keeps insertion order.
+    let mut keys: Vec<u64> = positions
+        .iter()
+        .enumerate()
+        .map(|(i, pos)| {
+            let h = pos
+                .y
+                .wrapping_add(pos.z.wrapping_mul(31))
+                .wrapping_mul(31)
+                .wrapping_add(pos.x);
+            let spread = h ^ ((h as u32) >> 16) as i32;
+            ((spread as u32 as usize & mask) as u64) << 32 | i as u64
+        })
+        .collect();
+    keys.sort_unstable();
+    let unordered = positions.to_vec();
+    for (slot, key) in positions.iter_mut().zip(keys) {
+        *slot = unordered[(key & u64::from(u32::MAX)) as usize];
+    }
 }
 
 #[cfg(test)]

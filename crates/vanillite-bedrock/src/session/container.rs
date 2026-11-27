@@ -1,7 +1,10 @@
 //! Java menus as Bedrock containers: chests, barrels, shulker boxes, ender chests, hoppers,
-//! dispensers and droppers, furnaces, brewing stands and crafting tables open at the block the
-//! player used (chest minecarts, chest boats and hopper minecarts at the entity). A menu with no
-//! block or entity behind it (a plugin menu) becomes a form whose buttons click the slots.
+//! dispensers and droppers, furnaces, brewing stands, crafting tables, crafters, anvils,
+//! enchanting tables, smithing tables, stonecutters, grindstones and cartography tables open at
+//! the block the player used (chest minecarts, chest boats and hopper minecarts at the entity).
+//! A menu with no block or entity behind it (a plugin menu) becomes a form whose buttons click
+//! the slots. Bedrock computes anvil, smithing, stonecutter, grindstone and cartography results
+//! itself; taking one clicks the Java result slot (after `rename_item` or the stonecutter button).
 //!
 //! The menu's own slots are mirrored in [`Open`]; its player inventory part maps onto the
 //! inventory mirror. Bedrock requests on these slots become Java clicks in the open menu
@@ -42,7 +45,24 @@ pub(super) enum Kind {
     Brewing,
     /// `crafting`: result, 3x3 grid.
     Crafting,
+    /// `crafter`: the 3x3 grid (the result slot after the inventory is not shown).
+    Crafter,
+    /// `anvil`: input, material, result.
+    Anvil,
+    /// `enchantment`: item, lapis.
+    Enchanting,
+    /// `smithing`: template, base, addition, result.
+    Smithing,
+    /// `stonecutter`: input, result.
+    Stonecutter,
+    /// `grindstone`: input, additional, result.
+    Grindstone,
+    /// `cartography_table`: map, additional, result.
+    Cartography,
 }
+
+/// Bedrock recipe network ids of the three enchanting options (above all crafting recipes).
+pub(super) const ENCHANT_NET_ID: u32 = 0x4000_0000;
 
 /// The open Java menu.
 #[derive(Debug)]
@@ -59,6 +79,8 @@ pub(super) struct Open {
     /// Shown as a form (no block or entity to open it at).
     form: bool,
     title: String,
+    /// Enchanting table data: costs, clue enchantments and clue levels of the three options.
+    enchant: [[i32; 3]; 3],
 }
 
 /// What the player used last: a block or an entity (Java id).
@@ -84,6 +106,13 @@ fn menu_kind(menu: &str) -> Option<(Kind, usize, i8)> {
         "minecraft:smoker" => (Kind::Furnace, 3, ct::SMOKER),
         "minecraft:brewing_stand" => (Kind::Brewing, 5, ct::BREWING_STAND),
         "minecraft:crafting" => (Kind::Crafting, 10, ct::WORKBENCH),
+        "minecraft:crafter_3x3" => (Kind::Crafter, 9, ct::CRAFTER),
+        "minecraft:anvil" => (Kind::Anvil, 3, ct::ANVIL),
+        "minecraft:enchantment" => (Kind::Enchanting, 2, ct::ENCHANTMENT),
+        "minecraft:smithing" => (Kind::Smithing, 4, ct::SMITHING_TABLE),
+        "minecraft:stonecutter" => (Kind::Stonecutter, 2, ct::STONECUTTER),
+        "minecraft:grindstone" => (Kind::Grindstone, 3, ct::GRINDSTONE),
+        "minecraft:cartography_table" => (Kind::Cartography, 3, ct::CARTOGRAPHY),
         _ => return None,
     })
 }
@@ -104,8 +133,23 @@ fn bedrock_slot(open: &Open, i: usize) -> Option<(u32, u32)> {
             1..=9 => (window::UI, s.saturating_add(31)),
             _ => return None,
         },
+        // Bedrock computes the results of these itself; the inputs live in the UI window.
+        Kind::Anvil => (window::UI, *[1, 2].get(i)?),
+        Kind::Enchanting => (window::UI, *[14, 15].get(i)?),
+        Kind::Smithing => (window::UI, *[53, 51, 52].get(i)?),
+        Kind::Stonecutter => (window::UI, *[3].get(i)?),
+        Kind::Grindstone => (window::UI, *[16, 17].get(i)?),
+        Kind::Cartography => (window::UI, *[12, 13].get(i)?),
         _ => (w, s),
     })
+}
+
+/// Whether the menu's slots are shown one by one (UI window or remapped slots).
+fn per_slot(kind: Kind) -> bool {
+    !matches!(
+        kind,
+        Kind::Chest | Kind::Dispenser | Kind::Hopper | Kind::Furnace | Kind::Crafter
+    )
 }
 
 /// "Stone" or "16 Stone" or the custom name of a stack.
@@ -197,6 +241,7 @@ impl Session {
             cook: java_total,
             form: pos.is_none(),
             title,
+            enchant: [[0, -1, -1]; 3],
         });
         if let Some(pos) = pos {
             self.send(
@@ -271,7 +316,7 @@ impl Session {
             self.show_menu_form();
             return;
         }
-        if matches!(open.kind, Kind::Brewing | Kind::Crafting) {
+        if per_slot(open.kind) {
             for i in 0..open.slots.len() {
                 self.send_open_slot(i);
             }
@@ -280,7 +325,7 @@ impl Session {
         let items = self.version.palette.items();
         let mut body = Vec::with_capacity(open.slots.len().saturating_mul(12));
         for s in &open.slots {
-            items.write_instance(&mut body, &s.stack, s.net);
+            items.write_instance(&mut body, &s.stack, s.net, &self.enchantments);
         }
         let packet = bp::inventory_content(u32::from(open.window), open.slots.len(), &body);
         self.send(id::INVENTORY_CONTENT, &packet);
@@ -382,6 +427,20 @@ impl Session {
             // Java: brew time, fuel; Bedrock also wants the full fuel.
             (Kind::Brewing, 0) => &[(0, value)],
             (Kind::Brewing, 1) => &[(1, value), (2, 20)],
+            // Java: costs 0-2, seed 3, clue enchantments 4-6, clue levels 7-9.
+            (Kind::Enchanting, k @ (0..=2 | 4..=9)) => {
+                let k = usize::try_from(k).unwrap_or(0);
+                let (row, option) = match k {
+                    0..=2 => (0, k),
+                    4..=6 => (1, k.saturating_sub(4)),
+                    _ => (2, k.saturating_sub(7)),
+                };
+                if let Some(v) = open.enchant.get_mut(row).and_then(|r| r.get_mut(option)) {
+                    *v = value;
+                }
+                self.send_enchant_options();
+                return;
+            }
             _ => return,
         };
         for &(key, v) in data {
@@ -390,6 +449,34 @@ impl Session {
                 &bp::container_set_data(window, key, v),
             );
         }
+    }
+
+    /// `player_enchant_options`: the enchanting table's options with a cost and a clue.
+    fn send_enchant_options(&mut self) {
+        let Some(open) = self
+            .inv
+            .open
+            .as_ref()
+            .filter(|o| o.kind == Kind::Enchanting)
+        else {
+            return;
+        };
+        let [costs, clues, levels] = open.enchant;
+        let options: Vec<bp::EnchantOption> = (0..3usize)
+            .filter_map(|i| {
+                let cost = u8::try_from(*costs.get(i)?).ok().filter(|&c| c > 0)?;
+                Some(bp::EnchantOption {
+                    cost,
+                    enchantment: self.enchantments.bedrock(*clues.get(i)?).unwrap_or(0),
+                    level: u8::try_from(*levels.get(i)?).unwrap_or(1).max(1),
+                    net_id: ENCHANT_NET_ID.saturating_add(u32::try_from(i).ok()?),
+                })
+            })
+            .collect();
+        self.send(
+            id::PLAYER_ENCHANT_OPTIONS,
+            &bp::player_enchant_options(&options),
+        );
     }
 
     /// Shows a menu without block or entity as a form: one button per filled slot.

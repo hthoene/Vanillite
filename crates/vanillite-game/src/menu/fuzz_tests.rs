@@ -150,7 +150,7 @@ fn act(
                 _ => rng.next_int_bounded(70),
             };
             let may_build = rng.next_int_bounded(4) != 0;
-            super::container::with_view(inv, level, Vec3::default(), None, |view| {
+            super::container::with_view(inv, level, Vec3::default(), None, None, |view| {
                 view.menu.may_build = may_build;
                 if view.button(id, drops) {
                     super::broadcast_changes(view, &sink);
@@ -165,7 +165,7 @@ fn act(
             }
             let slot = rng.next_int_bounded(60) - 5;
             let enabled = rng.next_int_bounded(2) == 0;
-            super::container::with_view(inv, level, Vec3::default(), None, |view| {
+            super::container::with_view(inv, level, Vec3::default(), None, None, |view| {
                 view.crafter_slot_state(slot, enabled);
             });
             false
@@ -190,7 +190,7 @@ fn act(
             if !super::container::still_valid(inv, level, &|_| true, &|_| true) {
                 return false;
             }
-            super::container::with_view(inv, level, Vec3::default(), None, |view| {
+            super::container::with_view(inv, level, Vec3::default(), None, None, |view| {
                 if !super::is_valid_slot_index(view, slot) {
                     return;
                 }

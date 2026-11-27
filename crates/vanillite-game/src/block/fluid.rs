@@ -644,6 +644,11 @@ pub fn place_liquid(
     }
     let delay = tick_delay(level, WATER);
     level.schedule_fluid_tick(pos, WATER, delay);
+    // `DriedGhastBlock.placeLiquid`.
+    if state.block() == ids::DRIED_GHAST {
+        let sound = super::sound_id("block.dried_ghast.place_in_water");
+        level.play_block_sound(None, pos, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
+    }
     true
 }
 
@@ -826,6 +831,8 @@ fn try_absorb_water(level: &mut Level, start: BlockPos) {
     }
     if count > 1 {
         level.set_block(start, ids::WET_SPONGE.default_state(), update::CLIENTS);
+        let sound = super::sound_id("block.sponge.absorb");
+        level.play_block_sound(None, start, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
     }
 }
 

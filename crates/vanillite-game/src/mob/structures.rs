@@ -188,16 +188,26 @@ impl StructureIndex {
 
     /// The structures whose starts reach `pos`, with whether `pos` is in one of their pieces
     /// (`structureHasPieceAt`) and in their whole box (`getBoundingBox().isInside`).
-    pub fn structures_at(
+    pub fn structures_at(&mut self, level: &Level, pos: BlockPos, f: impl FnMut(&str, bool, bool)) {
+        self.structures_at_of(level, pos, |_| true, f);
+    }
+
+    /// [`Self::structures_at`] for the structures `wanted` accepts; the others are not looked
+    /// up.
+    pub fn structures_at_of(
         &mut self,
         level: &Level,
         pos: BlockPos,
+        wanted: impl Fn(&str) -> bool,
         mut f: impl FnMut(&str, bool, bool),
     ) {
         let Some(here) = self.chunk(level, pos.chunk()) else {
             return;
         };
         for (name, refs) in &here.references {
+            if !wanted(name) {
+                continue;
+            }
             let (mut in_piece, mut in_box) = (false, false);
             for &c in refs {
                 let Some(other) = self.chunk(level, c) else {

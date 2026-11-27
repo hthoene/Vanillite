@@ -149,7 +149,8 @@ fn is_shrieking(state: BlockState) -> bool {
 fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if is_shrieking(state) {
         level.set_block_and_update(pos, state.set("shrieking", "false"));
-        try_respond(level, pos);
+        let now = level.block(pos);
+        try_respond(level, pos, now);
     }
 }
 
@@ -163,19 +164,27 @@ pub fn step_on(level: &mut Level, pos: BlockPos, entity: EntityId) {
     }
 }
 
-/// `preRemoveSideEffects`: a shrieker removed while shrieking answers at once.
+/// `preRemoveSideEffects`: a shrieker removed while shrieking answers at once, with the
+/// block entity's old state (the chunk already holds the new block).
 pub fn pre_remove(level: &mut Level, pos: BlockPos, state: BlockState) {
     if is_shrieking(state) {
-        try_respond(level, pos);
+        try_respond(level, pos, state);
     }
 }
 
-/// `SculkShriekerBlockEntity.tryGetPlayer`: the player behind an entity (itself, the owner
-/// of its projectile, the thrower of a dropped item).
+/// `SculkShriekerBlockEntity.tryGetPlayer`: the player behind an entity (itself, the player
+/// controlling it, the owner of its projectile, the thrower of a dropped item).
 pub fn try_get_player(level: &Level, entity: Option<EntityId>) -> Option<EntityId> {
     let entity = entity?;
     if level.entities.player(entity).is_some() {
         return Some(entity);
+    }
+    // `getControllingPassenger() instanceof ServerPlayer`.
+    if let Some(&rider) = level.entities.riding.passengers_of(entity).first()
+        && level.entities.player(rider).is_some()
+        && crate::riding::controls(&level.entities, rider, entity)
+    {
+        return Some(rider);
     }
     if let Some(owner) = sculk_vibration::projectile_owner(level, Some(entity)) {
         return level.entities.player(owner).is_some().then_some(owner);
@@ -303,8 +312,7 @@ fn can_respond(level: &Level, state: BlockState) -> bool {
 
 /// `tryRespond`: a summoning shrieker that warned answers with a warden (level 4) or the
 /// warden's distant sounds, and darkness around.
-pub fn try_respond(level: &mut Level, pos: BlockPos) {
-    let state = level.block(pos);
+pub fn try_respond(level: &mut Level, pos: BlockPos, state: BlockState) {
     let warning = match level.block_entity(pos) {
         Some(BlockEntity::SculkShrieker(s)) => s.warning_level,
         _ => return,
@@ -371,14 +379,20 @@ pub(crate) fn handle_game_event(
     }
     let destination = center(pos);
     // `canReceiveVibration`: not shrieking and a player behind the event.
-    if is_shrieking(level.block(pos)) || try_get_player(level, context.source).is_none() {
+    // A removed projectile still leads to its owner (`context.owner`).
+    let player = try_get_player(level, context.source).or_else(|| {
+        context
+            .owner
+            .filter(|&o| level.entities.player(o).is_some())
+    });
+    if is_shrieking(level.block(pos)) || player.is_none() {
         return;
     }
     if sculk_vibration::is_occluded(level, source, destination) {
         return;
     }
     let time = level.game_time();
-    let projectile_owner = sculk_vibration::projectile_owner(level, context.source);
+    let projectile_owner = sculk_vibration::event_projectile_owner(level, context);
     if let Some(BlockEntity::SculkShrieker(s)) = level.block_entity_mut(pos) {
         let distance = source.distance_to_sqr(destination).sqrt() as f32;
         s.vibration.add_candidate(

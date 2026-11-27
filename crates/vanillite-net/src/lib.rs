@@ -28,7 +28,7 @@ pub use configuration::{ConfigurationData, json_to_nbt, network_tags};
 pub use conn::rand_bytes;
 pub use limits::{ConnectionGuard, ConnectionLimiter};
 pub use outbound::Outbound;
-pub use player::{Injector, Joined, Latency};
+pub use player::{Injector, Joined, Latency, LoginCheck};
 pub use status::{StatusCache, StatusInfo};
 pub use vanillite_protocol::{Inbound, SharedPacket};
 
@@ -47,6 +47,7 @@ pub(crate) struct Shared {
     configuration: std::sync::RwLock<Arc<ConfigurationData>>,
     pub(crate) limiter: Arc<ConnectionLimiter>,
     pub(crate) auth_permits: Semaphore,
+    pub(crate) logins: std::sync::mpsc::SyncSender<LoginCheck>,
     pub(crate) joins: std::sync::mpsc::SyncSender<Joined>,
     pub(crate) session_id: Uuid,
 }
@@ -132,6 +133,16 @@ impl VirtualOpener {
     }
 }
 
+/// What connections hand to the server: logins waiting for its decision, then joined players.
+/// Both are drained on the server thread every tick.
+#[derive(Debug)]
+pub struct Arrivals {
+    /// Logins to admit or refuse before `LoginFinished`.
+    pub logins: std::sync::mpsc::Receiver<LoginCheck>,
+    /// Players that finished configuration.
+    pub joins: std::sync::mpsc::Receiver<Joined>,
+}
+
 /// The running network pipeline.
 pub struct Network {
     runtime: tokio::runtime::Runtime,
@@ -148,14 +159,15 @@ impl std::fmt::Debug for Network {
 }
 
 impl Network {
-    /// Binds the listener and starts the I/O threads. Joined players arrive on the returned
-    /// receiver. `authenticator` defaults to Mojang's session server in online mode.
+    /// Binds the listener and starts the I/O threads. Logins to decide on and joined players
+    /// arrive on the returned [`Arrivals`]. `authenticator` defaults to Mojang's session
+    /// server in online mode.
     pub fn start(
         config: NetConfig,
         status: StatusInfo,
         configuration: ConfigurationData,
         authenticator: Option<Arc<dyn Authenticator>>,
-    ) -> std::io::Result<(Self, std::sync::mpsc::Receiver<Joined>)> {
+    ) -> std::io::Result<(Self, Arrivals)> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(config.io_threads.max(1))
             .max_blocking_threads(config.max_concurrent_auth.max(1))
@@ -172,6 +184,7 @@ impl Network {
         let authenticator =
             authenticator.unwrap_or_else(|| Arc::new(SessionServer::new(config.auth_timeout)));
         let (joins, joined) = std::sync::mpsc::sync_channel(config.max_pending_joins);
+        let (logins, login_checks) = std::sync::mpsc::sync_channel(config.max_pending_joins);
         let shared = Arc::new(Shared {
             status: StatusCache::new(&status),
             keys,
@@ -179,6 +192,7 @@ impl Network {
             configuration: std::sync::RwLock::new(Arc::new(configuration)),
             limiter: ConnectionLimiter::new(config.max_connections, config.max_pending_per_ip),
             auth_permits: Semaphore::new(config.max_concurrent_auth.max(1)),
+            logins,
             joins,
             session_id: Uuid(u128::from_be_bytes(conn::rand_bytes())),
             config,
@@ -193,7 +207,10 @@ impl Network {
                 shared,
                 local_addr,
             },
-            joined,
+            Arrivals {
+                logins: login_checks,
+                joins: joined,
+            },
         ))
     }
 

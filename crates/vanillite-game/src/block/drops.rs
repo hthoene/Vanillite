@@ -46,17 +46,10 @@ pub fn drop_resources(
         block_entity: Some(&components),
     };
     // `LootContext.Builder.create`: the table's random sequence, else the level random.
-    match data.loot.block_sequence(state) {
-        Some(key) => {
-            let sequences = std::sync::Arc::clone(level.random_sequences());
-            let mut sequences = sequences
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            data.loot
-                .block_drops(&loot, sequences.get(key), &mut stacks);
-        }
-        None => data.loot.block_drops(&loot, level.random(), &mut stacks),
-    }
+    let mut random = level.lend_random();
+    data.loot
+        .roll_block(level, pos, &loot, &mut random, &mut stacks);
+    level.restore_random(random);
     if let Some(hooks) = level.hooks_for(vanillite_abi::event::BLOCK_DROP) {
         let player = breaker
             .filter(|&b| level.entities.player(b).is_some())
@@ -164,7 +157,7 @@ pub fn explosion_loot(
         block_entity: Some(&components),
     };
     let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
-    data.loot.roll_block(level, &loot, &mut random, out);
+    data.loot.roll_block(level, pos, &loot, &mut random, out);
     *level.random() = random;
 }
 

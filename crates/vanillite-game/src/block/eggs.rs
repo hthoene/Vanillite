@@ -25,9 +25,22 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     } else if block == ids::FROGSPAWN {
         b.on_place = Some(frogspawn_on_place);
         b.tick = Some(frogspawn_tick);
+        b.entity_inside = Some(frogspawn_entity_inside);
     } else if block == ids::DRIED_GHAST {
         b.tick = Some(dried_ghast_tick);
         b.random_tick = Some(dried_ghast_random_tick);
+    }
+}
+
+/// `FrogspawnBlock.entityInside`: a falling block destroys the spawn.
+fn frogspawn_entity_inside(
+    level: &mut Level,
+    _state: BlockState,
+    pos: BlockPos,
+    entity: vanillite_world::entity::EntityId,
+) {
+    if level.entities.falling_block(entity).is_some() {
+        level.destroy_block(pos, false, None);
     }
 }
 

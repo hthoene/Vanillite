@@ -47,7 +47,7 @@ flowchart BT
 | Crate | Role |
 |---|---|
 | `vanillite-base` | Java-exact maths and random generators, positions, bounding boxes, slot maps, bit sets, the per-tick arena. |
-| `vanillite-data` | Tables generated from Mojang's data (`cargo xtask codegen` from `data/vanilla/`): block states and their facts, shapes, registries, protocol ids, entity and item facts. |
+| `vanillite-data` | Tables generated at build time from Mojang's data (`vanillite-datagen`: extracted from the server jar pinned in `data/vanilla/version.toml` into a per-machine cache): block states and their facts, shapes, registries, protocol ids, entity and item facts. |
 | `vanillite-nbt` | NBT and SNBT with a budgeted streaming reader and writer. |
 | `vanillite-macros` | `#[derive(Packet)]`, the rule catalogue and behaviour tables. |
 | `vanillite-protocol` | The Java protocol without I/O: primitives, framing, packets, text components. |

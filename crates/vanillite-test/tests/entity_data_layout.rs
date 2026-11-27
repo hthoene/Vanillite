@@ -1,5 +1,5 @@
 //! The synched entity data of every summonable entity type against Vanilla's layout
-//! (`data/vanilla/entity_data.json`): every item the server sends must have an index the
+//! (`entity_data.json` of the extracted data): every item the server sends must have an index the
 //! type defines, with that index's serializer. The client drops the connection on any
 //! mismatch (`SynchedEntityData.assignValue`), so a wrong index kicks every player that
 //! comes near such an entity.
@@ -17,10 +17,7 @@ use vanillite_test::world::ScenarioWorld;
 type Layouts = (BTreeMap<String, BTreeMap<u8, String>>, Vec<String>);
 
 fn vanilla_layouts() -> Layouts {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../data/vanilla/entity_data.json"
-    );
+    let path = std::path::Path::new(vanillite_data::VANILLA_DATA_DIR).join("entity_data.json");
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let serializers = json["serializers"]

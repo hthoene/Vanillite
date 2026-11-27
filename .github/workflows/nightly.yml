@@ -50,7 +50,7 @@ jobs:
             gh issue create --title "$title" --body "Mojang released Minecraft $NEWER (found by the nightly \`cargo xtask version check\`).
 
           1. \`cargo xtask version update $NEWER\` writes the change report (target/version/$NEWER/change-report.md) and tests the new data in a separate worktree.
-          2. Do the work the report lists, then switch with \`cargo xtask version update $NEWER --final\` and commit data, generated code and goldens."
+          2. Do the work the report lists, then switch with \`cargo xtask version update $NEWER --final\` and commit the pins (data/**/version.toml) and goldens."
           fi
 
   bulk-tests:
@@ -61,6 +61,14 @@ jobs:
         with:
           ref: dev
       - run: rustup toolchain install --profile minimal
+      # The Vanilla data the build extracts from Mojang's server jars (#213), one entry per
+      # pinned version and pipeline: restored instead of extracted again; a missing entry is
+      # extracted by the build and saved with the new key.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vanillite/vanilla-data
+          key: vanilla-data-${{ hashFiles('data/**/version.toml', 'tools/extractor/src/**/*.java', 'crates/vanillite-datagen/src/**') }}
+          restore-keys: vanilla-data-
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
@@ -93,6 +101,14 @@ jobs:
         with:
           ref: dev
       - run: rustup toolchain install --profile minimal
+      # The Vanilla data the build extracts from Mojang's server jars (#213), one entry per
+      # pinned version and pipeline: restored instead of extracted again; a missing entry is
+      # extracted by the build and saved with the new key.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vanillite/vanilla-data
+          key: vanilla-data-${{ hashFiles('data/**/version.toml', 'tools/extractor/src/**/*.java', 'crates/vanillite-datagen/src/**') }}
+          restore-keys: vanilla-data-
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
@@ -107,6 +123,14 @@ jobs:
         with:
           ref: dev
       - run: rustup toolchain install nightly --profile minimal
+      # The Vanilla data the build extracts from Mojang's server jars (#213), one entry per
+      # pinned version and pipeline: restored instead of extracted again; a missing entry is
+      # extracted by the build and saved with the new key.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vanillite/vanilla-data
+          key: vanilla-data-${{ hashFiles('data/**/version.toml', 'tools/extractor/src/**/*.java', 'crates/vanillite-datagen/src/**') }}
+          restore-keys: vanilla-data-
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
@@ -138,6 +162,14 @@ jobs:
         with:
           ref: dev
       - run: rustup toolchain install --profile minimal
+      # The Vanilla data the build extracts from Mojang's server jars (#213), one entry per
+      # pinned version and pipeline: restored instead of extracted again; a missing entry is
+      # extracted by the build and saved with the new key.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vanillite/vanilla-data
+          key: vanilla-data-${{ hashFiles('data/**/version.toml', 'tools/extractor/src/**/*.java', 'crates/vanillite-datagen/src/**') }}
+          restore-keys: vanilla-data-
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false

@@ -1,0 +1,3 @@
+tick = 24
+cause = "only the level random differs, from a tick that changes between Vanilla recordings of the same scenario (tick 18 in one, 24 in another): Vanilla draws from it nondeterministically while a client player is there; blocks, fluid ticks and the client view match (client view #196)"
+owner = "network-developer #196"
