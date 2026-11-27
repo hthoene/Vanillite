@@ -11,8 +11,10 @@
 //! cargo xtask golden bless <scenario>...
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask dev [--release] [-- <server args>]
-//! cargo xtask deploy [--port <port>] [--release]
-//! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask deploy [--host <host>] [--port <port>] [--release]
+//! cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask testserver [--host <host>] run [--fetch <path>]... -- <xtask args>
+//! cargo xtask testserver [--host <host>] nightly [status | fetch [<run>]]
 //! cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
 //! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
 //! cargo xtask egg [--check] | egg smoke [--image <ref>]
@@ -93,15 +95,27 @@ pub const USAGE: &str = "usage:
       crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
   cargo xtask dev [--release] [-- <server args>]
       Build and run the server in ./run (debug build; --release uses the release-fast profile).
-  cargo xtask deploy [--port <port>] [--release]
+  cargo xtask deploy [--host <host>] [--port <port>] [--release]
       Build the server (release-fast; --release for the full release profile) and install it on
       the test server as vanillite@<port>.service. <port> is 30003-30999, default 30003
       (30001, 30002 and the proxy follow dev automatically).
-      The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
-  cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
-      provision runs scripts/testserver/provision.sh on the test server (idempotent);
-      status lists the services, ports, the last auto-deploys and incidents; the others act on
-      vanillite@<port> (default 30001).
+      The SSH host is --host, else VANILLITE_TEST_HOST, else vanillite-test (vanillite-test2:
+      the internal server for experiments, offline mode).
+  cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
+      provision runs scripts/testserver/provision.sh on the test server (idempotent; on
+      vanillite-test2 scripts/testserver/provision-test2.sh); status lists the services, ports,
+      the last auto-deploys and incidents (vanillite-test2: lock, disk, last nightly run); the
+      others act on vanillite@<port> (default 30001). Host as for deploy.
+  cargo xtask testserver [--host <host>] run [--fetch <path>]... -- <xtask args>
+      Heavy tests and experiments on vanillite-test2 (default host): wait for its lock, copy
+      this checkout (without target/ and .git/) to /opt/vanillite-work/src there, run
+      `cargo xtask <xtask args>` in it, then copy the --fetch paths (relative to the checkout,
+      e.g. target/parity-fuzz) back. Example: testserver run --fetch target/parity-fuzz --
+      parity fuzz --minutes 30.
+  cargo xtask testserver [--host <host>] nightly [status | fetch [<run>]]
+      The nightly heavy tests on vanillite-test2 (scripts/testserver/nightly.sh, 00:30
+      Europe/Berlin): summaries of the newest runs, or download one run (default the newest)
+      into target/nightly/.
   cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
       Crashes and suspicious disconnects that vanillite-incidents saved on the test server:
       list the newest (default 20), show one (summary and backtrace), or download bundles into

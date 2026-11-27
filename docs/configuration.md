@@ -382,3 +382,22 @@ view-distance = 8
 | `replacement-blocks` | limit |  | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | Blocks that "obfuscate" also replaces with random hidden blocks (block ids). Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__REPLACEMENT_BLOCKS`. |
 | `max-block-height` | limit |  | `64` | `64` | `64` | `64` | `64` | Blocks at and above this height are always sent as they are. Integer from -2048 to 2048. Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__MAX_BLOCK_HEIGHT`. |
 | `update-radius` | limit |  | `2` | `2` | `2` | `2` | `2` | Distance in blocks around a changed block (mined, exploded, moved) within which hidden blocks are sent with their real state. Integer from 1 to 4. Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__UPDATE_RADIUS`. |
+
+### Extra worlds
+
+Worlds besides `level-name`, each with its own folder, `level.dat`, seed and generator (see [Worlds](worlds.md#extra-worlds)), are loaded at startup from one section each. Their rules come from `[worlds."minecraft:<name>"]`.
+
+```toml
+[extra-worlds.lobby]
+environment = "normal"
+generator = "flat"
+seed = ""
+generate-structures = true
+```
+
+| Key | Default | Values | Description |
+|---|---|---|---|
+| `environment` | `normal` | `normal`, `nether`, `the_end` | Its dimension type. |
+| `generator` | `normal` | `normal`, `flat`, `void`, `amplified`, `large_biomes`, a dimension key | The terrain of a new world; a dimension key takes that dimension's generator. |
+| `seed` | (empty) | text | The seed of a new world, like `level-seed`; empty for a random one. |
+| `generate-structures` | `true` | `true`, `false` | Whether a new world gets structures. |

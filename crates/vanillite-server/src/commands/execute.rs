@@ -168,9 +168,8 @@ fn facing(source: &CommandSource, at: Vec3) -> CommandSource {
 fn teleport_scale(global: &crate::global::Global, from: WorldId, to: WorldId) -> f64 {
     let scale = |w: WorldId| {
         global
-            .level
-            .dimension_types
-            .get(w.index())
+            .dimensions
+            .facts(w)
             .map_or(1.0, |t| t.coordinate_scale)
     };
     scale(from) / scale(to)
@@ -634,9 +633,6 @@ pub(crate) fn summon_for(
     if select::find_uuid(&env.level.entities, uuid).is_some() {
         return Err(duplicate());
     }
-    // The level's allocator (the server's shared one).
-    let network_id = env.level.network_ids_arc().next();
-    let new = NewEntity::new(kind, network_id, uuid, pos);
     let short = |key: &str, default: i32| {
         nbt.get(key)
             .and_then(Tag::as_i64)
@@ -747,6 +743,9 @@ pub(crate) fn summon_for(
         }
         return select::local(entities, env.world, id).ok_or_else(failed);
     }
+    // The level's allocator (the server's shared one).
+    let network_id = env.level.network_ids_arc().next();
+    let new = NewEntity::new(kind, network_id, uuid, pos);
     let entities = &mut env.level.entities;
     let id = if kind == ids::ITEM {
         let stack = match nbt.get("Item") {

@@ -698,8 +698,8 @@ pub fn tick_arrow(
 }
 
 /// `Entity.applyEffectsFromBlocks(from, to)` of a projectile whose box was `start_box` at
-/// `from`: `entityInside` (buttons, pressure plates, tripwires) of the blocks the box touches
-/// on its way, as world actions. The way is sampled in steps of at most a quarter block.
+/// `from`: `entityInside` (buttons, pressure plates, tripwires) of the blocks the box passes
+/// on its way ([`crate::survival::inside`]), as world actions.
 pub fn inside_blocks(
     level: &Level,
     cx: &mut MobContext,
@@ -708,26 +708,18 @@ pub fn inside_blocks(
     from: Vec3,
     to: Vec3,
 ) {
-    let delta = to - from;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let steps = ((delta.length() / 0.25).ceil() as u32).clamp(1, 64);
-    let base = start_box.inflate(-1.0e-5, -1.0e-5, -1.0e-5);
-    let mut seen: Vec<BlockPos> = Vec::new();
-    for i in 0..=steps {
-        let f = f64::from(i) / f64::from(steps);
-        let b = base.offset(delta.x * f, delta.y * f, delta.z * f);
-        for x in b.min_x.floor() as i32..=b.max_x.floor() as i32 {
-            for y in b.min_y.floor() as i32..=b.max_y.floor() as i32 {
-                for z in b.min_z.floor() as i32..=b.max_z.floor() as i32 {
-                    let p = BlockPos::new(x, y, z);
-                    if !seen.contains(&p) && level.has_entity_inside(level.block(p)) {
-                        seen.push(p);
-                        cx.actions.push(super::WorldAction::EntityInside(p, id));
-                    }
-                }
-            }
-        }
-    }
+    #[allow(clippy::cast_possible_truncation)]
+    let dims = level.entities.store.get(id).map_or(
+        vanillite_world::entity::Dimensions {
+            width: (start_box.max_x - start_box.min_x) as f32,
+            height: (start_box.max_y - start_box.min_y) as f32,
+        },
+        |e| e.dims(),
+    );
+    let way = [crate::survival::inside::Movement::plain(from, to)];
+    crate::block::plate::for_each_inside(level, dims, &way, |pos| {
+        cx.actions.push(super::WorldAction::EntityInside(pos, id));
+    });
 }
 
 /// `soundEvent`: what the arrow sounds like when it hits.

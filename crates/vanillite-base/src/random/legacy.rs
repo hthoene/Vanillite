@@ -8,7 +8,7 @@ const INCREMENT: i64 = 0xB;
 const MASK: i64 = (1 << 48) - 1;
 
 /// Java's 48-bit linear congruential generator (`LegacyRandomSource`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LegacyRandom {
     seed: i64,
     gaussian: Gaussian,

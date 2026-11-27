@@ -683,11 +683,11 @@ pub(crate) fn move_to_world(
 }
 
 /// The world of a plugin's world index, if there is one.
-pub(crate) fn plugin_world(global: &Global, index: u32) -> Option<WorldId> {
+pub(crate) fn plugin_world(global: &crate::global::Global, index: u32) -> Option<WorldId> {
     u16::try_from(index)
         .ok()
-        .filter(|&i| usize::from(i) < global.dimensions.len())
         .map(WorldId)
+        .filter(|&w| global.dimensions.is_loaded(w))
 }
 
 /// `ComponentUtils.formatList` with `, ` in gray.

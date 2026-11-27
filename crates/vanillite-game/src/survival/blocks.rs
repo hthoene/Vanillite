@@ -200,7 +200,7 @@ impl BlockFacts {
 }
 
 /// `FluidState.getHeight`: full when the same fluid is above, else its own height.
-fn fluid_height(
+pub(super) fn fluid_height(
     blocks: &dyn BlockAccess,
     facts: &BlockFacts,
     pos: BlockPos,
@@ -374,20 +374,36 @@ pub fn is_in_wall(blocks: &dyn BlockAccess, facts: &BlockFacts, eye: Vec3, width
     })
 }
 
-/// What an entity touches inside its box (the effects of `checkInsideBlocks` at its position).
+/// The effects one step of the way collected (`InsideBlockEffectApplier.StepBasedCollector`).
+/// They apply in this order: `FREEZE`, `CLEAR_FREEZE`, `FIRE_IGNITE` and the fire damage,
+/// `LAVA_IGNITE` and `lavaHurt`, what runs before `EXTINGUISH` (melting powder snow, the
+/// cauldron), `EXTINGUISH`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Inside {
-    /// Fire damage of each fire block touched, summed by count (`BaseFireBlock.entityInside`).
+pub struct StepEffects {
+    /// `FREEZE` (powder snow).
+    pub freeze: bool,
+    /// `CLEAR_FREEZE` (fire, lava cauldrons).
+    pub clear_freeze: bool,
+    /// `FIRE_IGNITE` with the highest fire damage of the fire blocks touched
+    /// (`BaseFireBlock.entityInside`).
     pub fire: Option<f32>,
     /// Number of fire blocks touched.
     pub fire_blocks: u8,
-    /// Number of lava fluid blocks touched.
+    /// `LAVA_IGNITE`: number of lava fluid blocks and lava cauldrons touched.
     pub lava_blocks: u8,
-    /// Touches water (`EXTINGUISH`).
-    pub water: bool,
+    /// The first powder snow block touched: a burning entity melts it before the fire goes
+    /// out (`runBefore(EXTINGUISH)`).
+    pub melt_snow: Option<BlockPos>,
     /// The first water or powder snow cauldron touched: a burning entity takes a level of
     /// it before the fire goes out (`LayeredCauldronBlock.entityInside`).
     pub cauldron: Option<BlockPos>,
+    /// `EXTINGUISH` (water, powder snow, filled cauldrons).
+    pub extinguish: bool,
+}
+
+/// What an entity touches on its way (the effects of `checkInsideBlocks`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Inside {
     /// `CactusBlock.entityInside`.
     pub cactus: bool,
     /// `SweetBerryBushBlock.entityInside`: a bush touched, and whether one of them is grown
@@ -400,72 +416,136 @@ pub struct Inside {
     pub wither_rose: bool,
     /// `PowderSnowBlock.entityInside`: the first powder snow block touched.
     pub powder_snow: Option<BlockPos>,
+    /// `WebBlock.entityInside`.
+    pub cobweb: bool,
+    steps: [StepEffects; Inside::STEPS],
+    step_count: u8,
 }
 
-/// The blocks inside the deflated box of an entity at its current position.
-pub fn inside_blocks(blocks: &dyn BlockAccess, facts: &BlockFacts, aabb: Aabb) -> Inside {
-    let b = Aabb {
-        min_x: aabb.min_x + 1.0e-5,
-        min_y: aabb.min_y + 1.0e-5,
-        min_z: aabb.min_z + 1.0e-5,
-        max_x: aabb.max_x - 1.0e-5,
-        max_y: aabb.max_y - 1.0e-5,
-        max_z: aabb.max_z - 1.0e-5,
+impl Inside {
+    /// Steps with effects kept apart; the effects of later ones join the last.
+    const STEPS: usize = 4;
+
+    /// The collected effects, step by step in the order they apply.
+    pub fn steps(&self) -> &[StepEffects] {
+        &self.steps[..usize::from(self.step_count)]
+    }
+
+    /// Fire or lava touched on the way.
+    pub fn burns(&self) -> bool {
+        self.steps()
+            .iter()
+            .any(|s| s.fire.is_some() || s.lava_blocks > 0)
+    }
+
+    /// `flushStep`: the effects of a finished step.
+    fn flush(&mut self, step: StepEffects) {
+        if step == StepEffects::default() {
+            return;
+        }
+        let count = usize::from(self.step_count);
+        if count < Inside::STEPS {
+            self.steps[count] = step;
+            self.step_count += 1;
+            return;
+        }
+        let last = &mut self.steps[Inside::STEPS - 1];
+        last.freeze |= step.freeze;
+        last.clear_freeze |= step.clear_freeze;
+        last.fire = match (last.fire, step.fire) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        last.fire_blocks = last.fire_blocks.saturating_add(step.fire_blocks);
+        last.lava_blocks = last.lava_blocks.saturating_add(step.lava_blocks);
+        last.melt_snow = last.melt_snow.or(step.melt_snow);
+        last.cauldron = last.cauldron.or(step.cauldron);
+        last.extinguish |= step.extinguish;
+    }
+}
+
+/// The blocks an entity of the size `dims` is inside on the movements of a tick
+/// ([`super::inside`]), each block once; `each` sees every block whose `entityInside` runs.
+pub fn inside_blocks(
+    blocks: &dyn BlockAccess,
+    facts: &BlockFacts,
+    dims: vanillite_world::entity::Dimensions,
+    fast_fall: bool,
+    movements: &[super::inside::Movement],
+    mut each: impl FnMut(&super::inside::Cell),
+) -> Inside {
+    let walker = super::inside::Walker {
+        blocks,
+        facts: Some(facts),
+        dims,
+        fast_fall,
     };
     let mut out = Inside::default();
-    for pos in cells(b) {
-        let Some(state) = blocks.block_state(pos) else {
-            continue;
-        };
-        if state.is_air() {
-            continue;
+    let mut step = StepEffects::default();
+    // `advanceStep`: effects of one step apply together.
+    let mut last_step = -1;
+    walker.walk(movements, |cell| {
+        if cell.step != last_step {
+            last_step = cell.step;
+            out.flush(std::mem::take(&mut step));
         }
-        let block = state.block();
-        if block == vanillite_data::block::ids::LAVA_CAULDRON {
-            // `LavaCauldronBlock.entityInside`: `LAVA_IGNITE` and `lavaHurt`.
-            out.lava_blocks = out.lava_blocks.saturating_add(1);
-        } else if block == vanillite_data::block::ids::WATER_CAULDRON
-            || block == vanillite_data::block::ids::POWDER_SNOW_CAULDRON
-        {
-            out.water = true;
-            out.cauldron.get_or_insert(pos);
-        }
-        match block.info().kind {
-            vanillite_data::block::BlockKind::CactusBlock => out.cactus = true,
-            vanillite_data::block::BlockKind::SweetBerryBushBlock => {
-                let grown = state.int("age").unwrap_or(0) != 0;
-                out.berry_bush = Some(out.berry_bush.unwrap_or(false) || grown);
+        let (state, pos) = (cell.state, cell.pos);
+        if cell.in_block {
+            let block = state.block();
+            if block == vanillite_data::block::ids::LAVA_CAULDRON {
+                // `LavaCauldronBlock.entityInside`: `LAVA_IGNITE` and `lavaHurt`.
+                step.clear_freeze = true;
+                step.lava_blocks = step.lava_blocks.saturating_add(1);
+            } else if block == vanillite_data::block::ids::WATER_CAULDRON
+                || block == vanillite_data::block::ids::POWDER_SNOW_CAULDRON
+            {
+                step.extinguish = true;
+                step.cauldron.get_or_insert(pos);
             }
-            vanillite_data::block::BlockKind::CampfireBlock if state.flag("lit") => {
-                let damage = if block == vanillite_data::block::ids::SOUL_CAMPFIRE {
-                    2.0
-                } else {
-                    1.0
-                };
-                out.campfire.get_or_insert(damage);
-            }
-            vanillite_data::block::BlockKind::WitherRoseBlock => out.wither_rose = true,
-            vanillite_data::block::BlockKind::PowderSnowBlock => {
-                out.powder_snow.get_or_insert(pos);
-            }
-            _ => {}
-        }
-        if let Some(damage) = facts.fire_damage(state) {
-            out.fire = Some(out.fire.map_or(damage, |d| d.max(damage)));
-            out.fire_blocks = out.fire_blocks.saturating_add(1);
-        }
-        let fluid = state.fluid_state();
-        if !fluid.is_empty() {
-            let top = f64::from(pos.y) + f64::from(fluid_height(blocks, facts, pos, fluid));
-            if b.min_y <= top {
-                if facts.is_lava(fluid) {
-                    out.lava_blocks = out.lava_blocks.saturating_add(1);
-                } else if facts.is_water(fluid) {
-                    out.water = true;
+            match block.info().kind {
+                vanillite_data::block::BlockKind::CactusBlock => out.cactus = true,
+                vanillite_data::block::BlockKind::SweetBerryBushBlock => {
+                    let grown = state.int("age").unwrap_or(0) != 0;
+                    out.berry_bush = Some(out.berry_bush.unwrap_or(false) || grown);
                 }
+                vanillite_data::block::BlockKind::CampfireBlock if state.flag("lit") => {
+                    let damage = if block == vanillite_data::block::ids::SOUL_CAMPFIRE {
+                        2.0
+                    } else {
+                        1.0
+                    };
+                    out.campfire.get_or_insert(damage);
+                }
+                vanillite_data::block::BlockKind::WitherRoseBlock => out.wither_rose = true,
+                vanillite_data::block::BlockKind::PowderSnowBlock => {
+                    out.powder_snow.get_or_insert(pos);
+                    step.melt_snow.get_or_insert(pos);
+                    step.freeze = true;
+                    step.extinguish = true;
+                }
+                vanillite_data::block::BlockKind::WebBlock => out.cobweb = true,
+                _ => {}
+            }
+            if let Some(damage) = facts.fire_damage(state) {
+                step.clear_freeze = true;
+                step.fire = Some(step.fire.map_or(damage, |d| d.max(damage)));
+                step.fire_blocks = step.fire_blocks.saturating_add(1);
+            }
+            each(cell);
+        }
+        if cell.in_fluid {
+            let fluid = state.fluid_state();
+            if facts.is_lava(fluid) {
+                // `LavaFluid.entityInside`.
+                step.clear_freeze = true;
+                step.lava_blocks = step.lava_blocks.saturating_add(1);
+            } else if facts.is_water(fluid) {
+                step.extinguish = true;
             }
         }
-    }
+        true
+    });
+    out.flush(step);
     out
 }
 

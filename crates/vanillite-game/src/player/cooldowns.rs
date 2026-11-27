@@ -18,7 +18,7 @@ pub struct ItemCooldowns {
 }
 
 /// The `use_cooldown` component: seconds and the optional group (patched, else the item's
-/// default: ender pearls and chorus fruit 1 s, wind charges 0.5 s).
+/// default component, which has no group).
 fn use_cooldown(stack: &ItemStack) -> Option<(f32, Option<String>)> {
     if stack.is_empty() {
         return None;
@@ -30,11 +30,8 @@ fn use_cooldown(stack: &ItemStack) -> Option<(f32, Option<String>)> {
         {
             return None;
         }
-        return match item::item_id(stack).name() {
-            "minecraft:ender_pearl" | "minecraft:chorus_fruit" => Some((1.0, None)),
-            "minecraft:wind_charge" => Some((0.5, None)),
-            _ => None,
-        };
+        let seconds = item::item_id(stack).info().use_cooldown;
+        return (seconds > 0.0).then_some((seconds, None));
     };
     let mut r = Reader::new(value);
     let seconds = r.f32().ok()?;

@@ -57,17 +57,27 @@ pub(crate) fn plan(
     level_name: &str,
     dimensions: &Dimensions,
 ) -> Result<FormatPlan, StartError> {
-    let level_dir = dir.join(level_name);
     let layout = layout(config);
     let dimension_dirs: Vec<PathBuf> = dimensions
         .names()
         .map(|d| layout.dimension_dir(dir, level_name, d))
         .collect();
+    plan_in(config, dir, level_name, &dimension_dirs)
+}
+
+/// [`plan`] of the world `level_name` (a folder of `dir`) with these dimension folders.
+pub(crate) fn plan_in(
+    config: &Config,
+    dir: &Path,
+    level_name: &str,
+    dimension_dirs: &[PathBuf],
+) -> Result<FormatPlan, StartError> {
+    let level_dir = dir.join(level_name);
     let wanted = configured(config);
     let error = |e: std::io::Error| StartError::Io(format!("world \"{level_name}\": {e}"));
     let backup = convert_settings(config, dir, 1).backup;
     if let format::Interrupted::Pending(to) =
-        format::finish_interrupted(dir, &level_dir, &dimension_dirs, backup.as_deref())
+        format::finish_interrupted(dir, &level_dir, dimension_dirs, backup.as_deref())
             .map_err(error)?
     {
         log::warn!(
@@ -78,7 +88,7 @@ pub(crate) fn plan(
             to.name()
         );
     }
-    let found = format::detect(&level_dir, &dimension_dirs).map_err(error)?;
+    let found = format::detect(&level_dir, dimension_dirs).map_err(error)?;
     if found == Some(WorldFormat::Vanillite) {
         // An own-format world of an older version: records are upgraded as they are saved.
         format::stamp_current(&level_dir).map_err(error)?;
@@ -207,7 +217,7 @@ fn open_offline(dir: &Path) -> Result<Offline, StartError> {
     let dimensions = crate::world_setup::WorldGen::load(&level_dir)?
         .unwrap_or_else(crate::world_setup::WorldGen::empty)
         .bake(packs.as_ref())
-        .dimensions();
+        .dimensions(packs.as_ref());
     let layout = layout(&config);
     let dimension_dirs: Vec<PathBuf> = dimensions
         .names()

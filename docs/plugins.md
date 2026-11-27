@@ -113,7 +113,7 @@ library in `native/<target-triple>/` (one per platform, e.g.
 | Events | `on_login`, `on_join`, `on_leave`, `on_chat`, `on_command`, `on_players_moved` (one batch per world and tick), `on_interact`, `on_block_break`, `on_block_place`, `on_entity_damage`, `on_death`, `on_entity_death`, `on_respawn`, `on_change_world`, `on_game_mode_change`, `on_bed_enter`, `on_bed_leave`, `on_spawn_change`; each with a priority (`priority::*`), many cancellable. |
 | Commands | `Registrar::command` with Brigadier trees (`Command::literal`, `Command::argument`, `ArgType`), suggestions and permissions; `Server::run_command` runs any command. |
 | Players | messages, action bar, titles, tab list, kick, permission checks, broadcast. |
-| Worlds | worlds and their names, single and bulk block reads and writes, player positions. |
+| Worlds | worlds and their names, single and bulk block reads and writes, player positions; extra worlds with their own folder (`create_world` with a `WorldCreator`, `load_world`, `unload_world`, `world_details`, `on_world_load`, `on_world_unload`) and players moved between worlds from any thread (`move_player`). |
 | Data | persistent entity and player data (`entity_data`, `set_entity_data`; saved with the entity), the plugin's `config.toml` (`Registrar::config` writes the defaults, `Server::config_string` and siblings read it), its data folder (`Server::data_dir`), and the server's rules (`Server::rule`). |
 | Providers | `Registrar::chunk_generator` replaces the world generator of chosen dimensions (declare `provides = ["chunk-generator"]`); `Registrar::permission_provider` answers permission checks. |
 | Logging | `vanillite_plugin::info!`, `debug!` and siblings, prefixed with the plugin's id. |

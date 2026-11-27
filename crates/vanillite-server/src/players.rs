@@ -1245,7 +1245,7 @@ impl WorldPlayers {
                     has_ceiling: global
                         .dimensions
                         .world(dimension_name)
-                        .and_then(|w| global.level.dimension_types.get(w.index()))
+                        .and_then(|w| global.dimensions.facts(w))
                         .is_some_and(|t| t.has_ceiling),
                 };
                 vanillite_game::carried::tick(level, owner, player);
@@ -1962,7 +1962,8 @@ fn touch_orb(
         return;
     }
     let n = i32::try_from(near.len()).unwrap_or(i32::MAX);
-    let pick = orbs::with_entity_random(|r| r.next_int_bounded(n));
+    // `Util.getRandom(orbs, player.getRandom())`.
+    let pick = survival.random.next_int_bounded(n);
     let Some(&orb) = usize::try_from(pick).ok().and_then(|i| near.get(i)) else {
         return;
     };
@@ -1970,15 +1971,14 @@ fn touch_orb(
         return;
     }
     survival.take_xp_delay = orbs::TAKE_XP_DELAY;
-    let points = orbs::with_entity_random(|r| {
-        orbs::take_one(
-            &mut level.entities,
-            orb,
-            inventory,
-            &global.game().enchanting,
-            &mut |n| r.next_int_bounded(n),
-        )
-    });
+    let random = &mut survival.random;
+    let points = orbs::take_one(
+        &mut level.entities,
+        orb,
+        inventory,
+        &global.game().enchanting,
+        &mut |n| random.next_int_bounded(n),
+    );
     let Some(points) = points else {
         return;
     };

@@ -310,11 +310,14 @@ pub(super) fn iron_after_hurt(h: &mut Hurt<'_, '_>, amount: f32) {
     let max = m.max_health();
     let before = (m.health + amount).min(max);
     if crackiness(before / max) != crackiness(m.health / max) {
-        combat::mob_sound(
+        // `playSound(IRON_GOLEM_DAMAGE, 1.0F, 1.0F)`: no voice pitch draws.
+        sound_at(
             h.ents,
             h.env,
             h.target,
             "minecraft:entity.iron_golem.damage",
+            SoundSource::Neutral,
+            1.0,
         );
     }
 }

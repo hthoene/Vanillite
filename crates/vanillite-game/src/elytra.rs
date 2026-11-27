@@ -261,14 +261,9 @@ pub fn swappable_slot(stack: &ItemStack) -> Option<EquipmentSlot> {
     if stack.is_empty() {
         return None;
     }
-    let slot = item::item_id(stack).info().equip_slot;
-    let slot = EquipmentSlot::from_ordinal(slot)?;
-    let name = item::item_id(stack).name();
-    let not_swappable = name == "minecraft:carved_pumpkin"
-        || name.ends_with("_skull")
-        || name.ends_with("_head")
-        || name == "minecraft:shield";
-    (slot.is_armor() && !not_swappable).then_some(slot)
+    let info = item::item_id(stack).info();
+    let slot = EquipmentSlot::from_ordinal(info.equip_slot)?;
+    (slot.is_armor() && info.equip_swappable).then_some(slot)
 }
 
 /// `Equippable.swapWithEquipmentSlot`: the held item and the worn one change places (a stack

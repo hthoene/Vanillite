@@ -70,7 +70,10 @@ pub use events::{
 pub use game::{ChunkPopulator, GameEvent, Goal, GoalAction, GoalMob};
 pub use generator::{ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, WorldInfo};
 pub use registrar::{Permission, PermissionDefault, Registrar};
-pub use server::{BossBar, Ctx, Owner, RayHit, Server, TaskId, WorldBorder};
+pub use server::{
+    BossBar, Ctx, Environment, Owner, RayHit, Server, TaskId, WorldBorder, WorldCreator,
+    WorldDetails,
+};
 pub use types::{
     AccessList, BlockBox, BlockPos, DataValue, Effect, Error, GameMode, Hand, Location, NO_BLOCK,
     Particle, PlayerInfo, ServerStats, SetMode, Sound, Text, Uuid, Vec3, Weather, World,

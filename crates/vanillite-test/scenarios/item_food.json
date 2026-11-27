@@ -1,0 +1,177 @@
+{
+  "description": "A player eats and drinks (#162): the consumable, food and use_remainder components from the item data (apple, dried kelp at half the time, stew with a bowl left, honey bottles with the bottle going to the inventory, golden apple effects after damage, poisonous potatoes with their 60 % poison roll from the player's random, milk clearing the effects, a healing potion, a suspicious stew, an ominous bottle), from stack components (a stick that is drunk in half a second with food, effects and a remainder; one consumed at once), a chorus fruit teleport with its cool-down (the second use is refused), and what is not eaten: an apple when full and a fish bucket.",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -50,
+      31
+    ]
+  ],
+  "ticks": 640,
+  "player_state": true,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        16.5,
+        -60.0,
+        16.5
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:apple",
+      "food": 10
+    },
+    {
+      "tick": 40,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:dried_kelp",
+      "food": 10,
+      "count": 2
+    },
+    {
+      "tick": 60,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:mushroom_stew",
+      "food": 10
+    },
+    {
+      "tick": 96,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:honey_bottle",
+      "count": 3
+    },
+    {
+      "tick": 140,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 8
+    },
+    {
+      "tick": 142,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:golden_apple"
+    },
+    {
+      "tick": 180,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:poisonous_potato",
+      "food": 10
+    },
+    {
+      "tick": 216,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:poisonous_potato",
+      "food": 10
+    },
+    {
+      "tick": 252,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:poisonous_potato",
+      "food": 10
+    },
+    {
+      "tick": 288,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:milk_bucket"
+    },
+    {
+      "tick": 324,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:potion",
+      "components": "{\"minecraft:potion_contents\": {\"potion\": \"minecraft:healing\"}}"
+    },
+    {
+      "tick": 360,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:suspicious_stew",
+      "food": 10,
+      "components": "{\"minecraft:suspicious_stew_effects\": [{\"id\": \"minecraft:wither\", \"duration\": 200}]}"
+    },
+    {
+      "tick": 396,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:ominous_bottle"
+    },
+    {
+      "tick": 432,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:stick",
+      "components": "{\"minecraft:consumable\": {\"consume_seconds\": 0.5, \"animation\": \"drink\", \"has_consume_particles\": false, \"on_consume_effects\": [{\"type\": \"minecraft:apply_effects\", \"effects\": [{\"id\": \"minecraft:instant_health\", \"amplifier\": 0, \"duration\": 1}], \"probability\": 0.5}, {\"type\": \"minecraft:remove_effects\", \"effects\": \"minecraft:wither\"}]}, \"minecraft:food\": {\"nutrition\": 3, \"saturation\": 1.5, \"can_always_eat\": true}, \"minecraft:use_remainder\": {\"id\": \"minecraft:diamond\", \"count\": 1}}"
+    },
+    {
+      "tick": 450,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:stick",
+      "count": 2,
+      "components": "{\"minecraft:consumable\": {\"consume_seconds\": 0.0, \"on_consume_effects\": [{\"type\": \"minecraft:clear_all_effects\"}]}, \"minecraft:use_remainder\": {\"id\": \"minecraft:emerald\", \"count\": 1}}"
+    },
+    {
+      "tick": 456,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:rotten_flesh",
+      "food": 10
+    },
+    {
+      "tick": 492,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:chorus_fruit",
+      "count": 2
+    },
+    {
+      "tick": 530,
+      "op": "use_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 560,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:chorus_fruit",
+      "count": 2
+    },
+    {
+      "tick": 600,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:apple",
+      "food": 20
+    },
+    {
+      "tick": 604,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:cod_bucket",
+      "food": 10
+    }
+  ]
+}

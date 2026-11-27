@@ -332,6 +332,11 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
                 }
                 _ => {
                     out.insert("variant", variant_name(m.variant));
+                    if let Some(v) =
+                        super::kinds::sound_variant_names(m.kind).get(usize::from(m.sound_variant))
+                    {
+                        out.insert("sound_variant", format!("minecraft:{v}"));
+                    }
                     if m.kind == Kind::Chicken {
                         let c = super::fam::classic::chicken(m);
                         out.insert("EggLayTime", c.egg_time);
@@ -403,6 +408,8 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
 /// state is read again from `tag`; what is not saved (its random, running goals, path) stays.
 pub fn apply_mob(m: &mut MobData, tag: &Compound) {
     read_mob(m, tag);
+    // `Entity.load` ends with `reapplyPosition`: the known speed starts over.
+    m.last_known_pos = None;
 }
 
 /// The saved state of a mob (`readAdditionalSaveData` of the entity classes) from `tag`.
@@ -498,6 +505,16 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
                     Some("minecraft:warm" | "warm") => 2,
                     _ => 1,
                 };
+                // An unknown or missing key keeps the default (`classic`), like Vanilla.
+                if let Some(v) = tag.get("sound_variant").and_then(Tag::as_str) {
+                    let v = v.strip_prefix("minecraft:").unwrap_or(v);
+                    if let Some(i) = super::kinds::sound_variant_names(kind)
+                        .iter()
+                        .position(|n| *n == v)
+                    {
+                        m.sound_variant = u8::try_from(i).unwrap_or(0);
+                    }
+                }
                 if kind == Kind::Chicken {
                     let c = super::fam::classic::chicken_mut(m);
                     if let Some(t) = int(tag, "EggLayTime") {
