@@ -1,6 +1,7 @@
 //! `cargo xtask parity fuzz`: random parity scenarios against Vanilla (#132); `cargo xtask
 //! parity replay`: recorded server sessions against Vanilla (#152); `cargo xtask parity
-//! soak`: long scenarios against Vanilla (#166).
+//! soak`: long scenarios against Vanilla (#166); `cargo xtask parity quick`: the quick tier of
+//! the parity scenarios for the quick check (#257).
 //!
 //! Compiles the Java recorder on the pinned jar (like `golden regen`) and runs the
 //! `parity_fuzz` binary of `vanillite-test` with its class path; that binary generates (or
@@ -135,6 +136,31 @@ pub fn soak(root: &Path, args: &[&str]) -> Result<()> {
             .arg("--out")
             .arg(&out)
             .args(args),
+    )
+}
+
+/// `cargo xtask parity quick`: the fast scenarios without the slow ones of
+/// `crates/vanillite-test/scenarios/quick-skip.txt` against their goldens (no Java needed), with
+/// the world crate at opt-level 1 like CI's parity jobs.
+pub fn quick(root: &Path) -> Result<()> {
+    run(
+        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+            .current_dir(root)
+            .args([
+                "test",
+                "-q",
+                "-p",
+                "vanillite-test",
+                "--locked",
+                "--config",
+                "profile.dev.package.vanillite-world.opt-level=1",
+                "--test",
+                "parity",
+                "--",
+                "--ignored",
+                "--exact",
+                "quick_scenarios",
+            ]),
     )
 }
 

@@ -13,6 +13,7 @@
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+//! cargo xtask parity quick
 //! cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask light sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask dev [--release] [-- <server args>]
@@ -115,6 +116,11 @@ pub const USAGE: &str = "usage:
       <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
       tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
       Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
+  cargo xtask parity quick
+      The quick tier of the parity scenarios (#257, part of scripts/quick-check.sh): the fast
+      scenarios without the slow ones of crates/vanillite-test/scenarios/quick-skip.txt against
+      their goldens, serial and parallel, on all cores (about a minute). The full fast tier
+      runs on every land.
   cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
       World generation against Vanilla (#223): for --seeds world seeds (default 3, derived from
       --seed, default the day number; or the given --world-seed values) and every kind
@@ -283,6 +289,7 @@ fn main() -> ExitCode {
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
+        ["parity", "quick"] => parity::quick(&repo_root()),
         ["worldgen", "sweep", rest @ ..] => worldgen::sweep(&repo_root(), rest),
         ["light", "sweep", rest @ ..] => worldgen::light_sweep(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
