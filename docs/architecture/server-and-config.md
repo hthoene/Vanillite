@@ -27,6 +27,13 @@ Crates: `vanillite-server`, `vanillite-config`, binary `vanillite`.
 - Decision D1: exploit rules (`exploits.*`) keep Vanilla behaviour in the `vanilla` profile;
   `paper` fixes them. Decision D2: `performance.tick.parallel-dimensions` is off in the `vanilla` and
   `technical` profiles (Vanilla's exact tick order) and on in `paper`, `spigot` and `performance`.
+- `anticheat.digging.fast-break-check` (#180, `Kind::Fix`): Vanilla's delayed destroy after a
+  premature "stop digging" counts the start tick as the ticks spent, so start-and-stop breaks
+  any block once the player has been online for a while. Off in `vanilla` and `technical`
+  (tick-exact Vanilla, the `fuzz_dig_stop_destroy` scenario records it), on in `paper`,
+  `spigot` and `performance`: the delayed destroy counts the real ticks since the start and
+  is dropped (block sent again) when it does not complete within the dig time seen so far
+  plus 20 ticks.
 
 ## Slots (`slot.rs`)
 

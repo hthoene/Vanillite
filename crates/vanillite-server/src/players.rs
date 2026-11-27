@@ -732,6 +732,7 @@ impl WorldPlayers {
             .collect();
         let mut swings: Vec<(EntityId, Hand)> = Vec::new();
         for (id, player) in players.iter_mut() {
+            player.connection.play.fast_break_check = rules.digging.fast_break_check;
             let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };

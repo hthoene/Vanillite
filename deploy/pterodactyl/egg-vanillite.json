@@ -1542,6 +1542,16 @@
       "field_type": "text"
     },
     {
+      "name": "Anticheat: Digging › Fast Break Check",
+      "description": "Validates \"stop digging\" against the server's own break progress: the time since the player started digging, the tool, Haste and Mining Fatigue, being in water and on the ground. Vanilla breaks a block whose progress falls short on the next tick once the player has been online for a while (it takes the start tick as the time spent), so a client that starts and at once stops digging breaks any block. On, a stop with too little progress waits for the progress to complete like a legit dig with latency and is rejected (the block is sent again, nothing drops) when it does not complete within the dig time seen so far plus one second. Instant mining, creative and normal digging with lag are not affected. Applies to every world. default: the profile's value (vanilla profile: false). vanillite.toml: anticheat.digging.fast-break-check.",
+      "env_variable": "VANILLITE_ANTICHEAT__DIGGING__FAST_BREAK_CHECK",
+      "default_value": "default",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:default,true,false",
+      "field_type": "text"
+    },
+    {
       "name": "Anticheat: Anti X-Ray › Engine Mode",
       "description": "\"disabled\" sends the real blocks (Vanilla). \"hide\" sends hidden blocks as the dimension's base stone (deepslate below y 0, netherrack, end stone). \"obfuscate\" sends hidden and replacement blocks as random hidden blocks (bigger chunk packets). Applies to every world. default: the profile's value (vanilla profile: disabled). vanillite.toml: anticheat.anti-xray.engine-mode.",
       "env_variable": "VANILLITE_ANTICHEAT__ANTI_XRAY__ENGINE_MODE",
