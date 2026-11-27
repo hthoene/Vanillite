@@ -132,12 +132,68 @@ impl BrewingStand {
     }
 }
 
+/// `BREW` before a brewing stand brews: `None` when cancelled, else the three bottle slots
+/// as plugins replace them (`None`: unchanged). The results go to plugins as a list of the
+/// three slots (`{}` for an empty one), and a replacement list fills them in that order.
+fn brew_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    pos: BlockPos,
+    state: BlockState,
+    items: &[ItemStack],
+    reagent: &ItemStack,
+    recipes: &crate::recipe::Recipes,
+) -> Option<Option<[ItemStack; 3]>> {
+    use vanillite_nbt::{List, Tag};
+    let results: [ItemStack; 3] = std::array::from_fn(|slot| {
+        let bottle = items.get(slot).cloned().unwrap_or_default();
+        recipes
+            .brewing_for(&bottle, reagent)
+            .map_or(bottle, |r| r.output.clone())
+    });
+    let list = results
+        .iter()
+        .map(|s| {
+            Tag::Compound(if s.is_empty() {
+                vanillite_nbt::Compound::new()
+            } else {
+                crate::item_nbt::stack_to_nbt(s)
+            })
+        })
+        .collect();
+    let mut ev = crate::hooks::Event {
+        pos,
+        state: Some(state),
+        item: vanillite_nbt::snbt::to_string(&Tag::List(List(list))),
+        ..crate::hooks::Event::new(vanillite_abi::event::BREW)
+    };
+    hooks.event(&mut ev);
+    if ev.cancelled {
+        return None;
+    }
+    let Some(Ok(Tag::List(list))) = ev.item_out.as_deref().map(vanillite_nbt::snbt::parse) else {
+        return Some(None);
+    };
+    // A bottle slot holds one item.
+    Some(Some(std::array::from_fn(|slot| match list.0.get(slot) {
+        Some(Tag::Compound(c)) => {
+            let stack = crate::item_nbt::stack_from_nbt(c);
+            if stack.is_empty() {
+                stack
+            } else {
+                stack.with_count(1)
+            }
+        }
+        _ => ItemStack::EMPTY,
+    })))
+}
+
 /// `BrewingStandBlockEntity.serverTick`.
 pub fn server_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
     let Some(data) = crate::player::play::game_data() else {
         return;
     };
     let recipes = &data.recipes;
+    let hooks = level.hooks_for(vanillite_abi::event::BREW);
     let Some(BlockEntity::BrewingStand(stand)) = level.block_entity_mut(pos) else {
         return;
     };
@@ -159,12 +215,22 @@ pub fn server_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
     let mut remainder = None;
     if stand.brew_time > 0 {
         stand.brew_time -= 1;
-        if stand.brew_time == 0 && brewable {
+        // Bukkit's `BrewEvent`: plugins may cancel the brew or change its results.
+        let plugin = match hooks.as_deref() {
+            Some(h) if stand.brew_time == 0 && brewable => {
+                brew_event(h, pos, state, &stand.items, &reagent, recipes)
+            }
+            _ => Some(None),
+        };
+        if let (0, true, Some(plugin_results)) = (stand.brew_time, brewable, plugin) {
             // `doBrew`.
             for slot in 0..3 {
                 if let Some(r) = recipes.brewing_for(&stand.items[slot], &reagent) {
                     stand.items[slot] = r.output.clone();
                 }
+            }
+            if let Some(results) = plugin_results {
+                stand.items[..3].clone_from_slice(&results);
             }
             let rest = crate::recipe::crafting_remainder(reagent.item);
             stand.items[3].shrink(1);

@@ -161,7 +161,7 @@ pub(crate) fn spawn_primed(
     let network_id = level.network_ids().next();
     let mut new = NewEntity::new(entity_ids::TNT, network_id, insecure_uuid(), at);
     new.velocity = velocity;
-    level.entities.spawn_primed_tnt(
+    let id = level.entities.spawn_primed_tnt(
         new,
         PrimedTntData {
             fuse,
@@ -169,7 +169,14 @@ pub(crate) fn spawn_primed(
             owner,
             explosion_power: DEFAULT_POWER,
         },
-    )
+    );
+    let parent = owner
+        .and_then(|o| level.entities.store.get(o))
+        .map_or(0, |e| e.uuid());
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, parent);
+    id
 }
 
 /// `Mth.createInsecureUUID(entity.random)`: entities draw their UUID from their own random,

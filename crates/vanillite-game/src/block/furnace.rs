@@ -212,6 +212,8 @@ pub fn server_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
         return;
     };
     let recipes = &data.recipes;
+    let burn_hooks = level.hooks_for(vanillite_abi::event::FURNACE_BURN);
+    let smelt_hooks = level.hooks_for(vanillite_abi::event::FURNACE_SMELT);
     let Some(BlockEntity::Furnace(furnace)) = level.block_entity_mut(pos) else {
         return;
     };
@@ -230,9 +232,24 @@ pub fn server_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
         if has_ingredient {
             if let Some(recipe) = recipes.cooking_for(furnace.kind, &furnace.items[0]) {
                 let result = recipe.result.clone();
-                if !result.is_empty() && can_burn(&furnace.items, &result) {
+                let mut plugin_burn_time = None;
+                let mut burns = !result.is_empty() && can_burn(&furnace.items, &result);
+                if burns
+                    && !is_lit
+                    && let Some(hooks) = &burn_hooks
+                {
+                    let time = recipes.fuel(&fuel, furnace.fast()).unwrap_or_default();
+                    if time.burn_time > 0 {
+                        plugin_burn_time = burn_event(&**hooks, pos, state, &fuel, time.burn_time);
+                        burns = plugin_burn_time.is_some();
+                    }
+                }
+                if burns {
                     if !is_lit {
-                        let value = recipes.fuel(&fuel, furnace.fast()).unwrap_or_default();
+                        let mut value = recipes.fuel(&fuel, furnace.fast()).unwrap_or_default();
+                        if let Some(time) = plugin_burn_time {
+                            value.burn_time = time;
+                        }
                         furnace.lit_time_remaining = value.burn_time;
                         furnace.lit_total_time = value.burn_time;
                         furnace.speed = value.speed;
@@ -275,27 +292,16 @@ pub fn server_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
                             furnace.cooking_timer = 0;
                             furnace.cooking_total_time =
                                 furnace.total_cook_time(recipe.cooking_time);
-                            // `burn`.
-                            let input_item = item::item_id(&furnace.items[0]);
-                            if furnace.items[2].is_empty() {
-                                furnace.items[2] = result.clone();
-                            } else {
-                                furnace.items[2].grow(result.count);
-                            }
-                            if input_item == items::WET_SPONGE
-                                && item::item_id(&furnace.items[1]) == items::BUCKET
-                            {
-                                furnace.items[1] = ItemStack::new(items::WATER_BUCKET.0, 1);
-                            }
-                            furnace.items[0].shrink(1);
-                            // `setRecipeUsed`.
-                            match furnace
-                                .recipes_used
-                                .iter_mut()
-                                .find(|(id, _)| *id == recipe.id)
-                            {
-                                Some((_, n)) => *n += 1,
-                                None => furnace.recipes_used.push((recipe.id.clone(), 1)),
+                            // Plugins may cancel `burn` or change its result (Bukkit's
+                            // `FurnaceSmeltEvent`): a cancelled item stays in the input.
+                            let result = match &smelt_hooks {
+                                None => Some(result),
+                                Some(hooks) => {
+                                    smelt_event(&**hooks, pos, state, &furnace.items, &result)
+                                }
+                            };
+                            if let Some(result) = result {
+                                burn(furnace, &result, &recipe.id);
                             }
                             changed = true;
                         }
@@ -324,6 +330,82 @@ pub fn server_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
     }
     if changed {
         super::container::set_changed(level, pos);
+    }
+}
+
+/// `AbstractFurnaceBlockEntity.burn`: one input becomes `result` (which fits) in the result
+/// slot; the recipe counts for the experience.
+fn burn(furnace: &mut Furnace, result: &ItemStack, recipe: &str) {
+    let input_item = item::item_id(&furnace.items[0]);
+    if furnace.items[2].is_empty() {
+        furnace.items[2] = result.clone();
+    } else {
+        furnace.items[2].grow(result.count);
+    }
+    if input_item == items::WET_SPONGE && item::item_id(&furnace.items[1]) == items::BUCKET {
+        furnace.items[1] = ItemStack::new(items::WATER_BUCKET.0, 1);
+    }
+    furnace.items[0].shrink(1);
+    // `setRecipeUsed`.
+    match furnace
+        .recipes_used
+        .iter_mut()
+        .find(|(id, _)| *id == recipe)
+    {
+        Some((_, n)) => *n += 1,
+        None => furnace.recipes_used.push((recipe.to_owned(), 1)),
+    }
+}
+
+/// `FURNACE_BURN` before a furnace burns `fuel` for `burn_time` ticks: the burn time as
+/// plugins change it, `None` when cancelled.
+fn burn_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    pos: BlockPos,
+    state: BlockState,
+    fuel: &ItemStack,
+    burn_time: i32,
+) -> Option<i32> {
+    /// The longest burn time a plugin may set (a day of game time).
+    const MAX_BURN_TIME: i64 = 24_000;
+    let mut ev = crate::hooks::Event {
+        pos,
+        state: Some(state),
+        item: crate::hooks::item_snbt(fuel),
+        value: i64::from(burn_time),
+        ..crate::hooks::Event::new(vanillite_abi::event::FURNACE_BURN)
+    };
+    hooks.event(&mut ev);
+    if ev.cancelled {
+        return None;
+    }
+    Some(i32::try_from(ev.value.clamp(0, MAX_BURN_TIME)).unwrap_or(0))
+}
+
+/// `FURNACE_SMELT` before a furnace turns its input into `result`: the result as plugins
+/// change it, `None` when cancelled or when a plugin's result does not fit the result slot.
+fn smelt_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    pos: BlockPos,
+    state: BlockState,
+    items: &[ItemStack; 3],
+    result: &ItemStack,
+) -> Option<ItemStack> {
+    let mut ev = crate::hooks::Event {
+        pos,
+        state: Some(state),
+        other_item: crate::hooks::item_snbt(&items[0]),
+        item: crate::hooks::item_snbt(result),
+        ..crate::hooks::Event::new(vanillite_abi::event::FURNACE_SMELT)
+    };
+    hooks.event(&mut ev);
+    if ev.cancelled {
+        return None;
+    }
+    match ev.item_out.as_deref().and_then(crate::hooks::parse_item) {
+        Some(new) if new.is_empty() || can_burn(items, &new) => Some(new),
+        Some(_) => None,
+        None => Some(result.clone()),
     }
 }
 

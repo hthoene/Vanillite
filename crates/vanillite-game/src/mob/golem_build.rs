@@ -247,8 +247,11 @@ fn spawn_golem(level: &mut Level, m: &Match, golem: MobData, spawn: BlockPos) ->
         Rotation::default(),
         golem,
     );
+    let spawned = level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
     // `SUMMONED_ENTITY` for the players within 5 blocks of the golem's box.
-    if let Some(b) = level.entities.store.get(id).map(|e| e.aabb()) {
+    if spawned && let Some(b) = level.entities.store.get(id).map(|e| e.aabb()) {
         let near = super::animal::players_in(&level.entities, &b.inflate(5.0, 5.0, 5.0));
         super::animal::award_summoned(&mut level.entities, &near, id);
     }

@@ -400,6 +400,9 @@ fn spread(level: &mut Level, kind: Kind, pos: BlockPos, state: BlockState, fluid
             Direction::Down,
         ) && can_hold_specific_fluid(below, new_type)
         {
+            if !may_flow(level, pos, below_pos, new) {
+                return;
+            }
             spread_to(level, kind, below_pos, below, Direction::Down, new);
             if source_neighbour_count(level, kind, pos) >= 3 {
                 spread_to_sides(level, kind, pos, fluid, state);
@@ -437,9 +440,30 @@ fn spread_to_sides(
     }
     for (direction, new) in get_spread(level, kind, pos, state) {
         let neighbour = pos.relative(direction);
+        if !may_flow(level, pos, neighbour, new) {
+            continue;
+        }
         let neighbour_state = level.block(neighbour);
         spread_to(level, kind, neighbour, neighbour_state, direction, new);
     }
+}
+
+/// Whether plugins let the fluid at `from` flow into `to` as `new` (`BLOCK_FLUID_FLOW`,
+/// Bukkit's `BlockFromToEvent`). `true` when no plugin listens.
+#[inline]
+fn may_flow(level: &Level, from: BlockPos, to: BlockPos, new: FluidState) -> bool {
+    let Some(hooks) = level.hooks_for(vanillite_abi::event::BLOCK_FLUID_FLOW) else {
+        return true;
+    };
+    let mut ev = crate::hooks::Event {
+        from: crate::hooks::Place::at(crate::level::game_event::center(from)),
+        pos: to,
+        key: super::hook_events::state_text(level.block(to)),
+        state: Some(new.block_state()),
+        ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_FLUID_FLOW)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
 }
 
 /// `getSpread(level, pos, state)`: the directions towards the nearest holes with the fluid each
@@ -550,7 +574,11 @@ fn spread_to(
 ) {
     if kind == Kind::Lava && direction == Direction::Down && Kind::Water.is_same(level.fluid(pos)) {
         if is_liquid(state) {
-            level.set_block_and_update(pos, ids::STONE.default_state());
+            let stone = ids::STONE.default_state();
+            if !super::hook_events::allows(level, vanillite_abi::event::BLOCK_FORM, pos, stone) {
+                return;
+            }
+            level.set_block_and_update(pos, stone);
         }
         level.level_event(None, LAVA_FIZZ, pos, 0);
         return;
@@ -656,8 +684,10 @@ fn schedule_if_spreading(level: &mut Level, state: BlockState, pos: BlockPos) {
     }
 }
 
-/// `LiquidBlock.shouldSpreadLiquid`: lava touching water hardens.
+/// `LiquidBlock.shouldSpreadLiquid`: lava touching water hardens (plugins may cancel it:
+/// `BLOCK_FORM`).
 fn should_spread_liquid(level: &mut Level, state: BlockState, pos: BlockPos) -> bool {
+    use vanillite_abi::event::BLOCK_FORM as FORM;
     if !Kind::Lava.is_same(state.fluid_state()) {
         return true;
     }
@@ -670,13 +700,18 @@ fn should_spread_liquid(level: &mut Level, state: BlockState, pos: BlockPos) -> 
             } else {
                 ids::COBBLESTONE
             };
-            level.set_block_and_update(pos, block.default_state());
-            level.level_event(None, LAVA_FIZZ, pos, 0);
+            if super::hook_events::allows(level, FORM, pos, block.default_state()) {
+                level.set_block_and_update(pos, block.default_state());
+                level.level_event(None, LAVA_FIZZ, pos, 0);
+            }
             return false;
         }
         if over_soul_soil && level.block(neighbour).is(ids::BLUE_ICE) {
-            level.set_block_and_update(pos, ids::BASALT.default_state());
-            level.level_event(None, LAVA_FIZZ, pos, 0);
+            let basalt = ids::BASALT.default_state();
+            if super::hook_events::allows(level, FORM, pos, basalt) {
+                level.set_block_and_update(pos, basalt);
+                level.level_event(None, LAVA_FIZZ, pos, 0);
+            }
             return false;
         }
     }

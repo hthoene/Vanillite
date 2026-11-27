@@ -93,7 +93,11 @@ pub fn strike(level: &mut Level, column: BlockPos, input: StrikeInput) -> Option
         f64::from(pos.y),
         f64::from(pos.z) + 0.5,
     );
-    Some(spawn(level, at, trap))
+    let id = spawn(level, at, trap);
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+        .then_some(id)
 }
 
 /// Adds a lightning bolt at `pos` (`EntityTypes.LIGHTNING_BOLT.create`): it draws its seed and
@@ -397,9 +401,19 @@ fn spawn_fire(level: &mut Level, id: EntityId, pos: Vec3, additional: i32) {
     if !fire::can_spread_fire_around(level, at) {
         return;
     }
+    let bolt = level.entities.store.get(id).map_or(0, |e| e.uuid());
     let place_fire = |level: &mut Level, target: BlockPos| {
         let state = place::fire_state(&*level, target);
-        if level.block(target).is_air() && level.can_survive(state, target) {
+        if level.block(target).is_air()
+            && level.can_survive(state, target)
+            && crate::block::hook_events::may_ignite(
+                level,
+                target,
+                vanillite_abi::ignite_cause::LIGHTNING,
+                bolt,
+                0,
+            )
+        {
             level.set_block_and_update(target, state);
             return 1;
         }
@@ -573,15 +587,6 @@ fn pig_struck(
     if env.difficulty == Difficulty::Peaceful {
         return false;
     }
-    let uuid = ents.store.get(target).map_or(0, |e| e.uuid());
-    if !env.hooks.entity_transform(
-        uuid,
-        "minecraft:pig",
-        "minecraft:zombified_piglin",
-        "lightning",
-    ) {
-        return false;
-    }
     let Some(mut random) = ents.mob_mut(target).map(|m| m.random.clone()) else {
         return false;
     };
@@ -592,8 +597,13 @@ fn pig_struck(
         cx,
         id: target,
     };
-    let new =
-        crate::mob::fam::undead::convert_to(&mut t, Kind::ZombifiedPiglin, false, true, |z| {
+    let new = crate::mob::fam::undead::convert_to(
+        &mut t,
+        Kind::ZombifiedPiglin,
+        false,
+        true,
+        vanillite_abi::transform_reason::LIGHTNING,
+        |z| {
             // `populateDefaultEquipmentSlots(pig.getRandom(), ...)`.
             let item = if random.next_int_bounded(20) == 0 {
                 "minecraft:golden_spear"
@@ -605,6 +615,7 @@ fn pig_struck(
                 crate::mob::equipment::stack(item),
             );
             z.persistent = true;
-        });
+        },
+    );
     new.is_some()
 }

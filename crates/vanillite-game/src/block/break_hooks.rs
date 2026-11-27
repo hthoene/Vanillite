@@ -83,10 +83,22 @@ pub fn spawn_after_break(
     if !drop_experience {
         return;
     }
+    let amount = break_experience(level, state, tool);
+    if amount > 0 {
+        pop_experience(level, pos, amount);
+    }
+}
+
+/// The experience `spawnAfterBreak` drops for `state` broken with `tool` (drawn from the
+/// level random; 0 for blocks without experience and infested blocks).
+pub(crate) fn break_experience(level: &mut Level, state: BlockState, tool: &ItemStack) -> i32 {
+    if is_infested(state) {
+        return 0;
+    }
     let Some(xp) = experience(state) else {
-        return;
+        return 0;
     };
-    let amount = match xp {
+    match xp {
         Experience::Spawner => {
             let r = level.random();
             15 + r.next_int_bounded(15) + r.next_int_bounded(15)
@@ -96,9 +108,28 @@ pub fn spawn_after_break(
             process_block_experience(level, tool, sample)
         }
         Experience::Constant(v) => process_block_experience(level, tool, v),
-    };
-    if amount > 0 {
-        pop_experience(level, pos, amount);
+    }
+}
+
+/// [`spawn_after_break`] with the experience already drawn ([`break_experience`]): the
+/// silverfish of infested blocks, else `experience` as orbs.
+pub(crate) fn spawn_after_break_with(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    tool: &ItemStack,
+    experience: i32,
+) {
+    if is_infested(state) {
+        if level.settings.block_drops
+            && !has_enchantment_tag(tool, "minecraft:prevents_infested_spawns")
+        {
+            spawn_infestation(level, pos);
+        }
+        return;
+    }
+    if experience > 0 {
+        pop_experience(level, pos, experience);
     }
 }
 
@@ -149,7 +180,7 @@ fn spawn_infestation(level: &mut Level, pos: BlockPos) {
         f64::from(pos.y),
         f64::from(pos.z) + 0.5,
     );
-    crate::mob::spawn::add_mob(level, mob, at, 0.0);
+    crate::mob::spawn::add_mob(level, mob, at, 0.0, crate::mob::fam::SpawnReason::Triggered);
 }
 
 /// `IceBlock.playerDestroy` after the drops: without a melting-preventing enchantment, the ice

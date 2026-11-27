@@ -118,6 +118,32 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         }
     }
     t.cx.ids = found;
+    // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored and the throwable flies on.
+    let mut block_hit = block_hit;
+    if let Some((target, _)) = hit
+        && !crate::mob::missile::hit_event(
+            t.level,
+            t.ents,
+            t.id,
+            owner,
+            crate::mob::missile::HitWhat::Entity(target),
+        )
+    {
+        hit = None;
+    }
+    if hit.is_none()
+        && let Some((block, at)) = block_hit
+        && !crate::mob::missile::hit_event(
+            t.level,
+            t.ents,
+            t.id,
+            owner,
+            crate::mob::missile::HitWhat::Block(block, at),
+        )
+    {
+        block_hit = None;
+        to = pos + v;
+    }
     let new_pos = match hit {
         Some((_, f)) => pos + (to - pos) * f,
         None => to,

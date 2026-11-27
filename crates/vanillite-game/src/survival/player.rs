@@ -909,11 +909,32 @@ pub fn hurt(
     source: DamageSource,
     amount: f32,
 ) -> bool {
-    hurt_with(entity, player, env, source, amount, None)
+    hurt_with(entity, player, env, source, amount, None, (None, None))
+}
+
+/// [`hurt`] with the UUIDs of the source's causing and direct entities for the plugins'
+/// damage and death events (resolved by callers that have the entities, only when a plugin
+/// listens: [`wants_attackers`]).
+pub fn hurt_by(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    source: DamageSource,
+    amount: f32,
+    attackers: (Option<u128>, Option<u128>),
+) -> bool {
+    hurt_with(entity, player, env, source, amount, None, attackers)
+}
+
+/// Whether the plugins' damage or death events need the UUIDs of a player's attackers.
+pub fn wants_attackers(hooks: &dyn crate::hooks::GameHooks) -> bool {
+    hooks.wants(vanillite_abi::event::ENTITY_DAMAGE)
+        || hooks.wants(vanillite_abi::event::PLAYER_DEATH)
 }
 
 /// [`hurt`] with the armour effectiveness of the source's weapon (Breach, see
-/// [`crate::mob::attack::armor_effectiveness`]).
+/// [`crate::mob::attack::armor_effectiveness`]) and the UUIDs of the causing and direct
+/// entities (see [`hurt_by`]).
 pub fn hurt_with(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
@@ -921,6 +942,7 @@ pub fn hurt_with(
     source: DamageSource,
     amount: f32,
     armor_effectiveness: Option<&dyn Fn(f32) -> f32>,
+    attackers: (Option<u128>, Option<u128>),
 ) -> bool {
     let types = env.types;
     let kind = source.kind;
@@ -954,10 +976,15 @@ pub fn hurt_with(
         }
     }
     let uuid = entity.as_ref().uuid();
-    match env
-        .hooks
-        .entity_damage(uuid, "minecraft:player", &types.get(kind).id, damage)
-    {
+    let (attacker, direct) = attackers;
+    match env.hooks.entity_damage(
+        uuid,
+        "minecraft:player",
+        &types.get(kind).id,
+        damage,
+        attacker,
+        direct,
+    ) {
         Some(changed) => damage = changed,
         None => return false,
     }
@@ -1060,7 +1087,7 @@ pub fn hurt_with(
             if took_full {
                 player_sound(env, id, pos, "minecraft:entity.player.death");
             }
-            die(entity, player, env, source);
+            die(entity, player, env, source, attackers.0);
         }
     } else if took_full {
         player_sound(env, id, pos, types.get(kind).effects.sound());
@@ -1435,12 +1462,14 @@ fn fall_location(s: &Survival) -> Option<FallLocation> {
     }
 }
 
-/// `ServerPlayer.die`.
+/// `ServerPlayer.die`; `killer` is the UUID of the source's causing entity (the kill credit)
+/// for the plugins' death event, when the caller resolved it.
 pub fn die(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,
     source: DamageSource,
+    killer: Option<u128>,
 ) {
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
@@ -1461,7 +1490,7 @@ pub fn die(
         keep_inventory: env.rules.bool(Rule::KEEP_INVENTORY),
     };
     env.hooks
-        .player_death(uuid, &env.types.get(source.kind).id, None, &mut death);
+        .player_death(uuid, &env.types.get(source.kind).id, killer, &mut death);
     sink.send(&PlayerCombatKill {
         player_id: network_id,
         message: death.message.clone().unwrap_or_else(Component::empty),
@@ -1482,13 +1511,26 @@ pub fn die(
             _ => 1.62,
         };
         let eye_y = pos.y + f64::from(eye);
-        drop_all(
-            &mut player.inventory,
-            Vec3::new(pos.x, eye_y - 0.3, pos.z),
-            env,
-        );
+        let mut drops = take_drops(&mut player.inventory);
         // `getBaseExperienceReward`.
-        let amount = player.survival.xp.level.saturating_mul(7).min(100);
+        let mut amount = player.survival.xp.level.saturating_mul(7).min(100);
+        if env.hooks.wants(vanillite_abi::event::ENTITY_DROPS) {
+            let mut ev = crate::hooks::Event {
+                entity: uuid,
+                entity_type: vanillite_data::entity::ids::PLAYER.name().to_owned(),
+                key: env.types.get(source.kind).id.clone(),
+                item: crate::hooks::items_snbt(&drops),
+                value: i64::from(amount),
+                to: crate::hooks::Place::at(pos),
+                ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
+            };
+            env.hooks.event(&mut ev);
+            if let Some(new) = crate::hooks::drops_out(&ev) {
+                drops = new;
+            }
+            amount = crate::hooks::experience_value(ev.value);
+        }
+        throw_drops(drops, Vec3::new(pos.x, eye_y - 0.3, pos.z), env);
         if amount > 0 {
             env.out.push(Effect::Experience { pos, amount });
         }
@@ -1530,9 +1572,9 @@ pub fn die(
     player.connection.movement.mark_client_unloaded();
 }
 
-/// `destroyVanishingCursedItems` + `Inventory.dropAll`: every stack is thrown in a random
-/// direction from `from` (`createItemStackToDrop(stack, true, false)`).
-fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: &mut Env<'_>) {
+/// `destroyVanishingCursedItems` + `Inventory.dropAll`: the stacks that drop, taken out of the
+/// inventory, in drop order.
+fn take_drops(inventory: &mut crate::inventory::PlayerInventory) -> Vec<crate::item::ItemStack> {
     let vanishing = |stack: &crate::item::ItemStack| {
         crate::player::play::game_data()
             .is_some_and(|d| d.enchantment_level(stack, "minecraft:vanishing_curse") > 0)
@@ -1544,11 +1586,16 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
         .iter_mut()
         .chain(std::iter::once(&mut inv.offhand))
         .chain(inv.armor.iter_mut());
-    for slot in slots {
-        let stack = std::mem::replace(slot, crate::item::ItemStack::EMPTY);
-        if stack.is_empty() || vanishing(&stack) {
-            continue;
-        }
+    slots
+        .map(|slot| std::mem::replace(slot, crate::item::ItemStack::EMPTY))
+        .filter(|stack| !stack.is_empty() && !vanishing(stack))
+        .collect()
+}
+
+/// `Inventory.dropAll`'s throws: every stack in a random direction from `from`
+/// (`createItemStackToDrop(stack, true, false)`).
+fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>) {
+    for stack in drops {
         // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
         // draws from the player's own random in Vanilla, here from the level random.
         let (uuid, y_rot, _) = crate::mob::new_item_entity();

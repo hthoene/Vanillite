@@ -121,6 +121,26 @@ impl Level {
         self.load_with_passengers(nbt, &mut loaded, false).is_some()
     }
 
+    /// [`Self::load_entity`] of an entity new to the world (placed with a structure): the
+    /// plugins' spawn event fires for it and its passengers with `reason`
+    /// (`vanillite_abi::spawn_reason`); the ones a plugin cancels are not added.
+    pub fn load_new_entity(&mut self, nbt: Compound, reason: u32) -> bool {
+        let mut loaded = Vec::new();
+        let ok = self.load_with_passengers(nbt, &mut loaded, false).is_some();
+        if self
+            .entities
+            .hooks_for(vanillite_abi::event::ENTITY_SPAWN)
+            .is_some()
+        {
+            for id in loaded {
+                if !self.entities.spawned(id, reason, 0) {
+                    self.entity_nbt.remove(&id);
+                }
+            }
+        }
+        ok
+    }
+
     /// `teleportCrossDimension` into this level of an entity saved in another one, without its
     /// passengers: `EntityType.create` (a new entity: its random takes the next entity seed)
     /// and `restoreFrom` the stored data. Returns the new entity.

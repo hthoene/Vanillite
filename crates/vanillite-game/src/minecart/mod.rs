@@ -946,7 +946,7 @@ pub fn use_item_on(
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
-    spawn(
+    let id = spawn(
         ents,
         network_ids,
         crate::block::tnt::insecure_uuid(),
@@ -954,6 +954,9 @@ pub fn use_item_on(
         Rotation::default(),
         data,
     );
+    if !ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0) {
+        return false;
+    }
     if !infinite {
         stack.shrink(1);
     }
@@ -997,7 +1000,7 @@ pub fn dispense(
     let mut data = MinecartData::new(kind, crate::survival::sound_seed());
     data.custom_name = name;
     let network_ids = std::sync::Arc::clone(level.network_ids_arc());
-    spawn(
+    let id = spawn(
         &mut level.entities,
         &network_ids,
         crate::block::tnt::insecure_uuid(),
@@ -1005,6 +1008,9 @@ pub fn dispense(
         Rotation::default(),
         data,
     );
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DISPENSER, 0);
     true
 }
 

@@ -30,6 +30,7 @@ use vanillite_game::survival::blocks::BlockAccess;
 use vanillite_game::survival::damage::DamageSource;
 use vanillite_game::survival::rules::{Difficulty, Rule};
 use vanillite_game::vehicle::{self, BoatKind};
+use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::EntityId;
 
 use crate::global::Global;
@@ -961,6 +962,20 @@ impl WorldMobs {
         survival.deliver(&mut level.entities, global);
     }
 
+    /// The damage of an explosion made outside the entity tick (a plugin's `explode`) and
+    /// what it queued, applied at once as after an exploding entity's tick.
+    pub(crate) fn after_explosion(
+        &mut self,
+        level: &mut Level,
+        survival: &mut WorldSurvival,
+        global: &Global,
+        dimension: &str,
+    ) {
+        self.apply_explosion_hurts(level, survival, global, dimension);
+        self.apply_actions(level, survival, global, dimension);
+        survival.deliver(&mut level.entities, global);
+    }
+
     /// Applies what the last mob tick queued: explosions and block changes.
     fn apply_actions(
         &mut self,
@@ -1427,6 +1442,53 @@ fn environment(
     }
 }
 
+/// Bukkit's `PlayerInteractEntityEvent` (with the hand and the packet's offset from the
+/// target; the event gets the point clicked in the world) or, without, the attack of `target`
+/// (`PLAYER_ATTACK_ENTITY`); `true` when a plugin cancelled it.
+fn player_entity_event(
+    hooks: &dyn vanillite_game::hooks::GameHooks,
+    ents: &Entities,
+    player: EntityId,
+    target: EntityId,
+    interact: Option<(Hand, Vec3)>,
+) -> bool {
+    use vanillite_abi::event;
+    let kind = match interact {
+        Some(_) => event::PLAYER_INTERACT_ENTITY,
+        None => event::PLAYER_ATTACK_ENTITY,
+    };
+    if !hooks.wants(kind) {
+        return false;
+    }
+    let (Some(pe), Some(te)) = (ents.store.get(player), ents.store.get(target)) else {
+        return false;
+    };
+    let hand = interact.map_or(Hand::MainHand, |(hand, _)| hand);
+    let stack = vanillite_game::mob::animal::held(ents, player, hand);
+    let target_pos = te.pos();
+    let mut ev = vanillite_game::hooks::Event {
+        entity: pe.uuid(),
+        entity_type: "minecraft:player".to_owned(),
+        other: te.uuid(),
+        other_type: te.kind().name().to_owned(),
+        key: vanillite_game::item::item_id(&stack).name().to_owned(),
+        ..vanillite_game::hooks::Event::new(kind)
+    };
+    if let Some((hand, at)) = interact {
+        ev.cause = match hand {
+            Hand::MainHand => vanillite_abi::hand::MAIN,
+            Hand::OffHand => vanillite_abi::hand::OFF,
+        };
+        ev.to = vanillite_game::hooks::Place::at(Vec3::new(
+            target_pos.x + at.x,
+            target_pos.y + at.y,
+            target_pos.z + at.z,
+        ));
+    }
+    hooks.event(&mut ev);
+    ev.cancelled
+}
+
 /// One attack, interaction, entity item use, spectate or pick of a player
 /// (`handleAttack`, `handleInteract`, `handleUseItem`, ...), as [`WorldMobs::player_actions`]
 /// runs it. The scenario harness drives its packet-level players through it too.
@@ -1451,6 +1513,9 @@ pub fn player_entity_action(
             let Some(target) = in_reach(ents, player, network_id) else {
                 return;
             };
+            if player_entity_event(env.hooks, ents, player, target, None) {
+                return;
+            }
             // The part the player hit takes the damage (`EnderDragon.hurt(part)`).
             if let Some(i) = dragon::part_of(ents, target, network_id)
                 && let Some(s) = ents.mob_mut(target).and_then(|m| m.boss.dragon_mut())
@@ -1468,6 +1533,9 @@ pub fn player_entity_action(
             let Some(target) = in_reach(ents, player, entity) else {
                 return;
             };
+            if player_entity_event(env.hooks, ents, player, target, Some((hand, location))) {
+                return;
+            }
             // `handleInteract`: the stack before the interaction for
             // `player_interacted_with_entity`.
             let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
@@ -1556,7 +1624,7 @@ pub fn player_entity_action(
         }
         EntityAction::Spectate(network_id) => {
             if let Some(target) = in_reach(ents, player, network_id) {
-                crate::spectator::spectate(ents, &level.border, player, target);
+                crate::spectator::spectate(ents, &level.border, env.hooks, player, target);
             }
         }
         EntityAction::PickItem { entity, .. } => {

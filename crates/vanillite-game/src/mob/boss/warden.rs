@@ -597,7 +597,9 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         A::Idle,
     ]);
     let attack = target(brain);
-    t.mob().target = attack;
+    if crate::mob::brain::target_changed(t, attack) {
+        t.mob().target = attack;
+    }
 }
 
 /// `angerManagement.tick(level, canTargetEntity)`.
@@ -869,6 +871,12 @@ fn spawn_emerging(level: &mut Level, pos: BlockPos) -> bool {
         },
         m,
     );
+    if !level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0)
+    {
+        return false;
+    }
     if let Some(mut e) = level.entities.store.get_mut(id) {
         e.set_pose(Pose::Emerging);
         e.set_dims(vanillite_world::entity::Dimensions {

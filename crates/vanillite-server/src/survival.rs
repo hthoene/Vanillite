@@ -218,13 +218,24 @@ impl WorldSurvival {
         let advance = level.rules().bool(Rule::ADVANCE_WEATHER);
         self.weather_out.clear();
         if self.can_have_weather {
-            let mut data = level.weather();
-            self.weather.advance(
-                Some(&mut data),
-                advance,
-                &mut self.random,
-                &mut self.weather_out,
-            );
+            if advance && global.plugins.wants(vanillite_abi::event::WEATHER_CHANGE) {
+                weather_change_event(global, &mut self.random);
+                let mut data = level.weather();
+                self.weather.advance(
+                    Some(&mut data),
+                    false,
+                    &mut self.random,
+                    &mut self.weather_out,
+                );
+            } else {
+                let mut data = level.weather();
+                self.weather.advance(
+                    Some(&mut data),
+                    advance,
+                    &mut self.random,
+                    &mut self.weather_out,
+                );
+            }
         } else {
             self.weather
                 .advance(None, advance, &mut self.random, &mut self.weather_out);
@@ -506,6 +517,16 @@ impl WorldSurvival {
         amount: f32,
         events: &mut Vec<PendingGameEvent>,
     ) -> bool {
+        // The causing and direct entities for the plugins' damage and death events.
+        let attackers = if global.plugins.wants(vanillite_abi::event::ENTITY_DAMAGE)
+            || global.plugins.wants(vanillite_abi::event::PLAYER_DEATH)
+        {
+            let uuid_of =
+                |id: Option<EntityId>| id.and_then(|i| entities.store.get(i)).map(|e| e.uuid());
+            (uuid_of(source.cause), uuid_of(source.direct))
+        } else {
+            (None, None)
+        };
         Self::on_player(
             entities,
             chunks,
@@ -513,7 +534,7 @@ impl WorldSurvival {
             dimension,
             id,
             events,
-            |entity, data, env| player::hurt(entity, data, env, source, amount),
+            |entity, data, env| player::hurt_by(entity, data, env, source, amount, attackers),
         )
     }
 
@@ -966,6 +987,7 @@ fn spawn_drops(
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);
             }
+            entities.spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
         }
         if let Effect::RespawnShoulder { tag, pos, owner } = effect {
             // `EntityType.create(tag, LOAD)`, `setOwner`, `setPos`, `addWithUUID`.
@@ -994,7 +1016,7 @@ fn spawn_drops(
             stack,
         } = effect
         {
-            entities.spawn_item(
+            let id = entities.spawn_item(
                 global.network_ids.next(),
                 *uuid,
                 *pos,
@@ -1002,6 +1024,7 @@ fn spawn_drops(
                 *y_rot,
                 vanillite_game::item_entity::ItemData::new(stack.clone(), *pickup_delay, None),
             );
+            entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
         }
     }
 }
@@ -1009,6 +1032,43 @@ fn spawn_drops(
 /// Sends `packet` to every player of the server (`broadcastAll`).
 pub(crate) fn broadcast_all<P: vanillite_protocol::Packet>(global: &Global, packet: &P) {
     global.players.broadcast(packet, None);
+}
+
+/// The `weather` code of a world's weather for plugins (thunder needs rain).
+fn weather_code(raining: bool, thundering: bool) -> u32 {
+    use vanillite_abi::weather;
+    match (raining, thundering) {
+        (false, _) => weather::CLEAR,
+        (true, false) => weather::RAIN,
+        (true, true) => weather::THUNDER,
+    }
+}
+
+/// The weather timers of `advanceWeatherCycle` with `WEATHER_CHANGE` (Bukkit's
+/// `WeatherChangeEvent` and `ThunderChangeEvent`): when the rain or thunder flips, plugins
+/// may cancel it and the old weather stays. The timers are not locked while handlers run.
+fn weather_change_event(global: &Global, random: &mut LegacyRandom) {
+    let (old, new) = {
+        let mut data = global.level.weather();
+        let old = (data.raining, data.thundering);
+        data.advance(random);
+        (old, (data.raining, data.thundering))
+    };
+    let (old_code, new_code) = (weather_code(old.0, old.1), weather_code(new.0, new.1));
+    if old_code == new_code {
+        return;
+    }
+    let mut ev = vanillite_game::hooks::Event {
+        cause: new_code,
+        extra: i64::from(old_code),
+        ..vanillite_game::hooks::Event::new(vanillite_abi::event::WEATHER_CHANGE)
+    };
+    crate::plugins::Hooks::of(&global.plugins, "minecraft:overworld").event(&mut ev);
+    if ev.cancelled {
+        let mut data = global.level.weather();
+        data.raining = old.0;
+        data.thundering = old.1;
+    }
 }
 
 #[cfg(test)]
