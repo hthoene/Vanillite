@@ -299,6 +299,8 @@ struct Holder {
     queued: bool,
     /// The order within its level it was queued with ([`Chunks::set_focus`]).
     rank: u8,
+    /// Whether it was queued with its next step running inline ([`Holder::inline_next`]).
+    queued_inline: bool,
     /// Set while a queued generation step of this chunk is not needed any more (its level left
     /// [`MAX_LEVEL`]); the step is then skipped when it starts.
     unneeded: Option<Arc<AtomicBool>>,
@@ -316,6 +318,12 @@ struct Holder {
 }
 
 impl Holder {
+    /// Whether the next step runs inline on the world thread (spawn and full): it needs no
+    /// job slot and frees the chunks waiting for this one.
+    fn inline_next(&self) -> bool {
+        matches!(self.status(), Some(ChunkStatus::Light | ChunkStatus::Spawn))
+    }
+
     fn status(&self) -> Option<ChunkStatus> {
         self.chunk.as_ref().map(|c| c.status)
     }
@@ -500,8 +508,9 @@ pub struct Chunks {
     generation_tickets: FxHashMap<ChunkPos, u8>,
     next_ticket: u64,
     level_changes: Vec<LevelChange>,
-    /// Chunks to check, most urgent (lowest level) first, then by rank (nearest to a focus).
-    check: BTreeSet<(u8, u8, ChunkPos)>,
+    /// Chunks to check: those whose next step runs inline first (`false` sorts first), then
+    /// the most urgent (lowest level), then by rank (nearest to a focus).
+    check: BTreeSet<(bool, u8, u8, ChunkPos)>,
     /// Points the players' views move towards ([`Chunks::set_focus`]).
     focus: Vec<ChunkPos>,
     /// Chunks parked on a neighbour.
@@ -950,8 +959,9 @@ impl Chunks {
                 ..Holder::default()
             });
             if holder.queued {
-                self.check.remove(&(holder.level, holder.rank, pos));
-                self.check.insert((new, holder.rank, pos));
+                let job = !holder.queued_inline;
+                self.check.remove(&(job, holder.level, holder.rank, pos));
+                self.check.insert((job, new, holder.rank, pos));
             }
             if let Some(unneeded) = &holder.unneeded {
                 unneeded.store(false, Ordering::Relaxed);
@@ -966,7 +976,8 @@ impl Chunks {
             }
         } else if let Some(holder) = self.holders.get_mut(&pos) {
             if holder.queued {
-                self.check.remove(&(holder.level, holder.rank, pos));
+                let job = !holder.queued_inline;
+                self.check.remove(&(job, holder.level, holder.rank, pos));
                 holder.queued = false;
             }
             // A generation step nobody needs any more is skipped if it did not start.
@@ -1011,7 +1022,9 @@ impl Chunks {
         {
             holder.queued = true;
             holder.rank = rank;
-            self.check.insert((holder.level, rank, pos));
+            holder.queued_inline = holder.inline_next();
+            self.check
+                .insert((!holder.queued_inline, holder.level, rank, pos));
         }
     }
 
@@ -1712,11 +1725,14 @@ impl Chunks {
 
     fn dispatch(&mut self) -> bool {
         let mut progress = false;
-        while let Some(&(level, rank, pos)) = self.check.first() {
-            if self.in_flight >= self.settings.max_jobs {
+        while let Some(&(job, level, rank, pos)) = self.check.first() {
+            // Spawn and full steps (first in the queue) need no job slot: they must not wait
+            // until the generation of the whole area is through, or every chunk of a new area
+            // would become full in the same tick.
+            if job && self.in_flight >= self.settings.max_jobs {
                 break;
             }
-            self.check.remove(&(level, rank, pos));
+            self.check.remove(&(job, level, rank, pos));
             if let Some(holder) = self.holders.get_mut(&pos) {
                 holder.queued = false;
             }
