@@ -521,7 +521,7 @@ pub struct MoveRecord {
     pub accepted: bool,
 }
 
-fn block_pos(v: Vec3) -> BlockPos {
+pub(crate) fn block_pos(v: Vec3) -> BlockPos {
     BlockPos::new(
         vanillite_base::math::floor(v.x),
         vanillite_base::math::floor(v.y),

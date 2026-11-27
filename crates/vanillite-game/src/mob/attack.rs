@@ -239,6 +239,13 @@ pub fn player_attack(
         .map_or_else(|| p.inventory.selected_item().clone(), |s| s.1.clone());
     let fall_distance = p.survival.fall_distance;
     let in_water = p.survival.fluids.in_water();
+    // `onClimbable` and `isMobilityRestricted` (blindness) of `canCriticalAttack`.
+    let climbing = p.game_mode != vanillite_config::GameMode::Spectator
+        && env
+            .blocks
+            .block_state(player::block_pos(ppos))
+            .is_some_and(|s| env.facts.is_climbable(s.block()));
+    let blind = p.survival.effects.has(crate::effect::MobEffect::BLINDNESS);
     let combat = combat_data();
     let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
 
@@ -281,7 +288,15 @@ pub fn player_attack(
     }
     base_damage += mace_bonus(ents, env, attacker, target, &weapon, &source, fall_distance);
     let passenger = ents.vehicle_of(attacker).is_some();
-    let crit = full && fall_distance > 0.0 && !on_ground && !in_water && !passenger && !sprinting;
+    // `canCriticalAttack`: the target is always living here (`is_alive`).
+    let crit = full
+        && fall_distance > 0.0
+        && !on_ground
+        && !climbing
+        && !in_water
+        && !blind
+        && !passenger
+        && !sprinting;
     if crit {
         base_damage *= 1.5;
     }
