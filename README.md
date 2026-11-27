@@ -70,7 +70,9 @@ lists them all.
 
 Vanillite needs no Java. On the first start it downloads Mojang's server jar once (for the
 Vanilla data) into `cache/` and creates `eula.txt`: accept the
-[Minecraft EULA](https://aka.ms/MinecraftEULA) there or with `VANILLITE_EULA=true`.
+[Minecraft EULA](https://aka.ms/MinecraftEULA) there or with `VANILLITE_EULA=true`. Started
+from a terminal (or with a double click on Windows), the server asks instead: type `yes` and it
+saves `eula=true` and starts.
 
 ### Release archive
 

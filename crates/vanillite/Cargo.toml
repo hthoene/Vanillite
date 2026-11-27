@@ -16,12 +16,14 @@ vanillite-server.workspace = true
 vanillite-storage.workspace = true
 ctrlc.workspace = true
 log.workspace = true
+# The console line editor (prompt, history, log lines above the input line).
+rustyline = { version = "19", default-features = false }
 
 # musl's allocator is slow with many threads; the static (Docker) build uses mimalloc.
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = { version = "0.1", default-features = false }
 
-[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [lints]

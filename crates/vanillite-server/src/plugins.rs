@@ -395,7 +395,7 @@ impl ServerAccess for Services {
     fn broadcast(&self, text: Text<'_>) {
         if let Some(global) = self.global.upgrade() {
             let content = component(text);
-            log::info!("{}", content.plain());
+            log::info!("{}", global.console_text(&content));
             global.players.broadcast_system(content, false, None);
         }
     }

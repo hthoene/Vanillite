@@ -318,7 +318,7 @@ impl ServerBuilder {
         let config = Config::load(&dir)?;
         log::info!("Using profile {}", config.profile);
         if !crate::eula::check(&dir).map_err(|e| StartError::io(&dir, e))? {
-            return Err(StartError::Eula);
+            return Err(StartError::Eula(crate::eula::file(&dir)));
         }
 
         // Plugins load first: they register commands, events and slot providers.
@@ -2383,8 +2383,8 @@ pub enum StartError {
     WorldInUse(PathBuf),
     /// A slot was filled twice.
     Slot(SlotError),
-    /// The EULA is not accepted in `eula.txt`.
-    Eula,
+    /// The EULA is not accepted in `eula.txt` (its full path).
+    Eula(PathBuf),
 }
 
 impl StartError {
@@ -2404,9 +2404,16 @@ impl fmt::Display for StartError {
                 path.display()
             ),
             StartError::Slot(e) => e.fmt(f),
-            StartError::Eula => f.write_str(
-                "you need to agree to the EULA in order to run the server; go to eula.txt for \
-                 more info (or set VANILLITE_EULA=true)",
+            // The first sentences are Vanilla's: panels such as Pterodactyl detect them.
+            StartError::Eula(file) => write!(
+                f,
+                "You need to agree to the EULA in order to run the server. Go to eula.txt for \
+                 more info.\n\
+                 \x20 Read the Minecraft EULA: https://aka.ms/MinecraftEULA\n\
+                 \x20 To accept it, open {} and change eula=false to eula=true,\n\
+                 \x20 or set the environment variable VANILLITE_EULA=true. Then start the server \
+                 again.",
+                file.display()
             ),
         }
     }

@@ -15,9 +15,11 @@ The server keeps its files (configuration, worlds, cache) in the current folder;
 `--dir <folder>` picks another one. `@START@ --help` lists all commands,
 `@START@ --version` prints the version.
 
-1. The first start creates eula.txt and stops. Read the Minecraft EULA
-   (https://aka.ms/MinecraftEULA), set eula=true in eula.txt and start again
-   (or set the environment variable VANILLITE_EULA=true).
+1. The first start creates eula.txt and asks whether you accept the Minecraft
+   EULA (https://aka.ms/MinecraftEULA): type yes and press Enter, and it saves
+   eula=true and starts. Without a console to answer in, it stops instead: set
+   eula=true in eula.txt and start again (or set the environment variable
+   VANILLITE_EULA=true).
 2. The first real start downloads Mojang's server jar (for the Vanilla data) into
    cache/, so it needs internet access once, and generates the spawn area.
 3. When the log shows "Done", connect with Minecraft Java Edition @MC@ to

@@ -7,7 +7,7 @@ Vanillite reads two files from the server directory, both created with every key
 - [`server.properties`](#serverproperties): Vanilla's keys with Vanilla's meaning and defaults. Unknown keys are kept.
 - [`vanillite.toml`](#vanillitetoml): everything Vanillite-specific: the `profile` and the rules below. Every rule is written commented out with its documentation; uncomment a key to override the profile.
 
-Every key of both files can also be set with an environment variable for one run (it is not written to the files): `VANILLITE_` plus the key in upper case, `-` becomes `_` and `.` becomes `__`, e.g. `VANILLITE_MAX_PLAYERS=50` or `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`. Empty variables are ignored. `VANILLITE_EULA=true` accepts the [Minecraft EULA](https://aka.ms/MinecraftEULA).
+Every key of both files can also be set with an environment variable for one run (it is not written to the files): `VANILLITE_` plus the key in upper case, `-` becomes `_` and `.` becomes `__`, e.g. `VANILLITE_MAX_PLAYERS=50` or `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`. Empty variables are ignored. `VANILLITE_EULA=true` accepts the [Minecraft EULA](https://aka.ms/MinecraftEULA). `VANILLITE_LOG` sets the log level (`error` to `trace`, default `info`). The console shows colours (WARN yellow, ERROR red, `§` colour codes of chat, plugin messages and command output) on a terminal and in Pterodactyl's console, otherwise plain text; `VANILLITE_COLOR=always` or `never` overrides that, and `NO_COLOR` turns colours off.
 
 ## Profiles
 
