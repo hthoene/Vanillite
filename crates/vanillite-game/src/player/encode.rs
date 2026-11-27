@@ -957,9 +957,12 @@ pub(crate) mod layout_tests {
     /// the client disconnects on any other.
     #[test]
     fn mob_data_matches_vanilla_layout() {
-        let layout: Value =
-            serde_json::from_str(include_str!("../../../../data/vanilla/entity_data.json"))
-                .expect("entity_data.json");
+        let json = std::fs::read_to_string(format!(
+            "{}/entity_data.json",
+            vanillite_data::VANILLA_DATA_DIR
+        ))
+        .expect("entity_data.json");
+        let layout: Value = serde_json::from_str(&json).expect("entity_data.json");
         let mut wrong = Vec::new();
         for &kind in crate::mob::Kind::ALL {
             let name = kind.type_id().info().name;
