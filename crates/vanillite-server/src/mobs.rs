@@ -282,8 +282,8 @@ impl WorldMobs {
         self.fight_data = Some(store);
     }
 
-    /// `EnderDragonFight.tick` (before the entities), and the crystal placed since the last
-    /// tick (`tryRespawn`).
+    /// What commands told the fight since the last tick, `EnderDragonFight.tick` (before the
+    /// entities), and the crystal placed since the last tick (`tryRespawn`).
     pub(crate) fn tick_dragon_fight(
         &mut self,
         level: &mut Level,
@@ -291,6 +291,11 @@ impl WorldMobs {
         global: &Global,
         dimension: &str,
     ) {
+        let pending = std::mem::take(&mut level.output().dragon_events);
+        if !pending.is_empty() {
+            self.cx.dragon_events.extend(pending);
+            self.apply_actions(level, survival, global, dimension);
+        }
         let Some(fight) = &mut self.fight else {
             self.cx.dragon_fight = None;
             return;
@@ -728,6 +733,7 @@ impl WorldMobs {
         let anger = std::mem::take(&mut level.output().piglin_anger);
         if !anger.is_empty() {
             let mut ents = std::mem::take(&mut level.entities);
+            let mut random = level.lend_random();
             {
                 let blocks = WorldBlocks(&level.chunks);
                 let raining = |_| false;
@@ -735,6 +741,7 @@ impl WorldMobs {
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
                 let mut env = survival.env(
+                    &mut random,
                     state,
                     &rules,
                     &blocks,
@@ -756,6 +763,7 @@ impl WorldMobs {
                     );
                 }
             }
+            level.restore_random(random);
             level.entities = ents;
         }
         // What spawner blocks read when the block entities tick after the entities.
