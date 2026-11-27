@@ -152,14 +152,19 @@ impl ChunkLight {
     }
 
     /// Raises every level of both light types to at least the level in `other` (same layout).
-    /// An absent sky layer counts as full sky light and stays absent.
+    /// An absent sky layer counts as full sky light and stays absent; an absent block layer
+    /// below or above the chunk (one it keeps no light in) stays absent as well.
     pub fn merge_max(&mut self, other: &ChunkLight) {
         for (mine, theirs) in self.sky.iter_mut().zip(other.sky.iter()) {
             if *mine != LightNibbles::Absent {
                 mine.merge_max(theirs);
             }
         }
-        for (mine, theirs) in self.block.iter_mut().zip(other.block.iter()) {
+        let top = self.block.len() - 1;
+        for (index, (mine, theirs)) in self.block.iter_mut().zip(other.block.iter()).enumerate() {
+            if (index == 0 || index == top) && *mine == LightNibbles::Absent {
+                continue;
+            }
             mine.merge_max(theirs);
         }
     }
@@ -169,6 +174,59 @@ impl ChunkLight {
     pub fn block_mut(&mut self) -> &mut [LightNibbles] {
         &mut self.block
     }
+}
+
+/// What a chunk's light keeps when a neighbour unloads (`ThreadedLevelLightEngine
+/// .updateChunkStatus`): Vanilla keeps light data for a section while a section within one
+/// section of it, also in the neighbouring chunks, holds blocks; a section that only the
+/// unloaded chunk kept loses its light (block light reads 0, sky light continues the layer
+/// above). It does not come back when the neighbour loads again.
+///
+/// `area` is the 3 × 3 chunks around the chunk (row-major, z then x; the chunk at index 4),
+/// `unloaded` the index of the neighbour that unloads. Returns whether the light changed.
+pub fn forget_unkept_light(
+    light: &mut ChunkLight,
+    area: &[Option<&crate::Chunk>; 9],
+    unloaded: usize,
+) -> bool {
+    let filled = |index: usize, section: isize| {
+        usize::try_from(section).ok().is_some_and(|section| {
+            area[index].is_some_and(|chunk| {
+                chunk
+                    .sections()
+                    .get(section)
+                    .is_some_and(|s| !s.summary().is_empty())
+            })
+        })
+    };
+    let kept = |section: isize, with_unloaded: bool| {
+        (0..9).any(|index| {
+            (with_unloaded || index != unloaded)
+                && (section - 1..=section + 1).any(|s| filled(index, s))
+        })
+    };
+    let top = light.len() - 1;
+    let mut changed = false;
+    for layer in 0..light.len() {
+        let section = layer as isize - 1;
+        if !kept(section, true) || kept(section, false) {
+            continue;
+        }
+        let forgotten = if layer == 0 || layer == top {
+            LightNibbles::Absent
+        } else {
+            LightNibbles::Uniform(0)
+        };
+        if light.block[layer] != forgotten {
+            light.block[layer] = forgotten;
+            changed = true;
+        }
+        if light.sky[layer] != LightNibbles::Absent {
+            light.sky[layer] = LightNibbles::Absent;
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]

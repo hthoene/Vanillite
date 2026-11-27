@@ -1,0 +1,15 @@
+{
+  "description": "Block light through the light section above the world: a glowstone in a stone slab at the build limit lights an air pocket in the slab that is only open upwards, then goes again.",
+  "tier": "fast",
+  "light": true,
+  "region": [[-1, 317, -2], [7, 319, 2]],
+  "ticks": 2,
+  "setup": [
+    {"op": "fill", "from": [0, 318, -1], "to": [6, 319, 1], "block": "minecraft:stone"},
+    {"op": "set", "pos": [5, 319, 0], "block": "minecraft:air"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "place", "pos": [0, 319, 0], "block": "minecraft:glowstone"},
+    {"tick": 2, "op": "place", "pos": [0, 319, 0], "block": "minecraft:stone"}
+  ]
+}

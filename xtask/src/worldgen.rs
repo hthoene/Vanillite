@@ -1,10 +1,13 @@
 //! `cargo xtask worldgen sweep`: world generation against Vanilla over many seeds, all
-//! dimensions and world types (#223).
+//! dimensions and world types (#223); `cargo xtask light sweep`: light after generation and
+//! after scripted block changes the same way (#237).
 //!
 //! Compiles the Java harness on the pinned jar (like `golden regen`), lets
-//! `golden/WorldSweep.java` generate the areas in Vanilla, then runs the ignored test
-//! `vanillite-worldgen/tests/vanilla_sweep.rs`, which generates the same areas with Vanillite
-//! and compares them chunk by chunk. Results go to `target/worldgen-sweep/` (`summary.md`).
+//! `golden/WorldSweep.java` (`LightSweep.java`) generate the areas in Vanilla, then runs the
+//! ignored test `vanillite-worldgen/tests/vanilla_sweep.rs`
+//! (`vanillite-light/tests/vanilla_light_sweep.rs`), which does the same with Vanillite and
+//! compares chunk by chunk. Results go to `target/worldgen-sweep/` (`target/light-sweep/`),
+//! `summary.md`.
 
 use std::path::Path;
 use std::process::Command;
@@ -32,12 +35,60 @@ fn mix(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// One kind of sweep.
+struct Sweep {
+    /// Name in messages, e.g. `worldgen sweep`.
+    name: &'static str,
+    /// Java class under `dev.vanillite.extractor.golden`.
+    class: &'static str,
+    /// Output under `target/`.
+    out: &'static str,
+    /// Crate and test that compare.
+    package: &'static str,
+    test: &'static str,
+    /// Chunks per side of the origin area.
+    size: i32,
+}
+
 /// `cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N]
 /// [--kinds a,b] [--keep]`.
 pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
+    run_sweep(
+        root,
+        args,
+        &Sweep {
+            name: "worldgen sweep",
+            class: "WorldSweep",
+            out: "worldgen-sweep",
+            package: "vanillite-worldgen",
+            test: "vanilla_sweep",
+            size: 16,
+        },
+    )
+}
+
+/// `cargo xtask light sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b]
+/// [--keep]`.
+pub fn light_sweep(root: &Path, args: &[&str]) -> Result<()> {
+    run_sweep(
+        root,
+        args,
+        &Sweep {
+            name: "light sweep",
+            class: "LightSweep",
+            out: "light-sweep",
+            package: "vanillite-light",
+            test: "vanilla_light_sweep",
+            size: 6,
+        },
+    )
+}
+
+fn run_sweep(root: &Path, args: &[&str], sweep: &Sweep) -> Result<()> {
+    let name = sweep.name;
     let mut start: Option<u64> = None;
     let mut seeds = 3_usize;
-    let mut size = 16_i32;
+    let mut size = sweep.size;
     let mut kinds: Vec<String> = KINDS.iter().map(|k| (*k).to_owned()).collect();
     let mut explicit: Vec<i64> = Vec::new();
     let mut keep = false;
@@ -86,7 +137,7 @@ pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
             .map_or(0, |d| d.as_secs() / 86_400)
     });
     let start_seed = state;
-    println!("worldgen sweep: start seed {start_seed}");
+    println!("{name}: start seed {start_seed}");
     let mut world_seeds = explicit;
     if world_seeds.is_empty() {
         world_seeds = (0..seeds).map(|_| mix(&mut state) as i64).collect();
@@ -104,7 +155,7 @@ pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
     }
     let seeds_text: Vec<String> = world_seeds.iter().map(i64::to_string).collect();
     println!(
-        "worldgen sweep: seeds {}, kinds {}, {} areas",
+        "{name}: seeds {}, kinds {}, {} areas",
         seeds_text.join(" "),
         kinds.join(","),
         jobs.len()
@@ -115,15 +166,15 @@ pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
     if broken
         .files
         .iter()
-        .any(|f| f.file_stem().and_then(|s| s.to_str()) == Some("WorldSweep"))
+        .any(|f| f.file_stem().and_then(|s| s.to_str()) == Some(sweep.class))
     {
         return Err(format!(
-            "WorldSweep does not compile against {}:\n{}",
-            key.minecraft, broken.errors
+            "{} does not compile against {}:\n{}",
+            sweep.class, key.minecraft, broken.errors
         ));
     }
     let work_dir = root.join("target/vanilla").join(&key.minecraft);
-    let out = root.join("target/worldgen-sweep");
+    let out = root.join("target").join(sweep.out);
     let vanilla = out.join("vanilla");
     remove_dir(&out)?;
     std::fs::create_dir_all(&vanilla).map_err(|e| format!("{}: {e}", vanilla.display()))?;
@@ -147,7 +198,7 @@ pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
                         .arg("-Xmx3G")
                         .arg("-cp")
                         .arg(classpath)
-                        .arg("dev.vanillite.extractor.golden.WorldSweep")
+                        .arg(format!("dev.vanillite.extractor.golden.{}", sweep.class))
                         .arg(vanilla)
                         .args(part))
                 })
@@ -159,7 +210,7 @@ pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
             .collect::<Result<Vec<()>>>()
     })?;
     println!(
-        "worldgen sweep: Vanilla generated {} areas in {:.0} s",
+        "{name}: Vanilla generated {} areas in {:.0} s",
         jobs.len(),
         started.elapsed().as_secs_f64()
     );
@@ -173,9 +224,9 @@ pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
                 "-q",
                 "--release",
                 "-p",
-                "vanillite-worldgen",
+                sweep.package,
                 "--test",
-                "vanilla_sweep",
+                sweep.test,
                 "--",
                 "--ignored",
                 "--nocapture",
@@ -195,6 +246,6 @@ pub fn sweep(root: &Path, args: &[&str]) -> Result<()> {
     if !keep {
         remove_dir(&vanilla)?;
     }
-    println!("worldgen sweep: {}", summary.display());
+    println!("{name}: {}", summary.display());
     result
 }
