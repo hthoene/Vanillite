@@ -351,6 +351,56 @@ impl WorldSurvival {
         dimension: &str,
         portals: &mut PortalRequests,
     ) {
+        self.tick_players(
+            entities,
+            chunks,
+            border,
+            block_entities,
+            global,
+            dimension,
+            portals,
+            None,
+        );
+    }
+
+    /// The rest of the tick of the player `id`, which a portal just brought to this world
+    /// (`player::finish_tick_after_portal`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finish_portal_tick(
+        &mut self,
+        entities: &mut Entities,
+        chunks: &Chunks,
+        border: &vanillite_game::level::border::WorldBorder,
+        block_entities: &BlockEntities,
+        global: &Global,
+        dimension: &str,
+        id: EntityId,
+    ) {
+        self.tick_players(
+            entities,
+            chunks,
+            border,
+            block_entities,
+            global,
+            dimension,
+            &mut PortalRequests::default(),
+            Some(id),
+        );
+    }
+
+    /// [`Self::do_tick`], or with `arrived` only the rest of that player's tick.
+    #[allow(clippy::too_many_arguments)]
+    fn tick_players(
+        &mut self,
+        entities: &mut Entities,
+        chunks: &Chunks,
+        border: &vanillite_game::level::border::WorldBorder,
+        block_entities: &BlockEntities,
+        global: &Global,
+        dimension: &str,
+        portals: &mut PortalRequests,
+        arrived: Option<EntityId>,
+    ) {
         let level = &global.level;
         let rules = level.rules().clone();
         let blocks = WorldBlocks(chunks);
@@ -388,10 +438,18 @@ impl WorldSurvival {
             env.border = Some(border);
             let Entities { store, players, .. } = entities;
             for (id, data) in players.iter_mut() {
+                if arrived.is_some_and(|a| a != id) {
+                    continue;
+                }
                 let Some(mut entity) = store.get_mut(id) else {
                     continue;
                 };
-                match player::do_tick(&mut entity, data, &mut env) {
+                let result = if arrived.is_some() {
+                    player::finish_tick_after_portal(&mut entity, data, &mut env)
+                } else {
+                    player::do_tick(&mut entity, data, &mut env)
+                };
+                match result {
                     TickResult::Remove | TickResult::Credits => removed.push(id),
                     TickResult::Portal(kind, entry) => portals.travels.push((id, kind, entry)),
                     TickResult::Alive => {}

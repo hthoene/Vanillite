@@ -115,7 +115,7 @@ pub(super) fn resolve_message(
     let mut out = Component::text(text.get(..first).unwrap_or(""));
     let mut previous = first;
     for part in &message.parts {
-        let names = select::select(&part.selector, source, &env.level.entities, env.global)
+        let names = select::select(&part.selector, source, env)
             .into_iter()
             .map(|t| display_name(&t.name, t.uuid))
             .collect();

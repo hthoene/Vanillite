@@ -646,10 +646,9 @@ impl ServerBuilder {
                 level.set_tree_features(Arc::clone(trees));
             }
             level.set_maps(Arc::clone(&global.level.maps));
-            level.set_command_runner(Arc::new(crate::commands::BlockCommands::new(
-                &global,
-                WorldId(index),
-            )));
+            let block_commands = crate::commands::BlockCommands::new(&global, WorldId(index));
+            let lent_levels = block_commands.lent();
+            level.set_command_runner(Arc::new(block_commands));
             level.set_structure_templates(Arc::clone(&global.templates));
             if let Some(packs) = &packs {
                 level.set_data_packs(Arc::clone(packs));
@@ -675,6 +674,7 @@ impl ServerBuilder {
                 mobs,
                 data,
             );
+            world.set_lent_levels(lent_levels);
             world.restore_tickets(saved_tickets);
             worlds.push(world);
         }
