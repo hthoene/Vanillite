@@ -711,7 +711,8 @@ impl WorldSurvival {
     ) -> R {
         let state = &global.level;
         let rules = state.rules().clone();
-        let mut random = LegacyRandom::new(state.game_time() ^ level.game_time());
+        // The level random, as in the world's tick (`level.random` of Vanilla).
+        let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
         let mut out = Vec::new();
         let mut cx = vanillite_game::mob::MobContext::default();
         let mut ents = std::mem::take(&mut level.entities);
@@ -743,13 +744,23 @@ impl WorldSurvival {
             f(level, &mut ents, &mut env, &mut cx)
         };
         level.entities = ents;
+        *level.random() = random;
         for action in std::mem::take(&mut cx.actions) {
-            action.apply_to_level(level);
+            use vanillite_game::mob::WorldAction;
+            match action {
+                // The entities an explosion hurts take the damage in the world's next tick.
+                WorldAction::Explode(e) => e.run(level, &rules),
+                WorldAction::Level(action) => action.apply(level),
+                other => {
+                    other.apply_to_level(level);
+                }
+            }
         }
         for id in std::mem::take(&mut cx.discarded) {
             level.entities.despawn(id);
         }
-        deliver_simple(&out, &mut level.entities, &mut random, global);
+        let (entities, network_ids, random) = level.entity_parts();
+        deliver_simple(&out, entities, network_ids, random, global);
         for effect in &out {
             if let Effect::GameEvent {
                 event,
@@ -826,7 +837,7 @@ impl WorldSurvival {
             return false;
         };
         let done = f(&mut entity, data, &mut env);
-        deliver_simple(&out, entities, &mut random, global);
+        deliver_simple(&out, entities, &global.network_ids, &mut random, global);
         collect_game_events(&out, events);
         done
     }
@@ -964,7 +975,13 @@ impl WorldSurvival {
         }
         out.flush(entities);
         self.outgoing = out;
-        spawn_drops(&effects, entities, &mut self.random, global);
+        spawn_drops(
+            &effects,
+            entities,
+            &global.network_ids,
+            &mut self.random,
+            global,
+        );
     }
 
     /// The player rows of the chunks within `range` of `pos` (all players when that is
@@ -994,6 +1011,7 @@ impl WorldSurvival {
 fn deliver_simple(
     effects: &[Effect],
     entities: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
     random: &mut LegacyRandom,
     global: &Global,
 ) {
@@ -1070,7 +1088,7 @@ fn deliver_simple(
             | Effect::RespawnShoulder { .. } => {}
         }
     }
-    spawn_drops(effects, entities, random, global);
+    spawn_drops(effects, entities, network_ids, random, global);
 }
 
 /// A game event for the world to post: the event, its position and context.
@@ -1119,6 +1137,7 @@ fn award_experience(
 fn spawn_drops(
     effects: &[Effect],
     entities: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
     random: &mut LegacyRandom,
     global: &Global,
 ) {
@@ -1135,7 +1154,7 @@ fn spawn_drops(
                 });
             }
         }
-        award_experience(effect, entities, &global.network_ids, random);
+        award_experience(effect, entities, network_ids, random);
         if let Effect::SpawnMob {
             kind,
             pos,
@@ -1153,8 +1172,7 @@ fn spawn_drops(
                 y_head_rot: *y_rot,
             };
             let data = vanillite_game::mob::MobData::new(kind, seed);
-            let id =
-                vanillite_game::mob::spawn(entities, &global.network_ids, uuid, *pos, rot, data);
+            let id = vanillite_game::mob::spawn(entities, network_ids, uuid, *pos, rot, data);
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);
             }
@@ -1167,7 +1185,7 @@ fn spawn_drops(
                 loaded.data.owner = Some(*owner);
                 let id = vanillite_game::mob::spawn(
                     entities,
-                    &global.network_ids,
+                    network_ids,
                     loaded.uuid,
                     *pos,
                     loaded.rot,
@@ -1189,7 +1207,7 @@ fn spawn_drops(
         } = effect
         {
             let id = entities.spawn_item(
-                global.network_ids.next(),
+                network_ids.next(),
                 *uuid,
                 *pos,
                 *velocity,
