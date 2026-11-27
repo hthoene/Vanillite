@@ -75,6 +75,35 @@ impl std::fmt::Debug for Shared {
     }
 }
 
+/// The last Bedrock packet ids of one direction (disconnect logs).
+#[derive(Debug, Default)]
+struct Recent {
+    ids: [u32; 8],
+    count: usize,
+}
+
+impl Recent {
+    fn push(&mut self, id: u32) {
+        if let Some(slot) = self.ids.get_mut(self.count % 8) {
+            *slot = id;
+        }
+        self.count = self.count.wrapping_add(1);
+    }
+}
+
+impl std::fmt::Display for Recent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown = self.count.min(8);
+        write!(f, "{} packets, last [", self.count)?;
+        for i in 0..shown {
+            let at = self.count.wrapping_sub(shown).wrapping_add(i) % 8;
+            let sep = if i == 0 { "" } else { " " };
+            write!(f, "{sep}{}", self.ids.get(at).copied().unwrap_or_default())?;
+        }
+        f.write_str("]")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     NetworkSettings,
@@ -317,6 +346,10 @@ pub(crate) struct Session {
     events_tx: mpsc::Sender<Event>,
     /// The event receiver for the task loop to take.
     pub events_rx: Option<mpsc::Receiver<Event>>,
+    /// Packet ids sent and received, and client warnings logged (disconnect diagnostics).
+    sent_ids: Recent,
+    received_ids: Recent,
+    warnings_logged: u8,
 }
 
 impl std::fmt::Debug for Session {
@@ -383,12 +416,16 @@ impl Session {
             book: utility::BookEdit::default(),
             events_tx,
             events_rx: Some(events_rx),
+            sent_ids: Recent::default(),
+            received_ids: Recent::default(),
+            warnings_logged: 0,
         }
     }
 
     // ---- Output ---------------------------------------------------------------------------
 
     fn send(&mut self, packet: u32, body: &[u8]) {
+        self.sent_ids.push(packet);
         batch::push_packet(&mut self.batch, packet, body);
     }
 
@@ -454,6 +491,17 @@ impl Session {
                 self.phase
             );
         }
+        let transport = match &mut self.link {
+            Link::Rak(rak) => format!("RakNet: {} bytes waiting", rak.backlog()),
+            Link::Net(net) => net.describe(Instant::now()),
+        };
+        log::info!(
+            "Bedrock connection {} after {:.1}s: sent {}, received {}; {transport}",
+            self.peer,
+            self.started.elapsed().as_secs_f32(),
+            self.sent_ids,
+            self.received_ids
+        );
         self.java_tx = None;
         self.done = true;
     }
@@ -565,6 +613,7 @@ impl Session {
                     self.kick("Bad packet header");
                     return;
                 };
+                self.received_ids.push(pid);
                 if let Err(e) = self.bedrock_packet(pid, body) {
                     self.kick(&format!("Bad packet {pid}: {e}"));
                     return;
@@ -587,6 +636,7 @@ impl Session {
 
     fn bedrock_packet(&mut self, pid: u32, body: &[u8]) -> crate::io::Result<()> {
         match (self.phase, pid) {
+            (_, id::DISCONNECT | id::PACKET_VIOLATION_WARNING) => self.client_complaint(pid, body),
             (Phase::NetworkSettings, id::REQUEST_NETWORK_SETTINGS) => {
                 let protocol = crate::io::Reader::new(body).be_i32()?;
                 let accepted = self.shared.config.accepts(protocol);
@@ -740,6 +790,43 @@ impl Session {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Logs why the client leaves or which packet it could not read (a few per session).
+    fn client_complaint(&mut self, pid: u32, body: &[u8]) {
+        if self.warnings_logged >= 8 {
+            return;
+        }
+        self.warnings_logged = self.warnings_logged.saturating_add(1);
+        let who = if self.name.is_empty() {
+            self.peer.to_string()
+        } else {
+            self.name.clone()
+        };
+        let mut r = crate::io::Reader::new(body);
+        if pid == id::DISCONNECT {
+            let reason = r.vari32().unwrap_or(-1);
+            let hidden = r.bool().unwrap_or(true);
+            let message = if hidden {
+                ""
+            } else {
+                r.string("message", 1024).unwrap_or_default()
+            };
+            log::info!(
+                "Bedrock client {who} disconnects during {:?} (reason {reason}): {message:?}; last sent {}",
+                self.phase,
+                self.sent_ids
+            );
+        } else {
+            let kind = r.vari32().unwrap_or(-1);
+            let severity = r.vari32().unwrap_or(-1);
+            let packet = r.vari32().unwrap_or(-1);
+            let context = r.string("context", 1024).unwrap_or_default();
+            log::warn!(
+                "Bedrock client {who} rejected packet {packet} (violation {kind}, severity {severity}): {context:?}; last sent {}",
+                self.sent_ids
+            );
+        }
     }
 
     fn login(&mut self, request: &[u8]) {
