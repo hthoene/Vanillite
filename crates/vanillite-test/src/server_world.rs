@@ -198,6 +198,13 @@ impl ServerWorld {
         for (k, v) in rules {
             world.server.command(&format!("gamerule {k} {v}"));
         }
+        // The recorder's time of day and difficulty (`ScenarioRecorder.timeAndDifficulty`).
+        if let Some(time) = spec.time {
+            world.server.command(&format!("time set {time}"));
+        }
+        world
+            .server
+            .command(&format!("difficulty {}", spec.difficulty));
         // The regions' chunks, forced like `/forceload`, until they tick with their entities.
         let mut areas = vec![(world.selected, spec.forced.clone())];
         for view in &spec.views {
@@ -341,6 +348,8 @@ impl ServerWorld {
                 y_head_rot: spec.rot[0],
             });
             e.set_old_pos();
+            // A new player is not on the ground before its first move.
+            e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, false);
         }
         if let Some(p) = overworld.entities.player_mut(id) {
             p.survival.simulate_movement = true;

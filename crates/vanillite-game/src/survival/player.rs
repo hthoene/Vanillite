@@ -272,10 +272,6 @@ pub struct Survival {
     /// The server moves the player itself (`canSimulateMovement` for a player no client
     /// moves: the parity scenarios' mock players), see [`simulate_travel`].
     pub simulate_movement: bool,
-    /// The world runs `Player.touch` at the end of the player's own `aiStep`
-    /// ([`crate::mob::fam::undead::cubes::player_touch`]), as it does for a player the server
-    /// moves itself; otherwise the cubes hurt the player in their tick.
-    pub touches_in_tick: bool,
     /// `yBodyRot`, only kept while the server moves the player.
     pub y_body_rot: f32,
     /// The state of the player's own random (`Entity.random`), seeded at its first use
@@ -382,7 +378,6 @@ impl Default for Survival {
             flying: false,
             raid_omen: crate::raid::PlayerOmen::default(),
             simulate_movement: false,
-            touches_in_tick: false,
             y_body_rot: 0.0,
             random: None,
             horizontal_collision: false,
@@ -1753,20 +1748,10 @@ pub fn do_tick_ai(
     Continue(tick_after_portal(entity, player, env))
 }
 
-/// The rest of [`do_tick`] for a player whose portal took it to another world
-/// (`TickResult::Portal`), run where it arrived: Vanilla teleports inside `handlePortal` and
-/// the tick goes on in the new world.
-pub fn finish_tick_after_portal(
-    entity: &mut EntityMut<'_>,
-    player: &mut PlayerData,
-    env: &mut Env<'_>,
-) -> TickResult {
-    let result = tick_after_portal(entity, player, env);
-    do_tick_end(entity, player, env, result)
-}
-
-/// [`do_tick_ai`] after `handlePortal`.
-fn tick_after_portal(
+/// [`do_tick_ai`] after `handlePortal`; alone for a player whose portal took it to another
+/// world (`TickResult::Portal`), run where it arrived: Vanilla teleports inside
+/// `handlePortal` and the tick goes on in the new world.
+pub fn tick_after_portal(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,

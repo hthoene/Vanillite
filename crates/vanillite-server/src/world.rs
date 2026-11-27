@@ -784,13 +784,17 @@ impl ServerWorld {
             vanillite_game::survival::sleep::tick_players(&mut self.level, &hooks);
         }
         self.survival.do_tick(
-            &mut self.level.entities,
-            &self.level.chunks,
-            &self.level.border,
-            &self.level.block_entities,
+            &mut self.level,
+            self.mobs.cx_mut(),
             ctx.global,
             &self.dimension,
             &mut portals,
+        );
+        self.mobs.after_player_ticks(
+            &mut self.level,
+            &mut self.survival,
+            ctx.global,
+            &self.dimension,
         );
         vanillite_game::raid::start_pending_raids(
             &mut self.level.entities,
