@@ -1554,6 +1554,11 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         ("Wildlife", "GolemStroll") => "GolemRandomStrollInVillageGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
         ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
+        ("Village", "Trader") => match word(2) {
+            "LookAt" if field("players") == "true" => "InteractGoal",
+            "LookAt" => "LookAtPlayerGoal",
+            inner => leak(format!("{inner}Goal")),
+        },
         (_, variant) => leak(if variant.ends_with("Goal") {
             variant.to_owned()
         } else {
