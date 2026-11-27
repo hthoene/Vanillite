@@ -289,6 +289,34 @@ pub struct AccessOp<'a> {
     pub change: Option<(bool, &'a str)>,
 }
 
+/// A new extra world (`world_create`, Bukkit's `WorldCreator`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldCreator<'a> {
+    /// Name and folder.
+    pub name: &'a str,
+    /// One of [`vanillite_abi::environment`].
+    pub environment: u32,
+    /// The generator name or dimension key; empty for `normal`.
+    pub generator: &'a str,
+    /// `None`: random.
+    pub seed: Option<i64>,
+    /// Whether structures are generated.
+    pub structures: bool,
+}
+
+/// What a world is (`world_info`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldDescription {
+    /// One of [`vanillite_abi::environment`].
+    pub environment: u32,
+    /// Flags from [`vanillite_abi::world_flag`].
+    pub flags: u32,
+    /// Its seed.
+    pub seed: i64,
+    /// Its folder.
+    pub folder: String,
+}
+
 /// Where an entity is.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Location {
@@ -436,6 +464,30 @@ pub trait ServerAccess: Send + Sync {
     }
     /// A plugin was disabled: the server drops what it holds for it (chunk tickets).
     fn plugin_disabled(&self, _plugin: &str) {}
+    /// Creates (or loads) an extra world in the next global phase; its world index.
+    fn create_world(&self, _world: &WorldCreator<'_>) -> Result<u32, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Loads the extra world of a folder in the next global phase; its world index.
+    fn load_world(&self, _name: &str) -> Result<u32, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// Unloads an extra world in the next global phase.
+    fn unload_world(&self, _world: u32, _save: bool) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// The number of world indices, loaded or not.
+    fn world_count(&self) -> u32 {
+        0
+    }
+    /// What a world is.
+    fn world_info(&self, _world: u32) -> Option<WorldDescription> {
+        None
+    }
+    /// Moves an online player to a place in any loaded world.
+    fn move_player(&self, _player: u128, _to: Location) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
 }
 
 /// A plugin menu to open (`menu_open`).

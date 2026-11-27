@@ -14,7 +14,9 @@ use crate::types::{
 };
 
 mod v16;
+mod v18;
 pub use v16::{RayHit, WorldBorder};
+pub use v18::{Environment, WorldCreator, WorldDetails};
 
 /// Thread-safe access to the server. Cheap to copy; usable from any thread after `load`.
 #[derive(Clone, Copy, Debug)]
@@ -279,11 +281,12 @@ impl Server {
         read_string(|out| unsafe { (self.api().world_name)(self.host.id, world.0, out) }).ok()
     }
 
-    /// All worlds with their dimension keys.
+    /// All loaded worlds with their dimension keys.
     pub fn worlds(&self) -> Vec<(World, String)> {
-        (0..)
+        (0..self.world_count())
             .map(World)
-            .map_while(|w| self.world_name(w).map(|name| (w, name)))
+            .filter(|&w| self.world_details(w).is_some_and(|d| d.loaded))
+            .filter_map(|w| self.world_name(w).map(|name| (w, name)))
             .collect()
     }
 

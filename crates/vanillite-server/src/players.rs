@@ -1242,7 +1242,7 @@ impl WorldPlayers {
                     has_ceiling: global
                         .dimensions
                         .world(dimension_name)
-                        .and_then(|w| global.level.dimension_types.get(w.index()))
+                        .and_then(|w| global.dimensions.facts(w))
                         .is_some_and(|t| t.has_ceiling),
                 };
                 vanillite_game::carried::tick(level, owner, player);

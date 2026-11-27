@@ -51,9 +51,8 @@ pub(crate) fn clock(
                 })
         }
         None => {
-            let index = source.world.index();
             let dimension = global.dimensions.name_or_overworld(source.world);
-            let clock = level.default_clocks.get(index).copied().flatten();
+            let clock = global.dimensions.default_clock(source.world);
             match clock {
                 Some(i) => {
                     let id = level

@@ -19,7 +19,7 @@ fn known_kind(kind: u32) -> bool {
     matches!(kind,
         event::PLAYER_JOIN..=event::PLAYER_FISH
         | event::ENTITY_SPAWN..=event::ENTITY_DROP_ITEM
-        | event::BLOCK_DROP..=event::PORTAL_CREATE
+        | event::BLOCK_DROP..=event::WORLD_UNLOAD
         | event::INVENTORY_OPEN..=event::BREW)
 }
 
