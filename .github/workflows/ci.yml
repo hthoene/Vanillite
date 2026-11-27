@@ -55,8 +55,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   # The tests run in parallel jobs: the world generation goldens and the game and world crates
-  # (menu fuzz and chunk level tests) in two parts each, the test harness (parity scenarios) and
-  # all other crates. Together they run every test of the workspace; the doc tests and the
+  # (menu fuzz and chunk level tests) in two parts each, the test harness (parity scenarios) in
+  # three parts and all other crates. Together they run every test of the workspace; the doc tests and the
   # codegen checks run in a job of their own.
   test:
     name: Tests (all other crates)
@@ -146,12 +146,27 @@ jobs:
           name: junit-game-${{ matrix.slice }}
           path: target/nextest/ci/junit.xml
 
+  # The parity scenarios in three parts side by side (VANILLITE_SCENARIO_SHARD: every third
+  # scenario in name order, so the parts together run all of them). Part 1 also runs the other
+  # tests of the harness, parts 2 and 3 only the parity test binary.
   test-parity:
-    name: Tests (parity scenarios)
+    name: Tests (parity scenarios ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+        include:
+          - shard: 1
+            filter: all()
+          - shard: 2
+            filter: binary(parity)
+          - shard: 3
+            filter: binary(parity)
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
+      VANILLITE_SCENARIO_SHARD: ${{ matrix.shard }}/3
     steps:
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
@@ -185,11 +200,11 @@ jobs:
       - name: Tests
         run: >-
           cargo nextest run -p vanillite-test --all-features --locked --profile ci --no-tests=warn
-          --config 'profile.dev.package.vanillite-world.opt-level=1'
+          --config 'profile.dev.package.vanillite-world.opt-level=1' -E '${{ matrix.filter }}'
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: junit-parity
+          name: junit-parity-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
 
   codegen:
