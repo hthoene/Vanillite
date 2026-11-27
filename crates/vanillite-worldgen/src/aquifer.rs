@@ -99,19 +99,34 @@ pub struct AquiferFunctions {
     pub lava: FnId,
     pub exclusion: FnId,
     pub surface_level: FnId,
+    /// Whether the functions that decide a cell's fluid give the same values whenever they are
+    /// sampled ([`Program::is_point_exact`]), so cells may be resolved ahead of their first use.
+    pub cells_point_exact: bool,
 }
 
 impl AquiferFunctions {
     /// Compiles the functions of `config` (at generator setup).
     pub fn compile(config: &AquiferConfig, compiler: &mut DensityCompiler<'_>) -> Self {
-        Self {
+        let mut functions = Self {
             barrier: compiler.compile(&config.barrier),
             fluid_level_floodedness: compiler.compile(&config.fluid_level_floodedness),
             fluid_level_spread: compiler.compile(&config.fluid_level_spread),
             lava: compiler.compile(&config.lava),
             exclusion: compiler.compile(&config.exclusion),
             surface_level: compiler.compile(&config.surface_level),
-        }
+            cells_point_exact: false,
+        };
+        let program = compiler.program();
+        functions.cells_point_exact = [
+            functions.fluid_level_floodedness,
+            functions.fluid_level_spread,
+            functions.lava,
+            functions.exclusion,
+            functions.surface_level,
+        ]
+        .into_iter()
+        .all(|function| program.is_point_exact(function));
+        functions
     }
 }
 
@@ -200,13 +215,29 @@ impl Aquifer {
         }
     }
 
+    /// The lowest Y from which every block with a density `<= 0` is air: above the aquifer's
+    /// sampling limit the global fluid applies, which is air from the sea level up.
+    pub fn air_from_y(&self) -> i32 {
+        match self {
+            Self::Disabled(picker) => picker.sea_level.max(picker.sea.fluid_level),
+            Self::NoiseBased(aquifer) => aquifer
+                .skip_sampling_above_y
+                .saturating_add(1)
+                .max(aquifer.fluid_picker.sea_level)
+                .max(aquifer.fluid_picker.sea.fluid_level),
+        }
+    }
+
     /// `shouldScheduleFluidUpdate()`: whether the last fluid placed must be ticked
     /// (marked for post-processing).
     #[inline]
     pub fn should_schedule_fluid_update(&self) -> bool {
         match self {
             Self::Disabled(_) => false,
-            Self::NoiseBased(aquifer) => aquifer.should_schedule_fluid_update,
+            Self::NoiseBased(aquifer) => match aquifer.air_above_fluids {
+                Some((x, y, z)) => aquifer.air_schedules_update(x, y, z),
+                None => aquifer.should_schedule_fluid_update,
+            },
         }
     }
 }
@@ -302,6 +333,72 @@ fn adjust_surface_level(level: i32) -> i32 {
     level + 8
 }
 
+/// Surface levels by quart position (`ChunkPos.pack`) that the aquifers of one thread have
+/// sampled for one program: a level is a function of the position alone when the function is
+/// point exact, and the aquifer cells of neighbouring chunks sample the same positions.
+#[derive(Default)]
+struct SurfaceLevels {
+    /// [`Program::id`] and the surface level function the levels belong to.
+    source: (u64, u32),
+    levels: FxHashMap<i64, i32>,
+}
+
+impl SurfaceLevels {
+    /// Most levels kept per thread (about half a megabyte); a full cache starts over.
+    const MAX: usize = 1 << 15;
+
+    /// The level at `key`, from `sample` if this thread has not sampled it yet.
+    fn get_or_insert(
+        program: &Program,
+        function: FnId,
+        key: i64,
+        sample: impl FnOnce() -> i32,
+    ) -> i32 {
+        thread_local! {
+            static LEVELS: std::cell::RefCell<SurfaceLevels> = std::cell::RefCell::default();
+        }
+        let source = (program.id(), function.0);
+        let known = LEVELS.with_borrow_mut(|cache| {
+            if cache.source != source {
+                cache.source = source;
+                cache.levels.clear();
+            }
+            cache.levels.get(&key).copied()
+        });
+        // (Sampled outside the borrow: sampling does not come back here.)
+        known.unwrap_or_else(|| {
+            let level = sample();
+            LEVELS.with_borrow_mut(|cache| {
+                if cache.levels.len() >= Self::MAX {
+                    cache.levels.clear();
+                }
+                cache.levels.insert(key, level);
+            });
+            level
+        })
+    }
+}
+
+/// What the 12 cells of a grid anchor have in common.
+#[derive(Clone, Copy, Debug)]
+struct AnchorSummary {
+    /// The highest fluid level of the cells.
+    max_fluid_level: i32,
+    /// The fluid of every cell, if they all have the same.
+    uniform: Option<FluidStatus>,
+}
+
+/// Whether a grid anchor has its summary yet.
+#[derive(Clone, Copy, Debug)]
+enum AnchorState {
+    /// Not yet: how often it was asked.
+    Asked(u8),
+    Summary(AnchorSummary),
+}
+
+/// How often an anchor is searched cell by cell before its summary is made.
+const SUMMARY_AFTER: u8 = 24;
+
 /// `Aquifer.NoiseBasedAquifer`: aquifer cells on a 16×12×16 grid, each with its own fluid
 /// level and type, separated by barriers.
 #[derive(Debug)]
@@ -327,6 +424,12 @@ pub struct NoiseBasedAquifer {
     /// and indices.
     anchor: Option<(i32, i32, i32)>,
     anchor_cells: [(i32, i32, i32, usize); 12],
+    /// Per grid anchor (indexed like the cells): its summary, once resolved.
+    anchor_summaries: Box<[AnchorState]>,
+    /// The block of the last result if it was air found without the search of the closest
+    /// cells: whether it schedules a fluid update is then worked out when asked (generation
+    /// only asks for fluids).
+    air_above_fluids: Option<(i32, i32, i32)>,
 }
 
 impl NoiseBasedAquifer {
@@ -365,6 +468,8 @@ impl NoiseBasedAquifer {
             lava: ids::LAVA.default_state(),
             anchor: None,
             anchor_cells: [(0, 0, 0, 0); 12],
+            anchor_summaries: vec![AnchorState::Asked(0); total].into_boxed_slice(),
+            air_above_fluids: None,
         };
         let max_surface = aquifer.max_surface_level(
             program,
@@ -392,8 +497,17 @@ impl NoiseBasedAquifer {
         let quantized_z = (block_z >> 2) << 2;
         let key = ChunkPos::new(quantized_x, quantized_z).as_long();
         let surface = self.functions.surface_level;
+        // (An unfinished program has no number of its own to keep its levels apart.)
+        let shared = self.functions.cells_point_exact && program.id() != 0;
         *self.surface_level_cache.entry(key).or_insert_with(|| {
-            floor_f(program.sample_value(ctx, surface, quantized_x, 0, quantized_z))
+            let mut sample =
+                || floor_f(program.sample_value(ctx, surface, quantized_x, 0, quantized_z));
+            if shared {
+                // The cells of neighbouring chunks ask for the same positions.
+                SurfaceLevels::get_or_insert(program, surface, key, sample)
+            } else {
+                sample()
+            }
         })
     }
 
@@ -465,6 +579,7 @@ impl NoiseBasedAquifer {
         block_z: i32,
         density: f64,
     ) -> Option<BlockState> {
+        self.air_above_fluids = None;
         if density > 0.0 {
             self.should_schedule_fluid_update = false;
             return None;
@@ -500,6 +615,35 @@ impl NoiseBasedAquifer {
         );
         if self.anchor != Some(anchor) {
             self.set_anchor(anchor);
+        }
+        if self.functions.cells_point_exact
+            && let Some(summary) = self.anchor_summary(program, ctx, anchor)
+        {
+            // Two cases need no search for the closest cells; both follow from the code below.
+            // Far enough above every fluid level around, the block is air: each cell's fluid
+            // is air here, and every barrier between two of them has a gradient below -2
+            // (five blocks above the higher level), so it is negative and adds no density.
+            if block_y >= summary.max_fluid_level.saturating_add(5) {
+                self.air_above_fluids = Some((block_x, block_y, block_z));
+                return Some(ids::AIR.default_state());
+            }
+            // With one and the same fluid in all cells around, the block gets that fluid:
+            // no barrier (equal levels) and nothing to flow to. Water right above the global
+            // lava is the one case that schedules an update depending on the distances.
+            if let Some(status) = summary.uniform {
+                let fluid_state = status.at(block_y);
+                if !(Self::is(fluid_state, ids::WATER)
+                    && Self::is(
+                        self.fluid_picker
+                            .compute_fluid(block_x, block_y - 1, block_z)
+                            .at(block_y - 1),
+                        ids::LAVA,
+                    ))
+                {
+                    self.should_schedule_fluid_update = false;
+                    return Some(fluid_state);
+                }
+            }
         }
         let mut distance_sqr = [i32::MAX; 4];
         let mut closest = [0_usize; 4];
@@ -607,6 +751,77 @@ impl NoiseBasedAquifer {
             true
         };
         Some(fluid_state)
+    }
+
+    /// `shouldScheduleFluidUpdate()` after the block at `(block_x, block_y, block_z)` was
+    /// found to be air above every fluid level of the current anchor (its cells are all
+    /// resolved): what `compute_fluid_substance` sets on that path, where the fluid is air
+    /// and no barrier adds density.
+    fn air_schedules_update(&self, block_x: i32, block_y: i32, block_z: i32) -> bool {
+        let mut distance_sqr = [i32::MAX; 4];
+        let mut closest = [0_usize; 4];
+        for &(x, y, z, index) in &self.anchor_cells {
+            let dx = x.wrapping_sub(block_x);
+            let dy = y.wrapping_sub(block_y);
+            let dz = z.wrapping_sub(block_z);
+            let new_distance = dx
+                .wrapping_mul(dx)
+                .wrapping_add(dy.wrapping_mul(dy))
+                .wrapping_add(dz.wrapping_mul(dz));
+            insert_closest(&mut distance_sqr, &mut closest, new_distance, index);
+        }
+        let status = |rank: usize| self.status_cache[closest[rank]];
+        let similarity12 = similarity(distance_sqr[0], distance_sqr[1]);
+        if similarity12 <= 0.0 {
+            return similarity12 >= FLOWING_UPDATE_SIMILARITY && status(0) != status(1);
+        }
+        let similarity13 = similarity(distance_sqr[0], distance_sqr[2]);
+        let similarity23 = similarity(distance_sqr[1], distance_sqr[2]);
+        let may_flow12 = status(0) != status(1);
+        let may_flow23 = similarity23 >= FLOWING_UPDATE_SIMILARITY && status(1) != status(2);
+        let may_flow13 = similarity13 >= FLOWING_UPDATE_SIMILARITY && status(0) != status(2);
+        if !may_flow12 && !may_flow23 && !may_flow13 {
+            similarity13 >= FLOWING_UPDATE_SIMILARITY
+                && similarity(distance_sqr[0], distance_sqr[3]) >= FLOWING_UPDATE_SIMILARITY
+                && status(0) != status(3)
+        } else {
+            true
+        }
+    }
+
+    /// The fluids of the 12 cells of grid anchor `anchor` (the current one) together. They
+    /// are resolved once the anchor has been asked [`SUMMARY_AFTER`] times in the chunk: for a
+    /// few blocks the search of the closest cells resolves fewer cells.
+    fn anchor_summary(
+        &mut self,
+        program: &Program,
+        ctx: &mut SamplerContext,
+        anchor: (i32, i32, i32),
+    ) -> Option<AnchorSummary> {
+        let slot = self.index(anchor.0, anchor.1, anchor.2);
+        match self.anchor_summaries[slot] {
+            AnchorState::Summary(summary) => return Some(summary),
+            AnchorState::Asked(times) if times < SUMMARY_AFTER => {
+                self.anchor_summaries[slot] = AnchorState::Asked(times + 1);
+                return None;
+            }
+            AnchorState::Asked(_) => {}
+        }
+        let cells = self.anchor_cells;
+        let first = self.aquifer_status(program, ctx, cells[0].3);
+        let mut summary = AnchorSummary {
+            max_fluid_level: first.fluid_level,
+            uniform: Some(first),
+        };
+        for &(_, _, _, index) in &cells[1..] {
+            let status = self.aquifer_status(program, ctx, index);
+            summary.max_fluid_level = summary.max_fluid_level.max(status.fluid_level);
+            if summary.uniform != Some(status) {
+                summary.uniform = None;
+            }
+        }
+        self.anchor_summaries[slot] = AnchorState::Summary(summary);
+        Some(summary)
     }
 
     /// Moves to grid anchor `(x_anchor, y_anchor, z_anchor)`: the centres of its 12 cells
