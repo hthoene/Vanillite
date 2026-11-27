@@ -12,6 +12,7 @@ use crate::events::{
     Login, PlayerDeath, PlayerJoin, PlayerText, PlayerWorld, PlayersMoved, PluginMessage,
 };
 use crate::ffi::{Host, guard, str, with_plugin};
+use crate::game::{ChunkPopulator, GameEvent};
 use crate::generator::{self, ChunkGeneratorProvider};
 use crate::server::{Ctx, Server};
 use crate::types::{Error, Uuid};
@@ -556,6 +557,593 @@ impl<P: Plugin> Registrar<P> {
         let user = Box::into_raw(provider).cast::<c_void>();
         // SAFETY: valid host function; `user` lives for the life of the library.
         let s = unsafe { (self.host.api.set_permission_provider)(self.host.id, permission, user) };
+        self.record(s);
+        self
+    }
+
+    /// Handles an event of the kinds added with ABI 1.6 ([`abi::event::PLAYER_MOVE`] and
+    /// later; [`GameEvent`] documents the fields per kind). The `on_*` methods below name each
+    /// kind. Since ABI 1.6.
+    pub fn on_event(
+        &mut self,
+        kind: u32,
+        priority: i32,
+        mut f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.subscribe(
+            kind,
+            priority,
+            Box::new(move |p, ctx, e| {
+                // SAFETY: the host passes a `GameEvent` for the kinds since ABI 1.6.
+                let raw = unsafe { &mut *e.cast::<abi::GameEvent>() };
+                f(p, ctx, &mut GameEvent { raw });
+            }),
+        )
+    }
+
+    /// A player moved or turned; cancellable, the target can be changed. See [`abi::event::PLAYER_MOVE`]. Since ABI 1.6.
+    pub fn on_player_move(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_MOVE, priority, f)
+    }
+
+    /// A player is about to be teleported; cancellable, the target can be changed. See [`abi::event::PLAYER_TELEPORT`]. Since ABI 1.6.
+    pub fn on_player_teleport(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_TELEPORT, priority, f)
+    }
+
+    /// A player uses its item on an entity; cancellable. See [`abi::event::PLAYER_INTERACT_ENTITY`]. Since ABI 1.6.
+    pub fn on_player_interact_entity(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_INTERACT_ENTITY, priority, f)
+    }
+
+    /// A player is about to attack an entity; cancellable. See [`abi::event::PLAYER_ATTACK_ENTITY`]. Since ABI 1.6.
+    pub fn on_player_attack_entity(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_ATTACK_ENTITY, priority, f)
+    }
+
+    /// A player drops an item; cancellable. See [`abi::event::PLAYER_DROP_ITEM`]. Since ABI 1.6.
+    pub fn on_player_drop_item(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_DROP_ITEM, priority, f)
+    }
+
+    /// An entity picks up an item; cancellable. See [`abi::event::ENTITY_PICKUP_ITEM`]. Since ABI 1.6.
+    pub fn on_entity_pickup_item(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_PICKUP_ITEM, priority, f)
+    }
+
+    /// A player starts or stops sneaking. See [`abi::event::PLAYER_TOGGLE_SNEAK`]. Since ABI 1.6.
+    pub fn on_player_toggle_sneak(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_TOGGLE_SNEAK, priority, f)
+    }
+
+    /// A player starts or stops sprinting. See [`abi::event::PLAYER_TOGGLE_SPRINT`]. Since ABI 1.6.
+    pub fn on_player_toggle_sprint(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_TOGGLE_SPRINT, priority, f)
+    }
+
+    /// A player starts or stops flying; cancellable. See [`abi::event::PLAYER_TOGGLE_FLIGHT`]. Since ABI 1.6.
+    pub fn on_player_toggle_flight(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_TOGGLE_FLIGHT, priority, f)
+    }
+
+    /// A player selects another hotbar slot; cancellable. See [`abi::event::PLAYER_ITEM_HELD`]. Since ABI 1.6.
+    pub fn on_player_item_held(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_ITEM_HELD, priority, f)
+    }
+
+    /// A player finishes eating or drinking; cancellable. See [`abi::event::PLAYER_ITEM_CONSUME`]. Since ABI 1.6.
+    pub fn on_player_item_consume(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_ITEM_CONSUME, priority, f)
+    }
+
+    /// A player is about to be kicked; cancellable, the reason can be changed. See [`abi::event::PLAYER_KICK`]. Since ABI 1.6.
+    pub fn on_player_kick(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_KICK, priority, f)
+    }
+
+    /// A player's statistic changes; cancellable. See [`abi::event::PLAYER_STATISTIC`]. Since ABI 1.6.
+    pub fn on_player_statistic(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_STATISTIC, priority, f)
+    }
+
+    /// A player's client reports a resource pack status. See [`abi::event::PLAYER_RESOURCE_PACK`]. Since ABI 1.6.
+    pub fn on_player_resource_pack(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_RESOURCE_PACK, priority, f)
+    }
+
+    /// A player swaps the items of its hands; cancellable. See [`abi::event::PLAYER_SWAP_HANDS`]. Since ABI 1.6.
+    pub fn on_player_swap_hands(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_SWAP_HANDS, priority, f)
+    }
+
+    /// A player gains experience from an orb; the amount can be changed. See [`abi::event::PLAYER_EXP_CHANGE`]. Since ABI 1.6.
+    pub fn on_player_exp_change(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_EXP_CHANGE, priority, f)
+    }
+
+    /// An entity is about to be added to a world; cancellable. See [`abi::event::ENTITY_SPAWN`]. Since ABI 1.6.
+    pub fn on_entity_spawn(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_SPAWN, priority, f)
+    }
+
+    /// An entity died and is about to drop loot and experience; both can be changed. See [`abi::event::ENTITY_DROPS`]. Since ABI 1.6.
+    pub fn on_entity_drops(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_DROPS, priority, f)
+    }
+
+    /// A mob is about to change its target; cancellable. See [`abi::event::ENTITY_TARGET`]. Since ABI 1.6.
+    pub fn on_entity_target(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_TARGET, priority, f)
+    }
+
+    /// An explosion is about to happen; cancellable, radius and flags can be changed. See [`abi::event::ENTITY_EXPLODE`]. Since ABI 1.6.
+    pub fn on_entity_explode(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_EXPLODE, priority, f)
+    }
+
+    /// A projectile is launched; cancellable. See [`abi::event::PROJECTILE_LAUNCH`]. Since ABI 1.6.
+    pub fn on_projectile_launch(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PROJECTILE_LAUNCH, priority, f)
+    }
+
+    /// A projectile hits something; cancellable. See [`abi::event::PROJECTILE_HIT`]. Since ABI 1.6.
+    pub fn on_projectile_hit(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PROJECTILE_HIT, priority, f)
+    }
+
+    /// An entity is about to mount a vehicle; cancellable. See [`abi::event::VEHICLE_ENTER`]. Since ABI 1.6.
+    pub fn on_vehicle_enter(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::VEHICLE_ENTER, priority, f)
+    }
+
+    /// An entity is about to leave its vehicle; cancellable. See [`abi::event::VEHICLE_EXIT`]. Since ABI 1.6.
+    pub fn on_vehicle_exit(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::VEHICLE_EXIT, priority, f)
+    }
+
+    /// An animal is about to be tamed; cancellable. See [`abi::event::ENTITY_TAME`]. Since ABI 1.6.
+    pub fn on_entity_tame(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_TAME, priority, f)
+    }
+
+    /// Two animals are about to make a child; cancellable. See [`abi::event::ENTITY_BREED`]. Since ABI 1.6.
+    pub fn on_entity_breed(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_BREED, priority, f)
+    }
+
+    /// An entity is about to travel through a portal; cancellable. See [`abi::event::ENTITY_PORTAL`]. Since ABI 1.6.
+    pub fn on_entity_portal(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_PORTAL, priority, f)
+    }
+
+    /// An entity is about to turn into another; cancellable. See [`abi::event::ENTITY_TRANSFORM`]. Since ABI 1.6.
+    pub fn on_entity_transform(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_TRANSFORM, priority, f)
+    }
+
+    /// A broken block is about to drop items and experience; both can be changed. See [`abi::event::BLOCK_DROP`]. Since ABI 1.6.
+    pub fn on_block_drop(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_DROP, priority, f)
+    }
+
+    /// A block grows; cancellable. See [`abi::event::BLOCK_GROW`]. Since ABI 1.6.
+    pub fn on_block_grow(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_GROW, priority, f)
+    }
+
+    /// A block forms; cancellable. See [`abi::event::BLOCK_FORM`]. Since ABI 1.6.
+    pub fn on_block_form(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_FORM, priority, f)
+    }
+
+    /// A block spreads; cancellable. See [`abi::event::BLOCK_SPREAD`]. Since ABI 1.6.
+    pub fn on_block_spread(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_SPREAD, priority, f)
+    }
+
+    /// A block fades; cancellable. See [`abi::event::BLOCK_FADE`]. Since ABI 1.6.
+    pub fn on_block_fade(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_FADE, priority, f)
+    }
+
+    /// Leaves decay; cancellable. See [`abi::event::LEAVES_DECAY`]. Since ABI 1.6.
+    pub fn on_leaves_decay(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::LEAVES_DECAY, priority, f)
+    }
+
+    /// A fluid flows into a block; cancellable. See [`abi::event::BLOCK_FLUID_FLOW`]. Since ABI 1.6.
+    pub fn on_block_fluid_flow(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_FLUID_FLOW, priority, f)
+    }
+
+    /// Fire destroys a block; cancellable. See [`abi::event::BLOCK_BURN`]. Since ABI 1.6.
+    pub fn on_block_burn(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_BURN, priority, f)
+    }
+
+    /// A block catches fire; cancellable. See [`abi::event::BLOCK_IGNITE`]. Since ABI 1.6.
+    pub fn on_block_ignite(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_IGNITE, priority, f)
+    }
+
+    /// A player uses bone meal; cancellable. See [`abi::event::BLOCK_FERTILIZE`]. Since ABI 1.6.
+    pub fn on_block_fertilize(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_FERTILIZE, priority, f)
+    }
+
+    /// A sapling or mushroom grows into a tree; cancellable. See [`abi::event::STRUCTURE_GROW`]. Since ABI 1.6.
+    pub fn on_structure_grow(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::STRUCTURE_GROW, priority, f)
+    }
+
+    /// A piston extends or retracts; cancellable. See [`abi::event::BLOCK_PISTON`]. Since ABI 1.6.
+    pub fn on_block_piston(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_PISTON, priority, f)
+    }
+
+    /// A player changes a sign's text; cancellable, the lines can be changed. See [`abi::event::SIGN_CHANGE`]. Since ABI 1.6.
+    pub fn on_sign_change(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::SIGN_CHANGE, priority, f)
+    }
+
+    /// A dispenser or dropper is about to dispense; cancellable. See [`abi::event::BLOCK_DISPENSE`]. Since ABI 1.6.
+    pub fn on_block_dispense(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BLOCK_DISPENSE, priority, f)
+    }
+
+    /// A chunk was loaded. See [`abi::event::CHUNK_LOAD`]. Since ABI 1.6.
+    pub fn on_chunk_load(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::CHUNK_LOAD, priority, f)
+    }
+
+    /// A chunk is about to be unloaded. See [`abi::event::CHUNK_UNLOAD`]. Since ABI 1.6.
+    pub fn on_chunk_unload(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::CHUNK_UNLOAD, priority, f)
+    }
+
+    /// A world is about to be saved. See [`abi::event::WORLD_SAVE`]. Since ABI 1.6.
+    pub fn on_world_save(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::WORLD_SAVE, priority, f)
+    }
+
+    /// A world's weather is about to change; cancellable. See [`abi::event::WEATHER_CHANGE`]. Since ABI 1.6.
+    pub fn on_weather_change(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::WEATHER_CHANGE, priority, f)
+    }
+
+    /// A world's time is about to skip by sleeping; cancellable. See [`abi::event::TIME_SKIP`]. Since ABI 1.6.
+    pub fn on_time_skip(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::TIME_SKIP, priority, f)
+    }
+
+    /// A nether portal is about to be created; cancellable. See [`abi::event::PORTAL_CREATE`]. Since ABI 1.6.
+    pub fn on_portal_create(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PORTAL_CREATE, priority, f)
+    }
+
+    /// A player's menu opens; cancellable. See [`abi::event::INVENTORY_OPEN`]. Since ABI 1.6.
+    pub fn on_inventory_open(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::INVENTORY_OPEN, priority, f)
+    }
+
+    /// A player clicks in its menu; cancellable. See [`abi::event::INVENTORY_CLICK`]. Since ABI 1.6.
+    pub fn on_inventory_click(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::INVENTORY_CLICK, priority, f)
+    }
+
+    /// A player drags its cursor stack over slots; cancellable. See [`abi::event::INVENTORY_DRAG`]. Since ABI 1.6.
+    pub fn on_inventory_drag(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::INVENTORY_DRAG, priority, f)
+    }
+
+    /// A player's menu closed. See [`abi::event::INVENTORY_CLOSE`]. Since ABI 1.6.
+    pub fn on_inventory_close(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::INVENTORY_CLOSE, priority, f)
+    }
+
+    /// A crafting result is computed; the result can be changed. See [`abi::event::CRAFT_PREPARE`]. Since ABI 1.6.
+    pub fn on_craft_prepare(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::CRAFT_PREPARE, priority, f)
+    }
+
+    /// A player takes a crafting result; cancellable. See [`abi::event::CRAFT_ITEM`]. Since ABI 1.6.
+    pub fn on_craft_item(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::CRAFT_ITEM, priority, f)
+    }
+
+    /// An anvil result is computed; result and cost can be changed. See [`abi::event::ANVIL_PREPARE`]. Since ABI 1.6.
+    pub fn on_anvil_prepare(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ANVIL_PREPARE, priority, f)
+    }
+
+    /// A furnace finishes an item; cancellable, the result can be changed. See [`abi::event::FURNACE_SMELT`]. Since ABI 1.6.
+    pub fn on_furnace_smelt(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::FURNACE_SMELT, priority, f)
+    }
+
+    /// A furnace starts burning fuel; cancellable, the burn time can be changed. See [`abi::event::FURNACE_BURN`]. Since ABI 1.6.
+    pub fn on_furnace_burn(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::FURNACE_BURN, priority, f)
+    }
+
+    /// A player takes furnace results; the experience can be changed. See [`abi::event::FURNACE_EXTRACT`]. Since ABI 1.6.
+    pub fn on_furnace_extract(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::FURNACE_EXTRACT, priority, f)
+    }
+
+    /// A hopper moves an item; cancellable. See [`abi::event::INVENTORY_MOVE_ITEM`]. Since ABI 1.6.
+    pub fn on_inventory_move_item(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::INVENTORY_MOVE_ITEM, priority, f)
+    }
+
+    /// A player enchants an item; cancellable. See [`abi::event::ENCHANT_ITEM`]. Since ABI 1.6.
+    pub fn on_enchant_item(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENCHANT_ITEM, priority, f)
+    }
+
+    /// A brewing stand finishes; cancellable, the results can be changed. See [`abi::event::BREW`]. Since ABI 1.6.
+    pub fn on_brew(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::BREW, priority, f)
+    }
+
+    /// Adds a chunk populator after a stage of the generation ([`abi::gen_stage`]). Since
+    /// ABI 1.6.
+    pub fn chunk_populator(&mut self, stage: u32, populator: impl ChunkPopulator) -> &mut Self {
+        let populator: Box<Box<dyn ChunkPopulator>> = Box::new(Box::new(populator));
+        let table = abi::ChunkPopulatorProvider {
+            size: abi::size_of::<abi::ChunkPopulatorProvider>(),
+            data_version: 0,
+            stage,
+            user: Box::into_raw(populator).cast(),
+            populate: crate::game::populate,
+        };
+        // SAFETY: valid host function; the host copies the table, `user` lives for the life
+        // of the library.
+        let s = unsafe { (self.host.api.provide_chunk_populator)(self.host.id, &table) };
         self.record(s);
         self
     }

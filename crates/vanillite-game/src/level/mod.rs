@@ -494,6 +494,9 @@ pub struct Level {
     seed: i64,
     /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
     pub spawner_env: crate::block::spawner::SpawnerEnv,
+    /// The plugin hooks of this world; `None` without plugins, so hook sites cost one
+    /// branch ([`Level::hooks_for`]).
+    hooks: Option<Arc<dyn crate::hooks::GameHooks + Send>>,
     /// The server's dispatcher for command blocks and command block minecarts.
     pub(crate) command_runner:
         Option<Arc<dyn crate::block::technical::command_block::CommandRunner>>,
@@ -516,6 +519,27 @@ impl std::fmt::Debug for Level {
 }
 
 impl Level {
+    /// Installs the plugin hooks of this world (only when plugins are loaded).
+    pub fn set_hooks(&mut self, hooks: Arc<dyn crate::hooks::GameHooks + Send>) {
+        self.hooks = Some(hooks);
+    }
+
+    /// The plugin hooks when a plugin listens to `kind` (`vanillite_abi::event`): without
+    /// plugins one branch, with plugins one bit of the subscription mask. Build the
+    /// [`crate::hooks::Event`] only when this returns hooks.
+    #[inline]
+    pub fn hooks_for(&self, kind: u32) -> Option<Arc<dyn crate::hooks::GameHooks + Send>> {
+        match &self.hooks {
+            Some(h) if h.wants(kind) => Some(Arc::clone(h)),
+            _ => None,
+        }
+    }
+
+    /// The installed plugin hooks, if any (for code that passes hooks on).
+    pub fn hooks(&self) -> Option<&Arc<dyn crate::hooks::GameHooks + Send>> {
+        self.hooks.as_ref()
+    }
+
     /// The game state of a world over its chunk runtime.
     pub fn new(
         chunks: Chunks,
@@ -578,6 +602,7 @@ impl Level {
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
             command_runner: None,
+            hooks: None,
             poi_changes: Vec::new(),
         };
         level.entities.poi = crate::poi::PoiManager::new_live();

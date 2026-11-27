@@ -650,6 +650,12 @@ impl ServerBuilder {
                 &global,
                 WorldId(index),
             )));
+            if !global.plugins.plugins().is_empty() {
+                level.set_hooks(Arc::new(crate::plugins::WorldHooks::new(
+                    &global.plugins,
+                    dimension,
+                )));
+            }
             level.set_structure_templates(Arc::clone(&global.templates));
             if let Some(packs) = &packs {
                 level.set_data_packs(Arc::clone(packs));

@@ -876,7 +876,7 @@ pub fn hurt_with(
     let uuid = entity.as_ref().uuid();
     match env
         .hooks
-        .entity_damage(uuid, "minecraft:player", &types.get(kind).id, damage)
+        .entity_damage(uuid, "minecraft:player", &types.get(kind).id, damage, None, None)
     {
         Some(changed) => damage = changed,
         None => return false,

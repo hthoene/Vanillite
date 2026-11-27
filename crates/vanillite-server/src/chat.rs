@@ -104,6 +104,7 @@ fn chat(
         && !global
             .plugins
             .player_chat(uuid, &name, &message.decorated_content().plain())
+            .cancelled
     {
         return None;
     }

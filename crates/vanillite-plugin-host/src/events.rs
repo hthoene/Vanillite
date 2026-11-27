@@ -11,10 +11,17 @@ use std::sync::{Arc, PoisonError, RwLock};
 use vanillite_abi::{self as abi, Status, status};
 
 use crate::api::CallCtx;
-use crate::{Inner, PluginHost, SendPtr, Subscriber, WorldAccess};
+use crate::{Inner, Location, PluginHost, SendPtr, Subscriber, WorldAccess};
 
-/// Highest event kind of this ABI version.
-const MAX_KIND: u32 = abi::event::PLAYER_ADVANCEMENT_DONE;
+/// Whether an event kind exists in this ABI version.
+fn known_kind(kind: u32) -> bool {
+    use abi::event;
+    matches!(kind,
+        event::PLAYER_JOIN..=event::PLAYER_EXP_CHANGE
+        | event::ENTITY_SPAWN..=event::ENTITY_TRANSFORM
+        | event::BLOCK_DROP..=event::PORTAL_CREATE
+        | event::INVENTORY_OPEN..=event::BREW)
+}
 
 /// Event kinds the subscription mask can hold.
 const MASK_BITS: u32 = 256;
@@ -97,7 +104,7 @@ impl Events {
         callback: abi::EventFn,
         user: *mut c_void,
     ) -> Status {
-        let known = (1..=MAX_KIND).contains(&kind)
+        let known = known_kind(kind)
             || (kind < MASK_BITS && self.custom_name(kind).is_some());
         if !known || flags & !abi::subscribe_flag::IGNORE_CANCELLED != 0 {
             return status::UNSUPPORTED;
@@ -346,20 +353,23 @@ impl PluginHost {
         );
     }
 
-    /// A player sends a chat message. Returns `false` when a plugin cancelled it.
-    pub fn player_chat(&self, player: u128, name: &str, message: &str) -> bool {
+    /// A player sends a chat message: whether a plugin cancelled it, and the text players
+    /// see instead (the message's unsigned content).
+    pub fn player_chat(&self, player: u128, name: &str, message: &str) -> TextDecision {
         self.player_text(abi::event::PLAYER_CHAT, player, name, message)
     }
 
-    /// A player runs a command (without `/`). Returns `false` when a plugin cancelled it.
-    pub fn player_command(&self, player: u128, name: &str, command: &str) -> bool {
+    /// A player runs a command (without `/`): whether a plugin cancelled it, and the command
+    /// line to run instead (plain).
+    pub fn player_command(&self, player: u128, name: &str, command: &str) -> TextDecision {
         self.player_text(abi::event::PLAYER_COMMAND, player, name, command)
     }
 
-    fn player_text(&self, kind: u32, player: u128, name: &str, text: &str) -> bool {
+    fn player_text(&self, kind: u32, player: u128, name: &str, text: &str) -> TextDecision {
         if !self.wants(kind) {
-            return true;
+            return TextDecision::default();
         }
+        let slot = TextSlot::new();
         let event = fire!(
             self,
             kind,
@@ -368,9 +378,13 @@ impl PluginHost {
                 player: abi::Uuid::from_u128(player),
                 name: abi::Str::new(name),
                 text: abi::Str::new(text),
+                text_out: &raw const slot.record,
             }
         );
-        event.header.cancelled == 0
+        TextDecision {
+            cancelled: event.header.cancelled != 0,
+            text: slot.take(),
+        }
     }
 
     /// The players of a world that moved this tick: `(player, from, to)`.
@@ -403,6 +417,7 @@ impl PluginHost {
 
     /// An entity is about to take `amount` damage. Returns the damage to apply, `None` when a
     /// plugin cancelled it.
+    #[allow(clippy::too_many_arguments)]
     pub fn entity_damage(
         &self,
         world: u32,
@@ -410,6 +425,8 @@ impl PluginHost {
         entity_type: &str,
         damage_type: &str,
         amount: f32,
+        attacker: Option<u128>,
+        direct: Option<u128>,
     ) -> Option<f32> {
         if !self.wants(abi::event::ENTITY_DAMAGE) {
             return Some(amount);
@@ -424,6 +441,8 @@ impl PluginHost {
                 entity_type: abi::Str::new(entity_type),
                 damage_type: abi::Str::new(damage_type),
                 amount,
+                attacker: uuid(attacker),
+                direct: uuid(direct),
             }
         );
         (event.header.cancelled == 0).then_some(event.amount)
@@ -549,6 +568,143 @@ unsafe extern "C" fn set_text(state: *mut c_void, text: abi::Str, format: u32) {
             _ => return,
         };
     }));
+}
+
+/// What the plugins decided about a chat message or command.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextDecision {
+    /// A plugin cancelled it.
+    pub cancelled: bool,
+    /// The text a plugin put in its place; `None` keeps it.
+    pub text: Option<NewText>,
+}
+
+/// An event of the kinds added since ABI 1.6 ([`abi::GameEvent`]): the server fills what the
+/// kind documents, [`PluginHost::game_event`] writes back what the handlers changed (the
+/// server applies what the kind allows).
+#[derive(Clone, Debug, Default)]
+pub struct GameEvent<'a> {
+    /// One of [`abi::event`].
+    pub kind: u32,
+    /// Cancelled (in: already cancelled by the server; out: the handlers' decision).
+    pub cancelled: bool,
+    /// The world.
+    pub world: u32,
+    /// The entity the event is about (0 for none).
+    pub entity: u128,
+    /// Its type.
+    pub entity_type: &'a str,
+    /// A second entity.
+    pub other: u128,
+    /// Its type.
+    pub other_type: &'a str,
+    /// A third entity.
+    pub source: u128,
+    /// The player behind it.
+    pub player: u128,
+    /// A code of the kind.
+    pub cause: u32,
+    /// An identifier of the kind.
+    pub key: &'a str,
+    /// A block.
+    pub pos: [i32; 3],
+    /// A block state as text.
+    pub state: &'a str,
+    /// Where from.
+    pub from: Location,
+    /// Where to.
+    pub to: Location,
+    /// An item or a list of items as SNBT.
+    pub item: &'a str,
+    /// A second item as SNBT.
+    pub other_item: &'a str,
+    /// A text.
+    pub text: &'a str,
+    /// A number.
+    pub amount: f64,
+    /// An integer.
+    pub value: i64,
+    /// A second integer.
+    pub extra: i64,
+    /// Flags.
+    pub flags: u32,
+    /// Out: the item (SNBT) a handler put in place of `item`.
+    pub item_out: Option<String>,
+    /// Out: the text a handler put in place of `text`.
+    pub text_out: Option<NewText>,
+}
+
+fn location(l: Location) -> abi::Location {
+    let [x, y, z] = l.pos;
+    abi::Location {
+        world: l.world,
+        pos: abi::Vec3 { x, y, z },
+        yaw: l.yaw,
+        pitch: l.pitch,
+    }
+}
+
+fn from_location(l: abi::Location) -> Location {
+    Location {
+        world: l.world,
+        pos: [l.pos.x, l.pos.y, l.pos.z],
+        yaw: l.yaw,
+        pitch: l.pitch,
+    }
+}
+
+impl PluginHost {
+    /// Fires an event of the kinds added since ABI 1.6 when a plugin listens; `world` is the
+    /// event's world when the caller owns it (handlers may then touch it). Writes the
+    /// handlers' changes back into `event`; returns whether it was fired.
+    pub fn game_event(&self, world: Option<&mut dyn WorldAccess>, event: &mut GameEvent<'_>) -> bool {
+        if !self.wants(event.kind) {
+            return false;
+        }
+        let item_slot = TextSlot::new();
+        let text_slot = TextSlot::new();
+        let mut record = abi::GameEvent {
+            header: abi::EventHeader {
+                cancelled: u32::from(event.cancelled),
+                ..header::<abi::GameEvent>(event.kind)
+            },
+            world: event.world,
+            entity: abi::Uuid::from_u128(event.entity),
+            entity_type: abi::Str::new(event.entity_type),
+            other: abi::Uuid::from_u128(event.other),
+            other_type: abi::Str::new(event.other_type),
+            source: abi::Uuid::from_u128(event.source),
+            player: abi::Uuid::from_u128(event.player),
+            cause: event.cause,
+            key: abi::Str::new(event.key),
+            pos: block_pos(event.pos),
+            state: abi::Str::new(event.state),
+            from: location(event.from),
+            to: location(event.to),
+            item: abi::Str::new(event.item),
+            other_item: abi::Str::new(event.other_item),
+            item_out: &raw const item_slot.record,
+            text: abi::Str::new(event.text),
+            text_out: &raw const text_slot.record,
+            amount: event.amount,
+            value: event.value,
+            extra: event.extra,
+            flags: event.flags,
+        };
+        self.inner
+            .dispatch(event.kind, world, std::ptr::from_mut(&mut record).cast());
+        event.cancelled = record.header.cancelled != 0;
+        event.to = from_location(record.to);
+        event.amount = record.amount;
+        event.value = record.value;
+        event.extra = record.extra;
+        event.flags = record.flags;
+        event.item_out = item_slot.take().map(|t| match t {
+            NewText::Plain(s) | NewText::Json(s) => s,
+        });
+        event.text_out = text_slot.take();
+        true
+    }
 }
 
 /// What the plugins decided about a login.

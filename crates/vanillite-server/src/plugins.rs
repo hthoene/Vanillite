@@ -875,16 +875,204 @@ impl Hooks<'_> {
     }
 }
 
-impl GameHooks for Hooks<'_> {
+/// The game hooks a level keeps ([`vanillite_game::level::Level::set_hooks`]): the hooks of
+/// one world, owning a handle of the plugin host.
+#[derive(Debug)]
+pub(crate) struct WorldHooks {
+    host: PluginHost,
+    world: u32,
+}
+
+impl WorldHooks {
+    pub(crate) fn new(host: &PluginHost, dimension: &str) -> Self {
+        WorldHooks {
+            host: host.clone(),
+            world: world_index(dimension),
+        }
+    }
+
+    fn hooks(&self) -> Hooks<'_> {
+        Hooks {
+            host: &self.host,
+            world: self.world,
+        }
+    }
+}
+
+impl GameHooks for WorldHooks {
+    fn wants(&self, kind: u32) -> bool {
+        self.host.wants(kind)
+    }
+
+    fn event(&self, event: &mut vanillite_game::hooks::Event) {
+        self.hooks().event(event);
+    }
+
     fn entity_damage(
         &self,
         entity: u128,
         entity_type: &str,
         damage_type: &str,
         amount: f32,
+        attacker: Option<u128>,
+        direct: Option<u128>,
     ) -> Option<f32> {
-        self.host
-            .entity_damage(self.world, entity, entity_type, damage_type, amount)
+        self.hooks()
+            .entity_damage(entity, entity_type, damage_type, amount, attacker, direct)
+    }
+
+    fn block_break(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().block_break(player, pos, state)
+    }
+
+    fn block_place(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().block_place(player, pos, state)
+    }
+
+    fn bed_enter(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().bed_enter(player, pos, state)
+    }
+
+    fn bed_leave(&self, player: u128, pos: BlockPos, state: BlockState) {
+        self.hooks().bed_leave(player, pos, state);
+    }
+
+    fn spawn_change(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().spawn_change(player, pos, state)
+    }
+
+    fn player_death(
+        &self,
+        player: u128,
+        damage_type: &str,
+        killer: Option<u128>,
+        death: &mut vanillite_game::hooks::Death,
+    ) {
+        self.hooks().player_death(player, damage_type, killer, death);
+    }
+
+    fn entity_death(
+        &self,
+        entity: u128,
+        entity_type: &str,
+        damage_type: &str,
+        killer: Option<u128>,
+    ) {
+        self.hooks()
+            .entity_death(entity, entity_type, damage_type, killer);
+    }
+
+    fn player_interact(
+        &self,
+        player: u128,
+        hand: u32,
+        item: &str,
+        block: Option<(BlockPos, u32, BlockState)>,
+    ) -> bool {
+        self.hooks().player_interact(player, hand, item, block)
+    }
+}
+
+fn place(world: u32, p: vanillite_game::hooks::Place) -> Location {
+    Location {
+        world: p.world.unwrap_or(world),
+        pos: p.pos,
+        yaw: p.yaw,
+        pitch: p.pitch,
+    }
+}
+
+impl Hooks<'_> {
+    /// Fires an event of the kinds since ABI 1.6 without world access; see
+    /// [`Hooks::event_in`].
+    pub(crate) fn event(&self, event: &mut vanillite_game::hooks::Event) {
+        self.event_in(None, event);
+    }
+
+    /// Fires an event of the kinds since ABI 1.6; `world` is the event's world when the
+    /// caller owns it whole (handlers may then touch it).
+    pub(crate) fn event_in(
+        &self,
+        world: Option<&mut dyn WorldAccess>,
+        event: &mut vanillite_game::hooks::Event,
+    ) {
+        if !self.host.wants(event.kind) {
+            return;
+        }
+        let state = event.state.map(state_text).unwrap_or_default();
+        let mut e = vanillite_plugin_host::GameEvent {
+            kind: event.kind,
+            cancelled: event.cancelled,
+            world: self.world,
+            entity: event.entity,
+            entity_type: &event.entity_type,
+            other: event.other,
+            other_type: &event.other_type,
+            source: event.source,
+            player: event.player,
+            cause: event.cause,
+            key: &event.key,
+            pos: [event.pos.x, event.pos.y, event.pos.z],
+            state: &state,
+            from: place(self.world, event.from),
+            to: place(self.world, event.to),
+            item: &event.item,
+            other_item: &event.other_item,
+            text: &event.text,
+            amount: event.amount,
+            value: event.value,
+            extra: event.extra,
+            flags: event.flags,
+            item_out: None,
+            text_out: None,
+        };
+        self.host.game_event(world, &mut e);
+        event.cancelled = e.cancelled;
+        event.to = vanillite_game::hooks::Place {
+            world: (e.to.world != self.world).then_some(e.to.world),
+            pos: e.to.pos,
+            yaw: e.to.yaw,
+            pitch: e.to.pitch,
+        };
+        event.amount = e.amount;
+        event.value = e.value;
+        event.extra = e.extra;
+        event.flags = e.flags;
+        event.item_out = e.item_out;
+        event.text_out = e.text_out.map(|t| match t {
+            NewText::Plain(s) => vanillite_game::hooks::NewText::Plain(s),
+            NewText::Json(s) => vanillite_game::hooks::NewText::Json(s),
+        });
+    }
+}
+
+impl GameHooks for Hooks<'_> {
+    fn wants(&self, kind: u32) -> bool {
+        self.host.wants(kind)
+    }
+
+    fn event(&self, event: &mut vanillite_game::hooks::Event) {
+        self.event_in(None, event);
+    }
+
+    fn entity_damage(
+        &self,
+        entity: u128,
+        entity_type: &str,
+        damage_type: &str,
+        amount: f32,
+        attacker: Option<u128>,
+        direct: Option<u128>,
+    ) -> Option<f32> {
+        self.host.entity_damage(
+            self.world,
+            entity,
+            entity_type,
+            damage_type,
+            amount,
+            attacker,
+            direct,
+        )
     }
 
     fn block_break(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {

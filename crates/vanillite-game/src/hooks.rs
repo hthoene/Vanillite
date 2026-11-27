@@ -1,6 +1,11 @@
 //! Hooks the server installs into the game so plugins can observe and change game events
 //! (block breaking and placing, damage, deaths, item use). Each method has a no-op default; the server checks
 //! for listeners before it does any work, so an unused hook costs one virtual call.
+//!
+//! The event kinds since plugin ABI 1.6 go through one generic [`Event`]: a hook site asks
+//! [`Level::hooks_for`](crate::level::Level::hooks_for) (no plugins: a `None` check; with
+//! plugins: one bit of the subscription mask), builds the event only then, fires it with
+//! [`GameHooks::event`] and applies what the kind allows.
 
 use vanillite_base::BlockPos;
 use vanillite_data::block::BlockState;
@@ -15,16 +20,272 @@ pub struct Death {
     pub keep_inventory: bool,
 }
 
+/// A place in a world for [`Event::from`] and [`Event::to`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Place {
+    /// The world index; `None` for the hooks' own world.
+    pub world: Option<u32>,
+    /// The position.
+    pub pos: [f64; 3],
+    /// Yaw in degrees.
+    pub yaw: f32,
+    /// Pitch in degrees.
+    pub pitch: f32,
+}
+
+impl Place {
+    /// A position in the hooks' own world.
+    pub fn at(pos: vanillite_base::Vec3) -> Place {
+        Place {
+            world: None,
+            pos: [pos.x, pos.y, pos.z],
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+
+    /// A position with a rotation in the hooks' own world.
+    pub fn looking(pos: vanillite_base::Vec3, yaw: f32, pitch: f32) -> Place {
+        Place {
+            yaw,
+            pitch,
+            ..Place::at(pos)
+        }
+    }
+
+    /// The position.
+    pub fn vec(&self) -> vanillite_base::Vec3 {
+        vanillite_base::Vec3::new(self.pos[0], self.pos[1], self.pos[2])
+    }
+}
+
+/// A text a handler put in place of the event's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NewText {
+    /// Plain text.
+    Plain(String),
+    /// A JSON text component.
+    Json(String),
+}
+
+impl NewText {
+    /// As a text component (bad JSON becomes plain text).
+    pub fn component(&self) -> Component {
+        match self {
+            NewText::Plain(s) => Component::text(s),
+            NewText::Json(s) => serde_json::from_str::<serde_json::Value>(s)
+                .map(|v| Component::from_json(&v))
+                .unwrap_or_else(|_| Component::text(s)),
+        }
+    }
+
+    /// The text as given.
+    pub fn as_str(&self) -> &str {
+        match self {
+            NewText::Plain(s) | NewText::Json(s) => s,
+        }
+    }
+}
+
+/// A plugin event of the kinds since ABI 1.6 (`vanillite_abi::event`, record `GameEvent`).
+/// The hook site fills what the kind documents; after [`GameHooks::event`] the fields hold the
+/// handlers' changes (`cancelled`, `to`, `amount`, `value`, `extra`, `flags`, `item_out`,
+/// `text_out`) and the site applies what the kind allows.
+#[derive(Clone, Debug, Default)]
+pub struct Event {
+    /// The kind (`vanillite_abi::event`).
+    pub kind: u32,
+    /// Cancelled.
+    pub cancelled: bool,
+    /// The entity the event is about (0 for none).
+    pub entity: u128,
+    /// Its type, e.g. `minecraft:zombie`.
+    pub entity_type: String,
+    /// A second entity (0 for none).
+    pub other: u128,
+    /// Its type.
+    pub other_type: String,
+    /// A third entity (0 for none).
+    pub source: u128,
+    /// The player behind it (0 for none).
+    pub player: u128,
+    /// A code of the kind.
+    pub cause: u32,
+    /// An identifier of the kind.
+    pub key: String,
+    /// A block.
+    pub pos: BlockPos,
+    /// A block state.
+    pub state: Option<BlockState>,
+    /// Where from.
+    pub from: Place,
+    /// Where to.
+    pub to: Place,
+    /// An item or a list of items as SNBT ([`item_snbt`], [`items_snbt`]).
+    pub item: String,
+    /// A second item as SNBT.
+    pub other_item: String,
+    /// A text.
+    pub text: String,
+    /// A number.
+    pub amount: f64,
+    /// An integer.
+    pub value: i64,
+    /// A second integer.
+    pub extra: i64,
+    /// Flags.
+    pub flags: u32,
+    /// Out: the item SNBT a handler put in place of `item` ([`parse_item`], [`parse_items`]).
+    pub item_out: Option<String>,
+    /// Out: the text a handler put in place of `text`.
+    pub text_out: Option<NewText>,
+}
+
+impl Event {
+    /// An event of `kind` with everything else empty.
+    pub fn new(kind: u32) -> Event {
+        Event {
+            kind,
+            pos: BlockPos::new(0, 0, 0),
+            ..Event::default()
+        }
+    }
+}
+
+/// An item stack as SNBT (`{id:"minecraft:stone",count:3}`; `{}` for none).
+pub fn item_snbt(stack: &crate::item::ItemStack) -> String {
+    if stack.is_empty() {
+        return "{}".to_owned();
+    }
+    vanillite_nbt::snbt::to_string(&vanillite_nbt::Tag::Compound(
+        crate::item_nbt::stack_to_nbt(stack),
+    ))
+}
+
+/// Item stacks as an SNBT list.
+pub fn items_snbt<'a>(stacks: impl IntoIterator<Item = &'a crate::item::ItemStack>) -> String {
+    let list = stacks
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| vanillite_nbt::Tag::Compound(crate::item_nbt::stack_to_nbt(s)))
+        .collect();
+    vanillite_nbt::snbt::to_string(&vanillite_nbt::Tag::List(vanillite_nbt::List(list)))
+}
+
+/// An item stack from SNBT (`{}` and unknown items: empty); `None` for bad SNBT.
+pub fn parse_item(snbt: &str) -> Option<crate::item::ItemStack> {
+    if snbt.trim().is_empty() {
+        return Some(crate::item::ItemStack::EMPTY);
+    }
+    let c = vanillite_nbt::snbt::parse_compound(snbt).ok()?;
+    if c.is_empty() {
+        return Some(crate::item::ItemStack::EMPTY);
+    }
+    Some(crate::item_nbt::stack_from_nbt(&c))
+}
+
+/// Item stacks from an SNBT list (empty stacks dropped); `None` for bad SNBT.
+pub fn parse_items(snbt: &str) -> Option<Vec<crate::item::ItemStack>> {
+    if snbt.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    match vanillite_nbt::snbt::parse(snbt).ok()? {
+        vanillite_nbt::Tag::List(list) => Some(
+            list.0
+                .iter()
+                .filter_map(|t| match t {
+                    vanillite_nbt::Tag::Compound(c) => Some(crate::item_nbt::stack_from_nbt(c)),
+                    _ => None,
+                })
+                .filter(|s| !s.is_empty())
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// What a plugin goal sees of its mob (`vanillite_abi::GoalMob`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GoalMob {
+    /// The mob.
+    pub mob: u128,
+    /// Its position.
+    pub pos: [f64; 3],
+    /// Its yaw.
+    pub yaw: f32,
+    /// Its pitch.
+    pub pitch: f32,
+    /// Its health.
+    pub health: f32,
+    /// On the ground.
+    pub on_ground: bool,
+    /// Its navigation follows a path.
+    pub navigating: bool,
+    /// Its target (0 for none).
+    pub target: u128,
+    /// The target's position.
+    pub target_pos: [f64; 3],
+    /// The world's game time.
+    pub game_time: i64,
+}
+
+/// What a plugin goal's tick makes its mob do (`vanillite_abi::GoalAction`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GoalAction {
+    /// `vanillite_abi::goal_action` bits.
+    pub actions: u32,
+    /// Where to walk.
+    pub move_to: [f64; 3],
+    /// Speed modifier.
+    pub speed: f64,
+    /// Where to look.
+    pub look_at: [f64; 3],
+    /// The new target (0 forgets it).
+    pub target: u128,
+}
+
+/// A plugin goal of one mob, run by the mob's goal selector like a Vanilla goal.
+pub trait PluginGoal: Send + Sync + std::fmt::Debug {
+    /// Priority (lower runs first).
+    fn priority(&self) -> i32;
+    /// `Goal.Flag` bits it controls (`vanillite_abi::goal_flag`).
+    fn flags(&self) -> u32;
+    /// It belongs to the target selector.
+    fn is_target(&self) -> bool;
+    /// Whether it should start.
+    fn can_use(&self, mob: &GoalMob) -> bool;
+    /// Whether it should go on.
+    fn can_continue(&self, mob: &GoalMob) -> bool;
+    /// It starts.
+    fn start(&self, mob: &GoalMob);
+    /// It stops.
+    fn stop(&self, mob: &GoalMob);
+    /// One tick.
+    fn tick(&self, mob: &GoalMob) -> GoalAction;
+}
+
 /// Game events the server forwards to plugins.
 pub trait GameHooks: Sync {
-    /// An entity is about to take `amount` damage of `damage_type` (e.g. `minecraft:fall`).
-    /// Returns the damage to apply, or `None` to cancel it.
+    /// Whether a plugin listens to an event kind of [`Event`]. With no plugin at all the
+    /// level holds no hooks, so this is only asked when plugins are loaded.
+    fn wants(&self, _kind: u32) -> bool {
+        false
+    }
+
+    /// Fires an event of the kinds since ABI 1.6; the handlers' changes are written back.
+    fn event(&self, _event: &mut Event) {}
+
+    /// An entity is about to take `amount` damage of `damage_type` (e.g. `minecraft:fall`)
+    /// from `attacker` (the responsible entity) and `direct` (e.g. its projectile). Returns
+    /// the damage to apply, or `None` to cancel it.
     fn entity_damage(
         &self,
         _entity: u128,
         _entity_type: &str,
         _damage_type: &str,
         amount: f32,
+        _attacker: Option<u128>,
+        _direct: Option<u128>,
     ) -> Option<f32> {
         Some(amount)
     }

@@ -237,10 +237,15 @@ pub fn hurt_mob(
     }
     // Plugins see the damage after the kind's own filters.
     if let Some(e) = ents.store.get(target) {
-        match env
-            .hooks
-            .entity_damage(e.uuid(), e.kind().name(), &types.get(kind).id, amount)
-        {
+        let uuid_of = |id: Option<EntityId>| id.and_then(|i| ents.store.get(i)).map(|e| e.uuid());
+        match env.hooks.entity_damage(
+            e.uuid(),
+            e.kind().name(),
+            &types.get(kind).id,
+            amount,
+            uuid_of(source.cause),
+            uuid_of(source.direct),
+        ) {
             Some(changed) => amount = changed,
             None => return false,
         }

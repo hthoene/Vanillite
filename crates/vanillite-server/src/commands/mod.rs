@@ -410,9 +410,14 @@ pub(crate) fn run_player_command(
             }
         }
     };
-    if !global.plugins.player_command(uuid, &name, command) {
+    let decision = global.plugins.player_command(uuid, &name, command);
+    if decision.cancelled {
         return None;
     }
+    let replaced = decision.text.map(|t| match t {
+        vanillite_plugin_host::NewText::Plain(s) | vanillite_plugin_host::NewText::Json(s) => s,
+    });
+    let command = replaced.as_deref().unwrap_or(command);
     log::info!("{name} issued server command: /{command}");
     let mut env = Env {
         level,
