@@ -29,7 +29,7 @@ const GOLDEN_SRC: &str = "tools/extractor/src/dev/vanillite/extractor/golden";
 
 /// The key parts shared by all goldens.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Key {
+pub(crate) struct Key {
     minecraft: String,
     jar_sha1: String,
     jar_url: String,
@@ -238,9 +238,12 @@ fn read_keys(dir: &Path) -> Result<(Option<Key>, BTreeMap<String, String>)> {
     if !path.exists() {
         return Ok((None, BTreeMap::new()));
     }
-    let table: toml::Table = read(&path)?
-        .parse()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_keys(&read(&path)?).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Parses the text of a `KEYS.toml`.
+pub(crate) fn parse_keys(text: &str) -> Result<(Option<Key>, BTreeMap<String, String>)> {
+    let table: toml::Table = text.parse().map_err(|e| format!("{e}"))?;
     let s = |k: &str| table.get(k).and_then(|v| v.as_str()).map(str::to_owned);
     let key = match (s("minecraft"), s("jar_sha1"), table.get("harness")) {
         (Some(minecraft), Some(jar_sha1), Some(h)) => Some(Key {
@@ -267,6 +270,11 @@ fn read_keys(dir: &Path) -> Result<(Option<Key>, BTreeMap<String, String>)> {
 }
 
 fn write_keys(dir: &Path, key: &Key, entries: &BTreeMap<String, String>) -> Result<()> {
+    write(&dir.join(KEYS_FILE), &render_keys(key, entries))
+}
+
+/// The text of a `KEYS.toml`.
+pub(crate) fn render_keys(key: &Key, entries: &BTreeMap<String, String>) -> String {
     let mut s =
         String::from("# Golden keys, written by `cargo xtask golden regen`. Do not edit.\n");
     let _ = writeln!(s, "minecraft = \"{}\"", key.minecraft);
@@ -275,7 +283,7 @@ fn write_keys(dir: &Path, key: &Key, entries: &BTreeMap<String, String>) -> Resu
     for (name, hash) in entries {
         let _ = writeln!(s, "{name} = \"{hash}\"");
     }
-    write(&dir.join(KEYS_FILE), &s)
+    s
 }
 
 fn same_key(a: &Key, b: &Key) -> bool {

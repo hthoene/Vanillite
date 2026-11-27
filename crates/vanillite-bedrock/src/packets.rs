@@ -79,6 +79,11 @@ pub mod id {
     pub const ITEM_STACK_RESPONSE: u32 = 148;
     pub const DEATH_INFO: u32 = 189;
     pub const LEVEL_SOUND_EVENT: u32 = 123;
+    pub const CLIENTBOUND_MAP_ITEM_DATA: u32 = 67;
+    pub const MAP_INFO_REQUEST: u32 = 68;
+    pub const BOOK_EDIT: u32 = 97;
+    pub const PLAYER_START_ITEM_COOLDOWN: u32 = 176;
+    pub const ADD_PAINTING: u32 = 22;
 }
 
 /// Inventory window ids.
@@ -780,6 +785,17 @@ pub fn update_block(pos: [i32; 3], runtime_id: u32, layer: u32) -> Vec<u8> {
     io::write_varu32(&mut out, runtime_id);
     io::write_varu32(&mut out, 2); // network flag
     io::write_varu32(&mut out, layer);
+    out
+}
+
+/// `add_painting`: a painting by its Bedrock motif name, centred on its wall area.
+pub fn add_painting(entity_id: i64, pos: [f32; 3], direction: i32, title: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(48);
+    io::write_vari64(&mut out, entity_id);
+    io::write_varu64(&mut out, u64::try_from(entity_id).unwrap_or(0));
+    io::write_vec3(&mut out, pos);
+    io::write_vari32(&mut out, direction);
+    io::write_str(&mut out, title);
     out
 }
 
@@ -1801,4 +1817,140 @@ pub fn player_skin(uuid: u128, skin: &crate::skin::Skin, v: &Version) -> Vec<u8>
     io::write_str(&mut out, "");
     io::write_str(&mut out, "");
     out
+}
+
+// ---- Utility items ------------------------------------------------------------------------------
+
+/// `player_start_item_cooldown`: a cool-down category and its duration in ticks.
+pub fn start_item_cooldown(category: &str, ticks: i32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(category.len().saturating_add(8));
+    io::write_str(&mut out, category);
+    io::write_vari32(&mut out, ticks);
+    out
+}
+
+/// One map decoration (`MapDecoration`): image, rotation, position, label and colour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapDecoration {
+    pub image: u8,
+    pub rotation: u8,
+    pub x: u8,
+    pub y: u8,
+    pub label: String,
+    /// ARGB.
+    pub color: u32,
+}
+
+/// What `clientbound_map_item_data` carries besides the map id.
+#[derive(Debug, Clone, Default)]
+pub struct MapUpdate<'a> {
+    pub dimension: u8,
+    pub locked: bool,
+    pub scale: u8,
+    pub decorations: Option<&'a [MapDecoration]>,
+    /// Start x, start y, width, height and the ABGR pixels of the rectangle (row by row).
+    pub texture: Option<(u8, u8, u8, u8, &'a [u32])>,
+}
+
+/// `clientbound_map_item_data` (the optional-field layout of all supported protocols): the
+/// map tracks itself (`MapsIncludedIn`, required since 1.19.50); each decoration gets a
+/// tracked object as Bedrock needs one to show it.
+pub fn map_item_data(map_id: i64, u: &MapUpdate<'_>) -> Vec<u8> {
+    let pixels = u.texture.map_or(0, |t| t.4.len());
+    let mut out = Vec::with_capacity(pixels.saturating_mul(4).saturating_add(64));
+    io::write_vari64(&mut out, map_id);
+    out.push(u.dimension);
+    out.push(u8::from(u.locked));
+    io::write_block_pos(&mut out, [0, 0, 0]);
+    out.push(1);
+    io::write_varu32(&mut out, 1);
+    io::write_vari64(&mut out, map_id);
+    out.push(1);
+    out.push(u.scale);
+    match u.decorations {
+        Some(list) => {
+            out.push(1);
+            io::write_len(&mut out, list.len());
+            for i in 0..list.len() {
+                // Type entity, the entity id, no block.
+                out.extend_from_slice(&0i32.to_le_bytes());
+                out.push(1);
+                io::write_vari64(&mut out, i64::try_from(i).unwrap_or(0));
+                out.push(0);
+            }
+            out.push(1);
+            io::write_len(&mut out, list.len());
+            for d in list {
+                out.extend_from_slice(&[d.image, d.rotation, d.x, d.y]);
+                io::write_str(&mut out, &d.label);
+                out.extend_from_slice(&d.color.to_le_bytes());
+            }
+        }
+        None => out.extend_from_slice(&[0, 0]),
+    }
+    match u.texture {
+        Some((x, y, w, h, colors)) => {
+            for v in [w, h, x, y] {
+                out.push(1);
+                io::write_vari32(&mut out, i32::from(v));
+            }
+            out.push(1);
+            io::write_len(&mut out, colors.len());
+            for c in colors {
+                out.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        None => out.extend_from_slice(&[0; 5]),
+    }
+    out
+}
+
+/// Reads the map id of `map_info_request` (the client's pixel hints are not needed).
+pub fn read_map_info_request(body: &[u8]) -> Result<i64> {
+    Reader::new(body).vari64()
+}
+
+/// A `book_edit` action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BookAction {
+    ReplacePage { page: i32, text: String },
+    AddPage { page: i32, text: String },
+    DeletePage { page: i32 },
+    SwapPages { a: i32, b: i32 },
+    Sign { title: String },
+}
+
+/// Most bytes of a page or title string from the client (Java pages hold 1024 characters).
+const MAX_BOOK_TEXT: usize = 1024 * 4;
+
+/// Reads `book_edit`: the inventory slot and the action.
+pub fn read_book_edit(body: &[u8]) -> Result<(i32, BookAction)> {
+    let mut r = Reader::new(body);
+    let slot = r.vari32()?;
+    let action = r.varu32()?;
+    let action = match action {
+        0 | 1 => {
+            let page = r.vari32()?;
+            let text = r.string("book page", MAX_BOOK_TEXT)?.to_owned();
+            r.string("book photo", MAX_BOOK_TEXT)?;
+            if action == 0 {
+                BookAction::ReplacePage { page, text }
+            } else {
+                BookAction::AddPage { page, text }
+            }
+        }
+        2 => BookAction::DeletePage { page: r.vari32()? },
+        3 => BookAction::SwapPages {
+            a: r.vari32()?,
+            b: r.vari32()?,
+        },
+        4 => {
+            let title = r.string("book title", MAX_BOOK_TEXT)?.to_owned();
+            r.string("book author", MAX_BOOK_TEXT)?;
+            r.string("book xuid", MAX_BOOK_TEXT)?;
+            BookAction::Sign { title }
+        }
+        _ => return Err(io::Error::Invalid("book edit action")),
+    };
+    Ok((slot, action))
 }

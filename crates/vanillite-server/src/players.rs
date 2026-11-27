@@ -14,6 +14,7 @@ use vanillite_game::entities::Entities;
 use vanillite_game::inventory::{Drop, PlayerInventory};
 use vanillite_game::item::ItemStack;
 use vanillite_game::level::Level;
+use vanillite_game::mob::fam::wildlife::ender_pearl;
 use vanillite_game::player::chat::ChatInbox;
 use vanillite_game::player::encode::EQUIPMENT_SLOTS;
 use vanillite_game::player::encode::encode_update;
@@ -25,7 +26,7 @@ use vanillite_game::player::{
 };
 use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
-use vanillite_game::survival::rules::Rule;
+use vanillite_nbt::{List, Tag};
 use vanillite_net::{Latency, Outbound};
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::compress::Codec;
@@ -41,6 +42,9 @@ use vanillite_world::entity::{EntityFlags, EntityId, EntityRef, Pose, Rotation};
 use vanillite_world::tracking::{EntityTracker, TrackerOutput};
 
 use crate::blocks::{LevelEffects, WorldLevel};
+
+/// `ServerPlayer.ENDER_PEARLS_TAG`.
+const PEARLS_TAG: &str = "ender_pearls";
 
 use crate::compute::Compute;
 use crate::global::Global;
@@ -72,8 +76,9 @@ pub(crate) struct FanOut {
     codec: Codec,
     /// Runs: arena range and the index of the message whose viewers receive it.
     runs: Vec<(u32, u32, u32)>,
-    /// Viewer slot by entity index (`u32::MAX` = no viewer).
-    slot_of: Vec<u32>,
+    /// Generation and viewer slot by entity index (generation 0 = no viewer): one load per
+    /// viewer of a message.
+    slot_of: Vec<(u32, u32)>,
     /// Batches per job, by viewer slot.
     batches: Vec<Vec<Vec<u8>>>,
     /// Size of each batch at the last tick, by job and viewer slot: its capacity this tick.
@@ -99,19 +104,21 @@ impl FanOut {
             .map(|(_, player)| &player.connection.sink)
             .collect();
         let viewers_n = sinks.len();
-        self.slot_of.fill(u32::MAX);
+        self.slot_of.fill((0, u32::MAX));
         for (slot, (id, _)) in entities.players.iter().enumerate() {
             let index = id.raw().index() as usize;
             if self.slot_of.len() <= index {
-                self.slot_of.resize(index + 1, u32::MAX);
+                self.slot_of.resize(index + 1, (0, u32::MAX));
             }
-            self.slot_of[index] = u32::try_from(slot).unwrap_or(u32::MAX);
+            self.slot_of[index] = (
+                id.raw().generation(),
+                u32::try_from(slot).unwrap_or(u32::MAX),
+            );
         }
-        let ids: Vec<EntityId> = entities.players.iter().map(|(id, _)| id).collect();
         let slot_of = &self.slot_of;
         let slot = |viewer: &EntityId| -> usize {
             match slot_of.get(viewer.raw().index() as usize) {
-                Some(&s) if ids.get(s as usize) == Some(viewer) => s as usize,
+                Some(&(generation, s)) if generation == viewer.raw().generation() => s as usize,
                 _ => usize::MAX,
             }
         };
@@ -391,11 +398,17 @@ impl WorldPlayers {
         weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
         state: &join::LevelPackets,
     ) {
-        let survival = arrival
+        let mut survival = arrival
             .saved
             .as_ref()
             .map(|saved| Survival::load(&saved.other))
             .unwrap_or_default();
+        // `loadGameTypes` → `updatePlayerAbilities`: creative keeps the saved flying state.
+        match arrival.game_mode {
+            GameMode::Spectator => survival.flying = true,
+            GameMode::Survival | GameMode::Adventure => survival.flying = false,
+            GameMode::Creative => {}
+        }
         let (pos, rot, on_ground) = match &arrival.saved {
             Some(saved) => (
                 Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]),
@@ -444,6 +457,21 @@ impl WorldPlayers {
             }
             _ => vanillite_game::recipe::book::PlayerRecipeBook::default(),
         };
+        let saved = arrival.saved.as_ref().map(|saved| &saved.other);
+        let previous_game_mode = saved
+            .and_then(|d| d.get("previousPlayerGameType"))
+            .and_then(Tag::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+            .and_then(game_mode_by_id);
+        let tags = saved.map(load_tags).unwrap_or_default();
+        let motion = saved.map_or(Vec3::ZERO, load_motion);
+        let icon = saved
+            .and_then(|d| d.get("locator_bar_icon"))
+            .and_then(Tag::as_compound)
+            .and_then(crate::command_state::WaypointIcon::from_nbt);
+        if let Some(icon) = icon {
+            global.systems.waypoints().insert(arrival.uuid, icon);
+        }
         let data = PlayerData {
             stats,
             advancements,
@@ -452,7 +480,7 @@ impl WorldPlayers {
             last_equipment: std::array::from_fn(|_| ItemStack::EMPTY),
             profile: arrival.profile,
             game_mode: arrival.game_mode,
-            previous_game_mode: None,
+            previous_game_mode,
             client: arrival.client,
             chunk_view: ChunkView {
                 center,
@@ -481,10 +509,12 @@ impl WorldPlayers {
             },
             data,
         );
+        entities.set_tags(id, tags);
         let Some(mut entity) = entities.store.get_mut(id) else {
             return;
         };
         entity.set_flags(EntityFlags::ON_GROUND, on_ground);
+        entity.set_velocity(motion);
         let network_id = entity.as_ref().network_id().0;
         let mut body = body_of(entities, id);
         let Some(player) = entities.player_mut(id) else {
@@ -497,17 +527,17 @@ impl WorldPlayers {
             pos.y,
             pos.z
         );
-        let immediate_respawn = global.level.rules().bool(Rule::IMMEDIATE_RESPAWN);
+        let rules = global.level.rules().clone();
         join::send_login(
             sink.as_ref(),
             &self.level,
             network_id,
             player,
             global.chat.enforce_secure,
-            !immediate_respawn,
+            &rules,
         );
         sink.send(&crate::survival::change_difficulty(&global.level));
-        join::send_abilities(sink.as_ref(), player.game_mode);
+        join::send_abilities(sink.as_ref(), player.game_mode, player.survival.flying);
         let Some(global_arc) = global.arc() else {
             return;
         };
@@ -600,11 +630,26 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
+        let border = level.border.clone();
+        let (movement_check, elytra_movement_check) = {
+            use vanillite_game::survival::rules::Rule;
+            let game_rules = global.level.rules();
+            (
+                game_rules.bool(Rule::PLAYER_MOVEMENT_CHECK),
+                game_rules.bool(Rule::ELYTRA_MOVEMENT_CHECK),
+            )
+        };
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
+            border: Some(&border),
+            no_wrong_move_check: false,
+            movement_check,
+            elytra_movement_check,
         };
-        let protection = self.spawn_protection(global);
+        let protection = self.spawn_protection(global, level);
+        let dimension_name = self.level.dimension.clone();
+        let dimension_name = dimension_name.as_str();
         // The player kind data leaves the level while the packets are handled, so the block
         // handlers can change the level (`setBlock` with its updates) meanwhile. Nothing in
         // between adds or removes players.
@@ -640,6 +685,7 @@ impl WorldPlayers {
                 sprinting: flags.contains(EntityFlags::SPRINTING),
                 client: None,
                 respawn: false,
+                flying: player.survival.flying,
             };
             let mut state = before.clone();
             let mut actor = actor_of(
@@ -660,6 +706,7 @@ impl WorldPlayers {
                     effects: &mut *blocks.effects,
                     spectators: &spectators,
                     actor: Some((id, aabb)),
+                    dimension: dimension_name,
                 };
                 let hooks =
                     crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
@@ -680,7 +727,13 @@ impl WorldPlayers {
                 };
                 let handled = player.connection.handle_packets(
                     &mut state,
-                    ctx,
+                    MoveContext {
+                        no_wrong_move_check: matches!(
+                            player.game_mode,
+                            GameMode::Spectator | GameMode::Creative
+                        ),
+                        ..ctx
+                    },
                     chat,
                     &mut play,
                     PACKETS_PER_TICK,
@@ -738,11 +791,12 @@ impl WorldPlayers {
             }
             entity.set_flags(EntityFlags::ON_GROUND, body.on_ground);
             entity.set_flags(EntityFlags::SPRINTING, state.sprinting);
-            if state.shift_key_down != before.shift_key_down {
+            player.survival.flying = state.flying;
+            if state.shift_key_down != before.shift_key_down || state.flying != before.flying {
                 // `setShiftKeyDown`, and the pose `Player.updatePlayerPose` picks (without the
-                // collision test, which needs blocks).
+                // collision test, which needs blocks): flying players do not crouch.
                 entity.set_flags(EntityFlags::CROUCHING, state.shift_key_down);
-                let pose = if state.shift_key_down {
+                let pose = if state.shift_key_down && !state.flying {
                     Pose::Crouching
                 } else {
                     Pose::Standing
@@ -811,8 +865,8 @@ impl WorldPlayers {
     }
 
     /// Spawn protection of this world for this tick (`isUnderSpawnProtection`).
-    fn spawn_protection(&self, global: &Global) -> SpawnProtection {
-        let spawn = self.level.spawn.0;
+    fn spawn_protection(&self, global: &Global, level: &Level) -> SpawnProtection {
+        let spawn = crate::world::effective_spawn(level, self.level.spawn).0;
         SpawnProtection {
             active: self.level.dimension.as_str() == "minecraft:overworld"
                 && global.spawn_protection > 0
@@ -828,6 +882,7 @@ impl WorldPlayers {
         for (_, player) in entities.players.iter_mut() {
             player.connection.movement.tick_client_load_timeout();
         }
+        crate::spectator::tick(entities);
     }
 
     /// `ChunkMap.tick`: one chunk batch per player.
@@ -917,7 +972,9 @@ impl WorldPlayers {
     /// block change acknowledgement, digging progress, item pickup, the inventory menu's
     /// `broadcastChanges` and equipment changes for other players.
     fn tick_players(&mut self, level: &mut Level, global: &Global, blocks: &mut WorldBlocks<'_>) {
-        let protection = self.spawn_protection(global);
+        let protection = self.spawn_protection(global, level);
+        let dimension_name = self.level.dimension.clone();
+        let dimension_name = dimension_name.as_str();
         // As in `handle_packets`: the players leave the level while it may change.
         let mut players = std::mem::take(&mut level.entities.players);
         let spectators: FxHashSet<EntityId> = players
@@ -931,7 +988,7 @@ impl WorldPlayers {
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
         for (id, player) in players.iter_mut() {
-            let sink = Arc::clone(&player.connection.sink);
+            let sink = &player.connection.sink;
             if let Some(sequence) = player.connection.play.take_ack() {
                 sink.send(&BlockChangedAck { sequence });
             }
@@ -956,6 +1013,7 @@ impl WorldPlayers {
                     effects: &mut *blocks.effects,
                     spectators: &spectators,
                     actor: Some((id, aabb)),
+                    dimension: dimension_name,
                 };
                 let mut drops = Vec::new();
                 let mut hands = Vec::new();
@@ -1030,6 +1088,17 @@ impl WorldPlayers {
                     &mut taken_orbs,
                 );
             }
+            // `Inventory.tick` of maps and lodestone compasses, and the map updates.
+            {
+                let owner = vanillite_game::carried::Owner {
+                    uuid,
+                    pos: actor.pos,
+                    y_rot: actor.y_rot,
+                    dimension: dimension_name,
+                    has_ceiling: dimension_name == "minecraft:the_nether",
+                };
+                vanillite_game::carried::tick(level, owner, player);
+            }
             let sink = &player.connection.sink;
             if player.inventory.container.is_some() {
                 // `containerMenu.broadcastChanges`, then `stillValid`.
@@ -1065,6 +1134,7 @@ impl WorldPlayers {
                         effects: &mut *blocks.effects,
                         spectators: &spectators,
                         actor: Some((id, aabb)),
+                        dimension: dimension_name,
                     };
                     for drop in drops {
                         throw_item(&mut world, &actor, drop);
@@ -1180,7 +1250,17 @@ impl WorldPlayers {
             }
             None => log::info!("{name} lost connection: Disconnected"),
         }
-        self.save_player(entities, id);
+        self.save_player(level, Some(global), id);
+        level.remove_root_vehicle(id);
+        self.store_pearls(level, global, uuid);
+        if let Some(p) = level.entities.player_mut(id) {
+            let mut carried = std::mem::take(&mut p.survival.carried_maps);
+            if let Some(maps) = level.maps() {
+                for map in carried.drain(..) {
+                    maps.with(map, |d| d.carrier_gone(uuid));
+                }
+            }
+        }
         drop_menus_on_leave(level, id);
         let entities = &mut level.entities;
         entities.despawn(id);
@@ -1200,64 +1280,299 @@ impl WorldPlayers {
         global.plugins.player_leave(world, uuid, &name);
     }
 
-    /// Queues the write of a player's data file; the fields this server does not handle stay
-    /// as they are in the file.
-    fn save_player(&self, entities: &Entities, id: EntityId) {
+    /// `saveEnderPearls` and the removal of a leaving player's ender pearls: those of this
+    /// world go into its data file now, the other worlds add theirs when they get the request.
+    fn store_pearls(&self, level: &mut Level, global: &Global, uuid: u128) {
+        let dimension = self.level.dimension.as_str().to_owned();
+        let pearls = ender_pearl::take_owned(&mut level.entities, uuid, &dimension);
+        self.store.update(uuid, move |data| {
+            if pearls.is_empty() {
+                data.other.remove(PEARLS_TAG);
+            } else {
+                let list = pearls
+                    .into_iter()
+                    .map(vanillite_nbt::Tag::Compound)
+                    .collect();
+                data.other.insert(
+                    PEARLS_TAG,
+                    vanillite_nbt::Tag::List(vanillite_nbt::List(list)),
+                );
+            }
+        });
+        for (i, other) in crate::server::DIMENSIONS.iter().enumerate() {
+            if *other == dimension.as_str() {
+                continue;
+            }
+            let Ok(index) = u16::try_from(i) else {
+                continue;
+            };
+            global.run_in_world(crate::world::WorldId(index), move |world| {
+                world.add_pearls_of(uuid);
+            });
+        }
+    }
+
+    /// The ender pearls of a player that left another world: removed here, added to its data
+    /// file.
+    pub(crate) fn add_pearls(&self, level: &mut Level, uuid: u128) {
+        let dimension = self.level.dimension.as_str();
+        let pearls = ender_pearl::take_owned(&mut level.entities, uuid, dimension);
+        if pearls.is_empty() {
+            return;
+        }
+        self.store.update(uuid, move |data| {
+            let mut list = match data.other.remove(PEARLS_TAG) {
+                Some(vanillite_nbt::Tag::List(list)) => list.0,
+                _ => Vec::new(),
+            };
+            list.extend(pearls.into_iter().map(vanillite_nbt::Tag::Compound));
+            data.other.insert(
+                PEARLS_TAG,
+                vanillite_nbt::Tag::List(vanillite_nbt::List(list)),
+            );
+        });
+    }
+
+    /// Takes the ender pearls out of a joining player's data (`loadAndSpawnEnderPearls`): they
+    /// return to their worlds and live there until the player leaves again.
+    pub(crate) fn take_saved_pearls(
+        &self,
+        uuid: u128,
+        saved: Option<&vanillite_nbt::Tag>,
+    ) -> Vec<vanillite_nbt::Compound> {
+        let Some(vanillite_nbt::Tag::List(list)) = saved else {
+            return Vec::new();
+        };
+        self.store.update(uuid, |data| {
+            data.other.remove(PEARLS_TAG);
+        });
+        list.0
+            .iter()
+            .filter_map(|t| t.as_compound().cloned())
+            .collect()
+    }
+
+    /// Queues the write of a player's data file (`PlayerList.save`): what the server keeps of
+    /// the player is written from its live state, the fields it does not handle stay as they
+    /// are in the file. Without `global` (world saves) the waypoint icon stays as saved.
+    fn save_player(&self, level: &Level, global: Option<&Global>, id: EntityId) {
+        let entities = &level.entities;
         let (Some(entity), Some(player)) = (entities.store.get(id), entities.player(id)) else {
             return;
         };
         let pos = entity.pos();
         let pos = [pos.x, pos.y, pos.z];
         let rotation = [entity.rot().y_rot, entity.rot().x_rot];
-        let on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
+        let flags = entity.flags();
+        let on_ground = flags.contains(EntityFlags::ON_GROUND);
         let dimension = self.level.dimension.as_str().to_owned();
         let game_mode = game_mode_id(player.game_mode);
-        let mut survival = vanillite_nbt::Compound::new();
-        player.inventory.save(&mut survival);
-        player.survival.save(&mut survival);
-        survival.insert(
+        let uuid = entity.uuid();
+        let mut live = vanillite_nbt::Compound::new();
+        live.insert(
+            "UUID",
+            Tag::IntArray(vanillite_nbt::snbt::uuid_to_ints(uuid).to_vec()),
+        );
+        let motion = entity.velocity();
+        live.insert(
+            "Motion",
+            Tag::List(List(vec![
+                Tag::Double(motion.x),
+                Tag::Double(motion.y),
+                Tag::Double(motion.z),
+            ])),
+        );
+        let tags = entities.tags_of(id);
+        if !tags.is_empty() {
+            live.insert(
+                "Tags",
+                Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
+            );
+        }
+        player.inventory.save(&mut live);
+        player.survival.save(&mut live);
+        live.insert(
             "post_effects",
-            vanillite_nbt::Tag::List(vanillite_nbt::List(
+            Tag::List(List(
                 player
                     .post_effects
                     .iter()
-                    .map(|e| vanillite_nbt::Tag::String(e.clone()))
+                    .map(|e| Tag::String(e.clone()))
                     .collect(),
             )),
         );
+        live.insert("recipeBook", player.recipe_book.save());
+        if let Some(previous) = player.previous_game_mode {
+            live.insert("previousPlayerGameType", Tag::Int(game_mode_id(previous)));
+        }
+        // Players do not sleep, glide, freeze or keep explosion impulses here yet: those
+        // keys carry the state of a player that does none of it.
+        live.insert("SleepTimer", Tag::Short(0));
+        live.insert(
+            "FallFlying",
+            Tag::Byte(i8::from(flags.contains(EntityFlags::FALL_FLYING))),
+        );
+        live.insert("current_impulse_context_reset_grace_time", Tag::Int(0));
+        live.insert("spawn_extra_particles_on_fall", Tag::Byte(0));
+        if let Some((attacker, tick)) = player.survival.last_hurt_by_mob
+            && let Some(attacker) = entities.store.get(attacker)
+        {
+            live.insert(
+                "last_hurt_by_mob",
+                Tag::IntArray(vanillite_nbt::snbt::uuid_to_ints(attacker.uuid()).to_vec()),
+            );
+            live.insert(
+                "ticks_since_last_hurt_by_mob",
+                Tag::Int(player.survival.tick_count.wrapping_sub(tick)),
+            );
+        }
+        if let Some(vehicle) = level.save_root_vehicle(id) {
+            live.insert("RootVehicle", Tag::Compound(vehicle));
+        }
+        let icon = global.map(|global| {
+            global
+                .systems
+                .waypoints()
+                .get(&uuid)
+                .and_then(crate::command_state::WaypointIcon::to_nbt)
+        });
+        if let Some(Some(icon)) = &icon {
+            live.insert("locator_bar_icon", Tag::Compound(icon.clone()));
+        }
+        let abilities = Abilities {
+            mode: player.game_mode,
+            flying: player.survival.flying,
+        };
         // `PlayerList.save`: the statistics and advancements files with the data.
-        let uuid = entity.uuid();
         self.store
             .save_json(JsonFile::Stats, uuid, player.stats.to_json());
         self.store
             .save_json(JsonFile::Advancements, uuid, player.advancements.to_json());
-        survival.insert("recipeBook", player.recipe_book.save());
-        // `Survival::save` removes the death location when there is none.
-        let has_death = survival.get("LastDeathLocation").is_some();
-        let has_effects = survival.get("active_effects").is_some();
-        self.store.update(entity.uuid(), move |data| {
+        let icon_is_live = icon.is_some();
+        self.store.update(uuid, move |data| {
             data.pos = pos;
             data.rotation = rotation;
             data.on_ground = on_ground;
             data.dimension = dimension;
             data.game_mode = game_mode;
-            if !has_death {
-                data.other.remove("LastDeathLocation");
+            for key in LIVE_KEYS {
+                data.other.remove(key);
             }
-            if !has_effects {
-                data.other.remove("active_effects");
+            if icon_is_live {
+                data.other.remove("locator_bar_icon");
             }
-            for (key, tag) in survival.iter() {
+            let saved = match data.other.remove("abilities") {
+                Some(Tag::Compound(c)) => c,
+                _ => vanillite_nbt::Compound::new(),
+            };
+            data.other
+                .insert("abilities", Tag::Compound(abilities.save(saved)));
+            // The pearls live in their worlds while the player is online.
+            data.other.remove(PEARLS_TAG);
+            for (key, tag) in live.iter() {
                 data.other.insert(key, tag.clone());
             }
         });
     }
 
     /// Saves all players of this world.
-    pub(crate) fn save_all(&self, entities: &Entities) {
-        for (id, _) in entities.players.iter() {
-            self.save_player(entities, id);
+    pub(crate) fn save_all(&self, level: &Level) {
+        for (id, _) in level.entities.players.iter() {
+            self.save_player(level, None, id);
         }
+    }
+}
+
+/// The keys of a player data file that only exist for some live states: dropped before the
+/// live state is written, so a stale value never stays.
+const LIVE_KEYS: [&str; 15] = [
+    "Tags",
+    "previousPlayerGameType",
+    "LastDeathLocation",
+    "active_effects",
+    "respawn",
+    "entered_nether_pos",
+    "RootVehicle",
+    "sleeping_pos",
+    "TicksFrozen",
+    "current_explosion_impact_pos",
+    "last_explosion_impact_pos",
+    "last_hurt_by_mob",
+    "ticks_since_last_hurt_by_mob",
+    "last_hurt_by_player",
+    "last_hurt_by_player_memory_time",
+];
+
+/// `Abilities` as the game mode sets them (`GameType.updatePlayerAbilities`) with the flying
+/// state.
+#[derive(Clone, Copy, Debug)]
+struct Abilities {
+    mode: GameMode,
+    flying: bool,
+}
+
+impl Abilities {
+    /// `Abilities.Packed.CODEC` over the saved compound: the speeds the server does not
+    /// change stay as saved.
+    fn save(self, mut out: vanillite_nbt::Compound) -> vanillite_nbt::Compound {
+        let creative = self.mode == GameMode::Creative;
+        let spectator = self.mode == GameMode::Spectator;
+        out.insert("invulnerable", Tag::Byte(i8::from(creative || spectator)));
+        out.insert("flying", Tag::Byte(i8::from(self.flying)));
+        out.insert(
+            "mayfly",
+            Tag::Byte(i8::from(
+                vanillite_game::survival::player::Abilities::of(self.mode).mayfly,
+            )),
+        );
+        out.insert("instabuild", Tag::Byte(i8::from(creative)));
+        // `isBlockPlacingRestricted`.
+        out.insert(
+            "mayBuild",
+            Tag::Byte(i8::from(matches!(
+                self.mode,
+                GameMode::Survival | GameMode::Creative
+            ))),
+        );
+        if !matches!(out.get("flySpeed"), Some(Tag::Float(_))) {
+            out.insert("flySpeed", Tag::Float(0.05));
+        }
+        if !matches!(out.get("walkSpeed"), Some(Tag::Float(_))) {
+            out.insert("walkSpeed", Tag::Float(0.1));
+        }
+        out
+    }
+}
+
+/// `Entity.load`'s `Tags`.
+fn load_tags(data: &vanillite_nbt::Compound) -> Vec<String> {
+    match data.get("Tags") {
+        Some(Tag::List(list)) => list
+            .0
+            .iter()
+            .filter_map(|t| t.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `Entity.load`'s `Motion`: components beyond 10 become 0.
+fn load_motion(data: &vanillite_nbt::Compound) -> Vec3 {
+    let clamp = |v: f64| {
+        if v.is_finite() && v.abs() <= 10.0 {
+            v
+        } else {
+            0.0
+        }
+    };
+    match data.get("Motion") {
+        Some(Tag::List(list)) => match list.0.as_slice() {
+            [Tag::Double(x), Tag::Double(y), Tag::Double(z)] => {
+                Vec3::new(clamp(*x), clamp(*y), clamp(*z))
+            }
+            _ => Vec3::ZERO,
+        },
+        _ => Vec3::ZERO,
     }
 }
 

@@ -23,7 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl xz-utils c
 WORKDIR /src
 COPY . .
 ARG TARGETARCH
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+# The commit shown by `vanillite --version` (the build context has no .git).
+ARG VANILLITE_COMMIT=
+ENV VANILLITE_COMMIT=${VANILLITE_COMMIT}
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=vanillite-target-${TARGETARCH} \
     case "${TARGETARCH}" in \
       amd64) triple=x86_64-unknown-linux-musl ;; \

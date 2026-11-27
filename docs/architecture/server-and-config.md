@@ -11,8 +11,8 @@ Crates: `vanillite-server`, `vanillite-config`, binary `vanillite`.
   rule commented out, documented, with its range.
 - Every deviation from Vanilla and every setting is one declaration in the `rules!` catalogue
   (`catalogue.rs`): field, TOML key, `Kind`, optional `range = [min, max]`, optional
-  `restart = true`, and per-profile values (`vanilla`, `technical`, `paper`, `spigot`; missing
-  profiles take the `vanilla` value). The macro generates the typed structs, TOML access by
+  `restart = true`, and per-profile values (`vanilla`, `technical`, `paper`, `spigot`,
+  `performance`; missing profiles take the `vanilla` value). The macro generates the typed structs, TOML access by
   dotted key and the `RuleInfo` table used for docs and validation.
 - Two rule sets: `ServerRules` (server scope) and `WorldRules` (overridable per world). Both
   read from the top level of `vanillite.toml`; group keys must be unique across both.
@@ -25,7 +25,8 @@ Crates: `vanillite-server`, `vanillite-config`, binary `vanillite`.
 - `Kind::Setting` was added to the kinds of the architecture draft for operational settings
   that do not change game behaviour (thread counts, watchdog).
 - Decision D1: exploit rules (`exploits.*`) keep Vanilla behaviour in the `vanilla` profile;
-  `paper` fixes them. Decision D2: `performance.tick.parallel-dimensions` is on by default.
+  `paper` fixes them. Decision D2: `performance.tick.parallel-dimensions` is off in the `vanilla` and
+  `technical` profiles (Vanilla's exact tick order) and on in `paper`, `spigot` and `performance`.
 
 ## Slots (`slot.rs`)
 

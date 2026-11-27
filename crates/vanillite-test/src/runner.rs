@@ -57,6 +57,9 @@ fn apply(
     if let Some(effect) = &op.effect {
         return world.effect(effect);
     }
+    if let Some(use_item) = &op.use_item {
+        return world.use_item(use_item);
+    }
     if let Some(command) = &op.command {
         return world.command(command);
     }
@@ -73,9 +76,10 @@ fn apply(
         OpKind::Hurt => return Err("hurt without its damage".to_owned()),
         OpKind::Lightning => return world.lightning(op.from),
         OpKind::Effect => return Err("effect without its effect".to_owned()),
+        OpKind::UseItem => return Err("use_item without its item".to_owned()),
         OpKind::Command => return Err("command without its line".to_owned()),
         OpKind::ThrowPotion => return Err("throw_potion without its potion".to_owned()),
-        OpKind::Use | OpKind::Attack | OpKind::UseItem => {
+        OpKind::Use | OpKind::Attack => {
             return Err("use without its click".to_owned());
         }
         OpKind::Force | OpKind::Unforce => {
@@ -229,13 +233,12 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
     let diff = expected.diff(&serial, DIFF_LIMIT);
     match (known, first) {
         (Some(d), None) => Err(format!(
-            "matches the golden now: remove its entry (tick {}: {}) from \
-             scenarios/divergences.toml",
-            d.tick, d.cause
+            "matches the golden now: remove scenarios/divergences/{}.toml (tick {}: {})",
+            scenario.name, d.tick, d.cause
         )),
         (Some(d), Some(t)) => Err(format!(
             "the first divergence moved from tick {} to tick {t} ({}; {}, owner {}): {} the \
-             tick in scenarios/divergences.toml if intended:\n  {}",
+             tick in scenarios/divergences/{}.toml if intended:\n  {}",
             d.tick,
             scenario.description,
             d.cause,
@@ -245,6 +248,7 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
             } else {
                 "regression, or lower"
             },
+            scenario.name,
             diff.join("\n  ")
         )),
         _ => Err(format!(

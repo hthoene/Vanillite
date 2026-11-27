@@ -257,7 +257,8 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         *d = data;
     }
     if data.tick_count % 20 == 1 {
-        scan_for_merges(&mut level.entities, id, aabb);
+        let radius = level.settings.xp_merge_radius;
+        scan_for_merges(&mut level.entities, id, aabb, radius);
     }
     let following = follow_nearby_player(level, id, pos, &mut v);
     let mut needs_sync = false;
@@ -278,7 +279,7 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     }
     let fall_speed = v.y;
     // `move(MoverType.SELF, delta)`.
-    let movement = crate::block::falling::collide(level, aabb, v);
+    let movement = crate::block::falling::collide(&level.view(), aabb, v);
     let new_pos = pos + movement;
     let hit_x = (v.x - movement.x).abs() >= 1.0e-5;
     let hit_z = (v.z - movement.z).abs() >= 1.0e-5;
@@ -337,8 +338,9 @@ fn eye_in_water(level: &Level, pos: Vec3) -> bool {
         && eye_y < f64::from(at.y) + f64::from(crate::block::fluid::height(level, fluid, at))
 }
 
-/// `scanForMerges`: orbs of the same value and merge group within half a block join this one.
-fn scan_for_merges(entities: &mut Entities, id: EntityId, aabb: Aabb) {
+/// `scanForMerges`: orbs of the same value and merge group within `radius` (Vanilla half a
+/// block) join this one.
+fn scan_for_merges(entities: &mut Entities, id: EntityId, aabb: Aabb, radius: f64) {
     let Some(this) = entities.experience_orb(id).copied() else {
         return;
     };
@@ -348,7 +350,7 @@ fn scan_for_merges(entities: &mut Entities, id: EntityId, aabb: Aabb) {
     let mut near = Vec::new();
     entities
         .store
-        .for_each_in(&aabb.inflate(0.5, 0.5, 0.5), false, |other| {
+        .for_each_in(&aabb.inflate(radius, radius, radius), false, |other| {
             if other != id && can_merge(entities, other, network_id, this.value) {
                 near.push(other);
             }
@@ -553,7 +555,7 @@ pub fn take_one(
 /// The orbs a player's pickup box touches, in entity order.
 pub fn touching(entities: &Entities, reach: &Aabb, out: &mut Vec<EntityId>) {
     out.clear();
-    entities.store.for_each_in(reach, false, |id| {
+    entities.store.for_each_non_player_in(reach, |id| {
         if entities.experience_orb(id).is_some_and(|d| d.count > 0) {
             out.push(id);
         }

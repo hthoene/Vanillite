@@ -4,7 +4,7 @@
 //! Fields, in this order, so readers that need only the front can stop early (§4.1 of the
 //! storage design):
 //! 1. header: record version, status, flags, data version, position, section range,
-//!    inhabited time;
+//!    inhabited time, last update (since record version 2);
 //! 2. heightmaps in their packed form (taken over on load instead of primed);
 //! 3. `extra`: every chunk tag the server does not decode (structure starts and references,
 //!    plugin data, …) as network NBT, written back unchanged;
@@ -26,8 +26,8 @@ use vanillite_chunk::light::{ChunkLight, LightNibbles, NIBBLE_BYTES};
 use vanillite_chunk::slots::{BlockEntityData, ChunkStatus, SavedTick, WorldInfo};
 use vanillite_chunk::store::{ChunkCodec, RecordMeta};
 use vanillite_chunk::{
-    Biomes, BlockStates, Chunk, Heightmap, HeightmapKind, PalettedContainer, ProtoChunk, Section,
-    Strategy,
+    Biomes, BlockStates, Chunk, ContainerData, Heightmap, HeightmapKind, PalettedContainer,
+    ProtoChunk, Section, Strategy,
 };
 use vanillite_data::version::DATA_VERSION;
 
@@ -35,7 +35,7 @@ use crate::compression::{zstd_compress, zstd_decompress};
 use crate::upgrade::{IdRemap, Upgrades};
 
 /// Version of the record layout.
-const RECORD_VERSION: u8 = 1;
+const RECORD_VERSION: u8 = 2;
 /// Default zstd level (`storage.own-format.compression-level`).
 pub const DEFAULT_LEVEL: i32 = 3;
 
@@ -118,6 +118,7 @@ impl OwnCodec {
         out.extend_from_slice(&c.min_section().to_le_bytes());
         out.extend_from_slice(&(c.sections().len() as u16).to_le_bytes());
         out.extend_from_slice(&chunk.inhabited_time.to_le_bytes());
+        out.extend_from_slice(&chunk.last_update.to_le_bytes());
         // 2. Heightmaps.
         let mask = c
             .heightmaps()
@@ -133,13 +134,22 @@ impl OwnCodec {
             out.extend_from_slice(extra);
         }
         // 4. Biome names, sections, light, block entities, ticks, post-processing.
+        // Every id on the wire gets a name, also palette entries no biome uses any more
+        // (#142: they were left out, so such records could not be read back).
         let mut biomes: Vec<u16> = Vec::new();
+        let mut add = |id: u16| {
+            if !biomes.contains(&id) {
+                biomes.push(id);
+            }
+        };
         for section in c.sections() {
-            section.biomes().for_each_count(|id, _| {
-                if !biomes.contains(&id) {
-                    biomes.push(id);
+            match section.biomes().data() {
+                ContainerData::Single(id) => add(*id),
+                ContainerData::Indirect { palette, .. } => palette.iter().for_each(|&id| add(id)),
+                ContainerData::Direct { bits, data } => {
+                    bits::for_each(data, *bits, Biomes::ENTRIES, |_, id| add(id as u16));
                 }
-            });
+            }
         }
         out.extend_from_slice(&(biomes.len() as u16).to_le_bytes());
         for id in biomes {
@@ -204,7 +214,8 @@ impl OwnCodec {
     pub fn decode_raw(&self, pos: ChunkPos, raw: &[u8]) -> io::Result<ProtoChunk> {
         let mut r = Reader { bytes: raw, pos };
         let info = &self.info;
-        if r.u8()? != RECORD_VERSION {
+        let version = r.u8()?;
+        if !(1..=RECORD_VERSION).contains(&version) {
             return Err(invalid(pos, "unknown record version"));
         }
         let status = *ChunkStatus::ALL
@@ -235,6 +246,7 @@ impl OwnCodec {
             return Err(invalid(pos, "stored for another world height"));
         }
         let inhabited_time = r.i64()?;
+        let last_update = if version >= 2 { r.i64()? } else { 0 };
 
         let mask = r.u8()?;
         let words = Heightmap::new(info.height).raw().len();
@@ -293,7 +305,7 @@ impl OwnCodec {
                 bits::words_for(BlockStates::ENTRIES, bits)
             };
             let data = r.take(words * 8)?.as_chunks::<8>().0;
-            let biomes = read_biomes(&mut r, &remap, identity)?;
+            let biomes = read_biomes(&mut r, &remap, identity, info.default_biome)?;
             let section = match ids {
                 None => Section::from_parts(bits, &palette, data, biomes),
                 Some(ids) => remap_section(pos, ids, bits, &mut palette, data, biomes)?,
@@ -373,11 +385,13 @@ impl OwnCodec {
             chunk,
             block_entities,
             inhabited_time,
+            last_update,
             light_on: flags & FLAG_LIGHT_ON != 0,
             block_ticks,
             fluid_ticks,
             post_processing,
             entities: Vec::new(),
+            poi: None,
             extra,
             generation: None,
         })
@@ -466,6 +480,7 @@ fn read_biomes(
     r: &mut Reader<'_>,
     remap: &[(u16, u16)],
     identity: bool,
+    default_biome: u16,
 ) -> io::Result<PalettedContainer<Biomes>> {
     let pos = r.pos;
     let map = |id: u16| {
@@ -490,16 +505,33 @@ fn read_biomes(
             return Err(invalid(pos, "invalid biome palette"));
         }
         let mut palette = Vec::with_capacity(len as usize);
-        for _ in 0..len {
+        // (palette index, stored id) of entries without a name.
+        let mut unnamed: Vec<(u32, u16)> = Vec::new();
+        for index in 0..len {
             let value =
                 vanillite_chunk::wire::read_varint(&mut r.bytes).map_err(|e| invalid(pos, e))?;
-            palette.push(map(
-                u16::try_from(value).map_err(|_| invalid(pos, "biome id"))?
-            )?);
+            let id = u16::try_from(value).map_err(|_| invalid(pos, "biome id"))?;
+            // Records written before #142 have no names for palette entries no biome uses;
+            // those entries are never read, any biome keeps the record loadable.
+            palette.push(map(id).unwrap_or_else(|_| {
+                unnamed.push((index, id));
+                default_biome
+            }));
         }
         let data = r.take(bits::words_for(Biomes::ENTRIES, bits) * 8)?;
-        return PalettedContainer::from_parts(bits, &palette, data.as_chunks::<8>().0)
-            .map_err(|e| invalid(pos, e));
+        let data = data.as_chunks::<8>().0;
+        if !unnamed.is_empty() {
+            let mut used = vec![false; len as usize];
+            bits::for_each(data, bits, Biomes::ENTRIES, |_, index| {
+                if let Some(used) = used.get_mut(index as usize) {
+                    *used = true;
+                }
+            });
+            if let Some((_, id)) = unnamed.iter().find(|(index, _)| used[*index as usize]) {
+                return Err(invalid(pos, format!("biome id {id} without a name")));
+            }
+        }
+        return PalettedContainer::from_parts(bits, &palette, data).map_err(|e| invalid(pos, e));
     }
     // Packed ids with the bit count of the registry the record was written with.
     if bits > 16 {
@@ -612,6 +644,33 @@ impl ChunkCodec for OwnCodec {
         Ok((meta, Arc::from(zstd_compress(&nbt, self.level)?)))
     }
 
+    /// A POI record is Vanilla's POI NBT (`DataVersion`, `Sections`) in one zstd frame.
+    fn decode_poi(
+        &self,
+        pos: ChunkPos,
+        _: &RecordMeta,
+        record: &[u8],
+    ) -> io::Result<Option<Arc<[u8]>>> {
+        let nbt = zstd_decompress(record).map_err(|e| invalid(pos, e))?;
+        crate::chunk_nbt::read_poi(pos, crate::read_root(pos, &nbt)?).map(Some)
+    }
+
+    fn encode_poi(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root =
+            crate::chunk_nbt::write_poi(chunk.pos, chunk.poi.as_deref().unwrap_or_default())?;
+        let mut nbt = Vec::with_capacity(1024);
+        vanillite_nbt::write::write_named("", &root, &mut nbt)
+            .map_err(|e| invalid(chunk.pos, format!("{e:?}")))?;
+        let meta = RecordMeta {
+            data_version: DATA_VERSION as u32,
+            raw_len: u32::try_from(nbt.len()).unwrap_or(u32::MAX),
+            checksum: 0,
+            status: RecordMeta::STATUS_UNKNOWN,
+            flags: 0,
+        };
+        Ok((meta, Arc::from(zstd_compress(&nbt, self.level)?)))
+    }
+
     fn chunks_per_job(&self) -> usize {
         // ~80 µs per chunk with zstd 3 (#25 measurements): jobs of about 1 ms.
         12
@@ -619,7 +678,7 @@ impl ChunkCodec for OwnCodec {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chunk_nbt::tests::{codec, diff, golden, without};
     use vanillite_nbt::Tag;
@@ -770,6 +829,91 @@ mod tests {
         let (meta, raw) = own.encode_raw(&back);
         assert_eq!(meta.data_version, DATA_VERSION as u32);
         assert_eq!(own.encode_raw(&own.decode_raw(*pos, &raw).unwrap()).1, raw);
+    }
+
+    /// Gives every section of `chunk` a biome container whose palette holds an entry no biome
+    /// uses any more (what worldgen and biome changes leave behind), varied by `salt`.
+    pub(crate) fn with_unused_biomes(chunk: &mut ProtoChunk, biomes: usize, salt: usize) {
+        let biomes = biomes.max(2);
+        for y in 0..chunk.chunk.sections().len() {
+            let used = ((salt + y) % biomes) as u16;
+            let unused = ((salt * 7 + y + 1) % biomes) as u16;
+            let unused = if unused == used {
+                (unused + 1) % biomes as u16
+            } else {
+                unused
+            };
+            let mut container = PalettedContainer::new(used);
+            container.set(0, unused);
+            container.set(0, used);
+            *chunk.chunk.section_mut(y).biomes_mut() = container;
+        }
+    }
+
+    /// Biome palette entries no biome uses get a name too, so the record reads back (#142).
+    #[test]
+    fn unused_biome_palette_entries_round_trip() {
+        let chunks = golden();
+        let anvil = codec(&chunks);
+        let own = OwnCodec::new(anvil.info(), DEFAULT_LEVEL);
+        let biomes = anvil.info().biomes.len();
+        for (salt, (pos, bytes, _)) in chunks.iter().enumerate() {
+            let mut chunk = anvil.read_bytes(*pos, bytes).unwrap();
+            with_unused_biomes(&mut chunk, biomes, salt);
+            let (meta, record) = own.encode(&chunk).unwrap();
+            let back = own.decode(*pos, &meta, &record).unwrap();
+            assert_eq!(own.encode_raw(&back).1, own.encode_raw(&chunk).1, "{pos:?}");
+        }
+    }
+
+    /// Records written before #142 lack the names of unused biome palette entries: they load,
+    /// with the biomes that are used unchanged; a used id without a name stays an error.
+    #[test]
+    fn records_without_unused_biome_names_load() {
+        let chunks = golden();
+        let anvil = codec(&chunks);
+        let info = anvil.info();
+        let own = OwnCodec::new(info, DEFAULT_LEVEL);
+        let (pos, bytes, _) = &chunks[0];
+        let mut chunk = anvil.read_bytes(*pos, bytes).unwrap();
+        // Every section uses biome 0 and keeps 1 unused: the table holds 0 and 1.
+        for y in 0..chunk.chunk.sections().len() {
+            let mut container = PalettedContainer::new(0);
+            container.set(0, 1);
+            container.set(0, 0);
+            *chunk.chunk.section_mut(y).biomes_mut() = container;
+        }
+        let entry = |id: u16| {
+            let name = info.biomes[usize::from(id)].as_bytes();
+            let mut out = id.to_le_bytes().to_vec();
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(name);
+            out
+        };
+        let old_table = |raw: &[u8]| {
+            let full = [&2u16.to_le_bytes()[..], &entry(0), &entry(1)].concat();
+            let at = raw
+                .windows(full.len())
+                .position(|w| w == full)
+                .expect("the biome table");
+            let old = [&1u16.to_le_bytes()[..], &entry(0)].concat();
+            [&raw[..at], &old, &raw[at + full.len()..]].concat()
+        };
+        let raw = own.encode_raw(&chunk).1;
+        let back = own.decode_raw(*pos, &old_table(&raw)).unwrap();
+        for (a, b) in back.chunk.sections().iter().zip(chunk.chunk.sections()) {
+            for index in 0..Biomes::ENTRIES {
+                assert_eq!(a.biomes().get(index), b.biomes().get(index));
+            }
+        }
+        // Biome 1 in use: its name is needed.
+        chunk.chunk.section_mut(0).biomes_mut().set(5, 1);
+        let raw = own.encode_raw(&chunk).1;
+        let error = own.decode_raw(*pos, &old_table(&raw)).unwrap_err();
+        assert!(
+            error.to_string().contains("biome id 1 without a name"),
+            "{error}"
+        );
     }
 
     /// A damaged or truncated record is an error, never a panic.

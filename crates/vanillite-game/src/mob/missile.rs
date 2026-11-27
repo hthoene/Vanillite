@@ -1,5 +1,5 @@
 //! The projectiles besides arrows (`Projectile` subclasses): fireballs, shulker bullets,
-//! evoker fangs, thrown potions, llama spit, snowballs, tridents and wind charges. They share
+//! evoker fangs, thrown potions, llama spit, snowballs, ender pearls, tridents and wind charges. They share
 //! one entity store; each kind's flight and impact is implemented by the mob family that uses
 //! it (`FamilyHooks::missile_tick`), so mobs and later players throw the same entities.
 
@@ -30,6 +30,8 @@ pub enum MissileKind {
     LingeringPotion,
     LlamaSpit,
     Snowball,
+    /// `ThrownEnderpearl` (players).
+    EnderPearl,
     /// `ThrownTrident` (drowned).
     Trident,
     WindCharge,
@@ -37,7 +39,7 @@ pub enum MissileKind {
 }
 
 impl MissileKind {
-    pub const ALL: [MissileKind; 11] = [
+    pub const ALL: [MissileKind; 12] = [
         MissileKind::SmallFireball,
         MissileKind::Fireball,
         MissileKind::ShulkerBullet,
@@ -46,6 +48,7 @@ impl MissileKind {
         MissileKind::LingeringPotion,
         MissileKind::LlamaSpit,
         MissileKind::Snowball,
+        MissileKind::EnderPearl,
         MissileKind::Trident,
         MissileKind::WindCharge,
         MissileKind::BreezeWindCharge,
@@ -62,10 +65,22 @@ impl MissileKind {
             MissileKind::LingeringPotion => ids::LINGERING_POTION,
             MissileKind::LlamaSpit => ids::LLAMA_SPIT,
             MissileKind::Snowball => ids::SNOWBALL,
+            MissileKind::EnderPearl => ids::ENDER_PEARL,
             MissileKind::Trident => ids::TRIDENT,
             MissileKind::WindCharge => ids::WIND_CHARGE,
             MissileKind::BreezeWindCharge => ids::BREEZE_WIND_CHARGE,
         }
+    }
+
+    /// A `ThrowableProjectile` (snowballs, ender pearls, thrown potions).
+    pub fn is_throwable(self) -> bool {
+        matches!(
+            self,
+            MissileKind::Snowball
+                | MissileKind::EnderPearl
+                | MissileKind::SplashPotion
+                | MissileKind::LingeringPotion
+        )
     }
 
     /// The kind of an entity type.
@@ -83,7 +98,7 @@ impl MissileKind {
             | MissileKind::SplashPotion
             | MissileKind::LingeringPotion => Family::Illager,
             MissileKind::LlamaSpit => Family::Companion,
-            MissileKind::Snowball => Family::Wildlife,
+            MissileKind::Snowball | MissileKind::EnderPearl => Family::Wildlife,
             MissileKind::Trident => Family::Undead,
             MissileKind::WindCharge | MissileKind::BreezeWindCharge => Family::Mount,
         }
@@ -126,6 +141,12 @@ pub struct MissileData {
     pub in_ground: bool,
     /// Removed during its tick; the world despawns it afterwards.
     pub removed: bool,
+    /// `hasBeenShot`: the `PROJECTILE_SHOOT` game event was posted.
+    pub has_been_shot: bool,
+    /// The state of its own random ([`vanillite_base::random::LegacyRandom::state`]) for the
+    /// kinds that draw from it (ender pearls, shulker bullets); the shooter seeds it with
+    /// [`new_projectile_random`].
+    pub random_state: i64,
 }
 
 impl MissileData {
@@ -137,6 +158,7 @@ impl MissileData {
             owner_uuid: None,
             left_owner: false,
             life: 0,
+            has_been_shot: false,
             item: ItemStack::default(),
             acceleration: 0.1,
             explosion_power: 1,
@@ -146,6 +168,7 @@ impl MissileData {
             vec: Vec3::ZERO,
             in_ground: false,
             removed: false,
+            random_state: 0,
         }
     }
 }
@@ -277,6 +300,20 @@ pub fn tick(
             cx,
             id,
         };
+        // `Projectile.tick` (evoker fangs are no projectile).
+        let unshot = t
+            .ents
+            .missile(id)
+            .filter(|d| !d.has_been_shot && d.kind != MissileKind::EvokerFangs)
+            .map(|d| d.owner);
+        if let Some(owner) = unshot {
+            if let Some(pos) = t.ents.store.get(id).map(|e| e.pos()) {
+                shoot_event(t.env.out, pos, owner);
+            }
+            if let Some(d) = t.data() {
+                d.has_been_shot = true;
+            }
+        }
         if let Some(d) = t.data() {
             d.life += 1;
         }
@@ -285,6 +322,46 @@ pub fn tick(
     if ents.missile(id).is_some_and(|d| d.removed) {
         cx.discarded.push(id);
     }
+}
+
+/// `Projectile.onHit`'s `PROJECTILE_LAND` game event of `projectile`: at the hit point `at`
+/// for an entity hit (`block` = `None`), at the centre of the hit block with its state for a
+/// block hit.
+pub fn land_event(
+    out: &mut Vec<crate::survival::Effect>,
+    level: &Level,
+    projectile: EntityId,
+    block: Option<vanillite_base::BlockPos>,
+    at: Vec3,
+) {
+    use crate::level::game_event::{GameEventContext, events};
+    let (pos, context) = match block {
+        Some(b) => (
+            Vec3::new(
+                f64::from(b.x) + 0.5,
+                f64::from(b.y) + 0.5,
+                f64::from(b.z) + 0.5,
+            ),
+            GameEventContext::with_state(Some(projectile), level.block(b)),
+        ),
+        None => (at, GameEventContext::of(Some(projectile))),
+    };
+    out.push(crate::survival::Effect::GameEvent {
+        event: events().projectile_land,
+        pos,
+        context,
+    });
+}
+
+/// `Projectile.tick`'s first `PROJECTILE_SHOOT` (`hasBeenShot`), from the projectile with its
+/// owner as the source.
+pub fn shoot_event(out: &mut Vec<crate::survival::Effect>, pos: Vec3, owner: Option<EntityId>) {
+    crate::survival::game_event(
+        out,
+        crate::level::game_event::events().projectile_shoot,
+        pos,
+        owner,
+    );
 }
 
 /// The owner as a UUID array.
@@ -306,7 +383,7 @@ pub fn save(core: &EntityRef<'_>, d: &MissileData, owner: Option<u128>) -> Compo
         out.insert("Owner", uuid_ints(o));
     }
     out.insert("LeftOwner", d.left_owner);
-    out.insert("HasBeenShot", true);
+    out.insert("HasBeenShot", d.has_been_shot);
     if !d.item.is_empty() {
         out.insert("Item", crate::inventory::stack_to_nbt(&d.item));
     }
@@ -321,6 +398,7 @@ pub fn load(tag: &Compound) -> Option<(super::nbt::LoadedEntity, MissileData)> {
     let mut d = MissileData::new(kind);
     d.owner_uuid = super::nbt::uuid_key_of(tag, "Owner");
     d.left_owner = matches!(tag.get("LeftOwner"), Some(Tag::Byte(b)) if *b != 0);
+    d.has_been_shot = matches!(tag.get("HasBeenShot"), Some(Tag::Byte(b)) if *b != 0);
     if let Some(Tag::Compound(c)) = tag.get("Item") {
         d.item = crate::inventory::stack_from_nbt(c);
     }

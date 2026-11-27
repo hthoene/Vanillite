@@ -1,0 +1,27 @@
+{
+  "description": "Command blocks: an impulse block powered by a redstone block runs its command and the chain in front of it (unconditional, failing, conditional after a failure, a turn south, conditional after a success, a chain block that is not automatic), a comparator reads its success count into a lamp, an automatic impulse block runs once, a repeating block with a chain on top runs every tick; the impulse block runs again after its power comes back.",
+  "tier": "fast",
+  "region": [[0, 0, 0], [8, 3, 4]],
+  "ticks": 12,
+  "setup": [],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "fill 0 0 0 8 0 4 minecraft:stone"},
+    {"tick": 1, "op": "command", "command": "setblock 1 1 1 minecraft:command_block[facing=east]{Command:\"setblock 1 3 1 minecraft:gold_block\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 2 1 1 minecraft:chain_command_block[facing=east]{auto:1b,Command:\"setblock 2 3 1 minecraft:emerald_block\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 3 1 1 minecraft:chain_command_block[facing=east]{auto:1b,Command:\"execute if block 0 0 0 minecraft:dirt\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 4 1 1 minecraft:chain_command_block[facing=east,conditional=true]{auto:1b,Command:\"setblock 4 3 1 minecraft:diamond_block\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 5 1 1 minecraft:chain_command_block[facing=south]{auto:1b,Command:\"setblock 5 3 1 minecraft:iron_block\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 5 1 2 minecraft:chain_command_block[facing=south,conditional=true]{auto:1b,Command:\"setblock 5 3 2 minecraft:lapis_block\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 5 1 3 minecraft:chain_command_block[facing=south]{Command:\"setblock 5 3 3 minecraft:coal_block\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 5 1 4 minecraft:chain_command_block[facing=south]{auto:1b,Command:\"setblock 5 3 4 minecraft:copper_block\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 1 1 2 minecraft:comparator[facing=north]"},
+    {"tick": 1, "op": "command", "command": "setblock 1 1 3 minecraft:redstone_lamp"},
+    {"tick": 1, "op": "command", "command": "setblock 7 1 0 minecraft:command_block[facing=up]{auto:1b,Command:\"setblock 7 3 0 minecraft:obsidian\"}"},
+    {"tick": 2, "op": "command", "command": "setblock 7 1 2 minecraft:repeating_command_block[facing=up]{auto:1b,Command:\"execute if block 1 3 1 minecraft:gold_block run setblock 7 3 2 minecraft:glowstone\"}"},
+    {"tick": 2, "op": "command", "command": "setblock 7 2 2 minecraft:chain_command_block[facing=up]{auto:1b,Command:\"clone 7 3 2 7 3 2 8 3 2\"}"},
+    {"tick": 3, "op": "command", "command": "setblock 1 1 0 minecraft:redstone_block"},
+    {"tick": 6, "op": "command", "command": "setblock 1 1 0 minecraft:air"},
+    {"tick": 6, "op": "command", "command": "setblock 1 3 1 minecraft:air"},
+    {"tick": 8, "op": "command", "command": "setblock 1 1 0 minecraft:redstone_block"}
+  ]
+}

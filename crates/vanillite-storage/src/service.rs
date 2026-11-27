@@ -897,10 +897,10 @@ impl StoreInner {
                 let mut state = lock(&shard.state);
                 match state.files.get_mut(&fk) {
                     Some(file) if file.idle() => {
+                        // `dirty` stays set until the commit is done: a commit round that
+                        // meets the busy file waits for it instead of finishing early.
                         file.busy = true;
-                        file.region
-                            .take()
-                            .map(|r| (r, std::mem::take(&mut file.dirty)))
+                        file.region.take().map(|r| (r, file.dirty))
                     }
                     _ => None,
                 }
@@ -922,10 +922,10 @@ impl StoreInner {
                 .get_mut(&fk)
                 .expect("a busy file stays in the table");
             file.busy = false;
+            file.dirty = result.is_err();
             let requeue = if file.has_work() || result.is_err() {
                 // Work arrived meanwhile, or the file must stay open to be synced again.
                 file.region = Some(region);
-                file.dirty |= result.is_err();
                 (file.has_work() && file.queued.is_none()).then(|| file.best_priority())
             } else {
                 state.files.remove(&fk);
@@ -949,6 +949,8 @@ impl StoreInner {
     /// Writes every put with a sequence number up to `upto`, then syncs the touched files.
     fn run_commit(self: &Arc<Self>, upto: u64) -> io::Result<()> {
         let mut first_error = None;
+        // Files whose commit failed in this round: they stay dirty for the next round.
+        let mut failed: Vec<FileKey> = Vec::new();
         for shard in &self.shards {
             loop {
                 let mut state = lock(&shard.state);
@@ -975,7 +977,9 @@ impl StoreInner {
                 let dirty = state
                     .files
                     .iter()
-                    .find(|(_, f)| f.dirty && (f.region.is_some() || f.busy))
+                    .find(|(fk, f)| {
+                        f.dirty && (f.region.is_some() || f.busy) && !failed.contains(fk)
+                    })
                     .map(|(&fk, f)| (fk, f.busy));
                 let Some((fk, busy)) = dirty else {
                     break;
@@ -989,15 +993,17 @@ impl StoreInner {
                     );
                     continue;
                 }
+                // `dirty` stays set until the commit is done, so a concurrent round waits.
                 let file = state.files.get_mut(&fk).expect("found above");
                 file.busy = true;
-                file.dirty = false;
                 let mut region = file.region.take().expect("dirty files are open");
                 drop(state);
                 let result = region.commit(self.settings.sync);
+                let ok = result.is_ok();
                 if let Err(e) = result {
                     log::error!("Couldn't sync {}: {e}", self.path(fk).display());
                     first_error.get_or_insert(e);
+                    failed.push(fk);
                 }
                 let mut state = lock(&shard.state);
                 let file = state
@@ -1005,6 +1011,7 @@ impl StoreInner {
                     .get_mut(&fk)
                     .expect("a busy file stays in the table");
                 file.busy = false;
+                file.dirty = !ok;
                 file.region = Some(region);
                 let requeue =
                     (file.has_work() && file.queued.is_none()).then(|| file.best_priority());
@@ -1215,6 +1222,66 @@ mod tests {
     fn many_threads_many_regions() {
         many_threads_many_regions_in(WorldFormat::Anvil);
         many_threads_many_regions_in(WorldFormat::Vanillite);
+    }
+
+    /// Own-format chunks with many biomes (and unused biome palette entries) written from many
+    /// threads into more regions than stay open, committed, and read back by a fresh store:
+    /// every chunk decodes to what was saved (#142, #133).
+    #[test]
+    fn own_format_chunks_reload_from_many_threads() {
+        use crate::chunk_nbt::tests::{codec, golden};
+        use crate::own_codec::tests::with_unused_biomes;
+        use crate::own_codec::{DEFAULT_LEVEL, OwnCodec};
+
+        let chunks = golden();
+        let anvil = codec(&chunks);
+        let own = OwnCodec::new(anvil.info(), DEFAULT_LEVEL);
+        let biomes = anvil.info().biomes.len();
+        let base: Vec<_> = chunks
+            .iter()
+            .map(|(pos, bytes, _)| anvil.read_bytes(*pos, bytes).unwrap())
+            .collect();
+        let (regions, per_region, threads) = (12, 6, 8);
+        let pos = |n: i32| ChunkPos::new((n % regions - 6) * 32 + n / regions * 5, n % 3 * 32 - 40);
+        let chunk_at = |n: i32| {
+            let mut chunk = base[n as usize % base.len()].clone();
+            chunk.pos = pos(n);
+            with_unused_biomes(&mut chunk, biomes, n as usize);
+            chunk
+        };
+        let count = regions * per_region;
+        let dir = temp_dir("store-own-biomes");
+        let pool = IoPool::new(4).unwrap();
+        let settings = StoreSettings {
+            max_open_files: 4,
+            ..StoreSettings::default()
+        };
+        let store = RegionStore::new(dir.clone(), WorldFormat::Vanillite, settings, pool.clone());
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                let (store, own) = (&store, &own);
+                scope.spawn(move || {
+                    for n in (t..count).step_by(threads as usize) {
+                        let chunk = chunk_at(n);
+                        let results = blocking::save(store, own, DimensionId(0), &[&chunk]);
+                        assert!(results.iter().all(Result::is_ok), "{results:?}");
+                    }
+                });
+            }
+        });
+        blocking::commit(&store).unwrap();
+        let fresh = RegionStore::new(dir.clone(), WorldFormat::Vanillite, settings, pool.clone());
+        let positions: Vec<ChunkPos> = (0..count).map(pos).collect();
+        for (n, got) in (0..count).zip(blocking::load(&fresh, &own, DimensionId(0), &positions)) {
+            let back = got.unwrap().expect("a saved chunk");
+            assert_eq!(
+                own.encode_raw(&back).1,
+                own.encode_raw(&chunk_at(n)).1,
+                "{n}"
+            );
+        }
+        pool.shutdown();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn many_threads_many_regions_in(format: WorldFormat) {

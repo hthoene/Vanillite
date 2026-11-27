@@ -167,6 +167,10 @@ kinds! {
     Wither "wither" WITHER Boss;
     EnderDragon "ender_dragon" ENDER_DRAGON Boss;
     Warden "warden" WARDEN Boss;
+    ArmorStand "armor_stand" ARMOR_STAND Decor;
+    Mannequin "mannequin" MANNEQUIN Decor;
+    Villager "villager" VILLAGER Village;
+    WanderingTrader "wandering_trader" WANDERING_TRADER Village;
 }
 
 /// The default sounds of a kind (`minecraft:entity.<name>.<suffix>`).
@@ -474,7 +478,7 @@ pub fn max_head_y_rot(m: &MobData) -> f32 {
     }
 }
 
-pub fn ambient_sound(m: &MobData) -> Option<&'static str> {
+pub fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
     if !m.kind.classic() {
         return fam::ambient_sound(m);
     }
@@ -923,7 +927,13 @@ pub fn play_ambient_sound(t: &mut Tick<'_, '_>) {
         super::boss::warden::play_ambient_sound(t);
         return;
     }
-    if let Some(sound) = ambient_sound(t.mob_ref()) {
+    if t.mob_ref().kind == Kind::Parrot {
+        let sound = super::fam::companion::parrot::ambient_sound(t);
+        let id = t.id;
+        combat::mob_sound(t.ents, t.env, id, sound);
+        return;
+    }
+    if let Some(sound) = ambient_sound(t.mob()) {
         let id = t.id;
         combat::mob_sound(t.ents, t.env, id, sound);
     }
@@ -985,6 +995,7 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
         radius,
         mob: true,
         resistance: crate::level::explosion::BlockResistance::Default,
+        fire: false,
     }));
 }
 
@@ -1016,6 +1027,22 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             t.set_velocity(v.multiply(1.0, 0.6, 1.0));
         }
     }
+    if kind.ageable() && t.mob_ref().forced_age_timer > 0 {
+        // `AgeableMob.aiStep`: a happy villager particle at a random spot every 4 ticks.
+        if t.mob_ref().forced_age_timer % 4 == 0 {
+            let (pos, dims) = (t.pos(), t.core().dims());
+            let (width, height) = (f64::from(dims.width), f64::from(dims.height));
+            let r = &mut t.mob().random;
+            let at = Vec3::new(
+                pos.x + width * (2.0 * r.next_double() - 1.0),
+                pos.y + height * r.next_double() + 0.5,
+                pos.z + width * (2.0 * r.next_double() - 1.0),
+            );
+            let particle = crate::level::particles::simple("minecraft:happy_villager");
+            t.cx.send_particles(particle, at, 1, Vec3::ZERO, 0.0);
+        }
+        t.mob().forced_age_timer -= 1;
+    }
     if kind.ageable() && t.mob_ref().is_alive() {
         // `AgeableMob.aiStep` and `Animal.aiStep`.
         let m = t.mob();
@@ -1029,9 +1056,13 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         }
         if m.in_love > 0 {
             m.in_love -= 1;
-        }
-        if m.forced_age_timer > 0 {
-            m.forced_age_timer -= 1;
+            if m.in_love % 10 == 0 {
+                // `Animal.aiStep`: the heart particle is the client's, but its speed and
+                // position are drawn on the server too.
+                let r = &mut m.random;
+                let _ = (r.next_gaussian(), r.next_gaussian(), r.next_gaussian());
+                let _ = (r.next_double(), r.next_double(), r.next_double());
+            }
         }
         // `ItemBasedSteering.tickBoost`.
         if m.boosting {
@@ -1147,7 +1178,9 @@ pub fn eat_block(t: &mut Tick<'_, '_>) {
                 .push(WorldAction::SetBlock(below, ids::DIRT.default_state(), 2));
         }
     }
-    // `Sheep.ate`: the wool grows back, babies grow up.
+    // `Sheep.ate`: `Mob.ate` (the eat game event), the wool grows back, babies grow up.
+    let at = t.pos();
+    super::living::post_game_event(t, crate::level::game_event::events().eat, at, None);
     let m = t.mob();
     m.sheared = false;
     if m.baby {
@@ -1245,6 +1278,8 @@ fn teleport_to(
     id: EntityId,
     to: Vec3,
 ) -> bool {
+    // `randomTeleport`: the target is clamped into the world border.
+    let to = level.border.clamp_vec(to.x, to.y, to.z);
     let mut pos = BlockPos::containing(to.x, to.y, to.z);
     while pos.y > level.min_y()
         && !blocks_motion(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
@@ -1263,7 +1298,7 @@ fn teleport_to(
     let dest = Vec3::new(to.x, f64::from(pos.y), to.z);
     let aabb = dims.bounding_box(dest);
     let mut scratch = Vec::new();
-    if !physics::no_collision(level, &aabb, &mut scratch)
+    if !physics::no_collision(&level.view(), &aabb, &mut scratch)
         || physics::contains_any_liquid(level, &aabb)
     {
         return false;
@@ -1276,6 +1311,12 @@ fn teleport_to(
     if let Some(m) = ents.mob_mut(id) {
         m.nav.stop();
     }
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().teleport,
+        old,
+        Some(id),
+    );
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound(
         env.out,
@@ -1540,4 +1581,14 @@ pub fn enderman_take_block(t: &mut Tick<'_, '_>) {
         .push(WorldAction::SetBlock(pos, BlockState::AIR, 3));
     t.mob().carried = Some(state.block().default_state());
     t.core_mut().mark_data_dirty();
+}
+
+/// The path costs of a mob: its kind's, or those a creaking gets from its heart
+/// (`Creaking.setTransient`).
+pub fn mob_malus(m: &MobData) -> &'static MalusTable {
+    if fam::mount::creaking::heart_bound(m) {
+        fam::mount::creaking::HEART_BOUND_MALUS
+    } else {
+        m.kind.malus()
+    }
 }

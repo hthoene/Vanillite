@@ -17,7 +17,7 @@ use super::{
 };
 use crate::effect as effects;
 use crate::effect::{EffectInstance, MobEffect};
-use crate::survival::rules::{Difficulty, Rule};
+use crate::survival::rules::Rule;
 
 /// `SpellcasterIllager.IllagerSpell` ids.
 pub mod spell {
@@ -54,6 +54,7 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, raider::patrol());
+    raider::add_raider_goals(g);
     g.add(0, MobGoal::Float);
     g.add(1, fam(Goal::SpellCasting));
     if evoker {
@@ -157,8 +158,9 @@ pub fn can_use(t: &mut Tick<'_, '_>, s: &mut UseSpell) -> bool {
                 return false;
             };
             let net = t.ents.store.get(target).map_or(0, |e| e.network_id().0);
-            // `isHarderThan(NORMAL)`: the effective difficulty above 2.
-            net != s.last_target && t.env.difficulty == Difficulty::Hard
+            // `getCurrentDifficultyAt(blockPosition()).isHarderThan(NORMAL.ordinal())`.
+            net != s.last_target
+                && crate::level::difficulty::at(t.level, t.block_pos()).is_harder_than(2.0)
         }
         _ => base_can_use(t, s),
     }
@@ -262,8 +264,7 @@ fn summon_vexes(t: &mut Tick<'_, '_>) {
         let pos = BlockPos::new(here.x + dx, here.y + 1, here.z + dz);
         let seed = crate::mob::new_entity_seed();
         let mut vex = MobData::new(Kind::Vex, seed);
-        let mut ctx = SpawnContext::simple(t.env.difficulty, SpawnReason::MobSummoned);
-        ctx.pos = pos;
+        let mut ctx = SpawnContext::at(t.level, pos, SpawnReason::MobSummoned);
         kinds::finalize_spawn(&mut vex, &mut ctx, t.env.random);
         let life = 20 * (30 + t.mob().random.next_int_bounded(90));
         let s = st_mut(&mut vex);

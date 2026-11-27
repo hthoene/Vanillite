@@ -12,6 +12,8 @@ use vanillite_protocol::chat::{
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
+
+use crate::block::technical;
 use vanillite_protocol::packets::play::serverbound::{
     ClientCommandAction, PlayerAction, SeenAdvancementsAction,
 };
@@ -45,6 +47,8 @@ pub struct PlayerState {
     pub client: Option<ClientInformation>,
     /// The client asked to respawn (`client_command` `PERFORM_RESPAWN`).
     pub respawn: bool,
+    /// `Abilities.flying`.
+    pub flying: bool,
 }
 
 /// An attack or interaction of a player with an entity, by network id.
@@ -73,6 +77,12 @@ pub enum EntityAction {
     /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
     /// (`HasCustomInventoryScreen`: chest boats).
     OpenVehicleInventory,
+    /// `spectator_action` of a spectator: spectate the entity of this network id.
+    Spectate(i32),
+    /// `pick_item_from_entity`: the entity's pick result goes to the hand.
+    PickItem { entity: i32, include_data: bool },
+    /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
+    Stab,
 }
 
 /// What a player sends to steer its vehicle.
@@ -139,6 +149,36 @@ pub enum ChatRequest {
     /// The player started a new, validated chat session; other players learn it through the
     /// tab list.
     Session(ChatSessionData),
+    /// `openItemGui`: the written book in the hand is resolved for the player (selectors,
+    /// scores, NBT), then opened.
+    OpenBook(Hand),
+    /// `LecternBlockEntity.resolveBook`: the written book put on the lectern at the position is
+    /// resolved for the player.
+    ResolveLecternBook(BlockPos),
+    /// An operator screen packet; the server checks the permissions.
+    Admin(AdminRequest),
+}
+
+/// The packets of the operator screens, handled by the server in packet order with the chat
+/// requests (Vanilla's `ServerGamePacketListenerImpl.handleChangeDifficulty` and friends).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdminRequest {
+    /// `change_difficulty` with the raw difficulty id.
+    ChangeDifficulty(i32),
+    /// `lock_difficulty`.
+    LockDifficulty(bool),
+    /// `change_game_mode` (F3+F4) with the raw game mode id.
+    ChangeGameMode(i32),
+    /// `set_game_rule`: rule keys and serialized values.
+    SetGameRules(Vec<(String, String)>),
+    /// `client_command` `REQUEST_GAMERULE_VALUES`.
+    RequestGameRuleValues,
+    /// `block_entity_tag_query` (F3+I on a block).
+    BlockEntityTagQuery { transaction_id: i32, pos: BlockPos },
+    /// `entity_tag_query` (F3+I on an entity).
+    EntityTagQuery { transaction_id: i32, entity_id: i32 },
+    /// `teleport_to_entity`: the spectator menu teleport to the entity with this UUID.
+    TeleportToEntity(u128),
 }
 
 /// A player's chat state.
@@ -202,6 +242,8 @@ pub struct Connection {
     /// Attacks and interactions with entities since the last tick (`attack`, `interact`), in
     /// packet order; the world resolves them with the entities.
     pub entity_actions: Vec<EntityAction>,
+    /// `ServerPlayer.camera`: the entity a spectator watches through (`None`: itself).
+    pub camera: Option<vanillite_world::entity::EntityId>,
     /// Vehicle input: the last `player_input`, `paddle_boat` and `move_vehicle`.
     pub vehicle: VehicleInput,
     /// Digging, placing and item handling.
@@ -266,6 +308,7 @@ impl Connection {
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
             entity_actions: Vec::new(),
+            camera: None,
             vehicle: VehicleInput::default(),
             play: Digging::new(),
             last_action: std::time::Instant::now(),
@@ -334,6 +377,9 @@ impl Connection {
             | ServerboundPlay::PlaceRecipe(_)
             | ServerboundPlay::ContainerButtonClick(_)
             | ServerboundPlay::SignUpdate(_) => true,
+            ServerboundPlay::SpectatorAction(_) => {
+                loaded && play.actor.game_mode == vanillite_config::GameMode::Spectator
+            }
             _ => false,
         };
         let pos_before = state.body.pos;
@@ -401,8 +447,9 @@ impl Connection {
                         sink.send(&stats.award_packet());
                     }
                 }
-                // Game rule values come later.
-                ClientCommandAction::RequestGameRuleValues => {}
+                ClientCommandAction::RequestGameRuleValues => {
+                    self.admin(AdminRequest::RequestGameRuleValues);
+                }
             },
             ServerboundPlay::SeenAdvancements(p) => {
                 // `handleSeenAdvancements`: an opened tab of a known advancement.
@@ -478,6 +525,17 @@ impl Connection {
                     self.vehicle.input = p.0;
                 }
             }
+            ServerboundPlay::SpectatorAction(p) => {
+                // `handleSpectatorAction`: only loaded spectators, bounded like attacks.
+                let spectator = play.actor.game_mode == vanillite_config::GameMode::Spectator;
+                if let Some(id) = p.spectate_entity_id
+                    && spectator
+                    && self.movement.has_client_loaded()
+                    && self.entity_actions.len() < 16
+                {
+                    self.entity_actions.push(EntityAction::Spectate(id));
+                }
+            }
             ServerboundPlay::Attack(p) => {
                 // `handleAttack`: bounded like the other per-tick packet budgets.
                 if self.movement.has_client_loaded() && self.entity_actions.len() < 16 {
@@ -548,6 +606,15 @@ impl Connection {
                         || name == "minecraft:lead"
                         || name.ends_with("minecart");
                     self.play.use_item_on(play, &p, self.sink.as_ref());
+                    // `LecternBlockEntity.setBook` resolves a written book for the player.
+                    let at = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
+                    if name == "minecraft:written_book"
+                        && let Some(level) = play.level.level_mut()
+                        && let Some(crate::level::BlockEntity::Lectern(l)) = level.block_entity(at)
+                        && crate::book::needs_resolving(&l.book)
+                    {
+                        self.chat.requests.push(ChatRequest::ResolveLecternBook(at));
+                    }
                     if entity_item && self.play.entity_item_use && self.entity_actions.len() < 16 {
                         self.entity_actions.push(EntityAction::UseItemOn {
                             hand: p.hand,
@@ -605,10 +672,41 @@ impl Connection {
                 }
             }
             ServerboundPlay::PickItemFromBlock(p) => self.pick_item_from_block(p.pos, play),
+            ServerboundPlay::PickItemFromEntity(p) => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::PickItem {
+                        entity: p.id,
+                        include_data: p.include_data,
+                    });
+                }
+            }
+            ServerboundPlay::EditBook(p) => {
+                // `handleEditBook`: a hotbar slot or the off hand.
+                let slot = usize::try_from(p.slot)
+                    .ok()
+                    .filter(|&s| s < crate::inventory::HOTBAR || s == crate::inventory::OFFHAND);
+                if let Some(slot) = slot
+                    && let Some(stack) = play.inventory.get_mut(slot)
+                {
+                    match &p.title {
+                        Some(title) => {
+                            if let Some(book) = crate::book::sign(stack, title, chat.name, &p.pages)
+                            {
+                                *stack = book;
+                            }
+                        }
+                        None => crate::book::update_pages(stack, &p.pages),
+                    }
+                }
+            }
+            ServerboundPlay::SelectBundleItem(p) => {
+                self.select_bundle_item(p.slot_id, p.selected_item_index, play);
+            }
             ServerboundPlay::ContainerButtonClick(p) => {
                 self.container_button(p.container_id, p.button_id, play)
             }
             ServerboundPlay::RenameItem(p) => self.rename_item(&p.name, play),
+            ServerboundPlay::SelectTrade(p) => self.select_trade(p.item, play),
             ServerboundPlay::SetBeacon(p) => self.set_beacon(p.primary, p.secondary, play),
             ServerboundPlay::ContainerSlotStateChanged(p) => {
                 self.container_slot_state(p.slot_id, p.container_id, p.new_state, play);
@@ -622,6 +720,62 @@ impl Connection {
                 {
                     crate::block::sign::update_text(level, pos, uuid, p.front, &p.lines);
                 }
+            }
+            ServerboundPlay::SetCommandBlock(p) => {
+                self.technical(play, |l, e| technical::command_block::handle(l, p, e));
+            }
+            ServerboundPlay::SetCommandMinecart(p) => {
+                self.technical(play, |l, e| {
+                    technical::command_block::handle_minecart(l, p, e)
+                });
+            }
+            ServerboundPlay::SetStructureBlock(p) => {
+                self.technical(play, |l, e| technical::structure_block::handle(l, p, e));
+            }
+            ServerboundPlay::SetJigsawBlock(p) => {
+                self.technical(play, |l, e| technical::jigsaw::handle(l, p, e));
+            }
+            ServerboundPlay::JigsawGenerate(p) => {
+                self.technical(play, |l, e| technical::jigsaw::handle_generate(l, p, e));
+            }
+            ServerboundPlay::SetTestBlock(p) => {
+                self.technical(play, |l, e| technical::test_block::handle(l, p, e));
+            }
+            ServerboundPlay::TestInstanceBlockAction(p) => {
+                self.technical(play, |l, e| technical::test_instance::handle(l, p, e));
+            }
+            // `handlePlayerAbilities`.
+            ServerboundPlay::PlayerAbilities(p) => {
+                state.flying = p.is_flying()
+                    && crate::survival::player::Abilities::of(play.actor.game_mode).mayfly;
+            }
+            ServerboundPlay::ChangeDifficulty(p) => {
+                self.admin(AdminRequest::ChangeDifficulty(p.difficulty));
+            }
+            ServerboundPlay::LockDifficulty(p) => {
+                self.admin(AdminRequest::LockDifficulty(p.locked));
+            }
+            ServerboundPlay::ChangeGameMode(p) => self.admin(AdminRequest::ChangeGameMode(p.mode)),
+            ServerboundPlay::SetGameRule(p) => {
+                let entries = p
+                    .entries
+                    .into_iter()
+                    .map(|e| (e.rule.to_string(), e.value))
+                    .collect();
+                self.admin(AdminRequest::SetGameRules(entries));
+            }
+            ServerboundPlay::BlockEntityTagQuery(p) => {
+                self.admin(AdminRequest::BlockEntityTagQuery {
+                    transaction_id: p.transaction_id,
+                    pos: BlockPos::new(p.pos.x, p.pos.y, p.pos.z),
+                });
+            }
+            ServerboundPlay::EntityTagQuery(p) => self.admin(AdminRequest::EntityTagQuery {
+                transaction_id: p.transaction_id,
+                entity_id: p.entity_id,
+            }),
+            ServerboundPlay::TeleportToEntity(p) => {
+                self.admin(AdminRequest::TeleportToEntity(p.uuid.0));
             }
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
@@ -642,6 +796,37 @@ impl Connection {
             | ServerboundPlay::Unhandled { .. } => {}
         }
         Ok(())
+    }
+
+    /// The edit packets of the technical blocks: run on the player's level with the player as
+    /// the editor.
+    fn technical(
+        &self,
+        play: &mut PlayContext<'_>,
+        f: impl FnOnce(&mut crate::level::Level, &technical::Editor<'_>),
+    ) {
+        let actor = &play.actor;
+        let editor = technical::Editor {
+            player: actor.entity,
+            uuid: actor.uuid,
+            allowed: technical::can_use_game_master_blocks(
+                actor.game_mode == vanillite_config::GameMode::Creative,
+                actor.permission_level,
+            ),
+            permission_level: actor.permission_level,
+            sink: self.sink.as_ref(),
+        };
+        if let Some(level) = play.level.level_mut() {
+            f(level, &editor);
+        }
+    }
+
+    /// Queues an operator screen request. The queue is bounded like the other per-tick
+    /// request lists; requests beyond the bound are dropped.
+    fn admin(&mut self, request: AdminRequest) {
+        if self.chat.requests.len() < 64 {
+            self.chat.requests.push(ChatRequest::Admin(request));
+        }
     }
 
     /// `handlePlayerAction`.
@@ -667,7 +852,11 @@ impl Connection {
                     self.entity_actions.push(EntityAction::ReleaseUseItem);
                 }
             }
-            DigAction::Stab => {}
+            DigAction::Stab => {
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Stab);
+                }
+            }
             DigAction::StartDestroyBlock
             | DigAction::ChangeDestroyDirection
             | DigAction::AbortDestroyBlock
@@ -988,6 +1177,37 @@ impl Connection {
         });
     }
 
+    /// `handleSelectTrade`: the offer picked in the open merchant menu.
+    fn select_trade(&mut self, item: i32, play: &mut PlayContext<'_>) {
+        let sink = self.sink.as_ref();
+        let actor = play.actor;
+        let PlayContext {
+            level, inventory, ..
+        } = play;
+        let Some(level) = level.level_mut() else {
+            return;
+        };
+        if inventory
+            .container
+            .as_ref()
+            .is_none_or(|m| m.kind != crate::menu::container::MenuKind::Merchant)
+        {
+            return;
+        }
+        let in_range = |pos| actor.within_block_range(pos, 4.0);
+        if !crate::menu::container::still_valid(inventory, level, &in_range, &|b| {
+            actor.within_entity_range(b, 4.0)
+        }) {
+            log::debug!("A player interacted with an invalid menu");
+            return;
+        }
+        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            view.merchant_select(item);
+            view.flush_result_updates(sink);
+            crate::menu::broadcast_changes(view, sink);
+        });
+    }
+
     /// `handleRenameItem`: the anvil's name field.
     fn rename_item(&mut self, name: &str, play: &mut PlayContext<'_>) {
         let actor = play.actor;
@@ -1029,6 +1249,13 @@ impl Connection {
         if let Some(open) = &play.inventory.container {
             if p.container_id == open.state.container_id {
                 self.container_menu_click(p, play);
+                let sounds = play
+                    .inventory
+                    .container
+                    .as_mut()
+                    .map(|c| std::mem::take(&mut c.state.sounds))
+                    .unwrap_or_default();
+                play_bundle_sounds(play, sounds);
             }
             return;
         }
@@ -1055,6 +1282,8 @@ impl Connection {
         play.inventory.menu.suppress_remote = true;
         play.inventory
             .click(p.slot, p.button, p.input, ctx, play.drops);
+        let sounds = std::mem::take(&mut play.inventory.menu.sounds);
+        play_bundle_sounds(play, sounds);
         play.inventory.flush_result_updates(sink);
         play.inventory.receive_predictions(&p.changed, &p.carried);
         play.inventory.menu.suppress_remote = false;
@@ -1062,6 +1291,36 @@ impl Connection {
             play.inventory.broadcast_full_state(sink);
         } else {
             play.inventory.broadcast_changes(sink);
+        }
+    }
+
+    /// `AbstractContainerMenu.setSelectedBundleItemIndex` of the open menu.
+    fn select_bundle_item(&mut self, slot: i32, index: i32, play: &mut PlayContext<'_>) {
+        let Ok(slot) = usize::try_from(slot) else {
+            return;
+        };
+        let stack = if play.inventory.container.is_some() {
+            let pos = play.actor.pos;
+            let Some(level) = play.level.level_mut() else {
+                return;
+            };
+            crate::menu::container::with_view(play.inventory, level, pos, None, |view| {
+                use crate::menu::MenuSlots;
+                (slot < view.slot_count()).then(|| view.item(slot).clone())
+            })
+            .flatten()
+        } else {
+            use crate::menu::MenuSlots;
+            (slot < crate::inventory::MENU_SLOTS).then(|| play.inventory.item(slot).clone())
+        };
+        let Some(stack) = stack else {
+            return;
+        };
+        let selection = play.inventory.bundle_selection;
+        if let Some(mut contents) = crate::bundle::Contents::of(&stack, selection) {
+            contents.toggle_selected(index);
+            play.inventory.bundle_selection =
+                (contents.selected >= 0).then(|| (crate::bundle::key(&stack), contents.selected));
         }
     }
 
@@ -1173,4 +1432,26 @@ fn chat_validation_failed() -> Kick {
         "multiplayer.disconnect.chat_validation_failed",
         vec![],
     )))
+}
+
+/// The bundle sounds of a click (`Entity.playSound` of the player: everyone around but the
+/// player, who predicted them).
+fn play_bundle_sounds(play: &mut PlayContext<'_>, sounds: Vec<crate::bundle::Sound>) {
+    for sound in sounds {
+        let (name, volume, random_pitch) = sound.params();
+        let pitch = if random_pitch {
+            0.8 + play.level.random_float() * 0.4
+        } else {
+            1.0
+        };
+        let id = u16::try_from(crate::survival::sound_event(name).0).unwrap_or(0);
+        play.level.play_sound(
+            Some(play.actor.network_id),
+            play.actor.pos,
+            id,
+            crate::player::world::SoundSource::Players,
+            volume,
+            pitch,
+        );
+    }
 }

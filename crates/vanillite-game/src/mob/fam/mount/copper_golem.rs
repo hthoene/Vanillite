@@ -88,6 +88,8 @@ pub struct CopperGolem {
     pub next_weathering_tick: i64,
     /// `TRANSPORT_ITEMS_COOLDOWN_TICKS` set in the constructor.
     pub transport_cooldown: i32,
+    /// `openedChestPos` with the container whose lid it opened.
+    pub opened_chest: Option<(BlockPos, crate::block::container::ContainerRef)>,
 }
 
 pub fn golem(m: &MobData) -> CopperGolem {
@@ -296,6 +298,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             "minecraft:entity.copper_golem.shear",
         );
         drop_above(ix, pos, antenna);
+        crate::mob::animal::entity_game_event(
+            ix.ents,
+            ix.env,
+            ix.target,
+            crate::level::game_event::events().shear,
+            Some(ix.player),
+        );
         animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
         return Interaction::Success;
     }

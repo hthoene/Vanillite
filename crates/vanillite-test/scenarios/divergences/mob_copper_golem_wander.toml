@@ -1,0 +1,3 @@
+tick = 90
+cause = "a timed brain behaviour starts on tick 90 in Vanillite only (1 level random draw, Vanilla 0)"
+owner = "architect #120"

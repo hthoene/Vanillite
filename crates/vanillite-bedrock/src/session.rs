@@ -7,6 +7,7 @@
 mod inventory;
 mod play;
 mod trade;
+mod utility;
 mod vehicle;
 
 use std::net::SocketAddr;
@@ -97,6 +98,14 @@ enum Kind {
     Item,
     /// An item entity whose item has not arrived yet (not spawned on Bedrock).
     PendingItem,
+    /// A painting whose variant has not arrived yet (not spawned on Bedrock).
+    PendingPainting,
+    /// A painting (`add_painting`).
+    Painting,
+    /// An item frame: a frame block on Bedrock at the entity's block.
+    Frame,
+    /// An entity Bedrock does not show (markers, block and item displays, cushions).
+    Hidden,
     #[default]
     Actor,
 }
@@ -118,6 +127,9 @@ struct Entity {
     wool: u8,
     /// Rides another entity.
     riding: bool,
+    /// Block position and Java 3D direction of hanging entities (paintings, item frames).
+    block: [i32; 3],
+    direction: u8,
 }
 
 /// The player's world on the Java side, after the Java `login`.
@@ -176,6 +188,8 @@ struct World {
     input: psb::Input,
     /// The open merchant menu.
     merchant: Option<trade::Merchant>,
+    /// Item frames by block (Java entity ids): uses and hits of the frame block go to them.
+    frames: FxHashMap<[i32; 3], i32>,
 }
 
 /// The layout of a Java dimension (`dim_type`: its dimension type name).
@@ -260,6 +274,10 @@ pub(crate) struct Session {
     /// Names of the `minecraft:world_clock` registry (ids of `set_time`).
     world_clocks: Vec<String>,
     equipment: play::Equipment,
+    /// The Java maps the client was sent, by map id.
+    maps: FxHashMap<i32, utility::MapCache>,
+    /// The book the client edits.
+    book: utility::BookEdit,
     events_tx: mpsc::Sender<Event>,
     /// The event receiver for the task loop to take.
     pub events_rx: Option<mpsc::Receiver<Event>>,
@@ -316,6 +334,8 @@ impl Session {
             inventory_open: false,
             world_clocks: Vec::new(),
             equipment: play::Equipment::default(),
+            maps: FxHashMap::default(),
+            book: utility::BookEdit::default(),
             events_tx,
             events_rx: Some(events_rx),
         }
@@ -408,6 +428,7 @@ impl Session {
             self.kick("Connection too slow");
             return;
         }
+        self.flush_book(now);
         // Chunk flow control: acknowledge a batch once RakNet has sent most of it.
         let backlog_ok = self.rak.backlog() < self.shared.config.chunk_backlog;
         if let Some(w) = &mut self.world
@@ -572,6 +593,8 @@ impl Session {
             (Phase::Playing, id::PLAYER_ACTION) => self.player_action(body)?,
             (Phase::Playing, id::RESPAWN) => self.bedrock_respawn(body)?,
             (Phase::Playing, id::BLOCK_PICK_REQUEST) => self.pick_block(body)?,
+            (Phase::Playing, id::MAP_INFO_REQUEST) => self.map_info_request(body)?,
+            (Phase::Playing, id::BOOK_EDIT) => self.book_edit(body, Instant::now())?,
             (Phase::Playing, id::MODAL_FORM_RESPONSE) => {
                 let (form, data) = bp::read_modal_form_response(body)?;
                 if form == trade::TRADE_FORM {
@@ -614,7 +637,7 @@ impl Session {
             (Phase::NetworkSettings | Phase::Login | Phase::Handshake, _) => {
                 self.kick("Unexpected packet during login");
             }
-            // Everything else (emotes, books, ...) is not translated.
+            // Everything else (emotes, ...) is not translated.
             _ => {}
         }
         Ok(())
@@ -1060,6 +1083,10 @@ impl Session {
             ClientboundPlay::RemoveMobEffect(m) => {
                 self.java_mob_effect(m.entity_id, m.effect, None)
             }
+            ClientboundPlay::Cooldown(c) => self.java_cooldown(&c),
+            ClientboundPlay::MapItemData(m) => self.java_map_data(m),
+            // Bedrock opens written books itself.
+            ClientboundPlay::OpenBook(_) => {}
             ClientboundPlay::Unhandled { id } => self.java_unhandled(id, body),
             _ => {}
         }
@@ -1162,6 +1189,7 @@ impl Session {
             predicted_vehicle: None,
             input: psb::Input::default(),
             merchant: None,
+            frames: FxHashMap::default(),
         });
     }
 

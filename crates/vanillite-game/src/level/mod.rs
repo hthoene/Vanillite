@@ -13,17 +13,20 @@
 
 pub mod block_entity;
 pub mod border;
+pub mod difficulty;
 mod entity_storage;
 pub mod explosion;
 pub mod forced;
 pub mod game_event;
 mod neighbors;
+pub mod particles;
 pub mod place;
 #[cfg(test)]
 pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
 mod tick;
 pub mod update;
+pub mod view;
 
 pub use crate::random_sequences::RandomSequences;
 
@@ -114,12 +117,21 @@ pub struct LevelSettings {
     pub spread_vines: bool,
     /// The server's difficulty (`level.getDifficulty()`).
     pub difficulty: crate::survival::rules::Difficulty,
+    /// `getOverworldClockTime` (local difficulty), set by the server every tick.
+    pub overworld_clock_time: i64,
+    /// `getMoonBrightness` of this dimension (`visual/moon_phase`), set by the server every
+    /// tick.
+    pub moon_brightness: f32,
     /// The dimension's `infiniburn` tag.
     pub infiniburn: crate::block::fire::Infiniburn,
     /// The dimension's `fast_lava` attribute (the Nether).
     pub fast_lava: bool,
     /// `tntExplodes` game rule (`TNT_EXPLODES`).
     pub tnt_explodes: bool,
+    /// `tnt_explosion_drop_decay` game rule.
+    pub tnt_explosion_drop_decay: bool,
+    /// `ServerLevel.isSpawningMonsters`: the `spawn_mobs` and `spawn_monsters` game rules.
+    pub spawning_monsters: bool,
     /// The dimension has sky light.
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
@@ -129,10 +141,24 @@ pub struct LevelSettings {
     pub portal_dimension: bool,
     /// Exploit switches (D1).
     pub exploits: ExploitSettings,
+    /// Ticks a hopper waits after moving an item (`HopperBlockEntity.MOVE_ITEM_SPEED`, 8).
+    pub hopper_transfer_cooldown: i32,
+    /// Ticks a hopper waits after finding nothing to move (Vanilla 1: every tick).
+    pub hopper_check_cooldown: i32,
+    /// Radius of the experience orb merge scan (Vanilla 0.5).
+    pub xp_merge_radius: f64,
     /// The difficulty is peaceful (set by the server every tick).
     pub peaceful: bool,
     /// `spawnWardens` game rule (set by the server every tick).
     pub spawn_wardens: bool,
+    /// `command_blocks_work` game rule (`isCommandBlockEnabled`).
+    pub command_blocks_work: bool,
+    /// `max_command_sequence_length` game rule (chain command blocks).
+    pub max_command_sequence_length: i32,
+    /// `send_command_feedback` game rule (new command blocks track their output).
+    pub send_command_feedback: bool,
+    /// `mobGriefing` game rule (`MOB_GRIEFING`).
+    pub mob_griefing: bool,
 }
 
 impl Default for LevelSettings {
@@ -150,15 +176,26 @@ impl Default for LevelSettings {
             fire_spread_radius: 128,
             spread_vines: true,
             difficulty: crate::survival::rules::Difficulty::Normal,
+            overworld_clock_time: 0,
+            moon_brightness: 1.0,
             infiniburn: crate::block::fire::Infiniburn::Overworld,
             fast_lava: false,
             tnt_explodes: true,
+            tnt_explosion_drop_decay: false,
+            spawning_monsters: true,
             has_sky_light: true,
             water_evaporates: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
+            hopper_transfer_cooldown: 8,
+            hopper_check_cooldown: 1,
+            xp_merge_radius: 0.5,
             peaceful: false,
             spawn_wardens: true,
+            command_blocks_work: true,
+            max_command_sequence_length: 65536,
+            send_command_feedback: true,
+            mob_griefing: true,
         }
     }
 }
@@ -180,6 +217,13 @@ impl LevelSettings {
         if let Some(v) = get("block_drops") {
             self.block_drops = v != 0;
         }
+        if let Some(v) = get("tnt_explodes") {
+            self.tnt_explodes = v != 0;
+        }
+        if let Some(v) = get("tnt_explosion_drop_decay") {
+            self.tnt_explosion_drop_decay = v != 0;
+        }
+        self.spawning_monsters = rules.bool(Rule::SPAWN_MOBS) && rules.bool(Rule::SPAWN_MONSTERS);
         if let Some(v) = get("entity_drops") {
             self.entity_drops = v != 0;
         }
@@ -191,6 +235,12 @@ impl LevelSettings {
         }
         if let Some(v) = get("spread_vines") {
             self.spread_vines = v != 0;
+        }
+        self.command_blocks_work = rules.bool(Rule::COMMAND_BLOCKS_WORK);
+        self.max_command_sequence_length = rules.get(Rule::MAX_COMMAND_SEQUENCE_LENGTH);
+        self.send_command_feedback = rules.bool(Rule::SEND_COMMAND_FEEDBACK);
+        if let Some(v) = get("mob_griefing") {
+            self.mob_griefing = v != 0;
         }
     }
 }
@@ -270,6 +320,8 @@ pub struct LevelOutput {
     pub level_events: Vec<LevelEvent>,
     /// Sounds.
     pub sounds: Vec<Sound>,
+    /// Server particles (`sendParticles`).
+    pub particles: Vec<particles::LevelParticles>,
     /// Explosions.
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
@@ -288,12 +340,21 @@ pub struct LevelOutput {
     pub summon_checks: Vec<BlockPos>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
+    /// Entity packets for the players near a position (position, range): equipment a
+    /// dispenser put on an armor stand.
+    pub nearby_packets: Vec<(
+        vanillite_base::Vec3,
+        f64,
+        Arc<vanillite_protocol::SharedPacket>,
+    )>,
 }
 
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
 #[derive(Clone)]
 pub struct Generation {
     pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// The dimension it generates.
+    pub dimension: String,
     /// `WorldOptions.generateStructures`.
     pub structures: bool,
 }
@@ -382,14 +443,31 @@ pub struct Level {
     /// Statistics and criterion triggers for players (`awardStat`, `CriteriaTriggers`) from
     /// block code; the server applies them after the players' tick.
     player_awards: Vec<(EntityId, crate::advancements::award::Award)>,
+    /// `test_instance_block_action` packets of the tick; the server's game tests handle them
+    /// after the players' packets.
+    pub test_instance_actions: Vec<crate::block::technical::test_instance::Action>,
     /// The server's maps (shared by all worlds).
     maps: Option<Arc<crate::map::Maps>>,
+    /// The server's structure templates (`getStructureTemplateManager`, shared by all worlds).
+    templates: Option<Arc<vanillite_worldgen::template::manager::StructureTemplateManager>>,
+    /// The data packs loaded at start (template pools of jigsaw blocks).
+    packs: Option<Arc<vanillite_datapack::LoadedPacks>>,
     min_y: i32,
     max_y: i32,
     /// The seed the level was created with (`getSeed`).
     seed: i64,
     /// What spawner blocks read of this tick's rules and sky (set by the world each tick).
     pub spawner_env: crate::block::spawner::SpawnerEnv,
+    /// The server's dispatcher for command blocks and command block minecarts.
+    pub(crate) command_runner:
+        Option<Arc<dyn crate::block::technical::command_block::CommandRunner>>,
+    /// POI changes of block changes made while the entities (with the POI manager) were out
+    /// of the level; applied by [`Level::flush_poi_changes`].
+    poi_changes: Vec<(
+        BlockPos,
+        Option<crate::poi::PoiType>,
+        Option<crate::poi::PoiType>,
+    )>,
 }
 
 impl std::fmt::Debug for Level {
@@ -452,15 +530,46 @@ impl Level {
             player_gives: Vec::new(),
             player_effects: Vec::new(),
             player_awards: Vec::new(),
+            test_instance_actions: Vec::new(),
             maps: None,
+            templates: None,
+            packs: None,
             min_y,
             max_y,
             seed,
             spawner_env: crate::block::spawner::SpawnerEnv::default(),
+            command_runner: None,
+            poi_changes: Vec::new(),
         };
+        level.entities.poi = crate::poi::PoiManager::new_live();
         // Chunks that are visible already queue their entities for the end of the first tick.
         level.apply_visibility();
         level
+    }
+
+    /// Sets the server's structure templates.
+    pub fn set_structure_templates(
+        &mut self,
+        templates: Arc<vanillite_worldgen::template::manager::StructureTemplateManager>,
+    ) {
+        self.templates = Some(templates);
+    }
+
+    /// Sets the data packs loaded at start.
+    pub fn set_data_packs(&mut self, packs: Arc<vanillite_datapack::LoadedPacks>) {
+        self.packs = Some(packs);
+    }
+
+    /// The data packs loaded at start (`registryAccess`), if the server has them.
+    pub fn data_packs(&self) -> Option<&Arc<vanillite_datapack::LoadedPacks>> {
+        self.packs.as_ref()
+    }
+
+    /// `getStructureTemplateManager`: the server's structure templates, if it has any.
+    pub fn structure_templates(
+        &self,
+    ) -> Option<&Arc<vanillite_worldgen::template::manager::StructureTemplateManager>> {
+        self.templates.as_ref()
     }
 
     /// `getSeed`.
@@ -498,6 +607,11 @@ impl Level {
     }
 
     /// The server's map store.
+    pub fn maps_shared(&self) -> Option<Arc<crate::map::Maps>> {
+        self.maps.clone()
+    }
+
+    /// The maps of the server.
     pub fn maps(&self) -> Option<&crate::map::Maps> {
         self.maps.as_deref()
     }
@@ -534,6 +648,17 @@ impl Level {
     pub fn trigger(&mut self, player: EntityId, event: crate::advancements::trigger::Event) {
         self.player_awards
             .push((player, crate::advancements::award::Award::Trigger(event)));
+    }
+
+    /// `clearBlockEvents(bb)`: drops the queued block events inside `min..=max`.
+    pub fn clear_block_events(&mut self, min: BlockPos, max: BlockPos) {
+        let inside = |p: BlockPos| {
+            (min.x..=max.x).contains(&p.x)
+                && (min.y..=max.y).contains(&p.y)
+                && (min.z..=max.z).contains(&p.z)
+        };
+        self.block_events.retain(|e| !inside(e.pos));
+        self.block_event_set.retain(|e| !inside(e.pos));
     }
 
     /// Takes the statistics and triggers block code awarded since the last call.
@@ -773,8 +898,8 @@ impl Level {
 
     // --- Reading -------------------------------------------------------------------------
 
-    /// `getBlockState(pos)`: void air below and above the world, air in chunks that are not
-    /// live.
+    /// `getBlockState(pos)` of the world thread (the tick view, see [`view`]): void air below
+    /// and above the world, air in chunks that are not live.
     #[inline]
     pub fn block(&self, pos: BlockPos) -> BlockState {
         match self.chunks.block(pos) {
@@ -782,6 +907,13 @@ impl Level {
             None if self.in_height(pos.y) => BlockState::AIR,
             None => block::VOID_AIR,
         }
+    }
+
+    /// The pure read view ([`view`]): reads without side effects for collision, path finding
+    /// and code on other threads.
+    #[inline]
+    pub fn view(&self) -> view::LevelView<'_> {
+        view::LevelView::new(self.chunks.view(), &self.border, self.min_y, self.max_y)
     }
 
     /// `getBlockState(pos)` with the chunk loaded first like Vanilla: a chunk that is not
@@ -1048,8 +1180,34 @@ impl Level {
                 self.update_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
                 self.update_indirect_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
             }
+            // `updatePOIOnBlockStateChange`.
+            let (old_poi, new_poi) = (
+                crate::poi::PoiType::of_state(old),
+                crate::poi::PoiType::of_state(state),
+            );
+            if old_poi != new_poi {
+                self.poi_changes.push((pos, old_poi, new_poi));
+                self.flush_poi_changes();
+            }
         }
         true
+    }
+
+    /// Applies the POI changes of block changes to the POI manager (`remove`, then `add`, as
+    /// the server tasks of `updatePOIOnBlockStateChange` run); kept while the entities are out
+    /// of the level.
+    pub fn flush_poi_changes(&mut self) {
+        if self.poi_changes.is_empty() || !self.entities.poi.live {
+            return;
+        }
+        for (pos, old, new) in std::mem::take(&mut self.poi_changes) {
+            if old.is_some() {
+                self.entities.poi.remove(pos);
+            }
+            if let Some(ty) = new {
+                self.entities.poi.add(pos, ty);
+            }
+        }
     }
 
     /// `removeBlock(pos, movedByPiston)`: the block becomes the fluid it holds.
@@ -1226,6 +1384,9 @@ impl Level {
         neighbour_pos: BlockPos,
         neighbour_state: BlockState,
     ) -> BlockState {
+        if block::beehive::is_beehive(state.block()) {
+            block::beehive::neighbour_changed_shape(self, pos, state, neighbour_pos);
+        }
         shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state)
     }
 

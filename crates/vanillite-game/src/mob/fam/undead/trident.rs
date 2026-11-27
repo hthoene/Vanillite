@@ -129,7 +129,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
     if d.in_ground && !no_physics {
         let last = u16::try_from(d.ints[1] - 1).ok().map(BlockState);
         let probe = Aabb::new(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z).inflate(0.06, 0.06, 0.06);
-        if last != Some(state) && physics::no_collision(t.level, &probe, &mut t.cx.boxes) {
+        if last != Some(state) && physics::no_collision(&t.level.view(), &probe, &mut t.cx.boxes) {
             d.in_ground = false;
             let r = &mut *t.env.random;
             velocity = velocity.multiply(
@@ -181,6 +181,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
             if let Some((target, hit)) = entity_hit {
                 pos = hit;
                 hit_entity(t, &mut d, target, pos);
+                crate::mob::missile::land_event(t.env.out, t.level, id, None, hit);
                 velocity = velocity.multiply(-0.01, -0.1, -0.01);
                 let turn = 170.0 + t.env.random.next_float() * 20.0;
                 rot.y_rot += turn;
@@ -202,6 +203,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
                 d.in_ground = true;
                 let pitch = 1.2 / (t.env.random.next_float() * 0.2 + 0.9);
                 sound(t, pos, "minecraft:item.trident.hit_ground", 1.0, pitch);
+                crate::mob::missile::land_event(t.env.out, t.level, id, Some(hit_pos), at);
             } else {
                 pos = to;
             }

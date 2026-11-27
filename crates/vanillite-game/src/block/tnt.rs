@@ -103,6 +103,9 @@ fn neighbor_changed(
 /// priming sound. The caller removes the block. Fire (`FireBlock`), flint and steel and burning
 /// projectiles call this too.
 pub fn prime(level: &mut Level, pos: BlockPos, source: Option<EntityId>) -> bool {
+    if !level.settings.tnt_explodes {
+        return false;
+    }
     let at = Vec3::new(
         f64::from(pos.x) + 0.5,
         f64::from(pos.y),
@@ -125,6 +128,9 @@ pub fn prime(level: &mut Level, pos: BlockPos, source: Option<EntityId>) -> bool
 
 /// `TntBlock.wasExploded`: TNT hit by an explosion primes with a short random fuse.
 pub fn was_exploded(level: &mut Level, pos: BlockPos, source: Option<EntityId>) {
+    if !level.settings.tnt_explodes {
+        return;
+    }
     let at = Vec3::new(
         f64::from(pos.x) + 0.5,
         f64::from(pos.y),
@@ -255,8 +261,17 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     }
 }
 
-/// `PrimedTnt.explode`: power 4 at a sixteenth of its height, breaking blocks like TNT.
+/// `PrimedTnt.explode`: power 4 at a sixteenth of its height, breaking blocks like TNT
+/// (`ExplosionInteraction.TNT`), if the `tnt_explodes` rule allows.
 fn explode(level: &mut Level, id: EntityId, pos: Vec3, data: PrimedTntData) {
+    if !level.settings.tnt_explodes {
+        return;
+    }
+    let interaction = if level.settings.tnt_explosion_drop_decay {
+        BlockInteraction::DestroyWithDecay
+    } else {
+        BlockInteraction::Destroy
+    };
     let height = f64::from(entity_ids::TNT.info().height);
     let center = Vec3::new(pos.x, pos.y + height * 0.0625, pos.z);
     level.explode(
@@ -264,7 +279,7 @@ fn explode(level: &mut Level, id: EntityId, pos: Vec3, data: PrimedTntData) {
         data.owner,
         center,
         data.explosion_power,
-        BlockInteraction::Destroy,
+        interaction,
     );
 }
 
@@ -286,7 +301,7 @@ fn move_self(
     delta: Vec3,
     gravity: f64,
 ) -> Moved {
-    let movement = falling::collide(level, aabb, delta);
+    let movement = falling::collide(&level.view(), aabb, delta);
     let movement_length = movement.length_sqr();
     let mut new_pos = pos;
     if movement_length > 1.0e-7 || delta.length_sqr() - movement_length < 1.0e-7 {
@@ -306,6 +321,7 @@ fn move_self(
     );
     let effect_state = level.block(effect_pos);
     let mut velocity = delta;
+    let mut bounced = false;
     if (moved_vertically && vertical) || horizontal {
         // `restituteMovementAfterCollisions` with the entity's bounciness of 0.
         let current = delta;
@@ -326,6 +342,7 @@ fn move_self(
                     0.0
                 };
             }
+            bounced = restitution > 0.0;
             velocity.y = if restitution > 0.0 {
                 let portion = movement.y / current.y;
                 let compensation = portion * gravity;
@@ -355,6 +372,13 @@ fn move_self(
             entity.set_flags(EntityFlags::ON_GROUND, below);
         }
         entity.set_velocity(velocity);
+    }
+    if bounced {
+        level.game_event(
+            crate::level::game_event::events().bounce,
+            new_pos,
+            crate::level::game_event::GameEventContext::of(Some(id)),
+        );
     }
     Moved {
         horizontal,

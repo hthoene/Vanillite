@@ -23,6 +23,8 @@ data/<palette version>/:
 - creative.bin: the body of `creative_content` (groups and items, Bedrock's creative order).
 - creative_java.bin: u32 count, then per creative item network id (1-based, in order): u16 Java
   item id.
+- frames.bin: 24 u16 Bedrock runtime ids of `minecraft:frame` then `minecraft:glow_frame`, per
+  `item_frame_map_bit` (0, 1) and `facing_direction` (0-5): Java item frames are blocks there.
 Shared by all releases, in data/:
 - biomes.txt: `<java biome name> <bedrock biome id>` per line.
 - biome_definitions.bin: the body of `biome_definition_list`.
@@ -266,6 +268,23 @@ def conversion_tables(geyser):
     return blocks, items
 
 
+def write_frames(out_dir, lookup):
+    """frames.bin: Java item frames are blocks on Bedrock. 24 u16 runtime ids: frame, then
+    glow_frame; per map bit 0 and 1; per facing_direction 0-5."""
+    ids = []
+    for name in ('minecraft:frame', 'minecraft:glow_frame'):
+        for map_bit in (0, 1):
+            for facing in range(6):
+                states = ('c', [('facing_direction', ('i', facing)),
+                                ('item_frame_map_bit', ('b', map_bit)),
+                                ('item_frame_photo_bit', ('b', 0))])
+                rid = lookup(name, states)
+                assert rid is not None, (name, facing, map_bit)
+                ids.append(rid)
+    with open(os.path.join(out_dir, 'frames.bin'), 'wb') as f:
+        f.write(struct.pack('<24H', *ids))
+
+
 def write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet):
     """The files of one Bedrock release (palette version) in data/<version>/."""
     out_dir = os.path.join(root, 'crates', 'vanillite-bedrock', 'data', version)
@@ -325,6 +344,7 @@ def write_release(root, mappings, resources, version, fallbacks, item_fallbacks,
         f.write(struct.pack(f'<{len(table)}H', *table))
     print(f'{version} blocks: {len(table)} Java states, {len(runtime)} Bedrock states, '
           f'{fell_back} fallbacks, {missing} unmapped')
+    write_frames(out_dir, lookup)
     # Block properties of start_game (data-driven vanilla blocks; none before 26.50).
     path = os.path.join(resources, f'data_driven_blocks.{version}.nbt')
     ddb = read_gz_nbt(path) if os.path.exists(path) else ('c', [])

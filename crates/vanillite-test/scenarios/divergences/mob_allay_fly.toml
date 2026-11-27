@@ -1,0 +1,3 @@
+tick = 1
+cause = "stroll target: Vanilla takes `AirAndWaterRandomPos` (36 draws of the allay's random), Vanillite `DefaultRandomPos` (30)"
+owner = "architect #120"

@@ -15,7 +15,7 @@ use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::equipment;
-use crate::mob::fam::{ExtraMob, Hurt, Relation, SpawnReason};
+use crate::mob::fam::{ExtraMob, GroupData, Hurt, Relation, SpawnReason};
 use crate::mob::goals::flag;
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick, nav, randompos};
@@ -230,8 +230,14 @@ pub fn randomize_attributes(m: &mut MobData) {
 pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     let chance = match m.kind {
         Kind::Horse => {
-            // `HorseGroupData(variant)`: a random variant and markings.
-            let variant = m.random.next_int_bounded(7);
+            // `HorseGroupData(variant)`: the group's coat, own markings.
+            let variant = if let GroupData::Horse(v) = ctx.group {
+                v
+            } else {
+                let v = m.random.next_int_bounded(7);
+                ctx.group = GroupData::Horse(v);
+                v
+            };
             let markings = m.random.next_int_bounded(5);
             m.variant = (variant & 0xFF) | ((markings << 8) & 0xFF00);
             0.05
@@ -626,6 +632,8 @@ fn handle_eating(ix: &mut Interact<'_, '_>) -> bool {
             });
             sound(ix, s, 1.0, pitch);
         }
+        let event = crate::level::game_event::events().eat;
+        crate::mob::animal::entity_game_event(ix.ents, ix.env, ix.target, event, Some(ix.target));
         dirty(ix);
     }
     used
@@ -767,7 +775,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return super::animal_interact(ix);
     }
     if tame && ix.sneaking {
-        // `openCustomInventoryScreen`: the mount inventory menu is not available yet.
+        open_inventory_screen(ix);
         return Interaction::Success;
     }
     if !ix.stack.is_empty() {
@@ -799,6 +807,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Success;
     }
     ride(ix)
+}
+
+/// `openCustomInventoryScreen`: the mount inventory menu.
+pub fn open_inventory_screen(ix: &mut Interact<'_, '_>) {
+    if let Some(request) = crate::menu::mount::request(ix.ents, ix.target, ix.player) {
+        ix.cx.menus.push(request);
+    }
 }
 
 /// `equipChest`.
@@ -1217,13 +1232,14 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
         m.baby = false;
     }
     t.core_mut().mark_data_dirty();
-    let difficulty = t.env.difficulty;
     let pos = t.pos();
+    // `SkeletonTrapGoal.tick`: `getCurrentDifficultyAt(horse.blockPosition())`.
+    let block = t.block_pos();
     let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
     let spawn_skeleton = |t: &mut Tick<'_, '_>, horse: EntityId| {
         let seed = crate::mob::new_entity_seed();
         let mut sk = MobData::new(Kind::Skeleton, seed);
-        let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Triggered);
+        let mut ctx = SpawnContext::at(t.level, block, SpawnReason::Triggered);
         crate::mob::kinds::finalize_spawn(&mut sk, &mut ctx, t.env.random);
         sk.persistent = true;
         sk.damage_cooldown = 60;
@@ -1254,7 +1270,7 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
     for _ in 0..3 {
         let seed = crate::mob::new_entity_seed();
         let mut horse = MobData::new(Kind::SkeletonHorse, seed);
-        let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Triggered);
+        let mut ctx = SpawnContext::at(t.level, block, SpawnReason::Triggered);
         crate::mob::kinds::finalize_spawn(&mut horse, &mut ctx, t.env.random);
         horse.damage_cooldown = 60;
         horse.persistent = true;

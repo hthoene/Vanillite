@@ -5,7 +5,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::Rotation;
 
-use super::{Goal, SEA_LEVEL, block_tags, bright_enough, closer_to_center, rotlerp, st, st_mut};
+use super::{Goal, block_tags, bright_enough, closer_to_center, rotlerp, st, st_mut};
 use crate::level::Level;
 use crate::mob::common::MoveToBlock;
 use crate::mob::fam::FamGoal;
@@ -80,7 +80,7 @@ fn on_sand(level: &Level, pos: BlockPos) -> bool {
 
 /// `Turtle.checkTurtleSpawnRules`: beaches up to 3 blocks above the sea.
 pub(super) fn spawn_rules(level: &Level, pos: BlockPos) -> bool {
-    pos.y < SEA_LEVEL + 4 && on_sand(level, pos) && bright_enough(level, pos)
+    pos.y < crate::mob::sea_level(level) + 4 && on_sand(level, pos) && bright_enough(level, pos)
 }
 
 /// `Turtle.getWalkTargetValue`: water (unless going home) and sand are best.
@@ -350,7 +350,7 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             let xt = r.next_int_bounded(1025) - 512;
             let mut yt = r.next_int_bounded(9) - 4;
             let zt = r.next_int_bounded(1025) - 512;
-            if f64::from(yt) + p.y > f64::from(SEA_LEVEL - 1) {
+            if f64::from(yt) + p.y > f64::from(t.cx.env.sea_level - 1) {
                 yt = 0;
             }
             st_mut(t.mob()).travel_pos = Some(BlockPos::containing(

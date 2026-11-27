@@ -269,8 +269,16 @@ impl GameWorld {
         };
         level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
-        let env = Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0);
-        level.spawner_env.env = env;
+        let env = Environment {
+            sea_level: FLAT_SEA_LEVEL,
+            ..Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0)
+        };
+        // What spawner blocks and creaking hearts read when the block entities tick.
+        level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
+            env,
+            difficulty,
+            ..Default::default()
+        };
         let mut world = Self {
             level,
             spec: spec.clone(),
@@ -361,6 +369,8 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        // What block entities (beehives) read of the world after the entities.
+        self.level.spawner_env.env = self.env;
         minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
@@ -408,7 +418,10 @@ impl GameWorld {
                     id,
                     &mut || random.next_float(),
                     MIN_Y,
-                    ITEM_LIFETIME,
+                    vanillite_server::ItemSettings {
+                        lifetime: ITEM_LIFETIME,
+                        merge_radius: 0.5,
+                    },
                     &mut self.item_scratch,
                 );
                 continue;
@@ -418,11 +431,13 @@ impl GameWorld {
             let is_minecart = MinecartKind::of(kind).is_some();
             let is_boat = vanillite_game::vehicle::BoatKind::of(kind).is_some();
             let is_missile = vanillite_game::mob::missile::is_missile_kind(kind);
+            let is_decor = vanillite_game::decoration::ticks(kind);
             if !is_mob
                 && !is_special
                 && !is_minecart
                 && !is_boat
                 && !is_missile
+                && !is_decor
                 && !projectile::is_arrow_kind(kind)
                 && kind != ids::EXPERIENCE_ORB
                 && kind != ids::AREA_EFFECT_CLOUD
@@ -452,6 +467,8 @@ impl GameWorld {
                     projectile::tick_arrow(level, ents, env, cx, id);
                 } else if is_missile {
                     vanillite_game::mob::missile::tick(level, ents, env, cx, id);
+                } else if is_decor {
+                    vanillite_game::decoration::tick(level, ents, env, cx, id);
                 } else {
                     vanillite_game::effect::cloud::tick(level, ents, env, cx, id);
                 }
@@ -465,6 +482,9 @@ impl GameWorld {
             }
             self.finish_removals();
         }
+        // No chunk tickets or other worlds here: every chunk of the scenario is forced.
+        self.mobs.travel.clear();
+        self.mobs.gateways.clear();
         self.spawn_drops();
     }
 
@@ -549,16 +569,16 @@ impl GameWorld {
     fn spawn_drops(&mut self) {
         for effect in std::mem::take(&mut self.effects) {
             if let Effect::Experience { pos, amount } = effect {
-                vanillite_game::experience_orb::with_entity_random(|random| {
-                    vanillite_game::experience_orb::award_in(
-                        &mut self.level.entities,
-                        &self.network_ids,
-                        random,
-                        pos,
-                        vanillite_base::Vec3::default(),
-                        amount,
-                    );
-                });
+                // The merge group comes from the level random (`tryMergeToExisting`).
+                let (entities, network_ids, random) = self.level.entity_parts();
+                vanillite_game::experience_orb::award_in(
+                    entities,
+                    network_ids,
+                    random,
+                    pos,
+                    vanillite_base::Vec3::default(),
+                    amount,
+                );
             }
             if let Effect::DropItem {
                 uuid,
@@ -715,7 +735,8 @@ impl GameWorld {
             .and_then(Kind::of)
             .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
         let mut m = MobData::new(kind, spec.seed);
-        if spec.finalize {
+        // Only a `Mob` has `finalizeSpawn`.
+        if spec.finalize && kind.family() != vanillite_game::mob::Family::Decor {
             // `finalizeSpawn(level, difficulty, COMMAND, null)` with the level random.
             let pos = BlockPos::containing(spec.pos[0], spec.pos[1], spec.pos[2]);
             let mut random = std::mem::replace(self.level.random(), LegacyRandom::new(0));
@@ -816,6 +837,12 @@ impl GameWorld {
         }
         if let Some(m) = ents.mob(id) {
             living(&mut d, m.y_body_rot, m.health, m.death_time);
+        }
+        // Armor stands and mannequins are living entities but no `Mob`.
+        if let Some(m) = ents
+            .mob(id)
+            .filter(|m| m.kind.family() != vanillite_game::mob::Family::Decor)
+        {
             d.insert("rng".into(), json!(m.random.state()));
             if let Some(t) = m.target {
                 let name = self.name_of(t).map_or_else(
@@ -1052,6 +1079,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         ("Wildlife", "Puff") => "PufferfishPuffGoal",
         ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
+        ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
         (_, variant) => leak(if variant.ends_with("Goal") {
             variant.to_owned()
         } else {
@@ -1204,10 +1232,14 @@ fn apply_rules(
                 | "fire_spread_radius_around_player"
                 | "spread_vines"
                 | "spawn_mobs"
+                | "spawn_monsters"
+                | "ender_pearls_vanish_on_death"
                 | "advance_time"
                 | "advance_weather"
                 | "mob_griefing"
                 | "mob_drops"
+                | "tnt_explodes"
+                | "tnt_explosion_drop_decay"
         );
         let rule = Rule::by_name(name)
             .filter(|_| supported)
@@ -1481,6 +1513,10 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn command(&mut self, line: &str) -> Result<(), String> {
+        // Command blocks run on the same server's dispatcher.
+        if self.level.command_runner().is_none() {
+            vanillite_server::install_command_runner(command_server(), &mut self.level);
+        }
         vanillite_server::run_command_on_level(
             command_server(),
             &mut self.level,
@@ -1488,6 +1524,47 @@ impl ScenarioWorld for GameWorld {
             line,
         )?;
         self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+
+    fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
+        if op.item != mob::fam::wildlife::ender_pearl::ITEM {
+            // Every other item goes through the real `use_item` packet handler.
+            return self.player_use(&crate::scenario::PlayerUse {
+                entity: op.entity.clone(),
+                attack: false,
+                air: true,
+                pos: BlockPos::new(0, 0, 0),
+                face: "up".to_owned(),
+                hit: None,
+                item: Some(op.item.clone()),
+                count: op.count,
+                components: None,
+                offhand: false,
+                sneak: false,
+                food: None,
+            });
+        }
+        let player = self.named(&op.entity)?;
+        let item = vanillite_data::item::ItemId::by_name(&op.item)
+            .ok_or_else(|| format!("unknown item {}", op.item))?;
+        let mut stack = vanillite_game::item::ItemStack::new(item.0, op.count);
+        let network_ids = Arc::clone(&self.network_ids);
+        self.with_env(|_, ents, env, _| {
+            mob::fam::wildlife::ender_pearl::throw(
+                ents,
+                env,
+                &network_ids,
+                player,
+                &mut stack,
+                vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+            );
+        });
+        if let Some(p) = self.level.entities.player_mut(player) {
+            let slot = p.inventory.selected;
+            p.inventory.set(slot, stack);
+        }
         self.spawn_drops();
         Ok(())
     }
@@ -1584,6 +1661,7 @@ impl ScenarioWorld for GameWorld {
                 effects: &mut effects,
                 spectators: &spectators,
                 actor: Some((id, aabb)),
+                dimension: "minecraft:overworld",
             };
             let mut drops = Vec::new();
             let mut swings = Vec::new();
@@ -1704,6 +1782,7 @@ impl ScenarioWorld for GameWorld {
                 stack,
                 left_owner: false,
                 tick_count: 0,
+                has_been_shot: false,
             })),
         );
         Ok(())

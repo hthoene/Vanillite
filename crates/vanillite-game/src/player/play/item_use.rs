@@ -1475,7 +1475,7 @@ fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos
     m.y_body_rot = yaw;
     // `mob.playAmbientSound()`.
     let sound = (!m.silent)
-        .then(|| crate::mob::kinds::ambient_sound(&m))
+        .then(|| crate::mob::kinds::ambient_sound(&mut m))
         .flatten();
     let volume = crate::mob::fam::mob_sound_volume(&m);
     let pitch = {
@@ -1647,70 +1647,4 @@ fn on_equip_item(ctx: &mut PlayContext<'_>, old: &ItemStack, new: &ItemStack) {
     let id = vanillite_data::registry::SOUND_EVENT.id(sound).unwrap_or(0);
     level.play_sound(None, at.x, at.y, at.z, id, SOUND_PLAYERS, 1.0, 1.0);
     level.game_event(events().equip, at, GameEventContext::of(player));
-}
-
-/// `BlockItem.updateCustomBlockEntityTag`: the stack's `block_entity_data` merges into the
-/// placed block entity of the same type (command blocks, lecterns, signs and spawners only for
-/// creative operators).
-pub(super) fn apply_block_entity_data(
-    level: &mut Level,
-    pos: BlockPos,
-    stack: &ItemStack,
-    game_master: bool,
-) {
-    let Some(data) = stack.component(ids::BLOCK_ENTITY_DATA) else {
-        return;
-    };
-    let mut r = Reader::new(data);
-    let Ok(kind) = r.varint() else {
-        return;
-    };
-    let mut input = r.rest();
-    let mut budget = vanillite_nbt::read::Budget::new(1 << 21, 512);
-    let Ok(Some(Tag::Compound(custom))) =
-        vanillite_nbt::read::read_network(&mut input, &mut budget)
-    else {
-        return;
-    };
-    let placed = level.block(pos).block().info().block_entity;
-    if i32::from(placed) != kind || placed == u16::MAX {
-        return;
-    }
-    let name = vanillite_data::registry::BLOCK_ENTITY_TYPE
-        .name(placed)
-        .unwrap_or_default();
-    let op_only = [
-        "minecraft:command_block",
-        "minecraft:lectern",
-        "minecraft:sign",
-        "minecraft:hanging_sign",
-        "minecraft:mob_spawner",
-        "minecraft:trial_spawner",
-    ];
-    if op_only.contains(&name) && !game_master {
-        return;
-    }
-    let Some(old) = level.block_entity_nbt(pos) else {
-        return;
-    };
-    let mut merged = Tag::Compound(old.clone());
-    merge_nbt(&mut merged, &Tag::Compound(custom));
-    if merged != Tag::Compound(old)
-        && let Tag::Compound(merged) = merged
-    {
-        level.load_block_entity_nbt(pos, &merged);
-    }
-}
-
-/// `CompoundTag.merge`: compounds merge key by key, other values are replaced.
-fn merge_nbt(into: &mut Tag, from: &Tag) {
-    let (Tag::Compound(into), Tag::Compound(from)) = (into, from) else {
-        return;
-    };
-    for (key, value) in from.iter() {
-        match (into.get_mut(key), value) {
-            (Some(existing @ Tag::Compound(_)), Tag::Compound(_)) => merge_nbt(existing, value),
-            _ => into.insert(key, value.clone()),
-        }
-    }
 }

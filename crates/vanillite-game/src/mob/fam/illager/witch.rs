@@ -12,6 +12,7 @@ use super::raider::{self, Ignore};
 use super::{Gate, Goal, dirty, fam, is_raider, look_at_player, sound, st, st_mut};
 use crate::effect::MobEffect;
 use crate::item::EquipmentSlot;
+use crate::mob::Kind;
 use crate::survival::damage::{DamageSource, DamageTypes, tag};
 
 /// `Witch.registerGoals`.
@@ -19,13 +20,22 @@ pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     let tg = &mut m.targets;
     g.add(4, raider::patrol());
+    raider::add_raider_goals(g);
     g.add(1, MobGoal::Float);
     g.add(2, MobGoal::Common(CommonGoal::ranged(1.0, 60, 60, 10.0)));
     g.add(2, MobGoal::stroll(1.0));
     g.add(3, look_at_player(8.0, 0.02));
     g.add(3, MobGoal::random_look());
     tg.add(1, raider::hurt_by(Ignore::Raiders, false));
-    tg.add(2, fam(Goal::WitchHeal));
+    tg.add(
+        2,
+        fam(Goal::WitchHeal(CommonGoal::nearest(0, true, |t, id| {
+            crate::raid::has_active_raid(t.ents, t.mob_ref())
+                && t.ents
+                    .mob(id)
+                    .is_some_and(|m| is_raider(m.kind) && m.kind != Kind::Witch)
+        }))),
+    );
     tg.add(
         3,
         fam(Goal::Target {
@@ -35,13 +45,16 @@ pub fn register_goals(m: &mut MobData) {
     );
 }
 
-/// `NearestHealableRaiderTargetGoal.canUse`: rolls, then needs a raid (none yet).
-pub fn heal_can_use(t: &mut Tick<'_, '_>) -> bool {
+/// `NearestHealableRaiderTargetGoal.canUse`: rolls, then during an active raid the nearest
+/// raider it sees that is no witch.
+pub fn heal_can_use(t: &mut Tick<'_, '_>, inner: &mut CommonGoal) -> bool {
     if st(t.mob_ref()).heal_cooldown > 0 || !t.mob().random.next_boolean() {
         return false;
     }
-    // `hasActiveRaid`: raids are not simulated.
-    false
+    if !crate::raid::has_active_raid(t.ents, t.mob_ref()) {
+        return false;
+    }
+    common::can_use(t, inner)
 }
 
 /// `Witch.aiStep` before `super.aiStep()`: the heal cooldown, drinking and picking potions.
@@ -70,6 +83,9 @@ pub fn ai_step_start(t: &mut Tick<'_, '_>) {
                     crate::effect::living::add_to_mob(t.mob(), e);
                 }
             }
+            let at = t.pos();
+            let drink = crate::level::game_event::events().drink;
+            crate::mob::living::post_game_event(t, drink, at, None);
             if let Some(speed) = speed {
                 t.mob().attrs.movement_speed = speed;
             }
@@ -225,6 +241,7 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
                 stack,
                 left_owner: false,
                 tick_count: 0,
+                has_been_shot: false,
             },
         )),
     );

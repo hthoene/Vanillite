@@ -152,10 +152,13 @@ final class ScenarioEntities {
     name(spec, e);
   }
 
-  /** Gives the players back to the chunk system, which removes them when the server stops. */
+  /**
+   * Gives the players back to the chunk system, which removes them when the server stops: at the
+   * section it last saw them in (players that teleported moved on since).
+   */
   void release() {
     for (ServerPlayer p : players) {
-      level.getChunkSource().chunkMap.getDistanceManager().addPlayer(SectionPos.of(p), p);
+      level.getChunkSource().chunkMap.getDistanceManager().addPlayer(p.getLastSectionPos(), p);
     }
     players.clear();
   }
@@ -171,19 +174,14 @@ final class ScenarioEntities {
 
   /**
    * The {@code use} action ({@code ServerPlayerGameMode.useItemOn} after the checks of {@code
-   * handleUseItemOn}), the {@code use_item} action ({@code ServerPlayerGameMode.useItem}) and the
-   * {@code attack} action ({@code START_DESTROY_BLOCK}) of a named player, with the stack of the
-   * action put into its hand first.
+   * handleUseItemOn}) and the {@code attack} action ({@code START_DESTROY_BLOCK}) of a named
+   * player, with the stack of the action put into its hand first.
    */
-  void use(JsonObject action, String op) throws Exception {
-    boolean attack = op.equals("attack");
+  void use(JsonObject action, boolean attack) throws Exception {
     net.minecraft.server.level.ServerPlayer p =
         (net.minecraft.server.level.ServerPlayer) byName.get(action.get("entity").getAsString());
-    JsonArray at = action.has("pos") ? action.getAsJsonArray("pos") : null;
-    BlockPos pos =
-        at == null
-            ? BlockPos.ZERO
-            : new BlockPos(at.get(0).getAsInt(), at.get(1).getAsInt(), at.get(2).getAsInt());
+    JsonArray at = action.getAsJsonArray("pos");
+    BlockPos pos = new BlockPos(at.get(0).getAsInt(), at.get(1).getAsInt(), at.get(2).getAsInt());
     net.minecraft.core.Direction face =
         action.has("face")
             ? net.minecraft.core.Direction.byName(action.get("face").getAsString())
@@ -216,9 +214,7 @@ final class ScenarioEntities {
     }
     boolean sneak = action.has("sneak") && action.get("sneak").getAsBoolean();
     p.setShiftKeyDown(sneak);
-    if (op.equals("use_item")) {
-      p.gameMode.useItem(p, level, p.getItemInHand(hand), hand);
-    } else if (attack) {
+    if (attack) {
       p.gameMode.handleBlockBreakAction(
           pos,
           net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,
@@ -260,6 +256,20 @@ final class ScenarioEntities {
                 ? level.damageSources().mobAttack(l)
                 : level.damageSources().generic();
     target.hurtServer(level, source, action.get("amount").getAsFloat());
+  }
+
+  /**
+   * The {@code use_item} action: the named player gets {@code count} of {@code item} in its main
+   * hand and uses it, as a {@code use_item} packet would ({@code ServerPlayerGameMode.useItem}).
+   */
+  void useItem(JsonObject action) {
+    ServerPlayer player = (ServerPlayer) byName.get(action.get("entity").getAsString());
+    var item =
+        BuiltInRegistries.ITEM.getValue(Identifier.parse(action.get("item").getAsString()));
+    int count = action.has("count") ? action.get("count").getAsInt() : 1;
+    net.minecraft.world.item.ItemStack stack = new net.minecraft.world.item.ItemStack(item, count);
+    player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, stack);
+    player.gameMode.useItem(player, level, stack, net.minecraft.world.InteractionHand.MAIN_HAND);
   }
 
   /** The {@code effect} action: {@code addEffect} on a named living entity. */

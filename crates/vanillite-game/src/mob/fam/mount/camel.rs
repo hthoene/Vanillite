@@ -265,7 +265,7 @@ pub fn can_change_pose(t: &Tick<'_, '_>) -> bool {
         .bounding_box(t.pos())
         .inflate(-1.0e-7, -1.0e-7, -1.0e-7);
     let mut scratch = Vec::new();
-    crate::mob::physics::no_collision(t.level, &aabb, &mut scratch)
+    crate::mob::physics::no_collision(&t.level.view(), &aabb, &mut scratch)
 }
 
 /// `Camel.tick` after `LivingEntity.tick`: the dash ends on the ground, its cooldown runs
@@ -402,7 +402,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let baby = m.baby;
     let kind = m.kind;
     if ix.sneaking && !baby {
-        // `openCustomInventoryScreen`: the mount inventory menu is not there yet.
+        crate::mob::fam::companion::horse::open_inventory_screen(ix);
         return Interaction::Success;
     }
     let name = crate::item::item_id(ix.stack).name();
@@ -468,6 +468,8 @@ fn fed_food(ix: &mut Interact<'_, '_>) -> Interaction {
     if let Some(s) = s {
         crate::mob::combat::mob_sound(ix.ents, ix.env, ix.target, s);
     }
+    let event = crate::level::game_event::events().eat;
+    animal::entity_game_event(ix.ents, ix.env, ix.target, event, Some(ix.target));
     animal::use_item(ix.ents, ix.player, ix.hand);
     Interaction::Success
 }

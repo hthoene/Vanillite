@@ -641,8 +641,8 @@ pub fn phantom_spawner_tick(
             continue;
         }
         // `DifficultyInstance.isHarderThan(random * 3)`.
-        let effective = crate::mob::fam::effective_difficulty(difficulty);
-        if effective <= level.random().next_float() * 3.0 {
+        let instance = crate::level::difficulty::at(level, pp);
+        if !instance.is_harder_than(level.random().next_float() * 3.0) {
             continue;
         }
         let rest = time_since_rest(player).max(1);

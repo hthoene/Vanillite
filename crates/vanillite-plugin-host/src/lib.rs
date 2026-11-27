@@ -67,6 +67,8 @@ pub trait ServerAccess: Send + Sync {
     fn world_name(&self, world: u32) -> Option<String>;
     /// The numeric id of a block state text.
     fn block_state_id(&self, state: &str) -> Option<u32>;
+    /// The text of a numeric block state id.
+    fn block_state_name(&self, state: u32) -> Option<String>;
     /// A `vanillite.toml` rule as TOML text.
     fn rule(&self, key: &str) -> Option<String>;
     /// Queues a console command.
@@ -89,6 +91,71 @@ pub trait WorldAccess {
     fn player_position(&self, player: u128) -> Option<[f64; 3]>;
     /// Whether an entity is in this world.
     fn has_entity(&self, entity: u128) -> bool;
+    /// The numeric block state id at a position; `None` outside loaded chunks.
+    fn block_id(&self, pos: [i32; 3]) -> Option<u32>;
+    /// Sets a block state by numeric id; returns whether the block changed.
+    /// [`vanillite_abi::status::INVALID_ARGUMENT`] for an unknown id,
+    /// [`vanillite_abi::status::NOT_FOUND`] outside loaded chunks.
+    fn set_block_id(&mut self, pos: [i32; 3], state: u32, mode: SetMode) -> Result<bool, Status>;
+
+    /// The block state ids of a box into `out` (its volume, in [`BlockBox`] order);
+    /// [`vanillite_abi::limits::NO_BLOCK`] outside loaded chunks.
+    fn blocks(&self, area: BlockBox, out: &mut [u32]) {
+        for (pos, slot) in area.positions().zip(out) {
+            *slot = self
+                .block_id(pos)
+                .unwrap_or(vanillite_abi::limits::NO_BLOCK);
+        }
+    }
+
+    /// Sets the block states of a box from `states` (its volume, in [`BlockBox`] order),
+    /// skipping [`vanillite_abi::limits::NO_BLOCK`] and positions outside loaded chunks;
+    /// returns how many blocks changed. Every id is checked before the first block changes.
+    fn set_blocks(
+        &mut self,
+        area: BlockBox,
+        states: &[u32],
+        mode: SetMode,
+    ) -> Result<usize, Status>;
+}
+
+/// How plugin block changes update the world ([`vanillite_abi::set_mode`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetMode {
+    /// Vanilla's `setBlock` with neighbour and shape updates.
+    Update,
+    /// No neighbour and shape updates; clients still see the change.
+    NoPhysics,
+}
+
+impl SetMode {
+    /// From [`vanillite_abi::set_mode`]; `None` for unknown values.
+    pub fn from_abi(mode: u32) -> Option<SetMode> {
+        match mode {
+            vanillite_abi::set_mode::UPDATE => Some(SetMode::Update),
+            vanillite_abi::set_mode::NO_PHYSICS => Some(SetMode::NoPhysics),
+            _ => None,
+        }
+    }
+}
+
+/// A box of block positions, both corners inclusive; its blocks are ordered by Y, then Z,
+/// then X (X fastest), as [`vanillite_abi::BlockBox`] arrays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockBox {
+    /// The lowest corner.
+    pub min: [i32; 3],
+    /// The highest corner.
+    pub max: [i32; 3],
+}
+
+impl BlockBox {
+    /// The positions in array order.
+    pub fn positions(self) -> impl Iterator<Item = [i32; 3]> {
+        let [x0, y0, z0] = self.min;
+        let [x1, y1, z1] = self.max;
+        (y0..=y1).flat_map(move |y| (z0..=z1).flat_map(move |z| (x0..=x1).map(move |x| [x, y, z])))
+    }
 }
 
 /// Settings of the host (`plugins.*` in `vanillite.toml`).

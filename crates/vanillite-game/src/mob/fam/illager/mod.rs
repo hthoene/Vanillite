@@ -2,9 +2,8 @@
 //! ghasts, blazes and shulkers, with their projectiles (fireballs, shulker bullets, evoker
 //! fangs, thrown potions) and the pillager patrols.
 //!
-//! Raids themselves are not simulated yet: the raid goals of `Raider` (banner pickup, path to
-//! the raid, moving through the village, celebrating) never start without a raid, so they are
-//! left out; their `canUse` takes no random calls.
+//! Raids are in [`crate::raid`]; the raiders' part (joining, the raid goals, banners, death)
+//! is in [`raider`].
 
 pub mod blaze;
 pub mod ghast;
@@ -54,6 +53,12 @@ pub struct State {
     pub celebrating: bool,
     pub can_join_raid: bool,
     pub wave: i32,
+    /// `Raider.raid`: the id of the raid in the level's raids.
+    pub raid: Option<i32>,
+    /// `ticksOutsideRaid`.
+    pub ticks_outside_raid: i32,
+    /// `ObtainRaidLeaderBannerGoal.unreachableBannerCache`: banner item and until when.
+    pub banner_cache: Vec<(EntityId, i64)>,
     // Witch.
     pub drinking: bool,
     pub using_time: i32,
@@ -61,9 +66,8 @@ pub struct State {
     pub speed_before_drinking: Option<f64>,
     // Pillager.
     pub charging_crossbow: bool,
-    pub crossbow_charged: bool,
-    pub start_sound_played: bool,
-    pub mid_sound_played: bool,
+    /// The loading sounds the crossbow played.
+    pub crossbow_sounds: crate::crossbow::UseFlags,
     // Vindicator.
     pub johnny: bool,
     // Spellcasters.
@@ -111,14 +115,15 @@ impl Default for State {
             celebrating: false,
             can_join_raid: false,
             wave: 0,
+            raid: None,
+            ticks_outside_raid: 0,
+            banner_cache: Vec::new(),
             drinking: false,
             using_time: 0,
             heal_cooldown: 0,
             speed_before_drinking: None,
             charging_crossbow: false,
-            crossbow_charged: false,
-            start_sound_played: false,
-            mid_sound_played: false,
+            crossbow_sounds: crate::crossbow::UseFlags::default(),
             johnny: false,
             spell_ticks: 0,
             spell: 0,
@@ -198,8 +203,19 @@ pub enum Goal {
     Locked(CommonGoal),
     /// A `NearestAttackableTargetGoal` with a gate.
     Target { inner: CommonGoal, gate: Gate },
+    /// `VindicatorBreakDoorGoal` (`breaker`) and `RaiderOpenDoorGoal`: door goals that only
+    /// run during an active raid.
+    RaidDoor { inner: CommonGoal, breaker: bool },
+    /// `Raider.ObtainRaidLeaderBannerGoal`.
+    ObtainBanner { banner: Option<EntityId> },
+    /// `PathfindToRaidGoal`.
+    PathfindToRaid { recruitment_tick: i32 },
+    /// `Raider.RaiderMoveThroughVillageGoal(1.05, 1)`.
+    MoveThroughVillage(raider::MoveThroughVillage),
+    /// `Raider.RaiderCelebration`.
+    Celebration,
     /// `NearestHealableRaiderTargetGoal`.
-    WitchHeal,
+    WitchHeal(CommonGoal),
     /// `RangedCrossbowAttackGoal`.
     Crossbow(pillager::Crossbow),
     /// `SpellcasterCastingSpellGoal`.
@@ -315,9 +331,18 @@ impl FamilyHooks for Hooks {
     /// `PatrollingMonster.removeWhenFarAway`: patrols only despawn beyond 128 blocks.
     fn remove_when_far_away_mob(m: &MobData, dist_sqr: f64) -> bool {
         if is_raider(m.kind) {
+            // `Raider.removeWhenFarAway`: never while in a raid.
+            if st(m).raid.is_some() {
+                return false;
+            }
             return !st(m).patrolling || dist_sqr > 16384.0;
         }
         Self::remove_when_far_away(m.kind)
+    }
+
+    /// `Raider.requiresCustomPersistence`: raiders of a raid stay.
+    fn requires_custom_persistence(m: &MobData) -> bool {
+        is_raider(m.kind) && st(m).raid.is_some()
     }
 
     type Goal = Goal;
@@ -349,7 +374,7 @@ impl FamilyHooks for Hooks {
         if kind == Kind::Ghast { 5.0 } else { 1.0 }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         match m.kind {
             Kind::Shulker if st(m).peek == 0 => None,
             _ => Some(m.kind.default_sound(DefaultSound::Ambient)),
@@ -477,7 +502,8 @@ impl FamilyHooks for Hooks {
     }
 
     fn pick_up_items(t: &mut Tick<'_, '_>) {
-        // `Pillager.pickUpItem`: only banners (raid banners go to the inventory in raids).
+        // `Pillager.pickUpItem`: only banners (white banners of a raid go to the inventory,
+        // which is not modelled).
         let rules = if t.mob_ref().kind == Kind::Pillager {
             super::super::equipment::PickupRules {
                 wants: |_, s| crate::item::item_id(s).name().ends_with("_banner"),
@@ -486,7 +512,13 @@ impl FamilyHooks for Hooks {
         } else {
             super::super::equipment::PickupRules::default()
         };
-        super::super::equipment::pick_up_items(t, &rules, None, (1.0, 0.0, 1.0));
+        let pick_up: Option<fn(&mut Tick<'_, '_>, EntityId) -> bool> =
+            if is_raider(t.mob_ref().kind) {
+                Some(raider::pick_up_item)
+            } else {
+                None
+            };
+        super::super::equipment::pick_up_items(t, &rules, pick_up, (1.0, 0.0, 1.0));
     }
 
     fn before_tick(t: &mut Tick<'_, '_>) {
@@ -520,6 +552,9 @@ impl FamilyHooks for Hooks {
             Kind::Blaze => blaze::ai_step_start(t),
             _ => {}
         }
+        if t.exists() && is_raider(t.mob_ref().kind) {
+            raider::ai_step(t);
+        }
     }
 
     fn ai_step(t: &mut Tick<'_, '_>) {
@@ -539,8 +574,11 @@ impl FamilyHooks for Hooks {
         match t.mob_ref().kind {
             Kind::Blaze => blaze::custom_server_ai_step(t),
             Kind::Vindicator => {
-                // `setCanOpenDoors(level.isRaided(pos))`: no raids yet.
-                t.mob().nav.can_open_doors = false;
+                // `setCanOpenDoors(level.isRaided(pos))`.
+                if !t.mob_ref().no_ai && t.mob_ref().nav.is_ground() {
+                    let raided = t.ents.raids.is_raided(t.block_pos());
+                    t.mob().nav.can_open_doors = raided;
+                }
             }
             Kind::Evoker | Kind::Illusioner => {
                 let s = st_mut(t.mob());
@@ -605,6 +643,10 @@ impl FamilyHooks for Hooks {
 
     fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
         let kind = h.ents.mob(h.target)?.kind;
+        if is_raider(kind) {
+            // `Raider.hurtServer`: the raid bar before the damage.
+            crate::raid::on_raider_hurt(h.ents, h.target, h.env.out);
+        }
         match kind {
             // `noPhysics` during its tick: a vex never suffocates in blocks.
             Kind::Vex if h.source.kind == h.env.types.in_wall => None,
@@ -619,6 +661,12 @@ impl FamilyHooks for Hooks {
             return witch::absorb(source, env.types, damage);
         }
         damage
+    }
+
+    fn on_die(h: &mut Hurt<'_, '_>) {
+        if h.ents.mob(h.target).is_some_and(|m| is_raider(m.kind)) {
+            crate::raid::on_raider_death(h.ents, h.target, h.source.cause, h.env.out);
+        }
     }
 
     fn after_hurt(h: &mut Hurt<'_, '_>, amount: f32) {
@@ -670,6 +718,9 @@ impl FamilyHooks for Hooks {
             out.insert("Patrolling", s.patrolling);
             out.insert("Wave", s.wave);
             out.insert("CanJoinRaid", s.can_join_raid);
+            if let Some(id) = s.raid {
+                out.insert("RaidId", id);
+            }
         }
         match m.kind {
             Kind::Vindicator if s.johnny => out.insert("Johnny", true),
@@ -712,6 +763,8 @@ impl FamilyHooks for Hooks {
             s.patrolling = boolean("Patrolling");
             s.wave = int("Wave").unwrap_or(0);
             s.can_join_raid = boolean("CanJoinRaid");
+            // Rejoined when the chunk is live (`crate::raid::rejoin_loaded`).
+            s.raid = int("RaidId");
         }
         match kind {
             Kind::Vindicator => s.johnny = boolean("Johnny"),
@@ -768,10 +821,21 @@ impl FamilyHooks for Hooks {
         use goals::flag::*;
         match g {
             Goal::Idle | Goal::Spell(_) => 0,
-            Goal::WitchHeal => TARGET,
+            Goal::WitchHeal(_) => TARGET,
             Goal::Stroll(s) if s.look => MOVE | LOOK,
             Goal::Locked(_) => MOVE | LOOK,
             Goal::Patrol(_) | Goal::Stroll(_) | Goal::GhastFloat | Goal::VexCharge => MOVE,
+            Goal::RaidDoor { breaker, .. } => {
+                if *breaker {
+                    MOVE
+                } else {
+                    0
+                }
+            }
+            Goal::ObtainBanner { .. }
+            | Goal::PathfindToRaid { .. }
+            | Goal::MoveThroughVillage(_)
+            | Goal::Celebration => MOVE,
             Goal::VexRandomMove => MOVE,
             Goal::HoldGround { .. }
             | Goal::Crossbow(_)
@@ -793,7 +857,7 @@ impl FamilyHooks for Hooks {
             | Goal::GhastShoot { .. }
             | Goal::BlazeAttack(_)
             | Goal::ShulkerAttack { .. } => true,
-            Goal::Target { inner, .. } => inner.every_tick(),
+            Goal::Target { inner, .. } | Goal::RaidDoor { inner, .. } => inner.every_tick(),
             _ => false,
         }
     }
@@ -826,7 +890,22 @@ impl FamilyHooks for Hooks {
                 };
                 open && common::can_use(t, inner)
             }
-            Goal::WitchHeal => witch::heal_can_use(t),
+            Goal::RaidDoor { inner, breaker } => {
+                let raid = crate::raid::has_active_raid(t.ents, t.mob_ref());
+                if *breaker {
+                    raid && {
+                        let r = goals::reduced(10).max(1);
+                        t.mob().random.next_int_bounded(r) == 0
+                    } && common::can_use(t, inner)
+                } else {
+                    common::can_use(t, inner) && raid
+                }
+            }
+            Goal::ObtainBanner { banner } => raider::banner_can_use(t, banner),
+            Goal::PathfindToRaid { .. } => raider::pathfind_can_use(t),
+            Goal::MoveThroughVillage(v) => raider::move_through_can_use(t, v),
+            Goal::Celebration => raider::celebration_can_use(t),
+            Goal::WitchHeal(inner) => witch::heal_can_use(t, inner),
             Goal::Crossbow(_) => pillager::crossbow_can_use(t),
             Goal::SpellCasting => st(t.mob_ref()).spell_ticks > 0,
             Goal::Spell(s) => spellcaster::can_use(t, s),
@@ -850,6 +929,18 @@ impl FamilyHooks for Hooks {
             Goal::Stroll(_) => !t.mob_ref().nav.is_done(),
             Goal::Locked(inner) => common::can_continue(t, inner),
             Goal::Target { inner, .. } => common::can_continue(t, inner),
+            Goal::RaidDoor { inner, breaker } => {
+                if *breaker {
+                    crate::raid::has_active_raid(t.ents, t.mob_ref())
+                        && common::can_continue(t, inner)
+                } else {
+                    common::can_continue(t, inner)
+                }
+            }
+            Goal::ObtainBanner { banner } => raider::banner_can_continue(t, banner),
+            Goal::WitchHeal(inner) => common::can_continue(t, inner),
+            Goal::PathfindToRaid { .. } => raider::pathfind_can_continue(t),
+            Goal::MoveThroughVillage(v) => raider::move_through_can_continue(t, v),
             Goal::Crossbow(_) => pillager::crossbow_can_continue(t),
             Goal::Spell(s) => spellcaster::can_continue(t, s),
             Goal::VexCharge => vex::charge_can_continue(t),
@@ -885,6 +976,14 @@ impl FamilyHooks for Hooks {
                     t.mob().no_action_time = 0;
                 }
             }
+            Goal::RaidDoor { inner, .. } => common::start(t, inner),
+            Goal::WitchHeal(inner) => {
+                st_mut(t.mob()).heal_cooldown = goals::reduced(200);
+                common::start(t, inner);
+            }
+            Goal::ObtainBanner { .. } => raider::banner_start(t),
+            Goal::MoveThroughVillage(v) => raider::move_through_start(t, v),
+            Goal::Celebration => raider::set_celebrating(t, true),
             Goal::SpellCasting => t.mob().nav.stop(),
             Goal::Spell(s) => spellcaster::start(t, s),
             Goal::VexCharge => vex::charge_start(t),
@@ -916,6 +1015,13 @@ impl FamilyHooks for Hooks {
             Goal::Stroll(_) => t.mob().nav.stop(),
             Goal::Locked(inner) => common::stop(t, inner),
             Goal::Target { inner, .. } => common::stop(t, inner),
+            Goal::RaidDoor { inner, .. } | Goal::WitchHeal(inner) => common::stop(t, inner),
+            Goal::ObtainBanner { banner } => {
+                t.mob().goal_path = None;
+                *banner = None;
+            }
+            Goal::MoveThroughVillage(v) => raider::move_through_stop(t, v),
+            Goal::Celebration => raider::set_celebrating(t, false),
             Goal::Crossbow(c) => pillager::crossbow_stop(t, c),
             Goal::SpellCasting => {
                 st_mut(t.mob()).spell = 0;
@@ -947,6 +1053,13 @@ impl FamilyHooks for Hooks {
             Goal::LookAt(l) => raider::look_at_tick(t, l),
             Goal::Locked(inner) => common::tick(t, inner),
             Goal::Target { inner, .. } => common::tick(t, inner),
+            Goal::RaidDoor { inner, .. } | Goal::WitchHeal(inner) => common::tick(t, inner),
+            Goal::ObtainBanner { banner } => raider::banner_tick(t, banner),
+            Goal::PathfindToRaid { recruitment_tick } => {
+                raider::pathfind_tick(t, recruitment_tick);
+            }
+            Goal::MoveThroughVillage(v) => raider::move_through_tick(t, v),
+            Goal::Celebration => raider::celebration_tick(t),
             Goal::Crossbow(c) => pillager::crossbow_tick(t, c),
             Goal::SpellCasting => spellcaster::casting_tick(t),
             Goal::Spell(s) => spellcaster::tick(t, s),

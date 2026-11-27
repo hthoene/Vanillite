@@ -56,10 +56,16 @@ pub struct GameData {
     pub banner_patterns: crate::menu::BannerPatterns,
     /// The tags of the registries: registry → tag id (without `#`) → entry ids in tag order.
     pub registry_tags: HashMap<String, HashMap<String, Vec<u32>>>,
+    /// The `minecraft:instrument` registry, by id.
+    pub instruments: Vec<super::items::Instrument>,
+    /// The `minecraft:painting_variant` registry: width and height by id.
+    pub painting_variants: Vec<(i32, i32)>,
     /// The `minecraft:context_int_provider` registry (compostable layers).
     pub compostables: HashMap<String, crate::block::composter::IntProvider>,
-    /// The `minecraft:jukebox_song` registry in protocol id order.
-    pub jukebox_songs: Vec<crate::block::jukebox::Song>,
+    /// The `minecraft:villager_trade` and `minecraft:trade_set` registries.
+    pub trades: crate::trading::data::TradeData,
+    /// The `minecraft:jukebox_song` registry, by registry id.
+    pub jukebox_songs: Vec<crate::block::jukebox::JukeboxSong>,
 }
 
 impl crate::predicate::EntityTags for GameData {
@@ -297,6 +303,38 @@ fn wire(pos: BlockPos) -> WirePos {
     }
 }
 
+/// `ServerPlayer.sendSpawnProtectionMessage`.
+fn spawn_protection_message(sink: &dyn PacketSink, pos: BlockPos) {
+    use vanillite_protocol::text::{Arg, Color, Component, NamedColor};
+    sink.send(
+        &vanillite_protocol::packets::play::clientbound::SystemChat {
+            content: Component::translatable_args(
+                "build.spawn_protection",
+                vec![Arg::String(format!("{}, {}, {}", pos.x, pos.y, pos.z))],
+            )
+            .color(Color::Named(NamedColor::Red)),
+            overlay: true,
+        },
+    );
+}
+
+/// `ServerPlayer.sendBuildLimitMessage`.
+fn build_limit_message(sink: &dyn PacketSink, too_high: bool, limit: i32) {
+    use vanillite_protocol::text::{Arg, Color, Component, NamedColor};
+    let key = if too_high {
+        "build.tooHigh"
+    } else {
+        "build.tooLow"
+    };
+    sink.send(
+        &vanillite_protocol::packets::play::clientbound::SystemChat {
+            content: Component::translatable_args(key, vec![Arg::Int(limit)])
+                .color(Color::Named(NamedColor::Red)),
+            overlay: true,
+        },
+    );
+}
+
 fn block_update(sink: &dyn PacketSink, level: &dyn PlayLevel, pos: BlockPos) {
     sink.send(&BlockUpdate {
         pos: wire(pos),
@@ -306,14 +344,7 @@ fn block_update(sink: &dyn PacketSink, level: &dyn PlayLevel, pos: BlockPos) {
 
 /// Blocks only operators in creative may break or use (`GameMasterBlock`).
 fn is_game_master_block(state: BlockState) -> bool {
-    matches!(
-        state.block().info().kind,
-        BlockKind::CommandBlock
-            | BlockKind::StructureBlock
-            | BlockKind::JigsawBlock
-            | BlockKind::TestBlock
-            | BlockKind::TestInstanceBlock
-    )
+    crate::block::technical::is_game_master_block(state)
 }
 
 /// Blocks whose `useWithoutItem`/`useItemOn` consume a click (doors, levers, containers, …).
@@ -359,9 +390,6 @@ fn has_use_action(state: BlockState) -> bool {
             | BlockKind::DaylightDetectorBlock
             | BlockKind::CakeBlock
             | BlockKind::BellBlock
-            | BlockKind::CommandBlock
-            | BlockKind::StructureBlock
-            | BlockKind::JigsawBlock
     )
 }
 
@@ -567,6 +595,11 @@ impl Digging {
         match action {
             DigAction::StartDestroyBlock => {
                 if (ctx.spawn_protected)(pos) {
+                    spawn_protection_message(sink, pos);
+                    return;
+                }
+                if !ctx.level.within_border(pos) {
+                    block_update(sink, ctx.level, pos);
                     return;
                 }
                 if !ctx.level.is_loaded(pos) {
@@ -683,6 +716,14 @@ impl Digging {
             block_update(sink, ctx.level, pos);
             return false;
         }
+        // `CreakingHeartBlock.playerWillDestroy`: the creaking dies by the player's attack.
+        if state.block() == vanillite_data::block::ids::CREAKING_HEART
+            && let Some(player) = ctx.actor.entity
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let prevents = ctx.actor.creative();
+            crate::block::creaking_heart::player_will_destroy(level, pos, state, player, prevents);
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -737,6 +778,10 @@ impl Digging {
         {
             // `ShulkerBoxBlock.playerWillDestroy`: a creative player still gets a filled box.
             crate::block::container::creative_shulker_drop(level, pos, state, entity);
+            // `BeehiveBlock.playerWillDestroy`: a hive with bees or honey drops as an item.
+            if crate::block::beehive::is_beehive(state.block()) {
+                crate::block::beehive::creative_drop(level, pos, state);
+            }
         }
         ctx.level.game_event(
             events_ids().block_destroy,
@@ -757,6 +802,19 @@ impl Digging {
             // `Block.playerDestroy`.
             ctx.award_stat(Stat::of(StatType::Mined, state.block().0), 1);
             drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            if crate::block::beehive::is_beehive(state.block())
+                && let Some(player) = ctx.actor.entity
+                && let Some(level) = ctx.level.level_mut()
+            {
+                crate::block::beehive::player_destroy(
+                    level,
+                    pos,
+                    state,
+                    entity.as_ref(),
+                    player,
+                    &tool,
+                );
+            }
         }
         true
     }
@@ -842,9 +900,19 @@ impl Digging {
             log::warn!("Rejecting UseItemOnPacket: location too far away from hit block {pos:?}");
             return;
         }
-        if pos.y <= ctx.level.max_y() && pos.y >= ctx.level.min_y() {
-            if (ctx.spawn_protected)(pos) || !ctx.level.is_loaded(pos) {
-                // Spawn protection: nothing happens.
+        let (min_y, max_y) = (ctx.level.min_y(), ctx.level.max_y());
+        if pos.y > max_y {
+            build_limit_message(sink, true, max_y);
+        } else if pos.y < min_y {
+            build_limit_message(sink, false, min_y);
+        } else {
+            if (ctx.spawn_protected)(pos) {
+                spawn_protection_message(sink, pos);
+            } else if !ctx.level.is_loaded(pos) {
+                // Not loaded yet: nothing happens.
+            } else if !ctx.level.within_border(pos) {
+                // `mayInteract` refuses: Vanilla answers with the build limit message.
+                build_limit_message(sink, true, max_y);
             } else if self.use_item_on_block(ctx, p.hand, pos, face, hit, p.inside, sink) {
                 // Vanilla 26.3 swings twice for a successful use (two branches of
                 // `handleUseItemOn` both call `swingAndResetAttackStrength`).
@@ -882,78 +950,101 @@ impl Digging {
             !ctx.inventory.selected_item().is_empty() || !ctx.inventory.offhand.is_empty();
         let suppress_use = ctx.actor.sneaking && has_items;
         if !suppress_use {
-            // `state.useItemOn(stack, …)`, then `useWithoutItem` for the main hand when it
-            // tries with an empty hand.
-            let (has_use, has_item_use) = ctx.level.level_mut().map_or((false, false), |l| {
-                let b = l.behaviours().get(state.block());
-                (b.use_without_item.is_some(), b.use_item_on.is_some())
-            });
-            if (has_use || has_item_use)
-                && let Some(player) = ctx.actor.entity
-            {
-                let use_ctx = crate::block::UseContext {
-                    player,
-                    may_build: ctx.actor.game_mode != GameMode::Adventure,
-                    yaw: ctx.actor.y_rot,
-                    face,
-                    hit,
-                    infinite: ctx.actor.creative(),
-                    // `canEat(false)`: creative players are invulnerable.
-                    can_eat: ctx.actor.creative()
-                        || ctx.food.as_deref().is_some_and(|f| f.needs_food()),
-                    game_master: ctx.actor.creative() && ctx.actor.permission_level >= 2,
+            // The game master blocks: `useItemOn` tries with an empty hand, `useWithoutItem`
+            // opens the edit screen for operators in creative and passes for everyone else.
+            if is_game_master_block(state) {
+                let editor = crate::block::technical::Editor {
+                    player: ctx.actor.entity,
+                    uuid: ctx.actor.uuid,
+                    allowed: crate::block::technical::can_use_game_master_blocks(
+                        ctx.actor.creative(),
+                        ctx.actor.permission_level,
+                    ),
+                    permission_level: ctx.actor.permission_level,
+                    sink,
                 };
-                let mut held = match hand {
-                    Hand::MainHand => ctx.inventory.selected_item().clone(),
-                    Hand::OffHand => ctx.inventory.offhand.clone(),
-                };
-                let before = held.clone();
-                let item_use = match ctx.level.level_mut() {
-                    Some(level) if has_item_use => level.use_item_on(pos, &use_ctx, &mut held),
-                    _ => crate::block::ItemInteraction::TryWithEmptyHand,
-                };
-                let (result, item_used) = match item_use {
-                    crate::block::ItemInteraction::Done(result) => {
-                        if held != before && !ctx.actor.creative() {
-                            let slot = match hand {
-                                Hand::MainHand => ctx.inventory.selected_item_mut(),
-                                Hand::OffHand => Some(&mut ctx.inventory.offhand),
-                            };
-                            if let Some(slot) = slot {
-                                *slot = held;
-                            }
-                        }
-                        (Some(result), true)
-                    }
-                    crate::block::ItemInteraction::TryWithEmptyHand
-                        if hand == Hand::MainHand && has_use =>
-                    {
-                        let used = ctx
-                            .level
-                            .level_mut()
-                            .map(|level| level.use_without_item(pos, &use_ctx));
-                        (used, false)
-                    }
-                    _ => (None, false),
-                };
-                apply_player_effects(ctx, hand);
-                self.open_requested(ctx, sink);
-                if let Some(
-                    result @ (crate::block::Interaction::Success
-                    | crate::block::Interaction::Consume),
-                ) = result
+                if hand == Hand::MainHand
+                    && let Some(level) = ctx.level.level_mut()
+                    && crate::block::technical::use_without_item(level, pos, &editor)
                 {
-                    ctx.trigger(if item_used {
-                        Event::ItemUsedOnBlock(pos, before)
-                    } else {
-                        Event::DefaultBlockUse(pos)
-                    });
+                    ctx.trigger(Event::DefaultBlockUse(pos));
                     any_block_use(ctx, hand, pos);
-                    return result == crate::block::Interaction::Success;
+                    return true;
                 }
-            } else if has_use_action(state) {
-                // Blocks whose use is not implemented yet consume the click.
-                return false;
+            } else {
+                // `state.useItemOn(stack, …)`, then `useWithoutItem` for the main hand when it
+                // tries with an empty hand.
+                let (has_use, has_item_use) = ctx.level.level_mut().map_or((false, false), |l| {
+                    let b = l.behaviours().get(state.block());
+                    (b.use_without_item.is_some(), b.use_item_on.is_some())
+                });
+                if (has_use || has_item_use)
+                    && let Some(player) = ctx.actor.entity
+                {
+                    let use_ctx = crate::block::UseContext {
+                        player,
+                        may_build: ctx.actor.game_mode != GameMode::Adventure,
+                        yaw: ctx.actor.y_rot,
+                        face,
+                        hit,
+                        infinite: ctx.actor.creative(),
+                        // `canEat(false)`: creative players are invulnerable.
+                        can_eat: ctx.actor.creative()
+                            || ctx.food.as_deref().is_some_and(|f| f.needs_food()),
+                        game_master: ctx.actor.creative() && ctx.actor.permission_level >= 2,
+                    };
+                    let mut held = match hand {
+                        Hand::MainHand => ctx.inventory.selected_item().clone(),
+                        Hand::OffHand => ctx.inventory.offhand.clone(),
+                    };
+                    let before = held.clone();
+                    let item_use = match ctx.level.level_mut() {
+                        Some(level) if has_item_use => level.use_item_on(pos, &use_ctx, &mut held),
+                        _ => crate::block::ItemInteraction::TryWithEmptyHand,
+                    };
+                    let (result, item_used) = match item_use {
+                        crate::block::ItemInteraction::Done(result) => {
+                            if held != before && !ctx.actor.creative() {
+                                let slot = match hand {
+                                    Hand::MainHand => ctx.inventory.selected_item_mut(),
+                                    Hand::OffHand => Some(&mut ctx.inventory.offhand),
+                                };
+                                if let Some(slot) = slot {
+                                    *slot = held;
+                                }
+                            }
+                            (Some(result), true)
+                        }
+                        crate::block::ItemInteraction::TryWithEmptyHand
+                            if hand == Hand::MainHand && has_use =>
+                        {
+                            let used = ctx
+                                .level
+                                .level_mut()
+                                .map(|level| level.use_without_item(pos, &use_ctx));
+                            (used, false)
+                        }
+                        _ => (None, false),
+                    };
+                    apply_player_effects(ctx, hand);
+                    self.open_requested(ctx, sink);
+                    if let Some(
+                        result @ (crate::block::Interaction::Success
+                        | crate::block::Interaction::Consume),
+                    ) = result
+                    {
+                        ctx.trigger(if item_used {
+                            Event::ItemUsedOnBlock(pos, before)
+                        } else {
+                            Event::DefaultBlockUse(pos)
+                        });
+                        any_block_use(ctx, hand, pos);
+                        return result == crate::block::Interaction::Success;
+                    }
+                } else if has_use_action(state) {
+                    // Blocks whose use is not implemented yet consume the click.
+                    return false;
+                }
             }
         }
         let stack = match hand {
@@ -992,6 +1083,60 @@ impl Digging {
             return false;
         }
         let used = item::item_id(&stack);
+        if used == vanillite_data::item::ids::FILLED_MAP
+            && let Some(level) = ctx.level.level_mut()
+            && let Some(ok) = crate::map::use_on_banner(level, &stack, pos)
+        {
+            // `MapItem.useOn` on a banner (any game mode: it runs before `useOn`'s build check
+            // in Vanilla's `ItemStack.useOn` only for the item itself).
+            if ok {
+                ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+                ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+                any_block_use(ctx, hand, pos);
+            }
+            return ok;
+        }
+        if used == vanillite_data::item::ids::COMPASS
+            && ctx.actor.game_mode != GameMode::Adventure
+            && ctx.level.block(pos).block() == vanillite_data::block::ids::LODESTONE
+        {
+            // `CompassItem.useOn`.
+            ctx.level.play_sound(
+                None,
+                Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                u16::try_from(
+                    crate::survival::sound_event("minecraft:item.lodestone_compass.lock").0,
+                )
+                .unwrap_or(0),
+                crate::player::world::SoundSource::Players,
+                1.0,
+                1.0,
+            );
+            let dimension = ctx.level.dimension().to_owned();
+            let creative = ctx.actor.creative();
+            let slot = match hand {
+                Hand::MainHand => ctx.inventory.selected_item_mut(),
+                Hand::OffHand => Some(&mut ctx.inventory.offhand),
+            };
+            let extra =
+                slot.and_then(|s| crate::carried::bind_lodestone(s, &dimension, pos, creative));
+            if let Some(mut compass) = extra
+                && !ctx.inventory.add(None, &mut compass, creative)
+            {
+                ctx.drops.push(Drop {
+                    stack: compass,
+                    thrown: false,
+                });
+            }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
+            return true;
+        }
         if used == vanillite_data::item::ids::FLINT_AND_STEEL
             || used == vanillite_data::item::ids::ENDER_EYE
         {
@@ -1045,6 +1190,9 @@ impl Digging {
         if let Some(done) = self.spawn_egg_on_spawner(ctx, hand, pos, &stack) {
             return done;
         }
+        if let Some(placed) = self.place_decoration(ctx, hand, &stack, pos, face, hit) {
+            return placed;
+        }
         let used = item::item_id(&stack);
         let Some(_block) = used.block() else {
             // Spawn eggs, leads and minecarts act on entities: the world runs them next.
@@ -1086,6 +1234,72 @@ impl Digging {
             any_block_use(ctx, hand, pos);
         }
         placed
+    }
+
+    /// `useOn` of the items that place decorations: armor stands, item frames, paintings and
+    /// cushions. `None` for other items; else whether the hand swings.
+    fn place_decoration(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        stack: &ItemStack,
+        pos: BlockPos,
+        face: Direction,
+        hit: Vec3,
+    ) -> Option<bool> {
+        use crate::decoration::hanging::Placed;
+        let used = item::item_id(stack);
+        let kind = if used == vanillite_data::item::ids::ARMOR_STAND {
+            vanillite_data::entity::ids::ARMOR_STAND
+        } else if used == vanillite_data::item::ids::ITEM_FRAME {
+            vanillite_data::entity::ids::ITEM_FRAME
+        } else if used == vanillite_data::item::ids::GLOW_ITEM_FRAME {
+            vanillite_data::entity::ids::GLOW_ITEM_FRAME
+        } else if used == vanillite_data::item::ids::PAINTING {
+            vanillite_data::entity::ids::PAINTING
+        } else if crate::decoration::cushion::color_of_item(stack).is_some() {
+            vanillite_data::entity::ids::CUSHION
+        } else {
+            return None;
+        };
+        // `ItemStack.useOn`: adventure players cannot build.
+        if ctx.actor.game_mode == GameMode::Adventure {
+            return Some(false);
+        }
+        let creative = ctx.actor.creative();
+        let player = ctx.actor.entity;
+        let y_rot = ctx.actor.y_rot;
+        let level = ctx.level.level_mut()?;
+        let mut held = stack.clone();
+        let result = if kind == vanillite_data::entity::ids::ARMOR_STAND {
+            if crate::decoration::stand::use_on(
+                level, pos, face, y_rot, &mut held, player, creative,
+            ) {
+                Placed::Success
+            } else {
+                Placed::Fail
+            }
+        } else if kind == vanillite_data::entity::ids::CUSHION {
+            crate::decoration::cushion::use_on(
+                level, pos, face, hit.y, y_rot, &mut held, player, creative,
+            )
+        } else {
+            crate::decoration::hanging::use_on(
+                level, kind, pos, face, &mut held, player, true, creative,
+            )
+        };
+        if result == Placed::Success {
+            let slot = match hand {
+                Hand::MainHand => ctx.inventory.selected_item_mut(),
+                Hand::OffHand => Some(&mut ctx.inventory.offhand),
+            };
+            if let Some(slot) = slot {
+                *slot = held;
+            }
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack.clone()));
+        }
+        Some(result == Placed::Success)
     }
 
     /// Opens the menus and sign editors blocks asked for during a use.
@@ -1201,6 +1415,9 @@ impl Digging {
         {
             return false;
         }
+        if let Some(level) = ctx.level.level_mut() {
+            state = crate::block::creaking_heart::placement_state(level, state);
+        }
         if !ctx.level.is_unobstructed(state, target) {
             return false;
         }
@@ -1254,11 +1471,31 @@ impl Digging {
         {
             // `BlockItem.updateCustomBlockEntityTag`, `updateBlockEntityComponents` and
             // `Block.setPlacedBy`.
-            let game_master = ctx.actor.creative() && ctx.actor.permission_level >= 2;
-            item_use::apply_block_entity_data(level, target, stack, game_master);
+            crate::level::block_entity::apply_block_entity_data(
+                level,
+                target,
+                stack,
+                crate::block::technical::can_use_game_master_blocks(
+                    ctx.actor.creative(),
+                    ctx.actor.permission_level,
+                ),
+            );
             crate::level::block_entity::apply_components(level, target, stack);
             crate::block::redstone::set_placed_by(level, placed, target);
             crate::block::crafter::set_placed_by(level, placed, target);
+            crate::block::technical::command_block::set_placed_by(
+                level,
+                placed,
+                target,
+                stack.component(ids::BLOCK_ENTITY_DATA).is_some(),
+            );
+            if placed.block() == vanillite_data::block::ids::STRUCTURE_BLOCK {
+                crate::block::technical::structure_block::set_placed_by(
+                    level,
+                    target,
+                    ctx.actor.entity,
+                );
+            }
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
@@ -1736,11 +1973,11 @@ impl crate::loot::LootRandom for LevelRandom<'_> {
 
 /// `Block.popResource`.
 pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) {
-    if stack.is_empty() {
-        return;
-    }
     if let Some(level) = level.level_mut() {
         crate::block::drops::pop_resource(level, pos, stack);
+        return;
+    }
+    if stack.is_empty() {
         return;
     }
     let half_height = 0.125;

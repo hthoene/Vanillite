@@ -43,6 +43,8 @@ mod data_id {
     pub const PLAYER_MODE_CUSTOMISATION: u8 = 16;
     pub const PLAYER_ABSORPTION: u8 = 17;
     pub const PLAYER_SCORE: u8 = 18;
+    pub const PLAYER_SHOULDER_LEFT: u8 = 19;
+    pub const PLAYER_SHOULDER_RIGHT: u8 = 20;
     pub const LIVING_FLAGS: u8 = 8;
     pub const MOB_FLAGS: u8 = 15;
     pub const KIND_16: u8 = 16;
@@ -51,6 +53,7 @@ mod data_id {
     pub const KIND_19: u8 = 19;
     pub const ORB_VALUE: u8 = 8;
     pub const ARROW_FLAGS: u8 = 8;
+    pub const ARROW_PIERCE_LEVEL: u8 = 9;
     pub const ARROW_IN_GROUND: u8 = 10;
 }
 
@@ -151,16 +154,18 @@ fn minecart_data(out: &mut Vec<u8>, m: &crate::minecart::MinecartData, all: bool
             }
         }
         MinecartKind::CommandBlock => {
-            if all || !m.command.is_empty() {
+            let command = &m.command.command;
+            if all || !command.is_empty() {
                 item(out, 13, serializer::STRING, |o| {
-                    write_varint(o, i32::try_from(m.command.len()).unwrap_or(0));
-                    o.extend_from_slice(m.command.as_bytes());
+                    write_varint(o, i32::try_from(command.len()).unwrap_or(0));
+                    o.extend_from_slice(command.as_bytes());
                 });
             }
             let output = m
-                .extra
-                .get("LastOutput")
-                .and_then(crate::mob::nbt::tag_component);
+                .command
+                .last_output
+                .as_ref()
+                .and_then(|c| crate::mob::nbt::tag_component(&c.to_nbt()));
             if all || output.is_some() {
                 item(out, 14, serializer::COMPONENT, |o| match &output {
                     Some(c) => o.extend_from_slice(c),
@@ -219,7 +224,8 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             entities
                 .minecart(entity.id())
                 .and_then(|m| m.custom_name.as_deref())
-        });
+        })
+        .or_else(|| crate::decoration::custom_name(entities, entity.id()));
     if all || name.is_some() {
         item(
             &mut out,
@@ -232,6 +238,30 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 }
             },
         );
+    }
+    let name_visible = crate::decoration::name_visible(entities, entity.id());
+    if all || name_visible {
+        item(&mut out, 3, serializer::BOOLEAN, |o| {
+            o.push(u8::from(name_visible));
+        });
+    }
+    let silent = entities
+        .decor(entity.id())
+        .map(|d| d.silent)
+        .or_else(|| entities.mob(entity.id()).map(|m| m.silent))
+        .unwrap_or(false);
+    if all || silent {
+        item(&mut out, 4, serializer::BOOLEAN, |o| {
+            o.push(u8::from(silent))
+        });
+    }
+    let no_gravity = entity
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::NO_GRAVITY);
+    if all || no_gravity {
+        item(&mut out, 5, serializer::BOOLEAN, |o| {
+            o.push(u8::from(no_gravity));
+        });
     }
     let pose = entity.pose();
     if all || pose != Pose::Standing {
@@ -289,12 +319,26 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
                 write_varint(o, score);
             });
         }
+        let shoulders = &player.survival.shoulders;
+        for (id, variant) in [
+            (data_id::PLAYER_SHOULDER_LEFT, shoulders.parrot_left()),
+            (data_id::PLAYER_SHOULDER_RIGHT, shoulders.parrot_right()),
+        ] {
+            if all || variant.is_some() {
+                item(&mut out, id, serializer::OPTIONAL_UNSIGNED_INT, |o| {
+                    write_varint(o, variant.map_or(0, |v| v.saturating_add(1)));
+                });
+            }
+        }
     }
     if let Some(mob) = entities.mob(entity.id()) {
         mob_data(&mut out, mob, all);
     }
     if let Some(special) = entities.special(entity.id()) {
         crate::mob::boss::special::entity_data(&mut out, special, all);
+    }
+    if let Some(d) = entities.decor(entity.id()) {
+        crate::decoration::entity_data(&mut DataWriter { out: &mut out, all }, d);
     }
     if let Some(b) = entities.boat(entity.id()) {
         if all || b.hurt_time != 0 {
@@ -341,6 +385,16 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             item(&mut out, data_id::ARROW_FLAGS, serializer::BYTE, |o| {
                 o.push(u8::from(arrow.crit));
             });
+        }
+        if all || arrow.pierce_level != 0 {
+            item(
+                &mut out,
+                data_id::ARROW_PIERCE_LEVEL,
+                serializer::BYTE,
+                |o| {
+                    o.push(arrow.pierce_level);
+                },
+            );
         }
         if all || arrow.in_ground {
             item(
@@ -576,7 +630,8 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
     effect_data(out, &mob.effects, all);
     let flags =
         u8::from(mob.no_ai) | (u8::from(mob.left_handed) << 1) | (u8::from(mob.aggressive) << 2);
-    if all || flags != 0 {
+    // Armor stands and mannequins are no `Mob`: their own data starts at 15.
+    if (all || flags != 0) && mob.kind.family() != crate::mob::Family::Decor {
         item(out, data_id::MOB_FLAGS, serializer::BYTE, |o| o.push(flags));
     }
     let boolean = |out: &mut Vec<u8>, id: u8, v: bool| {
@@ -714,6 +769,9 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
             x_rot,
             y_head_rot,
         } => {
+            // `HangingEntity.getAddEntityPacket`: the direction and the block position.
+            let hanging = crate::decoration::add_entity_packet(entities, message.entity);
+            let pos = hanging.map_or(pos, |(_, p)| p);
             let add = SharedPacket::of(&AddEntity {
                 entity_id: id,
                 uuid: Uuid(uuid),
@@ -725,9 +783,13 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 y_head_rot,
                 // `getAddEntityPacket` data: the block state of a falling block, the owner
                 // of a projectile.
-                data: entities
-                    .falling_block(message.entity)
-                    .map(|f| i32::from(f.state.0))
+                data: hanging
+                    .map(|(d, _)| d)
+                    .or_else(|| {
+                        entities
+                            .falling_block(message.entity)
+                            .map(|f| i32::from(f.state.0))
+                    })
                     .or_else(|| {
                         let owner = entities.arrow(message.entity)?.owner?;
                         Some(entities.store.get(owner)?.network_id().0)

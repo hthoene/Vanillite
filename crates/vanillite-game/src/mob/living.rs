@@ -44,6 +44,11 @@ pub fn entity_event(t: &mut Tick<'_, '_>, id: EntityId, event: i8) {
 
 /// `Mob.tick` (with the kind specific parts before and after `LivingEntity.tick`).
 pub fn tick(t: &mut Tick<'_, '_>) {
+    // `Entity.baseTick`: `computeSpeed`.
+    let pos = t.pos();
+    let m = t.mob();
+    m.known_speed = pos - m.last_known_pos.unwrap_or(pos);
+    m.last_known_pos = Some(pos);
     kinds::before_tick(t);
     if t.mob_ref().removed {
         return;
@@ -51,6 +56,19 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     base_tick(t);
     if t.mob_ref().removed {
         return;
+    }
+    // `updatingUsingItem` of the zombies' spears.
+    if matches!(
+        t.mob_ref().kind,
+        super::Kind::Zombie
+            | super::Kind::Husk
+            | super::Kind::ZombieVillager
+            | super::Kind::ZombifiedPiglin
+    ) {
+        super::fam::undead::zombies::spear_use_tick(t);
+        if !t.exists() || t.mob_ref().removed {
+            return;
+        }
     }
     ai_step(t);
     if t.mob_ref().removed || !t.exists() {
@@ -61,7 +79,11 @@ pub fn tick(t: &mut Tick<'_, '_>) {
         t.mob_ref().kind,
         super::Kind::Camel | super::Kind::CamelHusk
     );
-    if !camel || super::fam::mount::camel::turns_body(t) {
+    if t.mob_ref().kind == super::Kind::ArmorStand {
+        // `ArmorStand.tickHeadTurn`: the body follows the yaw.
+        let y = t.core().rot().y_rot;
+        crate::decoration::stand::tick_head_turn(t.mob(), y);
+    } else if !camel || super::fam::mount::camel::turns_body(t) {
         nav::tick_body_rotation(t);
     }
     // `refreshDirtyAttributes`: a lowered max health caps the health.
@@ -191,8 +213,8 @@ fn base_tick(t: &mut Tick<'_, '_>) {
     if !t.exists() || t.mob_ref().removed {
         return;
     }
-    // `Mob.baseTick`: the ambient sound.
-    if t.mob_ref().is_alive() {
+    // `Mob.baseTick`: the ambient sound (armor stands and mannequins are no `Mob`).
+    if t.mob_ref().is_alive() && t.mob_ref().kind.family() != super::Family::Decor {
         let m = t.mob();
         let roll = m.random.next_int_bounded(1000);
         let time = m.ambient_sound_time;
@@ -253,13 +275,21 @@ fn update_fluids(t: &mut Tick<'_, '_>) {
             Currents::default(),
         )
     };
+    let first_tick = t.mob_ref().tick_count <= 1;
     let m = t.mob();
+    let was_in_water = m.fluids.in_water();
     m.fluids = contact;
+    if let Some(r) = &mut m.move_ctl.rabbit {
+        r.in_water = contact.in_water();
+    }
     if contact.in_water() {
         // `updateInWaterStateAndDoWaterCurrentPushing`: water ends the fall and the fire.
         m.fall_distance = 0.0;
         if m.fire_ticks > 0 {
             m.fire_ticks = 0;
+        }
+        if !was_in_water && !first_tick {
+            water_splash_effect(t);
         }
     }
     if pushed {
@@ -275,6 +305,55 @@ fn update_fluids(t: &mut Tick<'_, '_>) {
             apply_current(t, currents.lava, scale);
         }
     }
+}
+
+/// `Entity.doWaterSplashEffect`: the splash sound and particles of a mob falling into water
+/// (the server adds no particles, but they draw from the mob's random).
+fn water_splash_effect(t: &mut Tick<'_, '_>) {
+    let v = t.velocity();
+    let point_two = f64::from(0.2_f32);
+    #[allow(clippy::cast_possible_truncation)]
+    let speed =
+        ((v.x * v.x * point_two + v.y * v.y + v.z * v.z * point_two).sqrt() as f32 * 0.2).min(1.0);
+    let kind = t.mob_ref().kind;
+    let sound = match kind {
+        super::Kind::Axolotl if speed < 0.25 => "minecraft:entity.axolotl.splash",
+        super::Kind::Dolphin if speed < 0.25 => "minecraft:entity.dolphin.splash",
+        _ if speed < 0.25 && hostile_swimmer(kind) => "minecraft:entity.hostile.splash",
+        _ => "minecraft:entity.generic.splash",
+    };
+    let r = &mut t.mob().random;
+    let pitch = 1.0 + (r.next_float() - r.next_float()) * 0.4;
+    kinds::play_sound(t, sound, speed, pitch);
+    let width = t.core().dims().width;
+    let r = &mut t.mob().random;
+    let mut i = 0_u16;
+    while f32::from(i) < 1.0 + width * 20.0 {
+        // The bubble's x, z and y speed.
+        for _ in 0..3 {
+            r.next_double();
+        }
+        i += 1;
+    }
+    let mut i = 0_u16;
+    while f32::from(i) < 1.0 + width * 20.0 {
+        // The splash's x and z.
+        for _ in 0..2 {
+            r.next_double();
+        }
+        i += 1;
+    }
+    let pos = t.pos();
+    post_game_event(t, crate::level::game_event::events().splash, pos, None);
+}
+
+/// `Monster` (and hoglins) with the hostile swim and splash sounds.
+fn hostile_swimmer(kind: super::Kind) -> bool {
+    use super::Kind;
+    !matches!(
+        kind,
+        Kind::Slime | Kind::MagmaCube | Kind::Ghast | Kind::Phantom
+    ) && kind.is_monster()
 }
 
 /// The summed flows of the water and lava an entity touches
@@ -584,14 +663,22 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     if super::boss::ai_step_override(t) {
         return;
     }
-    let effective_ai = !t.mob_ref().no_ai;
+    let decor = t.mob_ref().kind.family() == super::Family::Decor;
+    // `isEffectiveAi`: armor stands move with physics, mannequins unless immovable; neither
+    // has a `serverAiStep`.
+    let effective_ai = if decor {
+        let no_gravity = t.core().flags().contains(EntityFlags::NO_GRAVITY);
+        crate::decoration::stand::moves(t.mob_ref(), no_gravity)
+    } else {
+        !t.mob_ref().no_ai
+    };
     // `isImmobile`: dead or held by the kind (a stunned ravager).
     if t.mob_ref().is_dead_or_dying() || super::fam::is_immobile(t.mob_ref()) {
         let m = t.mob();
         m.jumping = false;
         m.xxa = 0.0;
         m.zza = 0.0;
-    } else if effective_ai {
+    } else if effective_ai && !decor {
         server_ai_step(t);
         if !t.exists() || t.mob_ref().removed {
             return;
@@ -725,8 +812,14 @@ fn jump_in_liquid(t: &mut Tick<'_, '_>) {
 
 /// `jumpFromGround`.
 fn jump_from_ground(t: &mut Tick<'_, '_>) {
+    let rabbit = t.mob_ref().kind == super::Kind::Rabbit;
+    let multiplier = if rabbit {
+        super::fam::companion::rabbit::jump_multiplier(t)
+    } else {
+        1.0
+    };
     #[allow(clippy::cast_possible_truncation)]
-    let mut power = t.mob_ref().attrs.jump_strength as f32 * block_jump_factor(t)
+    let mut power = t.mob_ref().attrs.jump_strength as f32 * multiplier * block_jump_factor(t)
         + t.mob_ref().effects.jump_boost_power();
     if power <= 1.0e-5 {
         return;
@@ -737,6 +830,9 @@ fn jump_from_ground(t: &mut Tick<'_, '_>) {
     let v = t.velocity();
     t.set_velocity(Vec3::new(v.x, f64::from(power).max(v.y), v.z));
     t.core_mut().set_flags(EntityFlags::HAS_IMPULSE, true);
+    if rabbit {
+        super::fam::companion::rabbit::after_jump(t);
+    }
 }
 
 fn block_jump_factor(t: &Tick<'_, '_>) -> f32 {
@@ -965,7 +1061,11 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
     let drag_modifier = t.mob_ref().attrs.air_drag_modifier as f32;
     let air_drag = modified_friction(0.91, drag_modifier);
     let friction = block_friction * air_drag;
-    let vertical = modified_friction(0.98, drag_modifier);
+    let vertical = if omnidirectional_air_mover(t.mob_ref()) {
+        air_drag
+    } else {
+        modified_friction(0.98, drag_modifier)
+    };
     if t.mob_ref().discard_friction {
         // `shouldDiscardFriction` (long jumps).
         t.set_velocity(Vec3::new(movement.x, y, movement.z));
@@ -976,6 +1076,16 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
         y * f64::from(vertical),
         movement.z * f64::from(friction),
     ));
+}
+
+/// `omnidirectionalAirMover`: parrots, bees and sulfur cubes holding a block slow down
+/// vertically like horizontally in the air.
+fn omnidirectional_air_mover(m: &super::MobData) -> bool {
+    match m.kind {
+        super::Kind::Parrot | super::Kind::Bee => true,
+        super::Kind::SulfurCube => !m.equipment.get(crate::item::EquipmentSlot::Body).is_empty(),
+        _ => false,
+    }
 }
 
 fn travel_in_fluid(t: &mut Tick<'_, '_>, input: Vec3) {
@@ -1042,7 +1152,7 @@ fn travel_in_fluid(t: &mut Tick<'_, '_>, input: Vec3) {
         let probe = t
             .aabb()
             .offset(v.x, v.y + f64::from(0.6_f32) - t.pos().y + old_y, v.z);
-        if physics::no_collision(t.level, &probe, &mut t.cx.boxes)
+        if physics::no_collision(&t.level.view(), &probe, &mut t.cx.boxes)
             && !physics::contains_any_liquid(t.level, &probe)
         {
             t.set_velocity(Vec3::new(v.x, f64::from(0.3_f32), v.z));
@@ -1080,7 +1190,16 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let step = t.mob_ref().attrs.step_height as f32;
     let on_ground = t.on_ground();
     let aabb = t.aabb();
-    let movement = physics::collide(t.level, aabb, delta, step, on_ground, &mut t.cx.boxes);
+    let on_lava = t.mob_ref().nav.stands_on_lava;
+    let movement = physics::collide_for(
+        &t.level.view(),
+        aabb,
+        delta,
+        step,
+        on_ground,
+        &mut t.cx.boxes,
+        on_lava,
+    );
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
         let p = t.pos();
@@ -1100,7 +1219,7 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     }
     let effect_pos = on_pos(t, f64::from(0.2_f32));
     let effect_state = t.level.block(effect_pos);
-    check_fall_damage(t, movement.y, t.on_ground(), effect_state);
+    check_fall_damage(t, movement.y, t.on_ground(), effect_state, effect_pos);
     if !t.exists() || t.mob_ref().removed {
         return;
     }
@@ -1127,7 +1246,12 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
 }
 
 /// Queues `gameEvent(event, pos, Context.of(this mob, affected))`.
-fn post_game_event(t: &mut Tick<'_, '_>, event: u16, pos: Vec3, affected: Option<BlockState>) {
+pub(crate) fn post_game_event(
+    t: &mut Tick<'_, '_>,
+    event: u16,
+    pos: Vec3,
+    affected: Option<BlockState>,
+) {
     let context = crate::level::game_event::GameEventContext {
         source: Some(t.id),
         affected,
@@ -1165,9 +1289,13 @@ fn movement_emission(
         }
     }
     let on_ground = t.on_ground();
+    let swimming = t
+        .core()
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::SWIMMING);
     let pos = t.pos();
     let steps = |t: &Tick<'_, '_>, st: BlockState| {
-        !st.is_air() && (on_ground || t.env.facts.is_climbable(st.block()))
+        !st.is_air() && (on_ground || t.env.facts.is_climbable(st.block())) && !swimming
     };
     let only_effect = supporting_pos == effect_pos;
     let mut produced = false;
@@ -1199,8 +1327,64 @@ fn movement_emission(
         m.next_step = next;
     }
     if !produced && in_water {
+        if emits_sounds(t.mob_ref().kind) {
+            water_swim_sound(t);
+        }
         post_game_event(t, crate::level::game_event::events().swim, pos, None);
     }
+}
+
+/// `getMovementEmission().emitsSounds()`: kinds whose moves make no sound.
+fn emits_sounds(kind: super::Kind) -> bool {
+    use super::Kind;
+    !matches!(
+        kind,
+        Kind::Silverfish
+            | Kind::Breeze
+            | Kind::Squid
+            | Kind::GlowSquid
+            | Kind::Bat
+            | Kind::Guardian
+            | Kind::ElderGuardian
+            | Kind::Endermite
+            | Kind::Shulker
+    )
+}
+
+/// `Entity.waterSwimSound` → `playSwimSound(volume)`: the swim sound of a move in water.
+fn water_swim_sound(t: &mut Tick<'_, '_>) {
+    use super::Kind;
+    let v = t.velocity();
+    let point_two = f64::from(0.2_f32);
+    #[allow(clippy::cast_possible_truncation)]
+    let speed =
+        ((v.x * v.x * point_two + v.y * v.y + v.z * v.z * point_two).sqrt() as f32 * 0.35).min(1.0);
+    let kind = t.mob_ref().kind;
+    let volume = match kind {
+        Kind::Turtle => speed * 1.5,
+        Kind::SkeletonHorse if t.on_ground() => 0.3,
+        Kind::SkeletonHorse => (speed * 25.0).min(0.1),
+        _ => speed,
+    };
+    let baby = t.mob_ref().baby;
+    let sound = match kind {
+        Kind::Cod | Kind::Salmon | Kind::Pufferfish | Kind::TropicalFish | Kind::Tadpole => {
+            "minecraft:entity.fish.swim"
+        }
+        Kind::Axolotl => "minecraft:entity.axolotl.swim",
+        Kind::Drowned => "minecraft:entity.drowned.swim",
+        Kind::Dolphin => "minecraft:entity.dolphin.swim",
+        Kind::Turtle => "minecraft:entity.turtle.swim",
+        Kind::SkeletonHorse => "minecraft:entity.skeleton_horse.swim",
+        Kind::Nautilus if baby => "minecraft:entity.baby_nautilus.swim",
+        Kind::Nautilus => "minecraft:entity.nautilus.swim",
+        Kind::ZombieNautilus => "minecraft:entity.zombie_nautilus.swim",
+        _ if hostile_swimmer(kind) => "minecraft:entity.hostile.swim",
+        _ => "minecraft:entity.generic.swim",
+    };
+    let r = &mut t.mob().random;
+    let pitch = 1.0 + (r.next_float() - r.next_float()) * 0.4;
+    super::kinds::play_sound(t, sound, volume, pitch);
 }
 
 /// `Mth.equal(double, double)`.
@@ -1209,7 +1393,28 @@ fn java_equal(a: f64, b: f64) -> bool {
 }
 
 /// `LivingEntity.checkFallDamage` → `Entity.checkFallDamage` → `Block.fallOn`.
-fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: BlockState) {
+fn check_fall_damage(
+    t: &mut Tick<'_, '_>,
+    ya: f64,
+    on_ground: bool,
+    on_state: BlockState,
+    on_pos: BlockPos,
+) {
+    if !t.mob_ref().fluids.in_water() {
+        update_fluids(t);
+    }
+    if on_ground {
+        let distance = t.mob_ref().fall_distance;
+        if distance > 0.0 {
+            fall_particles(t, distance, on_state, on_pos);
+        }
+    }
+    if !t.mob_ref().fluids.in_water() && ya < 0.0 {
+        // `fallDistance -= (float) ya`.
+        #[allow(clippy::cast_possible_truncation)]
+        let ya = f64::from(ya as f32);
+        t.mob().fall_distance -= ya;
+    }
     if on_ground {
         let distance = t.mob_ref().fall_distance;
         if distance > 0.0 {
@@ -1244,9 +1449,38 @@ fn check_fall_damage(t: &mut Tick<'_, '_>, ya: f64, on_ground: bool, on_state: B
         if t.exists() {
             t.mob().fall_distance = 0.0;
         }
-    } else if ya < 0.0 {
-        t.mob().fall_distance -= ya;
     }
+}
+
+/// `LivingEntity.checkFallDamage`: the landing dust of a fall of at least one damaging
+/// block, more for higher falls.
+fn fall_particles(t: &mut Tick<'_, '_>, distance: f64, on_state: BlockState, on_pos: BlockPos) {
+    let power = floor(distance + 1.0e-6 - t.mob_ref().attrs.safe_fall_distance).max(0);
+    if power <= 0 || on_state.is_air() {
+        return;
+    }
+    let p = t.pos();
+    let (mut x, mut z) = (p.x, p.z);
+    let here = t.block_pos();
+    if on_pos.x != here.x || on_pos.z != here.z {
+        let x_diff = x - f64::from(on_pos.x) - 0.5;
+        let z_diff = z - f64::from(on_pos.z) - 0.5;
+        let max = x_diff.abs().max(z_diff.abs());
+        x = f64::from(on_pos.x) + 0.5 + x_diff / max * 0.5;
+        z = f64::from(on_pos.z) + 0.5 + z_diff / max * 0.5;
+    }
+    let scale = (f64::from(0.2_f32) + f64::from(power) / 15.0).min(2.5);
+    #[allow(clippy::cast_possible_truncation)]
+    let count = (150.0 * scale) as i32;
+    let mut particle = crate::level::particles::simple("minecraft:block");
+    vanillite_protocol::codec::write_varint(&mut particle.options, i32::from(on_state.0));
+    t.cx.send_particles(
+        particle,
+        Vec3::new(x, p.y, z),
+        count,
+        Vec3::ZERO,
+        f64::from(0.15_f32),
+    );
 }
 
 /// `LivingEntity.causeFallDamage`.
@@ -1410,11 +1644,40 @@ fn bubble_columns(
                     (false, false) => (v.y + 0.06).min(0.7),
                 };
                 t.set_velocity(Vec3::new(v.x, yd, v.z));
-                if !nothing_above {
+                if nothing_above {
+                    send_bubble_column_particles(t, pos);
+                } else {
                     t.mob().fall_distance = 0.0;
                 }
             }
         }
+    }
+}
+
+/// `Entity.sendBubbleColumnParticles`: splashes and bubbles at random spots on the column's
+/// top, drawn from the level's random.
+fn send_bubble_column_particles(t: &mut Tick<'_, '_>, pos: BlockPos) {
+    use crate::level::particles::simple;
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y + 1), f64::from(pos.z));
+    for _ in 0..2 {
+        let at = Vec3::new(
+            x + t.env.random.next_double(),
+            y,
+            z + t.env.random.next_double(),
+        );
+        t.cx.send_particles(simple("minecraft:splash"), at, 1, Vec3::ZERO, 1.0);
+        let at = Vec3::new(
+            x + t.env.random.next_double(),
+            y,
+            z + t.env.random.next_double(),
+        );
+        t.cx.send_particles(
+            simple("minecraft:bubble"),
+            at,
+            1,
+            Vec3::new(0.0, 0.01, 0.0),
+            0.2,
+        );
     }
 }
 
@@ -1423,6 +1686,10 @@ fn bubble_columns(
 fn push_entities(t: &mut Tick<'_, '_>) {
     let aabb = t.aabb();
     let id = t.id;
+    if t.mob_ref().kind == super::Kind::ArmorStand {
+        crate::decoration::stand::push_minecarts(t.ents, id);
+        return;
+    }
     let mut ids = std::mem::take(&mut t.cx.ids);
     ids.clear();
     t.ents.store.for_each_in(&aabb, false, |other| {
@@ -1431,7 +1698,9 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         }
     });
     ids.retain(|&o| {
-        t.ents.mob(o).is_some_and(super::MobData::is_alive)
+        t.ents
+            .mob(o)
+            .is_some_and(|m| m.is_alive() && crate::decoration::stand::pushable(m))
             || t.ents.minecart(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
@@ -1455,7 +1724,12 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         }
     }
     let climbing = on_climbable(t);
-    for &other in &ids {
+    // `max-entity-collisions`: only the first ones push.
+    let limit =
+        t.cx.settings
+            .max_entity_collisions
+            .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    for &other in ids.iter().take(limit) {
         if t.ents.minecart(other).is_some() {
             // `AbstractMinecart.push(this)`.
             crate::minecart::push_by(t.ents, other, id);
@@ -1518,7 +1792,8 @@ pub fn player_push_entities(ents: &mut super::Entities, player: EntityId) {
         }
     });
     ids.retain(|&o| {
-        ents.mob(o).is_some_and(super::MobData::is_alive)
+        ents.mob(o)
+            .is_some_and(|m| m.is_alive() && crate::decoration::stand::pushable(m))
             || ents.minecart(o).is_some()
             || ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
@@ -1591,6 +1866,10 @@ fn server_ai_step(t: &mut Tick<'_, '_>) {
         nav::tick_move_control(t);
     }
     nav::tick_look_control(t);
+    if t.mob_ref().kind == super::Kind::Rabbit {
+        super::fam::companion::rabbit::jump_control(t);
+        return;
+    }
     let m = t.mob();
     m.jumping = m.jump;
     m.jump = false;
@@ -1613,6 +1892,10 @@ fn is_sun_burn_tick(t: &mut Tick<'_, '_>) -> bool {
 
 /// `Mob.checkDespawn`.
 pub fn check_despawn(t: &mut Tick<'_, '_>) {
+    // `Mob.checkDespawn`: armor stands and mannequins are no `Mob`.
+    if t.mob_ref().kind.family() == super::Family::Decor {
+        return;
+    }
     if t.env.difficulty == crate::survival::rules::Difficulty::Peaceful
         && !t.mob_ref().kind.allowed_in_peaceful()
     {
@@ -1630,7 +1913,9 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     let category = super::spawn::Category::of(t.core().kind());
     let despawn = f64::from(category.map_or(128, super::spawn::Category::despawn_distance));
     let p = t.pos();
-    let r = 128.0;
+    let hard = t.cx.settings.hard_despawn_range.unwrap_or(despawn);
+    let soft = t.cx.settings.soft_despawn_range;
+    let r = hard.max(128.0);
     let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
     let mut nearest = f64::MAX;
     t.ents.store.for_each_in(&area, true, |player| {
@@ -1649,7 +1934,7 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
         }
     });
     let far_away_ok = super::fam::remove_when_far_away_mob(t.mob_ref(), nearest);
-    if !persistent && nearest > despawn * despawn && far_away_ok {
+    if !persistent && nearest > hard * hard && far_away_ok {
         t.mob().removed = true;
         return;
     }
@@ -1657,11 +1942,11 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     if !persistent
         && m.no_action_time > 600
         && m.random.next_int_bounded(800) == 0
-        && nearest > 32.0 * 32.0
+        && nearest > soft * soft
         && far_away_ok
     {
         m.removed = true;
-    } else if nearest < 32.0 * 32.0 {
+    } else if nearest < soft * soft {
         m.no_action_time = 0;
     }
 }

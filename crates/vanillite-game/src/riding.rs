@@ -97,6 +97,14 @@ pub fn passengers_packet(ents: &Entities, vehicle: EntityId) -> Option<SetPassen
 /// `canAddPassenger` of a vehicle.
 fn can_add_passenger(ents: &Entities, vehicle: EntityId) -> bool {
     let count = ents.riding.passengers_of(vehicle).len();
+    // `Marker.canAddPassenger`.
+    if ents
+        .store
+        .get(vehicle)
+        .is_some_and(|e| e.kind() == vanillite_data::entity::ids::MARKER)
+    {
+        return false;
+    }
     if let Some(b) = ents.boat(vehicle) {
         return count < b.kind.max_passengers();
     }
@@ -137,6 +145,10 @@ pub fn start_riding(
         e.set_flags(EntityFlags::PASSENGER, true);
     }
     ents.riding.add(passenger, vehicle, is_player);
+    if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
+        let event = crate::level::game_event::events().entity_mount;
+        crate::survival::game_event(env.out, event, at, Some(passenger));
+    }
     // `STARTED_RIDING` of every player riding the vehicle, directly or not
     // (`getIndirectPassengersStream`).
     let mut riders = vec![vehicle];
@@ -170,6 +182,10 @@ pub fn stop_riding(
     passenger: EntityId,
 ) -> Option<EntityId> {
     let vehicle = ents.riding.remove(passenger)?;
+    if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
+        let event = crate::level::game_event::events().entity_dismount;
+        crate::survival::game_event(env.out, event, at, Some(passenger));
+    }
     if let Some(mut e) = ents.store.get_mut(passenger) {
         e.set_flags(EntityFlags::PASSENGER, false);
     }
@@ -177,6 +193,7 @@ pub fn stop_riding(
         p.connection.movement.passenger = false;
     }
     send_passengers(ents, env, vehicle);
+    crate::decoration::cushion::passenger_left(ents, env, vehicle);
     let alive = ents.store.contains(passenger);
     if alive && let Some(target) = dismount_location(ents, env, vehicle, passenger) {
         dismount_to(ents, passenger, target);
@@ -221,13 +238,20 @@ fn dismount_to(ents: &mut Entities, passenger: EntityId, target: Vec3) {
 }
 
 /// The blocks of the survival environment as collision blocks (unloaded = air).
-struct EnvBlocks<'a>(&'a dyn crate::survival::blocks::BlockAccess);
+struct EnvBlocks<'a>(
+    &'a dyn crate::survival::blocks::BlockAccess,
+    Option<&'a crate::level::border::WorldBorder>,
+);
 
 impl physics::Blocks for EnvBlocks<'_> {
     fn state(&self, pos: BlockPos) -> vanillite_data::block::BlockState {
         self.0
             .block_state(pos)
             .unwrap_or(vanillite_data::block::BlockState::AIR)
+    }
+
+    fn border(&self) -> Option<&crate::level::border::WorldBorder> {
+        self.1
     }
 }
 
@@ -283,7 +307,7 @@ fn dismount_location(
 ) -> Option<Vec3> {
     let v = ents.store.get(vehicle)?;
     let p = ents.store.get(passenger)?;
-    let level = &EnvBlocks(env.blocks);
+    let level = &EnvBlocks(env.blocks, env.border);
     let vpos = v.pos();
     let fallback = Vec3::new(vpos.x, v.aabb().max_y, vpos.z);
     let (pw, ph) = (f64::from(p.dims().width), f64::from(p.dims().height));
@@ -630,13 +654,22 @@ pub fn move_vehicle(
         0.0
     };
     let was_on_ground = v.flags().contains(EntityFlags::ON_GROUND);
-    let moved = physics::collide(level, old_box, delta, step, was_on_ground, &mut cx.boxes);
+    let on_lava = ents.mob(vehicle).is_some_and(|m| m.nav.stands_on_lava);
+    let moved = physics::collide_for(
+        &level.view(),
+        old_box,
+        delta,
+        step,
+        was_on_ground,
+        &mut cx.boxes,
+        on_lava,
+    );
     let mut err = target - (old + moved);
     if err.y > -0.5 && err.y < 0.5 {
         err.y = 0.0;
     }
     let wrong = err.length_sqr() > 0.0625;
-    if wrong && physics::no_collision(level, &old_box, &mut cx.boxes) {
+    if wrong && physics::no_collision(&level.view(), &old_box, &mut cx.boxes) {
         send_back(ents);
         return;
     }

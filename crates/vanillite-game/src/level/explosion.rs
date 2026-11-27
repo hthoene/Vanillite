@@ -11,15 +11,18 @@
 //!
 //! Items lose health and are destroyed, boats take damage like living entities.
 //!
-//! Not ported: damage of end crystals and other non-living entities, fire of fire explosions, the
-//! block reactions of `TRIGGER_BLOCK` explosions (wind charges) and the special damage
+//! Fire explosions (ghast fireballs) set fire to a third of the blown up air above solid
+//! blocks. `TRIGGER_BLOCK` explosions (wind charges) leave the blocks and open doors,
+//! trapdoors and fence gates, press buttons, pull levers, ring bells and blow out candles.
+//!
+//! Not ported: damage of end crystals and other non-living entities and the special damage
 //! calculators (wither skulls, wind charges, TNT that used a portal).
 
 use vanillite_base::hash::FxHashSet;
 use vanillite_base::math::{floor, frac, lerp};
 use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, Vec3};
-use vanillite_data::block::{BlockState, ids};
+use vanillite_data::block::{BlockKind, BlockState, ids};
 use vanillite_data::entity::ids as entity_ids;
 use vanillite_world::entity::{EntityFlags, EntityId};
 use vanillite_worldgen::behaviour::StateExt;
@@ -84,6 +87,8 @@ pub struct ExplosionStyle {
     pub wind_sound: Option<&'static str>,
     /// The source's block resistance override.
     pub resistance: BlockResistance,
+    /// `fire`: sets fire to some of the blown up positions (`createFire`).
+    pub fire: bool,
 }
 
 impl Default for ExplosionStyle {
@@ -93,6 +98,7 @@ impl Default for ExplosionStyle {
             knockback: 1.0,
             wind_sound: None,
             resistance: BlockResistance::Default,
+            fire: false,
         }
     }
 }
@@ -111,6 +117,23 @@ pub struct ExplosionHurt {
     pub indirect: Option<EntityId>,
     /// Centre (the damage position without a source entity).
     pub center: Vec3,
+    /// `ServerExplosion.shouldAffectBlocklikeEntities` with mob griefing off: the explosion
+    /// breaks blocks and is no wind charge (with mob griefing on only the wind charge part
+    /// counts, see [`ExplosionHurt::wind`]).
+    pub blocklike: bool,
+    /// The source is a wind charge.
+    pub wind: bool,
+}
+
+impl ExplosionHurt {
+    /// `shouldAffectBlocklikeEntities`.
+    pub fn affects_blocklike(&self, mob_griefing: bool) -> bool {
+        if mob_griefing {
+            !self.wind
+        } else {
+            self.blocklike
+        }
+    }
 }
 
 impl Level {
@@ -150,9 +173,16 @@ impl Level {
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
         let mut targets = self.exploded_positions(center, radius, style.resistance);
-        let hit_players = self.hurt_entities(source, indirect, center, radius, style);
+        let destroys = matches!(
+            interaction,
+            BlockInteraction::Destroy | BlockInteraction::DestroyWithDecay
+        );
+        let hit_players = self.hurt_entities(source, indirect, center, radius, style, destroys);
         if interaction != BlockInteraction::Keep {
-            self.interact_with_blocks(&mut targets, source, indirect, interaction, radius);
+            self.interact_with_blocks(&mut targets, source, indirect, interaction, radius, center);
+        }
+        if style.fire {
+            self.create_fire(&targets);
         }
         let count = targets.len();
         self.output.explosions.push(ExplosionEvent {
@@ -204,7 +234,16 @@ impl Level {
                         let rail_protected = override_resistance == BlockResistance::TntMinecart
                             && (crate::block::is_rail(state.block())
                                 || crate::block::is_rail(self.block(pos.offset(0, 1, 0)).block()));
-                        if !(state.is_air() && fluid.is_empty()) {
+                        if override_resistance == BlockResistance::WindCharge {
+                            // `SimpleExplosionDamageCalculator` with immune blocks: only those
+                            // resist, everything else lets the ray through.
+                            if crate::block::block_tags()
+                                .blocks_wind_charge_explosions
+                                .contains(state)
+                            {
+                                power -= (3_600_000.0 + 0.3) * 0.3;
+                            }
+                        } else if !(state.is_air() && fluid.is_empty()) {
                             let mut resistance = if rail_protected {
                                 0.0
                             } else {
@@ -218,13 +257,6 @@ impl Level {
                                 resistance = crate::mob::boss::wither::skull_block_resistance(
                                     true, state, resistance,
                                 );
-                            }
-                            if override_resistance == BlockResistance::WindCharge
-                                && crate::block::block_tags()
-                                    .blocks_wind_charge_explosions
-                                    .contains(state)
-                            {
-                                resistance = 3_600_000.0;
                             }
                             power -= (resistance + 0.3) * 0.3;
                         }
@@ -252,8 +284,14 @@ impl Level {
         center: Vec3,
         radius: f32,
         style: ExplosionStyle,
+        destroys: bool,
     ) -> Vec<(EntityId, Vec3)> {
         let mut hit_players = Vec::new();
+        let wind = source
+            .and_then(|s| self.entities.store.get(s))
+            .is_some_and(|e| {
+                e.kind() == entity_ids::WIND_CHARGE || e.kind() == entity_ids::BREEZE_WIND_CHARGE
+            });
         if radius < 1.0e-5 {
             return hit_players;
         }
@@ -295,7 +333,10 @@ impl Level {
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
             let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
                 || crate::minecart::MinecartKind::of(kind).is_some();
-            if kind == entity_ids::ITEM && style.damages_entities {
+            // `ItemEntity.hurtServer`: a mob's explosion spares items without `mob_griefing`.
+            let mob_spared = !self.settings.mob_griefing
+                && indirect.is_some_and(|i| self.entities.mob(i).is_some());
+            if kind == entity_ids::ITEM && style.damages_entities && !mob_spared {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
                 #[allow(clippy::cast_possible_truncation)]
@@ -311,6 +352,15 @@ impl Level {
                     health <= 0
                 });
                 if destroyed {
+                    // `Item.onDestroyed`: a bundle's or a container item's contents drop.
+                    let contents = self
+                        .entities
+                        .item_mut(id)
+                        .map(|d| crate::item_entity::take_destroyed_contents(&mut d.stack))
+                        .unwrap_or_default();
+                    for stack in contents {
+                        crate::block::drops::spawn_item_moving(self, pos, stack, None, 0, None);
+                    }
                     self.entities.despawn(id);
                     continue;
                 }
@@ -331,11 +381,13 @@ impl Level {
             let exposure = f64::from(seen);
             // `ExplosionDamageCalculator.getEntityDamageAmount` for the living entities.
             let crystal = kind == entity_ids::END_CRYSTAL;
+            let decor = crate::decoration::ticks(kind);
             if style.damages_entities
                 && (player.is_some()
                     || crystal
                     || mob.is_some_and(crate::mob::MobData::is_alive)
-                    || is_boat)
+                    || is_boat
+                    || decor)
             {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * exposure;
@@ -347,7 +399,13 @@ impl Level {
                     source,
                     indirect,
                     center,
+                    blocklike: destroys && !wind,
+                    wind,
                 });
+            }
+            if decor || crate::decoration::is_decor_kind(kind) {
+                // Block-attached entities break when pushed; displays and markers do not move.
+                continue;
             }
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
             let knockback =
@@ -386,6 +444,7 @@ impl Level {
         indirect: Option<EntityId>,
         interaction: BlockInteraction,
         radius: f32,
+        center: Vec3,
     ) {
         // `Util.shuffle(targetBlocks, level.random)`.
         for i in (2..=targets.len()).rev() {
@@ -396,14 +455,32 @@ impl Level {
         let mut stacks: Vec<(BlockPos, crate::item::ItemStack)> = Vec::new();
         let mut loot = Vec::new();
         let decay = (interaction == BlockInteraction::DestroyWithDecay).then_some(radius);
+        let trigger =
+            interaction == BlockInteraction::TriggerBlock && self.can_trigger_blocks(source);
         for &pos in targets.iter() {
             // `Block.onExplosionHit`.
             let state = self.block(pos);
+            if trigger {
+                self.trigger_block(state, pos);
+            }
+            let hive = crate::block::beehive::is_beehive(state.block());
             if state.is_air() || interaction == BlockInteraction::TriggerBlock {
+                // `BeehiveBlock.onExplosionHit` angers the bees around in any explosion.
+                if hive {
+                    crate::block::beehive::anger_nearby_bees(self, pos);
+                }
                 continue;
+            }
+            if state.is(ids::CREAKING_HEART) {
+                crate::block::creaking_heart::on_explosion_hit(
+                    self, pos, state, source, indirect, center,
+                );
             }
             // `dropFromExplosion`: everything but TNT; the loot is rolled block by block.
             if !state.is(ids::TNT) {
+                if hive {
+                    crate::block::beehive::exploded(self, pos, state, source);
+                }
                 loot.clear();
                 drops::explosion_loot(self, pos, state, decay, source, &mut loot);
                 for mut stack in loot.drain(..) {
@@ -426,11 +503,66 @@ impl Level {
             if state.is(ids::TNT) {
                 tnt::was_exploded(self, pos, indirect);
             }
+            if hive {
+                crate::block::beehive::anger_nearby_bees(self, pos);
+            }
         }
-        // `Block.popResource` of the merged stacks.
-        if self.settings.block_drops {
-            for (pos, stack) in stacks {
-                drops::pop_resource(self, pos, stack);
+        // `Block.popResource` of the merged stacks (it draws the positions even without
+        // `block_drops`).
+        for (pos, stack) in stacks {
+            drops::pop_resource(self, pos, stack);
+        }
+    }
+
+    /// `canTriggerBlocks`: a breeze's wind charge only with `mobGriefing`.
+    fn can_trigger_blocks(&self, source: Option<EntityId>) -> bool {
+        let breeze = source
+            .and_then(|s| self.entities.store.get(s))
+            .is_some_and(|e| e.kind() == entity_ids::BREEZE_WIND_CHARGE);
+        !breeze || self.settings.mob_griefing
+    }
+
+    /// The `onExplosionHit` overrides of the blocks a triggering explosion reaches.
+    fn trigger_block(&mut self, state: BlockState, pos: BlockPos) {
+        use crate::block::redstone;
+        match state.block().info().kind {
+            BlockKind::DoorBlock | BlockKind::WeatheringCopperDoorBlock => {
+                redstone::door_explosion_hit(self, state, pos);
+            }
+            BlockKind::TrapDoorBlock | BlockKind::WeatheringCopperTrapDoorBlock => {
+                redstone::trapdoor_explosion_hit(self, state, pos);
+            }
+            BlockKind::FenceGateBlock => redstone::fence_gate_explosion_hit(self, state, pos),
+            BlockKind::ButtonBlock => redstone::button_explosion_hit(self, state, pos),
+            BlockKind::LeverBlock => redstone::lever_pull(self, state, pos),
+            BlockKind::BellBlock => {
+                crate::block::bell::attempt_to_ring(self, None, pos, None);
+            }
+            BlockKind::CandleBlock | BlockKind::CandleCakeBlock if state.flag("lit") => {
+                // `AbstractCandleBlock.extinguish(null, ...)`; the smoke is the client's.
+                self.set_block(
+                    pos,
+                    state.set_flag("lit", false),
+                    update::ALL | update::IMMEDIATE,
+                );
+                let sound = crate::block::sound_id("block.candle.extinguish");
+                self.play_block_sound(None, pos, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
+                let event = super::game_event::events().block_change;
+                self.game_event_at(None, event, pos);
+            }
+            _ => {}
+        }
+    }
+
+    /// `createFire`: a third of the blown up air positions above solid blocks catch fire.
+    fn create_fire(&mut self, targets: &[BlockPos]) {
+        for &pos in targets {
+            if self.random.next_int_bounded(3) == 0
+                && self.block(pos).is_air()
+                && vanillite_worldgen::behaviour::is_solid_render(self.block(pos.offset(0, -1, 0)))
+            {
+                let fire = crate::block::place::fire_state(&*self, pos);
+                self.set_block_and_update(pos, fire);
             }
         }
     }

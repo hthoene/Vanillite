@@ -68,7 +68,7 @@ impl FamilyHooks for Hooks {
             _ => 1.0,
         }
     }
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         Some(boss::guardian::sound_variant(
             m,
             m.kind.default_sound(DefaultSound::Ambient),

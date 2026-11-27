@@ -630,12 +630,13 @@ pub fn save_arrow(
     out.insert("pickup", a.pickup as i8);
     out.insert("damage", a.base_damage);
     out.insert("crit", a.crit);
-    out.insert("PierceLevel", 0_i8);
-    out.insert("SoundEvent", "minecraft:entity.arrow.hit");
+    #[allow(clippy::cast_possible_wrap)]
+    out.insert("PierceLevel", a.pierce_level as i8);
+    out.insert("SoundEvent", hit_sound(a));
     if let Some(o) = owner {
         out.insert("Owner", uuid_ints(o));
     }
-    out.insert("HasBeenShot", true);
+    out.insert("HasBeenShot", a.has_been_shot);
     out.insert("LeftOwner", a.left_owner);
     out.insert("item", crate::item_nbt::stack_to_nbt(&a.item));
     if let Some(w) = a.weapon.as_ref().filter(|w| !w.is_empty()) {
@@ -645,6 +646,15 @@ pub fn save_arrow(
         out.insert("Duration", a.spectral_duration);
     }
     out
+}
+
+/// The sound an arrow makes when it hits (`soundEvent`).
+fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
+    if a.crossbow_sound {
+        "minecraft:item.crossbow.hit"
+    } else {
+        "minecraft:entity.arrow.hit"
+    }
 }
 
 /// An arrow from entity NBT (its owner is not resolved).
@@ -692,6 +702,14 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             item,
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),
+            has_been_shot: matches!(tag.get("HasBeenShot"), Some(Tag::Byte(b)) if *b != 0),
+            pierce_level: u8::try_from(int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127))
+                .unwrap_or(0),
+            pierced: Vec::new(),
+            crossbow_sound: matches!(
+                tag.get("SoundEvent"),
+                Some(Tag::String(s)) if s.as_str() == "minecraft:item.crossbow.hit"
+            ),
             weapon: match tag.get("weapon") {
                 Some(Tag::Compound(c)) => Some(crate::item_nbt::stack_from_nbt(c)),
                 _ => None,
@@ -773,16 +791,7 @@ fn load_chest_vehicle(
     None
 }
 
-/// The keys of the kinds Vanillite does not simulate, kept as they were
-/// (`BaseCommandBlock.save`, `BaseSpawner.save`).
-const COMMAND_BLOCK_KEYS: &[&str] = &[
-    "SuccessCount",
-    "LastOutput",
-    "TrackOutput",
-    "UpdateLastExecution",
-    "LastExecution",
-    "CustomName",
-];
+/// The keys of the kind Vanillite does not simulate, kept as they were (`BaseSpawner.save`).
 const SPAWNER_KEYS: &[&str] = &[
     "Delay",
     "MinSpawnDelay",
@@ -842,7 +851,11 @@ pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) ->
             }
         }
         MinecartKind::CommandBlock => {
-            out.insert("Command", m.command.clone());
+            let mut base = Compound::new();
+            m.command.save(&mut base);
+            for (key, value) in base.iter() {
+                out.insert(key, value.clone());
+            }
         }
         MinecartKind::Plain | MinecartKind::Spawner => {}
     }
@@ -897,18 +910,7 @@ pub fn load_minecart(
                 .unwrap_or(1.0)
                 .clamp(0.0, 128.0);
         }
-        MinecartKind::CommandBlock => {
-            m.command = tag
-                .get("Command")
-                .and_then(Tag::as_str)
-                .unwrap_or("")
-                .to_owned();
-            for &key in COMMAND_BLOCK_KEYS {
-                if let Some(v) = tag.get(key) {
-                    m.extra.insert(key, v.clone());
-                }
-            }
-        }
+        MinecartKind::CommandBlock => m.command.load(tag),
         MinecartKind::Spawner => {
             for &key in SPAWNER_KEYS {
                 if let Some(v) = tag.get(key) {
@@ -918,7 +920,5 @@ pub fn load_minecart(
         }
         MinecartKind::Plain => {}
     }
-    // The command block's own custom name lives in the entity's name.
-    m.extra.remove("CustomName");
     Some((e, m))
 }

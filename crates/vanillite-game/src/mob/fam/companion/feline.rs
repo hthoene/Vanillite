@@ -19,9 +19,6 @@ use crate::mob::kinds::Kind;
 use crate::mob::{MobData, Tick, nav};
 use crate::player::encode::{DataWriter, serializer};
 
-/// The sea level of the Overworld (ocelots only spawn there).
-const SEA_LEVEL: i32 = 63;
-
 /// `cat_variant` ids (alphabetical): all_black, black, british_shorthair, calico, jellie,
 /// persian, ragdoll, red, siamese, tabby, white.
 const CAT_VARIANTS: [&str; 11] = [
@@ -245,12 +242,11 @@ pub fn cat_sound(m: &MobData, which: &str) -> &'static str {
 }
 
 /// `Cat.getAmbientSound`.
-pub fn cat_ambient_sound(m: &MobData) -> Option<&'static str> {
+pub fn cat_ambient_sound(m: &mut MobData) -> Option<&'static str> {
     Some(if m.tame {
         if m.in_love > 0 {
             cat_sound(m, "purr")
-        } else if m.tick_count % 4 == 0 {
-            // `random.nextInt(4) == 0` (the tick count stands in for the roll).
+        } else if m.random.next_int_bounded(4) == 0 {
             cat_sound(m, "purreow")
         } else {
             cat_sound(m, "ambient")
@@ -426,7 +422,7 @@ pub fn ocelot_spawn_rules(
     if random.next_int_bounded(3) == 0 {
         return false;
     }
-    if pos.y < SEA_LEVEL {
+    if pos.y < crate::mob::sea_level(level) {
         return false;
     }
     let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));

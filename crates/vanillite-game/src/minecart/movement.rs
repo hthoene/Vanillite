@@ -156,7 +156,7 @@ pub(super) fn tick(
     if on_rails {
         move_along_track(&mut c, rail_pos, state);
         if state.is(block_ids::ACTIVATOR_RAIL) && c.exists() {
-            super::activate(c.ents, c.env, id, powered(state));
+            super::activate(c.ents, c.env, c.cx, id, powered(state));
         }
     } else {
         come_off_track(&mut c);
@@ -565,7 +565,8 @@ fn collide(c: &mut Cart<'_, '_>, aabb: Aabb, delta: Vec3) -> Vec3 {
     let mut boxes = std::mem::take(&mut c.cx.boxes);
     boxes.clear();
     let area = aabb.expand_towards(delta.x, delta.y, delta.z);
-    physics::block_boxes(c.level, &area, &mut boxes);
+    physics::block_boxes(&c.level.view(), &area, &mut boxes);
+    physics::border_boxes(&c.level.border, &aabb, &area, &mut boxes);
     let size = (area.max_x - area.min_x + area.max_y - area.min_y + area.max_z - area.min_z) / 3.0;
     if size >= 1.0e-7 {
         let root = root_vehicle(c.ents, c.id);
@@ -599,7 +600,7 @@ fn root_vehicle(ents: &Entities, id: EntityId) -> EntityId {
 /// boats and minecarts.
 fn pushable(ents: &Entities, id: EntityId) -> bool {
     if let Some(m) = ents.mob(id) {
-        return m.is_alive();
+        return m.is_alive() && crate::decoration::stand::pushable(m);
     }
     if let Some(p) = ents.player(id) {
         return p.game_mode != vanillite_config::GameMode::Spectator
@@ -679,6 +680,15 @@ fn move_cart(c: &mut Cart<'_, '_>, delta: Vec3) {
                 } else {
                     0.0
                 };
+            }
+            if restitution > 0.0 {
+                // `bounceOn`, then `gameEvent(BOUNCE)`.
+                crate::survival::game_event(
+                    c.env.out,
+                    crate::level::game_event::events().bounce,
+                    new_pos,
+                    Some(c.id),
+                );
             }
             after.y = if restitution > 0.0 {
                 let portion = movement.y / current.y;

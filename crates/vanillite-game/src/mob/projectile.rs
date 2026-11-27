@@ -50,6 +50,15 @@ pub struct ArrowData {
     pub in_ground_time: i32,
     /// The glowing ticks of a spectral arrow (`duration`).
     pub spectral_duration: i32,
+    /// `hasBeenShot`: the `PROJECTILE_SHOOT` game event was posted.
+    pub has_been_shot: bool,
+    /// `PIERCE_LEVEL`: how many more entities it passes through (Piercing).
+    pub pierce_level: u8,
+    /// `piercingIgnoreEntityIds`: the entities it pierced (hits them no more).
+    pub pierced: Vec<EntityId>,
+    /// `soundEvent` is `item.crossbow.hit` (shot from a crossbow) instead of
+    /// `entity.arrow.hit`.
+    pub crossbow_sound: bool,
     /// The bow or crossbow it was shot from (`firedFromWeapon`).
     pub weapon: Option<crate::item::ItemStack>,
 }
@@ -80,6 +89,10 @@ impl ArrowData {
             item,
             in_ground_time: 0,
             spectral_duration: 200,
+            has_been_shot: false,
+            pierce_level: 0,
+            pierced: Vec::new(),
+            crossbow_sound: false,
             weapon: None,
         }
     }
@@ -117,14 +130,18 @@ pub fn arrow_of(
 
 /// `startUsingItem` with the bow: the "using item" living flag is synched.
 pub fn start_using_item(t: &mut Tick<'_, '_>) {
-    t.mob().using_item = 0;
+    let m = t.mob();
+    m.using_item = 0;
+    m.stabbed.clear();
     t.core_mut().mark_data_dirty();
 }
 
 /// `stopUsingItem`.
 pub fn stop_using_item(t: &mut Tick<'_, '_>) {
     if t.mob_ref().using_item >= 0 {
-        t.mob().using_item = -1;
+        let m = t.mob();
+        m.using_item = -1;
+        m.stabbed = Vec::new();
         t.core_mut().mark_data_dirty();
     }
 }
@@ -309,6 +326,10 @@ pub fn tick_arrow(
     let mut rot = e.rot();
     let (kind, network_id) = (e.kind(), e.network_id().0);
     let mut random = LegacyRandom::from_state(a.random_state);
+    // `Projectile.tick`: the first tick posts `PROJECTILE_SHOOT` from the shooter.
+    if !std::mem::replace(&mut a.has_been_shot, true) {
+        super::missile::shoot_event(env.out, pos, a.owner);
+    }
     a.tick_count += 1;
     let block_pos = BlockPos::containing(pos.x, pos.y, pos.z);
     let state = level.block(block_pos);
@@ -337,7 +358,7 @@ pub fn tick_arrow(
         let falls = a.last_state != Some(state) && {
             let probe =
                 Aabb::new(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z).inflate(0.06, 0.06, 0.06);
-            physics::no_collision(level, &probe, &mut cx.boxes)
+            physics::no_collision(&level.view(), &probe, &mut cx.boxes)
         };
         if falls {
             a.in_ground = false;
@@ -349,7 +370,7 @@ pub fn tick_arrow(
             a.life = 0;
         } else {
             a.life += 1;
-            if a.life >= 1200 {
+            if a.life >= cx.settings.arrow_despawn_ticks {
                 discard = true;
             }
         }
@@ -392,9 +413,9 @@ pub fn tick_arrow(
             .aabb()
             .expand_towards(velocity.x, velocity.y, velocity.z)
             .inflate(1.0, 1.0, 1.0);
-        let mut best: Option<(EntityId, f64, Vec3)> = None;
+        let mut hits: Vec<(EntityId, f64, Vec3)> = Vec::new();
         ents.store.for_each_in(&area, false, |other| {
-            if other == id {
+            if other == id || a.pierced.contains(&other) {
                 return;
             }
             if !a.left_owner && a.owner == Some(other) {
@@ -425,18 +446,30 @@ pub fn tick_arrow(
                 aabb_clip(&bb, outside, towards).map(|_| outside)
             });
             if let Some(hit) = hit {
-                let d = pos.distance_to_sqr(oe.pos());
-                if best.is_none_or(|(_, bd, _)| d < bd) {
-                    best = Some((other, d, hit));
-                }
+                hits.push((other, pos.distance_to_sqr(oe.pos()), hit));
             }
         });
-        if let Some((target, _, hit)) = best {
-            pos = hit;
+        // `stepMoveAndHit`: the entities on the way, nearest first, are hit one after the
+        // other until one stops the arrow; a piercing arrow then flies on.
+        hits.sort_by(|x, y| x.1.total_cmp(&y.1));
+        let mut deflected = false;
+        if let Some(&(_, _, first)) = hits.first() {
+            pos = first;
+        }
+        for &(target, _, hit) in &hits {
+            // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
+            super::missile::land_event(env.out, level, id, None, hit);
             // `onHitEntity`.
             let pow = velocity.length_sqr().sqrt();
             #[allow(clippy::cast_possible_truncation)]
             let mut damage = ceil((pow * a.base_damage).clamp(0.0, 2.147_483_647e9));
+            if a.pierce_level > 0 {
+                if a.pierced.len() > usize::from(a.pierce_level) {
+                    discard = true;
+                    break;
+                }
+                a.pierced.push(target);
+            }
             if a.crit {
                 let inc = random.next_int_bounded(damage / 2 + 2);
                 damage = damage.saturating_add(inc);
@@ -517,13 +550,16 @@ pub fn tick_arrow(
                     env.out,
                     None,
                     pos,
-                    "minecraft:entity.arrow.hit",
+                    hit_sound(&a),
                     SoundSource::Neutral,
                     1.0,
                     pitch,
                     seed,
                 );
-                discard = true;
+                if a.pierce_level == 0 {
+                    discard = true;
+                    break;
+                }
             } else {
                 // Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back at half
                 // the power, turned by 170° to 190°.
@@ -533,8 +569,14 @@ pub fn tick_arrow(
                 if velocity.length_sqr() < 1.0e-7 {
                     discard = true;
                 }
+                deflected = true;
+                break;
             }
-        } else if let Some((hit_pos, at)) = block_hit {
+        }
+        // A piercing arrow that went through everything on its way: no entity it has not
+        // pierced is left, so it goes on to the block or the end of its step.
+        let flies_on = hits.is_empty() || (!discard && !deflected && a.pierce_level > 0);
+        if flies_on && let Some((hit_pos, at)) = block_hit {
             // `onHitBlock`.
             let sign = |v: f64| {
                 if v > 0.0 {
@@ -550,22 +592,26 @@ pub fn tick_arrow(
             pos = at - offset;
             velocity = Vec3::ZERO;
             a.last_state = Some(level.block(hit_pos));
-            a.in_ground = true;
-            a.shake = 7;
-            a.crit = false;
             let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
             let seed = crate::survival::sound_seed();
             play_sound(
                 env.out,
                 None,
                 pos,
-                "minecraft:entity.arrow.hit",
+                hit_sound(&a),
                 SoundSource::Neutral,
                 1.0,
                 pitch,
                 seed,
             );
-        } else {
+            super::missile::land_event(env.out, level, id, Some(hit_pos), at);
+            a.in_ground = true;
+            a.shake = 7;
+            a.crit = false;
+            a.pierce_level = 0;
+            a.crossbow_sound = false;
+            a.pierced.clear();
+        } else if flies_on {
             pos = to;
         }
         if !super::is_water(level.block(BlockPos::containing(pos.x, pos.y, pos.z))) {
@@ -612,6 +658,15 @@ pub fn tick_arrow(
     }
     if let Some(d) = ents.arrow_mut(id) {
         *d = a;
+    }
+}
+
+/// `soundEvent`: what the arrow sounds like when it hits.
+fn hit_sound(a: &ArrowData) -> &'static str {
+    if a.crossbow_sound {
+        "minecraft:item.crossbow.hit"
+    } else {
+        "minecraft:entity.arrow.hit"
     }
 }
 

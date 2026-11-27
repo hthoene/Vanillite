@@ -5,8 +5,9 @@
 //! enum and the [`FamilyHooks`] implementation that dispatches to the groups.
 
 mod bat;
-mod bee;
+pub(crate) mod bee;
 mod dolphin;
+pub mod ender_pearl;
 pub(crate) mod fish;
 mod golem;
 mod mooshroom;
@@ -36,9 +37,6 @@ use crate::mob::path::{MalusTable, PathType};
 use crate::mob::{Environment, MobData, Tick};
 use crate::player::encode::DataWriter;
 use crate::survival::damage::DamageSource;
-
-/// The sea level of the overworld (`getSeaLevel`), the dimension of the water mobs.
-pub(crate) const SEA_LEVEL: i32 = 63;
 
 /// The family's hooks.
 #[derive(Debug)]
@@ -74,6 +72,8 @@ pub struct State {
     pub movement_vector: Vec3,
     pub x_body_rot: f32,
     pub x_body_rot_o: f32,
+    /// `yBodyRotO` (the body yaw after `baseTick`), for the ink's direction.
+    pub y_body_rot_o: f32,
     /// `GlowSquid` dark ticks.
     pub dark_ticks: i32,
     // Dolphins.
@@ -91,6 +91,10 @@ pub struct State {
     pub cooldown_flower: i32,
     pub flower_pos: Option<BlockPos>,
     pub hive_pos: Option<BlockPos>,
+    /// `BeeGoToHiveGoal.blacklistedTargets` (at most three, oldest first).
+    pub hive_blacklist: Vec<BlockPos>,
+    /// The nodes of `BeeGoToHiveGoal.lastPath`.
+    pub hive_last_path: Option<Vec<crate::mob::path::PathNode>>,
     pub underwater_ticks: i32,
     pub pollinating: bool,
     // Turtles.
@@ -133,6 +137,7 @@ impl State {
         movement_vector: Vec3::ZERO,
         x_body_rot: 0.0,
         x_body_rot_o: 0.0,
+        y_body_rot_o: 0.0,
         dark_ticks: 0,
         got_fish: false,
         moistness: 2400,
@@ -146,6 +151,8 @@ impl State {
         cooldown_flower: 0,
         flower_pos: None,
         hive_pos: None,
+        hive_blacklist: Vec::new(),
+        hive_last_path: None,
         underwater_ticks: 0,
         pollinating: false,
         home_pos: BlockPos::new(0, 0, 0),
@@ -230,9 +237,6 @@ pub enum Goal {
     DolphinMoveToItem { cooldown: i32 },
     /// `Dolphin.PlayWithItemsGoal`.
     DolphinPlayWithItems { cooldown: i32 },
-    /// `MoveBackToVillageGoal(golem, 0.6, false)`: outside a village it rolls its
-    /// `RandomStrollGoal` chance, then finds no section closer to a village (villages: #60).
-    MoveBackToVillage,
     /// `MoveTowardsTargetGoal(mob, speed, within)`.
     MoveTowardsTarget {
         speed: f64,
@@ -284,6 +288,28 @@ pub enum Goal {
     BeeGoToKnownFlower { travelling: i32 },
     /// `ValidateFlowerGoal` (its cooldown is rolled at construction).
     BeeValidateFlower { cooldown: i32, last_validate: i64 },
+    /// `ValidateHiveGoal` (its cooldown is rolled at construction).
+    BeeValidateHive { cooldown: i32, last_validate: i64 },
+    /// `BeeEnterHiveGoal`.
+    BeeEnterHive,
+    /// `BeeLocateHiveGoal`.
+    BeeLocateHive,
+    /// `BeeGoToHiveGoal`.
+    BeeGoToHive { travelling: i32, stuck: i32 },
+    /// `GolemRandomStrollInVillageGoal(0.6)` and (`back`) `MoveBackToVillageGoal(0.6, false)`.
+    GolemStroll {
+        back: bool,
+        speed: f64,
+        interval: i32,
+        wanted: Vec3,
+    },
+    /// `OfferFlowerGoal`.
+    OfferFlower { target: Option<EntityId>, tick: i32 },
+    /// `DefendVillageTargetGoal`: `candidate` is `potentialTarget`, kept between checks.
+    DefendVillage {
+        state: crate::mob::goals::TargetState,
+        candidate: Option<EntityId>,
+    },
 }
 
 /// `Goal.Flag` bits.
@@ -540,7 +566,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         let s = st(m);
         match m.kind {
             Kind::Pufferfish | Kind::IronGolem | Kind::Bee => None,
@@ -645,7 +671,7 @@ impl FamilyHooks for Hooks {
             }
             // `Turtle.getWalkTargetValue` needs the going-home state; see `turtle`.
             Kind::Turtle => turtle::walk_target_value(level, env, pos, false),
-            // `Strider.getWalkTargetValue` (in lava: negative infinity off lava, see `strider`).
+            // `Strider.getWalkTargetValue` (in lava: negative infinity off lava, see `randompos::walk_value`).
             Kind::Strider => {
                 if crate::mob::is_lava(level.block(pos)) {
                     10.0
@@ -653,6 +679,8 @@ impl FamilyHooks for Hooks {
                     0.0
                 }
             }
+            // `AgeableWaterCreature`s are no `Animal`s: `PathfinderMob.getWalkTargetValue`.
+            Kind::Squid | Kind::GlowSquid | Kind::Dolphin => 0.0,
             _ if Self::ageable(kind) => {
                 if below.block() == vanillite_data::block::ids::GRASS_BLOCK {
                     10.0
@@ -1149,12 +1177,15 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. }
             | Goal::MoveTowardsTarget { .. }
-            | Goal::MoveBackToVillage
             | Goal::TurtlePanic { .. }
             | Goal::TurtleStroll { .. }
             | Goal::BeePollinate { .. }
             | Goal::BeeWander
-            | Goal::BeeGoToKnownFlower { .. } => MOVE,
+            | Goal::BeeGoToKnownFlower { .. }
+            | Goal::BeeGoToHive { .. }
+            | Goal::GolemStroll { .. } => MOVE,
+            Goal::OfferFlower { .. } => MOVE | LOOK,
+            Goal::DefendVillage { .. } => flag::TARGET,
             Goal::DolphinSwimToTreasure { .. }
             | Goal::DolphinSwimWithPlayer { .. }
             | Goal::BreathAir
@@ -1192,13 +1223,10 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinJump { .. }
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::can_use(t, g),
-            Goal::MoveTowardsTarget { .. } => golem::can_use(t, g),
-            Goal::MoveBackToVillage => {
-                // `RandomStrollGoal.canUse` with interval 10, then `getPosition` is null.
-                let bound = crate::mob::goals::reduced(10);
-                let _ = t.mob().random.next_int_bounded(bound);
-                false
-            }
+            Goal::MoveTowardsTarget { .. }
+            | Goal::GolemStroll { .. }
+            | Goal::OfferFlower { .. }
+            | Goal::DefendVillage { .. } => golem::can_use(t, g),
             Goal::TurtlePanic { .. }
             | Goal::TurtleBreed { .. }
             | Goal::TurtleLayEgg(_)
@@ -1211,13 +1239,17 @@ impl FamilyHooks for Hooks {
             | Goal::BeeGrowCrop
             | Goal::BeeWander
             | Goal::BeeGoToKnownFlower { .. }
-            | Goal::BeeValidateFlower { .. } => bee::can_use(t, g),
+            | Goal::BeeValidateFlower { .. }
+            | Goal::BeeValidateHive { .. }
+            | Goal::BeeEnterHive
+            | Goal::BeeLocateHive
+            | Goal::BeeGoToHive { .. } => bee::can_use(t, g),
         }
     }
 
     fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         match g {
-            Goal::Idle | Goal::MoveBackToVillage => false,
+            Goal::Idle => false,
             Goal::Swim { .. } | Goal::FollowFlockLeader { .. } | Goal::Puff => {
                 fish::can_continue(t, g)
             }
@@ -1229,7 +1261,10 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinJump { .. }
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::can_continue(t, g),
-            Goal::MoveTowardsTarget { .. } => golem::can_continue(t, g),
+            Goal::MoveTowardsTarget { .. }
+            | Goal::GolemStroll { .. }
+            | Goal::OfferFlower { .. }
+            | Goal::DefendVillage { .. } => golem::can_continue(t, g),
             Goal::TurtlePanic { .. }
             | Goal::TurtleBreed { .. }
             | Goal::TurtleLayEgg(_)
@@ -1242,7 +1277,11 @@ impl FamilyHooks for Hooks {
             | Goal::BeeGrowCrop
             | Goal::BeeWander
             | Goal::BeeGoToKnownFlower { .. }
-            | Goal::BeeValidateFlower { .. } => bee::can_continue(t, g),
+            | Goal::BeeValidateFlower { .. }
+            | Goal::BeeValidateHive { .. }
+            | Goal::BeeEnterHive
+            | Goal::BeeLocateHive
+            | Goal::BeeGoToHive { .. } => bee::can_continue(t, g),
         }
     }
 
@@ -1257,7 +1296,10 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinJump { .. }
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::start(t, g),
-            Goal::MoveTowardsTarget { .. } => golem::start(t, g),
+            Goal::MoveTowardsTarget { .. }
+            | Goal::GolemStroll { .. }
+            | Goal::OfferFlower { .. }
+            | Goal::DefendVillage { .. } => golem::start(t, g),
             Goal::TurtlePanic { .. }
             | Goal::TurtleBreed { .. }
             | Goal::TurtleLayEgg(_)
@@ -1270,7 +1312,11 @@ impl FamilyHooks for Hooks {
             | Goal::BeeGrowCrop
             | Goal::BeeWander
             | Goal::BeeGoToKnownFlower { .. }
-            | Goal::BeeValidateFlower { .. } => bee::start(t, g),
+            | Goal::BeeValidateFlower { .. }
+            | Goal::BeeValidateHive { .. }
+            | Goal::BeeEnterHive
+            | Goal::BeeLocateHive
+            | Goal::BeeGoToHive { .. } => bee::start(t, g),
             _ => {}
         }
     }
@@ -1284,10 +1330,15 @@ impl FamilyHooks for Hooks {
             | Goal::DolphinMoveToItem { .. }
             | Goal::DolphinPlayWithItems { .. } => dolphin::stop(t, g),
             Goal::MoveTowardsTarget { target, .. } => *target = None,
+            Goal::GolemStroll { .. } | Goal::OfferFlower { .. } | Goal::DefendVillage { .. } => {
+                golem::stop(t, g);
+            }
             Goal::TurtleGoHome { .. } | Goal::TurtleTravel { .. } | Goal::TurtleBreed { .. } => {
                 turtle::stop(t, g);
             }
-            Goal::BeePollinate { .. } | Goal::BeeGoToKnownFlower { .. } => bee::stop(t, g),
+            Goal::BeePollinate { .. }
+            | Goal::BeeGoToKnownFlower { .. }
+            | Goal::BeeGoToHive { .. } => bee::stop(t, g),
             _ => {}
         }
     }
@@ -1312,9 +1363,11 @@ impl FamilyHooks for Hooks {
                 let target = s.block_pos;
                 s.tick_with(t, target, 1.0, 20);
             }
-            Goal::BeePollinate { .. } | Goal::BeeGrowCrop | Goal::BeeGoToKnownFlower { .. } => {
-                bee::tick(t, g)
-            }
+            Goal::BeePollinate { .. }
+            | Goal::BeeGrowCrop
+            | Goal::BeeGoToKnownFlower { .. }
+            | Goal::BeeGoToHive { .. } => bee::tick(t, g),
+            Goal::OfferFlower { .. } => golem::tick(t, g),
             _ => {}
         }
     }

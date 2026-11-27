@@ -7,6 +7,29 @@
 - Optional: [sccache](https://github.com/mozilla/sccache) as `RUSTC_WRAPPER` shares compiled
   dependencies between checkouts.
 - A JDK 25 is needed only for `cargo xtask vanilla update` and golden regeneration.
+- `cargo xtask setup` once per clone (`--global`: for every clone of this user): installs the
+  merge driver for generated and collective files (see [Merging](#merging)).
+
+## Merging
+
+Many branches land in parallel, so files that every branch extends are built to merge without
+conflicts:
+
+- **Merge driver** `vanillite` (`xtask/src/merge.rs`, installed by `cargo xtask setup`, a copy
+  of the xtask binary under `.git/vanillite/` or with `--global` under
+  `~/.local/share/vanillite/`). `.gitattributes` lists the files it merges: `Cargo.lock` (per
+  package; dependency lists as sets), the golden `KEYS.toml` files (per entry), the Pterodactyl
+  egg (per field and per variable), `Cargo.toml` files and the rule catalogue (two insertions at
+  the same place keep both; TOML must still parse, Rust must pass rustfmt) and `lib.rs`,
+  `mod.rs`, `main.rs` (the same for `mod`/`use` lines). Any other conflict stays a normal
+  conflict. Run `cargo xtask setup` again after the driver changes.
+- **After a merge** run `cargo xtask regen`: it rewrites the generated files from their sources
+  (codegen and the egg; cargo updates `Cargo.lock` while building xtask). A conflict in a
+  generated file is resolved by taking either side and running it.
+- **One file per entry** where a list grows with every change: parity scenarios
+  (`scenarios/*.json`) and their known divergences (`scenarios/divergences/<scenario>.toml`).
+  Keep new registries that way (directory scanning), or sorted with one entry per line and a
+  trailing separator.
 
 ## Everyday commands
 
@@ -21,6 +44,7 @@
 | `cargo xtask codegen --check` | Generated tables match `data/vanilla/`. |
 | `cargo xtask egg --check` | The Pterodactyl egg matches the configuration schema (`cargo xtask egg` regenerates it). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
+| `cargo xtask regen` | After a merge: rewrite generated files (codegen, egg). |
 
 ## New Minecraft versions
 
@@ -69,6 +93,32 @@ these ports by hand: landing on dev is enough. For a test before landing, use a 
 | `cargo xtask testserver status` | Services, listening ports and the last auto-deploys. |
 | `cargo xtask testserver logs [<port>]` | Follow the log. |
 | `cargo xtask testserver start\|stop\|restart [<port>]` | Control a server; stop also disables it. |
+| `cargo xtask testserver incidents [list [<count>]]` | The newest crashes and suspicious disconnects. |
+| `cargo xtask testserver incidents show <id>` | Summary and backtrace of an incident. |
+| `cargo xtask testserver incidents fetch [<id>...]` | Download bundles to `target/incidents/<id>/` (no ids: all not downloaded yet). |
+
+### Incidents
+
+No log digging: `vanillite-incidents` (a systemd service on the test server) follows the journal
+of every `vanillite@<port>` and of `vanillite-proxy` and saves an incident bundle in
+`/var/lib/vanillite-incidents/<id>/` for
+
+- every **crash**: a panic, a crashed world thread, an exit with an error, a kill or an OOM kill
+  (systemd restarts the instance as before);
+- every **suspicious disconnect**: a log line starting with `Suspicious disconnect` (the
+  server's disconnect diagnosis), a player who loses the connection within 10 s of logging in,
+  or a disconnect with an error as reason. Not on the load test instance 30901; at most one per
+  instance and player in 10 minutes.
+
+A bundle has `summary.txt` (time, instance, signature, deployed commit and binary, the players
+online with their world and login position, the trigger lines, the Vanillite frames of the
+backtrace), `backtrace.txt`, `journal.log` (the instance's journal from 5 minutes before a crash,
+2 minutes before a disconnect, to 30 seconds after) and `meta.json`. The signature is the panic
+location (the first Vanillite frame when the panic is inside std), the exit status or the
+disconnect reason; `list` marks the first incident of a signature `new`, so known crashes stand
+out from new ones. Bundles are kept 60 days, at most 300. `cargo xtask testserver status` shows
+the last five. On the test server itself: `vanillite-incidents list|show <id>`, and
+`vanillite-incidents scan <since> [<until>]` collects a past time range after the fact.
 
 ## Docker image
 
@@ -94,10 +144,18 @@ scripts/docker/install-docker.sh --client   # Docker CLI and buildx
 `deploy/pterodactyl/egg-vanillite.json` is generated from the typed schema in `vanillite-config`:
 every `server.properties` key (`ServerProperties::INFO`, except those declared `panel = false`)
 and every `vanillite.toml` rule (except the `debug` group) becomes a variable named like its
-`VANILLITE_<KEY>` override, with the documentation, default, range or allowed values. After a
-change of the schema run `cargo xtask egg`; CI and the `egg` test of xtask fail while the
-committed egg is stale. `cargo xtask egg smoke [--image <ref>]` starts an image like Wings does
-(STARTUP, `/home/container`, UID 988, read-only root) and pings it.
+`VANILLITE_<KEY>` override, with the documentation, default, range or allowed values. The
+curated `ESSENTIALS` in `xtask/src/egg.rs` come first, in their order and with plain names and
+one-sentence descriptions; all other variables follow grouped by area (`AREAS`, the first part
+of the rule's table) with the area as name prefix, so new keys appear without changes to the
+generator. Panels render `in:true,false` as a switch (Pterodactyl) and other `in:` rules as
+dropdowns: booleans and enumerations (`ValueShape::choices`) of rules get a dropdown with
+`default`, which the server ignores like an empty value (`EnvOverrides`), so the profile decides.
+The image dropdown is derived from the workspace version and the Minecraft version (tags of
+`scripts/release/meta.sh`). After a change of the schema run `cargo xtask egg`; CI and the
+`egg` test of xtask fail while the committed egg is stale. `cargo xtask egg smoke [--image
+<ref>]` starts an image like Wings does (STARTUP, `/home/container`, UID 988, read-only root)
+and pings it. How to import and use the egg is in the README.
 
 ## Fuzzing
 
@@ -164,10 +222,16 @@ Adding a mob:
    the first random call Vanillite makes differently (a missing goal, a draw from the wrong
    random, a different call order). The number of draws between two `rng` states shows how
    many calls each side made.
-4. Fix it, or record what is left in `scenarios/divergences.toml` (tick, cause, owner): the
+4. Fix it, or record what is left in `scenarios/divergences/<scenario>.toml` (tick, cause, owner): the
    check then stays green while the first difference is at exactly that tick, fails when it
    moves earlier (a regression) and asks to raise the tick when it moves later. Editing that
    file needs no new recording.
+
+Adding an action or a field to `Op` (`crates/vanillite-test/src/scenario.rs`): give the new
+field a type that implements `Default` (usually `Option<_>`) and derive `Default` for new action
+structs that need it. Every construction site names only `tick`, `kind` and the fields of its own
+kind and ends with `..Op::default()`, so a field added on another branch never breaks it; keep
+new sites that way.
 
 Scenario players are mock players: they join on a connection nobody reads and load no chunks
 (the region's chunks are the world). No client moves them, so the server does, in Vanilla as in
@@ -179,6 +243,44 @@ The recorder makes Vanilla's other hidden state fixed as well: every scenario st
 time 0, and every shuffled behaviour list (`ShufflingList`, the brains' `RunOne` gates) seeds its
 own random with the same constant (`ParityHooks.SHUFFLE_SEED`), as Vanillite's scenario world
 does.
+
+## Releases
+
+Vanillite has its own [SemVer](https://semver.org) version (`version` of `[workspace.package]`
+in `Cargo.toml`) with the Minecraft version it targets attached as build metadata; the Minecraft
+version is `VERSION_ID` of the generated `vanillite-data` (`cargo xtask vanilla update`), never
+written by hand. `vanillite --version` and the first log line show both and the commit, e.g.
+`Vanillite 0.1.0-beta.1 (Minecraft 26.3, 3bd22ae)`.
+
+| What | Scheme | Example |
+|---|---|---|
+| Git tag, GitHub release | `v<version>+mc<minecraft>` | `v0.1.0-beta.1+mc26.3` |
+| Release archive | `vanillite-<version>-mc<minecraft>-<os>-<arch>.<tar.gz\|zip>` | `vanillite-0.1.0-beta.1-mc26.3-windows-x86_64.zip` |
+| Docker tag, immutable | `<version>-mc<minecraft>` | `0.1.0-beta.1-mc26.3` |
+| Docker tag, newest of a channel for a Minecraft version | `mc<minecraft>-<channel>`, stable: `mc<minecraft>` | `mc26.3-beta`, `mc26.3` |
+| Docker tag, newest of a channel | `<channel>`, stable: `latest` | `beta`, `latest` |
+
+The channel is the first part of the pre-release (`beta` of `0.1.0-beta.1`, `rc` of
+`0.2.0-rc.1`). Pre-releases are GitHub pre-releases and never move `latest` or `mc<minecraft>`.
+`scripts/release/meta.sh [<tag>]` derives all names from the sources and fails for a tag that
+does not match them.
+
+To release: set the workspace version (and the `version` of every internal crate in
+`[workspace.dependencies]`), land it on dev, promote dev to main and push the tag
+`v<version>+mc<minecraft>` on that commit. The tag starts two workflows:
+
+- `.github/workflows/release.yml` builds the release profile for Linux (static musl, x86_64 and
+  aarch64, cargo-zigbuild), Windows (x86_64, static C runtime) and macOS (aarch64 and x86_64),
+  packs each binary with LICENSE, NOTICE and a README.txt (`scripts/release/package.sh`,
+  template `scripts/release/README.txt`) and creates the GitHub release with SHA256SUMS and
+  generated notes. A manual run (`gh workflow run release.yml --ref <branch>`) is a dry run: the
+  archives become workflow artifacts and nothing is published.
+- `.github/workflows/docker.yml` pushes the linux/amd64 and linux/arm64 image to Docker Hub with
+  the tags above. The Pterodactyl egg offers `mc<minecraft>-<channel>` (default) and `<channel>`, after the
+  first stable release `mc<minecraft>` and `latest`.
+
+The binaries hold everything but Mojang's data: the first start downloads the pinned server jar
+into `cache/` (internet access needed once, no Java).
 
 ## CI
 

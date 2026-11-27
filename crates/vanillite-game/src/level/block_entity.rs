@@ -89,6 +89,20 @@ pub enum BlockEntity {
     EndPortal,
     /// `TheEndGatewayBlockEntity`.
     EndGateway(crate::block::portal::Gateway),
+    /// `CommandBlockEntity` (impulse, chain and repeating command blocks).
+    CommandBlock(Box<crate::block::technical::command_block::CommandBlock>),
+    /// `StructureBlockEntity`.
+    StructureBlock(Box<crate::block::technical::structure_block::StructureBlock>),
+    /// `JigsawBlockEntity`.
+    Jigsaw(Box<crate::block::technical::jigsaw::Jigsaw>),
+    /// `TestBlockEntity`.
+    TestBlock(Box<crate::block::technical::test_block::TestBlock>),
+    /// `TestInstanceBlockEntity`.
+    TestInstance(Box<crate::block::technical::test_instance::TestInstance>),
+    /// `BeehiveBlockEntity` (beehives and bee nests).
+    Beehive(Box<crate::block::beehive::Beehive>),
+    /// `CreakingHeartBlockEntity`.
+    CreakingHeart(Box<crate::block::creaking_heart::CreakingHeart>),
     /// `JukeboxBlockEntity`.
     Jukebox(Box<crate::block::jukebox::Jukebox>),
     /// `EnchantingTableBlockEntity`: its custom name.
@@ -156,6 +170,9 @@ pub struct BlockEntities {
     next_ticker: u32,
     /// Game event listeners, of block entities and (later) entities.
     pub(super) listeners: GameEventListeners,
+    /// The number of loaded End gateways: entities look for gateways around them only while
+    /// there are any.
+    gateways: usize,
 }
 
 impl BlockEntities {
@@ -189,6 +206,11 @@ impl BlockEntities {
         self.chunks.is_empty()
     }
 
+    /// Whether an End gateway is loaded.
+    pub fn has_gateways(&self) -> bool {
+        self.gateways > 0
+    }
+
     /// `setBlockEntity` / `addAndRegisterBlockEntity`: replaces the block entity at `pos`; a
     /// ticking kind keeps the ticker slot of the one it replaces (`RebindableTickingBlockEntity
     /// Wrapper.rebind`) or gets a new one at the end of the tick order.
@@ -209,7 +231,17 @@ impl BlockEntities {
             (false, _) => None,
         };
         let new_listener = listener_of(pos, &entity);
-        if let Some(old) = entries.insert(pos, Entry { entity, ticker })
+        let gateway = matches!(entity, BlockEntity::EndGateway(_));
+        let old = entries.insert(pos, Entry { entity, ticker });
+        let old_gateway = matches!(
+            old,
+            Some(Entry {
+                entity: BlockEntity::EndGateway(_),
+                ..
+            })
+        );
+        self.gateways = self.gateways + usize::from(gateway) - usize::from(old_gateway);
+        if let Some(old) = old
             && let Some(listener) = listener_of(pos, &old.entity)
             && Some(listener) != new_listener
         {
@@ -230,6 +262,9 @@ impl BlockEntities {
             self.chunks.remove(&chunk);
         }
         self.touched.insert(chunk);
+        if matches!(removed.entity, BlockEntity::EndGateway(_)) {
+            self.gateways -= 1;
+        }
         if let Some(listener) = listener_of(pos, &removed.entity) {
             self.listeners.unregister(listener);
         }
@@ -253,6 +288,9 @@ impl BlockEntities {
     fn remove_chunk(&mut self, chunk: ChunkPos) {
         if let Some(entries) = self.chunks.remove(&chunk) {
             for (pos, entry) in entries {
+                if matches!(entry.entity, BlockEntity::EndGateway(_)) {
+                    self.gateways -= 1;
+                }
                 if let Some(listener) = listener_of(pos, &entry.entity) {
                     self.listeners.unregister(listener);
                 }
@@ -275,12 +313,17 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::DecoratedPot(_)
         | BlockEntity::ChiseledBookshelf(_)
         | BlockEntity::Brushable(_)
+        | BlockEntity::CommandBlock(_)
+        | BlockEntity::StructureBlock(_)
+        | BlockEntity::Jigsaw(_)
+        | BlockEntity::TestBlock(_)
+        | BlockEntity::TestInstance(_)
         | BlockEntity::EnchantingTable(_)
         | BlockEntity::Shelf(_)
         | BlockEntity::CopperGolemStatue(_)
         | BlockEntity::PotentSulfur { .. } => None,
-        BlockEntity::Jukebox(_) => Some(crate::block::jukebox::tick),
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
+        BlockEntity::Beehive(_) => Some(crate::block::beehive::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
         BlockEntity::Beacon(_) => Some(crate::block::beacon::tick),
         BlockEntity::Conduit(_) => Some(crate::block::beacon::conduit_tick),
@@ -292,12 +335,14 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         BlockEntity::Hopper(_) => Some(crate::block::hopper::push_items_tick),
         BlockEntity::DaylightDetector => Some(crate::block::sensor::daylight_detector_tick),
         BlockEntity::Bell(_) => Some(crate::block::bell::tick),
+        BlockEntity::Jukebox(_) => Some(crate::block::jukebox::tick),
         BlockEntity::SculkSensor(_) => Some(crate::block::sculk::tick_block_entity),
         BlockEntity::Spawner(_) => Some(crate::block::spawner::tick),
         BlockEntity::TrialSpawner(_) => Some(crate::block::trial_spawner::tick),
         BlockEntity::Vault(_) => Some(crate::block::vault::tick),
         BlockEntity::SculkShrieker(_) => Some(crate::block::sculk_shrieker::tick_block_entity),
         BlockEntity::SculkCatalyst(_) => Some(crate::block::sculk_catalyst::tick_block_entity),
+        BlockEntity::CreakingHeart(_) => Some(crate::block::creaking_heart::server_tick),
     }
 }
 
@@ -332,6 +377,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Bell(Bell::default()))
     } else if block == ids::LECTERN {
         Some(BlockEntity::Lectern(Lectern::default()))
+    } else if block == ids::JUKEBOX {
+        Some(BlockEntity::Jukebox(Box::default()))
     } else if block == ids::SCULK_SENSOR || block == ids::CALIBRATED_SCULK_SENSOR {
         Some(BlockEntity::SculkSensor(Box::new(SculkSensor::new(
             block == ids::CALIBRATED_SCULK_SENSOR,
@@ -350,6 +397,8 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::SculkCatalyst(Box::default()))
     } else if crate::block::sign::is_sign(block) {
         Some(BlockEntity::Sign(Box::default()))
+    } else if let Some(entity) = crate::block::technical::new_block_entity(state) {
+        Some(entity)
     } else if block == ids::END_PORTAL {
         Some(BlockEntity::EndPortal)
     } else if block == ids::END_GATEWAY {
@@ -358,8 +407,6 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         ))
     } else if block == ids::DECORATED_POT {
         Some(BlockEntity::DecoratedPot(Box::default()))
-    } else if block == ids::JUKEBOX {
-        Some(BlockEntity::Jukebox(Box::default()))
     } else if block == ids::ENCHANTING_TABLE {
         Some(BlockEntity::EnchantingTable(None))
     } else if block == ids::POTENT_SULFUR {
@@ -385,10 +432,14 @@ pub fn new_block_entity(state: BlockState) -> Option<BlockEntity> {
         Some(BlockEntity::Brushable(Box::default()))
     } else if crate::block::campfire::is_campfire(block) {
         Some(BlockEntity::Campfire(Box::default()))
+    } else if crate::block::beehive::is_beehive(block) {
+        Some(BlockEntity::Beehive(Box::default()))
     } else if crate::block::decor::is_skull(block) {
         Some(BlockEntity::Skull(Box::default()))
     } else if crate::block::decor::is_banner(block) {
         Some(BlockEntity::Banner(Box::default()))
+    } else if block == ids::CREAKING_HEART {
+        Some(BlockEntity::CreakingHeart(Box::default()))
     } else {
         crate::block::container::new_block_entity(block)
     }
@@ -412,6 +463,7 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::DaylightDetector => state.block() == ids::DAYLIGHT_DETECTOR,
         BlockEntity::Bell(_) => state.block() == ids::BELL,
         BlockEntity::Lectern(_) => state.block() == ids::LECTERN,
+        BlockEntity::Jukebox(_) => state.block() == ids::JUKEBOX,
         BlockEntity::SculkSensor(sensor) => {
             state.block()
                 == if sensor.calibrated {
@@ -454,17 +506,25 @@ fn is_valid(entity: &BlockEntity, state: BlockState) -> bool {
         BlockEntity::DecoratedPot(_) => state.block() == ids::DECORATED_POT,
         BlockEntity::ChiseledBookshelf(_) => state.block() == ids::CHISELED_BOOKSHELF,
         BlockEntity::Campfire(_) => crate::block::campfire::is_campfire(state.block()),
+        BlockEntity::Beehive(_) => crate::block::beehive::is_beehive(state.block()),
         BlockEntity::Brushable(_) => crate::block::brushable::is_brushable(state),
         BlockEntity::Crafter(_) => state.block() == ids::CRAFTER,
         BlockEntity::Beacon(_) => state.block() == ids::BEACON,
         BlockEntity::Conduit(_) => state.block() == ids::CONDUIT,
-        BlockEntity::Jukebox(_) => state.block() == ids::JUKEBOX,
+        BlockEntity::CommandBlock(_) => {
+            state.block().info().kind == vanillite_data::block::BlockKind::CommandBlock
+        }
+        BlockEntity::StructureBlock(_) => state.block() == ids::STRUCTURE_BLOCK,
+        BlockEntity::Jigsaw(_) => state.block() == ids::JIGSAW,
+        BlockEntity::TestBlock(_) => state.block() == ids::TEST_BLOCK,
+        BlockEntity::TestInstance(_) => state.block() == ids::TEST_INSTANCE_BLOCK,
         BlockEntity::EnchantingTable(_) => state.block() == ids::ENCHANTING_TABLE,
         BlockEntity::PotentSulfur { .. } => state.block() == ids::POTENT_SULFUR,
         BlockEntity::Shelf(_) => {
             state.block().info().kind == vanillite_data::block::BlockKind::ShelfBlock
         }
         BlockEntity::CopperGolemStatue(_) => is_golem_statue(state.block()),
+        BlockEntity::CreakingHeart(_) => state.block() == ids::CREAKING_HEART,
     }
 }
 
@@ -529,9 +589,7 @@ impl Level {
                         crate::block::lectern::drop_book(self, pos, old, lectern);
                     }
                     if let BlockEntity::Jukebox(_) = entity {
-                        // `preRemoveSideEffects`: the disc pops out; `setRemoved`.
                         crate::block::jukebox::pop_out_the_item(self, pos);
-                        crate::block::jukebox::removed(self, pos, old);
                     }
                     if let BlockEntity::Beacon(_) = entity {
                         crate::block::beacon::removed(self, pos);
@@ -539,13 +597,19 @@ impl Level {
                     if let BlockEntity::SculkShrieker(_) = entity {
                         crate::block::sculk_shrieker::pre_remove(self, pos, old);
                     }
+                    if let BlockEntity::CreakingHeart(_) = entity {
+                        crate::block::creaking_heart::remove_protector(self, pos, None);
+                    }
                     if let BlockEntity::Furnace(_) = entity {
                         let xp = crate::block::furnace::pop_experience(self, pos);
                         self.award_experience(crate::block::furnace::center(pos), xp);
                     }
                 }
             }
-            self.block_entities.remove(pos);
+            if let Some(BlockEntity::Jukebox(_)) = self.block_entities.remove(pos) {
+                // `setRemoved`.
+                crate::block::jukebox::removed(self, pos, old);
+            }
         }
     }
 
@@ -597,7 +661,8 @@ impl Level {
             let Some(ticker) = ticker else {
                 continue;
             };
-            if !self.is_block_ticking(pos.chunk()) {
+            // `LevelChunk.isTicking`: inside the world border and in a ticking chunk.
+            if !self.border.is_block_within_bounds(pos) || !self.is_block_ticking(pos.chunk()) {
                 continue;
             }
             let state = self.block(pos);
@@ -670,11 +735,13 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::DecoratedPot(pot) => pot.load(nbt),
         BlockEntity::ChiseledBookshelf(shelf) => shelf.load(nbt),
         BlockEntity::Campfire(campfire) => campfire.load(nbt),
+        BlockEntity::Beehive(hive) => hive.load(nbt),
         BlockEntity::Brushable(b) => b.load(nbt),
         BlockEntity::Crafter(c) => c.load(nbt),
         BlockEntity::Beacon(b) => b.load(nbt),
         BlockEntity::Conduit(c) => c.load(nbt),
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
+        BlockEntity::Jukebox(j) => j.load(nbt),
         BlockEntity::Hopper(h) => {
             h.custom_name = crate::block::container::load_name(nbt);
             (h.loot_table, h.loot_seed) = crate::block::chest_loot::load(nbt);
@@ -684,7 +751,11 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
             h.cooldown_time = int("TransferCooldown").unwrap_or(-1);
         }
         BlockEntity::EndGateway(gateway) => *gateway = crate::block::portal::Gateway::load(nbt),
-        BlockEntity::Jukebox(j) => j.load(nbt),
+        BlockEntity::CommandBlock(c) => c.load(nbt),
+        BlockEntity::StructureBlock(b) => b.load(nbt),
+        BlockEntity::Jigsaw(j) => j.load(nbt),
+        BlockEntity::TestBlock(t) => t.load(nbt),
+        BlockEntity::TestInstance(t) => t.load(nbt),
         BlockEntity::EnchantingTable(name) => {
             *name = crate::block::container::load_name(nbt).map(Box::new);
         }
@@ -700,6 +771,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
                 *countdown = v;
             }
         }
+        BlockEntity::CreakingHeart(h) => h.load(nbt),
         _ => {}
     }
     Some(entity)
@@ -752,11 +824,13 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::DecoratedPot(pot) => pot.save(&mut nbt),
         BlockEntity::ChiseledBookshelf(shelf) => shelf.save(&mut nbt),
         BlockEntity::Campfire(campfire) => campfire.save(&mut nbt),
+        BlockEntity::Beehive(hive) => hive.save(&mut nbt),
         BlockEntity::Brushable(b) => b.save(&mut nbt),
         BlockEntity::Crafter(c) => c.save(&mut nbt),
         BlockEntity::Beacon(b) => b.save(&mut nbt),
         BlockEntity::Conduit(c) => c.save(&mut nbt),
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
+        BlockEntity::Jukebox(j) => j.save(&mut nbt),
         BlockEntity::Hopper(h) => {
             crate::block::container::save_name(&h.custom_name, &mut nbt);
             if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {
@@ -765,7 +839,11 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }
         BlockEntity::EndGateway(gateway) => gateway.save(&mut nbt),
-        BlockEntity::Jukebox(j) => j.save(&mut nbt),
+        BlockEntity::CommandBlock(c) => c.save(&mut nbt),
+        BlockEntity::StructureBlock(b) => b.save(&mut nbt),
+        BlockEntity::Jigsaw(j) => j.save(&mut nbt),
+        BlockEntity::TestBlock(t) => t.save(&mut nbt),
+        BlockEntity::TestInstance(t) => t.save(&mut nbt),
         BlockEntity::EnchantingTable(name) => {
             crate::block::container::save_name(&name.as_deref().cloned(), &mut nbt);
         }
@@ -774,6 +852,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             nbt.insert("components", Tag::Compound((**c).clone()));
         }
         BlockEntity::PotentSulfur { countdown } => nbt.insert("countdown", Tag::Int(*countdown)),
+        BlockEntity::CreakingHeart(h) => h.save(&mut nbt),
         _ => {}
     }
     nbt
@@ -888,7 +967,12 @@ impl Level {
             let Some(entity) = load(state, nbt) else {
                 return false;
             };
+            let previous_auto = match self.block_entities.get(pos) {
+                Some(BlockEntity::CommandBlock(c)) => Some(c.auto),
+                _ => None,
+            };
             self.block_entities.insert(pos, entity);
+            crate::block::technical::command_block::loaded(self, pos, previous_auto);
         } else {
             let mut data = nbt.clone();
             for key in ["id", "x", "y", "z"] {
@@ -919,6 +1003,7 @@ impl Level {
             }
         }
         self.block_entities.touch(pos.chunk());
+        crate::block::technical::structure_block::loaded(self, pos);
         self.send_block_entity_updated(pos);
         true
     }
@@ -1037,6 +1122,7 @@ impl Level {
             self.write_block_entities(chunk);
         }
         self.write_all_entities();
+        self.write_all_poi();
         self.chunks.save_all(flush);
     }
 }
@@ -1097,6 +1183,10 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
             nbt.sort_java_hash_order();
             Some(nbt)
         }
+        BlockEntity::StructureBlock(b) => b.update_tag(),
+        BlockEntity::Jigsaw(j) => j.update_tag(),
+        BlockEntity::TestBlock(t) => t.update_tag(),
+        BlockEntity::TestInstance(t) => t.update_tag(),
         _ => None,
     }
 }
@@ -1126,6 +1216,7 @@ pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
                 None
             }
         }
+        BlockEntity::Beehive(hive) => hive.component(id),
         BlockEntity::Crafter(crafter) => {
             if id == components::CONTAINER {
                 Some(container_value(&crafter.items))
@@ -1148,6 +1239,64 @@ pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
 /// `ItemContainerContents.fromItems`: always a value (empty contents are an empty list).
 fn container_value(items: &[ItemStack]) -> Box<[u8]> {
     vanillite_protocol::item::encode_container_contents(items).unwrap_or_else(|| Box::new([0]))
+}
+
+/// `CompoundTag.merge`: compounds merge key by key, everything else is replaced.
+fn merge_compound(target: &mut Compound, other: &Compound) {
+    for (key, value) in other.iter() {
+        match (target.get_mut(key), value) {
+            (Some(Tag::Compound(old)), Tag::Compound(new)) => merge_compound(old, new),
+            _ => target.insert(key, value.clone()),
+        }
+    }
+}
+
+/// `BlockItem.updateCustomBlockEntityTag`: the item's `block_entity_data` merged into the
+/// placed block entity (`TypedEntityData.loadInto`), if the types match; the operator-only
+/// kinds (command blocks, lecterns, signs, spawners and trial spawners) only for players
+/// that may use game master blocks.
+pub fn apply_block_entity_data(
+    level: &mut Level,
+    pos: BlockPos,
+    stack: &ItemStack,
+    game_master: bool,
+) -> bool {
+    use vanillite_data::block::{BlockKind, ids};
+    let Some(wire) = stack.component(components::BLOCK_ENTITY_DATA) else {
+        return false;
+    };
+    let mut reader = vanillite_protocol::codec::Reader::new(wire);
+    let Ok(type_id) = reader.varint() else {
+        return false;
+    };
+    let mut rest = reader.rest();
+    let mut budget = vanillite_nbt::Budget::file();
+    let Ok(Some(Tag::Compound(data))) = vanillite_nbt::read::read_network(&mut rest, &mut budget)
+    else {
+        return false;
+    };
+    let state = level.block(pos);
+    let kind = state.block().info().block_entity;
+    if kind == u16::MAX || i32::from(kind) != type_id {
+        return false;
+    }
+    let op_only = matches!(state.block().info().kind, BlockKind::CommandBlock)
+        || state.is(ids::LECTERN)
+        || state.is(ids::SPAWNER)
+        || state.is(ids::TRIAL_SPAWNER)
+        || crate::block::sign::is_sign(state.block());
+    if op_only && !game_master {
+        return false;
+    }
+    let Some(mut tag) = level.block_entity_nbt(pos) else {
+        return false;
+    };
+    for key in ["id", "x", "y", "z"] {
+        tag.remove(key);
+    }
+    let old = tag.clone();
+    merge_compound(&mut tag, &data);
+    tag != old && level.load_block_entity_nbt(pos, &tag)
 }
 
 /// `BlockEntity.applyComponentsFromItemStack` of a placed block item.
@@ -1178,6 +1327,12 @@ pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
         }
         Some(BlockEntity::EnchantingTable(name)) => {
             *name = decode_name(stack).map(Box::new);
+        }
+        Some(BlockEntity::Beehive(hive)) => {
+            hive.apply(stack);
+            level.block_entities.touch(pos.chunk());
+            crate::block::beehive::placed_changed(level, pos);
+            return;
         }
         Some(BlockEntity::Crafter(crafter)) => {
             if let Some(name) = decode_name(stack) {

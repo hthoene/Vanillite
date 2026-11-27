@@ -330,6 +330,20 @@ fn execute(
     use Behaviour as B;
     let target = source.target();
     match behaviour {
+        B::Entity if item::item_id(&stack) == items::ARMOR_STAND => {
+            // `EntityType.spawn(level, config, pos, DISPENSER, false, false)` facing the
+            // dispenser's direction (`toYRot`).
+            let pos = Vec3::new(
+                f64::from(target.x) + 0.5,
+                f64::from(target.y),
+                f64::from(target.z) + 0.5,
+            );
+            #[allow(clippy::cast_precision_loss)]
+            let yaw = ((crate::decoration::data_2d(source.facing) & 3) * 90) as f32;
+            crate::decoration::stand::spawn_stand(level, pos, yaw, &stack);
+            stack.shrink(1);
+            stack
+        }
         B::Default | B::Entity | B::Chest => default_execute(level, source, stack),
         B::Minecart => {
             // Onto the rail in front, else dropped like the default behaviour.
@@ -492,12 +506,15 @@ fn execute(
             {
                 return dispense(level, source, stack, B::Default);
             }
-            // `sendParticles(SPLASH, ...)` five times; the particles are the client's.
-            for _ in 0..5 {
-                level.random().next_double();
-                level.random().next_double();
-            }
+            // `sendParticles(SPLASH, ...)` five times on top of the dispenser.
             let pos = source.pos;
+            for _ in 0..5 {
+                let x = f64::from(pos.x) + level.random().next_double();
+                let z = f64::from(pos.z) + level.random().next_double();
+                let at = vanillite_base::Vec3::new(x, f64::from(pos.y + 1), z);
+                let splash = crate::level::particles::simple("minecraft:splash");
+                level.send_particles(splash, at, 1, vanillite_base::Vec3::ZERO, 1.0);
+            }
             level.play_block_sound(
                 None,
                 pos,
@@ -868,9 +885,15 @@ fn full_beehive(state: BlockState) -> bool {
         && state.int("honey_level").is_some_and(|h| h >= 5)
 }
 
-/// `BeehiveBlock.releaseBeesAndResetHoneyLevel` (the hive's bees are not simulated).
+/// `BeehiveBlock.releaseBeesAndResetHoneyLevel(level, state, pos, null, BEE_RELEASED)`.
 fn reset_honey_level(level: &mut Level, pos: BlockPos, state: BlockState) {
-    level.set_block_and_update(pos, state.set_int("honey_level", 0));
+    super::beehive::release_bees_and_reset_honey_level(
+        level,
+        state,
+        pos,
+        None,
+        super::beehive::ReleaseStatus::BeeReleased,
+    );
 }
 
 /// `ShearsDispenseItemBehavior.tryShearBeehive`.
@@ -887,8 +910,7 @@ fn shear_beehive(level: &mut Level, pos: BlockPos) -> bool {
         1.0,
         1.0,
     );
-    // `BeehiveBlock.dropHoneycomb`: `minecraft:harvest/beehive` gives three honeycombs.
-    super::drops::pop_resource(level, pos, ItemStack::new(items::HONEYCOMB.0, 3));
+    super::beehive::drop_honeycomb(level, pos);
     reset_honey_level(level, pos, state);
     level.game_event_at(None, events().shear, pos);
     true
@@ -1062,16 +1084,61 @@ fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) 
     level
         .entities
         .store
-        .for_each_in(&aabb, true, |id| candidates.push(id));
+        .for_each_in(&aabb, false, |id| candidates.push(id));
     let Some(id) = candidates.into_iter().find(|&id| {
         level.entities.player(id).is_some_and(|p| {
             !p.survival.is_dead_or_dying()
                 && p.game_mode != vanillite_config::GameMode::Spectator
                 && p.inventory.equipment(slot).is_empty()
-        })
+        }) || level
+            .entities
+            .mob(id)
+            .and_then(|m| crate::decoration::stand::can_dispenser_equip(m, stack))
+            .is_some()
     }) else {
         return false;
     };
+    if level.entities.mob(id).is_some() {
+        // An armor stand: `setItemSlot`, the equip sound and the equipment packet.
+        let equip = stack.split(1);
+        let sound = sound_id(equip_sound(&equip));
+        let silent = level.entities.mob(id).is_some_and(|m| m.silent);
+        if let Some(m) = level.entities.mob_mut(id) {
+            m.equipment.set(slot, equip);
+        }
+        let Some(e) = level.entities.store.get(id) else {
+            return true;
+        };
+        let (at, network_id) = (e.pos(), e.network_id().0);
+        let slots = crate::mob::equipment::SLOTS
+            .iter()
+            .map(|&s| {
+                let item = level.entities.mob(id).map(|m| m.equipment.get(s).clone());
+                (s.ordinal(), item.unwrap_or_default())
+            })
+            .collect();
+        let packet = vanillite_protocol::SharedPacket::of(
+            &vanillite_protocol::packets::play::clientbound::SetEquipment {
+                entity_id: network_id,
+                slots,
+            },
+        );
+        level.output().nearby_packets.push((at, 160.0, packet));
+        if !silent {
+            level.play_sound(
+                None,
+                at.x,
+                at.y,
+                at.z,
+                sound,
+                crate::level::SOUND_NEUTRAL,
+                1.0,
+                1.0,
+            );
+        }
+        level.game_event(events().equip, at, GameEventContext::of(Some(id)));
+        return true;
+    }
     let equip = stack.split(1);
     let sound = sound_id(equip_sound(&equip));
     if let Some(player) = level.entities.player_mut(id) {
@@ -1098,7 +1165,7 @@ fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) 
 }
 
 /// `equippable.equipSound()` of the items players can wear.
-fn equip_sound(stack: &ItemStack) -> &'static str {
+pub(crate) fn equip_sound(stack: &ItemStack) -> &'static str {
     let name = item::item_id(stack).name();
     let path = name.strip_prefix("minecraft:").unwrap_or(name);
     if path == "elytra" {

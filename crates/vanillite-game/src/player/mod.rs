@@ -13,7 +13,9 @@
 pub mod chat;
 pub mod chunks;
 pub mod connection;
+pub mod cooldowns;
 pub mod encode;
+pub mod items;
 pub mod join;
 pub mod movement;
 pub mod play;
@@ -23,8 +25,8 @@ pub mod world;
 
 pub use chunks::{ChunkSource, PlayerChunks};
 pub use connection::{
-    ChatContext, ChatRequest, Connection, EntityAction, Handled, PlayerChatState, PlayerState,
-    SignedCommand, VehicleInput, effective_view_distance,
+    AdminRequest, ChatContext, ChatRequest, Connection, EntityAction, Handled, PlayerChatState,
+    PlayerState, SignedCommand, VehicleInput, effective_view_distance,
 };
 pub use movement::{Body, Kick, MoveContext, MoveRequest, Movement};
 pub use sink::PacketSink;
@@ -111,7 +113,7 @@ pub struct PlayerData {
     pub profile: GameProfile,
     /// Game mode.
     pub game_mode: GameMode,
-    /// Previous game mode, if it changed during this session.
+    /// `previousPlayerGameType`: the game mode before the last change.
     pub previous_game_mode: Option<GameMode>,
     /// Client settings.
     pub client: ClientInformation,

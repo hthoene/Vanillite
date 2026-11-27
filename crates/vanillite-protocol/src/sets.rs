@@ -116,11 +116,13 @@ packet_set! {
         Interact(play::serverbound::Interact),
         MoveVehicle(play::serverbound::MoveVehicle),
         PaddleBoat(play::serverbound::PaddleBoat),
+        SpectatorAction(play::serverbound::SpectatorAction),
         ContainerClick(play::serverbound::ContainerClick),
         ContainerClose(play::serverbound::ContainerClose),
         ContainerButtonClick(play::serverbound::ContainerButtonClick),
         ContainerSlotStateChanged(play::serverbound::ContainerSlotStateChanged),
         RenameItem(play::serverbound::RenameItem),
+        SelectTrade(play::serverbound::SelectTrade),
         SetBeacon(play::serverbound::SetBeacon),
         SignUpdate(play::serverbound::SignUpdate),
         PlaceRecipe(play::serverbound::PlaceRecipe),
@@ -159,6 +161,24 @@ packet_set! {
         Pong(play::serverbound::Pong),
         ResourcePack(play::serverbound::ResourcePack),
         SeenAdvancements(play::serverbound::SeenAdvancementsPacket),
+        SetCommandBlock(play::serverbound::SetCommandBlock),
+        SetCommandMinecart(play::serverbound::SetCommandMinecart),
+        SetStructureBlock(play::serverbound::SetStructureBlock),
+        SetJigsawBlock(play::serverbound::SetJigsawBlock),
+        JigsawGenerate(play::serverbound::JigsawGenerate),
+        SetTestBlock(play::serverbound::SetTestBlock),
+        TestInstanceBlockAction(play::serverbound::TestInstanceBlockAction),
+        EditBook(play::serverbound::EditBook),
+        SelectBundleItem(play::serverbound::SelectBundleItem),
+        PickItemFromEntity(play::serverbound::PickItemFromEntity),
+        PlayerAbilities(play::serverbound::PlayerAbilitiesServerbound),
+        ChangeDifficulty(play::serverbound::ChangeDifficultyServerbound),
+        LockDifficulty(play::serverbound::LockDifficulty),
+        ChangeGameMode(play::serverbound::ChangeGameMode),
+        SetGameRule(play::serverbound::SetGameRule),
+        BlockEntityTagQuery(play::serverbound::BlockEntityTagQuery),
+        EntityTagQuery(play::serverbound::EntityTagQuery),
+        TeleportToEntity(play::serverbound::TeleportToEntity),
     }
     unhandled Unhandled
 }
@@ -270,6 +290,9 @@ packet_set! {
         UpdateMobEffect(play::clientbound::UpdateMobEffect),
         RemoveMobEffect(play::clientbound::RemoveMobEffect),
         SystemChat(play::clientbound::SystemChat),
+        OpenBook(play::clientbound::OpenBook),
+        MapItemData(play::clientbound::MapItemData),
+        Cooldown(play::clientbound::Cooldown),
     }
     unhandled Unhandled
 }

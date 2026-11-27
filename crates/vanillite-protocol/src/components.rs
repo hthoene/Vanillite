@@ -133,12 +133,21 @@ pub mod ids {
     pub const FIREWORK_EXPLOSION: u16 = find("minecraft:firework_explosion");
     pub const WRITABLE_BOOK_CONTENT: u16 = find("minecraft:writable_book_content");
     pub const PROVIDES_BANNER_PATTERNS: u16 = find("minecraft:provides_banner_patterns");
+    pub const JUKEBOX_PLAYABLE: u16 = find("minecraft:jukebox_playable");
     pub const ITEM_NAME: u16 = find("minecraft:item_name");
     pub const RARITY: u16 = find("minecraft:rarity");
     pub const BUNDLE_CONTENTS: u16 = find("minecraft:bundle_contents");
     pub const DYE: u16 = find("minecraft:dye");
     pub const INSTRUMENT: u16 = find("minecraft:instrument");
     pub const OMINOUS_BOTTLE_AMPLIFIER: u16 = find("minecraft:ominous_bottle_amplifier");
+    pub const USE_EFFECTS: u16 = find("minecraft:use_effects");
+    pub const USE_COOLDOWN: u16 = find("minecraft:use_cooldown");
+    pub const RECIPES: u16 = find("minecraft:recipes");
+    pub const LODESTONE_TRACKER: u16 = find("minecraft:lodestone_tracker");
+    pub const EQUIPPABLE: u16 = find("minecraft:equippable");
+    pub const BEES: u16 = find("minecraft:bees");
+    pub const CHARGED_PROJECTILES: u16 = find("minecraft:charged_projectiles");
+    pub const INTANGIBLE_PROJECTILE: u16 = find("minecraft:intangible_projectile");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

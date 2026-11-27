@@ -202,7 +202,7 @@ fn can_teleport_to(t: &mut Tick<'_, '_>, pos: BlockPos) -> bool {
         y + f64::from(dims.height),
         z + half,
     );
-    super::physics::no_collision(t.level, &b, &mut t.cx.boxes)
+    super::physics::no_collision(&t.level.view(), &b, &mut t.cx.boxes)
 }
 
 /// The owner's `lastHurtByMob` (`by_owner = true`) or `lastHurtMob` with its time stamp, while
@@ -245,7 +245,16 @@ pub fn owner_hurt_by_can_use(
         .ents
         .mob(target)
         .is_some_and(|o| o.tame && o.owner == t.mob_ref().owner);
-    if !alive || same_owner || owner_of(t.ents, t.mob_ref()) == Some(target) {
+    let owner = owner_of(t.ents, t.mob_ref());
+    if !alive || same_owner || owner == Some(target) {
+        return false;
+    }
+    // `Wolf.wantsToAttack`: a player's wolf attacks no player when `canHarmPlayer` fails (the
+    // pvp rule).
+    if t.ents.player(target).is_some()
+        && owner.is_some_and(|o| t.ents.player(o).is_some())
+        && !t.env.rules.bool(crate::survival::rules::Rule::PVP)
+    {
         return false;
     }
     *found = Some(target);
@@ -372,6 +381,20 @@ pub fn leash_interact(
             }
         }
         if any {
+            // `gameEvent(ENTITY_ACTION, blockPosition(), Context.of(player))`.
+            if let Some(p) = ents.store.get(target).map(|e| e.pos()) {
+                let b = BlockPos::containing(p.x, p.y, p.z);
+                crate::survival::game_event(
+                    env.out,
+                    crate::level::game_event::events().entity_action,
+                    Vec3::new(
+                        f64::from(b.x) + 0.5,
+                        f64::from(b.y) + 0.5,
+                        f64::from(b.z) + 0.5,
+                    ),
+                    Some(player),
+                );
+            }
             entity_sound(ents, env, target, "minecraft:item.lead.tied");
             return Interaction::Success;
         }
@@ -388,6 +411,9 @@ pub fn leash_interact(
     let name = crate::item::item_id(&stack).name();
     if name == "minecraft:shears" && leash_holder(ents, target).is_some() && !sneaking {
         drop_leash(ents, env, target, true);
+        // `dropAllLeashConnections`.
+        let event = crate::level::game_event::events().shear;
+        super::animal::entity_game_event(ents, env, target, event, Some(player));
         entity_sound(ents, env, target, "minecraft:item.shears.snip");
         return Interaction::Success;
     }
@@ -399,6 +425,8 @@ pub fn leash_interact(
             .player(player)
             .is_some_and(|p| p.game_mode == GameMode::Creative);
         drop_leash(ents, env, target, !creative);
+        let event = crate::level::game_event::events().entity_interact;
+        super::animal::entity_game_event(ents, env, target, event, Some(player));
         entity_sound(ents, env, target, "minecraft:item.lead.untied");
         return Interaction::Success;
     }

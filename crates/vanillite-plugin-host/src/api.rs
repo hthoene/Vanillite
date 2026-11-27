@@ -11,7 +11,7 @@ use std::sync::{Arc, PoisonError};
 
 use vanillite_abi::{self as abi, Status, status};
 
-use crate::{Inner, Plugin, Text, WorldAccess};
+use crate::{BlockBox, Inner, Plugin, SetMode, Text, WorldAccess};
 
 /// The table every plugin gets in `load`.
 pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
@@ -47,6 +47,11 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     block_set,
     player_position,
     player_set_tab_list,
+    block_state_name,
+    block_get_id,
+    block_set_id,
+    blocks_get,
+    blocks_set,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -483,6 +488,19 @@ unsafe extern "C" fn block_state_id(id: abi::PluginId, state: abi::Str, out: *mu
     })
 }
 
+unsafe extern "C" fn block_state_name(
+    id: abi::PluginId,
+    state: u32,
+    out: *mut abi::StrBuf,
+) -> Status {
+    with(id, |inner, _| {
+        match server!(inner).block_state_name(state) {
+            Some(name) => write_str(out, &name),
+            None => status::INVALID_ARGUMENT,
+        }
+    })
+}
+
 unsafe extern "C" fn run_command(id: abi::PluginId, command: abi::Str) -> Status {
     with(id, |inner, plugin| {
         // SAFETY: the plugin's string is valid for the call.
@@ -712,6 +730,113 @@ unsafe extern "C" fn block_set(
             };
             match w.set_block([pos.x, pos.y, pos.z], state) {
                 Ok(()) => status::OK,
+                Err(s) => s,
+            }
+        }
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn block_get_id(
+    raw: *mut abi::Context,
+    world: u32,
+    pos: abi::BlockPos,
+    out: *mut u32,
+) -> Status {
+    guard(|| match owned(raw, world) {
+        Ok(w) => match w.block_id([pos.x, pos.y, pos.z]) {
+            Some(state) => write(out, state),
+            None => status::NOT_FOUND,
+        },
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn block_set_id(
+    raw: *mut abi::Context,
+    world: u32,
+    pos: abi::BlockPos,
+    state: u32,
+    mode: u32,
+) -> Status {
+    guard(|| match owned(raw, world) {
+        Ok(w) => match SetMode::from_abi(mode) {
+            Some(mode) => match w.set_block_id([pos.x, pos.y, pos.z], state, mode) {
+                Ok(_) => status::OK,
+                Err(s) => s,
+            },
+            None => status::INVALID_ARGUMENT,
+        },
+        Err(s) => s,
+    })
+}
+
+/// The box behind `area` and its volume, if it is valid and not larger than
+/// [`abi::limits::MAX_BOX_VOLUME`].
+fn block_box(area: *const abi::BlockBox) -> Option<(BlockBox, usize)> {
+    // SAFETY: the plugin passes a valid record or null.
+    let area = unsafe { area.as_ref() }?;
+    let (min, max) = (area.min, area.max);
+    let size = |lo: i32, hi: i32| (hi >= lo).then(|| u64::from(hi.abs_diff(lo)) + 1);
+    let volume = size(min.x, max.x)? * size(min.y, max.y)? * size(min.z, max.z)?;
+    if volume > u64::from(abi::limits::MAX_BOX_VOLUME) {
+        return None;
+    }
+    let area = BlockBox {
+        min: [min.x, min.y, min.z],
+        max: [max.x, max.y, max.z],
+    };
+    Some((area, usize::try_from(volume).ok()?))
+}
+
+unsafe extern "C" fn blocks_get(
+    raw: *mut abi::Context,
+    world: u32,
+    area: *const abi::BlockBox,
+    out: *mut u32,
+    cap: usize,
+) -> Status {
+    guard(|| match owned(raw, world) {
+        Ok(w) => {
+            let Some((area, volume)) = block_box(area) else {
+                return status::INVALID_ARGUMENT;
+            };
+            if out.is_null() || cap < volume {
+                return status::INVALID_ARGUMENT;
+            }
+            // SAFETY: the plugin passes `cap` writable entries.
+            let out = unsafe { std::slice::from_raw_parts_mut(out, volume) };
+            w.blocks(area, out);
+            status::OK
+        }
+        Err(s) => s,
+    })
+}
+
+unsafe extern "C" fn blocks_set(
+    raw: *mut abi::Context,
+    world: u32,
+    area: *const abi::BlockBox,
+    states: *const u32,
+    len: usize,
+    mode: u32,
+    changed: *mut usize,
+) -> Status {
+    guard(|| match owned(raw, world) {
+        Ok(w) => {
+            let Some((area, volume)) = block_box(area) else {
+                return status::INVALID_ARGUMENT;
+            };
+            let Some(mode) = SetMode::from_abi(mode) else {
+                return status::INVALID_ARGUMENT;
+            };
+            if states.is_null() || len != volume || changed.is_null() {
+                return status::INVALID_ARGUMENT;
+            }
+            // SAFETY: the plugin passes `len` readable entries.
+            let states = unsafe { std::slice::from_raw_parts(states, len) };
+            match w.set_blocks(area, states, mode) {
+                Ok(n) => write(changed, n),
                 Err(s) => s,
             }
         }

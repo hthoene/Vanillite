@@ -84,11 +84,12 @@
 //! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line
 //! as the server (permission level 4) at the origin of the overworld before that tick.
 //!
-//! Known divergences from Vanilla live in `scenarios/divergences.toml`, not in the scenario
-//! (so they change without a new recording):
+//! Known divergences from Vanilla live in `scenarios/divergences/<scenario>.toml`, not in the
+//! scenario (so they change without a new recording), one file per scenario so parallel
+//! changes never touch the same file:
 //!
 //! ```toml
-//! [mob_zombie_chase]
+//! # scenarios/divergences/mob_zombie_chase.toml
 //! tick = 1
 //! cause = "the zombie lacks the villager, iron golem and turtle target goals"
 //! owner = "gameplay-developer #58"
@@ -108,11 +109,12 @@
 //!   at `pos` on `face` (default `up`) at `hit` (relative to the block's corner, default the
 //!   face's centre), sneaking if `sneak`, with its food level set to `food` first
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
-//!   player starts to break the block (`START_DESTROY_BLOCK`). `use_item`: the player uses the
-//!   stack in the air (`ServerPlayerGameMode.useItem`, aiming with its rotation; no `pos`).
-//!   `"player_state": true` adds the players' food and hands to the frames.
+//!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
+//!   the players' food and hands to the frames.
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
+//! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
+//!   main hand and uses it (`ServerPlayerGameMode.useItem`, as a `use_item` packet would).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -167,9 +169,10 @@ pub struct WorldSpec {
 }
 
 /// What an operation does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OpKind {
     /// One block without updates.
+    #[default]
     Set,
     /// One block with neighbour and shape updates.
     Place,
@@ -187,6 +190,8 @@ pub enum OpKind {
     Restart,
     /// A status effect on a scenario entity ([`Op::effect`]).
     Effect,
+    /// A player uses an item ([`Op::use_item`]).
+    UseItem,
     /// Bone meal used on the block at `pos` (an action).
     Bonemeal,
     /// A command run as the server at the origin ([`Op::command`]).
@@ -197,8 +202,16 @@ pub enum OpKind {
     Use,
     /// A player starts to break a block ([`Op::player_use`]).
     Attack,
-    /// A player uses the stack in a hand in the air (`handleUseItem`, [`Op::player_use`]).
-    UseItem,
+}
+
+/// The item use of a `use_item` action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UseItemOp {
+    /// Name of the player.
+    pub entity: String,
+    /// Item id, e.g. `minecraft:ender_pearl`.
+    pub item: String,
+    pub count: i32,
 }
 
 /// The potion of a `throw_potion` action.
@@ -235,7 +248,7 @@ pub struct Hurt {
     pub amount: f32,
 }
 
-/// A known divergence from Vanilla (`scenarios/divergences.toml`).
+/// A known divergence from Vanilla (`scenarios/divergences/<scenario>.toml`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Divergence {
     /// The tick of the first difference.
@@ -280,7 +293,10 @@ impl EntitySpec {
 }
 
 /// A setup step or an action.
-#[derive(Clone, Debug)]
+///
+/// Build it with `Op { tick, kind, <fields of the kind>, ..Op::default() }`, so a new field
+/// (which must implement `Default`) needs no change at the other construction sites.
+#[derive(Clone, Debug, Default)]
 pub struct Op {
     /// Tick before which an action runs (0 for setup steps).
     pub tick: u32,
@@ -293,6 +309,8 @@ pub struct Op {
     pub hurt: Option<Hurt>,
     /// The effect of an `effect` action.
     pub effect: Option<EffectOp>,
+    /// The item use of a `use_item` action.
+    pub use_item: Option<UseItemOp>,
     /// The potion of a `throw_potion` action.
     pub throw_potion: Option<ThrowPotionOp>,
     /// The chunks of `force` and `unforce`.
@@ -311,7 +329,7 @@ pub struct PlayerUse {
     pub entity: String,
     /// `attack` instead of `use`.
     pub attack: bool,
-    /// `use_item` (the item's use in the air; `pos` and `face` are unused).
+    /// The item's use in the air (`use_item` actions; `pos` and `face` are unused).
     pub air: bool,
     pub pos: BlockPos,
     /// The clicked face: `down`, `up`, `north`, `south`, `west` or `east`.
@@ -517,20 +535,19 @@ fn pos(v: Option<&Value>) -> Result<BlockPos, String> {
     Ok(BlockPos::new(c(0)?, c(1)?, c(2)?))
 }
 
-/// The known divergence of a scenario from `scenarios/divergences.toml`.
+/// The known divergence of a scenario from `scenarios/divergences/<name>.toml`.
 fn divergence(name: &str) -> Result<Option<Divergence>, String> {
-    let path = Scenario::dir().join("divergences.toml");
+    let path = Scenario::dir()
+        .join("divergences")
+        .join(format!("{name}.toml"));
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    let table: toml::Table = text
+    let entry: toml::Table = text
         .parse()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    let Some(entry) = table.get(name) else {
-        return Ok(None);
-    };
     let field = |k: &str| {
         entry
             .get(k)
@@ -542,7 +559,7 @@ fn divergence(name: &str) -> Result<Option<Divergence>, String> {
             .get("tick")
             .and_then(toml::Value::as_integer)
             .and_then(|t| u32::try_from(t).ok())
-            .ok_or_else(|| format!("{}: [{name}] needs a tick", path.display()))?,
+            .ok_or_else(|| format!("{}: needs a tick", path.display()))?,
         cause: field("cause").to_owned(),
         owner: field("owner").to_owned(),
     }))
@@ -591,6 +608,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("hurt") if action => OpKind::Hurt,
         Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
+        Some("use_item") if action => OpKind::UseItem,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
@@ -598,22 +616,17 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("restart") if action => OpKind::Restart,
         Some("use") if action => OpKind::Use,
         Some("attack") if action => OpKind::Attack,
-        Some("use_item") if action => OpKind::UseItem,
         Some("bonemeal") if action => OpKind::Bonemeal,
         o => return Err(format!("unknown op {o:?}")),
     };
-    if matches!(kind, OpKind::Use | OpKind::Attack | OpKind::UseItem) {
+    if matches!(kind, OpKind::Use | OpKind::Attack) {
         let tick = v
             .get("tick")
             .and_then(Value::as_u64)
             .and_then(|t| u32::try_from(t).ok())
             .filter(|&t| t >= 1)
             .ok_or("an action needs a tick >= 1")?;
-        let p = if kind == OpKind::UseItem && v.get("pos").is_none() {
-            BlockPos::new(0, 0, 0)
-        } else {
-            pos(v.get("pos"))?
-        };
+        let p = pos(v.get("pos"))?;
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         let hit = match v.get("hit").and_then(Value::as_array) {
             Some(a) if a.len() == 3 => Some([
@@ -629,16 +642,10 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             kind,
             from: p,
             to: p,
-            block: String::new(),
-            hurt: None,
-            effect: None,
-            throw_potion: None,
-            chunks: Vec::new(),
-            command: None,
             player_use: Some(PlayerUse {
                 entity: s("entity").ok_or("use needs an entity")?,
                 attack: kind == OpKind::Attack,
-                air: kind == OpKind::UseItem,
+                air: false,
                 pos: p,
                 face: s("face").unwrap_or_else(|| "up".to_owned()),
                 hit,
@@ -656,6 +663,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(Value::as_i64)
                     .and_then(|f| i32::try_from(f).ok()),
             }),
+            ..Op::default()
         });
     }
     if kind == OpKind::Command {
@@ -668,20 +676,13 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         return Ok(Op {
             tick,
             kind,
-            from: BlockPos::new(0, 0, 0),
-            to: BlockPos::new(0, 0, 0),
-            block: String::new(),
-            hurt: None,
-            effect: None,
-            throw_potion: None,
-            chunks: Vec::new(),
-            player_use: None,
             command: Some(
                 v.get("command")
                     .and_then(Value::as_str)
                     .ok_or("command needs a command")?
                     .to_owned(),
             ),
+            ..Op::default()
         });
     }
     if matches!(kind, OpKind::Force | OpKind::Unforce | OpKind::Restart) {
@@ -711,15 +712,8 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         return Ok(Op {
             tick,
             kind,
-            from: BlockPos::new(0, 0, 0),
-            to: BlockPos::new(0, 0, 0),
-            block: String::new(),
-            hurt: None,
-            effect: None,
-            throw_potion: None,
             chunks,
-            player_use: None,
-            command: None,
+            ..Op::default()
         });
     }
     let tick = if action {
@@ -736,11 +730,6 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         return Ok(Op {
             tick,
             kind,
-            from: BlockPos::new(0, 0, 0),
-            to: BlockPos::new(0, 0, 0),
-            block: String::new(),
-            hurt: None,
-            effect: None,
             throw_potion: Some(ThrowPotionOp {
                 item: s("item").ok_or("throw_potion needs an item")?,
                 potion: s("potion").ok_or("throw_potion needs a potion")?,
@@ -748,9 +737,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 motion: vec3(v.get("motion"))?,
                 by: s("by"),
             }),
-            chunks: Vec::new(),
-            player_use: None,
-            command: None,
+            ..Op::default()
         });
     }
     if kind == OpKind::Effect {
@@ -763,20 +750,30 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         return Ok(Op {
             tick,
             kind,
-            from: BlockPos::new(0, 0, 0),
-            to: BlockPos::new(0, 0, 0),
-            block: String::new(),
-            hurt: None,
             effect: Some(EffectOp {
                 entity: s("entity").ok_or("effect needs an entity")?,
                 effect: s("effect").ok_or("effect needs an effect")?,
                 duration: int("duration").ok_or("effect needs a duration")?,
                 amplifier: int("amplifier").unwrap_or(0),
             }),
-            throw_potion: None,
-            chunks: Vec::new(),
-            player_use: None,
-            command: None,
+            ..Op::default()
+        });
+    }
+    if kind == OpKind::UseItem {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+        return Ok(Op {
+            tick,
+            kind,
+            use_item: Some(UseItemOp {
+                entity: s("entity").ok_or("use_item needs an entity")?,
+                item: s("item").ok_or("use_item needs an item")?,
+                count: v
+                    .get("count")
+                    .and_then(Value::as_i64)
+                    .and_then(|n| i32::try_from(n).ok())
+                    .unwrap_or(1),
+            }),
+            ..Op::default()
         });
     }
     if kind == OpKind::Hurt {
@@ -784,12 +781,6 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         return Ok(Op {
             tick,
             kind,
-            from: BlockPos::new(0, 0, 0),
-            to: BlockPos::new(0, 0, 0),
-            block: String::new(),
-            chunks: Vec::new(),
-            player_use: None,
-            command: None,
             hurt: Some(Hurt {
                 entity: s("entity").ok_or("hurt needs an entity")?,
                 by: s("by"),
@@ -798,8 +789,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(Value::as_f64)
                     .ok_or("hurt needs an amount")? as f32,
             }),
-            effect: None,
-            throw_potion: None,
+            ..Op::default()
         });
     }
     if matches!(kind, OpKind::Bonemeal | OpKind::Lightning) {
@@ -809,13 +799,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             kind,
             from: p,
             to: p,
-            block: String::new(),
-            hurt: None,
-            command: None,
-            effect: None,
-            throw_potion: None,
-            chunks: Vec::new(),
-            player_use: None,
+            ..Op::default()
         });
     }
     let (from, to) = if kind == OpKind::Fill {
@@ -834,11 +818,6 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .and_then(Value::as_str)
             .ok_or("an op needs a block")?
             .to_owned(),
-        hurt: None,
-        effect: None,
-        throw_potion: None,
-        chunks: Vec::new(),
-        player_use: None,
-        command: None,
+        ..Op::default()
     })
 }

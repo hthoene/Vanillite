@@ -2,9 +2,15 @@
 //! from the typed configuration schema of `vanillite-config`.
 //!
 //! Every `server.properties` key marked for panels and every rule of `vanillite.toml` (except
-//! the `debug` helpers) becomes an egg variable named like its `VANILLITE_<KEY>` override. Rule
-//! variables default to empty: an empty variable is ignored by the server, so the profile and
-//! `vanillite.toml` decide until a value is entered in the panel.
+//! the `debug` helpers) becomes an egg variable named like its `VANILLITE_<KEY>` override. The
+//! curated [`ESSENTIALS`] come first, in their order and with plain names; every other variable
+//! follows, grouped by area ([`AREAS`]) with the area as name prefix. Rule variables keep the
+//! profile's value until a value is entered in the panel: text fields stay empty, dropdowns of
+//! booleans and enumerations offer `default` (both are ignored by the server).
+//!
+//! How the panels render a variable (Pterodactyl 1.x `VariableBox`, Pelican `StartupVariable`):
+//! the rule `in:true,false` is a switch in Pterodactyl (a dropdown in Pelican), any other `in:`
+//! rule a dropdown, everything else a text field; the order is the order of the egg.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -20,15 +26,126 @@ use crate::Result;
 
 /// The egg, relative to the repository root.
 pub const EGG_PATH: &str = "deploy/pterodactyl/egg-vanillite.json";
-/// The image on Docker Hub (published by `.github/workflows/docker.yml`).
-const IMAGE: &str = "thoenehannes/vanillite:latest";
-/// The startup command; Wings replaces `{{SERVER_PORT}}` with the allocation's port.
-const STARTUP: &str =
-    "env VANILLITE_SERVER_PORT={{SERVER_PORT}} /vanillite run --dir /home/container";
+/// The image repository on Docker Hub (published by `.github/workflows/docker.yml`).
+const REPOSITORY: &str = "thoenehannes/vanillite";
+/// The generated Minecraft version, relative to the repository root.
+const MC_VERSION_PATH: &str = "crates/vanillite-data/src/generated/version.rs";
+/// The startup command; the image's entrypoint replaces `{{VAR}}` with the variable. Bedrock
+/// listens on the allocation's port (UDP) unless `Bedrock: Port` is set.
+const STARTUP: &str = "env VANILLITE_SERVER_PORT={{SERVER_PORT}} \
+     VANILLITE_BEDROCK__PORT=${VANILLITE_BEDROCK__PORT:-{{SERVER_PORT}}} \
+     /vanillite run --dir /home/container";
 /// The console line that marks a finished start.
 const DONE: &str = ")! For help, type ";
 /// Rule groups that never belong on a hosted server.
 const HIDDEN_GROUPS: &[&str] = &["debug"];
+/// The value of a dropdown that keeps the profile's value (ignored by the server).
+const KEEP: &str = "default";
+
+/// A variable shown first, with a plain name and a one-sentence description. `key` is a
+/// `server.properties` key, a `vanillite.toml` rule or one of `eula`, `profile`.
+struct Essential {
+    key: &'static str,
+    name: &'static str,
+    description: &'static str,
+}
+
+/// The few settings most servers change, in the order the panel shows them.
+const ESSENTIALS: &[Essential] = &[
+    Essential {
+        key: "eula",
+        name: "Accept the Minecraft EULA",
+        description: "Switch on to accept the Minecraft EULA (https://aka.ms/MinecraftEULA); \
+                      the server does not start before (the panel's EULA prompt does the same).",
+    },
+    Essential {
+        key: "profile",
+        name: "Profile",
+        description: "Preset of all technical settings below: vanilla (exactly like Vanilla), \
+                      technical (Vanilla plus what technical players need), paper or spigot \
+                      (their defaults) or performance (faster, deviates a little from Vanilla).",
+    },
+    Essential {
+        key: "motd",
+        name: "Server Description (MOTD)",
+        description: "The text shown below the server in the multiplayer list.",
+    },
+    Essential {
+        key: "max-players",
+        name: "Max Players",
+        description: "How many players can be online at the same time.",
+    },
+    Essential {
+        key: "gamemode",
+        name: "Game Mode",
+        description: "The game mode of players who join for the first time.",
+    },
+    Essential {
+        key: "difficulty",
+        name: "Difficulty",
+        description: "The difficulty of the world.",
+    },
+    Essential {
+        key: "hardcore",
+        name: "Hardcore",
+        description: "Hardcore mode: the difficulty is locked to hard and players have one life.",
+    },
+    Essential {
+        key: "online-mode",
+        name: "Online Mode",
+        description: "Only players with a Minecraft account checked by Mojang can join; switch \
+                      off only behind a proxy that checks the accounts.",
+    },
+    Essential {
+        key: "white-list",
+        name: "Whitelist",
+        description: "Only players on the whitelist (/whitelist add <name>) can join.",
+    },
+    Essential {
+        key: "level-seed",
+        name: "World Seed",
+        description: "The seed of a new world; empty picks a random one (no effect on an \
+                      existing world).",
+    },
+    Essential {
+        key: "view-distance",
+        name: "View Distance",
+        description: "How far players can see, in chunks (2 to 32, default 10).",
+    },
+    Essential {
+        key: "simulation-distance",
+        name: "Simulation Distance",
+        description: "How far around players the world is alive (mobs, crops, redstone), in \
+                      chunks (2 to 32, default 10).",
+    },
+    Essential {
+        key: "bedrock.enabled",
+        name: "Bedrock Players",
+        description: "Let Bedrock Edition players join, on the server's port (UDP) unless \
+                      \"Bedrock: Port\" says otherwise.",
+    },
+];
+
+/// The order of the areas after the essentials; areas not listed follow in catalogue order.
+const AREAS: &[&str] = &[
+    "Server",
+    "Performance",
+    "Storage",
+    "Backup",
+    "Watchdog",
+    "Security",
+    "Admin",
+    "Commands",
+    "Chat",
+    "Movement",
+    "Exploits",
+    "Anticheat",
+    "Proxy",
+    "Multiversion",
+    "Bedrock",
+    "Plugins",
+];
+
 /// Environment variables Pterodactyl sets itself; eggs must not declare them.
 const RESERVED: &[&str] = &[
     "SERVER_MEMORY",
@@ -52,22 +169,22 @@ echo \"Nothing to install.\"
 pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     match args {
         [] => {
-            let egg = render();
+            let egg = render(root)?;
             check_format(&egg)?;
             crate::write(&root.join(EGG_PATH), &egg)?;
             println!("wrote {EGG_PATH}");
             Ok(())
         }
         ["--check"] => check(root),
-        ["smoke"] => smoke(&default_image()),
-        ["smoke", "--image", image] => smoke(image),
+        ["smoke"] => smoke(root, &default_image()),
+        ["smoke", "--image", image] => smoke(root, image),
         _ => Err(crate::USAGE.to_owned()),
     }
 }
 
 /// Fails if the committed egg differs from the generated one or breaks the egg format.
 pub fn check(root: &Path) -> Result<()> {
-    let egg = render();
+    let egg = render(root)?;
     check_format(&egg)?;
     let committed = crate::read(&root.join(EGG_PATH)).unwrap_or_default();
     if committed != egg {
@@ -78,33 +195,56 @@ pub fn check(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// One generated variable before ordering.
+struct Entry {
+    /// The configuration key ([`Essential::key`]).
+    key: String,
+    /// The area (name prefix) outside the essentials.
+    area: String,
+    /// The name inside the area.
+    name: String,
+    description: String,
+    env: String,
+    default: String,
+    rules: String,
+    /// A rule's value in the vanilla profile (empty for other variables).
+    vanilla: String,
+}
+
 /// The egg as pretty JSON with a trailing newline.
-pub fn render() -> String {
-    let mut variables = vec![
-        variable(
-            "Accept the Minecraft EULA",
-            "Set to true to accept the Minecraft EULA (https://aka.ms/MinecraftEULA). The \
-             server does not start before. The panel's EULA prompt writes eula.txt instead.",
-            "VANILLITE_EULA",
-            "false",
-            "required|string|in:true,false",
-        ),
-        variable(
-            "Profile",
-            "Preset of every vanillite.toml rule: vanilla (Vanilla behaviour), technical \
-             (Vanilla plus what technical players need), paper or spigot (their defaults). Rules \
-             set below or in vanillite.toml override the profile.",
-            "VANILLITE_PROFILE",
-            "vanilla",
-            "required|string|in:vanilla,technical,paper,spigot",
-        ),
-        variable(
-            "Log Level",
-            "Console log level: error, warn, info, debug or trace.",
-            "VANILLITE_LOG",
-            "info",
-            "required|string|in:error,warn,info,debug,trace",
-        ),
+pub fn render(root: &Path) -> Result<String> {
+    let mut entries = vec![
+        Entry {
+            key: "eula".to_owned(),
+            area: "Server".to_owned(),
+            name: "Accept the Minecraft EULA".to_owned(),
+            description: String::new(),
+            env: "VANILLITE_EULA".to_owned(),
+            default: "false".to_owned(),
+            rules: "required|string|in:true,false".to_owned(),
+            vanilla: String::new(),
+        },
+        Entry {
+            key: "profile".to_owned(),
+            area: "Server".to_owned(),
+            name: "Profile".to_owned(),
+            description: String::new(),
+            env: "VANILLITE_PROFILE".to_owned(),
+            default: "vanilla".to_owned(),
+            rules: "required|string|in:vanilla,technical,paper,spigot,performance".to_owned(),
+            vanilla: String::new(),
+        },
+        Entry {
+            key: "log".to_owned(),
+            area: "Server".to_owned(),
+            name: "Log Level".to_owned(),
+            description: "Console log level: error, warn, info, debug or trace. Default: info."
+                .to_owned(),
+            env: "VANILLITE_LOG".to_owned(),
+            default: "info".to_owned(),
+            rules: "required|string|in:error,warn,info,debug,trace".to_owned(),
+            vanilla: String::new(),
+        },
     ];
 
     let mut defaults = std::collections::BTreeMap::new();
@@ -124,21 +264,62 @@ pub fn render() -> String {
         if let Some((min, max)) = info.range {
             description.push_str(&format!(" Range: {min} to {max}."));
         }
-        description.push_str(&format!(" server.properties: {}.", info.key));
+        if default.is_empty() {
+            description.push_str(" Default: empty.");
+        } else {
+            description.push_str(&format!(" Default: {default}."));
+        }
         if info.kind == PropertyKind::Text {
             description.push_str(" Empty: the value in server.properties.");
         }
-        variables.push(variable(
-            &title(info.key),
-            &description,
-            &env_name(info.key),
-            &default,
-            &rules,
-        ));
+        description.push_str(&format!(" server.properties: {}.", info.key));
+        entries.push(Entry {
+            key: info.key.to_owned(),
+            area: "Server".to_owned(),
+            name: title(info.key),
+            description,
+            env: env_name(info.key),
+            default,
+            rules,
+            vanilla: String::new(),
+        });
     }
 
-    rule_variables::<ServerRules>(&mut variables, "");
-    rule_variables::<WorldRules>(&mut variables, " Applies to every world.");
+    rule_entries::<ServerRules>(&mut entries, "");
+    rule_entries::<WorldRules>(&mut entries, " Applies to every world.");
+
+    let mut variables = Vec::with_capacity(entries.len());
+    for essential in ESSENTIALS {
+        let i = entries
+            .iter()
+            .position(|e| e.key == essential.key)
+            .ok_or_else(|| format!("egg: essential {:?} is not a setting", essential.key))?;
+        let mut entry = entries.remove(i);
+        if let Some(choices) = entry.rules.strip_prefix("nullable|string|in:default,") {
+            // A switch or dropdown of its own, starting at the vanilla profile's value.
+            entry.default = entry.vanilla.clone();
+            entry.rules = format!("required|string|in:{choices}");
+        }
+        variables.push(variable(
+            essential.name,
+            essential.description,
+            &entry.env,
+            &entry.default,
+            &entry.rules,
+        ));
+    }
+    // Stable: the catalogue order stays inside an area.
+    let rank = |area: &str| AREAS.iter().position(|a| *a == area).unwrap_or(AREAS.len());
+    entries.sort_by_key(|e| rank(&e.area));
+    for entry in &entries {
+        variables.push(variable(
+            &format!("{}: {}", entry.area, entry.name),
+            &entry.description,
+            &entry.env,
+            &entry.default,
+            &entry.rules,
+        ));
+    }
 
     let config = |value: Value| Value::String(serde_json::to_string(&value).unwrap_or_default());
     let egg = json!({
@@ -148,11 +329,12 @@ pub fn render() -> String {
         "name": "Vanillite",
         "author": "hthoene@users.noreply.github.com",
         "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves \
-                        like Vanilla in game; fast, multithreaded and low on RAM. Every \
-                        server.properties and vanillite.toml setting is a variable. \
+                        like Vanilla in game; fast, multithreaded and low on RAM. The startup \
+                        page shows the essential settings first, then every server.properties \
+                        and vanillite.toml setting, grouped by area. \
                         https://github.com/hthoene/Vanillite",
         "features": ["eula"],
-        "docker_images": { "Vanillite": IMAGE },
+        "docker_images": docker_images(root)?,
         "file_denylist": [],
         "startup": STARTUP,
         "config": {
@@ -170,12 +352,51 @@ pub fn render() -> String {
         },
         "variables": variables,
     });
-    let mut out = serde_json::to_string_pretty(&egg).unwrap_or_default();
+    let mut out = serde_json::to_string_pretty(&egg).map_err(|e| e.to_string())?;
     out.push('\n');
-    out
+    Ok(out)
 }
 
-fn rule_variables<R: RuleSet>(variables: &mut Vec<Value>, scope: &str) {
+/// The images the panel offers, the default first: the newest build of this release channel
+/// for this Minecraft version, then the newest of the channel (moves to new Minecraft versions).
+/// Tags as `scripts/release/meta.sh` pushes them.
+fn docker_images(root: &Path) -> Result<Value> {
+    let source = crate::read(&root.join(MC_VERSION_PATH))?;
+    let mc = source
+        .lines()
+        .find_map(|l| l.strip_prefix("pub const VERSION_ID: &str = \""))
+        .and_then(|l| l.strip_suffix("\";"))
+        .ok_or_else(|| format!("{MC_VERSION_PATH}: no VERSION_ID"))?;
+    let version = env!("CARGO_PKG_VERSION");
+    let mut images = serde_json::Map::new();
+    match version.split_once('-') {
+        Some((_, pre)) => {
+            let channel = pre.split('.').next().unwrap_or(pre);
+            let label = title(channel);
+            images.insert(
+                format!("{label} - Minecraft {mc}"),
+                format!("{REPOSITORY}:mc{mc}-{channel}").into(),
+            );
+            images.insert(
+                format!("{label} - newest Minecraft version"),
+                format!("{REPOSITORY}:{channel}").into(),
+            );
+        }
+        None => {
+            images.insert(
+                format!("Minecraft {mc}"),
+                format!("{REPOSITORY}:mc{mc}").into(),
+            );
+            images.insert(
+                "Newest Minecraft version".to_owned(),
+                format!("{REPOSITORY}:latest").into(),
+            );
+        }
+    }
+    Ok(Value::Object(images))
+}
+
+fn rule_entries<R: RuleSet>(entries: &mut Vec<Entry>, scope: &str) {
     let vanilla = R::for_profile(vanillite_config::Profile::Vanilla);
     for info in R::RULES {
         if HIDDEN_GROUPS.contains(&info.group) {
@@ -188,6 +409,7 @@ fn rule_variables<R: RuleSet>(variables: &mut Vec<Value>, scope: &str) {
                 other => other.to_string(),
             })
             .unwrap_or_default();
+        let fixed = info.value.ty == ValueType::Bool || !info.value.choices.is_empty();
         let mut description = sentence(info.doc);
         description.push_str(scope);
         if let Some((min, max)) = info.range {
@@ -196,25 +418,41 @@ fn rule_variables<R: RuleSet>(variables: &mut Vec<Value>, scope: &str) {
         if let Some(keyword) = info.value.keyword {
             description.push_str(&format!(" Also accepts {keyword}."));
         }
+        let keep = if fixed { KEEP } else { "Empty" };
         description.push_str(&format!(
-            " Empty: the profile's value (vanilla profile: {shown}). vanillite.toml: {}.",
+            " {keep}: the profile's value (vanilla profile: {shown}). vanillite.toml: {}.",
             info.key
         ));
-        let group = info.group.rsplit('.').next().unwrap_or(info.group);
-        variables.push(variable(
-            &format!("{}: {}", title(group), title(info.name)),
-            &description,
-            &env_name(info.key),
-            "",
-            &rule_rules(info),
-        ));
+        let (area, sub) = info.group.split_once('.').unwrap_or((info.group, ""));
+        let name = if sub.is_empty() {
+            title(info.name)
+        } else {
+            format!("{} › {}", title(sub), title(info.name))
+        };
+        entries.push(Entry {
+            key: info.key.to_owned(),
+            area: title(area),
+            name,
+            description,
+            env: env_name(info.key),
+            default: if fixed {
+                KEEP.to_owned()
+            } else {
+                String::new()
+            },
+            rules: rule_rules(info),
+            vanilla: shown,
+        });
     }
 }
 
 /// The panel's validation rules of a rule variable.
 fn rule_rules(info: &RuleInfo) -> String {
+    if !info.value.choices.is_empty() {
+        return format!("nullable|string|in:{KEEP},{}", info.value.choices.join(","));
+    }
     let number = match info.value.ty {
-        ValueType::Bool => return "nullable|string|in:true,false".to_owned(),
+        ValueType::Bool => return format!("nullable|string|in:{KEEP},true,false"),
         ValueType::Text => return "nullable|string".to_owned(),
         ValueType::Integer => ("integer", "[0-9]*"),
         ValueType::Number => ("numeric", "[0-9]*(\\.[0-9]+)?"),
@@ -255,11 +493,13 @@ fn sentence(doc: &str) -> String {
 fn title(key: &str) -> String {
     key.split(['-', '.', '_'])
         .map(|word| match word {
-            "motd" | "rcon" | "jmx" | "tnt" | "nbt" | "id" | "ips" | "url" => match word {
+            "motd" | "rcon" | "jmx" | "tnt" | "nbt" | "id" | "ips" | "url" | "io" | "xp" | "ip"
+            | "rc" => match word {
                 "ips" => "IPs".to_owned(),
                 other => other.to_ascii_uppercase(),
             },
             "sha1" => "SHA-1".to_owned(),
+            "xray" => "X-Ray".to_owned(),
             _ => {
                 let mut chars = word.chars();
                 chars
@@ -317,7 +557,24 @@ pub fn check_format(egg: &str) -> Result<()> {
         .and_then(Value::as_object)
         .filter(|m| !m.is_empty() && m.values().all(Value::is_string))
         .ok_or("egg: docker_images must map names to images")?;
-    let _ = images;
+    // The panel stores the images as `name|image` lines and rejects names with other characters
+    // than letters, digits, `_`, `#`, `.`, `/`, `-` and spaces (e.g. a comma).
+    for (name, image) in images {
+        let image = image.as_str().unwrap_or_default();
+        let name_ok = name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || " _#./-".contains(c));
+        let image_ok = image
+            .strip_prefix('~')
+            .unwrap_or(image)
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || " _./-:@".contains(c));
+        if !name_ok || !image_ok || image.is_empty() {
+            return Err(format!(
+                "egg: docker image \"{name}|{image}\" is not accepted by the panel"
+            ));
+        }
+    }
     for pointer in ["/features", "/file_denylist"] {
         egg.pointer(pointer)
             .and_then(Value::as_array)
@@ -440,10 +697,10 @@ fn default_image() -> String {
 /// Starts `image` like Pterodactyl's Wings does (startup command and default variables from the
 /// egg, the server folder at /home/container, a non-root user, a read-only root file system, a
 /// terminal) and checks that the server starts and answers a status ping on the published port.
-fn smoke(image: &str) -> Result<()> {
+fn smoke(root: &Path, image: &str) -> Result<()> {
     const NAME: &str = "vanillite-egg-smoke";
     const PORT: &str = "30950";
-    let egg: Value = serde_json::from_str(&render()).map_err(|e| e.to_string())?;
+    let egg: Value = serde_json::from_str(&render(root)?).map_err(|e| e.to_string())?;
     let host = crate::docker::docker_host();
     let docker = || crate::docker::docker(host.as_deref());
     let _ = docker()

@@ -33,6 +33,7 @@ pub mod player_data;
 pub mod region;
 pub mod saved_data;
 pub mod service;
+pub mod unreadable;
 pub mod upgrade;
 pub mod vwr;
 pub mod writer;
@@ -54,6 +55,7 @@ pub use crate::layout::WorldLayout;
 pub use crate::own_codec::OwnCodec;
 pub use crate::saved_data::{read_saved_data, saved_data_path, write_saved_data};
 pub use crate::service::{IoPool, RegionStore, RegionStoreProvider, StoreSettings, StoreStats};
+pub use crate::unreadable::KeepUnreadable;
 
 /// The folder of a dimension inside a world folder (26.x layout):
 /// `dimensions/<namespace>/<path>`.
@@ -162,6 +164,21 @@ impl ChunkCodec for AnvilCodec {
 
     fn encode_entities(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
         let root = chunk_nbt::write_entities(chunk.pos, &chunk.entities)?;
+        self.write_root(&root, RecordMeta::STATUS_UNKNOWN)
+    }
+
+    fn decode_poi(
+        &self,
+        pos: ChunkPos,
+        _: &RecordMeta,
+        record: &[u8],
+    ) -> io::Result<Option<Arc<[u8]>>> {
+        let root = self.read_root(pos, record)?;
+        chunk_nbt::read_poi(pos, root).map(Some)
+    }
+
+    fn encode_poi(&self, chunk: &ProtoChunk) -> io::Result<(RecordMeta, Arc<[u8]>)> {
+        let root = chunk_nbt::write_poi(chunk.pos, chunk.poi.as_deref().unwrap_or_default())?;
         self.write_root(&root, RecordMeta::STATUS_UNKNOWN)
     }
 

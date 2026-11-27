@@ -37,6 +37,7 @@ pub struct ComponentPatch {
 
 impl ComponentPatch {
     /// Whether the patch changes nothing.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty()
     }
@@ -123,11 +124,13 @@ impl ItemStack {
     }
 
     /// `ItemStack.isEmpty`.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.item == 0 || self.count <= 0
     }
 
     /// The component patch, if the stack has one.
+    #[inline]
     pub fn patch(&self) -> Option<&ComponentPatch> {
         self.patch.as_deref().filter(|p| !p.is_empty())
     }
@@ -143,6 +146,7 @@ impl ItemStack {
     }
 
     /// `ItemStack.isSameItemSameComponents`.
+    #[inline]
     pub fn same_item_same_components(&self, other: &ItemStack) -> bool {
         self.item == other.item && self.patch() == other.patch()
     }
@@ -297,6 +301,12 @@ impl ItemStack {
             return;
         }
         out.push(1);
+        self.encode_template(out);
+    }
+
+    /// Encodes `ItemStackTemplate.STREAM_CODEC` of a non-empty stack: item, count, trusted
+    /// patch (`charged_projectiles`).
+    pub fn encode_template(&self, out: &mut Vec<u8>) {
         write_varint(out, i32::from(self.item));
         write_varint(out, self.count);
         match self.patch.as_deref() {
@@ -311,6 +321,11 @@ impl ItemStack {
         if r.u8()? == 0 {
             return Ok(ItemStack::EMPTY);
         }
+        ItemStack::decode_template(r)
+    }
+
+    /// Decodes what [`Self::encode_template`] writes.
+    pub fn decode_template(r: &mut Reader<'_>) -> Result<ItemStack> {
         let item = u16::try_from(r.varint()?).map_err(|_| Error::Invalid("item id"))?;
         let count = r.varint()?;
         if !(1..=99).contains(&count) {

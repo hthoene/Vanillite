@@ -20,8 +20,7 @@
 //!   `enchant_randomly`, `enchant_with_levels`, `set_enchantments`, `set_damage`, `set_name`,
 //!   `set_potion`, `set_stew_effect`, `set_instrument`, `set_ominous_bottle_amplifier`,
 //!   `filtered`, named item modifiers; `copy_custom_data` and `enchanted_count_increase` do
-//!   nothing (no attacking entity); `exploration_map` leaves the map empty (there is no
-//!   structure search yet, as if no structure were found: the tables then discard the map);
+//!   nothing (no attacking entity); `exploration_map` needs the context's level access;
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
 //! The context has no level access, so:
@@ -128,6 +127,27 @@ pub struct LootContext<'a> {
     pub this_present: bool,
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`).
     pub entity: Option<&'a EntityLootContext<'a>>,
+    /// `exploration_map` with level access: the filled map for the request at the origin, if
+    /// a structure was found.
+    pub exploration_map: Option<&'a ExploreFn<'a>>,
+}
+
+/// Makes the map of an `exploration_map` request at an origin (see [`LootContext`]).
+pub type ExploreFn<'a> = dyn Fn(&ExplorationMap, Vec3) -> Option<ItemStack> + 'a;
+
+/// The arguments of `exploration_map` (`ExplorationMapFunction`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplorationMap {
+    /// `destination`: a structure tag id without `#`.
+    pub destination: String,
+    /// `decoration`: a map decoration type id.
+    pub decoration: String,
+    /// `zoom`.
+    pub zoom: i8,
+    /// `search_radius`.
+    pub search_radius: i32,
+    /// `skip_existing_chunks`.
+    pub skip_existing_chunks: bool,
 }
 
 impl fmt::Debug for LootContext<'_> {
@@ -173,6 +193,7 @@ impl LootContext<'_> {
             biome: None,
             this_present: false,
             entity: None,
+            exploration_map: None,
         }
     }
 }
@@ -388,6 +409,7 @@ impl LootTables {
             out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         eval.table(table);
     }
@@ -422,6 +444,7 @@ impl LootTables {
             out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         eval.table(table);
     }
@@ -511,6 +534,7 @@ impl LootTables {
             out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         eval.table(&table);
         Ok(())
@@ -569,6 +593,7 @@ impl LootTables {
             out: &mut out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         Ok(eval.test(cond))
     }
@@ -620,6 +645,7 @@ impl LootTables {
             out: &mut out,
             post: Vec::new(),
             depth: 0,
+            allow_additional_cost: false,
         };
         eval.apply(func, stack);
         Ok(())
@@ -1093,12 +1119,20 @@ enum FuncKind {
     EnchantRandomly {
         options: Option<Box<[Box<str>]>>,
         only_compatible: bool,
+        /// `include_additional_cost_component` (villager trades).
+        additional_cost: bool,
     },
     /// `enchant_with_levels`.
     EnchantWithLevels {
         levels: IntProvider,
         options: Option<Box<[Box<str>]>>,
+        /// `include_additional_cost_component` (villager trades).
+        additional_cost: bool,
     },
+    /// `set_random_dyes`: the number of random dyes mixed into the colour.
+    SetRandomDyes(IntProvider),
+    /// `set_random_potion`: `options` holder set entries (all potions if `None`).
+    SetRandomPotion(Option<Box<[Box<str>]>>),
     /// `set_enchantments`: enchantment ids with their level providers.
     SetEnchantments {
         enchantments: Box<[(Box<str>, IntProvider)]>,
@@ -1120,6 +1154,8 @@ enum FuncKind {
     SetStewEffect(Box<[(u32, IntProvider, bool)]>),
     /// `set_instrument`: holder set entries of `minecraft:instrument`.
     SetInstrument(Box<[Box<str>]>),
+    /// `exploration_map`.
+    ExplorationMap(Box<ExplorationMap>),
     /// `set_ominous_bottle_amplifier`.
     SetOminousBottleAmplifier(IntProvider),
     /// `filtered`.
@@ -1143,6 +1179,8 @@ enum IntProvider {
     Const(i32),
     Uniform(Box<(IntProvider, IntProvider)>),
     Binomial(Box<(IntProvider, FloatProvider)>),
+    /// `add`: the sum of the inputs, in order.
+    Sum(Box<[IntProvider]>),
 }
 
 #[derive(Debug)]
@@ -1842,11 +1880,25 @@ impl Parser<'_> {
                     .get("only_compatible")
                     .and_then(Value::as_bool)
                     .unwrap_or(true),
+                additional_cost: o
+                    .get("include_additional_cost_component")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             "minecraft:enchant_with_levels" => FuncKind::EnchantWithLevels {
                 levels: self.int_provider(field(o, "levels")?)?,
                 options: o.get("options").map(holder_entries).transpose()?,
+                additional_cost: o
+                    .get("include_additional_cost_component")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
+            "minecraft:set_random_dyes" => {
+                FuncKind::SetRandomDyes(self.int_provider(field(o, "number_of_dyes")?)?)
+            }
+            "minecraft:set_random_potion" => {
+                FuncKind::SetRandomPotion(o.get("options").map(holder_entries).transpose()?)
+            }
             "minecraft:set_enchantments" => {
                 let mut enchantments = Vec::new();
                 if let Some(map) = o.get("enchantments") {
@@ -1930,8 +1982,44 @@ impl Parser<'_> {
                     on_fail: on_fail.map(Box::new),
                 }
             }
-            // No structure search: the map stays empty, as when Vanilla finds no structure.
-            "minecraft:exploration_map" => FuncKind::Noop,
+            "minecraft:exploration_map" => {
+                let with_ns = |s: &str| {
+                    if s.contains(':') {
+                        s.to_owned()
+                    } else {
+                        format!("minecraft:{s}")
+                    }
+                };
+                let destination = o.get("destination").and_then(Value::as_str).map_or_else(
+                    || "minecraft:on_treasure_maps".to_owned(),
+                    |s| with_ns(s.trim_start_matches('#')),
+                );
+                let decoration = o
+                    .get("decoration")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| "minecraft:mansion".to_owned(), with_ns);
+                let zoom = o
+                    .get("zoom")
+                    .and_then(Value::as_i64)
+                    .and_then(|z| i8::try_from(z).ok())
+                    .unwrap_or(2);
+                let search_radius = o
+                    .get("search_radius")
+                    .and_then(Value::as_i64)
+                    .and_then(|r| i32::try_from(r).ok())
+                    .unwrap_or(50);
+                let skip_existing_chunks = o
+                    .get("skip_existing_chunks")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                FuncKind::ExplorationMap(Box::new(ExplorationMap {
+                    destination,
+                    decoration,
+                    zoom,
+                    search_radius,
+                    skip_existing_chunks,
+                }))
+            }
             "minecraft:copy_components" | "minecraft:copy_name" | "minecraft:copy_custom_data" => {
                 FuncKind::Noop
             }
@@ -1958,6 +2046,15 @@ impl Parser<'_> {
                 self.int_provider(field(o, "n")?)?,
                 self.float_provider(field(o, "p")?)?,
             ))),
+            "minecraft:add" => IntProvider::Sum(
+                field(o, "inputs")?
+                    .as_array()
+                    .ok_or("`inputs` is not a list")?
+                    .iter()
+                    .map(|v| self.int_provider(v))
+                    .collect::<Res<Vec<_>>>()?
+                    .into(),
+            ),
             other => return Err(format!("unsupported int provider {other}")),
         })
     }
@@ -2069,6 +2166,8 @@ struct Eval<'t, 'x> {
     /// Modifiers every created stack passes, applied last to first.
     post: Vec<&'t Func>,
     depth: u32,
+    /// `ADDITIONAL_COST_COMPONENT_ALLOWED` (villager trade contexts).
+    allow_additional_cost: bool,
 }
 
 impl<'t> Eval<'t, '_> {
@@ -2583,8 +2682,25 @@ impl<'t> Eval<'t, '_> {
             FuncKind::EnchantRandomly {
                 options,
                 only_compatible,
-            } => self.enchant_randomly(stack, options.as_deref(), *only_compatible),
-            FuncKind::EnchantWithLevels { levels, options } => {
+                additional_cost,
+            } => {
+                if let Some(level) =
+                    self.enchant_randomly(stack, options.as_deref(), *only_compatible)
+                    && *additional_cost
+                    && self.allow_additional_cost
+                {
+                    let bound = 5i32.wrapping_add(level.wrapping_mul(10));
+                    let cost = 2i32
+                        .wrapping_add(self.rng.next_int(bound.max(1)))
+                        .wrapping_add(level.wrapping_mul(3));
+                    set_additional_trade_cost(stack, cost);
+                }
+            }
+            FuncKind::EnchantWithLevels {
+                levels,
+                options,
+                additional_cost,
+            } => {
                 let cost = self.int(levels);
                 let Some(e) = self.ctx.enchanting else {
                     return;
@@ -2598,6 +2714,55 @@ impl<'t> Eval<'t, '_> {
                 }
                 for (id, level) in chosen {
                     upgrade_enchantment(stack, id, level);
+                }
+                if *additional_cost && self.allow_additional_cost && !stack.is_empty() && cost > 0 {
+                    set_additional_trade_cost(stack, cost);
+                }
+            }
+            FuncKind::SetRandomDyes(count) => {
+                // `SetRandomDyesFunction.run`: `Util.getRandom(DyeColor.VALUES, random)` each.
+                let rolls = self.int(count);
+                if rolls > 0 {
+                    let mut dyes = Vec::with_capacity(usize::try_from(rolls).unwrap_or(0));
+                    for _ in 0..rolls {
+                        dyes.push(self.rng.next_int(16));
+                    }
+                    let current = stack
+                        .component(ids::DYED_COLOR)
+                        .and_then(|v| Reader::new(v).i32().ok());
+                    let rgb = crate::recipe::apply_dyes(current, &dyes);
+                    *stack = stack.with_count(1);
+                    stack
+                        .patch_mut()
+                        .set(ids::DYED_COLOR, Box::new(rgb.to_be_bytes()));
+                }
+            }
+            FuncKind::SetRandomPotion(options) => {
+                // `HolderSet.getRandomElement` / `Registry.getRandom`: `Util.getRandomSafe`.
+                let potions: Vec<u32> = match options {
+                    Some(options) => options
+                        .iter()
+                        .flat_map(|o| (self.ctx.holder_set)("minecraft:potion", o))
+                        .collect(),
+                    None => (0..vanillite_data::registry::POTION.len())
+                        .filter_map(|i| u32::try_from(i).ok())
+                        .collect(),
+                };
+                if potions.is_empty() {
+                    return;
+                }
+                let len = i32::try_from(potions.len()).unwrap_or(i32::MAX);
+                let pick = usize::try_from(self.rng.next_int(len)).unwrap_or(0);
+                if let Some(&potion) = potions.get(pick) {
+                    let mut out = vec![1];
+                    vanillite_protocol::codec::write_varint(
+                        &mut out,
+                        i32::try_from(potion).unwrap_or(0),
+                    );
+                    out.extend_from_slice(&[0, 0, 0]);
+                    stack
+                        .patch_mut()
+                        .set(ids::POTION_CONTENTS, out.into_boxed_slice());
                 }
             }
             FuncKind::SetEnchantments { enchantments, add } => {
@@ -2735,6 +2900,17 @@ impl<'t> Eval<'t, '_> {
                     self.apply(f, stack);
                 }
             }
+            FuncKind::ExplorationMap(request) => {
+                // `ExplorationMapFunction.run`: an empty map becomes a map to the structure.
+                if stack.item != items::MAP.0 {
+                    return;
+                }
+                if let (Some(origin), Some(explore)) = (self.ctx.origin, self.ctx.exploration_map)
+                    && let Some(map) = explore(request, origin)
+                {
+                    *stack = map;
+                }
+            }
             FuncKind::Noop => {}
         }
     }
@@ -2745,10 +2921,8 @@ impl<'t> Eval<'t, '_> {
         stack: &mut ItemStack,
         options: Option<&[Box<str>]>,
         only_compatible: bool,
-    ) {
-        let Some(e) = self.ctx.enchanting else {
-            return;
-        };
+    ) -> Option<i32> {
+        let e = self.ctx.enchanting?;
         let is_book = stack.item == items::BOOK.0;
         let check = !is_book && only_compatible;
         let candidates: Vec<u32> = self
@@ -2758,19 +2932,18 @@ impl<'t> Eval<'t, '_> {
             .collect();
         if candidates.is_empty() {
             log::warn!("Couldn't find a compatible enchantment for {stack:?}");
-            return;
+            return None;
         }
         let len = i32::try_from(candidates.len()).unwrap_or(i32::MAX);
         let pick = usize::try_from(self.rng.next_int(len)).unwrap_or(0);
-        let Some(&id) = candidates.get(pick) else {
-            return;
-        };
+        let &id = candidates.get(pick)?;
         let max = e.get(id).map_or(1, |info| info.max_level);
         let level = next_int_between(&mut *self.rng, 1, max);
         if is_book {
             *stack = ItemStack::new(items::ENCHANTED_BOOK.0, 1);
         }
         upgrade_enchantment(stack, id, level);
+        Some(level)
     }
 
     /// `ApplyBonusCount.Formula.calculateNewCount`.
@@ -2831,6 +3004,9 @@ impl<'t> Eval<'t, '_> {
                 }
                 result
             }
+            IntProvider::Sum(inputs) => inputs
+                .iter()
+                .fold(0i32, |sum, p| sum.wrapping_add(self.int(p))),
         }
     }
 
@@ -2986,6 +3162,161 @@ fn decode_block_state(data: &[u8]) -> Option<Vec<(String, String)>> {
         pairs.push((k.to_owned(), v.to_owned()));
     }
     Some(pairs)
+}
+
+/// `DataComponents.ADDITIONAL_TRADE_COST` (a var int) on a stack.
+fn set_additional_trade_cost(stack: &mut ItemStack, cost: i32) {
+    let Some(id) =
+        vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:additional_trade_cost")
+    else {
+        return;
+    };
+    let mut out = Vec::new();
+    vanillite_protocol::codec::write_varint(&mut out, cost);
+    stack.patch_mut().set(id, out.into_boxed_slice());
+}
+
+// --- Standalone loot parts (villager trades and other data that embeds them) ------------------
+
+/// A parser for loot parts outside loot tables: named predicates and item modifiers are not
+/// available.
+fn standalone_parser<'n>(names: &'n HashMap<String, u32>) -> Parser<'n> {
+    Parser {
+        predicates: names,
+        modifiers: names,
+        unsupported: Vec::new(),
+    }
+}
+
+/// The empty name map of [`standalone_parser`].
+fn no_names() -> &'static HashMap<String, u32> {
+    static EMPTY: std::sync::OnceLock<HashMap<String, u32>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(HashMap::new)
+}
+
+/// Logs the unsupported parts a standalone parse met.
+fn note_unsupported(parser: &mut Parser<'_>, what: &str) {
+    for feature in parser.unsupported.drain(..) {
+        log::warn!("{what}: unsupported {feature}");
+    }
+}
+
+/// An item modifier (`LootItemFunction`, a list is a sequence) parsed on its own.
+#[derive(Debug)]
+pub struct LootFunction(Func);
+
+/// A loot condition (`LootItemCondition`) parsed on its own.
+#[derive(Debug)]
+pub struct LootCondition(Cond);
+
+/// A number provider of ints (`ContextIntProvider`).
+#[derive(Debug)]
+pub struct LootInt(IntProvider);
+
+/// A number provider of floats (`ContextFloatProvider`).
+#[derive(Debug)]
+pub struct LootFloat(FloatProvider);
+
+/// How a standalone loot part is evaluated: the context, its random and whether
+/// `ADDITIONAL_COST_COMPONENT_ALLOWED` is set.
+pub struct LootEval<'a> {
+    pub tables: &'a LootTables,
+    pub ctx: &'a LootContext<'a>,
+    pub rng: &'a mut dyn LootRandom,
+    pub additional_cost_allowed: bool,
+}
+
+impl fmt::Debug for LootEval<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LootEval")
+            .field("additional_cost_allowed", &self.additional_cost_allowed)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> LootEval<'a> {
+    fn eval<'s>(&'s mut self, out: &'s mut Vec<ItemStack>) -> Eval<'a, 's> {
+        Eval {
+            tables: self.tables,
+            ctx: self.ctx,
+            rng: &mut *self.rng,
+            out,
+            post: Vec::new(),
+            depth: 0,
+            allow_additional_cost: self.additional_cost_allowed,
+        }
+    }
+}
+
+impl LootFunction {
+    /// Parses a modifier object, a list of them or (failing) a reference.
+    pub fn parse(v: &Value, what: &str) -> Result<LootFunction, String> {
+        let mut parser = standalone_parser(no_names());
+        let f = parser.func(v);
+        note_unsupported(&mut parser, what);
+        f.map(LootFunction)
+    }
+
+    /// `apply(stack, context)`.
+    pub fn apply(&self, eval: &mut LootEval<'_>, stack: &mut ItemStack) {
+        let mut out = Vec::new();
+        let mut e = eval.eval(&mut out);
+        e.apply(&self.0, stack);
+    }
+}
+
+impl LootCondition {
+    /// Parses a condition object.
+    pub fn parse(v: &Value, what: &str) -> Result<LootCondition, String> {
+        let mut parser = standalone_parser(no_names());
+        let c = parser.cond(v);
+        note_unsupported(&mut parser, what);
+        c.map(LootCondition)
+    }
+
+    /// `test(context)`.
+    pub fn test(&self, eval: &mut LootEval<'_>) -> bool {
+        let mut out = Vec::new();
+        eval.eval(&mut out).test(&self.0)
+    }
+}
+
+impl LootInt {
+    /// A constant.
+    pub fn constant(v: i32) -> LootInt {
+        LootInt(IntProvider::Const(v))
+    }
+
+    /// Parses a number or a provider object.
+    pub fn parse(v: &Value) -> Result<LootInt, String> {
+        standalone_parser(no_names()).int_provider(v).map(LootInt)
+    }
+
+    /// `getInt(context)`.
+    pub fn sample(&self, eval: &mut LootEval<'_>) -> i32 {
+        let mut out = Vec::new();
+        eval.eval(&mut out).int(&self.0)
+    }
+}
+
+impl LootFloat {
+    /// A constant.
+    pub fn constant(v: f32) -> LootFloat {
+        LootFloat(FloatProvider::Const(v))
+    }
+
+    /// Parses a number or a provider object.
+    pub fn parse(v: &Value) -> Result<LootFloat, String> {
+        standalone_parser(no_names())
+            .float_provider(v)
+            .map(LootFloat)
+    }
+
+    /// `getFloat(context)`.
+    pub fn sample(&self, eval: &mut LootEval<'_>) -> f32 {
+        let mut out = Vec::new();
+        eval.eval(&mut out).float(&self.0)
+    }
 }
 
 #[cfg(test)]

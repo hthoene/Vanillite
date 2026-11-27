@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 1;
+pub const ABI_MINOR: u16 = 2;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -326,6 +326,18 @@ abi! {
             ROOT = u32::MAX,
             /// No world ([`Owner::world`], [`Sender::world`]).
             NO_WORLD = u32::MAX,
+            /// A block state id that is no block: written by `blocks_get` for positions
+            /// outside loaded chunks, skipped by `blocks_set`. Since ABI 1.2.
+            NO_BLOCK = u32::MAX,
+            /// The most blocks one `blocks_get` or `blocks_set` call covers. Since ABI 1.2.
+            MAX_BOX_VOLUME = 1 << 24,
+        }
+        /// How `block_set_id` and `blocks_set` change blocks. Since ABI 1.2.
+        pub mod set_mode: u32 {
+            /// Like `block_set`: Vanilla's `setBlock` with neighbour and shape updates.
+            UPDATE = 0,
+            /// Without neighbour and shape updates (no physics); clients still see the change.
+            NO_PHYSICS = 1,
         }
     }
     structs {
@@ -379,6 +391,15 @@ abi! {
             pub y: f64,
             /// Z.
             pub z: f64,
+        }
+        /// A box of block positions, both corners inclusive (`min` ≤ `max` on every axis).
+        /// Block arrays over a box are indexed `((y - min.y) * size_z + (z - min.z)) * size_x +
+        /// (x - min.x)` (as [`GenChunk`]). Since ABI 1.2.
+        pub struct BlockBox {
+            /// The lowest corner.
+            pub min: BlockPos,
+            /// The highest corner.
+            pub max: BlockPos,
         }
         /// What a plugin library reports about itself before any other of its code runs.
         pub struct PluginInfo {
@@ -755,6 +776,33 @@ abi! {
             /// Sets the header and footer of a player's player list (tab list); both in the
             /// format from [`text_format`], empty text removes them. Since ABI 1.1.
             pub player_set_tab_list: unsafe extern "C" fn(PluginId, Uuid, Str, Str, u32) -> Status,
+            /// The text of a numeric block state id (the inverse of `block_state_id`), e.g.
+            /// `minecraft:oak_log[axis=y]`. Since ABI 1.2.
+            pub block_state_name: unsafe extern "C" fn(PluginId, u32, *mut StrBuf) -> Status,
+            /// The numeric block state id at a position of the owned world;
+            /// [`status::NOT_FOUND`] outside loaded chunks. Since ABI 1.2.
+            pub block_get_id: unsafe extern "C" fn(*mut Context, u32, BlockPos, *mut u32) -> Status,
+            /// Sets a block state by numeric id in the owned world (`mode` from [`set_mode`]).
+            /// Since ABI 1.2.
+            pub block_set_id: unsafe extern "C" fn(*mut Context, u32, BlockPos, u32, u32) -> Status,
+            /// Reads the block state ids of a box of the owned world into `out` (`cap` entries,
+            /// at least the box's volume, at most [`limits::MAX_BOX_VOLUME`]); positions outside
+            /// loaded chunks read [`limits::NO_BLOCK`]. Since ABI 1.2.
+            pub blocks_get:
+                unsafe extern "C" fn(*mut Context, u32, *const BlockBox, *mut u32, usize) -> Status,
+            /// Sets the block states of a box of the owned world from `states` (`len` entries,
+            /// the box's volume), in array order with `mode` from [`set_mode`]; entries of
+            /// [`limits::NO_BLOCK`] and positions outside loaded chunks are skipped. Writes the
+            /// number of blocks that changed to the last argument. Since ABI 1.2.
+            pub blocks_set: unsafe extern "C" fn(
+                *mut Context,
+                u32,
+                *const BlockBox,
+                *const u32,
+                usize,
+                u32,
+                *mut usize,
+            ) -> Status,
         }
     }
 }

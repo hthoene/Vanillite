@@ -36,8 +36,9 @@ use vanillite_nbt::{Budget, Compound, List, Tag, TagType};
 pub const OLDEST_DATA_VERSION: i32 = 3953;
 
 /// Tags this module decodes; everything else goes to `extra`.
-pub(crate) const DECODED: [&str; 13] = [
+pub(crate) const DECODED: [&str; 14] = [
     "DataVersion",
+    "LastUpdate",
     "xPos",
     "yPos",
     "zPos",
@@ -203,7 +204,7 @@ impl Codec {
         // computes untrusted light again.
         let mut light = ChunkLight::new(count);
         let (mut version, mut x, mut z, mut status) = (None, None, None, None);
-        let (mut light_on, mut inhabited_time) = (false, 0);
+        let (mut light_on, mut inhabited_time, mut last_update) = (false, 0, 0);
         let mut heightmaps: [Option<&'b [u8]>; 6] = [None; 6];
         let mut block_entities = Vec::new();
         let (mut block_ticks, mut fluid_ticks) = (Vec::new(), Vec::new());
@@ -227,6 +228,7 @@ impl Codec {
                 (b"Status", _) => status = c.str(ty)?,
                 (b"isLightOn", _) => light_on = c.int(ty)? == Some(1),
                 (b"InhabitedTime", _) => inhabited_time = c.int(ty)?.unwrap_or(0),
+                (b"LastUpdate", _) => last_update = c.int(ty)?.unwrap_or(0),
                 (b"sections", TagType::List) => {
                     let (element, n) = c.enter_list()?;
                     for _ in 0..n {
@@ -388,11 +390,13 @@ impl Codec {
             chunk,
             block_entities,
             inhabited_time,
+            last_update,
             light_on,
             block_ticks,
             fluid_ticks,
             post_processing,
             entities: Vec::new(),
+            poi: None,
             extra,
             generation: None,
         })
@@ -610,6 +614,7 @@ impl Codec {
         root.insert("zPos", chunk.pos.z);
         root.insert("Status", chunk.status.name());
         root.insert("InhabitedTime", chunk.inhabited_time);
+        root.insert("LastUpdate", chunk.last_update);
         // Vanilla writes the flag only when set.
         if chunk.light_on {
             root.insert("isLightOn", true);
@@ -1000,6 +1005,39 @@ pub fn write_entities(pos: ChunkPos, entities: &[Arc<[u8]>]) -> io::Result<Compo
     Ok(root)
 }
 
+/// Decodes a POI record (`SectionStorage` data of `PoiManager`): the root without
+/// `DataVersion` as binary network NBT, unknown tags kept.
+pub fn read_poi(pos: ChunkPos, mut root: Compound) -> io::Result<Arc<[u8]>> {
+    let version = root.get("DataVersion").and_then(Tag::as_i64).unwrap_or(0);
+    if version > i64::from(DATA_VERSION) {
+        return Err(invalid(format!(
+            "POI of chunk {pos:?} have data version {version}, newer than this server \
+             ({DATA_VERSION})"
+        )));
+    }
+    root.remove("DataVersion");
+    let mut nbt = Vec::new();
+    vanillite_nbt::write::write_network_compound(&root, &mut nbt).map_err(nbt_err)?;
+    Ok(nbt.into())
+}
+
+/// Encodes the POI of a chunk (the root of [`read_poi`]) as a POI record with the current
+/// `DataVersion`.
+pub fn write_poi(pos: ChunkPos, poi: &[u8]) -> io::Result<Compound> {
+    let mut root = if poi.is_empty() {
+        Compound::new()
+    } else {
+        match vanillite_nbt::read::read_network(&mut &poi[..], &mut Budget::file())
+            .map_err(nbt_err)?
+        {
+            Some(Tag::Compound(c)) => c,
+            _ => return Err(invalid(format!("POI of chunk {pos:?} are no compound"))),
+        }
+    };
+    root.insert("DataVersion", DATA_VERSION);
+    Ok(root)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1230,5 +1268,50 @@ pub(crate) mod tests {
             chunk.heightmaps().get(HeightmapKind::OceanFloor),
             primed.heightmaps().get(HeightmapKind::OceanFloor)
         );
+    }
+
+    /// Every POI record of a real 26.x world (`VANILLITE_TEST_WORLD`, a copy that is only
+    /// read) comes back the same through [`read_poi`] and [`write_poi`].
+    #[test]
+    fn real_world_poi_round_trip() {
+        let Some(world) = std::env::var_os("VANILLITE_TEST_WORLD").map(std::path::PathBuf::from)
+        else {
+            return;
+        };
+        let mut count = 0;
+        for dimension in ["overworld", "the_nether", "the_end"] {
+            let dir = world
+                .join("dimensions/minecraft")
+                .join(dimension)
+                .join("poi");
+            let Ok(files) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for file in files {
+                let path = file.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                let parts: Vec<&str> = name.split('.').collect();
+                let (rx, rz): (i32, i32) = (parts[1].parse().unwrap(), parts[2].parse().unwrap());
+                let region = crate::region::RegionFile::open(&path, false)
+                    .unwrap()
+                    .unwrap();
+                for i in 0..1024 {
+                    let pos = ChunkPos::new(rx * 32 + i % 32, rz * 32 + i / 32);
+                    let Some(record) = region.read_record(pos).unwrap() else {
+                        continue;
+                    };
+                    let compression = crate::Compression::from_id(record[0]).unwrap();
+                    let nbt = compression.decompress(&record[1..]).unwrap();
+                    let mut original = crate::read_root(pos, &nbt).unwrap();
+                    let bytes = read_poi(pos, original.clone()).unwrap();
+                    let mut again = write_poi(pos, &bytes).unwrap();
+                    original.remove("DataVersion");
+                    again.remove("DataVersion");
+                    assert_eq!(again, original, "{} {pos:?}", path.display());
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0, "no POI records in the test world");
     }
 }

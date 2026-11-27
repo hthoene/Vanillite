@@ -52,6 +52,9 @@ pub struct PieceContext<'r, 'a> {
     pub random: &'r mut DecorationRandom,
     /// The `ChunkGenerator` (feature placement, sea level, ...).
     pub generator: &'r TerrainGenerator,
+    /// `keepJigsaws` of `PoolElementStructurePiece.place`: jigsaw blocks stay instead of
+    /// turning into their final state (jigsaw blocks generating with "keep jigsaws").
+    pub keep_jigsaws: bool,
 }
 
 /// The state of Vanilla's `StructurePiece` base class.

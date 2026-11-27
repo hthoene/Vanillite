@@ -15,13 +15,15 @@ mod data_cmd;
 mod dispatch;
 mod engine;
 mod entities_cmd;
-mod exec;
+pub(crate) mod exec;
 mod execute;
 pub(crate) mod functions;
+pub(crate) mod gametest;
 pub(crate) mod items;
 mod locate;
 pub(crate) mod loot_cmd;
 mod nbt_ops;
+mod operator;
 mod pack_cmd;
 mod particle;
 mod player_data;
@@ -51,6 +53,7 @@ use vanillite_world::entity::EntityId;
 
 pub(crate) use bans::ban_reason;
 pub(crate) use exec::{find_player, permission_event};
+pub(crate) use operator::handle as handle_admin;
 pub(crate) use player_data::add_experience;
 pub(crate) use select::find_uuid;
 pub(crate) use sound::send_post_effects;
@@ -140,6 +143,92 @@ fn run_line(env: &mut Env<'_>, line: engine::Line, source: CommandSource) {
     let mut engine = functions::new_engine(env.global);
     engine.queue_command(line, source, engine::Callback::Empty);
     engine.run(env);
+}
+
+/// Installs the structure search of exploration maps with the current registry tags.
+pub(crate) fn install_map_explorer(global: &Global) {
+    vanillite_game::map::install_explorer(Box::new(locate::MapExplorer {
+        tags: global.systems.tags(),
+    }));
+}
+
+/// Where a written book to resolve is.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum BookAt {
+    /// In a hand of the player; it opens afterwards (`openItemGui`).
+    Hand(vanillite_protocol::packets::play::serverbound::Hand),
+    /// On the lectern at the position (`LecternBlockEntity.resolveBook`).
+    Lectern(vanillite_base::BlockPos),
+}
+
+/// `WrittenBookContent.resolveForItem` with the player's command source.
+pub(crate) fn resolve_book(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    id: EntityId,
+    world: WorldId,
+    at: BookAt,
+) {
+    use vanillite_protocol::packets::play::serverbound::Hand;
+    let Some(source) = player_source(&level.entities, global, id, world) else {
+        return;
+    };
+    let slot = |level: &vanillite_game::level::Level, hand: Hand| match hand {
+        Hand::MainHand => level
+            .entities
+            .player(id)
+            .map_or(0, |p| p.inventory.selected),
+        Hand::OffHand => vanillite_game::inventory::OFFHAND,
+    };
+    let mut stack = match at {
+        BookAt::Hand(hand) => {
+            let i = slot(level, hand);
+            match level.entities.player(id) {
+                Some(p) => p.inventory.get(i).clone(),
+                None => return,
+            }
+        }
+        BookAt::Lectern(pos) => match level.block_entity(pos) {
+            Some(vanillite_game::level::BlockEntity::Lectern(l)) => l.book.clone(),
+            _ => return,
+        },
+    };
+    if vanillite_game::book::needs_resolving(&stack) {
+        let env = Env {
+            level: &mut *level,
+            global,
+            world,
+        };
+        vanillite_game::book::resolve_for_item(&mut stack, &mut |c| {
+            text::resolve(&env, &source, c, None).ok()
+        });
+        match at {
+            BookAt::Hand(hand) => {
+                let i = slot(level, hand);
+                if let Some(p) = level.entities.player_mut(id) {
+                    p.inventory.set(i, stack);
+                }
+            }
+            BookAt::Lectern(pos) => {
+                if let Some(vanillite_game::level::BlockEntity::Lectern(l)) =
+                    level.block_entity_mut(pos)
+                {
+                    l.book = stack;
+                }
+                level.block_entity_changed(pos);
+            }
+        }
+    }
+    if let BookAt::Hand(hand) = at
+        && let Some(p) = level.entities.player_mut(id)
+    {
+        // `containerMenu.broadcastChanges()` first: the client opens the resolved book.
+        let sink = Arc::clone(&p.connection.sink);
+        if p.inventory.container.is_none() {
+            p.inventory.broadcast_changes(sink.as_ref());
+        }
+        sink.send(&vanillite_protocol::packets::play::clientbound::OpenBook { hand });
+    }
 }
 
 /// The permission level of a player: its operator level or 0.
@@ -417,6 +506,14 @@ pub fn run_command_on_level(
     Ok(())
 }
 
+/// Installs the overworld's command block dispatcher on `level`, outside a running server
+/// (parity scenarios).
+pub fn install_command_runner(global: &Global, level: &mut vanillite_game::level::Level) {
+    if let Some(arc) = global.arc() {
+        level.set_command_runner(Arc::new(BlockCommands::new(&arc, WorldId(0))));
+    }
+}
+
 pub(crate) fn run_console_command(world: &mut ServerWorld, global: &Global, line: &str) {
     run_server_command(world, global, line, SourceKind::Console);
 }
@@ -430,6 +527,72 @@ pub(crate) fn run_rcon_command(world: &mut ServerWorld, global: &Global, line: &
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     )
+}
+
+/// The dispatcher of one world's command blocks and command block minecarts
+/// (`BaseCommandBlock.performCommand`).
+pub(crate) struct BlockCommands {
+    global: std::sync::Weak<Global>,
+    world: WorldId,
+}
+
+impl BlockCommands {
+    pub(crate) fn new(global: &Arc<Global>, world: WorldId) -> Self {
+        Self {
+            global: Arc::downgrade(global),
+            world,
+        }
+    }
+}
+
+impl vanillite_game::block::technical::command_block::CommandRunner for BlockCommands {
+    fn run(
+        &self,
+        level: &mut vanillite_game::level::Level,
+        run: &vanillite_game::block::technical::command_block::CommandRun<'_>,
+    ) -> vanillite_game::block::technical::command_block::CommandOutcome {
+        let Some(global) = self.global.upgrade() else {
+            return Default::default();
+        };
+        let output = Arc::new(source::BlockOutput::new(run.track_output, run.name.clone()));
+        let entity = run
+            .entity
+            .and_then(|id| select::local(&level.entities, self.world, id))
+            .map(|t| t.source_entity());
+        let successes = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let source = CommandSource::new(
+            Arc::clone(&global),
+            SourceKind::CommandBlock(Arc::clone(&output)),
+            2,
+            self.world,
+            run.pos,
+            run.rot,
+            entity,
+        )
+        .with_callback(engine::Callback::Count(Arc::clone(&successes)));
+        // `performPrefixedCommand`: one leading `/` is optional.
+        let command = run.command.strip_prefix('/').unwrap_or(run.command);
+        let mut env = Env {
+            level,
+            global: &global,
+            world: self.world,
+        };
+        match global.commands.parse_command(command, &source) {
+            Ok(parsed) => run_line(
+                &mut env,
+                engine::Line {
+                    parsed: Arc::new(parsed),
+                    signed: None,
+                },
+                source,
+            ),
+            Err(e) => send_error(&source, &global, &e, command),
+        }
+        vanillite_game::block::technical::command_block::CommandOutcome {
+            successes: successes.load(std::sync::atomic::Ordering::Relaxed),
+            last_message: output.take(),
+        }
+    }
 }
 
 /// A command of the console or RCON with the owner permission level.

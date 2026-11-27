@@ -75,6 +75,45 @@ pub struct MoveContext<'a> {
     pub runs_normally: bool,
     /// The world's movement rules.
     pub rules: &'a MovementRules,
+    /// The world border the player collides with (`None`: no border).
+    pub border: Option<&'a crate::level::border::WorldBorder>,
+    /// No "moved wrongly" check for this player (`isCreative()`, `isSpectator()`).
+    pub no_wrong_move_check: bool,
+    /// The `player_movement_check` game rule.
+    pub movement_check: bool,
+    /// The `elytra_movement_check` game rule.
+    pub elytra_movement_check: bool,
+}
+
+/// The part of `player.move`'s collision with the world border that the "moved wrongly"
+/// check sees: whether the move from `from` to `target` of a player box ends more than
+/// 0.25 blocks (`> 0.0625` squared) past the border's collision shape.
+fn moved_wrongly_into_border(
+    border: &crate::level::border::WorldBorder,
+    from: Vec3,
+    target: Vec3,
+) -> bool {
+    const HALF_WIDTH: f64 = 0.3;
+    let (dx, dz) = (target.x - from.x, target.z - from.z);
+    // `isInsideCloseToBorder` with the box grown by the movement.
+    let x_size = HALF_WIDTH * 2.0 + dx.abs();
+    let z_size = HALF_WIDTH * 2.0 + dz.abs();
+    if !border.is_inside_close_to_border(from.x, from.z, x_size, z_size) {
+        return false;
+    }
+    let (min_x, min_z, max_x, max_z) = border.collision_box();
+    let clamp = |v: f64, start: f64, lo: f64, hi: f64| {
+        // A box already past an edge does not collide with it from inside.
+        if start - HALF_WIDTH < lo || start + HALF_WIDTH > hi {
+            v
+        } else {
+            v.clamp(lo + HALF_WIDTH, hi - HALF_WIDTH)
+        }
+    };
+    let x = clamp(target.x, from.x, min_x, max_x);
+    let z = clamp(target.z, from.z, min_z, max_z);
+    let (ex, ez) = (target.x - x, target.z - z);
+    ex * ex + ez * ez > 0.0625
 }
 
 /// Per-connection movement state.
@@ -95,6 +134,10 @@ pub struct Movement {
     pub moves: Vec<crate::survival::player::MoveRecord>,
     /// The player rides a vehicle (`isPassenger`): moves only turn it, the vehicle places it.
     pub passenger: bool,
+    /// `lastKnownClientMovement`: the last move of this client tick, zero after a client tick
+    /// without one (`getKnownMovement`).
+    pub known_movement: Vec3,
+    received_movement_this_tick: bool,
 }
 
 /// `Mth.wrapDegrees`.
@@ -148,6 +191,8 @@ impl Movement {
             waiting_for_respawn: false,
             moves: Vec::new(),
             passenger: false,
+            known_movement: Vec3::ZERO,
+            received_movement_this_tick: false,
         }
     }
 
@@ -197,6 +242,10 @@ impl Movement {
 
     /// `client_tick_end`.
     pub fn client_tick_end(&mut self) {
+        if !self.received_movement_this_tick {
+            self.known_movement = Vec3::ZERO;
+        }
+        self.received_movement_this_tick = false;
         self.received_position_this_tick = false;
     }
 
@@ -382,8 +431,11 @@ impl Movement {
         Ok(())
     }
 
+    /// `shouldCheckPlayerMovement`: the game rules, and the server's own switches on top.
     fn should_check_movement(ctx: MoveContext<'_>, fall_flying: bool) -> bool {
-        ctx.rules.too_fast_check && (!fall_flying || ctx.rules.elytra_too_fast_check)
+        ctx.movement_check
+            && ctx.rules.too_fast_check
+            && (!fall_flying || (ctx.elytra_movement_check && ctx.rules.elytra_too_fast_check))
     }
 
     /// `handlePlayerPositionChange` without vehicles, sleeping and block collision.
@@ -438,6 +490,17 @@ impl Movement {
             }
         }
         let from = body.pos;
+        // `player.move` collides with the world border: a move through it is a wrong move,
+        // and the player goes back (`teleport(oldX, oldY, oldZ)`).
+        if !ctx.no_wrong_move_check
+            && let Some(border) = ctx.border
+            && moved_wrongly_into_border(border, from, target)
+        {
+            log::warn!("Player moved wrongly!");
+            let (y, x) = (body.y_rot, body.x_rot);
+            self.teleport(body, from, y, x, sink);
+            return;
+        }
         let was_on_ground = body.on_ground;
         let moved_upwards = target.y - self.last_good.y > 0.0;
         // TODO(milestone 3): `player.move` with block collision and the "moved wrongly" check
@@ -451,6 +514,13 @@ impl Movement {
         body.on_ground = on_ground;
         body.horizontal_collision = horizontal_collision;
         self.last_good = body.pos;
+        // `handlePlayerKnownMovement`.
+        self.known_movement = Vec3::new(
+            body.pos.x - from.x,
+            body.pos.y - from.y,
+            body.pos.z - from.z,
+        );
+        self.received_movement_this_tick = true;
         self.moves.push(crate::survival::player::MoveRecord {
             from,
             to: body.pos,
@@ -459,4 +529,50 @@ impl Movement {
             moved_upwards,
         });
     }
+}
+
+/// `ServerPlayer.teleport` within its world (`teleportSameDimension`, `connection.teleport`):
+/// the player goes to `pos` with the rotation and the [`relative`] bits of the transition, and
+/// its client follows. Returns the new position.
+///
+/// [`relative`]: vanillite_protocol::packets::play::clientbound::relative
+pub fn teleport_within_world(
+    ents: &mut crate::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+    pos: Vec3,
+    y_rot: f32,
+    x_rot: f32,
+    relatives: i32,
+) -> Option<Vec3> {
+    use vanillite_world::entity::EntityFlags;
+    let entity = ents.store.get(id)?;
+    let rot = entity.rot();
+    let flags = entity.flags();
+    let mut body = Body {
+        pos: entity.pos(),
+        velocity: entity.velocity(),
+        y_rot: rot.y_rot,
+        x_rot: rot.x_rot,
+        on_ground: flags.contains(EntityFlags::ON_GROUND),
+        horizontal_collision: false,
+        fall_flying: flags.contains(EntityFlags::FALL_FLYING),
+    };
+    let player = ents.player_mut(id)?;
+    let sink = std::sync::Arc::clone(&player.connection.sink);
+    player.connection.movement.teleport_relative(
+        &mut body,
+        pos,
+        y_rot,
+        x_rot,
+        relatives,
+        sink.as_ref(),
+    );
+    player.connection.movement.reset_position(body.pos);
+    player.survival.teleported();
+    if let Some(mut entity) = ents.store.get_mut(id) {
+        entity.set_pos(body.pos);
+        entity.set_velocity(body.velocity);
+        entity.set_old_pos();
+    }
+    Some(body.pos)
 }

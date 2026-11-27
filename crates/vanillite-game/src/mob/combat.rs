@@ -91,7 +91,22 @@ pub fn hurt(
     if ents.special(target).is_some() {
         return super::boss::special::hurt(ents, env, cx, target, &source);
     }
+    if ents.decor(target).is_some() {
+        return crate::decoration::hurt(level, ents, env, cx, target, &source);
+    }
     if ents.player(target).is_none() {
+        return false;
+    }
+    // `ServerPlayer.hurtServer`: a player-caused hit (also through projectiles, potions and
+    // arrows of a player) fails `canHarmPlayer` without the pvp rule.
+    if !env.rules.bool(Rule::PVP)
+        && (source.cause.is_some_and(|c| ents.player(c).is_some())
+            || source
+                .direct
+                .and_then(|d| ents.arrow(d))
+                .and_then(|a| a.owner)
+                .is_some_and(|o| ents.player(o).is_some()))
+    {
         return false;
     }
     let armor = super::attack::armor_effectiveness(ents, env.types, target, &source);
@@ -170,6 +185,9 @@ pub fn hurt_mob(
     let source = with_projectile_motion(ents, source);
     let kind = source.kind;
     let types = env.types;
+    if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
+        return crate::decoration::stand::hurt(level, ents, env, cx, target, &source);
+    }
     if invulnerable_to(ents, env, target, kind) {
         return false;
     }
@@ -412,7 +430,7 @@ pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f6
 /// `LivingEntity.actuallyHurt` of a mob: armour, then health.
 fn actually_hurt(
     ents: &mut Entities,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
     target: EntityId,
     source: DamageSource,
     damage: f32,
@@ -456,6 +474,8 @@ fn actually_hurt(
         if let Some(mut e) = ents.store.get_mut(target) {
             e.mark_data_dirty();
         }
+        let event = crate::level::game_event::events().entity_damage;
+        super::animal::entity_game_event(ents, env, target, event, Some(target));
     }
     // `DAMAGE_DEALT_RESISTED` and `DAMAGE_DEALT_ABSORBED` of the player that caused it.
     if let Some(p) = source.cause.and_then(|c| ents.player_mut(c)) {
@@ -468,6 +488,38 @@ fn actually_hurt(
                 .award(crate::stats::custom::DAMAGE_DEALT_ABSORBED, v);
         }
     }
+}
+
+/// `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage` without damage
+/// (`Creaking.blameSourceForDamage`): the responsible player, if any.
+pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Option<EntityId> {
+    let cause = source.cause?;
+    let is_player = ents.player(cause).is_some();
+    let living = is_player || ents.mob(cause).is_some();
+    let m = ents.mob_mut(target)?;
+    if living {
+        m.last_hurt_by_mob = Some(cause);
+        m.last_hurt_by_mob_time = m.tick_count;
+    }
+    if is_player {
+        m.last_hurt_by_player = Some(cause);
+        m.last_hurt_by_player_time = 100;
+    }
+    is_player.then_some(cause)
+}
+
+/// `blameSourceForDamage(source)` and `die(source)` of a mob killed without damage (a
+/// creaking whose heart was broken).
+pub fn blame_and_die(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    source: DamageSource,
+) {
+    blame(ents, target, &source);
+    die(level, ents, env, cx, target, source);
 }
 
 /// `LivingEntity.die` of a mob.
@@ -485,6 +537,43 @@ fn die(
     if m.removed || m.dead {
         return;
     }
+    // `TamableAnimal.die`: the death message goes to the owner first.
+    if let Some(m) = ents.mob(target)
+        && m.tame
+        && matches!(
+            m.kind,
+            Kind::Wolf | Kind::Cat | Kind::Parrot | Kind::Nautilus | Kind::ZombieNautilus
+        )
+        && env.rules.bool(Rule::SHOW_DEATH_MESSAGES)
+    {
+        let name = mob_name(m);
+        if let Some(owner) = super::tame::owner_of(ents, m).filter(|&o| ents.player(o).is_some()) {
+            let mut tracker = crate::survival::combat::CombatTracker::default();
+            tracker.record_damage(
+                crate::survival::combat::CombatEntry {
+                    source,
+                    damage: 0.0,
+                    fall_location: None,
+                    fall_distance: 0.0,
+                },
+                0,
+                false,
+                false,
+            );
+            env.out.push(Effect::To {
+                player: owner,
+                packet: SharedPacket::of(
+                    &vanillite_protocol::packets::play::clientbound::SystemChat {
+                        content: tracker.death_message(env.types, name),
+                        overlay: false,
+                    },
+                ),
+            });
+        }
+    }
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
     m.dead = true;
     let mob_kind = m.kind;
     if mob_kind.family() != super::Family::Classic {
@@ -572,7 +661,11 @@ fn die(
             .unwrap_or_default();
         // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
         // enderman's block.
-        if let Some(m) = ents.mob_mut(target) {
+        // `LivingEntity.dropEquipment` drops nothing; `Mob` and the players drop theirs.
+        if let Some(m) = ents
+            .mob_mut(target)
+            .filter(|m| m.kind.family() != super::Family::Decor)
+        {
             super::equipment::death_drops(m, killed_by_player, &mut loot);
             if m.saddled
                 && let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle")
@@ -625,6 +718,7 @@ fn die(
             )
         });
     }
+    create_wither_rose(level, ents, env, cx, pos, credit);
     env.out.push(Effect::Died {
         victim: target,
         killer: credit.or(source.cause),
@@ -643,6 +737,63 @@ fn die(
     }
 }
 
+/// `LivingEntity.createWitherRose`: a victim of the wither leaves a wither rose, planted
+/// where it died if `mob_griefing` allows and the rose survives there, else as an item.
+pub fn create_wither_rose(
+    level: &Level,
+    ents: &Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    pos: Vec3,
+    killer: Option<EntityId>,
+) {
+    if !killer.is_some_and(|k| ents.mob(k).is_some_and(|m| m.kind == Kind::Wither)) {
+        return;
+    }
+    use vanillite_data::block::ids;
+    let block_pos = vanillite_base::BlockPos::new(
+        vanillite_base::math::floor(pos.x),
+        vanillite_base::math::floor(pos.y),
+        vanillite_base::math::floor(pos.z),
+    );
+    let rose = ids::WITHER_ROSE.default_state();
+    if env.rules.bool(Rule::MOB_GRIEFING)
+        && level.block(block_pos).is_air()
+        && crate::block::place::can_survive(rose, block_pos, level)
+    {
+        cx.actions.push(super::WorldAction::SetBlock(
+            block_pos,
+            rose,
+            crate::level::update::ALL,
+        ));
+        return;
+    }
+    let Some(item) = vanillite_data::registry::ITEM.id("minecraft:wither_rose") else {
+        return;
+    };
+    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    env.out.push(Effect::DropItem {
+        uuid,
+        pos,
+        velocity,
+        y_rot,
+        pickup_delay: 0,
+        stack: crate::item::ItemStack::new(item, 1),
+    });
+}
+
+/// `getDisplayName` of a mob without team: its custom name, else its type's name.
+fn mob_name(m: &super::MobData) -> vanillite_protocol::text::Component {
+    if let Some(bytes) = &m.custom_name {
+        let mut input = &bytes[..];
+        let mut budget = vanillite_nbt::Budget::file();
+        if let Ok(Some(tag)) = vanillite_nbt::read::read_network(&mut input, &mut budget) {
+            return vanillite_protocol::text::Component::from_nbt(&tag);
+        }
+    }
+    vanillite_protocol::text::Component::translatable(m.kind.translation_key(), vec![])
+}
+
 /// `ExperienceOrb.award`: the world splits `amount` into orbs from the [`Effect::Experience`].
 pub fn award_experience(env: &mut Env<'_>, pos: Vec3, amount: i32) {
     env.out.push(Effect::Experience { pos, amount });
@@ -656,9 +807,6 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     let Some(m) = ents.mob_mut(id) else {
         return;
     };
-    if m.silent {
-        return;
-    }
     let volume = super::fam::mob_sound_volume(m);
     let a = m.random.next_float();
     let b = m.random.next_float();
@@ -667,6 +815,10 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     } else {
         (a - b) * 0.2 + 1.0
     };
+    // `playSound` checks `isSilent` after the pitch is drawn.
+    if m.silent {
+        return;
+    }
     let source = m.kind.sound_source();
     let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, volume, pitch, seed);

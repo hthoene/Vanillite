@@ -85,6 +85,21 @@ pub struct Data {
     pub wool: Option<u8>,
     /// `VillagerData`: type, profession and level ids.
     pub villager: Option<[i32; 3]>,
+    /// The item of an item frame (index 9).
+    pub frame_item: Option<ItemStack>,
+    /// The item rotation of an item frame (index 10, 0-7).
+    pub frame_rotation: Option<i32>,
+    /// The `painting_variant` id of a painting (index 9).
+    pub painting: Option<i32>,
+    /// The text of a text display (index 23), plain.
+    pub text: Option<String>,
+    /// The width and height of an interaction (indices 8 and 9).
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    /// The client flags of an armor stand (index 15: small, arms, no base plate, marker).
+    pub stand_flags: Option<u8>,
+    /// `DATA_NO_GRAVITY` (index 5).
+    pub no_gravity: Option<bool>,
 }
 
 /// Serializer ids (`EntityDataSerializers` registration order of 26.3) read here.
@@ -154,6 +169,10 @@ pub fn read_data(raw: &[u8], kind: &str) -> Data {
     let is_item = kind == "minecraft:item";
     let is_tnt = kind == "minecraft:tnt";
     let is_sheep = kind == "minecraft:sheep";
+    let is_frame = kind == "minecraft:item_frame" || kind == "minecraft:glow_item_frame";
+    let is_text = kind == "minecraft:text_display";
+    let is_interaction = kind == "minecraft:interaction";
+    let is_stand = kind == "minecraft:armor_stand";
     let mut d = Data::default();
     let mut r = Reader::new(raw);
     for _ in 0..64 {
@@ -170,17 +189,29 @@ pub fn read_data(raw: &[u8], kind: &str) -> Data {
             serializer::BYTE => r.u8().map(|v| match index {
                 0 => d.flags = Some(v),
                 17 if is_sheep => d.wool = Some(v),
+                15 if is_stand => d.stand_flags = Some(v),
                 _ => {}
             }),
             serializer::INT => r.varint().map(|v| {
                 if index == 8 && is_tnt {
                     d.fuse = Some(v);
                 }
+                if index == 10 && is_frame {
+                    d.frame_rotation = Some(v);
+                }
             }),
             serializer::LONG => r.varlong().map(|_| ()),
-            serializer::FLOAT => r.i32().map(|_| ()),
+            serializer::FLOAT => r.f32().map(|v| match index {
+                8 if is_interaction => d.width = Some(v),
+                9 if is_interaction => d.height = Some(v),
+                _ => {}
+            }),
             serializer::STRING => r.string(32_767).map(|_| ()),
-            serializer::COMPONENT => component(&mut r).map(|_| ()),
+            serializer::COMPONENT => component(&mut r).map(|c| {
+                if index == 23 && is_text {
+                    d.text = Some(c.plain());
+                }
+            }),
             serializer::OPTIONAL_COMPONENT => match r.u8() {
                 Ok(0) => {
                     if index == 2 {
@@ -198,10 +229,13 @@ pub fn read_data(raw: &[u8], kind: &str) -> Data {
             serializer::ITEM_STACK => ItemStack::decode_plain(&mut r).map(|s| {
                 if index == 8 && is_item {
                     d.item = Some(s);
+                } else if index == 9 && is_frame {
+                    d.frame_item = Some(s);
                 }
             }),
             serializer::BOOLEAN => r.u8().map(|v| match index {
                 3 => d.name_visible = Some(v != 0),
+                5 => d.no_gravity = Some(v != 0),
                 16 if !is_item => d.baby = Some(v != 0),
                 _ => {}
             }),
@@ -236,7 +270,10 @@ pub fn read_data(raw: &[u8], kind: &str) -> Data {
             // A holder: registry id + 1, 0 for an inline variant (not sent by the server).
             serializer::PAINTING_VARIANT => match r.varint() {
                 Ok(0) => break,
-                Ok(_) => Ok(()),
+                Ok(v) => {
+                    d.painting = Some(v.wrapping_sub(1));
+                    Ok(())
+                }
                 Err(e) => Err(e),
             },
             serializer::VECTOR3 => r.take(12).map(|_| ()),
@@ -260,6 +297,48 @@ pub fn read_data(raw: &[u8], kind: &str) -> Data {
 }
 
 /// Bedrock `VARIANT` (profession) and `MARK_VARIANT` (biome type) of Java villager data.
+/// The Bedrock motif of a Java painting variant: the motifs before 1.21 in CamelCase, the
+/// newer ones by their Java name.
+pub fn painting_title(java: &str) -> String {
+    const OLD: [&str; 30] = [
+        "Kebab",
+        "Aztec",
+        "Alban",
+        "Aztec2",
+        "Bomb",
+        "Plant",
+        "Wasteland",
+        "Wanderer",
+        "Graham",
+        "Pool",
+        "Courbet",
+        "Sunset",
+        "Sea",
+        "Creebet",
+        "Match",
+        "Bust",
+        "Stage",
+        "Void",
+        "SkullAndRoses",
+        "Wither",
+        "Fighters",
+        "Skeleton",
+        "DonkeyKong",
+        "Pointer",
+        "Pigscene",
+        "BurningSkull",
+        "Earth",
+        "Wind",
+        "Water",
+        "Fire",
+    ];
+    let path = java.strip_prefix("minecraft:").unwrap_or(java);
+    let flat: String = path.chars().filter(|c| *c != '_').collect();
+    OLD.iter()
+        .find(|o| o.eq_ignore_ascii_case(&flat))
+        .map_or_else(|| path.to_owned(), |o| (*o).to_owned())
+}
+
 pub fn villager_variants(data: [i32; 3]) -> (i32, i32) {
     use vanillite_data::registry::Registry;
     let name = |registry: &str, id: i32| {

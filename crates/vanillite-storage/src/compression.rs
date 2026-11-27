@@ -70,14 +70,7 @@ impl Compression {
     pub fn compress(self, data: &[u8]) -> io::Result<Vec<u8>> {
         match self {
             Self::None => Ok(data.to_vec()),
-            Self::Deflate => {
-                let mut out = flate2::write::ZlibEncoder::new(
-                    Vec::with_capacity(data.len() / 4),
-                    flate2::Compression::default(),
-                );
-                out.write_all(data)?;
-                out.finish()
-            }
+            Self::Deflate => deflate(data),
             Self::Gzip => {
                 let mut out = flate2::write::GzEncoder::new(
                     Vec::with_capacity(data.len() / 4),
@@ -146,35 +139,73 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
-/// Inflates zlib data in memory: one output buffer sized for a typical chunk (about 5:1), grown
-/// only for larger ones, no intermediate copies.
-fn inflate(data: &[u8]) -> io::Result<Vec<u8>> {
-    let mut z = flate2::Decompress::new(true);
-    let mut out = Vec::with_capacity(
-        data.len()
-            .saturating_mul(6)
-            .clamp(16 << 10, MAX_DECOMPRESSED),
-    );
-    loop {
-        let (read, written) = (z.total_in(), z.total_out());
-        let input = data.get(read as usize..).unwrap_or_default();
-        let status = z
-            .decompress_vec(input, &mut out, flate2::FlushDecompress::Finish)
-            .map_err(|e| invalid(&format!("deflate: {e}")))?;
-        match status {
-            flate2::Status::StreamEnd => return Ok(out),
-            _ if out.len() < out.capacity() && (z.total_in(), z.total_out()) == (read, written) => {
-                return Err(invalid("deflate: truncated chunk"));
-            }
-            _ => {}
-        }
-        if out.len() == out.capacity() {
-            if out.len() >= MAX_DECOMPRESSED {
-                return Err(too_large());
-            }
-            out.reserve(out.len().min(MAX_DECOMPRESSED - out.len()));
-        }
+/// zlib's default level, which Vanilla writes with.
+const DEFLATE_LEVEL: i32 = 6;
+
+/// Deflates a whole record into a zlib stream with libdeflate (one call, no streaming state).
+/// Every thread keeps its compressor, so a record costs no table setup.
+fn deflate(data: &[u8]) -> io::Result<Vec<u8>> {
+    thread_local! {
+        static COMPRESSOR: std::cell::RefCell<Option<libdeflater::Compressor>> =
+            const { std::cell::RefCell::new(None) };
     }
+    COMPRESSOR.with_borrow_mut(|compressor| {
+        let compressor = compressor.get_or_insert_with(|| {
+            libdeflater::Compressor::new(
+                libdeflater::CompressionLvl::new(DEFLATE_LEVEL).unwrap_or_default(),
+            )
+        });
+        let mut out = vec![0; compressor.zlib_compress_bound(data.len())];
+        let len = compressor
+            .zlib_compress(data, &mut out)
+            .map_err(|e| invalid(&format!("deflate: {e}")))?;
+        out.truncate(len);
+        Ok(out)
+    })
+}
+
+/// Scratch kept per thread for inflating; larger buffers are freed after use.
+const INFLATE_SCRATCH_KEEP: usize = 4 << 20;
+
+/// Inflates zlib data in memory with libdeflate. Region files do not store the raw size, so
+/// it inflates into a reused per-thread scratch buffer (doubled while too small) and copies the
+/// result out at its exact size.
+fn inflate(data: &[u8]) -> io::Result<Vec<u8>> {
+    thread_local! {
+        static INFLATE: std::cell::RefCell<Option<(libdeflater::Decompressor, Vec<u8>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    INFLATE.with_borrow_mut(|state| {
+        let (decompressor, scratch) =
+            state.get_or_insert_with(|| (libdeflater::Decompressor::new(), Vec::new()));
+        let mut size = scratch.len().max(
+            data.len()
+                .saturating_mul(8)
+                .clamp(64 << 10, MAX_DECOMPRESSED),
+        );
+        let result = loop {
+            // Grown once, then reused: no zeroing per record.
+            if scratch.len() < size {
+                scratch.resize(size, 0);
+            }
+            match decompressor.zlib_decompress(data, scratch) {
+                Ok(len) => break Ok(scratch.get(..len).unwrap_or_default().to_vec()),
+                Err(libdeflater::DecompressionError::InsufficientSpace) => {
+                    if size >= MAX_DECOMPRESSED {
+                        break Err(too_large());
+                    }
+                    size = size.saturating_mul(2).min(MAX_DECOMPRESSED);
+                }
+                Err(libdeflater::DecompressionError::BadData) => {
+                    break Err(invalid("deflate: bad or truncated chunk"));
+                }
+            }
+        };
+        if scratch.len() > INFLATE_SCRATCH_KEEP {
+            *scratch = Vec::new();
+        }
+        result
+    })
 }
 
 fn read_limited(reader: impl Read) -> io::Result<Vec<u8>> {

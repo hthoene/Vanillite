@@ -434,7 +434,8 @@ fn can_attack(ents: &Entities, env: &Env<'_>, me: EntityId, target: EntityId) ->
                 vanillite_config::GameMode::Survival | vanillite_config::GameMode::Adventure
             );
     }
-    ents.mob(target).is_some_and(MobData::is_alive)
+    ents.mob(target)
+        .is_some_and(|m| m.is_alive() && crate::decoration::stand::attackable(m))
 }
 
 /// `TargetingConditions.forCombat().range(range).selector(LIVING_ENTITY_SELECTOR)` with
@@ -1063,6 +1064,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
                 radius: 7.0,
                 mob: true,
                 resistance: BlockResistance::Default,
+                fire: false,
             }));
             if !t.mob_ref().silent {
                 global_spawn_event(t);
@@ -1298,6 +1300,7 @@ fn sync_bar(t: &mut Tick<'_, '_>) {
             entity: player,
             view_center: p.chunk_view.center,
             view_distance: p.chunk_view.view_distance,
+            sent_radius: 0,
         };
         let r = range.min(f64::from(p.chunk_view.view_distance) * 16.0);
         let d = e.pos() - pos;
@@ -1649,6 +1652,7 @@ pub fn tick_skull(t: &mut SpecialTick<'_, '_>) {
         } else {
             BlockResistance::Default
         },
+        fire: false,
     }));
     t.cx.discarded.push(id);
 }

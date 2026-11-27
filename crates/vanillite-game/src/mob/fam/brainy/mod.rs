@@ -49,6 +49,8 @@ pub struct State {
     pub inventory: Vec<ItemStack>,
     /// `DATA_IS_CHARGING_CROSSBOW`.
     pub charging_crossbow: bool,
+    /// The loading sounds the crossbow played (piglins).
+    pub crossbow_sounds: crate::crossbow::UseFlags,
     /// `DATA_IS_DANCING`.
     pub dancing: bool,
     /// `DATA_IS_SCREAMING_GOAT`, `DATA_HAS_LEFT_HORN`, `DATA_HAS_RIGHT_HORN`.
@@ -411,6 +413,8 @@ impl FamilyHooks for Hooks {
             Kind::Axolotl => axolotl::MALUS,
             Kind::Frog => frog::MALUS,
             Kind::Sniffer => sniffer::MALUS,
+            // `WaterAnimal`'s constructor.
+            Kind::Tadpole => &[(crate::mob::path::PathType::Water, 0.0)],
             _ => &[],
         }
     }
@@ -430,7 +434,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         match m.kind {
             Kind::Piglin => piglin::ambient_sound(m),
             Kind::PiglinBrute => piglin::brute_ambient_sound(m),
@@ -533,7 +537,7 @@ impl FamilyHooks for Hooks {
                     ),
                 }
             }
-            Kind::Axolotl => 0.0,
+            Kind::Axolotl | Kind::Tadpole => 0.0,
             _ => crate::mob::kinds::base_walk_target_value(kind.is_monster(), level, env, pos),
         }
     }

@@ -117,6 +117,7 @@ pub fn place_structure(
                 level: region,
                 random,
                 generator,
+                keep_jigsaws: false,
             };
             start.place_in_chunk(generator.structures(), &mut ctx, &mut chunk_bb, chunk);
         }
@@ -158,14 +159,15 @@ pub fn jigsaw_pieces(
     Ok(Some(stub.into_pieces_builder(&mut ctx).build()))
 }
 
-/// `PoolElementStructurePiece.place(level, ..., BoundingBox.infinite(), position, false)` of
-/// every piece.
+/// `PoolElementStructurePiece.place(level, ..., BoundingBox.infinite(), position,
+/// keepJigsaws)` of every piece.
 pub fn place_jigsaw(
     generator: &TerrainGenerator,
     pieces: &mut [Box<dyn StructurePiece>],
     region: &mut WorldGenRegion<'_>,
     random: &mut DecorationRandom,
     pos: BlockPos,
+    keep_jigsaws: bool,
 ) {
     let chunk = pos.chunk();
     for piece in pieces {
@@ -174,6 +176,7 @@ pub fn place_jigsaw(
             level: region,
             random,
             generator,
+            keep_jigsaws,
         };
         piece.post_process(&mut ctx, &mut infinite, chunk, pos);
     }

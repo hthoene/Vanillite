@@ -191,6 +191,8 @@ pub enum Goal {
     DrownedSwimUp { speed: f64, stuck: bool },
     /// `HurtByTargetGoal(this, Drowned.class)`: damage by drowned does not count.
     HurtByIgnoringDrowned(HurtBy),
+    /// `SpearUseGoal(mob, 1.0, 1.0, 10.0F, 2.0F)` of the zombies.
+    SpearUse(zombies::SpearUse),
     /// The melee goal of a skeleton without a bow (`AbstractSkeleton.meleeGoal`).
     SkeletonMelee(Melee),
     /// `Spider.SpiderTargetGoal` for other targets than players.
@@ -270,7 +272,8 @@ fn goal_group(g: &Goal) -> Group {
         | Goal::DrownedGoToWater { .. }
         | Goal::DrownedGoToBeach(_)
         | Goal::DrownedSwimUp { .. }
-        | Goal::HurtByIgnoringDrowned(_) => Group::Zombie,
+        | Goal::HurtByIgnoringDrowned(_)
+        | Goal::SpearUse(_) => Group::Zombie,
         Goal::SkeletonMelee(_) => Group::Skeleton,
         Goal::SpiderTarget(_)
         | Goal::SilverfishWakeUpFriends
@@ -565,7 +568,7 @@ impl FamilyHooks for Hooks {
         }
     }
 
-    fn ambient_sound(m: &MobData) -> Option<&'static str> {
+    fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         by_group!(m.kind, ambient_sound(m), None)
     }
 
@@ -820,11 +823,6 @@ pub fn add_effect(
     crate::effect::living::add_detached(ents, target, effect);
 }
 
-/// The effective difficulty as an integer (`(int) difficulty.getEffectiveDifficulty()`).
-pub fn effective_difficulty(env: &Env<'_>) -> f32 {
-    super::effective_difficulty(env.difficulty)
-}
-
 /// The rotation of a freshly spawned mob looking along `y_rot`.
 pub fn rotation(y_rot: f32) -> Rotation {
     Rotation {
@@ -839,6 +837,6 @@ pub fn rotation(y_rot: f32) -> Rotation {
 pub fn box_free(level: &Level, kind: Kind, pos: Vec3, liquids_ok: bool) -> bool {
     let aabb = Dimensions::of(kind.type_id()).bounding_box(pos);
     let mut scratch = Vec::new();
-    crate::mob::physics::no_collision(level, &aabb, &mut scratch)
+    crate::mob::physics::no_collision(&level.view(), &aabb, &mut scratch)
         && (liquids_ok || !crate::mob::physics::contains_any_liquid(level, &aabb))
 }

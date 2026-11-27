@@ -1,4 +1,4 @@
-abi 1.1
+abi 1.2
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -74,6 +74,10 @@ const permission::ALLOW: u32 = 1
 const permission::UNDEFINED: u32 = 2
 const limits::ROOT: u32 = 4294967295
 const limits::NO_WORLD: u32 = 4294967295
+const limits::NO_BLOCK: u32 = 4294967295
+const limits::MAX_BOX_VOLUME: u32 = 16777216
+const set_mode::UPDATE: u32 = 0
+const set_mode::NO_PHYSICS: u32 = 1
 struct Str size=16 align=8
   ptr: *constu8 @0
   len: usize @8
@@ -95,6 +99,9 @@ struct Vec3 size=24 align=8
   x: f64 @0
   y: f64 @8
   z: f64 @16
+struct BlockBox size=24 align=4
+  min: BlockPos @0
+  max: BlockPos @12
 struct PluginInfo size=88 align=8
   size: u32 @0
   abi_major: u16 @4
@@ -235,7 +242,7 @@ struct ChunkGeneratorProvider size=40 align=8
   create: GeneratorCreateFn @16
   generate: GeneratorRunFn @24
   destroy: GeneratorDestroyFn @32
-struct HostApi size=240 align=8
+struct HostApi size=280 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -268,3 +275,8 @@ struct HostApi size=240 align=8
   block_set: unsafeextern"C"fn(*mutContext,u32,BlockPos,Str)->Status @216
   player_position: unsafeextern"C"fn(*mutContext,Uuid,*mutVec3)->Status @224
   player_set_tab_list: unsafeextern"C"fn(PluginId,Uuid,Str,Str,u32)->Status @232
+  block_state_name: unsafeextern"C"fn(PluginId,u32,*mutStrBuf)->Status @240
+  block_get_id: unsafeextern"C"fn(*mutContext,u32,BlockPos,*mutu32)->Status @248
+  block_set_id: unsafeextern"C"fn(*mutContext,u32,BlockPos,u32,u32)->Status @256
+  blocks_get: unsafeextern"C"fn(*mutContext,u32,*constBlockBox,*mutu32,usize)->Status @264
+  blocks_set: unsafeextern"C"fn(*mutContext,u32,*constBlockBox,*constu32,usize,u32,*mutusize,)->Status @272

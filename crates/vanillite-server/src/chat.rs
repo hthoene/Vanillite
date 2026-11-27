@@ -9,6 +9,7 @@ use vanillite_protocol::packets::play::clientbound::{PlayerInfoUpdate, SystemCha
 use vanillite_protocol::text::{Color, Component, NamedColor};
 use vanillite_world::entity::EntityId;
 
+use crate::commands::BookAt;
 use crate::global::Global;
 use crate::player_list::Uuid;
 
@@ -50,8 +51,20 @@ pub(crate) fn handle_requests(
                 session(global, uuid, data);
                 None
             }
+            ChatRequest::Admin(request) => {
+                crate::commands::handle_admin(level, global, id, world, request);
+                None
+            }
             ChatRequest::Command { command, signed } => {
                 crate::commands::run_player_command(level, global, id, world, &command, signed)
+            }
+            ChatRequest::OpenBook(hand) => {
+                crate::commands::resolve_book(level, global, id, world, BookAt::Hand(hand));
+                None
+            }
+            ChatRequest::ResolveLecternBook(pos) => {
+                crate::commands::resolve_book(level, global, id, world, BookAt::Lectern(pos));
+                None
             }
         };
         if let Some(reason) = kicked {

@@ -35,15 +35,19 @@ pub enum Profile {
     Paper,
     /// Spigot's defaults.
     Spigot,
+    /// Vanillite's strongest optimizations that change Vanilla behaviour only a little
+    /// (activation range, merge radii, spawn and despawn tuning, overload protection, ...).
+    Performance,
 }
 
 impl Profile {
     /// All profiles, in documentation order.
-    pub const ALL: [Profile; 4] = [
+    pub const ALL: [Profile; 5] = [
         Profile::Vanilla,
         Profile::Technical,
         Profile::Paper,
         Profile::Spigot,
+        Profile::Performance,
     ];
 
     /// The name used in `vanillite.toml`.
@@ -53,6 +57,7 @@ impl Profile {
             Profile::Technical => "technical",
             Profile::Paper => "paper",
             Profile::Spigot => "spigot",
+            Profile::Performance => "performance",
         }
     }
 
@@ -90,11 +95,25 @@ pub struct ValueShape {
     pub ty: ValueType,
     /// A word accepted instead of a value (`vanilla`, `disabled`).
     pub keyword: Option<&'static str>,
+    /// The complete set of accepted values, if it is fixed (enumerations); empty otherwise.
+    pub choices: &'static [&'static str],
 }
 
 impl ValueShape {
     const fn of(ty: ValueType) -> ValueShape {
-        ValueShape { ty, keyword: None }
+        ValueShape {
+            ty,
+            keyword: None,
+            choices: &[],
+        }
+    }
+
+    const fn one_of(choices: &'static [&'static str]) -> ValueShape {
+        ValueShape {
+            ty: ValueType::Text,
+            keyword: None,
+            choices,
+        }
     }
 }
 
@@ -244,12 +263,29 @@ impl<T: Copy> VanillaOr<T> {
             VanillaOr::Value(v) => v,
         }
     }
+
+    /// `vanilla` for Vanilla's value, else the custom value mapped by `f`.
+    pub fn map_or<U>(self, vanilla: U, f: impl FnOnce(T) -> U) -> U {
+        match self {
+            VanillaOr::Vanilla => vanilla,
+            VanillaOr::Value(v) => f(v),
+        }
+    }
+
+    /// The custom value, `None` for Vanilla's.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Option<U> {
+        match self {
+            VanillaOr::Vanilla => None,
+            VanillaOr::Value(v) => Some(f(v)),
+        }
+    }
 }
 
 impl<T: RuleValue> RuleValue for VanillaOr<T> {
     const SHAPE: ValueShape = ValueShape {
         ty: T::SHAPE.ty,
         keyword: Some("vanilla"),
+        choices: &[],
     };
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str() {
@@ -285,7 +321,7 @@ pub enum StorageLayout {
 }
 
 impl RuleValue for StorageLayout {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["vanilla", "spigot"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str().map(str::trim) {
             Some(s) if s.eq_ignore_ascii_case("vanilla") => Ok(StorageLayout::Vanilla),
@@ -314,7 +350,7 @@ pub enum RedstoneImplementation {
 }
 
 impl RuleValue for RedstoneImplementation {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["vanilla", "alternate-current"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str().map(str::trim) {
             Some(s) if s.eq_ignore_ascii_case("vanilla") => Ok(RedstoneImplementation::Vanilla),
@@ -346,7 +382,7 @@ pub enum WorldFormat {
 }
 
 impl RuleValue for WorldFormat {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["vanillite", "anvil"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value.as_str().map(str::trim) {
             Some(s) if s.eq_ignore_ascii_case("vanillite") => Ok(WorldFormat::Vanillite),
@@ -407,7 +443,7 @@ pub enum AntiXrayMode {
 }
 
 impl RuleValue for AntiXrayMode {
-    const SHAPE: ValueShape = ValueShape::of(ValueType::Text);
+    const SHAPE: ValueShape = ValueShape::one_of(&["disabled", "hide", "obfuscate"]);
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value {
             toml::Value::Boolean(false) => Ok(AntiXrayMode::Disabled),
@@ -458,6 +494,7 @@ impl<T: RuleValue> RuleValue for DisabledOr<T> {
     const SHAPE: ValueShape = ValueShape {
         ty: T::SHAPE.ty,
         keyword: Some("disabled"),
+        choices: &[],
     };
     fn from_toml(value: &toml::Value) -> Result<Self, String> {
         match value {
@@ -505,7 +542,8 @@ impl<T: RuleValue> RuleValue for DisabledOr<T> {
 /// ```
 ///
 /// The TOML key of a rule is `<group key>.<key>`; hot paths read plain fields
-/// (`rules.chunks.send_rate`). Profiles not given take the `vanilla` value. `range` bounds
+/// (`rules.chunks.send_rate`). Profiles not given take the `vanilla` value (also
+/// `performance`: it never inherits `paper`). `range` bounds
 /// numeric values (inclusive, checked on load); `restart = true` marks rules that are read only at
 /// startup, all others are hot-reloadable.
 #[macro_export]
@@ -525,6 +563,7 @@ macro_rules! rules {
                             $(, technical = $technical:expr)?
                             $(, paper = $paper:expr)?
                             $(, spigot = $spigot:expr)?
+                            $(, performance = $performance:expr)?
                         ;
                     )*
                 }
@@ -580,6 +619,8 @@ macro_rules! rules {
                                         $crate::__rules_pick!($($paper)? ; $vanilla),
                                     $crate::Profile::Spigot =>
                                         $crate::__rules_pick!($($spigot)? ; $vanilla),
+                                    $crate::Profile::Performance =>
+                                        $crate::__rules_pick!($($performance)? ; $vanilla),
                                 },
                             )*
                         },

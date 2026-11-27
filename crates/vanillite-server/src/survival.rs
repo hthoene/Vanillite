@@ -59,6 +59,9 @@ pub(crate) struct WorldSurvival {
     /// The overworld advances the game time.
     ticks_time: bool,
     pub(crate) effects: Vec<Effect>,
+    /// Game events of the delivered effects, posted by the world (`ServerWorld`) to its
+    /// listeners.
+    pub(crate) game_events: Vec<PendingGameEvent>,
     weather_out: Vec<WeatherPacket>,
     /// The world's biomes for `isRainingAt`, shared with the level.
     climate: Option<Arc<Climate>>,
@@ -141,7 +144,7 @@ pub(crate) fn difficulty(d: vanillite_config::Difficulty) -> Difficulty {
 pub(crate) fn change_difficulty(level: &LevelState) -> ChangeDifficulty {
     ChangeDifficulty {
         difficulty: level.difficulty().id(),
-        locked: false,
+        locked: level.difficulty_locked(),
     }
 }
 
@@ -189,6 +192,7 @@ impl WorldSurvival {
             can_have_weather: overworld,
             ticks_time: overworld,
             effects: Vec::new(),
+            game_events: Vec::new(),
             weather_out: Vec::new(),
             climate: climate.map(Arc::new),
             min_y,
@@ -413,11 +417,21 @@ impl WorldSurvival {
         global: &Global,
         dimension: &str,
         id: EntityId,
+        events: &mut Vec<PendingGameEvent>,
     ) -> bool {
-        Self::on_player(entities, chunks, global, dimension, id, player::kill)
+        Self::on_player(
+            entities,
+            chunks,
+            global,
+            dimension,
+            id,
+            events,
+            player::kill,
+        )
     }
 
     /// Hurts a player (`/damage`, `hurtServer`) and delivers the effects at once.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn hurt(
         entities: &mut Entities,
         chunks: Option<&Chunks>,
@@ -426,6 +440,7 @@ impl WorldSurvival {
         id: EntityId,
         source: vanillite_game::survival::damage::DamageSource,
         amount: f32,
+        events: &mut Vec<PendingGameEvent>,
     ) -> bool {
         Self::on_player(
             entities,
@@ -433,6 +448,7 @@ impl WorldSurvival {
             global,
             dimension,
             id,
+            events,
             |entity, data, env| player::hurt(entity, data, env, source, amount),
         )
     }
@@ -489,18 +505,29 @@ impl WorldSurvival {
         for id in std::mem::take(&mut cx.discarded) {
             level.entities.despawn(id);
         }
-        deliver_simple(&out, &mut level.entities, global);
+        deliver_simple(&out, &mut level.entities, &mut random, global);
+        for effect in &out {
+            if let Effect::GameEvent {
+                event,
+                pos,
+                context,
+            } = effect
+            {
+                level.game_event(*event, *pos, *context);
+            }
+        }
         r
     }
 
     /// Runs `f` on a player with a survival environment outside the tick (commands) and
-    /// delivers its effects at once.
+    /// delivers its effects at once; its game events go to `events` for the caller to post.
     fn on_player(
         entities: &mut Entities,
         chunks: Option<&Chunks>,
         global: &Global,
         dimension: &str,
         id: EntityId,
+        events: &mut Vec<PendingGameEvent>,
         f: impl FnOnce(
             &mut vanillite_world::entity::EntityMut<'_>,
             &mut vanillite_game::player::PlayerData,
@@ -553,7 +580,8 @@ impl WorldSurvival {
             return false;
         };
         let done = f(&mut entity, data, &mut env);
-        deliver_simple(&out, entities, global);
+        deliver_simple(&out, entities, &mut random, global);
+        collect_game_events(&out, events);
         done
     }
 
@@ -578,6 +606,7 @@ impl WorldSurvival {
             return;
         }
         let effects = std::mem::take(&mut self.effects);
+        collect_game_events(&effects, &mut self.game_events);
         self.build_grid(entities);
         let mut receivers = Vec::new();
         for effect in &effects {
@@ -608,6 +637,7 @@ impl WorldSurvival {
                             entity: viewer,
                             view_center: p.chunk_view.center,
                             view_distance: p.chunk_view.view_distance,
+                            sent_radius: 0,
                         }
                         .sees_chunk(chunk);
                         if sees && d.x * d.x + d.z * d.z <= range * range {
@@ -648,16 +678,31 @@ impl WorldSurvival {
                     victim,
                     killer,
                     message,
-                } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
+                } => {
+                    // `ServerPlayer.die`: `tellNeutralMobsThatIDied` with `forgive_dead_players`.
+                    if entities.player(*victim).is_some()
+                        && global.level.rules().bool(Rule::FORGIVE_DEAD_PLAYERS)
+                    {
+                        vanillite_game::mob::common::tell_neutral_mobs_player_died(
+                            entities, *victim,
+                        );
+                    }
+                    crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
+                }
                 Effect::To { player, packet } => {
                     if let Some(p) = entities.player(*player) {
                         p.connection.sink.send_shared(packet);
                     }
                 }
-                Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
+                Effect::DropItem { .. }
+                | Effect::Experience { .. }
+                | Effect::SpawnMob { .. }
+                | Effect::GameEvent { .. }
+                | Effect::PearlsVanish(_)
+                | Effect::RespawnShoulder { .. } => {}
             }
         }
-        spawn_drops(&effects, entities, global);
+        spawn_drops(&effects, entities, &mut self.random, global);
     }
 
     /// The players of the chunks within `range` of `pos` (all players when that is fewer).
@@ -706,7 +751,13 @@ pub(crate) fn forced_respawn(
 }
 
 /// Effects of a command, delivered by looking at all players of the world.
-fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) {
+/// `random` is the level random.
+fn deliver_simple(
+    effects: &[Effect],
+    entities: &mut Entities,
+    random: &mut LegacyRandom,
+    global: &Global,
+) {
     for effect in effects {
         match effect {
             Effect::Tracking {
@@ -723,6 +774,7 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                         entity: id,
                         view_center: p.chunk_view.center,
                         view_distance: p.chunk_view.view_distance,
+                        sent_radius: 0,
                     }
                     .sees_chunk(chunk);
                     if (id == *entity && *with_self) || (id != *entity && sees) {
@@ -757,34 +809,97 @@ fn deliver_simple(effects: &[Effect], entities: &mut Entities, global: &Global) 
                 victim,
                 killer,
                 message,
-            } => crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref()),
+            } => {
+                // `ServerPlayer.die`: `tellNeutralMobsThatIDied` with `forgive_dead_players`.
+                if entities.player(*victim).is_some()
+                    && global.level.rules().bool(Rule::FORGIVE_DEAD_PLAYERS)
+                {
+                    vanillite_game::mob::common::tell_neutral_mobs_player_died(entities, *victim);
+                }
+                crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
+            }
             Effect::To { player, packet } => {
                 if let Some(p) = entities.player(*player) {
                     p.connection.sink.send_shared(packet);
                 }
             }
-            Effect::DropItem { .. } | Effect::Experience { .. } | Effect::SpawnMob { .. } => {}
+            Effect::DropItem { .. }
+            | Effect::Experience { .. }
+            | Effect::SpawnMob { .. }
+            | Effect::GameEvent { .. }
+            | Effect::PearlsVanish(_)
+            | Effect::RespawnShoulder { .. } => {}
         }
     }
-    spawn_drops(effects, entities, global);
+    spawn_drops(effects, entities, random, global);
+}
+
+/// A game event for the world to post: the event, its position and context.
+pub(crate) type PendingGameEvent = (
+    u16,
+    Vec3,
+    vanillite_game::level::game_event::GameEventContext,
+);
+
+/// The [`Effect::GameEvent`]s of `effects`, for the world to post.
+fn collect_game_events(effects: &[Effect], out: &mut Vec<PendingGameEvent>) {
+    for effect in effects {
+        if let Effect::GameEvent {
+            event,
+            pos,
+            context,
+        } = effect
+        {
+            out.push((*event, *pos, *context));
+        }
+    }
+}
+
+/// `ExperienceOrb.award` of an [`Effect::Experience`]: the merge group comes from the level
+/// `random`, the new orbs' yaw and motion from the orbs' own random.
+fn award_experience(
+    effect: &Effect,
+    entities: &mut Entities,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    random: &mut LegacyRandom,
+) {
+    if let Effect::Experience { pos, amount } = *effect {
+        vanillite_game::experience_orb::award_in(
+            entities,
+            network_ids,
+            random,
+            pos,
+            Vec3::default(),
+            amount,
+        );
+    }
 }
 
 /// The item entities of [`Effect::DropItem`]s (`addFreshEntity`) and the experience orbs of
-/// [`Effect::Experience`]s.
-fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
+/// [`Effect::Experience`]s. `random` is the level random.
+fn spawn_drops(
+    effects: &[Effect],
+    entities: &mut Entities,
+    random: &mut LegacyRandom,
+    global: &Global,
+) {
     for effect in effects {
-        if let Effect::Experience { pos, amount } = effect {
-            vanillite_game::experience_orb::with_entity_random(|random| {
-                vanillite_game::experience_orb::award_in(
-                    entities,
-                    &global.network_ids,
-                    random,
-                    *pos,
-                    Vec3::default(),
-                    *amount,
-                );
-            });
+        if let Effect::PearlsVanish(uuid) = *effect
+            && global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::ENDER_PEARLS_VANISH_ON_DEATH)
+        {
+            for i in 0..crate::server::DIMENSIONS.len() {
+                let Ok(index) = u16::try_from(i) else {
+                    continue;
+                };
+                global.run_in_world(crate::world::WorldId(index), move |world| {
+                    world.discard_pearls_of(uuid);
+                });
+            }
         }
+        award_experience(effect, entities, &global.network_ids, random);
         if let Effect::SpawnMob {
             kind,
             pos,
@@ -806,6 +921,24 @@ fn spawn_drops(effects: &[Effect], entities: &mut Entities, global: &Global) {
                 vanillite_game::mob::spawn(entities, &global.network_ids, uuid, *pos, rot, data);
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);
+            }
+        }
+        if let Effect::RespawnShoulder { tag, pos, owner } = effect {
+            // `EntityType.create(tag, LOAD)`, `setOwner`, `setPos`, `addWithUUID`.
+            let seed = vanillite_game::experience_orb::with_entity_random(|r| r.next_long());
+            if let Some(mut loaded) = vanillite_game::mob::nbt::load_mob(tag, seed) {
+                loaded.data.owner = Some(*owner);
+                let id = vanillite_game::mob::spawn(
+                    entities,
+                    &global.network_ids,
+                    loaded.uuid,
+                    *pos,
+                    loaded.rot,
+                    loaded.data,
+                );
+                if let Some(mut e) = entities.store.get_mut(id) {
+                    e.set_velocity(loaded.velocity);
+                }
             }
         }
         if let Effect::DropItem {
@@ -834,10 +967,27 @@ pub(crate) fn broadcast_all<P: vanillite_protocol::Packet>(global: &Global, pack
     global.players.broadcast(packet, None);
 }
 
-/// The game event for `immediate_respawn` (`ClientboundGameEventPacket.IMMEDIATE_RESPAWN`).
-pub(crate) fn immediate_respawn_event(on: bool) -> GameEvent {
-    GameEvent {
-        event: 11,
-        param: if on { 1.0 } else { 0.0 },
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An [`Effect::Experience`] spawns its orbs (#134: it borrowed the orb random twice).
+    #[test]
+    fn experience_effects_spawn_orbs() {
+        let ids = vanillite_world::entity::NetworkIds::new();
+        let mut entities = Entities::new();
+        let mut random = LegacyRandom::new(7);
+        let effect = Effect::Experience {
+            pos: Vec3::new(0.5, 64.0, 0.5),
+            amount: 10,
+        };
+        award_experience(&effect, &mut entities, &ids, &mut random);
+        award_experience(&effect, &mut entities, &ids, &mut random);
+        let total: i32 = entities
+            .experience_orbs
+            .iter()
+            .map(|(_, d)| d.value * d.count)
+            .sum();
+        assert_eq!(total, 20);
     }
 }

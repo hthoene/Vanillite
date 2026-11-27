@@ -461,7 +461,7 @@ fn float_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entit
         let target_y = f64::from(water_level_above(level, &aabb, b.last_yd)) - height + 0.101;
         let moved = aabb.offset(0.0, target_y - pos.y, 0.0);
         b.status = Status::InWater;
-        if physics::no_collision(level, &moved, &mut cx.boxes) {
+        if physics::no_collision(&level.view(), &moved, &mut cx.boxes) {
             b.last_yd = 0.0;
             if let Some(mut e) = ents.store.get_mut(id) {
                 e.set_pos(Vec3::new(pos.x, target_y, pos.z));
@@ -505,7 +505,7 @@ fn move_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entity
     let aabb = e.aabb();
     let on_ground = e.flags().contains(EntityFlags::ON_GROUND);
     let pos = e.pos();
-    let movement = physics::collide(level, aabb, delta, 0.0, on_ground, &mut cx.boxes);
+    let movement = physics::collide(&level.view(), aabb, delta, 0.0, on_ground, &mut cx.boxes);
     let mut v = delta;
     if movement.x != delta.x {
         v.x = 0.0;
@@ -696,7 +696,7 @@ pub fn use_boat_item(
         hit.z + half,
     );
     let mut scratch = Vec::new();
-    if !physics::no_collision(level, &boat_box, &mut scratch) {
+    if !physics::no_collision(&level.view(), &boat_box, &mut scratch) {
         return false;
     }
     let mut data = BoatData::new(kind);

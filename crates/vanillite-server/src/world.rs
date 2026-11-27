@@ -29,6 +29,35 @@ mod travel;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WorldId(pub u16);
 
+/// `Level.getWorldBorderAdjustedRespawnData`: a world spawn outside the world border moves to
+/// the top of the border's centre column (`MOTION_BLOCKING`).
+pub(crate) fn effective_spawn(
+    level: &vanillite_game::level::Level,
+    spawn: (vanillite_base::Vec3, f32),
+) -> (vanillite_base::Vec3, f32) {
+    let (pos, yaw) = spawn;
+    let block = vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z);
+    if level.border.is_block_within_bounds(block) {
+        return spawn;
+    }
+    let center =
+        vanillite_base::BlockPos::containing(level.border.center_x(), 0.0, level.border.center_z());
+    let y = vanillite_game::portal::height_at(
+        level,
+        vanillite_chunk::HeightmapKind::MotionBlocking,
+        center.x,
+        center.z,
+    );
+    (
+        vanillite_base::Vec3::new(
+            f64::from(center.x) + 0.5,
+            f64::from(y),
+            f64::from(center.z) + 0.5,
+        ),
+        yaw,
+    )
+}
+
 impl WorldId {
     /// The index into the server's world list.
     pub fn index(self) -> usize {
@@ -66,6 +95,8 @@ pub struct ServerWorld {
     effects: LevelEffects,
     /// The random of the item entities (`Entity.random`).
     item_random: XoroshiroRandom,
+    /// The counters of the world access rules at the last report ([`Self::report_rules`]).
+    reported: RuleCounters,
     updates: WorldUpdates,
     /// The centre chunk of every player with tickets.
     player_tickets: FxHashMap<EntityId, ChunkPos>,
@@ -73,6 +104,8 @@ pub struct ServerWorld {
     /// of players there: equal tickets at one chunk give the same levels as one, so dense
     /// players crossing chunks do not recompute the levels of their whole view.
     center_tickets: FxHashMap<ChunkPos, (u32, TicketId, TicketId)>,
+    /// Where the moving players' views head ([`Chunks::set_focus`]); reused per tick.
+    focus: Vec<ChunkPos>,
     scratch: Vec<ChunkPos>,
     /// Weather, lightning and the players' survival.
     pub(crate) survival: crate::survival::WorldSurvival,
@@ -94,6 +127,9 @@ pub struct ServerWorld {
     gateway_waits: Vec<travel::GatewayWait>,
     /// Portal tickets with the tick they expire.
     portal_tickets: Vec<travel::PortalTicket>,
+    /// Ender pearl tickets (load and simulation) by chunk with the tick they expire; placing
+    /// one again only extends it.
+    pearl_tickets: FxHashMap<ChunkPos, (u64, TicketId, TicketId)>,
     /// What the players' tick asked of portals.
     portal_requests: crate::survival::PortalRequests,
 }
@@ -110,7 +146,8 @@ impl fmt::Debug for ServerWorld {
 }
 
 impl ServerWorld {
-    /// Posts the game events of the players' moves (steps, swimming, landing).
+    /// Posts the game events of the players' moves (steps, swimming, landing) and those the
+    /// survival logic produced.
     fn post_player_game_events(&mut self) {
         let mut pending = Vec::new();
         for (id, p) in self.level.entities.players.iter_mut() {
@@ -126,6 +163,9 @@ impl ServerWorld {
                 source: Some(id),
                 affected,
             };
+            self.level.game_event(event, pos, context);
+        }
+        for (event, pos, context) in std::mem::take(&mut self.survival.game_events) {
             self.level.game_event(event, pos, context);
         }
     }
@@ -145,6 +185,11 @@ impl ServerWorld {
         // `dimensionType().hasEnderDragonFight()`.
         if dimension == "minecraft:the_end" {
             mobs.init_dragon_fight(&data, &mut level);
+        }
+        mobs.init_raids(&data, &mut level);
+        // `MinecraftServer.customSpawners`: the wandering trader spawner of the overworld.
+        if dimension == "minecraft:overworld" {
+            mobs.init_trader_spawner(&data);
         }
         // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
         let seed = std::time::SystemTime::now()
@@ -172,9 +217,11 @@ impl ServerWorld {
             packets,
             updates: WorldUpdates::default(),
             player_tickets: FxHashMap::default(),
+            focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
             item_random: XoroshiroRandom::new(seed),
+            reported: RuleCounters::default(),
             scratch: Vec::new(),
             survival,
             mobs,
@@ -185,6 +232,7 @@ impl ServerWorld {
             arrivals: Vec::new(),
             gateway_waits: Vec::new(),
             portal_tickets: Vec::new(),
+            pearl_tickets: FxHashMap::default(),
             portal_requests: crate::survival::PortalRequests::default(),
         }
     }
@@ -213,12 +261,22 @@ impl ServerWorld {
     /// Keeps every player's view loaded and the chunks in its simulation distance ticking:
     /// one load ticket and one simulation ticket at each centre chunk, shared by the players
     /// there, moved with a player that was alone, removed when the last one is gone.
-    fn update_player_tickets(&mut self) {
+    /// `ChunkMap.skipPlayer`: without `spectators_generate_chunks`, spectators hold no tickets
+    /// (they see what others keep loaded).
+    fn update_player_tickets(&mut self, spectators_generate_chunks: bool) {
         let chunks = &mut self.level.chunks;
         let level = chunks.player_ticket_level();
         let simulation = chunks.player_simulation_level();
         let centers = &mut self.center_tickets;
         for (id, player) in self.level.entities.players.iter() {
+            if !spectators_generate_chunks
+                && player.game_mode == vanillite_config::GameMode::Spectator
+            {
+                if let Some(old) = self.player_tickets.remove(&id) {
+                    release_center(chunks, centers, old);
+                }
+                continue;
+            }
             let center = player.chunk_view.center;
             let old = self.player_tickets.get(&id).copied();
             if old == Some(center) {
@@ -252,6 +310,18 @@ impl ServerWorld {
                 release_center(chunks, centers, old);
             }
         }
+        // Moving views order the chunk work ahead of them first.
+        let focus = &mut self.focus;
+        focus.clear();
+        focus.extend(
+            self.level
+                .entities
+                .players
+                .iter()
+                .filter_map(|(_, player)| player.connection.chunks.focus())
+                .take(vanillite_world::chunks::MAX_FOCUS),
+        );
+        chunks.set_focus(focus);
         let entities = &self.level.entities;
         self.player_tickets.retain(|&id, &mut center| {
             let alive = entities.player(id).is_some();
@@ -282,6 +352,17 @@ impl ServerWorld {
     pub(crate) fn join_player(&mut self, global: &Global, arrival: crate::players::Arrival) {
         let weather = self.survival.join_weather();
         let (uuid, name) = (arrival.uuid, arrival.profile.name.clone());
+        let vehicle = arrival
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.other.get("RootVehicle"))
+            .and_then(vanillite_nbt::Tag::as_compound)
+            .cloned();
+        let saved_pearls = arrival
+            .saved
+            .as_ref()
+            .and_then(|saved| saved.other.get("ender_pearls"))
+            .cloned();
         let state = crate::border::level_packets(&self.level.border, global);
         self.players.join(
             &mut self.level.entities,
@@ -291,6 +372,14 @@ impl ServerWorld {
             &weather,
             &state,
         );
+        // `PrepareSpawnTask`: the player rides back in.
+        if let Some(vehicle) = vehicle
+            && let Some(id) = self.level.entities.player_by_uuid(uuid)
+        {
+            self.level.spawn_root_vehicle(id, &vehicle);
+        }
+        let pearls = self.players.take_saved_pearls(uuid, saved_pearls.as_ref());
+        self.load_pearls(global, pearls);
         let plugins = global.plugins.clone();
         plugins.player_join(&mut crate::plugins::PluginWorld(self), uuid, &name);
     }
@@ -380,6 +469,12 @@ impl ServerWorld {
             },
         );
         self.effects.flush(&self.level.entities);
+        // `handleTestInstanceBlockAction` of the players' packets.
+        crate::commands::gametest::handle_actions(&mut crate::commands::Env {
+            level: &mut self.level,
+            global: ctx.global,
+            world: self.id,
+        });
         if let Some(before) = positions {
             let moves: Vec<(u128, [f64; 3], [f64; 3])> = self
                 .player_positions()
@@ -434,6 +529,10 @@ impl ServerWorld {
                 .settings
                 .apply_game_rules(&ctx.global.level.rules());
             self.level.settings.difficulty = ctx.global.level.difficulty();
+            self.level.settings.overworld_clock_time =
+                crate::mobs::overworld_clock_time(ctx.global);
+            self.level.settings.moon_brightness =
+                crate::mobs::moon_brightness(ctx.global, &self.dimension);
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
             if self.id.0 == 0 {
@@ -441,8 +540,20 @@ impl ServerWorld {
             }
             let level = &mut self.level;
             level.run_scheduled_ticks();
+            // `raids.tick`.
+            self.mobs.tick_raids(
+                &mut self.level,
+                &mut self.survival,
+                ctx.global,
+                &self.dimension,
+            );
         }
-        self.update_player_tickets();
+        let spectators_generate_chunks = ctx
+            .global
+            .level
+            .rules()
+            .bool(vanillite_game::survival::rules::Rule::SPECTATORS_GENERATE_CHUNKS);
+        self.update_player_tickets(spectators_generate_chunks);
         let level = &mut self.level;
         // `/save-off` (`ServerLevel.noSave`): chunks without tickets stay loaded.
         level.chunks.set_no_save(
@@ -458,10 +569,9 @@ impl ServerWorld {
         level.tick_chunk_runtime();
         level.post_process();
         if ctx.runs_normally {
-            let spawn_point = (self.dimension == "minecraft:overworld").then(|| {
-                let (pos, _) = self.players.level.spawn;
-                vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z)
-            });
+            let (spawn, _) = effective_spawn(level, self.players.level.spawn);
+            let spawn_point = (self.dimension == "minecraft:overworld")
+                .then(|| vanillite_base::BlockPos::containing(spawn.x, spawn.y, spawn.z));
             self.mobs.spawn(
                 level,
                 &self.survival,
@@ -476,7 +586,14 @@ impl ServerWorld {
         if ctx.runs_normally {
             self.ticks += 1;
             self.tick_entities(ctx.global);
+            self.entity_travel(ctx);
             self.level.tick_block_entities();
+            // `GameTestTicker.tick` for this world's tests.
+            crate::commands::gametest::tick(&mut crate::commands::Env {
+                level: &mut self.level,
+                global: ctx.global,
+                world: self.id,
+            });
             self.mobs.apply_magic_hurts(
                 &mut self.level,
                 &mut self.survival,
@@ -499,7 +616,7 @@ impl ServerWorld {
         for pos in &self.level.output().block_entity_updates {
             self.packets.invalidate_chunk(pos.chunk());
         }
-        self.updates.broadcast(&mut self.level, ctx.global);
+        self.updates.broadcast(&mut self.level, ctx.global, self.id);
         WorldPlayers::send_chunks(
             &mut self.level.entities,
             &self
@@ -514,6 +631,10 @@ impl ServerWorld {
             &mut self.fan_out,
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
+        // The omen effects see the village and raids at the players (they tick without the
+        // level); raid omens that ran out start their raids right after the players' ticks.
+        self.level.flush_poi_changes();
+        vanillite_game::raid::update_omen_views(&mut self.level.entities);
         self.survival.do_tick(
             &mut self.level.entities,
             &self.level.chunks,
@@ -523,6 +644,15 @@ impl ServerWorld {
             &self.dimension,
             &mut portals,
         );
+        vanillite_game::raid::start_pending_raids(
+            &mut self.level.entities,
+            ctx.global
+                .level
+                .rules()
+                .bool(vanillite_game::survival::rules::Rule::RAIDS),
+            self.dimension != "minecraft:the_nether",
+            ctx.global.level.difficulty(),
+        );
         for pos in portals.gateways.drain(..) {
             let state = self.level.block(pos);
             vanillite_game::block::portal::trigger_gateway_cooldown(&mut self.level, pos, state);
@@ -531,6 +661,7 @@ impl ServerWorld {
             self.enter_portal(ctx, id, kind, entry);
         }
         self.portal_requests = portals;
+        self.post_player_game_events();
         self.players.tick_connections(
             &mut self.level,
             ctx.tick,
@@ -545,6 +676,7 @@ impl ServerWorld {
         crate::scoreboard::flush(ctx.global);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
+        self.report_rules();
         // Save rounds take only the time left in the tick (#47).
         let left = ctx.deadline.saturating_sub(ctx.global.clock.now());
         self.level
@@ -568,37 +700,66 @@ impl ServerWorld {
     fn tick_entities(&mut self, global: &Global) {
         self.mobs
             .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
-        self.mobs
-            .tick_entities(&mut self.level, &mut self.survival, global, &self.dimension);
-        let level = &mut self.level;
-        let min_y = level.min_y();
-        crate::blocks::tick_items(
-            &mut level.entities,
-            &level.chunks,
-            &mut self.item_random,
-            min_y,
-            i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+        let items = crate::mobs::ItemTick {
+            random: &mut self.item_random,
+            settings: crate::blocks::ItemSettings {
+                lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+                merge_radius: self.rules.items.merge_radius,
+            },
+        };
+        self.mobs.tick_entities(
+            &mut self.level,
+            &mut self.survival,
+            global,
+            &self.dimension,
+            items,
         );
+    }
+
+    /// Once a minute: how often the two world access rules applied
+    /// (`docs/architecture/world-access.md`). Synchronous chunk loads block the tick and are
+    /// logged; deferred entity world changes only at debug level.
+    fn report_rules(&mut self) {
+        const EVERY: u64 = 20 * 60;
+        if self.ticks == self.reported.at || !self.ticks.is_multiple_of(EVERY) {
+            return;
+        }
+        let now = RuleCounters {
+            at: self.ticks,
+            sync_loads: self.level.chunks.sync_loads(),
+            deferred_actions: self.mobs.deferred_actions(),
+        };
+        let loads = now.sync_loads.count - self.reported.sync_loads.count;
+        if loads > 0 {
+            let waited = now.sync_loads.waited - self.reported.sync_loads.waited;
+            log::info!(
+                "{}: {loads} synchronous chunk loads blocked the tick for {} ms in the last minute",
+                self.dimension,
+                waited.as_millis()
+            );
+        }
+        log::debug!(
+            "{}: {} entity world changes applied after their tick in the last minute",
+            self.dimension,
+            now.deferred_actions - self.reported.deferred_actions
+        );
+        self.reported = now;
     }
 
     /// Runs the entity tracker over this tick's state and resets the per-tick sync state.
     fn track_entities(&mut self) {
         self.viewers.clear();
-        self.viewers.extend(
-            self.level
-                .entities
-                .players
-                .iter()
-                .map(|(entity, player)| Viewer {
-                    entity,
-                    view_center: player.chunk_view.center,
-                    view_distance: player.chunk_view.view_distance,
-                }),
-        );
         self.entity_updates.clear();
         self.chunks_sent.clear();
         let mut sent = Vec::new();
         for (entity, player) in self.level.entities.players.iter_mut() {
+            let view_center = player.chunk_view.center;
+            self.viewers.push(Viewer {
+                entity,
+                view_center,
+                view_distance: player.chunk_view.view_distance,
+                sent_radius: player.connection.chunks.sent_radius(view_center),
+            });
             player.connection.chunks.take_sent(&mut sent);
             self.chunks_sent
                 .extend(sent.drain(..).map(|pos| (entity, pos)));
@@ -639,7 +800,7 @@ impl ServerWorld {
     /// starts that captures them from the remaining time of the next ticks.
     pub(crate) fn save(&mut self, flush: bool, skip_chunks: bool) {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
-        self.players.save_all(&self.level.entities);
+        self.players.save_all(&self.level);
         if !skip_chunks {
             if let Some(border) = self.level.border.take_dirty() {
                 self.data.write(crate::border::SAVED_DATA, border.to_nbt());
@@ -824,4 +985,13 @@ fn release_center(
             chunks.remove_simulation_ticket(sim);
         }
     }
+}
+
+/// The counters of the world access rules (`docs/architecture/world-access.md`).
+#[derive(Clone, Copy, Debug, Default)]
+struct RuleCounters {
+    /// The world tick of the counters.
+    at: u64,
+    sync_loads: vanillite_world::chunks::SyncLoads,
+    deferred_actions: u64,
 }

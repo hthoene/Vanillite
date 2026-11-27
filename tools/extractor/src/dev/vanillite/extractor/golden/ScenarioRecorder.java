@@ -224,6 +224,8 @@ public final class ScenarioRecorder {
                 BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
+              } else if (op.equals("use_item")) {
+                entities.useItem(action);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));
               } else if (op.equals("effect")) {
@@ -237,8 +239,8 @@ public final class ScenarioRecorder {
                         action.get("command").getAsString());
               } else if (op.equals("throw_potion")) {
                 entities.throwPotion(action);
-              } else if (op.equals("use") || op.equals("attack") || op.equals("use_item")) {
-                entities.use(action, op);
+              } else if (op.equals("use") || op.equals("attack")) {
+                entities.use(action, op.equals("attack"));
               } else {
                 apply(level, action, true);
               }

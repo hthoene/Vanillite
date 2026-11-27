@@ -446,6 +446,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if let Some(mut e) = ix.ents.store.get_mut(ix.target) {
         e.mark_data_dirty();
     }
+    crate::mob::animal::entity_game_event(
+        ix.ents,
+        ix.env,
+        ix.target,
+        crate::level::game_event::events().shear,
+        Some(ix.player),
+    );
     crate::mob::animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
     Interaction::Success
 }

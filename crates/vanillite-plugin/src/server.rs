@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use vanillite_abi::{self as abi, Status, status};
 
 use crate::ffi::{self, Host, guard, read_string};
-use crate::types::{BlockPos, Error, Text, Uuid, Vec3, World};
+use crate::types::{BlockBox, BlockPos, Error, NO_BLOCK, SetMode, Text, Uuid, Vec3, World};
 
 /// Thread-safe access to the server. Cheap to copy; usable from any thread after `load`.
 #[derive(Clone, Copy, Debug)]
@@ -239,6 +239,14 @@ impl Server {
         (s == status::OK).then_some(id)
     }
 
+    /// The text of a numeric block state id, e.g. `minecraft:oak_log[axis=y]`.
+    pub fn block_state_name(&self, state: u32) -> Option<String> {
+        let api = self.api();
+        let id = self.host.id;
+        // SAFETY: valid host function and buffer.
+        read_string(|out| unsafe { (api.block_state_name)(id, state, out) }).ok()
+    }
+
     /// Runs a console command in the next global phase (without `/`).
     pub fn run_command(&self, command: &str) {
         // SAFETY: valid host function and string.
@@ -429,6 +437,80 @@ impl Ctx<'_> {
         Error::check(unsafe {
             (self.api().block_set)(self.raw, world.0, pos.to_abi(), abi::Str::new(state))
         })
+    }
+
+    /// The numeric block state id at a position ([`Server::block_state_id`]); the fast path
+    /// for code that reads many blocks.
+    pub fn block_id(&mut self, world: World, pos: BlockPos) -> Result<u32, Error> {
+        let mut out = 0;
+        // SAFETY: valid host function, context of this call and output.
+        Error::check(unsafe {
+            (self.api().block_get_id)(self.raw, world.0, pos.to_abi(), &mut out)
+        })?;
+        Ok(out)
+    }
+
+    /// Sets a block state by numeric id.
+    pub fn set_block_id(
+        &mut self,
+        world: World,
+        pos: BlockPos,
+        state: u32,
+        mode: SetMode,
+    ) -> Result<(), Error> {
+        // SAFETY: valid host function and context of this call.
+        Error::check(unsafe {
+            (self.api().block_set_id)(self.raw, world.0, pos.to_abi(), state, mode.to_abi())
+        })
+    }
+
+    /// The block state ids of a box in one call ([`BlockBox`] order); [`NO_BLOCK`] outside
+    /// loaded chunks. At most [`abi::limits::MAX_BOX_VOLUME`] blocks.
+    pub fn blocks(&mut self, world: World, area: BlockBox) -> Result<Vec<u32>, Error> {
+        let mut out = vec![NO_BLOCK; area.volume()];
+        self.blocks_into(world, area, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`Ctx::blocks`] into a buffer of at least the box's volume.
+    pub fn blocks_into(
+        &mut self,
+        world: World,
+        area: BlockBox,
+        out: &mut [u32],
+    ) -> Result<(), Error> {
+        let area = area.to_abi();
+        // SAFETY: valid host function, context of this call, box and buffer of `out.len()`.
+        Error::check(unsafe {
+            (self.api().blocks_get)(self.raw, world.0, &area, out.as_mut_ptr(), out.len())
+        })
+    }
+
+    /// Sets the block states of a box in one call from `states` ([`BlockBox`] order, exactly
+    /// its volume); [`NO_BLOCK`] entries and unloaded positions stay unchanged. Returns how
+    /// many blocks changed. Unknown ids fail before any block changes.
+    pub fn set_blocks(
+        &mut self,
+        world: World,
+        area: BlockBox,
+        states: &[u32],
+        mode: SetMode,
+    ) -> Result<usize, Error> {
+        let area = area.to_abi();
+        let mut changed = 0;
+        // SAFETY: valid host function, context of this call, box, states and output.
+        Error::check(unsafe {
+            (self.api().blocks_set)(
+                self.raw,
+                world.0,
+                &area,
+                states.as_ptr(),
+                states.len(),
+                mode.to_abi(),
+                &mut changed,
+            )
+        })?;
+        Ok(changed)
     }
 
     /// The position of a player of the owned world.

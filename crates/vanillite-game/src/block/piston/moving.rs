@@ -278,18 +278,36 @@ fn pushed_by_server(level: &Level, id: EntityId) -> bool {
         return false;
     };
     let kind = entity.kind();
+    // `PushReaction.IGNORE_ENTITY`: markers, displays, interactions, marker armor stands.
+    let ignores = kind == entity_ids::MARKER
+        || kind == entity_ids::INTERACTION
+        || crate::decoration::display::is_display_kind(kind)
+        || level
+            .entities
+            .mob(id)
+            .is_some_and(crate::decoration::stand::is_marker);
     kind != entity_ids::PLAYER
-        && kind != entity_ids::MARKER
+        && !ignores
         && kind != entity_ids::AREA_EFFECT_CLOUD
-        && kind != entity_ids::ITEM_FRAME
-        && kind != entity_ids::GLOW_ITEM_FRAME
-        && kind != entity_ids::PAINTING
         && kind != entity_ids::LEASH_KNOT
 }
 
 /// `moveEntityByPiston`: entities move without block collision until entity physics exist
 /// (#30); `entity.move(MoverType.PISTON, ...)` then clips the movement against blocks.
 fn move_entity(level: &mut Level, id: EntityId, delta: f64, direction: Direction) {
+    // `BlockAttachedEntity.move`: item frames, paintings and cushions break.
+    if crate::decoration::ticks(
+        level
+            .entities
+            .store
+            .get(id)
+            .map_or(entity_ids::PLAYER, |e| e.kind()),
+    ) {
+        if delta != 0.0 {
+            crate::decoration::break_in_level(level, id);
+        }
+        return;
+    }
     let [sx, sy, sz] = direction.normal();
     if let Some(mut entity) = level.entities.store.get_mut(id) {
         let p = entity.as_ref().pos();

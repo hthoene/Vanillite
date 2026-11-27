@@ -24,7 +24,8 @@ use vanillite_storage::player_data::{JsonFile, PlayerDataStore};
 use vanillite_storage::saved_data::SavedDataStore;
 use vanillite_storage::writer::FileWriter;
 use vanillite_storage::{
-    AnvilCodec, IoPool, OwnCodec, RegionStoreProvider, StoreSettings, WorldFormat, WorldLayout,
+    AnvilCodec, IoPool, KeepUnreadable, OwnCodec, RegionStoreProvider, StoreSettings, WorldFormat,
+    WorldLayout,
 };
 use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, SaveSettings};
 use vanillite_world::entity::NetworkIds;
@@ -142,6 +143,7 @@ pub struct ServerBuilder {
     light_engine: Slot<dyn LightEngineProvider>,
     vanilla_pack: VanillaPack,
     network: bool,
+    version: String,
 }
 
 impl ServerBuilder {
@@ -156,7 +158,19 @@ impl ServerBuilder {
             light_engine: Slot::new("light-engine"),
             vanilla_pack: VanillaPack::default(),
             network: true,
+            version: format!(
+                "Vanillite {} (Minecraft {})",
+                env!("CARGO_PKG_VERSION"),
+                vanillite_data::version::VERSION_ID
+            ),
         }
+    }
+
+    /// The version shown in the startup log (default: `Vanillite <version> (Minecraft <id>)`);
+    /// the server binary adds its commit.
+    pub fn version(&mut self, version: impl Into<String>) -> &mut Self {
+        self.version = version.into();
+        self
     }
 
     /// Where the Vanilla data pack comes from (default: downloaded once into `cache/`).
@@ -217,7 +231,7 @@ impl ServerBuilder {
     /// Loads the configuration, starts the threads and creates the worlds.
     pub fn start(self) -> Result<Server, StartError> {
         let started = Instant::now();
-        log::info!("Starting Vanillite {}", env!("CARGO_PKG_VERSION"));
+        log::info!("Starting {}", self.version);
         let dir = self.dir;
         fs::create_dir_all(&dir).map_err(|e| StartError::io(&dir, e))?;
         log::info!("Loading properties");
@@ -460,6 +474,15 @@ impl ServerBuilder {
                 Arc::clone(&random_sequences),
             ),
             packs: data_packs.with_loaded(packs.clone()),
+            templates: Arc::new(
+                vanillite_worldgen::template::StructureTemplateManager::for_world(
+                    packs
+                        .as_deref()
+                        .map(|p| p.roots().to_vec())
+                        .unwrap_or_default(),
+                    level_dir.join("generated"),
+                ),
+            ),
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
@@ -482,6 +505,7 @@ impl ServerBuilder {
             let _ = global.systems.mob_spawns.set(Arc::clone(table));
         }
         crate::commands::load_game_systems(&global, &opened_packs);
+        crate::commands::install_map_explorer(&global);
         let watch = Arc::new(WatchState::new(
             config.server.watchdog.early_warning_after.get(),
             config.server.watchdog.warning_interval,
@@ -516,11 +540,17 @@ impl ServerBuilder {
                 store: storage_provider
                     .create(&info, DimensionId(index))
                     .map_err(|e| StartError::io(&info.dir, e))?,
+                // Records that fail to decode are copied aside before the chunk is generated
+                // again and saved over them (#142).
                 codec: match world_format {
-                    WorldFormat::Anvil => Arc::new(AnvilCodec::new(&info, compression)),
-                    WorldFormat::Vanillite => Arc::new(
+                    WorldFormat::Anvil => Arc::new(KeepUnreadable::new(
+                        AnvilCodec::new(&info, compression),
+                        info.dir.join("unreadable"),
+                    )),
+                    WorldFormat::Vanillite => Arc::new(KeepUnreadable::new(
                         OwnCodec::new(&info, own_level).with_upgrades(Arc::clone(&upgrades)),
-                    ),
+                        info.dir.join("unreadable"),
+                    )),
                 },
                 generator: generator_provider
                     .create(&info)
@@ -581,6 +611,14 @@ impl ServerBuilder {
                 level.set_tree_features(Arc::clone(trees));
             }
             level.set_maps(Arc::clone(&global.level.maps));
+            level.set_command_runner(Arc::new(crate::commands::BlockCommands::new(
+                &global,
+                WorldId(index),
+            )));
+            level.set_structure_templates(Arc::clone(&global.templates));
+            if let Some(packs) = &packs {
+                level.set_data_packs(Arc::clone(packs));
+            }
             let survival = crate::survival::WorldSurvival::new(
                 dimension,
                 &global.level,
