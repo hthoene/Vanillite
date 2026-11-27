@@ -2,10 +2,12 @@
 //! near players, the spawn rules of each mob, the animals of freshly generated chunks
 //! (`spawnMobsForChunkGeneration`) and spawning a mob by command.
 
+use std::sync::Arc;
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
-use vanillite_chunk::HeightmapKind;
+
+use vanillite_chunk::{HeightmapKind, ProtoChunk};
 use vanillite_data::block::{BlockState, flags, ids};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityId, Rotation};
@@ -694,10 +696,19 @@ fn tick_world(
         if !round.level.border.is_chunk_within_bounds(chunk) {
             continue;
         }
+        let mut here = None;
         for &c in &categories {
             // `canSpawnForCategoryLocal`.
             if round.can_spawn_local(c, &spawner.nearby, chunk) {
-                spawn_category_for_chunk(&mut round, table, &spawner.nearby, input, c, chunk);
+                spawn_category_for_chunk(
+                    &mut round,
+                    table,
+                    &spawner.nearby,
+                    input,
+                    c,
+                    chunk,
+                    &mut here,
+                );
             }
         }
     }
@@ -837,9 +848,12 @@ pub fn tick_tiled(
                 if !shared.border.is_chunk_within_bounds(chunk) {
                     continue;
                 }
+                let mut here = None;
                 for &c in categories {
                     if round.can_spawn_local(c, nearby, chunk) {
-                        spawn_category_for_chunk(&mut round, table, nearby, input, c, chunk);
+                        spawn_category_for_chunk(
+                            &mut round, table, nearby, input, c, chunk, &mut here,
+                        );
                     }
                 }
             }
@@ -898,11 +912,11 @@ fn collect_spawning_chunks(level: &mut Level, spawner: &mut Spawner) {
         let nearby = &spawner.nearby;
         spawner.chunks.extend(
             nearby
-                .chunks()
-                .filter(|&c| level.is_block_ticking(c) && nearby.any_close_for_spawning(c)),
+                .chunks_close_for_spawning()
+                .filter(|&c| level.is_block_ticking(c)),
         );
     }
-    spawner.chunks.sort_by_key(|c| (c.x, c.z));
+    sort_chunks(&mut spawner.chunks);
     shuffle(&mut spawner.chunks, level.random());
 }
 
@@ -939,13 +953,23 @@ fn mobs_at<'t>(
     let mut fortress = false;
     let mut overridden: Option<&'t [SpawnEntry]> = None;
     let below_bricks = category == Category::Monster
-        && level
-            .block(BlockPos::new(pos.x, pos.y - 1, pos.z))
-            .block()
-            .name()
-            == "minecraft:nether_bricks";
-    if !table.structures.is_empty() || below_bricks {
-        index.structures_at(level, pos, |name, in_piece, in_box| {
+        && level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)).block() == ids::NETHER_BRICKS;
+    // Only structures that can change the list are looked up: the fortress on nether bricks
+    // and those with an override for this category.
+    let overrides = |name: &str| {
+        table
+            .structures
+            .get(name)
+            .is_some_and(|o| o[category.index()].is_some())
+    };
+    let wanted = |name: &str| (below_bricks && name == "minecraft:fortress") || overrides(name);
+    if below_bricks
+        || table
+            .structures
+            .values()
+            .any(|o| o[category.index()].is_some())
+    {
+        index.structures_at_of(level, pos, wanted, |name, in_piece, in_box| {
             if below_bricks && name == "minecraft:fortress" && in_box {
                 fortress = true;
             }
@@ -991,7 +1015,10 @@ pub fn max_spawn_cluster_size(kind: Kind) -> i32 {
     }
 }
 
-/// `spawnCategoryForChunk` and `spawnCategoryForPosition`.
+/// `spawnCategoryForChunk` and `spawnCategoryForPosition`. `here` keeps the chunk for the
+/// next category of the same chunk (Vanilla reads its height and start block from the chunk
+/// itself); it is dropped before a mob is added, so it never outlives a change of the level.
+#[allow(clippy::too_many_arguments)]
 fn spawn_category_for_chunk<R: Round>(
     round: &mut R,
     table: &SpawnTable,
@@ -999,19 +1026,38 @@ fn spawn_category_for_chunk<R: Round>(
     input: &SpawnInput<'_>,
     category: Category,
     chunk: ChunkPos,
+    here: &mut Option<Arc<ProtoChunk>>,
 ) {
+    if here.is_none() {
+        *here = round.level().chunks.chunk(chunk).cloned();
+    }
     let x0 = chunk.x * 16 + round.random().next_int_bounded(16);
     let z0 = chunk.z * 16 + round.random().next_int_bounded(16);
-    let top = surface_y(round.level(), HeightmapKind::WorldSurface, x0, z0) + 1;
+    let top = surface_y_of(
+        round.level(),
+        here.as_deref(),
+        HeightmapKind::WorldSurface,
+        x0,
+        z0,
+    ) + 1;
     let min_y = round.level().min_y();
     let y = round.random().next_int_between_inclusive(min_y, top);
     if y < min_y + 1 {
         return;
     }
     let start = BlockPos::new(x0, y, z0);
-    if round.level().block(start).has(flags::REDSTONE_CONDUCTOR) {
+    #[allow(clippy::cast_sign_loss)]
+    let start_state = here
+        .as_deref()
+        .and_then(|c| c.chunk.block((x0 & 15) as u32, y, (z0 & 15) as u32))
+        .map_or_else(|| round.level().block(start), BlockState);
+    if start_state.has(flags::REDSTONE_CONDUCTOR) {
         return;
     }
+    // `canSpawnEntitiesInChunk` of the chunks the positions fall into, and the spawn list of
+    // the first position (`getRandomSpawnMobAt` and `canSpawnMobAt` ask for the same one).
+    let mut ticking = TickingMemo::default();
+    let mut listed: Option<(BlockPos, &[SpawnEntry])> = None;
     let mut cluster = 0;
     for _ in 0..3 {
         let (mut x, mut z) = (x0, z0);
@@ -1032,7 +1078,7 @@ fn spawn_category_for_chunk<R: Round>(
             // `getNearestPlayer`: only compared with 24 (`isRightDistanceToPlayerAndSpawnPoint`
             // rejects closer positions) and the despawn distances up to 128.
             let nearest = nearby.nearest_distance_sqr(at, 576.0);
-            if !right_distance(round.level(), input, chunk, pos, nearest) {
+            if !right_distance(round.level(), input, chunk, pos, nearest, &mut ticking) {
                 continue;
             }
             if current.is_none() {
@@ -1049,6 +1095,7 @@ fn spawn_category_for_chunk<R: Round>(
                     let (level, structures) = round.level_structures();
                     mobs_at(level, table, structures, category, pos)
                 };
+                listed = Some((pos, list));
                 let Some(entry) = pick(list, round.random()) else {
                     break;
                 };
@@ -1062,8 +1109,9 @@ fn spawn_category_for_chunk<R: Round>(
             };
             let valid = {
                 let (level, structures) = round.level_structures();
+                let known = listed.filter(|l| l.0 == pos).map(|l| l.1);
                 valid_position_for_type(
-                    level, table, structures, input, category, entry, pos, nearest,
+                    level, table, structures, input, category, entry, pos, nearest, known,
                 )
             };
             if !valid {
@@ -1115,6 +1163,7 @@ fn spawn_category_for_chunk<R: Round>(
             cluster += 1;
             group_size += 1;
             let group_reached = super::fam::is_max_group_size_reached(&mob, group_size);
+            *here = None;
             // `afterSpawn`: the charge, the counts.
             round.spawned(
                 nearby,
@@ -1321,6 +1370,7 @@ fn right_distance(
     chunk: ChunkPos,
     pos: BlockPos,
     nearest: f64,
+    ticking: &mut TickingMemo,
 ) -> bool {
     if nearest <= 576.0 {
         return false;
@@ -1341,7 +1391,30 @@ fn right_distance(
         }
     }
     let c = pos.chunk();
-    c == chunk || (level.is_block_ticking(c) && level.border.is_chunk_within_bounds(c))
+    c == chunk
+        || ticking.get(c, || {
+            level.is_block_ticking(c) && level.border.is_chunk_within_bounds(c)
+        })
+}
+
+/// The last few answers of `canSpawnEntitiesInChunk` in one spawn attempt: its positions stay
+/// within a few chunks, and nothing that decides it changes while the attempt reads.
+#[derive(Default)]
+struct TickingMemo {
+    entries: [Option<(ChunkPos, bool)>; 4],
+    next: usize,
+}
+
+impl TickingMemo {
+    fn get(&mut self, chunk: ChunkPos, compute: impl FnOnce() -> bool) -> bool {
+        if let Some((_, v)) = self.entries.iter().flatten().find(|e| e.0 == chunk) {
+            return *v;
+        }
+        let v = compute();
+        self.entries[self.next] = Some((chunk, v));
+        self.next = (self.next + 1) % self.entries.len();
+        v
+    }
 }
 
 /// `isValidSpawnPostitionForType`.
@@ -1355,6 +1428,7 @@ fn valid_position_for_type(
     entry: SpawnEntry,
     pos: BlockPos,
     nearest: f64,
+    known: Option<&[SpawnEntry]>,
 ) -> bool {
     let info = entry.type_id.info();
     let despawn = f64::from(input.limits.despawn_distance(category));
@@ -1365,7 +1439,11 @@ fn valid_position_for_type(
         return false;
     }
     // `canSpawnMobAt`: the entry is still in the list there.
-    if !mobs_at(level, table, structures, category, pos).contains(&entry) {
+    let list = match known {
+        Some(list) => list,
+        None => mobs_at(level, table, structures, category, pos),
+    };
+    if !list.contains(&entry) {
         return false;
     }
     if !spawn_position_ok(level, entry.type_id, pos) {
@@ -1828,7 +1906,27 @@ pub fn heightmap_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
 }
 
 pub fn surface_y(level: &Level, kind: HeightmapKind, x: i32, z: i32) -> i32 {
-    let Some(c) = level.chunks.chunk(ChunkPos::new(x >> 4, z >> 4)) else {
+    surface_y_of(
+        level,
+        level
+            .chunks
+            .chunk(ChunkPos::new(x >> 4, z >> 4))
+            .map(|c| &**c),
+        kind,
+        x,
+        z,
+    )
+}
+
+/// [`surface_y`] with the chunk of `x`/`z` already looked up.
+fn surface_y_of(
+    level: &Level,
+    chunk: Option<&ProtoChunk>,
+    kind: HeightmapKind,
+    x: i32,
+    z: i32,
+) -> i32 {
+    let Some(c) = chunk else {
         return level.min_y();
     };
     let Some(h) = c.chunk.heightmaps().get(kind) else {
