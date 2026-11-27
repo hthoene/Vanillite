@@ -92,7 +92,7 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
                 )
             })
             .map(crate::mob::fam::undead::cubes::size),
-        raid_captain: ents.mob(id).map(|m| {
+        raid_captain: ents.mob(id).filter(|m| m.kind.is_raider()).map(|m| {
             use crate::mob::fam::illager::{raider, st};
             st(m).patrol_leader
                 && raider::is_ominous_banner(m.equipment.get(crate::item::EquipmentSlot::Head))

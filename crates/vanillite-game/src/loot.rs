@@ -19,8 +19,9 @@
 //!   `sequence`, `discard`, `copy_components` and `copy_name` from the block entity,
 //!   `enchant_randomly`, `enchant_with_levels`, `set_enchantments`, `set_damage`, `set_name`,
 //!   `set_potion`, `set_stew_effect`, `set_instrument`, `set_ominous_bottle_amplifier`,
-//!   `set_components`, `filtered`, named item modifiers; `copy_custom_data` and `enchanted_count_increase` do
-//!   nothing (no attacking entity); `exploration_map` needs the context's level access;
+//!   `set_components`, `filtered`, named item modifiers; `copy_custom_data` and
+//!   `enchanted_count_increase` do nothing (no attacking entity); `exploration_map` needs the
+//!   context's level access;
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
 //! The context has no level access, so:
@@ -410,6 +411,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: false,
         };
         eval.table(table);
     }
@@ -429,6 +431,30 @@ impl LootTables {
         rng: &mut dyn LootRandom,
         out: &mut Vec<ItemStack>,
     ) {
+        self.roll_with(table_id, ctx, rng, out, false);
+    }
+
+    /// [`Self::roll`] that keeps discarded results as empty stacks, as `/loot` gets them from
+    /// `LootTable.getRandomItems` (an empty dropped item still takes an entity seed, an empty
+    /// replaced slot is cleared).
+    pub fn roll_keeping_empty(
+        &self,
+        table_id: &str,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        self.roll_with(table_id, ctx, rng, out, true);
+    }
+
+    fn roll_with(
+        &self,
+        table_id: &str,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+        keep_empty: bool,
+    ) {
         let Some(table) = self
             .by_name
             .get(table_id)
@@ -445,6 +471,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty,
         };
         eval.table(table);
     }
@@ -518,7 +545,8 @@ impl LootTables {
         }
     }
 
-    /// `LootTable.getRandomItems` of an inline table (`ResourceOrIdArgument` with a value).
+    /// `LootTable.getRandomItems` of an inline table (`ResourceOrIdArgument` with a value), for
+    /// `/loot`: discarded results stay as empty stacks ([`Self::roll_keeping_empty`]).
     pub fn roll_inline(
         &self,
         json: &Value,
@@ -535,6 +563,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: true,
         };
         eval.table(&table);
         Ok(())
@@ -594,6 +623,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: false,
         };
         Ok(eval.test(cond))
     }
@@ -646,6 +676,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: false,
         };
         eval.apply(func, stack);
         Ok(())
@@ -2196,6 +2227,9 @@ struct Eval<'t, 'x> {
     depth: u32,
     /// `ADDITIONAL_COST_COMPONENT_ALLOWED` (villager trade contexts).
     allow_additional_cost: bool,
+    /// Empty results (a `discard` modifier) stay in the output as empty stacks, as
+    /// `LootTable.getRandomItems` passes them on (`/loot`).
+    keep_empty: bool,
 }
 
 impl<'t> Eval<'t, '_> {
@@ -2448,11 +2482,12 @@ impl<'t> Eval<'t, '_> {
             }
         }
         if stack.is_empty() {
+            if self.keep_empty {
+                self.out.push(ItemStack::default());
+            }
             return;
         }
-        let max = ITEMS
-            .get(usize::from(stack.item))
-            .map_or(1, |info| i32::from(info.max_stack_size).max(1));
+        let max = crate::item::max_stack_size(&stack).max(1);
         if stack.count < max {
             self.out.push(stack);
             return;
@@ -2938,6 +2973,8 @@ impl<'t> Eval<'t, '_> {
                     .set(ids::OMINOUS_BOTTLE_AMPLIFIER, out.into_boxed_slice());
             }
             FuncKind::SetComponents(components) => {
+                // `applyComponentsAndValidate`: a patch that leaves the stack invalid is undone.
+                let old = stack.patch.clone();
                 for (id, value) in components {
                     let Some(value) = value else {
                         let patch = stack.patch_mut();
@@ -2955,6 +2992,13 @@ impl<'t> Eval<'t, '_> {
                         Ok(wire) => stack.patch_mut().set(*id, wire),
                         Err(e) => log::debug!("set_components: component {id}: {e}"),
                     }
+                }
+                // `validateStrict` (without the container and bundle contents checks).
+                let max_stack = crate::item::max_stack_size(stack);
+                if stack.count > max_stack || (crate::item::max_damage(stack) > 0 && max_stack > 1)
+                {
+                    log::debug!("set_components: invalid stack, patch not applied");
+                    stack.patch = old;
                 }
             }
             FuncKind::Filtered {
@@ -3110,13 +3154,13 @@ fn entry_weight(entry: &Entry, luck: f32) -> i32 {
     ((entry.weight as f32 + entry.quality as f32 * luck).floor() as i32).max(0)
 }
 
-/// `EnchantmentHelper.getComponentType`: enchanted books store their enchantments.
 /// `EnchantmentPredicate.containedIn` without `enchantments`: some enchantment of the list has
 /// a level in `levels`.
 fn any_enchantment(list: &[(u32, i32)], levels: Bounds) -> bool {
     list.iter().any(|(_, level)| levels.matches(*level))
 }
 
+/// `EnchantmentHelper.getComponentType`: enchanted books store their enchantments.
 fn enchantment_component(stack: &ItemStack) -> u16 {
     if stack.item == items::ENCHANTED_BOOK.0 {
         ids::STORED_ENCHANTMENTS
@@ -3323,6 +3367,7 @@ impl<'a> LootEval<'a> {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: self.additional_cost_allowed,
+            keep_empty: false,
         }
     }
 }
