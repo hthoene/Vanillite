@@ -168,6 +168,12 @@ pub struct DamageTypes {
     pub sonic_boom: DamageKind,
     pub fireworks: DamageKind,
     pub fly_into_wall: DamageKind,
+    pub cactus: DamageKind,
+    pub sweet_berry_bush: DamageKind,
+    pub campfire: DamageKind,
+    pub falling_block: DamageKind,
+    pub falling_anvil: DamageKind,
+    pub falling_stalactite: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -269,6 +275,12 @@ impl DamageTypes {
             sonic_boom: find("minecraft:sonic_boom"),
             fireworks: find("minecraft:fireworks"),
             fly_into_wall: find("minecraft:fly_into_wall"),
+            cactus: find("minecraft:cactus"),
+            sweet_berry_bush: find("minecraft:sweet_berry_bush"),
+            campfire: find("minecraft:campfire"),
+            falling_block: find("minecraft:falling_block"),
+            falling_anvil: find("minecraft:falling_anvil"),
+            falling_stalactite: find("minecraft:falling_stalactite"),
             types,
         }
     }

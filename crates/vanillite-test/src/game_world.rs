@@ -397,7 +397,19 @@ impl GameWorld {
                 self.bolt_hits = hits;
                 continue;
             }
-            if kind == ids::FALLING_BLOCK || kind == ids::TNT {
+            if kind == ids::FALLING_BLOCK {
+                // The entities a landing block hurts take the damage (and drop their loot)
+                // before it lands.
+                if let Some(resume) =
+                    vanillite_game::block::falling::tick_until_hurt(&mut self.level, id)
+                {
+                    self.explosion_hurts();
+                    self.spawn_drops();
+                    vanillite_game::block::falling::resume_tick(&mut self.level, id, resume);
+                }
+                continue;
+            }
+            if kind == ids::TNT {
                 vanillite_game::entities::tick_entity(&mut self.level, id, kind);
                 self.explosion_hurts();
                 continue;
@@ -526,11 +538,15 @@ impl GameWorld {
     /// The explosion damage of the living entities the last explosions hit
     /// (`WorldMobs::apply_explosion_hurts` of the server).
     fn explosion_hurts(&mut self) {
-        if self.level.output().explosion_hurts.is_empty() {
+        if self.level.output().explosion_hurts.is_empty()
+            && self.level.output().falling_hurts.is_empty()
+        {
             return;
         }
         let hurts = std::mem::take(&mut self.level.output().explosion_hurts);
+        let falling = std::mem::take(&mut self.level.output().falling_hurts);
         self.with_env(|level, ents, env, cx| {
+            vanillite_game::block::falling::apply_falling_hurts(level, ents, env, cx, falling);
             for hurt in hurts {
                 let mut source = match (hurt.source, hurt.indirect) {
                     (Some(direct), Some(cause)) => {
@@ -640,6 +656,14 @@ impl GameWorld {
                 survival_player::do_tick_end(&mut entity, data, env, result);
             }
         });
+        // The players' contact with blocks (`post_player_game_events` of the server).
+        let mut actions = Vec::new();
+        for (_, p) in self.level.entities.players.iter_mut() {
+            actions.append(&mut p.survival.world_actions);
+        }
+        for action in actions {
+            action.apply_to_level(&mut self.level);
+        }
         self.spawn_drops();
     }
 

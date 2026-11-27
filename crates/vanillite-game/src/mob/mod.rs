@@ -138,6 +138,11 @@ pub struct MobData {
     pub fall_distance: f64,
     pub fire_ticks: i32,
     pub air: i32,
+    /// `getTicksFrozen` (`DATA_TICKS_FROZEN`).
+    pub ticks_frozen: i32,
+    /// `isInPowderSnow` (set by powder snow this tick) and `wasInPowderSnow`.
+    pub in_powder_snow: bool,
+    pub was_in_powder_snow: bool,
     pub y_body_rot: f32,
     pub speed: f32,
     pub xxa: f32,
@@ -286,6 +291,9 @@ impl MobData {
             fall_distance: 0.0,
             fire_ticks: -1,
             air: 300,
+            ticks_frozen: 0,
+            in_powder_snow: false,
+            was_in_powder_snow: false,
             y_body_rot: 0.0,
             speed: 0.0,
             xxa: 0.0,
@@ -744,6 +752,10 @@ pub enum WorldAction {
         can_destroy: bool,
         randomness: i32,
     },
+    /// `FarmlandBlock.turnToBaseBlock(entity, …)`: the entity trampled the farmland.
+    TrampleFarmland(BlockPos, EntityId),
+    /// `destroyBlock(pos, drop, breaker)` (ravagers in crops).
+    DestroyBlockBy(BlockPos, bool, EntityId),
 }
 
 impl WorldAction {
@@ -769,8 +781,14 @@ impl WorldAction {
             }
             WorldAction::StepOn(pos, id) => {
                 if level.entities.store.contains(id) {
-                    crate::block::sculk::step_on_block(level, pos, id);
+                    crate::block::contact::step_on(level, pos, id);
                 }
+            }
+            WorldAction::TrampleFarmland(pos, id) => {
+                crate::block::contact::trample_farmland(level, pos, Some(id));
+            }
+            WorldAction::DestroyBlockBy(pos, drop, id) => {
+                level.destroy_block(pos, drop, Some(id));
             }
             WorldAction::ProjectileHitBlock(pos, at, id) => {
                 crate::block::sensor::projectile_hit_block(level, pos, at, id);

@@ -326,6 +326,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// The damage of the living entities falling blocks land on, for the mob system.
+    pub falling_hurts: Vec<crate::block::falling::FallingHurt>,
     /// Magic damage block entities deal (conduits): target and amount.
     pub magic_hurts: Vec<(vanillite_world::entity::EntityId, f32)>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
@@ -1488,14 +1490,19 @@ impl Level {
     /// random of its own, as Vanilla's entities draw it from theirs, so spawning entities does
     /// not shift the level random.
     pub fn new_uuid(&mut self) -> u128 {
+        self.new_uuid_and_seed().0
+    }
+
+    /// [`Self::new_uuid`] with the seed of the new entity's own random.
+    pub fn new_uuid_and_seed(&mut self) -> (u128, i64) {
         // A new entity: it takes its seed like Vanilla's constructor.
-        crate::mob::new_entity_seed();
+        let seed = crate::mob::new_entity_seed();
         let most = self.sound_seeds.next_long() as u64;
         let least = self.sound_seeds.next_long() as u64;
         // Version 4, IETF variant.
         let most = (most & !0xF000) | 0x4000;
         let least = (least & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;
-        (u128::from(most) << 64) | u128::from(least)
+        ((u128::from(most) << 64) | u128::from(least), seed)
     }
 
     /// Whether `pos` lies in a chunk where blocks tick.
