@@ -12,6 +12,7 @@ pub mod id {
     pub const SERVER_TO_CLIENT_HANDSHAKE: u32 = 3;
     pub const CLIENT_TO_SERVER_HANDSHAKE: u32 = 4;
     pub const DISCONNECT: u32 = 5;
+    pub const PACKET_VIOLATION_WARNING: u32 = 156;
     pub const RESOURCE_PACKS_INFO: u32 = 6;
     pub const RESOURCE_PACK_STACK: u32 = 7;
     pub const RESOURCE_PACK_CLIENT_RESPONSE: u32 = 8;
