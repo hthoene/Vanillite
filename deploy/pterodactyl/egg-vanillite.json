@@ -882,13 +882,233 @@
       "field_type": "text"
     },
     {
-      "name": "Performance: Mobs › Activation Range",
-      "description": "Mobs farther than this many blocks from every player tick only every 20th tick (activation range). Saves most of the mob tick on servers with many mobs away from players. Deviation: such mobs move, path-find, grow up and breed at 1/20 of Vanilla's speed (farms and breeders outside the range slow down). 0 = off (Vanilla: every mob in simulation distance ticks). Applies to every world. Range: 0 to 512. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.mobs.activation-range.",
-      "env_variable": "VANILLITE_PERFORMANCE__MOBS__ACTIVATION_RANGE",
+      "name": "Performance: Activation Range › Animals",
+      "description": "Range of animals (`creature` and `ambient` mobs: cows, sheep, bats, ...). Applies to every world. Range: 0 to 128. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.animals.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__ANIMALS",
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
-      "rules": "nullable|integer|between:0,512",
+      "rules": "nullable|integer|between:0,128",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Monsters",
+      "description": "Range of monsters (`monster` mobs that are no raiders or flyers). Applies to every world. Range: 0 to 128. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.monsters.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__MONSTERS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,128",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Raiders",
+      "description": "Range of raiders (pillagers, vindicators, evokers, illusioners, witches and ravagers). Applies to every world. Range: 0 to 128. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.raiders.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__RAIDERS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,128",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Misc",
+      "description": "Range of the other mobs (golems, armor stands, ...). Applies to every world. Range: 0 to 128. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.misc.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__MISC",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,128",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Water",
+      "description": "Range of water mobs (fish, squid, dolphins, axolotls, ...). Applies to every world. Range: 0 to 128. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.water.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WATER",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,128",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Villagers",
+      "description": "Range of villagers and wandering traders. Applies to every world. Range: 0 to 128. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.villagers.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,128",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Flying",
+      "description": "Range of flying monsters (ghasts, phantoms, blazes, vexes). Applies to every world. Range: 0 to 128. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.flying.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__FLYING",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,128",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Villagers Work Immunity After",
+      "description": "Ticks an inactive villager must have been inactive before it becomes active while it works at its job site, so workstations keep restocking trades; 0 = never. Applies to every world. Range: 0 to 12000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.villagers-work-immunity-after.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_WORK_IMMUNITY_AFTER",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,12000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Villagers Work Immunity For",
+      "description": "Ticks a working villager then stays active. Applies to every world. Range: 0 to 12000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.villagers-work-immunity-for.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_WORK_IMMUNITY_FOR",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,12000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Villagers Active For Panic",
+      "description": "Panicking villagers stay active (they flee and alarm the village, which spawns iron golems). Applies to every world. default: the profile's value (vanilla profile: false). vanillite.toml: performance.activation-range.villagers-active-for-panic.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_ACTIVE_FOR_PANIC",
+      "default_value": "default",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:default,true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range › Inactive Mob Goal Selector Throttle",
+      "description": "Ticks between the goal and target selector runs of an inactive mob between its full ticks: it notices targets, food and partners sooner, but does not move before its next full tick. Lower values cost more. \"disabled\": inactive mobs choose goals only in their full ticks (cheapest). Applies to every world. Range: 1 to 20. Also accepts disabled. Empty: the profile's value (vanilla profile: disabled). vanillite.toml: performance.activation-range.inactive-mob-goal-selector-throttle.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__INACTIVE_MOB_GOAL_SELECTOR_THROTTLE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!disabled[0-9])(disabled)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Animals Max Per Tick",
+      "description": "Animals woken up per tick at most. Applies to every world. Range: 0 to 1000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.wake-up-inactive.animals-max-per-tick.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_MAX_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,1000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Animals Every",
+      "description": "Ticks animals must have been inactive before they may be woken up. Applies to every world. Range: 1 to 1728000. Empty: the profile's value (vanilla profile: 1200). vanillite.toml: performance.activation-range.wake-up-inactive.animals-every.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_EVERY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1728000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Animals For",
+      "description": "Ticks woken up animals stay active. Applies to every world. Range: 1 to 12000. Empty: the profile's value (vanilla profile: 100). vanillite.toml: performance.activation-range.wake-up-inactive.animals-for.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_FOR",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,12000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Villagers Max Per Tick",
+      "description": "Villagers woken up per tick at most. Applies to every world. Range: 0 to 1000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.wake-up-inactive.villagers-max-per-tick.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_MAX_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,1000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Villagers Every",
+      "description": "Ticks villagers must have been inactive before they may be woken up. Applies to every world. Range: 1 to 1728000. Empty: the profile's value (vanilla profile: 600). vanillite.toml: performance.activation-range.wake-up-inactive.villagers-every.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_EVERY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1728000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Villagers For",
+      "description": "Ticks woken up villagers stay active. Applies to every world. Range: 1 to 12000. Empty: the profile's value (vanilla profile: 100). vanillite.toml: performance.activation-range.wake-up-inactive.villagers-for.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_FOR",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,12000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Monsters Max Per Tick",
+      "description": "Monsters woken up per tick at most. Applies to every world. Range: 0 to 1000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.wake-up-inactive.monsters-max-per-tick.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_MAX_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,1000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Monsters Every",
+      "description": "Ticks monsters must have been inactive before they may be woken up. Applies to every world. Range: 1 to 1728000. Empty: the profile's value (vanilla profile: 400). vanillite.toml: performance.activation-range.wake-up-inactive.monsters-every.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_EVERY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1728000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Monsters For",
+      "description": "Ticks woken up monsters stay active. Applies to every world. Range: 1 to 12000. Empty: the profile's value (vanilla profile: 100). vanillite.toml: performance.activation-range.wake-up-inactive.monsters-for.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_FOR",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,12000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Flying Max Per Tick",
+      "description": "Flying woken up per tick at most. Applies to every world. Range: 0 to 1000. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.activation-range.wake-up-inactive.flying-max-per-tick.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_MAX_PER_TICK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,1000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Flying Every",
+      "description": "Ticks flying must have been inactive before they may be woken up. Applies to every world. Range: 1 to 1728000. Empty: the profile's value (vanilla profile: 200). vanillite.toml: performance.activation-range.wake-up-inactive.flying-every.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_EVERY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,1728000",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Activation Range Wake Up Inactive › Flying For",
+      "description": "Ticks woken up flying stay active. Applies to every world. Range: 1 to 12000. Empty: the profile's value (vanilla profile: 100). vanillite.toml: performance.activation-range.wake-up-inactive.flying-for.",
+      "env_variable": "VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_FOR",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:1,12000",
       "field_type": "text"
     },
     {
