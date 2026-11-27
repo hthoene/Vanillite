@@ -160,6 +160,9 @@ pub struct Burn {
     pub landed: Option<(Vec3, BlockPos)>,
     /// `applyEffectsFromBlocks` on the ground: the block with a `stepOn` of its own below it.
     pub step_on: Option<BlockPos>,
+    /// The tops of the bubble columns the item is above (`onAboveBubbleColumn`): their
+    /// particles draw from the level random.
+    pub bubble_tops: [Option<BlockPos>; 2],
 }
 
 impl Burn {
@@ -169,6 +172,7 @@ impl Burn {
             && self.inside[0].is_none()
             && self.landed.is_none()
             && self.step_on.is_none()
+            && self.bubble_tops[0].is_none()
             && self.splash_before.is_none()
             && self.splash_after.is_none()
             && self.extinguished.is_none()
@@ -267,6 +271,7 @@ fn inside_blocks_fire(
     pos: Vec3,
     world: &FireWorld<'_>,
     burn: &mut Burn,
+    v: &mut Vec3,
 ) {
     let dims = vanillite_world::entity::Dimensions {
         width: 0.25,
@@ -283,6 +288,10 @@ fn inside_blocks_fire(
         |cell| {
             if cell.state.block() == vanillite_data::block::ids::CACTUS {
                 cacti = cacti.saturating_add(1);
+            } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN {
+                if cell.in_block && cell.precise {
+                    bubble_column(data, cell, world, burn, v);
+                }
             } else if (world.reacts)(cell.state)
                 && let Some(slot) = burn.inside.get_mut(reacting)
             {
@@ -356,6 +365,32 @@ fn inside_blocks_fire(
     }
 }
 
+/// `BubbleColumnBlock.entityInside`: the column pulls the item down or pushes it up, harder at
+/// its top (`onAboveBubbleColumn`, whose particles the caller sends) than inside
+/// (`onInsideBubbleColumn`, which resets the fall distance).
+fn bubble_column(
+    data: &mut ItemData,
+    cell: &crate::survival::inside::Cell,
+    world: &FireWorld<'_>,
+    burn: &mut Burn,
+    v: &mut Vec3,
+) {
+    let above = BlockPos::new(cell.pos.x, cell.pos.y + 1, cell.pos.z);
+    let above = world
+        .blocks
+        .block_state(above)
+        .unwrap_or(vanillite_data::block::BlockState::AIR);
+    let (top, y) = crate::block::bubble::drag(above, cell.state, v.y);
+    v.y = y;
+    if top {
+        if let Some(slot) = burn.bubble_tops.iter_mut().find(|t| t.is_none()) {
+            *slot = Some(cell.pos);
+        }
+    } else {
+        data.fall_distance = 0.0;
+    }
+}
+
 /// `Entity.doWaterSplashEffect`: the sound and the `SPLASH` game event.
 fn splash_effects(level: &mut crate::level::Level, id: EntityId, splash: Splash) {
     let pos = splash.pos;
@@ -390,6 +425,9 @@ pub fn burn_effects(level: &mut crate::level::Level, id: EntityId, burn: Burn) {
             return;
         }
         level.entity_inside(block, id);
+    }
+    for top in burn.bubble_tops.into_iter().flatten() {
+        crate::block::bubble::send_particles(level, top);
     }
     if let Some(splash) = burn.splash_before {
         splash_effects(level, id, splash);
@@ -541,14 +579,17 @@ fn block_boxes(
                             b[4] + dy,
                             b[5] + dz,
                         );
-                        if shape.intersects(&area.inflate(1.0e-7, 1.0e-7, 1.0e-7))
-                            || touches(&shape, area)
-                        {
+                        if shape.intersects(area) {
                             out.push(shape);
                         }
                     }
                     continue;
                 }
+                // `BlockCollisions`: the whole shape when it overlaps the area (touching is not
+                // enough), so even its boxes beside the area make `Shapes.collide` drop a
+                // movement below 1.0E-7.
+                let start = out.len();
+                let mut overlaps = false;
                 for b in crate::mob::physics::context_shape(state, dy, Some(bottom)) {
                     let shape = Aabb::new(
                         b[0] + dx,
@@ -558,24 +599,15 @@ fn block_boxes(
                         b[4] + dy,
                         b[5] + dz,
                     );
-                    if shape.intersects(&area.inflate(1.0e-7, 1.0e-7, 1.0e-7))
-                        || touches(&shape, area)
-                    {
-                        out.push(shape);
-                    }
+                    overlaps |= shape.intersects(area);
+                    out.push(shape);
+                }
+                if !overlaps {
+                    out.truncate(start);
                 }
             }
         }
     }
-}
-
-fn touches(a: &Aabb, b: &Aabb) -> bool {
-    a.min_x <= b.max_x
-        && a.max_x >= b.min_x
-        && a.min_y <= b.max_y
-        && a.max_y >= b.min_y
-        && a.min_z <= b.max_z
-        && a.max_z >= b.min_z
 }
 
 const EPS: f64 = 1.0e-7;
@@ -887,6 +919,9 @@ pub fn tick(
         {
             v = crate::block::contact::slime_step_on(v);
         }
+        if !no_physics && let Some(movement) = data.last_movement {
+            inside_blocks_fire(data, movement, out.pos, fire, burn, &mut v);
+        }
         // `getAirDrag()` and the ground friction are floats, widened to double.
         let air_drag = 0.98_f32;
         let mut ground = air_drag;
@@ -903,12 +938,18 @@ pub fn tick(
         if out.on_ground && v.y < 0.0 {
             v.y *= -0.5;
         }
-    } else if !no_physics
-        && out.on_ground
-        && block.state(on_pos_legacy(out.pos)).block() == vanillite_data::block::ids::SLIME_BLOCK
-    {
-        // `applyEffectsFromBlocksForLastMovements`: `SlimeBlock.stepOn` of a resting item.
-        v = crate::block::contact::slime_step_on(v);
+    } else if !no_physics {
+        // `applyEffectsFromBlocksForLastMovements`: `SlimeBlock.stepOn` of a resting item, then
+        // the blocks on the way of its last move.
+        if out.on_ground
+            && block.state(on_pos_legacy(out.pos)).block()
+                == vanillite_data::block::ids::SLIME_BLOCK
+        {
+            v = crate::block::contact::slime_step_on(v);
+        }
+        if let Some(movement) = data.last_movement {
+            inside_blocks_fire(data, movement, out.pos, fire, burn, &mut v);
+        }
     }
     // `applyEffectsFromBlocks` on the way of the move, for a resting item on the way of its
     // last one (`isAffectedByBlocks`): `stepOn` of the block below, then `entityInside`.
@@ -917,9 +958,6 @@ pub fn tick(
         if crate::block::contact::has_step_on(block.state(on).block()) {
             burn.step_on = Some(on);
         }
-    }
-    if !no_physics && let Some(movement) = data.last_movement {
-        inside_blocks_fire(data, movement, out.pos, fire, burn);
     }
     out.moved_block = floor(old.x) != floor(out.pos.x)
         || floor(old.y) != floor(out.pos.y)

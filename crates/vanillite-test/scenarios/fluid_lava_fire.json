@@ -1,0 +1,132 @@
+{
+  "description": "Lava sets fire by random ticks (LavaFluid.randomTick): to air above it next to flammable blocks (planks, wool, logs, leaves) up to two blocks up, and on top of flammable blocks around it; the fire spreads and burns out.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "30",
+    "fire_spread_radius_around_player": "-1"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -60,
+      0
+    ],
+    [
+      12,
+      -56,
+      12
+    ]
+  ],
+  "ticks": 300,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        12,
+        -60,
+        12
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        5
+      ],
+      "to": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -59,
+        3
+      ],
+      "to": [
+        9,
+        -59,
+        3
+      ],
+      "block": "minecraft:oak_planks"
+    },
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -58,
+        9
+      ],
+      "to": [
+        9,
+        -58,
+        9
+      ],
+      "block": "minecraft:white_wool"
+    },
+    {
+      "op": "fill",
+      "from": [
+        9,
+        -59,
+        4
+      ],
+      "to": [
+        9,
+        -59,
+        8
+      ],
+      "block": "minecraft:oak_log[axis=y]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -60,
+        4
+      ],
+      "to": [
+        3,
+        -60,
+        8
+      ],
+      "block": "minecraft:oak_leaves[distance=1,persistent=true,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -59,
+        6
+      ],
+      "block": "minecraft:glass"
+    }
+  ],
+  "actions": []
+}
