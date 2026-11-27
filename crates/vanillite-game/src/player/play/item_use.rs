@@ -1470,7 +1470,7 @@ fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos
         crate::mob::kinds::finalize_spawn(&mut m, &mut spawn, &mut random);
         *level.entity_parts().2 = random;
     }
-    // `createDefaultStackConfig`: the custom name and the item's components.
+    // `createDefaultStackConfig`: the custom name (the other components after the spawn).
     if let Some(name) = stack.component(ids::CUSTOM_NAME) {
         m.custom_name = Some(name.into());
         m.persistent = true;
@@ -1502,6 +1502,8 @@ fn release_mob(level: &mut Level, kind: crate::mob::Kind, stack: &ItemStack, pos
     let uuid = crate::mob::new_uuid();
     let (ents, network_ids, _) = level.entity_parts();
     let id = crate::mob::spawn(ents, network_ids, uuid, p, rot, m);
+    // `createDefaultStackConfig`: the variants of the bucket and its `entity_data`.
+    crate::mob::item_components::apply_spawn_item(ents, id, stack);
     if !ents.spawned(id, vanillite_abi::spawn_reason::BUCKET, 0) {
         return;
     }

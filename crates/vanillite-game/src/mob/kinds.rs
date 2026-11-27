@@ -821,8 +821,11 @@ pub fn finalize_spawn(
 }
 
 fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
-    if m.kind == Kind::CaveSpider {
-        // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`.
+    if m.kind == Kind::CaveSpider
+        || m.kind == Kind::Axolotl && ctx.reason == fam::SpawnReason::Bucket
+    {
+        // `CaveSpider.finalizeSpawn` calls no `super`: not even `Mob.finalizeSpawn`; nor does
+        // `Axolotl.finalizeSpawn` for a mob from a bucket.
         return;
     }
     // `Mob.finalizeSpawn`: follow range bonus and left-handedness; the kinds that call

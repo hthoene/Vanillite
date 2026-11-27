@@ -834,6 +834,8 @@ pub fn mob_spawn_part_last(kind: Kind) -> bool {
             | Kind::CamelHusk
             | Kind::Wolf
             | Kind::Vex
+            | Kind::Axolotl
+            | Kind::Fox
     )
 }
 
@@ -876,6 +878,7 @@ pub fn pushed_by_fluid(m: &MobData) -> bool {
             | Kind::GlowSquid
             | Kind::Dolphin
             | Kind::Axolotl
+            | Kind::Fox
             | Kind::Frog
             | Kind::Tadpole
             | Kind::Turtle
@@ -1041,17 +1044,47 @@ pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut FamGoal) {
     by_goal!(g, goal_tick(t, @g));
 }
 
-/// `MobBucketItem.spawn` after the mob is created: the bucket's components
-/// (`createDefaultStackConfig`: the variants), `Bucketable.loadFromBucketTag` of its
-/// `bucket_entity_data` and `setFromBucket(true)`. `NoGravity`, `Glowing` and `Invulnerable`
-/// are entity flags the mob data does not hold.
+/// `Bucketable.saveDefaultDataToBucketTag`: the bucket `item` with the mob's custom name, and
+/// the default `bucket_entity_data` the kind adds to before [`set_bucket_data`].
+pub(crate) fn bucket_default(m: &MobData, item: &str) -> (ItemStack, Compound) {
+    let mut stack = super::equipment::stack(item);
+    if let Some(name) = m.custom_name.as_deref() {
+        stack.patch_mut().set(
+            vanillite_protocol::components::ids::CUSTOM_NAME,
+            name.into(),
+        );
+    }
+    let mut data = Compound::new();
+    if m.no_ai {
+        data.insert("NoAI", true);
+    }
+    if m.silent {
+        data.insert("Silent", true);
+    }
+    if m.persistent {
+        data.insert("PersistenceRequired", true);
+    }
+    data.insert("Health", m.health);
+    (stack, data)
+}
+
+/// The `bucket_entity_data` component of a filled bucket.
+pub(crate) fn set_bucket_data(stack: &mut ItemStack, data: Compound) {
+    if let (Some(id), Some(bytes)) = (
+        vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:bucket_entity_data"),
+        crate::mob::nbt::tag_component(&vanillite_nbt::Tag::Compound(data)),
+    ) {
+        stack.patch_mut().set(id, bytes);
+    }
+}
+
+/// `MobBucketItem.spawn` after the mob is created: `Bucketable.loadFromBucketTag` of the
+/// bucket's `bucket_entity_data` and `setFromBucket(true)` (its components are applied by
+/// [`crate::mob::item_components::apply_spawn_item`]). `NoGravity`, `Glowing` and
+/// `Invulnerable` are entity flags the mob data does not hold.
 pub fn load_from_bucket(m: &mut MobData, stack: &crate::item::ItemStack) {
-    let id = |name: &str| vanillite_data::registry::DATA_COMPONENT_TYPE.id(name);
-    let varint = |name: &str| -> Option<i32> {
-        let data = stack.component(id(name)?)?;
-        vanillite_protocol::codec::Reader::new(data).varint().ok()
-    };
-    let tag = id("minecraft:bucket_entity_data")
+    let tag = vanillite_data::registry::DATA_COMPONENT_TYPE
+        .id("minecraft:bucket_entity_data")
         .and_then(|c| stack.component(c))
         .and_then(crate::mob::nbt::component_tag);
     let empty = Compound::new();
@@ -1077,15 +1110,22 @@ pub fn load_from_bucket(m: &mut MobData, stack: &crate::item::ItemStack) {
     }
     match m.kind {
         Kind::Cod | Kind::Salmon | Kind::Pufferfish | Kind::TropicalFish => {
-            wildlife::fish::from_bucket(m, &varint);
+            wildlife::fish::from_bucket(m);
         }
         Kind::Axolotl => {
-            if let Some(v) = varint("minecraft:axolotl/variant") {
-                brainy::state_mut(m).variant = v.clamp(0, 4);
-            }
             if let Some(vanillite_nbt::Tag::Int(age)) = tag.get("Age") {
                 m.age = *age;
                 m.baby = m.age < 0;
+            }
+            if let Some(b) = m.brain.as_deref_mut() {
+                let cooldown = super::brain::MemoryType::HasHuntingCooldown;
+                match tag
+                    .get("HuntingCooldown")
+                    .and_then(vanillite_nbt::Tag::as_i64)
+                {
+                    Some(t) => b.set_with_expiry(cooldown, super::brain::MemValue::Bool(true), t),
+                    None => b.erase(cooldown),
+                }
             }
             brainy::state_mut(m).from_bucket = true;
         }
