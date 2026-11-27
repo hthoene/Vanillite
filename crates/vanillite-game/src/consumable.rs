@@ -194,7 +194,9 @@ pub(crate) fn default_effects(effects: &[ConsumeEffectInfo]) -> Vec<ConsumeEffec
                     .collect(),
             ),
             ConsumeEffectInfo::ClearAllEffects => ConsumeEffect::ClearAll,
-            ConsumeEffectInfo::TeleportRandomly(diameter) => ConsumeEffect::Teleport(diameter, true),
+            ConsumeEffectInfo::TeleportRandomly(diameter) => {
+                ConsumeEffect::Teleport(diameter, true)
+            }
             ConsumeEffectInfo::PlaySound(sound) => ConsumeEffect::PlaySound(Cow::Borrowed(sound)),
         })
         .collect()
@@ -367,7 +369,10 @@ mod tests {
         v.extend_from_slice(&[0, id("minecraft:clear_all_effects")]);
         assert_eq!(
             read_effects(&mut Reader::new(&v)),
-            Some(vec![ConsumeEffect::Teleport(8.0, false), ConsumeEffect::ClearAll])
+            Some(vec![
+                ConsumeEffect::Teleport(8.0, false),
+                ConsumeEffect::ClearAll
+            ])
         );
     }
 }

@@ -307,10 +307,21 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
         data.fire_ticks = 2000;
     }
     // `getMobArrow(.., bowItem)`: the arrow keeps the bow and its Power, Punch and Flame.
-    let bow = t.mob_ref().equipment.get(crate::item::EquipmentSlot::MainHand).clone();
+    let bow = t
+        .mob_ref()
+        .equipment
+        .get(crate::item::EquipmentSlot::MainHand)
+        .clone();
     if !bow.is_empty() {
         let mut random = t.mob().random.clone();
-        weapon_enchantments(t.ents, Some(id), entity_ids::ARROW, &bow, &mut random, &mut data);
+        weapon_enchantments(
+            t.ents,
+            Some(id),
+            entity_ids::ARROW,
+            &bow,
+            &mut random,
+            &mut data,
+        );
         data.weapon = Some(bow);
     }
     if data.fire_ticks > 0 {
@@ -477,7 +488,9 @@ pub fn tick_arrow(
         a.in_ground_time += 1;
         if !discard {
             inside_blocks(level, cx, id, start_box, start, pos);
-            a.fire_ticks = a.fire_ticks.max(fire_from_blocks(level, start_box, start, pos));
+            a.fire_ticks = a
+                .fire_ticks
+                .max(fire_from_blocks(level, start_box, start, pos));
         }
     } else {
         a.in_ground_time = 0;
@@ -859,7 +872,9 @@ pub fn tick_arrow(
             pos = to;
         }
         inside_blocks(level, cx, id, start_box, start, pos);
-        a.fire_ticks = a.fire_ticks.max(fire_from_blocks(level, start_box, start, pos));
+        a.fire_ticks = a
+            .fire_ticks
+            .max(fire_from_blocks(level, start_box, start, pos));
         if !super::is_water(level.block(BlockPos::containing(pos.x, pos.y, pos.z))) {
             // `applyInertia(0.99F)`.
             velocity = velocity * f64::from(0.99_f32);

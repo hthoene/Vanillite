@@ -673,7 +673,9 @@ impl Level {
                     0.0,
                     1.0,
                 ),
-                None => crate::mob::attack::player_attribute(&self.entities, id, name, 0.0, 0.0, 1.0),
+                None => {
+                    crate::mob::attack::player_attribute(&self.entities, id, name, 0.0, 0.0, 1.0)
+                }
             };
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));

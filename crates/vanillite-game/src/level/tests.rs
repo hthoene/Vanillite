@@ -623,7 +623,13 @@ fn entity_custom_data_round_trips() {
     )
     .expect("snbt");
     assert!(level.load_entity(nbt));
-    let pig = level.entities.mobs.iter().map(|(id, _)| id).next().expect("pig");
+    let pig = level
+        .entities
+        .mobs
+        .iter()
+        .map(|(id, _)| id)
+        .next()
+        .expect("pig");
     let saved = level.save_entity(pig).expect("saved");
     let data = vanillite_nbt::snbt::parse_compound("{quest:\"apple\",n:3b}").expect("data");
     assert_eq!(saved.get("data"), Some(&vanillite_nbt::Tag::Compound(data)));

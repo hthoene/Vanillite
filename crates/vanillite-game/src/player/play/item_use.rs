@@ -454,11 +454,14 @@ fn bone_meal(ctx: &mut PlayContext<'_>, click: Click) -> Used {
     let Some(at_pos) = grown else {
         return Used::Pass;
     };
-    level.game_event(
-        events().item_interact_finish,
-        at,
-        GameEventContext::of(player),
-    );
+    // `causeUseVibration`: the stack's `use_effects` (an emptied stack has none).
+    if !stack.is_empty() && crate::consumable::use_vibrations(&stack) {
+        level.game_event(
+            events().item_interact_finish,
+            at,
+            GameEventContext::of(player),
+        );
+    }
     level.level_event(None, 1505, at_pos, 15);
     set_held(ctx, click.hand, stack);
     Used::Success

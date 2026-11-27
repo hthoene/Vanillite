@@ -659,7 +659,9 @@ fn mob_interact(
     // mob that can be one (ageable mobs, the zombies, piglins and zoglins); otherwise the
     // interaction goes on (leads, mounting, trading).
     if let Some(egg_kind) = spawn_egg_kind(stack)
-        && ents.mob(target).is_some_and(|m| m.kind == egg_kind && can_be_baby(m.kind))
+        && ents
+            .mob(target)
+            .is_some_and(|m| m.kind == egg_kind && can_be_baby(m.kind))
     {
         spawn_offspring(level, ents, player, target, hand, egg_kind);
         interacted(ents, env);
@@ -749,12 +751,13 @@ fn own_interact(
             return Interaction::Success;
         }
         Kind::Cow if name == "minecraft:bucket" && !ents.mob(target).is_some_and(|m| m.baby) => {
-            // `AbstractCow.mobInteract`: the milk sound is the player's own.
+            // `AbstractCow.mobInteract`: the milk sound is the player's own (`player.playSound`:
+            // its client plays it, the others hear it).
             if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
                 let seed = crate::survival::sound_seed();
                 play_sound(
                     env.out,
-                    None,
+                    Some(player),
                     pos,
                     "minecraft:entity.cow.milk",
                     SoundSource::Players,
@@ -1275,7 +1278,13 @@ fn equip_on_target(
         return Interaction::Pass;
     }
     let one = stack.with_count(1);
-    use_item(ents, player, hand);
+    // `itemStack.split(1)`: taken from the hand in creative too.
+    let i = hand_index(ents, player, hand);
+    if let Some(p) = ents.player_mut(player)
+        && let Some(s) = p.inventory.get_mut(i)
+    {
+        s.shrink(1);
+    }
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
         return Interaction::Pass;
     };
@@ -1402,8 +1411,8 @@ pub fn use_spawn_egg_on(
         super::fam::SpawnContext::at(level, spawn_pos, super::fam::SpawnReason::SpawnItemUse);
     kinds::finalize_spawn(&mut m, &mut ctx, env.random);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
+        // `applyImplicitComponent(CUSTOM_NAME)` only names it (no `setPersistenceRequired`).
         m.custom_name = Some(name.into());
-        m.persistent = true;
     }
     let rot = Rotation {
         y_rot: yaw,
@@ -1457,8 +1466,8 @@ pub fn spawn_from_item(
     *level.random() = random;
     // `createDefaultStackConfig`: the custom name (the other components after the spawn).
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
+        // `applyImplicitComponent(CUSTOM_NAME)` only names it (no `setPersistenceRequired`).
         m.custom_name = Some(name.into());
-        m.persistent = true;
     }
     if reason == super::fam::SpawnReason::Bucket {
         super::fam::load_from_bucket(&mut m, stack);

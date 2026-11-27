@@ -259,8 +259,7 @@ pub fn use_item_on(
     } else if item::item_id(&stack).name() == "minecraft:lead" {
         tame::use_lead_on_fence(level, ents, env, player, pos)
     } else if item::item_id(&stack).name() == "minecraft:firework_rocket" {
-        crate::firework::use_on(ents, env, network_ids, player, &mut stack, face, location);
-        true
+        crate::firework::use_on(ents, env, network_ids, player, &mut stack, face, location)
     } else {
         crate::minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative)
     };

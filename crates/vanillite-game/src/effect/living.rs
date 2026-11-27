@@ -994,7 +994,8 @@ pub fn on_mob_killed(t: &mut Tick<'_, '_>) {
                         },
                         slime,
                     );
-                    t.ents.spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
+                    t.ents
+                        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
                 }
             }
             MobEffect::WEAVING if t.env.rules.bool(crate::survival::rules::Rule::MOB_GRIEFING) => {

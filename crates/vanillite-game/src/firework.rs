@@ -155,10 +155,11 @@ pub fn use_on(
     stack: &mut ItemStack,
     face: Direction,
     location: Vec3,
-) {
+) -> bool {
     let _ = env;
+    // A gliding player's click passes on to `use` (the boost).
     if is_fall_flying(ents, player) {
-        return;
+        return false;
     }
     let [dx, dy, dz] = face.normal();
     let pos = Vec3::new(
@@ -174,6 +175,7 @@ pub fn use_on(
     if !creative {
         stack.shrink(1);
     }
+    true
 }
 
 /// `isFallFlying` (shared flag 7).

@@ -259,11 +259,7 @@ fn hurt(data: &mut ItemData, types: &DamageTypes, kind: DamageKind, damage: f32,
 /// `isInvulnerableToBase` of an item (an entity cause is never a creative player here):
 /// `Invulnerable` keeps off all damage that does not bypass invulnerability.
 pub fn invulnerable_to(data: &ItemData, types: &DamageTypes, kind: DamageKind) -> bool {
-    data.invulnerable
-        && !types.is(
-            kind,
-            crate::survival::damage::tag::BYPASSES_INVULNERABILITY,
-        )
+    data.invulnerable && !types.is(kind, crate::survival::damage::tag::BYPASSES_INVULNERABILITY)
 }
 
 /// `ItemEntity.fireImmune`: the stack resists fire.

@@ -865,8 +865,18 @@ fn check_totem(
         .advancements
         .trigger(crate::advancements::trigger::Event::Item(
             crate::advancements::trigger::TriggerKind::USED_TOTEM,
-            used,
+            used.clone(),
         ));
+    // `causeUseVibration(ITEM_INTERACT_FINISH)`.
+    if crate::consumable::use_vibrations(&used) {
+        let e = entity.as_ref();
+        crate::survival::game_event(
+            env.out,
+            crate::level::game_event::events().item_interact_finish,
+            e.pos(),
+            Some(e.id()),
+        );
+    }
     set_health(entity, &mut player.survival, 1.0);
     // `ApplyStatusEffectsConsumeEffect`: one roll of the player's random per entry.
     let rolls: Vec<f32> = effects
@@ -2721,11 +2731,8 @@ fn tick_freezing(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut 
 
 /// `igniteForTicks`.
 fn ignite_for_ticks(player: &mut PlayerData, ticks: i32) {
-    let burning = crate::player::play::equipment_attribute(
-        &player.inventory,
-        "minecraft:burning_time",
-        1.0,
-    );
+    let burning =
+        crate::player::play::equipment_attribute(&player.inventory, "minecraft:burning_time", 1.0);
     let ticks = crate::mob::attack::burning_ticks(ticks, burning);
     let s = &mut player.survival;
     if s.fire_ticks < ticks {

@@ -1172,7 +1172,8 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
             },
             ..Default::default()
         };
-        t.cx.actions.push(WorldAction::SpawnCloud(pos, Box::new(data)));
+        t.cx.actions
+            .push(WorldAction::SpawnCloud(pos, Box::new(data)));
     }
     // `triggerOnDeathMobEffects(KILLED)`.
     crate::effect::living::on_mob_killed(t);

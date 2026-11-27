@@ -181,7 +181,10 @@ impl TrialConfig {
         c.insert("spawn_range", self.spawn_range);
         c.insert("total_mobs", self.total_mobs);
         c.insert("simultaneous_mobs", self.simultaneous_mobs);
-        c.insert("total_mobs_added_per_player", self.total_mobs_added_per_player);
+        c.insert(
+            "total_mobs_added_per_player",
+            self.total_mobs_added_per_player,
+        );
         c.insert(
             "simultaneous_mobs_added_per_player",
             self.simultaneous_mobs_added_per_player,

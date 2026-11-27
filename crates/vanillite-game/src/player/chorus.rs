@@ -150,7 +150,11 @@ pub fn teleport_randomly(
         let d = |a: i32, b: i32| (b - a).clamp(-127, 127) + 127 & 0xFF;
         let data = d(origin.x, target.x) << 16 | d(origin.y, target.y) << 8 | d(origin.z, target.z);
         env.out.push(crate::survival::Effect::Nearby {
-            pos: Vec3::new(f64::from(origin.x), f64::from(origin.y), f64::from(origin.z)),
+            pos: Vec3::new(
+                f64::from(origin.x),
+                f64::from(origin.y),
+                f64::from(origin.z),
+            ),
             range: 64.0,
             except: None,
             packet: vanillite_protocol::SharedPacket::of(
