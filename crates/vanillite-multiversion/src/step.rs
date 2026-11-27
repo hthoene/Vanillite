@@ -2079,12 +2079,14 @@ impl Serverbound {
                 }
             }
             Sb::PlayerAction
+            | Sb::ClientCommand
             | Sb::SetJigsawBlock
             | Sb::SetStructureBlock
             | Sb::CookieResponse
             | Sb::CustomClickAction
             | Sb::SeenAdvancements => {
-                // Only identifiers were renamed (1.21.11) or actions appended.
+                // Only identifiers were renamed (1.21.11) or actions appended (`client_command`
+                // gained `request_gamerule_values` in 26.1).
                 out.extend_from_slice(r.take_rest());
             }
             _ => return Ok(None),
