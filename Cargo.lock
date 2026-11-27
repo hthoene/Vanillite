@@ -1593,6 +1593,7 @@ dependencies = [
  "vanillite-chunk",
  "vanillite-command",
  "vanillite-data",
+ "vanillite-nbt",
  "zip",
 ]
 

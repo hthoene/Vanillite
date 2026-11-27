@@ -1,9 +1,12 @@
 //! Builds the example plugin (`examples/hello-plugin`) as a real `cdylib` and runs it through
 //! the C ABI: validation and `load`, its command in a Brigadier tree with suggestions, the join
-//! event, the `chunk-generator` slot and a development reload that keeps its state.
+//! event with persistent data and the action bar, login, interaction and death events, a
+//! periodic background task, the `chunk-generator` slot and a development reload that keeps its
+//! state.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vanillite_base::ChunkPos;
@@ -12,9 +15,10 @@ use vanillite_chunk::slots::{
 };
 use vanillite_command::Dispatcher;
 use vanillite_data::block::BlockId;
+use vanillite_nbt::{Compound, Tag};
 use vanillite_plugin_host::{
-    Arg, ArgValue, BlockBox, PluginHost, Sender, ServerAccess, SetMode, Settings, Text,
-    WorldAccess, loader,
+    Arg, ArgValue, BlockBox, InteractTarget, NewText, PluginHost, Sender, ServerAccess, SetMode,
+    Settings, Text, WorldAccess, loader,
 };
 
 const PLAYER: u128 = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
@@ -22,11 +26,19 @@ const PLAYER: u128 = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
 #[derive(Default)]
 struct FakeServer {
     messages: Mutex<Vec<(u128, String)>>,
+    action_bars: Mutex<Vec<String>>,
+    online_calls: AtomicUsize,
 }
 
 impl ServerAccess for FakeServer {
     fn online_players(&self) -> Vec<u128> {
+        self.online_calls.fetch_add(1, Ordering::Relaxed);
         vec![PLAYER]
+    }
+    fn send_action_bar(&self, _: u128, text: Text<'_>) -> bool {
+        let (Text::Plain(s) | Text::Json(s)) = text;
+        self.action_bars.lock().unwrap().push(s.to_owned());
+        true
     }
     fn player_name(&self, player: u128) -> Option<String> {
         (player == PLAYER).then(|| "Alex".to_owned())
@@ -76,7 +88,11 @@ impl ServerAccess for FakeServer {
     }
 }
 
-struct FakeWorld;
+/// A world holding the player's persistent data.
+#[derive(Default)]
+struct FakeWorld {
+    data: Compound,
+}
 
 impl WorldAccess for FakeWorld {
     fn id(&self) -> u32 {
@@ -102,6 +118,18 @@ impl WorldAccess for FakeWorld {
     }
     fn set_blocks(&mut self, _: BlockBox, _: &[u32], _: SetMode) -> Result<usize, i32> {
         Ok(0)
+    }
+    fn entity_data(&self, entity: u128) -> Result<Option<&Compound>, i32> {
+        if entity != PLAYER {
+            return Err(vanillite_abi::status::NOT_FOUND);
+        }
+        Ok((!self.data.is_empty()).then_some(&self.data))
+    }
+    fn entity_data_mut(&mut self, entity: u128) -> Result<&mut Compound, i32> {
+        if entity != PLAYER {
+            return Err(vanillite_abi::status::NOT_FOUND);
+        }
+        Ok(&mut self.data)
     }
 }
 
@@ -181,7 +209,8 @@ fn example_plugin_runs_through_the_abi() {
     std::fs::copy(&library, package.join(library.file_name().unwrap())).unwrap();
     let config = std::fs::read_to_string(root().join("examples/hello-plugin/config.toml"))
         .unwrap()
-        .replace("enabled = false", "enabled = true");
+        .replace("enabled = false", "enabled = true")
+        .replace("refuse = \"\"", "refuse = \"Herobrine\"");
     std::fs::write(package.join("config.toml"), config).unwrap();
 
     let host = PluginHost::load(
@@ -207,7 +236,8 @@ fn example_plugin_runs_through_the_abi() {
     let (name_command, provider) = (name_node.command.unwrap(), name_node.suggests.unwrap());
 
     host.enable_all();
-    host.player_join(&mut FakeWorld, PLAYER, "Alex");
+    let mut overworld = FakeWorld::default();
+    host.player_join(&mut overworld, PLAYER, "Alex");
     let sender = Sender {
         player: Some(PLAYER),
         world: Some(0),
@@ -239,6 +269,65 @@ fn example_plugin_runs_through_the_abi() {
     );
     assert!(messages[1].contains("Hello, Alex!"), "{messages:?}");
     assert!(messages[2].contains("Hello, Steve!"), "{messages:?}");
+
+    // Persistent data: the join counter under the plugin's namespace, and the action bar.
+    host.player_join(&mut overworld, PLAYER, "Alex");
+    assert_eq!(overworld.data.get("hello:joins"), Some(&Tag::Int(2)));
+    assert_eq!(
+        *server.action_bars.lock().unwrap(),
+        ["Visit #1", "Visit #2"]
+    );
+
+    // Login: the configured name is refused with its message, others pass untouched.
+    let refused = host
+        .player_login(
+            7,
+            "Herobrine",
+            "127.0.0.1",
+            vanillite_abi::login_reason::ALLOWED,
+            "",
+        )
+        .expect("the example listens to logins");
+    assert!(refused.refused);
+    assert!(
+        matches!(&refused.message, Some(NewText::Json(m)) if m.contains("This name is reserved.")),
+        "{refused:?}"
+    );
+    let full = host
+        .player_login(
+            8,
+            "Steve",
+            "127.0.0.1",
+            vanillite_abi::login_reason::FULL,
+            "\"full\"",
+        )
+        .unwrap();
+    assert!(full.refused && full.message.is_none());
+
+    // Protection: fire starting is cancelled, other items are not; deaths keep the inventory.
+    let block = InteractTarget {
+        pos: [0, 64, 0],
+        face: 1,
+        state: "minecraft:stone",
+    };
+    assert!(!host.player_interact(0, PLAYER, 0, "minecraft:flint_and_steel", Some(block)));
+    assert!(host.player_interact(0, PLAYER, 0, "minecraft:stick", None));
+    let death = host
+        .player_death(0, PLAYER, "minecraft:fall", None, "\"Alex fell\"", false)
+        .expect("the example listens to deaths");
+    assert!(death.keep_inventory);
+    assert!(
+        matches!(&death.message, Some(NewText::Json(m)) if m.contains("Alex died and kept everything")),
+        "{death:?}"
+    );
+
+    // The periodic background task runs every 6000 ticks.
+    let before = server.online_calls.load(Ordering::Relaxed);
+    host.run_global_tasks(5999);
+    assert_eq!(server.online_calls.load(Ordering::Relaxed), before);
+    host.run_global_tasks(6000);
+    host.run_global_tasks(12000);
+    assert_eq!(server.online_calls.load(Ordering::Relaxed), before + 2);
 
     let (id, provider) = host
         .take_chunk_generator(|| Box::new(FlatGeneratorProvider))

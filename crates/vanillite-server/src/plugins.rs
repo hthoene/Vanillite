@@ -10,7 +10,8 @@ use vanillite_config::{Config, RuleSet};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_game::hooks::GameHooks;
 use vanillite_plugin_host::{
-    BlockBox, PluginHost, ServerAccess, SetMode, Settings, Text, WorldAccess,
+    BlockBox, InteractTarget, NewText, PluginHost, ServerAccess, SetMode, Settings, Text, Title,
+    WorldAccess,
 };
 use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::text::Component;
@@ -247,6 +248,120 @@ impl ServerAccess for Services {
             global.stop();
         }
     }
+
+    fn send_action_bar(&self, player: u128, text: Text<'_>) -> bool {
+        let Some(global) = self.global.upgrade() else {
+            return false;
+        };
+        let Some((sink, _)) = global.players.connection(Uuid(player)) else {
+            return false;
+        };
+        sink.send(
+            &vanillite_protocol::packets::play::clientbound::SetActionBarText {
+                text: component(text),
+            },
+        );
+        true
+    }
+
+    fn send_title(&self, player: u128, title: &Title<'_>) -> bool {
+        use vanillite_protocol::packets::play::clientbound::{
+            SetSubtitleText, SetTitleText, SetTitlesAnimation,
+        };
+        let Some(global) = self.global.upgrade() else {
+            return false;
+        };
+        let Some((sink, _)) = global.players.connection(Uuid(player)) else {
+            return false;
+        };
+        let [fade_in, stay, fade_out] = title.times;
+        sink.send(&SetTitlesAnimation {
+            fade_in,
+            stay,
+            fade_out,
+        });
+        if let Some(subtitle) = title.subtitle {
+            sink.send(&SetSubtitleText {
+                text: component(subtitle),
+            });
+        }
+        // The title shows the subtitle too: it is sent even when empty.
+        sink.send(&SetTitleText {
+            text: title.title.map_or_else(Component::empty, component),
+        });
+        true
+    }
+}
+
+/// A plugin's replacement text as a component.
+fn new_component(text: &NewText) -> Component {
+    match text {
+        NewText::Plain(s) => component(Text::Plain(s)),
+        NewText::Json(s) => component(Text::Json(s)),
+    }
+}
+
+/// The game mode as plugins number it.
+pub(crate) fn plugin_game_mode(mode: vanillite_config::GameMode) -> u32 {
+    use vanillite_abi::game_mode;
+    match mode {
+        vanillite_config::GameMode::Survival => game_mode::SURVIVAL,
+        vanillite_config::GameMode::Creative => game_mode::CREATIVE,
+        vanillite_config::GameMode::Adventure => game_mode::ADVENTURE,
+        vanillite_config::GameMode::Spectator => game_mode::SPECTATOR,
+    }
+}
+
+/// Asks the plugins whether a player's game mode may change; `true` when nobody objects.
+pub(crate) fn game_mode_change(
+    global: &Global,
+    world: u32,
+    player: u128,
+    from: vanillite_config::GameMode,
+    to: vanillite_config::GameMode,
+) -> bool {
+    !global
+        .plugins
+        .wants(vanillite_abi::event::PLAYER_GAME_MODE_CHANGE)
+        || global.plugins.game_mode_change(
+            world,
+            player,
+            plugin_game_mode(from),
+            plugin_game_mode(to),
+        )
+}
+
+/// The plugins' say on a login the server refused with `refusal` (or let in): the refusal
+/// that stands, `None` to let the player in.
+pub(crate) fn login(
+    global: &Global,
+    player: u128,
+    name: &str,
+    address: &str,
+    reason: u32,
+    refusal: Option<Component>,
+) -> Option<Component> {
+    let message = refusal
+        .as_ref()
+        .map(Component::to_json_string)
+        .unwrap_or_default();
+    let Some(outcome) = global
+        .plugins
+        .player_login(player, name, address, reason, &message)
+    else {
+        return refusal;
+    };
+    if !outcome.refused {
+        return None;
+    }
+    match outcome.message {
+        Some(text) => Some(new_component(&text)),
+        None => {
+            Some(refusal.unwrap_or_else(|| {
+                Component::translatable("multiplayer.disconnect.generic", vec![])
+            }))
+        }
+    }
 }
 
 /// A world lent to a plugin call by its owner.
@@ -287,6 +402,20 @@ impl WorldAccess for PluginWorld<'_> {
     fn has_entity(&self, entity: u128) -> bool {
         let entities = self.0.entities();
         crate::commands::find_player(entities, entity).is_some()
+    }
+
+    fn entity_data(&self, entity: u128) -> Result<Option<&vanillite_nbt::Compound>, i32> {
+        let entities = self.0.entities();
+        let id = any_entity(entities, entity).ok_or(vanillite_abi::status::NOT_FOUND)?;
+        Ok(entities.persistent_data(id))
+    }
+
+    fn entity_data_mut(&mut self, entity: u128) -> Result<&mut vanillite_nbt::Compound, i32> {
+        let entities = self.0.entities_mut();
+        let id = any_entity(entities, entity).ok_or(vanillite_abi::status::NOT_FOUND)?;
+        entities
+            .persistent_data_mut(id)
+            .ok_or(vanillite_abi::status::NOT_FOUND)
     }
 
     fn block_id(&self, [x, y, z]: [i32; 3]) -> Option<u32> {
@@ -333,6 +462,16 @@ impl WorldAccess for PluginWorld<'_> {
         }
         Ok(changed)
     }
+}
+
+/// An entity of a world by UUID: players by their index, other entities by a scan.
+fn any_entity(
+    entities: &vanillite_game::entities::Entities,
+    uuid: u128,
+) -> Option<vanillite_world::entity::EntityId> {
+    entities
+        .player_by_uuid(uuid)
+        .or_else(|| crate::commands::find_uuid(entities, uuid))
 }
 
 /// A block state id from a plugin, if it is one.
@@ -431,5 +570,71 @@ impl GameHooks for Hooks<'_> {
             pos,
             state,
         )
+    }
+
+    fn player_death(
+        &self,
+        player: u128,
+        damage_type: &str,
+        killer: Option<u128>,
+        death: &mut vanillite_game::hooks::Death,
+    ) {
+        if !self.host.wants(vanillite_abi::event::PLAYER_DEATH) {
+            return;
+        }
+        let message = death
+            .message
+            .as_ref()
+            .map(Component::to_json_string)
+            .unwrap_or_default();
+        let Some(outcome) = self.host.player_death(
+            self.world,
+            player,
+            damage_type,
+            killer,
+            &message,
+            death.keep_inventory,
+        ) else {
+            return;
+        };
+        death.keep_inventory = outcome.keep_inventory;
+        if let Some(text) = outcome.message {
+            let empty = match &text {
+                NewText::Plain(s) => s.is_empty(),
+                NewText::Json(s) => matches!(s.trim(), "" | "\"\""),
+            };
+            death.message = (!empty).then(|| new_component(&text));
+        }
+    }
+
+    fn entity_death(
+        &self,
+        entity: u128,
+        entity_type: &str,
+        damage_type: &str,
+        killer: Option<u128>,
+    ) {
+        self.host
+            .entity_death(self.world, entity, entity_type, damage_type, killer);
+    }
+
+    fn player_interact(
+        &self,
+        player: u128,
+        hand: u32,
+        item: &str,
+        block: Option<(BlockPos, u32, BlockState)>,
+    ) -> bool {
+        if !self.host.wants(vanillite_abi::event::PLAYER_INTERACT) {
+            return true;
+        }
+        let state = block.map(|(_, _, state)| state_text(state));
+        let target = block.map(|(pos, face, _)| InteractTarget {
+            pos: [pos.x, pos.y, pos.z],
+            face,
+            state: state.as_deref().unwrap_or(""),
+        });
+        self.host
+            .player_interact(self.world, player, hand, item, target)
     }
 }

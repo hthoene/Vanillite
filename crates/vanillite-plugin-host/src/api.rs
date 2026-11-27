@@ -11,7 +11,9 @@ use std::sync::{Arc, PoisonError};
 
 use vanillite_abi::{self as abi, Status, status};
 
-use crate::{BlockBox, Inner, Plugin, SetMode, Text, WorldAccess};
+use vanillite_nbt::Tag;
+
+use crate::{BlockBox, Inner, Plugin, SetMode, Text, Title, WorldAccess};
 
 /// The table every plugin gets in `load`.
 pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
@@ -52,16 +54,24 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     block_set_id,
     blocks_get,
     blocks_set,
+    player_send_action_bar,
+    player_send_title,
+    entity_data_get,
+    entity_data_set,
+    entity_data_remove,
+    entity_data_keys,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
-pub(crate) struct CallCtx<'w> {
+pub(crate) struct CallCtx<'w, 'p> {
     pub(crate) world: Option<&'w mut dyn WorldAccess>,
+    /// The plugin called.
+    pub(crate) plugin: &'p Plugin,
 }
 
-impl<'w> CallCtx<'w> {
-    pub(crate) fn new(world: Option<&'w mut dyn WorldAccess>) -> Self {
-        CallCtx { world }
+impl<'w, 'p> CallCtx<'w, 'p> {
+    pub(crate) fn new(world: Option<&'w mut dyn WorldAccess>, plugin: &'p Plugin) -> Self {
+        CallCtx { world, plugin }
     }
 
     /// The pointer handed to the plugin; valid while `self` is borrowed.
@@ -76,9 +86,9 @@ impl<'w> CallCtx<'w> {
 ///
 /// `raw` must be null or come from [`CallCtx::as_raw`] of a context that is still borrowed by
 /// the running callback.
-unsafe fn ctx<'a>(raw: *mut abi::Context) -> Option<&'a mut CallCtx<'a>> {
+unsafe fn ctx<'a>(raw: *mut abi::Context) -> Option<&'a mut CallCtx<'a, 'a>> {
     // SAFETY: guaranteed by the caller.
-    unsafe { raw.cast::<CallCtx<'a>>().as_mut() }
+    unsafe { raw.cast::<CallCtx<'a, 'a>>().as_mut() }
 }
 
 /// Reborrows an optional world for one call.
@@ -401,6 +411,57 @@ unsafe extern "C" fn player_set_tab_list(
             return status::INVALID_ARGUMENT;
         };
         if server!(inner).set_tab_list(player.to_u128(), header, footer) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn player_send_action_bar(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    message: abi::Str,
+    format: u32,
+) -> Status {
+    with(id, |inner, _| {
+        let Some(text) = text(message, format) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if server!(inner).send_action_bar(player.to_u128(), text) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn player_send_title(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    spec: *const abi::TitleSpec,
+) -> Status {
+    with(id, |inner, _| {
+        // SAFETY: the plugin passes a valid record or null.
+        let Some(spec) = (unsafe { spec.as_ref() }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if (spec.size as usize) < size_of::<abi::TitleSpec>() {
+            return status::INVALID_ARGUMENT;
+        }
+        let part = |s: abi::Str| (s.len > 0).then(|| text(s, spec.format));
+        let (Some(title), Some(subtitle)) = (
+            part(spec.title).map_or(Some(None), |t| t.map(Some)),
+            part(spec.subtitle).map_or(Some(None), |t| t.map(Some)),
+        ) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let title = Title {
+            title,
+            subtitle,
+            times: [spec.fade_in, spec.stay, spec.fade_out],
+        };
+        if server!(inner).send_title(player.to_u128(), &title) {
             status::OK
         } else {
             status::NOT_FOUND
@@ -877,4 +938,214 @@ pub(crate) unsafe extern "C" fn collect_bytes(state: *mut c_void, data: abi::Byt
         }
         status::OK
     });
+}
+
+/// The full persistent data key of a plugin's key: `namespace:path` as given, or the plugin's
+/// id as namespace. `None` for keys that are no resource location or too long.
+fn data_key(plugin: &Plugin, key: abi::Str) -> Option<String> {
+    // SAFETY: the plugin's string is valid for the call.
+    let key = unsafe { str_checked(key) }?;
+    let (namespace, path) = key.split_once(':').unwrap_or((plugin.id(), key));
+    let valid = |s: &str, slash: bool| {
+        !s.is_empty()
+            && s.bytes().all(|b| {
+                b.is_ascii_lowercase()
+                    || b.is_ascii_digit()
+                    || matches!(b, b'_' | b'-' | b'.')
+                    || (slash && b == b'/')
+            })
+    };
+    let full = format!("{namespace}:{path}");
+    (valid(namespace, false)
+        && valid(path, true)
+        && full.len() <= abi::data_limits::MAX_KEY as usize)
+        .then_some(full)
+}
+
+/// A persistent data value from its type and bytes.
+fn data_tag(kind: u32, bytes: &[u8]) -> Option<Tag> {
+    fn array<const N: usize, T>(bytes: &[u8], f: fn([u8; N]) -> T) -> Option<Vec<T>> {
+        let (chunks, rest) = bytes.as_chunks::<N>();
+        rest.is_empty()
+            .then(|| chunks.iter().map(|c| f(*c)).collect())
+    }
+    use abi::data_type as t;
+    Some(match kind {
+        t::BYTE => Tag::Byte(i8::from_le_bytes(bytes.try_into().ok()?)),
+        t::SHORT => Tag::Short(i16::from_le_bytes(bytes.try_into().ok()?)),
+        t::INT => Tag::Int(i32::from_le_bytes(bytes.try_into().ok()?)),
+        t::LONG => Tag::Long(i64::from_le_bytes(bytes.try_into().ok()?)),
+        t::FLOAT => Tag::Float(f32::from_le_bytes(bytes.try_into().ok()?)),
+        t::DOUBLE => Tag::Double(f64::from_le_bytes(bytes.try_into().ok()?)),
+        t::BYTE_ARRAY => Tag::ByteArray(array(bytes, i8::from_le_bytes)?),
+        t::STRING => Tag::String(std::str::from_utf8(bytes).ok()?.to_owned()),
+        t::INT_ARRAY => Tag::IntArray(array(bytes, i32::from_le_bytes)?),
+        t::LONG_ARRAY => Tag::LongArray(array(bytes, i64::from_le_bytes)?),
+        _ => return None,
+    })
+}
+
+/// The type and bytes of a persistent data value; `None` for lists and compounds (written
+/// by other servers), which plugins cannot read here.
+fn tag_data(tag: &Tag) -> Option<(u32, Vec<u8>)> {
+    use abi::data_type as t;
+    Some(match tag {
+        Tag::Byte(v) => (t::BYTE, v.to_le_bytes().to_vec()),
+        Tag::Short(v) => (t::SHORT, v.to_le_bytes().to_vec()),
+        Tag::Int(v) => (t::INT, v.to_le_bytes().to_vec()),
+        Tag::Long(v) => (t::LONG, v.to_le_bytes().to_vec()),
+        Tag::Float(v) => (t::FLOAT, v.to_le_bytes().to_vec()),
+        Tag::Double(v) => (t::DOUBLE, v.to_le_bytes().to_vec()),
+        Tag::ByteArray(v) => (
+            t::BYTE_ARRAY,
+            v.iter().flat_map(|b| b.to_le_bytes()).collect(),
+        ),
+        Tag::String(v) => (t::STRING, v.as_bytes().to_vec()),
+        Tag::IntArray(v) => (
+            t::INT_ARRAY,
+            v.iter().flat_map(|b| b.to_le_bytes()).collect(),
+        ),
+        Tag::LongArray(v) => (
+            t::LONG_ARRAY,
+            v.iter().flat_map(|b| b.to_le_bytes()).collect(),
+        ),
+        Tag::List(_) | Tag::Compound(_) => return None,
+    })
+}
+
+/// Hands bytes to a plugin's sink.
+fn write_sink(sink: *const abi::ByteSink, data: &[u8]) -> Status {
+    // SAFETY: the plugin passes a valid sink record or null.
+    let Some(sink) = (unsafe { sink.as_ref() }) else {
+        return status::INVALID_ARGUMENT;
+    };
+    // SAFETY: the plugin's sink copies the bytes before it returns.
+    unsafe { (sink.write)(sink.state, abi::Bytes::new(data)) };
+    status::OK
+}
+
+/// The full data key of a context call's plugin.
+fn ctx_key(raw: *mut abi::Context, key: abi::Str) -> Option<String> {
+    // SAFETY: the plugin passes the context of the running callback.
+    data_key(unsafe { ctx(raw) }?.plugin, key)
+}
+
+unsafe extern "C" fn entity_data_get(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    key: abi::Str,
+    kind: *mut u32,
+    sink: *const abi::ByteSink,
+) -> Status {
+    guard(|| {
+        let Some(key) = ctx_key(raw, key) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let w = match owned(raw, world) {
+            Ok(w) => w,
+            Err(s) => return s,
+        };
+        let data = match w.entity_data(entity.to_u128()) {
+            Ok(data) => data,
+            Err(s) => return s,
+        };
+        let Some(tag) = data.and_then(|d| d.get(&key)) else {
+            return status::NOT_FOUND;
+        };
+        let Some((t, bytes)) = tag_data(tag) else {
+            return status::UNSUPPORTED;
+        };
+        match write(kind, t) {
+            status::OK => write_sink(sink, &bytes),
+            s => s,
+        }
+    })
+}
+
+unsafe extern "C" fn entity_data_set(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    key: abi::Str,
+    kind: u32,
+    value: abi::Bytes,
+) -> Status {
+    guard(|| {
+        let Some(key) = ctx_key(raw, key) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if value.len > abi::data_limits::MAX_VALUE as usize
+            || (value.len > 0 && value.ptr.is_null())
+        {
+            return status::INVALID_ARGUMENT;
+        }
+        let bytes = if value.len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: the plugin passes `len` readable bytes.
+            unsafe { std::slice::from_raw_parts(value.ptr, value.len) }
+        };
+        let Some(tag) = data_tag(kind, bytes) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let w = match owned(raw, world) {
+            Ok(w) => w,
+            Err(s) => return s,
+        };
+        let data = match w.entity_data_mut(entity.to_u128()) {
+            Ok(data) => data,
+            Err(s) => return s,
+        };
+        if data.get(&key).is_none() && data.len() >= abi::data_limits::MAX_KEYS as usize {
+            return status::INVALID_ARGUMENT;
+        }
+        data.insert(key, tag);
+        status::OK
+    })
+}
+
+unsafe extern "C" fn entity_data_remove(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    key: abi::Str,
+) -> Status {
+    guard(|| {
+        let Some(key) = ctx_key(raw, key) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let w = match owned(raw, world) {
+            Ok(w) => w,
+            Err(s) => return s,
+        };
+        match w.entity_data_mut(entity.to_u128()) {
+            Ok(data) => {
+                data.remove(&key);
+                status::OK
+            }
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn entity_data_keys(
+    raw: *mut abi::Context,
+    world: u32,
+    entity: abi::Uuid,
+    sink: *const abi::ByteSink,
+) -> Status {
+    guard(|| {
+        let w = match owned(raw, world) {
+            Ok(w) => w,
+            Err(s) => return s,
+        };
+        let keys = match w.entity_data(entity.to_u128()) {
+            Ok(data) => data
+                .map(|d| d.iter().map(|(k, _)| k).collect::<Vec<_>>().join("\n"))
+                .unwrap_or_default(),
+            Err(s) => return s,
+        };
+        write_sink(sink, keys.as_bytes())
+    })
 }

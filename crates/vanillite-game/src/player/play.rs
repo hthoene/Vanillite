@@ -306,6 +306,23 @@ fn wire(pos: BlockPos) -> WirePos {
 }
 
 /// `ServerPlayer.sendSpawnProtectionMessage`.
+/// A hand as plugins number it (0 main, 1 off).
+fn hand_index(hand: Hand) -> u32 {
+    match hand {
+        Hand::MainHand => 0,
+        Hand::OffHand => 1,
+    }
+}
+
+/// The item id of the stack in a hand, e.g. `minecraft:stick`.
+fn held_name(ctx: &PlayContext<'_>, hand: Hand) -> &'static str {
+    let stack = match hand {
+        Hand::MainHand => ctx.inventory.selected_item(),
+        Hand::OffHand => &ctx.inventory.offhand,
+    };
+    item::item_id(stack).name()
+}
+
 fn spawn_protection_message(sink: &dyn PacketSink, pos: BlockPos) {
     use vanillite_protocol::text::{Arg, Color, Component, NamedColor};
     sink.send(
@@ -927,6 +944,21 @@ impl Digging {
             } else if !ctx.level.within_border(pos) {
                 // `mayInteract` refuses: Vanilla answers with the build limit message.
                 build_limit_message(sink, true, max_y);
+            } else if !ctx.hooks.player_interact(
+                ctx.actor.uuid,
+                hand_index(p.hand),
+                held_name(ctx, p.hand),
+                Some((
+                    pos,
+                    Direction::ALL
+                        .iter()
+                        .position(|&d| d == face)
+                        .and_then(|i| u32::try_from(i).ok())
+                        .unwrap_or(0),
+                    ctx.level.block(pos),
+                )),
+            ) {
+                // A plugin cancelled the use: the block updates below correct the client.
             } else if self.use_item_on_block(ctx, p.hand, pos, face, hit, p.inside, sink) {
                 // Vanilla 26.3 swings twice for a successful use (two branches of
                 // `handleUseItemOn` both call `swingAndResetAttackStrength`).
@@ -1637,6 +1669,13 @@ impl Digging {
         self.ack(sequence.max(0));
         if ctx.actor.game_mode == GameMode::Spectator {
             return false;
+        }
+        if !ctx
+            .hooks
+            .player_interact(ctx.actor.uuid, hand_index(hand), held_name(ctx, hand), None)
+        {
+            // A plugin cancelled the use: nothing uses the item.
+            return true;
         }
         let y_rot = vanillite_base::math::wrap_degrees_f(y_rot);
         let x_rot = vanillite_base::math::wrap_degrees_f(x_rot);

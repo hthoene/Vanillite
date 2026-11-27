@@ -5,6 +5,20 @@
 join = "Welcome to Vanillite, {name}! Try /hello."
 # The answer of /hello; {name} is the greeted name.
 hello = "Hello, {name}!"
+# Shown above the hotbar on every join; {count} is the player's number of joins, kept in its
+# persistent data (saved with the player).
+visit = "Visit #{count}"
+
+[login]
+# A player name that is refused at login (empty for none).
+refuse = ""
+# The message such a player sees.
+message = "This name is reserved."
+
+[protect]
+# No fire starting with flint and steel or fire charges, and players keep their inventory on
+# death with a friendlier death message.
+enabled = false
 
 [generator]
 # Replace the world generator (new chunks only) with flat stone and grass layers.

@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use vanillite_abi::{self as abi, Status, status};
 
 use crate::ffi::{self, Host, guard, read_string};
-use crate::types::{BlockBox, BlockPos, Error, NO_BLOCK, SetMode, Text, Uuid, Vec3, World};
+use crate::types::{
+    BlockBox, BlockPos, DataValue, Error, NO_BLOCK, SetMode, Text, Uuid, Vec3, World,
+};
 
 /// Thread-safe access to the server. Cheap to copy; usable from any thread after `load`.
 #[derive(Clone, Copy, Debug)]
@@ -184,6 +186,61 @@ impl Server {
         })
     }
 
+    /// Shows a text above a player's hotbar. Since ABI 1.4.
+    pub fn send_action_bar(&self, player: Uuid, text: impl Into<Text>) -> Result<(), Error> {
+        let text = text.into();
+        let (s, format) = text.parts();
+        // SAFETY: valid host function and string.
+        Error::check(unsafe {
+            (self.api().player_send_action_bar)(
+                self.host.id,
+                player.to_abi(),
+                abi::Str::new(s),
+                format,
+            )
+        })
+    }
+
+    /// Shows a title and a subtitle (empty text for none) with fade-in, stay and fade-out
+    /// times in ticks (Vanilla's defaults are 10, 70 and 20). Since ABI 1.4.
+    pub fn send_title(
+        &self,
+        player: Uuid,
+        title: impl Into<Text>,
+        subtitle: impl Into<Text>,
+        [fade_in, stay, fade_out]: [i32; 3],
+    ) -> Result<(), Error> {
+        let (mut title, mut subtitle) = (title.into(), subtitle.into());
+        let empty = |t: &Text| t.parts().0.is_empty();
+        // One format for both: plain text becomes JSON when the other one is JSON.
+        if matches!(title, Text::Json(_)) != matches!(subtitle, Text::Json(_)) {
+            if !empty(&title) {
+                title = Text::Json(title.to_json());
+            }
+            if !empty(&subtitle) {
+                subtitle = Text::Json(subtitle.to_json());
+            }
+        }
+        let format = if matches!(title, Text::Json(_)) || matches!(subtitle, Text::Json(_)) {
+            abi::text_format::JSON
+        } else {
+            abi::text_format::PLAIN
+        };
+        let spec = abi::TitleSpec {
+            size: abi::size_of::<abi::TitleSpec>(),
+            title: abi::Str::new(title.parts().0),
+            subtitle: abi::Str::new(subtitle.parts().0),
+            format,
+            fade_in,
+            stay,
+            fade_out,
+        };
+        // SAFETY: valid host function and record.
+        Error::check(unsafe {
+            (self.api().player_send_title)(self.host.id, player.to_abi(), &spec)
+        })
+    }
+
     /// Whether a player has a permission node. Without a permission plugin, operators have
     /// every node and other players none.
     pub fn has_permission(&self, player: Uuid, node: &str) -> bool {
@@ -316,6 +373,31 @@ impl Server {
         )
     }
 
+    /// Runs `task` on a background thread after `delay` ticks, then every `period` ticks
+    /// (`period` 0: once), until it is cancelled. Runs never overlap. Since ABI 1.4.
+    pub fn run_async_timer(
+        &self,
+        delay: u64,
+        period: u64,
+        task: impl FnMut() + Send + 'static,
+    ) -> Result<TaskId, Error> {
+        let mut task = task;
+        let task: Box<Task> = Box::new(Box::new(move |_: &mut Ctx<'_>| task()));
+        self.submit(
+            abi::Owner {
+                kind: abi::owner::BACKGROUND,
+                world: abi::limits::NO_WORLD,
+                pos: BlockPos::default().to_abi(),
+                entity: abi::Uuid::NIL,
+            },
+            delay,
+            period,
+            run_task,
+            Box::into_raw(task).cast(),
+            drop_task,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -384,6 +466,33 @@ unsafe extern "C" fn drop_once(user: *mut c_void) {
         drop(unsafe { Box::from_raw(user.cast::<Option<Box<dyn FnOnce() + Send>>>()) });
         status::OK
     });
+}
+
+/// A [`abi::ByteSinkFn`] appending to the `Vec<u8>` behind `state`.
+unsafe extern "C" fn collect(state: *mut c_void, data: abi::Bytes) {
+    let _ = guard(|| {
+        // SAFETY: `state` is the caller's `Vec<u8>` for the call.
+        if let Some(out) = unsafe { state.cast::<Vec<u8>>().as_mut() }
+            && data.len > 0
+            && !data.ptr.is_null()
+        {
+            // SAFETY: the host passes bytes valid for the call.
+            out.extend_from_slice(unsafe { std::slice::from_raw_parts(data.ptr, data.len) });
+        }
+        status::OK
+    });
+}
+
+/// Calls `f` with a sink collecting into a buffer; returns the bytes.
+fn collect_with(f: impl FnOnce(*const abi::ByteSink) -> Status) -> Result<Vec<u8>, Error> {
+    let mut out: Vec<u8> = Vec::new();
+    let sink = abi::ByteSink {
+        size: abi::size_of::<abi::ByteSink>(),
+        state: std::ptr::from_mut(&mut out).cast(),
+        write: collect,
+    };
+    Error::check(f(&sink))?;
+    Ok(out)
 }
 
 /// The context of one call: what its owner may touch. It cannot be kept beyond the call.
@@ -523,5 +632,90 @@ impl Ctx<'_> {
         // SAFETY: valid host function, context of this call and output.
         Error::check(unsafe { (self.api().player_position)(self.raw, player.to_abi(), &mut out) })?;
         Ok(Vec3::from_abi(out))
+    }
+
+    /// A persistent data value of an entity (or player) of the owned world; `None` when it
+    /// has none under `key`. Keys are `namespace:path`; a key without a namespace uses the
+    /// plugin's id. Values are saved with the entity (`BukkitValues`, as Paper does). Since
+    /// ABI 1.4.
+    pub fn entity_data(
+        &mut self,
+        world: World,
+        entity: Uuid,
+        key: &str,
+    ) -> Result<Option<DataValue>, Error> {
+        let (api, raw) = (self.api(), self.raw);
+        let mut kind = 0;
+        // SAFETY: valid host function, context of this call, key, output and sink.
+        let bytes = collect_with(|sink| unsafe {
+            (api.entity_data_get)(
+                raw,
+                world.0,
+                entity.to_abi(),
+                abi::Str::new(key),
+                &mut kind,
+                sink,
+            )
+        });
+        match bytes {
+            Ok(bytes) => Ok(Some(
+                DataValue::decode(kind, &bytes).ok_or(Error::InvalidArgument)?,
+            )),
+            Err(Error::NotFound) if self.has_entity(world, entity) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether the entity is in the owned world (it answers an empty key list).
+    fn has_entity(&mut self, world: World, entity: Uuid) -> bool {
+        self.entity_data_keys(world, entity).is_ok()
+    }
+
+    /// Sets a persistent data value of an entity (or player) of the owned world (at most
+    /// 64 KiB, at most 256 keys per entity). Since ABI 1.4.
+    pub fn set_entity_data(
+        &mut self,
+        world: World,
+        entity: Uuid,
+        key: &str,
+        value: &DataValue,
+    ) -> Result<(), Error> {
+        let (kind, bytes) = value.encode();
+        // SAFETY: valid host function, context of this call, key and bytes.
+        Error::check(unsafe {
+            (self.api().entity_data_set)(
+                self.raw,
+                world.0,
+                entity.to_abi(),
+                abi::Str::new(key),
+                kind,
+                abi::Bytes::new(&bytes),
+            )
+        })
+    }
+
+    /// Removes a persistent data value of an entity of the owned world. Since ABI 1.4.
+    pub fn remove_entity_data(
+        &mut self,
+        world: World,
+        entity: Uuid,
+        key: &str,
+    ) -> Result<(), Error> {
+        // SAFETY: valid host function, context of this call and key.
+        Error::check(unsafe {
+            (self.api().entity_data_remove)(self.raw, world.0, entity.to_abi(), abi::Str::new(key))
+        })
+    }
+
+    /// The persistent data keys of an entity of the owned world (all plugins' keys, with
+    /// their namespaces). Since ABI 1.4.
+    pub fn entity_data_keys(&mut self, world: World, entity: Uuid) -> Result<Vec<String>, Error> {
+        let (api, raw) = (self.api(), self.raw);
+        // SAFETY: valid host function, context of this call and sink.
+        let bytes = collect_with(|sink| unsafe {
+            (api.entity_data_keys)(raw, world.0, entity.to_abi(), sink)
+        })?;
+        let text = String::from_utf8(bytes).map_err(|_| Error::InvalidArgument)?;
+        Ok(text.lines().map(str::to_owned).collect())
     }
 }
