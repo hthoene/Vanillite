@@ -1125,6 +1125,7 @@ impl Connection {
             inventory,
             drops,
             xp,
+            random,
             hooks,
             ..
         } = play;
@@ -1133,7 +1134,7 @@ impl Connection {
             return;
         };
         if actor.game_mode == vanillite_config::GameMode::Spectator {
-            crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+            crate::menu::container::with_view(inventory, level, actor.pos, None, None, |view| {
                 crate::menu::send_all(view, sink);
             });
             return;
@@ -1148,7 +1149,7 @@ impl Connection {
         let ctx = ClickContext {
             infinite: actor.game_mode == vanillite_config::GameMode::Creative,
         };
-        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
+        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), random.as_deref_mut(), |view| {
             if !crate::menu::is_valid_slot_index(view, p.slot) {
                 log::debug!("A player clicked invalid slot index {}", p.slot);
                 return;
@@ -1255,6 +1256,7 @@ impl Connection {
                 inventory,
                 drops,
                 xp,
+                random,
                 ..
             } = play;
             let Some(level) = level.level_mut() else {
@@ -1272,6 +1274,7 @@ impl Connection {
                 level,
                 actor.pos,
                 xp.as_deref_mut(),
+                random.as_deref_mut(),
                 |view| {
                     let (grid, matches) = match (view.menu.kind, entry.recipe) {
                         (MenuKind::Crafting, RecipeRef::Crafting(index)) => {
@@ -1343,6 +1346,7 @@ impl Connection {
             level,
             inventory,
             xp,
+            random,
             drops,
             ..
         } = play;
@@ -1357,7 +1361,7 @@ impl Connection {
             return;
         }
         let may_build = actor.game_mode != vanillite_config::GameMode::Adventure;
-        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
+        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), random.as_deref_mut(), |view| {
             view.menu.may_build = may_build;
             if view.button(button, drops) {
                 crate::menu::broadcast_changes(view, sink);
@@ -1389,7 +1393,7 @@ impl Connection {
         let Some(level) = level.level_mut() else {
             return;
         };
-        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+        crate::menu::container::with_view(inventory, level, actor.pos, None, None, |view| {
             view.crafter_slot_state(slot, enabled);
         });
     }
@@ -1422,7 +1426,7 @@ impl Connection {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
-        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+        crate::menu::container::with_view(inventory, level, actor.pos, None, None, |view| {
             view.update_beacon(primary, secondary);
         });
     }
@@ -1451,7 +1455,7 @@ impl Connection {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
-        crate::menu::container::with_view(inventory, level, actor.pos, None, |view| {
+        crate::menu::container::with_view(inventory, level, actor.pos, None, None, |view| {
             view.merchant_select(item);
             view.flush_result_updates(sink);
             crate::menu::broadcast_changes(view, sink);
@@ -1465,6 +1469,7 @@ impl Connection {
             level,
             inventory,
             xp,
+            random,
             ..
         } = play;
         let Some(level) = level.level_mut() else {
@@ -1484,7 +1489,7 @@ impl Connection {
             log::debug!("A player interacted with an invalid menu");
             return;
         }
-        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), |view| {
+        crate::menu::container::with_view(inventory, level, actor.pos, xp.as_deref_mut(), random.as_deref_mut(), |view| {
             view.menu.state.creative = actor.game_mode == vanillite_config::GameMode::Creative;
             view.rename(name);
         });
@@ -1565,7 +1570,7 @@ impl Connection {
             let Some(level) = play.level.level_mut() else {
                 return;
             };
-            crate::menu::container::with_view(play.inventory, level, pos, None, |view| {
+            crate::menu::container::with_view(play.inventory, level, pos, None, None, |view| {
                 use crate::menu::MenuSlots;
                 (slot < view.slot_count()).then(|| view.item(slot).clone())
             })

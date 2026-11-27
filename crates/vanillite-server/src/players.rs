@@ -831,6 +831,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    random: Some(&mut player.survival.random),
                     food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
@@ -1190,6 +1191,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    random: Some(&mut player.survival.random),
                     food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
@@ -1326,6 +1328,7 @@ impl WorldPlayers {
                     level,
                     actor.pos,
                     Some(&mut player.survival.xp),
+                    Some(&mut player.survival.random),
                     |view| {
                         view.flush_result_updates(sink.as_ref());
                         vanillite_game::menu::broadcast_changes(view, sink.as_ref());

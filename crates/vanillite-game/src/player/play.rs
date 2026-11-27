@@ -229,6 +229,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's own random (`Entity.random`; `None` in tests: the level random).
+    pub random: Option<&'a mut vanillite_base::random::LegacyRandom>,
     /// The player's food (`None` in tests).
     pub food: Option<&'a mut crate::survival::food::FoodData>,
     /// The player's recipe book (`None` in tests).
