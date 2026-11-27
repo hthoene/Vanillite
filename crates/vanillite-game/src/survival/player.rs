@@ -243,6 +243,9 @@ pub struct Survival {
     /// `moveDist` and `nextStep`: when the next step makes a sound and a vibration.
     pub move_dist: f32,
     pub next_step: f32,
+    /// `crystalSoundIntensity` and `lastCrystalSoundPlayTick` (the amethyst chime of steps).
+    pub crystal_intensity: f32,
+    pub last_crystal_tick: i32,
     /// Game events of the player's moves (`STEP`, `SWIM`, `HIT_GROUND`) for the world to
     /// post: event, position and the affected block.
     pub game_events: Vec<(u16, Vec3, Option<vanillite_data::block::BlockState>)>,
@@ -364,6 +367,8 @@ impl Default for Survival {
             tracking: crate::advancements::tracking::Tracking::default(),
             move_dist: 0.0,
             next_step: 1.0,
+            crystal_intensity: 0.0,
+            last_crystal_tick: 0,
             game_events: Vec::new(),
             world_actions: Vec::new(),
             ticks_frozen: 0,
@@ -2519,20 +2524,22 @@ pub fn on_move(
         reset_fall_distance(player);
     }
     if player.game_mode != GameMode::Spectator && !(mv.on_ground && crouching) {
-        movement_emission(entity, player, env, mv, crouching);
+        let flying = player.survival.flying;
+        movement_emission(entity, player, env, mv, crouching, !flying);
     }
     update_climbable(entity, player, env);
     movement_statistics(player, entity, env, mv);
 }
 
-/// `Entity.applyMovementEmissionAndPlaySound` for a player's move: the `STEP` and `SWIM`
-/// game events (the step sounds are the client's own for players).
+/// `Entity.applyMovementEmissionAndPlaySound` for a player's move: the step and swim sounds
+/// for the others (`sounds`: not while flying) and the `STEP` and `SWIM` game events.
 fn movement_emission(
     entity: &EntityMut<'_>,
     player: &mut PlayerData,
-    env: &Env<'_>,
+    env: &mut Env<'_>,
     mv: MoveRecord,
     crouching: bool,
+    sounds: bool,
 ) {
     let delta = mv.to - mv.from;
     #[allow(clippy::cast_possible_truncation)]
@@ -2582,15 +2589,140 @@ fn movement_emission(
     };
     let only_effect = supporting_pos == effect_pos;
     let mut produced = step(effect_pos, only_effect, &mut s.game_events);
+    let effect_stepped = produced;
     if !only_effect {
         produced |= step(supporting_pos, true, &mut s.game_events);
     }
+    let me = entity.as_ref();
+    let (id, velocity) = (me.id(), me.velocity());
     if produced {
         s.next_step = next_step(s.move_dist);
     } else if s.fluids.in_water() {
         s.next_step = next_step(s.move_dist);
-        s.game_events
+        if sounds {
+            player_swim_sound(player, env, id, pos, velocity);
+        }
+        player
+            .survival
+            .game_events
             .push((crate::level::game_event::events().swim, pos, None));
+    }
+    if effect_stepped
+        && sounds
+        && let Some(on_state) = state(effect_pos)
+    {
+        player_walking_step_sound(player, env, id, pos, velocity, effect_pos, on_state);
+    }
+}
+
+/// `Player.playSound`: heard by everybody but the player.
+fn step_sound_event(
+    env: &mut Env<'_>,
+    id: EntityId,
+    pos: Vec3,
+    sound: vanillite_protocol::packets::play::clientbound::SoundEvent,
+    volume: f32,
+    pitch: f32,
+) {
+    let seed = super::sound_seed();
+    super::play_sound_event(
+        env.out,
+        Some(id),
+        pos,
+        sound,
+        SoundSource::Players,
+        volume,
+        pitch,
+        seed,
+    );
+}
+
+/// `Entity.playStepSound` / `playMuffledStepSound` of a block's sound type.
+fn block_step_sound(
+    env: &mut Env<'_>,
+    id: EntityId,
+    pos: Vec3,
+    state: vanillite_data::block::BlockState,
+    muffled: bool,
+) {
+    let st = state.block().sound();
+    let sound =
+        vanillite_protocol::packets::play::clientbound::SoundEvent(i32::from(st.step_sound));
+    if muffled {
+        step_sound_event(env, id, pos, sound, st.volume * 0.05, st.pitch * 0.8);
+    } else {
+        step_sound_event(env, id, pos, sound, st.volume * 0.15, st.pitch);
+    }
+}
+
+/// `Entity.waterSwimSound` of a player (`entity.player.swim`).
+fn player_swim_sound(player: &mut PlayerData, env: &mut Env<'_>, id: EntityId, pos: Vec3, v: Vec3) {
+    let point_two = f64::from(0.2_f32);
+    #[allow(clippy::cast_possible_truncation)]
+    let volume =
+        ((v.x * v.x * point_two + v.y * v.y + v.z * v.z * point_two).sqrt() as f32 * 0.35).min(1.0);
+    let r = &mut player.survival.random;
+    let pitch = 1.0 + (r.next_float() - r.next_float()) * 0.4;
+    step_sound_event(
+        env,
+        id,
+        pos,
+        super::sound_event("minecraft:entity.player.swim"),
+        volume,
+        pitch,
+    );
+}
+
+/// `Entity.walkingStepSound` of a player: `Player.playStepSound` (in water the swim sound and
+/// a muffled step; else the block above for carpets and snow, combined with the muffled block
+/// below for `#combination_step_sound_blocks`), then the amethyst chime.
+#[allow(clippy::too_many_arguments)]
+fn player_walking_step_sound(
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    id: EntityId,
+    pos: Vec3,
+    velocity: Vec3,
+    on_pos: BlockPos,
+    on_state: vanillite_data::block::BlockState,
+) {
+    use crate::mob::spawn::in_block_tag;
+    if player.survival.fluids.in_water() {
+        player_swim_sound(player, env, id, pos, velocity);
+        block_step_sound(env, id, pos, on_state, true);
+    } else {
+        let above_pos = BlockPos::new(on_pos.x, on_pos.y + 1, on_pos.z);
+        let above = env.blocks.block_state(above_pos);
+        let combination =
+            above.is_some_and(|a| in_block_tag(a, "minecraft:combination_step_sound_blocks"));
+        let inside = above.is_some_and(|a| in_block_tag(a, "minecraft:inside_step_sound_blocks"));
+        match above {
+            Some(a) if combination => {
+                block_step_sound(env, id, pos, a, false);
+                block_step_sound(env, id, pos, on_state, true);
+            }
+            Some(a) if inside => block_step_sound(env, id, pos, a, false),
+            _ => block_step_sound(env, id, pos, on_state, false),
+        }
+    }
+    let s = &mut player.survival;
+    if s.tick_count >= s.last_crystal_tick.saturating_add(20)
+        && in_block_tag(on_state, "minecraft:crystal_sound_blocks")
+    {
+        #[allow(clippy::cast_possible_truncation)]
+        let decay = 0.997_f64.powi(s.tick_count - s.last_crystal_tick) as f32;
+        s.crystal_intensity = (s.crystal_intensity * decay + 0.07).min(1.0);
+        let pitch = 0.5 + s.crystal_intensity * s.random.next_float() * 1.2;
+        let volume = 0.1 + s.crystal_intensity * 1.2;
+        s.last_crystal_tick = s.tick_count;
+        step_sound_event(
+            env,
+            id,
+            pos,
+            super::sound_event("minecraft:block.amethyst_block.chime"),
+            volume,
+            pitch,
+        );
     }
 }
 
@@ -2767,7 +2899,18 @@ fn cause_fall_damage(
             "minecraft:entity.player.small_fall"
         };
         player_sound(env, id, pos, sound);
-        // TODO(block sounds): `playBlockFallSound` needs the block sound types.
+        // `playBlockFallSound`: the block 0.2 below the feet.
+        if let Some(st) = env.blocks.block_state(BlockPos::new(
+            vanillite_base::math::floor(pos.x),
+            vanillite_base::math::floor(pos.y - f64::from(0.2_f32)),
+            vanillite_base::math::floor(pos.z),
+        )) && !st.is_air()
+        {
+            let t = st.block().sound();
+            let sound =
+                vanillite_protocol::packets::play::clientbound::SoundEvent(i32::from(t.fall_sound));
+            step_sound_event(env, id, pos, sound, t.volume * 0.5, t.pitch * 0.75);
+        }
         player.survival.impulse_impact = None;
         player.survival.impulse_grace = 0;
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
@@ -3283,7 +3426,8 @@ fn simulate_move(
             moved_upwards: false,
             accepted: true,
         };
-        movement_emission(entity, player, env, mv, crouching);
+        let flying = player.survival.flying;
+        movement_emission(entity, player, env, mv, crouching, !flying);
     }
     // `getBlockSpeedFactor`.
     let here = env

@@ -257,6 +257,11 @@ pub struct MobData {
     /// `flyDist` and `nextFlap` (chickens and parrots flap when the flight passes it).
     pub fly_dist: f32,
     pub next_flap: f32,
+    /// `crystalSoundIntensity` and `lastCrystalSoundPlayTick` (the amethyst chime of steps).
+    pub crystal_intensity: f32,
+    pub last_crystal_tick: i32,
+    /// `AbstractHorse.gallopSoundCounter`.
+    pub gallop_counter: i32,
     /// The state of bosses and the other kinds with their own machinery.
     pub boss: boss::Ext,
     /// The last world tick the mob counts as active for `performance.activation-range` (in
@@ -383,6 +388,9 @@ impl MobData {
             next_step: 1.0,
             fly_dist: 0.0,
             next_flap: 1.0,
+            crystal_intensity: 0.0,
+            last_crystal_tick: 0,
+            gallop_counter: 0,
             boss: boss::new_ext(kind),
             active_until: 0,
         };

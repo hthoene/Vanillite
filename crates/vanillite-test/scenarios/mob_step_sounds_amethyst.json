@@ -1,0 +1,18 @@
+{
+  "description": "Entity.walkingStepSound of mobs: the step sound of each kind and, on #crystal_sound_blocks, the amethyst chime at most once a second, whose pitch draws from the mob's random (playAmethystStepSound). Pigs, a sheep and a cow wander on an amethyst floor; one pig on stone draws nothing extra.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [[0, -61, 0], [15, -58, 15]],
+  "ticks": 300,
+  "setup": [
+    {"op": "fill", "from": [0, -61, 0], "to": [15, -61, 15], "block": "minecraft:amethyst_block"},
+    {"op": "fill", "from": [0, -61, 12], "to": [15, -61, 15], "block": "minecraft:stone"},
+    {"op": "fill", "from": [0, -60, 11], "to": [15, -59, 11], "block": "minecraft:glass"}
+  ],
+  "entities": [
+    {"name": "pig", "type": "minecraft:pig", "pos": [4.5, -60.0, 4.5], "seed": 21, "finalize": false},
+    {"name": "sheep", "type": "minecraft:sheep", "pos": [9.5, -60.0, 4.5], "seed": 22, "finalize": false},
+    {"name": "cow", "type": "minecraft:cow", "pos": [7.5, -60.0, 8.5], "seed": 23, "finalize": false},
+    {"name": "stone_pig", "type": "minecraft:pig", "pos": [7.5, -60.0, 13.5], "seed": 24, "finalize": false}
+  ]
+}
