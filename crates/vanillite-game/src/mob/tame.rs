@@ -1015,15 +1015,19 @@ pub fn tick_leashes(
     env: &mut Env<'_>,
     discarded: &mut Vec<EntityId>,
 ) {
-    // Leashes read from NBT find their holder.
-    let pending: Vec<(EntityId, super::LeashRef)> = ents
+    // `restoreLeashFromSave`: leashes read from NBT find their holder (any entity of the
+    // world, or the knot at the fence); after 100 ticks without one the lead drops.
+    let pending: Vec<(EntityId, super::LeashRef, i32)> = ents
         .mobs
         .iter()
-        .filter_map(|(id, m)| m.pending_leash.map(|l| (id, l)))
+        .filter_map(|(id, m)| m.pending_leash.map(|l| (id, l, m.tick_count)))
         .collect();
-    for (id, l) in pending {
+    for (id, l, tick_count) in pending {
         let holder = match l {
-            super::LeashRef::Entity(uuid) => ents.player_by_uuid(uuid),
+            super::LeashRef::Entity(uuid) => ents
+                .player_by_uuid(uuid)
+                .or_else(|| ents.store.by_uuid(uuid))
+                .filter(|&h| h != id),
             super::LeashRef::Knot(pos) => {
                 if level.is_loaded(pos) && is_knot_block(level.block(pos)) {
                     let uuid = crate::mob::new_entity_uuid();
@@ -1035,6 +1039,25 @@ pub fn tick_leashes(
         };
         if let Some(h) = holder {
             set_leashed_to(ents, env, id, h);
+        } else if matches!(l, super::LeashRef::Entity(_)) && tick_count > 100 {
+            if let Some(m) = ents.mob_mut(id) {
+                m.pending_leash = None;
+            }
+            // `spawnAtLocation(Items.LEAD)`.
+            if let Some(pos) = ents.store.get(id).map(|e| e.pos())
+                && let Some(lead) = vanillite_data::registry::ITEM.id("minecraft:lead")
+            {
+                let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
+                env.out.push(Effect::DropItem {
+                    random: item_random,
+                    uuid,
+                    pos,
+                    velocity,
+                    y_rot,
+                    pickup_delay: 10,
+                    stack: ItemStack::new(lead, 1),
+                });
+            }
         }
     }
     if !ents.knots.is_empty() {
