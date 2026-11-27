@@ -177,8 +177,10 @@ struct FakeWorld {
 
 impl WorldAccess for FakeWorld {
     fn set_entity_name(&mut self, entity: u128, name: Option<Text<'_>>) -> Result<(), i32> {
-        self.changes
-            .push(format!("name {entity} {:?}", name.map(|n| n.as_str().to_owned())));
+        self.changes.push(format!(
+            "name {entity} {:?}",
+            name.map(|n| n.as_str().to_owned())
+        ));
         Ok(())
     }
     fn attribute_modifier(
@@ -580,9 +582,13 @@ fn example_plugin_runs_through_the_abi() {
             "effect minecraft:speed 200".to_owned(),
             "give {id:\"minecraft:cookie\",count:1}".to_owned(),
             "spawn minecraft:pig [3.5, 65.0, 4.5] glowing=true".to_owned(),
-            "name 42 Some(\"{\\\"text\\\":\\\"Homebody\\\",\\\"color\\\":\\\"light_purple\\\"}\")".to_owned(),
+            "name 42 Some(\"{\\\"text\\\":\\\"Homebody\\\",\\\"color\\\":\\\"light_purple\\\"}\")"
+                .to_owned(),
             "modifier 42 minecraft:movement_speed hello:homebody Some((0.5, 1))".to_owned(),
-            format!("goal 42 priority=1 flags={}", vanillite_abi::goal_flag::MOVE),
+            format!(
+                "goal 42 priority=1 flags={}",
+                vanillite_abi::goal_flag::MOVE
+            ),
         ]
     );
     // The pig's goal walks it home once it is more than four blocks away.
@@ -618,7 +624,10 @@ fn example_plugin_runs_through_the_abi() {
         action.actions,
         vanillite_abi::goal_action::MOVE | vanillite_abi::goal_action::LOOK
     );
-    assert_eq!((action.move_to.x, action.move_to.z, action.speed), (3.5, 4.5, 1.0));
+    assert_eq!(
+        (action.move_to.x, action.move_to.z, action.speed),
+        (3.5, 4.5, 1.0)
+    );
     // The pig is not in this fake world: its task's retired callback runs instead.
     host.run_world_tasks(&mut overworld, 1);
     assert!(
@@ -644,7 +653,10 @@ fn example_plugin_runs_through_the_abi() {
     assert_eq!(overworld.changes, ["menu minecraft:generic_9x1"]);
     let items = overworld.menu_items.clone();
     assert!(items.starts_with("[{Slot:4b,"), "{items}");
-    assert!(items.contains("PublicBukkitValues:{\"hello:button\":1b}"), "{items}");
+    assert!(
+        items.contains("PublicBukkitValues:{\"hello:button\":1b}"),
+        "{items}"
+    );
     let button = items
         .strip_prefix("[{Slot:4b,")
         .and_then(|i| i.strip_suffix(']'))

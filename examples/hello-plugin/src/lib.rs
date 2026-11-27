@@ -256,8 +256,8 @@ impl Plugin for Hello {
                         },
                     ),
                 ))
-                .then(Command::literal("menu").executes(
-                    |_: &mut Hello, ctx, invocation| {
+                .then(
+                    Command::literal("menu").executes(|_: &mut Hello, ctx, invocation| {
                         let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
                             return Ok(0);
                         };
@@ -270,10 +270,10 @@ impl Plugin for Hello {
                                 let _ = open_menu(ctx, world, player);
                             });
                         Ok(i32::from(task.is_ok()))
-                    },
-                ))
-                .then(Command::literal("look").executes(
-                    |_: &mut Hello, ctx, invocation| {
+                    }),
+                )
+                .then(
+                    Command::literal("look").executes(|_: &mut Hello, ctx, invocation| {
                         let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
                             return Ok(0);
                         };
@@ -286,8 +286,8 @@ impl Plugin for Hello {
                                 let _ = look(ctx, world, player);
                             });
                         Ok(i32::from(task.is_ok()))
-                    },
-                ))
+                    }),
+                )
                 .then(
                     Command::literal("pad")
                         .requires_permission("hello.pad")
@@ -478,7 +478,10 @@ fn open_menu(ctx: &mut Ctx<'_>, world: World, player: Uuid) -> Result<(), Error>
 /// `/hello look`: what the player looks at within 50 blocks.
 fn look(ctx: &mut Ctx<'_>, world: World, player: Uuid) -> Result<(), Error> {
     let at = ctx.location(world, player)?;
-    let (yaw, pitch) = (f64::from(at.yaw).to_radians(), f64::from(at.pitch).to_radians());
+    let (yaw, pitch) = (
+        f64::from(at.yaw).to_radians(),
+        f64::from(at.pitch).to_radians(),
+    );
     let eye = Vec3 {
         x: at.pos.x,
         y: at.pos.y + 1.62,
@@ -492,12 +495,19 @@ fn look(ctx: &mut Ctx<'_>, world: World, player: Uuid) -> Result<(), Error> {
     let flags = abi::raytrace_flag::BLOCKS | abi::raytrace_flag::ENTITIES;
     let text = match ctx.raytrace(world, eye, to, flags, Some(player))? {
         Some(RayHit::Block(_, pos, _)) => {
-            format!("{} at {} {} {}", ctx.block(world, pos)?, pos.x, pos.y, pos.z)
+            format!(
+                "{} at {} {} {}",
+                ctx.block(world, pos)?,
+                pos.x,
+                pos.y,
+                pos.z
+            )
         }
         Some(RayHit::Entity(_, entity)) => ctx.entity_type(world, entity)?,
         None => "nothing".to_owned(),
     };
-    ctx.server().send_message(player, format!("You look at {text}"))
+    ctx.server()
+        .send_message(player, format!("You look at {text}"))
 }
 
 /// `/hello pig`: the pig gets a name, more speed and a goal that walks it home; a task on the
@@ -512,7 +522,14 @@ fn home_pig(ctx: &mut Ctx<'_>, world: World, pig: Uuid, home: Vec3) -> Result<()
         0.5,
         abi::attribute_op::ADD_MULTIPLIED_BASE,
     )?;
-    ctx.add_goal(world, pig, 1, abi::goal_flag::MOVE, false, HomeGoal { home })?;
+    ctx.add_goal(
+        world,
+        pig,
+        1,
+        abi::goal_flag::MOVE,
+        false,
+        HomeGoal { home },
+    )?;
     ctx.server().schedule_entity(
         world,
         pig,
