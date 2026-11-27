@@ -390,7 +390,22 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
     };
     if kind == crate::mob::Kind::Tadpole && super::item_in_tag(ix.stack.item, "minecraft:frog_food")
     {
-        return super::frog::feed_tadpole(ix);
+        let fed = super::frog::feed_tadpole(ix);
+        if fed != Interaction::Pass {
+            return fed;
+        }
+    }
+    // `Tadpole.mobInteract`: the golden dandelion (`setAge(0)`).
+    if kind == crate::mob::Kind::Tadpole
+        && ix
+            .ents
+            .mob(ix.target)
+            .is_some_and(|m| crate::mob::age_lock::can_use(m, ix.stack, true))
+    {
+        crate::mob::age_lock::toggle(ix.ents, ix.env, ix.player, ix.target, ix.hand, |m| {
+            super::state_mut(m).tadpole_age = 0;
+        });
+        return Interaction::Success;
     }
     let name = crate::item::item_id(ix.stack).name();
     let alive = ix.ents.mob(ix.target).is_some_and(MobData::is_alive);
@@ -450,7 +465,7 @@ fn bucket_stack(m: &MobData, item: &str) -> crate::item::ItemStack {
             stack.patch_mut().set(id, v.into());
         }
         data.insert("Age", m.age);
-        data.insert("AgeLocked", false);
+        data.insert("AgeLocked", m.age_locked);
         if let Some(b) = m.brain.as_deref()
             && b.has(M::HasHuntingCooldown)
         {
@@ -458,7 +473,7 @@ fn bucket_stack(m: &MobData, item: &str) -> crate::item::ItemStack {
         }
     } else {
         data.insert("Age", s.tadpole_age);
-        data.insert("AgeLocked", s.playing_dead);
+        data.insert("AgeLocked", m.age_locked);
     }
     crate::mob::fam::set_bucket_data(&mut stack, data);
     stack

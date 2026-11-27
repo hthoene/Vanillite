@@ -28,8 +28,6 @@ pub struct CubeState {
     pub move_yaw: f32,
     pub aggressive: bool,
     pub jump_delay: i32,
-    /// `AgeableMob.AGE_LOCKED`.
-    pub age_locked: bool,
     /// `SulfurCube`: from a bucket, the pickup timer, the push sound cooldown and the fuse.
     pub from_bucket: bool,
     pub pickup_timer: i32,
@@ -44,7 +42,6 @@ impl Default for CubeState {
             move_yaw: 0.0,
             aggressive: false,
             jump_delay: 0,
-            age_locked: false,
             from_bucket: false,
             pickup_timer: 0,
             fuse: -1,
@@ -369,10 +366,6 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
     let kind = t.mob_ref().kind;
     if kind == Kind::SulfurCube {
         let m = t.mob();
-        if cs(m).is_some_and(|c| c.age_locked) && m.age < 0 {
-            // `canAgeUp`: an age locked baby stays a baby.
-            m.age -= 1;
-        }
         // `ageBoundaryReached`: grown up cubes are of size 2.
         if !m.baby && size(m) == 1 && m.is_alive() {
             set_size(m, 2, true);
@@ -689,9 +682,8 @@ pub fn has_body_item(m: &MobData) -> bool {
 pub fn load_from_bucket(m: &mut MobData, age: i32, age_locked: bool) {
     m.age = age;
     m.baby = age < 0;
-    let c = cs_mut(m);
-    c.age_locked = age_locked;
-    c.from_bucket = true;
+    m.age_locked = age_locked;
+    cs_mut(m).from_bucket = true;
 }
 
 /// `requiresCustomPersistence`: a block inside or from a bucket.
@@ -724,7 +716,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     }
     let name = crate::item::item_id(ix.stack).name();
     if m.baby {
-        let locked = cs(m).is_some_and(|c| c.age_locked);
+        let locked = m.age_locked;
         if sulfur_is_food(ix.stack.item) && !locked {
             crate::mob::animal::use_item(ix.ents, ix.player, ix.hand);
             if let Some(m) = ix.ents.mob_mut(ix.target) {
@@ -747,7 +739,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             );
             return Interaction::Success;
         }
-        return Interaction::Pass;
+        // `AgeableMob.mobInteract`: the golden dandelion.
+        return crate::mob::age_lock::interact_pub(ix).unwrap_or(Interaction::Pass);
     }
     if cs(m).is_some_and(|c| c.fuse >= 0) {
         return Interaction::Pass;
@@ -876,7 +869,7 @@ fn bucket(ix: &mut Interact<'_, '_>, pos: Vec3) -> Interaction {
         stack.patch_mut().set(id, bytes.into());
     }
     data.insert("age", m.age);
-    data.insert("age_locked", cs(m).is_some_and(|c| c.age_locked));
+    data.insert("age_locked", m.age_locked);
     crate::mob::fam::set_bucket_data(&mut stack, data);
     play(ix, pos, "minecraft:item.bucket.fill_sulfur_cube");
     crate::mob::animal::filled_bucket(ix.ents, ix.player, &stack);
@@ -928,7 +921,7 @@ pub fn pick_up_items(t: &mut Tick<'_, '_>) {
 pub fn encode_data(w: &mut DataWriter<'_>, m: &MobData) {
     let c = cs(m).cloned().unwrap_or_default();
     w.boolean(16, m.baby, false);
-    w.boolean(17, c.age_locked, false);
+    w.boolean(17, m.age_locked, false);
     w.int(18, c.size, 1);
     if m.kind == Kind::SulfurCube {
         w.int(19, c.fuse, -1);
@@ -943,7 +936,7 @@ pub fn save(m: &MobData, out: &mut Compound) {
     if m.kind == Kind::SulfurCube {
         out.insert("Age", m.age);
         out.insert("ForcedAge", m.forced_age);
-        out.insert("AgeLocked", c.age_locked);
+        out.insert("AgeLocked", m.age_locked);
         out.insert("pickup_timer", c.pickup_timer);
         out.insert("from_bucket", c.from_bucket);
         out.insert("fuse", c.fuse);
@@ -964,8 +957,8 @@ pub fn load(m: &mut MobData, tag: &Compound) {
         m.age = int("Age").unwrap_or(0);
         m.baby = m.age < 0;
         m.forced_age = int("ForcedAge").unwrap_or(0);
+        m.age_locked = boolean("AgeLocked");
         let c = cs_mut(m);
-        c.age_locked = boolean("AgeLocked");
         c.pickup_timer = int("pickup_timer").unwrap_or(0);
         c.from_bucket = boolean("from_bucket");
         c.fuse = int("fuse").unwrap_or(-1);

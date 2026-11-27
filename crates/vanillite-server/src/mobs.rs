@@ -1778,7 +1778,7 @@ pub fn player_entity_action(
                 .get(target)
                 .is_some_and(|e| e.kind() == ids::LEASH_KNOT)
             {
-                knot_interact(ents, env, cx, player, target)
+                tame::knot_interact(ents, env, &mut cx.discarded, player, target, hand, sneaking)
             } else if ents.decor(target).is_some() {
                 let spectator = ents
                     .player(player)
@@ -1949,41 +1949,6 @@ fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<Entity
         pe.pos().z,
     );
     (distance_sqr_to_box(&target_box, eye) < 36.0).then_some(target)
-}
-
-/// `LeashFenceKnotEntity.interact`: ties the player's leashed mobs to the knot, or breaks it.
-fn knot_interact(
-    ents: &mut Entities,
-    env: &mut vanillite_game::survival::player::Env<'_>,
-    cx: &mut MobContext,
-    player: EntityId,
-    knot: EntityId,
-) -> animal::Interaction {
-    let Some(pos) = ents.store.get(knot).map(|e| e.pos()) else {
-        return animal::Interaction::Pass;
-    };
-    let area = Aabb::new(
-        pos.x - 7.0,
-        pos.y - 7.0,
-        pos.z - 7.0,
-        pos.x + 7.0,
-        pos.y + 7.0,
-        pos.z + 7.0,
-    );
-    let mut mine = Vec::new();
-    ents.store.for_each_in(&area, false, |id| {
-        if ents.leashes.get(&id) == Some(&player) {
-            mine.push(id);
-        }
-    });
-    if mine.is_empty() {
-        tame::break_knot(ents, env, knot, &mut cx.discarded);
-    } else {
-        for m in mine {
-            tame::set_leashed_to(ents, env, m, knot);
-        }
-    }
-    animal::Interaction::Success
 }
 
 /// `Entity.getPickResult`: a mob's spawn egg, or the item of a vehicle or decoration.

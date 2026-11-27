@@ -945,6 +945,9 @@ fn killed_by_zombie(t: &mut Tick<'_, '_>, killer: EntityId) -> bool {
     let killer_pos = t.ents.store.get(killer).map(|e| e.pos());
     let v = vs(t.mob_ref()).clone();
     let xp = state(t.mob_ref()).merchant.villager_xp;
+    // `villager.getOffers().copy()`: offers nobody looked at yet are generated first.
+    let id = t.id;
+    super::merchant::ensure_offers_in(t.level, t.ents, id);
     let offers = state(t.mob_ref())
         .merchant
         .offers
@@ -1251,7 +1254,7 @@ impl FamilyHooks for Hooks {
         let s = state(m);
         let v = &s.villager;
         w.boolean(16, m.baby, false);
-        w.boolean(17, false, false);
+        w.boolean(17, m.age_locked, false);
         w.int(18, s.merchant.unhappy_counter, 0);
         let default =
             v.villager_type == plains() && v.profession == profession::NONE && v.level == 1;
@@ -1279,7 +1282,7 @@ impl FamilyHooks for Hooks {
     fn save(m: &MobData, out: &mut Compound) {
         out.insert("Age", m.age);
         out.insert("ForcedAge", m.forced_age);
-        out.insert("AgeLocked", false);
+        out.insert("AgeLocked", m.age_locked);
         merchant::save(&state(m).merchant, out);
         let v = vs(m);
         let name = |r: &vanillite_data::registry::Registry, id: u16| {
@@ -1331,6 +1334,7 @@ impl FamilyHooks for Hooks {
             m.age = age;
             m.baby = age < 0;
         }
+        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
         if let Some(f) = int("ForcedAge") {
             m.forced_age = f;
         }

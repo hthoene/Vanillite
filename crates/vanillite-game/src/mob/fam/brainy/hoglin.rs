@@ -586,12 +586,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     r
 }
 
-/// Synched data: `AgeableMob` baby (16) and immunity (17) for hoglins, baby (16) for
-/// zoglins.
+/// Synched data: `AgeableMob` baby (16), age locked (17) and immunity (18) for hoglins, baby
+/// (16) for zoglins.
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     w.boolean(16, m.baby, false);
     if m.kind == Kind::Hoglin {
-        w.boolean(17, state(m).immune_to_zombification, false);
+        w.boolean(17, m.age_locked, false);
+        w.boolean(18, state(m).immune_to_zombification, false);
     }
 }
 

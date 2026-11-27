@@ -92,10 +92,18 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
                 )
             })
             .map(crate::mob::fam::undead::cubes::size),
-        raid_captain: ents.mob(id).filter(|m| m.kind.is_raider()).map(|m| {
+        raider: ents.mob(id).filter(|m| m.kind.is_raider()).map(|m| {
             use crate::mob::fam::illager::{raider, st};
-            st(m).patrol_leader
-                && raider::is_ominous_banner(m.equipment.get(crate::item::EquipmentSlot::Head))
+            let captain = st(m).patrol_leader
+                && raider::is_ominous_banner(m.equipment.get(crate::item::EquipmentSlot::Head));
+            // `Raider.hasRaid`: its raid or a raid at its block position.
+            let at = ents.store.get(id).map(|e| {
+                let p = e.pos();
+                vanillite_base::BlockPos::containing(p.x, p.y, p.z)
+            });
+            let has_raid = crate::raid::current_raid(ents, m).is_some()
+                || at.is_some_and(|b| ents.raids.raid_at(b).is_some());
+            (has_raid, captain)
         }),
         mooshroom_variant: ents
             .mob(id)

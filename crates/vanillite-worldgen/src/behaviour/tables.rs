@@ -121,6 +121,7 @@ block_tags!(
     bats_spawnable_on,
     bee_attractive,
     bee_growables,
+    blocks_dolphin_jump,
     mooshrooms_spawnable_on,
     sand,
     strider_warm_blocks,

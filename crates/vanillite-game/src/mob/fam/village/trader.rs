@@ -375,13 +375,13 @@ impl FamilyHooks for Hooks {
     }
     fn encode_data(w: &mut DataWriter<'_>, m: &MobData) {
         w.boolean(16, m.baby, false);
-        w.boolean(17, false, false);
+        w.boolean(17, m.age_locked, false);
         w.int(18, state(m).merchant.unhappy_counter, 0);
     }
     fn save(m: &MobData, out: &mut Compound) {
         out.insert("Age", m.age);
         out.insert("ForcedAge", m.forced_age);
-        out.insert("AgeLocked", false);
+        out.insert("AgeLocked", m.age_locked);
         merchant::save(&state(m).merchant, out);
         let tr = &state(m).trader;
         out.insert("DespawnDelay", tr.despawn_delay);
@@ -399,6 +399,7 @@ impl FamilyHooks for Hooks {
         // `setAge(max(0, age))`.
         m.age = int("Age").max(0);
         m.forced_age = int("ForcedAge");
+        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
         m.baby = false;
         let s = state_mut(m);
         merchant::load(&mut s.merchant, tag);

@@ -79,16 +79,18 @@ pub fn strike(level: &mut Level, column: BlockPos, input: StrikeInput) -> Option
             < f64::from(effective_difficulty(level, pos, input.clock_time)) * 0.01
         && !is_lightning_rod(level.block(pos.below()));
     if trap {
-        // `SkeletonHorse` (`setTrap(true)`, `setAge(0)`) at the block corner. The horse has no
-        // behaviour in Vanillite yet: it only takes its place in the entity order.
-        let _ = level.new_entity_random();
+        // `SkeletonHorse` (`setTrap(true)`, `setAge(0)`) at the block corner, without
+        // `finalizeSpawn`: its `SkeletonTrapGoal` springs when a player comes near.
+        let mut horse =
+            crate::mob::MobData::new(Kind::SkeletonHorse, crate::mob::new_entity_seed());
+        crate::mob::fam::companion::st_mut(&mut horse).trap = true;
+        horse.age = 0;
+        horse.baby = false;
         let uuid = crate::mob::new_uuid();
-        let network_id = level.network_ids().next();
         let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-        level.entities.store.spawn(
-            NewEntity::new(ids::SKELETON_HORSE, network_id, uuid, at),
-            |_| 0,
-        );
+        let network_ids = std::sync::Arc::clone(level.network_ids_arc());
+        let rot = vanillite_world::entity::Rotation::default();
+        crate::mob::spawn(&mut level.entities, &network_ids, uuid, at, rot, horse);
     }
     let at = Vec3::new(
         f64::from(pos.x) + 0.5,
@@ -539,6 +541,13 @@ pub fn thunder_hit(
     let Some(kind) = ents.mob(target).filter(|m| m.is_alive()).map(|m| m.kind) else {
         return;
     };
+    // `MushroomCow.thunderHit`: a bolt converts a mooshroom only once over all its flashes.
+    if kind == Kind::Mooshroom {
+        let uuid = ents.store.get(bolt).map_or(0, |e| e.uuid());
+        if !crate::mob::fam::wildlife::mooshroom::new_bolt(ents, target, uuid) {
+            return;
+        }
+    }
     if kind.family() != crate::mob::Family::Classic {
         let mut h = crate::mob::fam::Hurt {
             level,

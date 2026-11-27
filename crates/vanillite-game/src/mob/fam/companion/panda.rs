@@ -86,6 +86,11 @@ pub fn variant(main: u8, hidden: u8) -> u8 {
     }
 }
 
+/// `Panda.isAggressive`: the aggressive gene.
+pub(crate) fn is_aggressive(m: &MobData) -> bool {
+    kind_gene(m) == gene::AGGRESSIVE
+}
+
 fn kind_gene(m: &MobData) -> u8 {
     let s = st(m);
     variant(s.main_gene, s.hidden_gene)
@@ -469,7 +474,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     }
     let (baby, age, in_love, sitting) =
         (m.baby, m.age, m.in_love, st(m).panda_flags & SITTING != 0);
-    if baby {
+    if baby && !m.age_locked {
         consume(ix);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
             #[allow(clippy::cast_possible_truncation)]

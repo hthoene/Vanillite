@@ -588,9 +588,16 @@ pub(crate) fn summon_for(
     };
     let uuid = match nbt.get("UUID") {
         Some(Tag::IntArray(ints)) => match ints.as_slice() {
-            [a, b, c, d] => [*a, *b, *c, *d]
-                .iter()
-                .fold(0u128, |acc, v| (acc << 32) | u128::from(v.cast_unsigned())),
+            [a, b, c, d] => {
+                // The entity's constructor still creates its random (and a UUID from it)
+                // before the NBT replaces the UUID.
+                if !own_seed {
+                    let _ = fresh_uuid();
+                }
+                [*a, *b, *c, *d]
+                    .iter()
+                    .fold(0u128, |acc, v| (acc << 32) | u128::from(v.cast_unsigned()))
+            }
             _ => fresh_uuid(),
         },
         _ => fresh_uuid(),

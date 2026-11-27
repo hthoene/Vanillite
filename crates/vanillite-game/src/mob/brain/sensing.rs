@@ -29,18 +29,40 @@ pub fn visibility_percent(t: &Tick<'_, '_>, id: EntityId) -> f64 {
     {
         v *= 0.8;
     }
-    if let Some(m) = t.ents.mob(id)
-        && m.effects.has(crate::effect::MobEffect::INVISIBILITY)
-    {
-        let worn = [
-            EquipmentSlot::Feet,
-            EquipmentSlot::Legs,
-            EquipmentSlot::Chest,
-            EquipmentSlot::Head,
-        ]
-        .iter()
-        .filter(|s| !m.equipment.get(**s).is_empty())
-        .count();
+    // `isInvisible` (the shared flag the Invisibility effect sets), with the armour cover.
+    let armor = [
+        EquipmentSlot::Feet,
+        EquipmentSlot::Legs,
+        EquipmentSlot::Chest,
+        EquipmentSlot::Head,
+    ];
+    let flagged = t
+        .ents
+        .store
+        .get(id)
+        .is_some_and(|e| e.flags().contains(EntityFlags::INVISIBLE));
+    let worn = if let Some(m) = t.ents.mob(id) {
+        (flagged || m.effects.has(crate::effect::MobEffect::INVISIBILITY)).then(|| {
+            armor
+                .iter()
+                .filter(|s| !m.equipment.get(**s).is_empty())
+                .count()
+        })
+    } else if let Some(p) = t.ents.player(id) {
+        (flagged
+            || p.survival
+                .effects
+                .has(crate::effect::MobEffect::INVISIBILITY))
+        .then(|| {
+            armor
+                .iter()
+                .filter(|s| !p.inventory.equipment(**s).is_empty())
+                .count()
+        })
+    } else {
+        None
+    };
+    if let Some(worn) = worn {
         #[allow(clippy::cast_precision_loss)]
         let cover = (worn as f32 / 4.0).max(0.1);
         v *= f64::from(0.7 * cover);

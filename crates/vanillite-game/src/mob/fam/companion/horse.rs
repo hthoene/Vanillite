@@ -604,7 +604,7 @@ fn handle_eating(ix: &mut Interact<'_, '_>) -> bool {
         super::heal(m, heal);
         used = true;
     }
-    if m.baby && age_up > 0 {
+    if m.baby && age_up > 0 && !m.age_locked {
         // `ageUp(seconds)`.
         m.age = (m.age + age_up * 20).min(0);
         used = true;

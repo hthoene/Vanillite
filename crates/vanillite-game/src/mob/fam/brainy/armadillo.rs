@@ -229,8 +229,12 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
     }
     let s = state_mut(t.mob());
     s.scute_time -= 1;
-    if s.scute_time <= 0 {
-        if t.env.rules.bool(crate::survival::rules::Rule::MOB_DROPS) {
+    // `shouldDropLoot`: adults with `mobDrops`; otherwise the timer keeps running down.
+    if s.scute_time <= 0
+        && !t.mob_ref().baby
+        && t.env.rules.bool(crate::survival::rules::Rule::MOB_DROPS)
+    {
+        {
             let items = super::gift_loot(t, "minecraft:gameplay/armadillo_shed");
             if !items.is_empty() {
                 for i in items {
@@ -244,6 +248,9 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
                     1.0,
                     pitch,
                 );
+                let event = crate::level::game_event::events().entity_place;
+                let pos = t.pos();
+                crate::survival::game_event(t.env.out, event, pos, Some(t.id));
             }
         }
         let time = next_scute_time(t.mob());

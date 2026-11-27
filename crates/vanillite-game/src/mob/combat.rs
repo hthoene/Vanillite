@@ -518,7 +518,10 @@ pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f6
     if super::boss::dragon::ignores_knockback(ents, target) {
         return;
     }
-    let Some(resistance) = ents.mob(target).map(|m| m.attrs.knockback_resistance) else {
+    let Some(resistance) = ents.mob(target).map(|m| {
+        let base = m.attrs.knockback_resistance;
+        super::equipment::attribute(m, "minecraft:knockback_resistance", base, 0.0, 1.0)
+    }) else {
         return;
     };
     let Entities { store, mobs, .. } = ents;
@@ -645,6 +648,8 @@ fn actually_hurt(
     let Some(m) = ents.mob_mut(target) else {
         return;
     };
+    // `Animal.actuallyHurt`: `resetLove()` (only animals are ever in love).
+    m.in_love = 0;
     let mut damage = damage;
     if !types.is(source.kind, tag::BYPASSES_ARMOR) {
         // `getArmorValue` and `ARMOR_TOUGHNESS` with the equipment's modifiers.
@@ -870,7 +875,11 @@ fn die(
         return;
     };
     let killed_by_player = m.last_hurt_by_player_time > 0;
-    let baby = m.baby;
+    // `shouldDropLoot`: `Monster` drops as a baby too (the hoglin is an animal);
+    // `shouldDropExperience`: `Monster` and `Hoglin` give experience as babies too.
+    let monster = m.kind.is_monster();
+    let loot_baby = m.baby && !(monster && m.kind != Kind::Hoglin);
+    let baby = m.baby && !monster;
     // `getExperienceReward` (it draws from the mob's random) only where Vanilla asks for it:
     // a sculk catalyst at the death, else `dropExperience` after the loot.
     let reward_of = |ents: &mut Entities| {
@@ -935,7 +944,7 @@ fn die(
     ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     let mut drops = Vec::new();
-    if !baby && env.rules.bool(Rule::MOB_DROPS) {
+    if !loot_baby && env.rules.bool(Rule::MOB_DROPS) {
         let mut loot = table_loot(level, ents, env, target, &source)
             .or_else(|| {
                 ents.mob_mut(target)
@@ -1279,6 +1288,14 @@ pub fn knock_living(
         apply_knockback(ents, target, power, xd, zd);
         return;
     }
+    // `KNOCKBACK_RESISTANCE` of the player's equipment (netherite armour).
+    let resistance = ents.player(target).map_or(0.0, |p| {
+        crate::player::play::equipment_attribute(
+            &p.inventory,
+            "minecraft:knockback_resistance",
+            0.0,
+        )
+    });
     if let Some(mut e) = ents.store.get_mut(target) {
         let on_ground = e.as_ref().flags().contains(EntityFlags::ON_GROUND);
         if let Some(v) = knockback(
@@ -1287,7 +1304,7 @@ pub fn knock_living(
             power,
             xd,
             zd,
-            0.0,
+            resistance,
             env.random,
         ) {
             e.set_velocity(v);

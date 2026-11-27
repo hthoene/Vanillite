@@ -1,0 +1,126 @@
+{
+  "description": "A player punches a ghast fireball floating in front of it (Player.deflectProjectile, AIM_DEFLECT): it flies off along the player's look as the player's own; a punched shulker bullet breaks (ShulkerBullet.hurtServer).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        180,
+        0
+      ],
+      "client": true
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:fireball 8.5 -58.9 10.5 {UUID:[I;1,2,3,4],Motion:[0.0,0.0,0.0],acceleration_power:0.0d}"
+    },
+    {
+      "tick": 63,
+      "op": "command",
+      "command": "summon minecraft:shulker_bullet 9.5 -59.0 11.5 {UUID:[I;1,2,3,5],Motion:[0.0,0.0,0.0]}"
+    },
+    {
+      "tick": 62,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000001000000020000000300000004",
+      "what": "Attack fireball"
+    },
+    {
+      "tick": 64,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000001000000020000000300000005",
+      "what": "Attack bullet"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false",
+    "mob_griefing": "false"
+  }
+}
