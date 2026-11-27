@@ -451,8 +451,8 @@ trait Round {
     fn level(&self) -> &Level;
     /// The round's random (`level.random`).
     fn random(&mut self) -> &mut LegacyRandom;
-    /// The level next to the round's random.
-    fn level_random(&mut self) -> (&Level, &mut LegacyRandom);
+    /// Runs `f` with the level next to the round's random.
+    fn with_level_random<T>(&mut self, f: impl FnOnce(&Level, &mut LegacyRandom) -> T) -> T;
     /// The level next to the structure index.
     fn level_structures(&mut self) -> (&Level, &mut super::structures::StructureIndex);
     /// The seed of a new mob's own random.
@@ -465,12 +465,10 @@ trait Round {
     fn spawned(&mut self, nearby: &NearbyPlayers, chunk: ChunkPos, c: Category, new: NewMob);
 }
 
-/// A spawn round on the world itself: mobs are added at once and the level's random is used,
-/// as in Vanilla.
+/// A spawn round on the world itself: mobs are added at once and the level's random is used
+/// in place, as in Vanilla.
 struct WorldRound<'a> {
     level: &'a mut Level,
-    /// The level's random, out of the level while the round runs.
-    random: LegacyRandom,
     structures: &'a mut super::structures::StructureIndex,
     potential: &'a mut Potential,
     close: &'a mut CloseForSpawning,
@@ -485,12 +483,12 @@ impl Round for WorldRound<'_> {
 
     #[inline]
     fn random(&mut self) -> &mut LegacyRandom {
-        &mut self.random
+        self.level.random()
     }
 
     #[inline]
-    fn level_random(&mut self) -> (&Level, &mut LegacyRandom) {
-        (self.level, &mut self.random)
+    fn with_level_random<T>(&mut self, f: impl FnOnce(&Level, &mut LegacyRandom) -> T) -> T {
+        with_level_random(self.level, f)
     }
 
     #[inline]
@@ -560,8 +558,8 @@ impl Round for TileRound<'_> {
     }
 
     #[inline]
-    fn level_random(&mut self) -> (&Level, &mut LegacyRandom) {
-        (self.level, &mut self.random)
+    fn with_level_random<T>(&mut self, f: impl FnOnce(&Level, &mut LegacyRandom) -> T) -> T {
+        f(self.level, &mut self.random)
     }
 
     #[inline]
@@ -679,37 +677,29 @@ fn tick_world(
     let categories = spawn_categories(&state, input, spawn_persistent);
     collect_spawning_chunks(level, spawner);
     let chunks = std::mem::take(&mut spawner.chunks);
+    let mut round = WorldRound {
+        level,
+        structures: &mut spawner.structures,
+        potential: &mut spawner.potential,
+        close: &mut spawner.close,
+        state: &mut state,
+    };
     for &chunk in &chunks {
         // `tickSpawningChunk`.
-        level.chunks.increment_inhabited_time(chunk);
-        if level.chunks.in_entity_ticking_range(chunk) {
-            crate::lightning::tick_thunder(level, chunk, input.thunder);
+        round.level.chunks.increment_inhabited_time(chunk);
+        if round.level.chunks.in_entity_ticking_range(chunk) {
+            crate::lightning::tick_thunder(round.level, chunk, input.thunder);
         }
         // `canSpawnEntitiesInChunk`: the chunk is ticking and inside the world border.
-        if !level.border.is_chunk_within_bounds(chunk) {
+        if !round.level.border.is_chunk_within_bounds(chunk) {
             continue;
         }
-        if categories.is_empty() {
-            continue;
-        }
-        // The level's random is the round's while the chunk's attempts run.
-        let random = std::mem::replace(level.random(), LegacyRandom::new(0));
-        let mut round = WorldRound {
-            level: &mut *level,
-            random,
-            structures: &mut spawner.structures,
-            potential: &mut spawner.potential,
-            close: &mut spawner.close,
-            state: &mut state,
-        };
         for &c in &categories {
             // `canSpawnForCategoryLocal`.
             if round.can_spawn_local(c, &spawner.nearby, chunk) {
                 spawn_category_for_chunk(&mut round, table, &spawner.nearby, input, c, chunk);
             }
         }
-        let random = round.random;
-        *level.random() = random;
     }
     spawner.chunks = chunks;
 }
@@ -1098,8 +1088,7 @@ fn spawn_category_for_chunk<R: Round>(
             if !valid_position_for_mob(round.level(), input, &mob, pos_v, nearest) {
                 continue;
             }
-            let extra = {
-                let (level, random) = round.level_random();
+            let extra = round.with_level_random(|level, random| {
                 finalize_in_group(
                     level,
                     Some(table),
@@ -1112,7 +1101,7 @@ fn spawn_category_for_chunk<R: Round>(
                     SpawnReason::Natural,
                     random,
                 )
-            };
+            });
             group_index += 1;
             cluster += 1;
             group_size += 1;

@@ -1052,9 +1052,16 @@ impl Chunks {
     /// ticket. Only tracked while `unknown` tickets exist.
     #[inline]
     fn note_read(&self, pos: ChunkPos, reset: bool) {
-        if self.unknown.is_empty() {
-            return;
+        if !self.unknown.is_empty() {
+            self.note_tracked_read(pos, reset);
         }
+    }
+
+    /// [`Self::note_read`] while `unknown` tickets exist. Out of line: block reads are hot and
+    /// almost never tracked.
+    #[cold]
+    #[inline(never)]
+    fn note_tracked_read(&self, pos: ChunkPos, reset: bool) {
         if self.chunk_cache.note(pos) {
             return;
         }
