@@ -522,9 +522,10 @@ pub fn start(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
             let s = state_mut(t.mob());
             s.jump_candidates.clear();
             s.not_preferred.clear();
-            for x in me.x - w..=me.x + w {
+            // `BlockPos.betweenClosedStream` order: x runs first, then y, then z.
+            for z in me.z - w..=me.z + w {
                 for y in me.y - h..=me.y + h {
-                    for z in me.z - w..=me.z + w {
+                    for x in me.x - w..=me.x + w {
                         let p = BlockPos::new(x, y, z);
                         if p != me {
                             #[allow(clippy::cast_possible_truncation)]
@@ -966,6 +967,7 @@ fn pick_candidate(
         if !acceptable_landing(t, jumper, pos) {
             continue;
         }
+
         let target = Vec3::new(
             f64::from(pos.x) + 0.5,
             f64::from(pos.y) + 0.5,
@@ -974,8 +976,9 @@ fn pick_candidate(
         let Some(jump) = optimal_jump(t, target) else {
             continue;
         };
+
         brain::brain(t).set(M::LookTarget, MemValue::Look(Tracker::block(pos)));
-        let path = nav::create_path_to(t, pos, 0);
+        let path = nav::create_path_within(t, pos, 0, 8.0);
         if path.is_none_or(|p| !p.reached) {
             *chosen = Some(jump);
             *prepare_start = now;
@@ -984,16 +987,14 @@ fn pick_candidate(
     }
 }
 
-/// `calculateOptimalJumpVector`: the angles 65–80 in random order.
+/// `calculateOptimalJumpVector`: the angles 65–80 in random order. `Collections.shuffle(list)`
+/// draws from a random of its own, not from the level's or the mob's.
 fn optimal_jump(t: &mut Tick<'_, '_>, target: Vec3) -> Option<Vec3> {
     let mut angles = [65, 70, 75, 80];
+    let mut random = vanillite_base::random::LegacyRandom::new(crate::mob::new_shuffle_seed());
     for i in (1..angles.len()).rev() {
-        let j = usize::try_from(
-            t.env
-                .random
-                .next_int_bounded(i32::try_from(i + 1).unwrap_or(1)),
-        )
-        .unwrap_or(0);
+        let j = usize::try_from(random.next_int_bounded(i32::try_from(i + 1).unwrap_or(1)))
+            .unwrap_or(0);
         angles.swap(i, j);
     }
     #[allow(clippy::cast_possible_truncation)]

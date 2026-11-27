@@ -357,13 +357,18 @@ pub(crate) fn world_info(
     })
 }
 
-/// The compute pool as the chunk runtime's executor: background jobs by priority.
+/// The compute pool as the chunk runtime's executor: background jobs by priority, with the
+/// budget told when a world waits for them.
 #[derive(Debug)]
-pub(crate) struct ComputeExecutor(pub(crate) Compute);
+pub(crate) struct ComputeExecutor(pub(crate) Compute, pub(crate) Arc<crate::budget::Budget>);
 
 impl Executor for ComputeExecutor {
     fn spawn(&self, priority: u32, job: Box<dyn FnOnce() + Send>) {
         self.0.spawn_background(priority, job);
+    }
+
+    fn blocked(&self, blocked: bool) {
+        self.1.set_blocked(blocked);
     }
 }
 

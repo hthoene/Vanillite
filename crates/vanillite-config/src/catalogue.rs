@@ -28,6 +28,18 @@ rules! {
             /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
         }
+        /// What the hardware allows. With less than two cores, background work (generation,
+        /// light, saving) runs only between ticks and below the CPU quota, so the tick stays
+        /// smooth; caches shrink under a memory limit. Only when work runs changes, never its
+        /// result.
+        budget: BudgetRules = "performance.budget" {
+            /// CPU cores the server may use. 0 = detect: the cgroup CPU quota (`cpu.max`, Docker
+            /// `--cpus`, Pterodactyl's CPU limit) and the CPU affinity.
+            cpu: f64 = "cpu", Setting, range = [0.0, 1024.0], restart = true, vanilla = 0.0;
+            /// Memory in MiB the server should stay far below; caches are sized from it. 0 =
+            /// detect: the cgroup memory limit (`memory.max`), none without a container.
+            memory: u32 = "memory", Setting, range = [0, 16_777_216], restart = true, vanilla = 0;
+        }
         /// Saving.
         autosave: AutosaveRules = "performance.autosave" {
             /// Ticks between autosaves. Vanilla saves every 5 minutes of game time.

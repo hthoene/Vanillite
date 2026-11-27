@@ -32,6 +32,7 @@ mod data_id {
     pub const CUSTOM_NAME: u8 = 2;
     pub const AIR_SUPPLY: u8 = 1;
     pub const POSE: u8 = 6;
+    pub const TICKS_FROZEN: u8 = 7;
     pub const ITEM_ENTITY_ITEM: u8 = 8;
     pub const HEALTH: u8 = 9;
     pub const EFFECT_PARTICLES: u8 = 10;
@@ -268,6 +269,12 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
     if all || pose != Pose::Standing {
         item(&mut out, data_id::POSE, serializer::POSE, |o| {
             write_varint(o, pose_id(pose));
+        });
+    }
+    let frozen = entities.mob(entity.id()).map_or(0, |m| m.ticks_frozen);
+    if all || frozen != 0 {
+        item(&mut out, data_id::TICKS_FROZEN, serializer::INT, |o| {
+            write_varint(o, frozen);
         });
     }
     if let Some(player) = player {

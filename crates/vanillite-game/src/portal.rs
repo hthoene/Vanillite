@@ -210,6 +210,13 @@ pub enum TravelRequest {
     /// (`ThrownEnderpearl.onHit` with a cross-dimension teleport): the owner's world sends it
     /// with [`PearlArrival`].
     PearlOwner { owner: u128, arrival: PearlArrival },
+    /// The entity goes through the nether or end portal at `entry` into another world
+    /// (`teleportCrossDimension`): it left this world's tick; the world moves it.
+    Portal {
+        entity: EntityId,
+        kind: PortalKind,
+        entry: BlockPos,
+    },
 }
 
 /// What happens to a player an ender pearl brings to its world: where it lands, whether an
@@ -258,14 +265,12 @@ pub fn can_use_portal(ents: &Entities, id: EntityId) -> bool {
     true
 }
 
-/// `EndGatewayBlock.entityInside` for an entity besides players on its way this tick (the box
-/// from its old to its new position): the first gateway it touches takes it unless the gateway
-/// cools down or took an entity this tick already (`taken`; their cooldowns start after the
-/// entities' tick, [`crate::block::portal::trigger_gateway_cooldown`]).
-pub fn enter_gateway(level: &Level, ents: &mut Entities, id: EntityId, taken: &mut Vec<BlockPos>) {
-    if !level.block_entities.has_gateways() {
-        return;
-    }
+/// `entityInside` of the portal blocks for an entity besides players on its way this tick (the
+/// box from its old to its new position): a nether or end portal it touches
+/// (`NetherPortalBlock`, `EndPortalBlock`), then the first End gateway it touches unless the
+/// gateway cools down or took an entity this tick already (`taken`; their cooldowns start
+/// after the entities' tick, [`crate::block::portal::trigger_gateway_cooldown`]).
+pub fn enter_portals(level: &Level, ents: &mut Entities, id: EntityId, taken: &mut Vec<BlockPos>) {
     let Some(e) = ents.store.get(id) else {
         return;
     };
@@ -280,7 +285,23 @@ pub fn enter_gateway(level: &Level, ents: &mut Entities, id: EntityId, taken: &m
         max_y: now.max_y.max(last.max_y),
         max_z: now.max_z.max(last.max_z),
     };
-    let Some(pos) = crate::survival::blocks::inside_portals(&LevelBlocks(level), swept).gateway
+    let inside = crate::survival::blocks::inside_portals(&LevelBlocks(level), swept);
+    for (kind, pos) in [
+        (PortalKind::Nether, inside.nether),
+        (PortalKind::End, inside.end),
+    ] {
+        if let Some(pos) = pos
+            && can_use_portal(ents, id)
+        {
+            ents.portals
+                .entry(id)
+                .or_default()
+                .set_inside_with(kind, pos, ENTITY_PORTAL_COOLDOWN);
+        }
+    }
+    let Some(pos) = inside
+        .gateway
+        .filter(|_| level.block_entities.has_gateways())
     else {
         return;
     };
@@ -297,8 +318,9 @@ pub fn enter_gateway(level: &Level, ents: &mut Entities, id: EntityId, taken: &m
     );
 }
 
-/// `handlePortal` of an entity besides players: the gateway it goes through now, if any.
-pub fn handle_portal(ents: &mut Entities, id: EntityId) -> Option<BlockPos> {
+/// `handlePortal` of an entity besides players: the portal it goes through now, if any (every
+/// portal takes it at once: `getPortalTransitionTime` is 0 for entities besides players).
+pub fn handle_portal(ents: &mut Entities, id: EntityId) -> Option<(PortalKind, BlockPos)> {
     if !ents.portals.contains_key(&id) {
         return None;
     }
@@ -309,22 +331,31 @@ pub fn handle_portal(ents: &mut Entities, id: EntityId) -> Option<BlockPos> {
         ents.portals.remove(&id);
     }
     teleport
-        .filter(|&(kind, _)| kind == PortalKind::Gateway)
-        .map(|(_, entry)| entry)
 }
 
 /// `handlePortal` with the teleport of an entity besides players: through the gateway it is
-/// in, when the gateway's exit is known and loaded, else a [`TravelRequest::Gateway`].
+/// in, when the gateway's exit is known and loaded, else a [`TravelRequest::Gateway`]; through
+/// a nether or end portal a [`TravelRequest::Portal`]. Returns whether the entity leaves this
+/// world: the rest of its tick does not run (Vanilla removes it inside `handlePortal`).
+#[must_use]
 pub fn tick_portal(
     level: &Level,
     ents: &mut Entities,
     id: EntityId,
     in_end: bool,
     travel: &mut Vec<TravelRequest>,
-) {
-    let Some(entry) = handle_portal(ents, id) else {
-        return;
+) -> bool {
+    let Some((kind, entry)) = handle_portal(ents, id) else {
+        return false;
     };
+    if kind != PortalKind::Gateway {
+        travel.push(TravelRequest::Portal {
+            entity: id,
+            kind,
+            entry,
+        });
+        return true;
+    }
     match crate::block::portal::gateway_exit_now(level, entry, in_end) {
         crate::block::portal::GatewayExit::At(exit) => {
             let pos = teleport_through_gateway(ents, id, exit);
@@ -337,6 +368,7 @@ pub fn tick_portal(
         }
         crate::block::portal::GatewayExit::Nowhere => {}
     }
+    false
 }
 
 /// The teleport of an entity besides players through a gateway to `exit`
@@ -566,9 +598,9 @@ pub fn exit_position(
     height: f32,
 ) -> (Vec3, f32) {
     let rotation = if entry.axis == exit_axis { 0.0 } else { 90.0 };
-    let (w, h) = (f64::from(width), f64::from(height));
-    let right = w / 2.0 + (f64::from(exit.width) - w) * entry.offset.x;
-    let up = (f64::from(exit.height) - h) * entry.offset.y;
+    // `width - dimensions.width()` is int minus float: a float.
+    let right = f64::from(width) / 2.0 + f64::from(exit.width as f32 - width) * entry.offset.x;
+    let up = f64::from(exit.height as f32 - height) * entry.offset.y;
     let forward = 0.5 + entry.offset.z;
     let b = exit.min_corner;
     let x_aligned = exit_axis == HorizontalAxis::X;

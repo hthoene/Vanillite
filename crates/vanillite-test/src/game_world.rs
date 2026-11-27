@@ -116,11 +116,11 @@ static BIOME_NAMES: OnceLock<Arc<[String]>> = OnceLock::new();
 static TREES: OnceLock<Arc<vanillite_game::block::tree::TreeFeatures>> = OnceLock::new();
 
 /// Sea level of Vanilla's flat worlds (`FlatLevelSource.getSeaLevel`).
-const FLAT_SEA_LEVEL: i32 = -63;
+pub(crate) const FLAT_SEA_LEVEL: i32 = -63;
 
 /// Installs the chunk facts and the block tags behaviour reads from the Vanilla data pack
 /// (extracted into `$VANILLITE_CACHE`, default `<workspace>/target/vanilla-cache`), once.
-fn install() {
+pub(crate) fn install() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         let cache = std::env::var_os("VANILLITE_CACHE").map_or_else(
@@ -246,7 +246,7 @@ impl std::fmt::Debug for GameWorld {
 
 /// The seed of every shuffled behaviour list's random in a scenario
 /// (`ParityHooks.SHUFFLE_SEED`).
-const PARITY_SHUFFLE_SEED: i64 = 0x5348_5546;
+pub(crate) const PARITY_SHUFFLE_SEED: i64 = 0x5348_5546;
 
 impl GameWorld {
     /// The world of `spec`. The simulation runs on the world's thread only, so serial and
@@ -397,7 +397,19 @@ impl GameWorld {
                 self.bolt_hits = hits;
                 continue;
             }
-            if kind == ids::FALLING_BLOCK || kind == ids::TNT {
+            if kind == ids::FALLING_BLOCK {
+                // The entities a landing block hurts take the damage (and drop their loot)
+                // before it lands.
+                if let Some(resume) =
+                    vanillite_game::block::falling::tick_until_hurt(&mut self.level, id)
+                {
+                    self.explosion_hurts();
+                    self.spawn_drops();
+                    vanillite_game::block::falling::resume_tick(&mut self.level, id, resume);
+                }
+                continue;
+            }
+            if kind == ids::TNT {
                 vanillite_game::entities::tick_entity(&mut self.level, id, kind);
                 self.explosion_hurts();
                 continue;
@@ -526,11 +538,15 @@ impl GameWorld {
     /// The explosion damage of the living entities the last explosions hit
     /// (`WorldMobs::apply_explosion_hurts` of the server).
     fn explosion_hurts(&mut self) {
-        if self.level.output().explosion_hurts.is_empty() {
+        if self.level.output().explosion_hurts.is_empty()
+            && self.level.output().falling_hurts.is_empty()
+        {
             return;
         }
         let hurts = std::mem::take(&mut self.level.output().explosion_hurts);
+        let falling = std::mem::take(&mut self.level.output().falling_hurts);
         self.with_env(|level, ents, env, cx| {
+            vanillite_game::block::falling::apply_falling_hurts(level, ents, env, cx, falling);
             for hurt in hurts {
                 let mut source = match (hurt.source, hurt.indirect) {
                     _ if hurt.bad_respawn_point => DamageSource::of(env.types.bad_respawn_point),
@@ -569,6 +585,16 @@ impl GameWorld {
     /// other effects go to clients nobody has.
     fn spawn_drops(&mut self) {
         for effect in std::mem::take(&mut self.effects) {
+            // `ServerPlayer.die`: `tellNeutralMobsThatIDied` (as the server does on this effect).
+            if let Effect::Died { victim, .. } = effect
+                && self.level.entities.player(victim).is_some()
+                && self.rules.bool(Rule::FORGIVE_DEAD_PLAYERS)
+            {
+                vanillite_game::mob::common::tell_neutral_mobs_player_died(
+                    &mut self.level.entities,
+                    victim,
+                );
+            }
             if let Effect::Experience { pos, amount } = effect {
                 // The merge group comes from the level random (`tryMergeToExisting`).
                 let (entities, network_ids, random) = self.level.entity_parts();
@@ -647,6 +673,14 @@ impl GameWorld {
                 survival_player::do_tick_end(&mut entity, data, env, result);
             }
         });
+        // The players' contact with blocks (`post_player_game_events` of the server).
+        let mut actions = Vec::new();
+        for (_, p) in self.level.entities.players.iter_mut() {
+            actions.append(&mut p.survival.world_actions);
+        }
+        for action in actions {
+            action.apply_to_level(&mut self.level);
+        }
         self.spawn_drops();
     }
 
@@ -717,185 +751,220 @@ impl GameWorld {
     }
 
     fn add_mob(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
-        if let Some(kind) = EntityTypeId::by_name(&spec.kind).and_then(MinecartKind::of) {
-            let rot = Rotation {
-                y_rot: spec.rot[0],
-                x_rot: spec.rot[1],
-                y_head_rot: spec.rot[0],
-            };
-            let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-            let id = minecart::spawn(
-                &mut self.level.entities,
-                &self.network_ids,
-                spec.uuid(index),
-                pos,
-                rot,
-                minecart::MinecartData::new(kind, spec.seed),
-            );
-            if let (Some(m), Some(mut e)) = (spec.motion, self.level.entities.store.get_mut(id)) {
-                e.set_velocity(Vec3::new(m[0], m[1], m[2]));
-            }
-            self.names.push((id, spec.name.clone()));
-            return Ok(());
-        }
-        let kind = EntityTypeId::by_name(&spec.kind)
-            .and_then(Kind::of)
-            .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
-        let mut m = MobData::new(kind, spec.seed);
-        // Only a `Mob` has `finalizeSpawn`.
-        if spec.finalize && kind.family() != vanillite_game::mob::Family::Decor {
-            // `finalizeSpawn(level, difficulty, COMMAND, null)` with the level random.
-            let pos = BlockPos::containing(spec.pos[0], spec.pos[1], spec.pos[2]);
-            let mut random = std::mem::replace(self.level.random(), LegacyRandom::new(0));
-            {
-                let mut ctx = vanillite_game::mob::fam::SpawnContext::simple(
-                    self.difficulty,
-                    vanillite_game::mob::fam::SpawnReason::Command,
-                );
-                ctx.pos = pos;
-                ctx.level = Some(&self.level);
-                ctx.env = self.env;
-                kinds::finalize_spawn(&mut m, &mut ctx, &mut random);
-            }
-            *self.level.random() = random;
-        }
-        if let Some(baby) = spec.baby {
-            m.baby = baby;
-            m.age = if baby { -24000 } else { 0 };
-        }
-        m.y_body_rot = spec.rot[0];
-        let rot = Rotation {
-            y_rot: spec.rot[0],
-            x_rot: spec.rot[1],
-            y_head_rot: spec.rot[0],
-        };
-        let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-        let id = mob::spawn(
-            &mut self.level.entities,
+        let id = spawn_mob(
+            &mut self.level,
             &self.network_ids,
-            spec.uuid(index),
-            pos,
-            rot,
-            m,
-        );
+            self.env,
+            self.difficulty,
+            spec,
+            index,
+        )?;
         self.names.push((id, spec.name.clone()));
         Ok(())
     }
 
     /// The trace detail of an entity (see [`crate::trace`]).
     fn detail(&self, row: usize) -> Option<Map<String, Value>> {
-        let ents = &self.level.entities;
-        let core = ents.store.columns();
-        let id = core.id[row];
-        let mut d = Map::new();
-        if let Some(name) = self.name_of(id) {
-            d.insert("name".into(), json!(name));
+        let name_of = |id| self.name_of(id).map(str::to_owned);
+        entity_detail(
+            &self.level.entities,
+            row,
+            &name_of,
+            self.spec.player_state,
+            self.spec.sleep_state,
+        )
+    }
+}
+
+/// A scenario entity besides players like `ScenarioEntities.mob` makes it: a minecart, or a
+/// mob created with its seed, `finalizeSpawn` with the level random, made a baby if asked.
+pub(crate) fn spawn_mob(
+    level: &mut Level,
+    network_ids: &NetworkIds,
+    env: Environment,
+    difficulty: Difficulty,
+    spec: &EntitySpec,
+    index: usize,
+) -> Result<EntityId, String> {
+    if let Some(kind) = EntityTypeId::by_name(&spec.kind).and_then(MinecartKind::of) {
+        let rot = Rotation {
+            y_rot: spec.rot[0],
+            x_rot: spec.rot[1],
+            y_head_rot: spec.rot[0],
+        };
+        let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
+        let id = minecart::spawn(
+            &mut level.entities,
+            network_ids,
+            spec.uuid(index),
+            pos,
+            rot,
+            minecart::MinecartData::new(kind, spec.seed),
+        );
+        if let (Some(m), Some(mut e)) = (spec.motion, level.entities.store.get_mut(id)) {
+            e.set_velocity(Vec3::new(m[0], m[1], m[2]));
         }
-        if let Some(item) = ents.item(id) {
-            d.insert(
-                "item".into(),
-                json!(vanillite_data::item::ItemId(item.stack.item).name()),
+        return Ok(id);
+    }
+    let kind = EntityTypeId::by_name(&spec.kind)
+        .and_then(Kind::of)
+        .ok_or_else(|| format!("{}: no mob behaviour in Vanillite", spec.kind))?;
+    let mut m = MobData::new(kind, spec.seed);
+    // Only a `Mob` has `finalizeSpawn`.
+    if spec.finalize && kind.family() != vanillite_game::mob::Family::Decor {
+        // `finalizeSpawn(level, difficulty, COMMAND, null)` with the level random.
+        let pos = BlockPos::containing(spec.pos[0], spec.pos[1], spec.pos[2]);
+        let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
+        {
+            let mut ctx = vanillite_game::mob::fam::SpawnContext::simple(
+                difficulty,
+                vanillite_game::mob::fam::SpawnReason::Command,
             );
-            d.insert("count".into(), json!(item.stack.count));
+            ctx.pos = pos;
+            ctx.level = Some(level);
+            ctx.env = env;
+            kinds::finalize_spawn(&mut m, &mut ctx, &mut random);
         }
-        let bits = |f: f32| json!(f.to_bits() as i32);
-        let rot = core.rot[row];
-        let living = |d: &mut Map<String, Value>, body: f32, hp: f32, death: i32| {
+        *level.random() = random;
+    }
+    if let Some(baby) = spec.baby {
+        m.baby = baby;
+        m.age = if baby { -24000 } else { 0 };
+    }
+    m.y_body_rot = spec.rot[0];
+    let rot = Rotation {
+        y_rot: spec.rot[0],
+        x_rot: spec.rot[1],
+        y_head_rot: spec.rot[0],
+    };
+    let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
+    let id = mob::spawn(
+        &mut level.entities,
+        network_ids,
+        spec.uuid(index),
+        pos,
+        rot,
+        m,
+    );
+    Ok(id)
+}
+
+/// The trace detail of the entity in row `row` (see [`crate::trace`]); `name_of` gives the
+/// scenario names.
+pub(crate) fn entity_detail(
+    ents: &Entities,
+    row: usize,
+    name_of: &dyn Fn(EntityId) -> Option<String>,
+    player_state: bool,
+    sleep_state: bool,
+) -> Option<Map<String, Value>> {
+    let core = ents.store.columns();
+    let id = core.id[row];
+    let mut d = Map::new();
+    if let Some(name) = name_of(id) {
+        d.insert("name".into(), json!(name));
+    }
+    if let Some(item) = ents.item(id) {
+        d.insert(
+            "item".into(),
+            json!(vanillite_data::item::ItemId(item.stack.item).name()),
+        );
+        d.insert("count".into(), json!(item.stack.count));
+    }
+    let bits = |f: f32| json!(f.to_bits() as i32);
+    let rot = core.rot[row];
+    let living = |d: &mut Map<String, Value>, body: f32, hp: f32, death: i32| {
+        d.insert(
+            "rot".into(),
+            json!([
+                bits(rot.y_rot),
+                bits(rot.x_rot),
+                bits(rot.y_head_rot),
+                bits(body)
+            ]),
+        );
+        d.insert("hp".into(), bits(hp));
+        if death > 0 {
+            d.insert("death".into(), json!(death));
+        }
+    };
+    if let Some(p) = ents.player(id) {
+        living(
+            &mut d,
+            p.survival.y_body_rot,
+            p.survival.health,
+            p.survival.death_time,
+        );
+        if player_state {
+            let hand = |s: &vanillite_game::item::ItemStack| {
+                json!([vanillite_game::item::item_id(s).name(), s.count])
+            };
             d.insert(
-                "rot".into(),
+                "food".into(),
+                json!([p.survival.food.food_level, bits(p.survival.food.saturation)]),
+            );
+            d.insert(
+                "hands".into(),
                 json!([
-                    bits(rot.y_rot),
-                    bits(rot.x_rot),
-                    bits(rot.y_head_rot),
-                    bits(body)
+                    hand(p.inventory.selected_item()),
+                    hand(&p.inventory.offhand)
                 ]),
             );
-            d.insert("hp".into(), bits(hp));
-            if death > 0 {
-                d.insert("death".into(), json!(death));
-            }
-        };
-        if let Some(p) = ents.player(id) {
-            living(
-                &mut d,
-                p.survival.y_body_rot,
-                p.survival.health,
-                p.survival.death_time,
+        }
+        if sleep_state {
+            let s = &p.survival;
+            d.insert(
+                "sleep".into(),
+                json!({
+                    "pos": s.sleeping_pos.map(|b| json!([b.x, b.y, b.z])),
+                    "timer": s.sleep_timer,
+                    "pose": vanillite_game::player::encode::pose_id(core.pose[row]),
+                    "spawn": s.respawn.as_ref().map(|r| json!([r.pos.x, r.pos.y, r.pos.z, r.forced])),
+                }),
             );
-            if self.spec.player_state {
-                let hand = |s: &vanillite_game::item::ItemStack| {
-                    json!([vanillite_game::item::item_id(s).name(), s.count])
-                };
-                d.insert(
-                    "food".into(),
-                    json!([p.survival.food.food_level, bits(p.survival.food.saturation)]),
-                );
-                d.insert(
-                    "hands".into(),
-                    json!([
-                        hand(p.inventory.selected_item()),
-                        hand(&p.inventory.offhand)
-                    ]),
-                );
-            }
-            if self.spec.sleep_state {
-                let s = &p.survival;
-                d.insert(
-                    "sleep".into(),
-                    json!({
-                        "pos": s.sleeping_pos.map(|b| json!([b.x, b.y, b.z])),
-                        "timer": s.sleep_timer,
-                        "pose": vanillite_game::player::encode::pose_id(core.pose[row]),
-                        "spawn": s.respawn.as_ref().map(|r| json!([r.pos.x, r.pos.y, r.pos.z, r.forced])),
-                    }),
-                );
-            }
         }
-        if ents.minecart(id).is_some() {
-            d.insert("rot".into(), json!([bits(rot.y_rot), bits(rot.x_rot)]));
-        }
-        if let Some(m) = ents.mob(id) {
-            living(&mut d, m.y_body_rot, m.health, m.death_time);
-        }
-        // Armor stands and mannequins are living entities but no `Mob`.
-        if let Some(m) = ents
-            .mob(id)
-            .filter(|m| m.kind.family() != vanillite_game::mob::Family::Decor)
-        {
-            d.insert("rng".into(), json!(m.random.state()));
-            if let Some(t) = m.target {
-                let name = self.name_of(t).map_or_else(
-                    || {
-                        ents.store
-                            .get(t)
-                            .map_or("?", |e| e.kind().name())
-                            .to_owned()
-                    },
-                    str::to_owned,
-                );
-                d.insert("target".into(), json!(name));
-            }
-            d.insert("goals".into(), running(m.kind, &m.goals.slots));
-            d.insert("targets".into(), running(m.kind, &m.targets.slots));
-            if let Some(path) = m.nav.path.as_ref().filter(|p| !p.is_done()) {
-                let nodes: Vec<Value> = path
-                    .nodes
-                    .iter()
-                    .map(|n| json!([n.x, n.y, n.z, path_type_name(n.kind)]))
-                    .collect();
-                d.insert(
-                    "path".into(),
-                    json!({
-                        "to": [path.target.x, path.target.y, path.target.z],
-                        "next": path.next,
-                        "reach": path.reached,
-                        "nodes": nodes,
-                    }),
-                );
-            }
-        }
-        (!d.is_empty()).then_some(d)
     }
+    if ents.minecart(id).is_some() {
+        d.insert("rot".into(), json!([bits(rot.y_rot), bits(rot.x_rot)]));
+    }
+    if let Some(m) = ents.mob(id) {
+        living(&mut d, m.y_body_rot, m.health, m.death_time);
+    }
+    // Armor stands and mannequins are living entities but no `Mob`.
+    if let Some(m) = ents
+        .mob(id)
+        .filter(|m| m.kind.family() != vanillite_game::mob::Family::Decor)
+    {
+        d.insert("rng".into(), json!(m.random.state()));
+        if let Some(t) = m.target {
+            let name = name_of(t).unwrap_or_else(|| {
+                ents.store
+                    .get(t)
+                    .map_or("?", |e| e.kind().name())
+                    .to_owned()
+            });
+            d.insert("target".into(), json!(name));
+        }
+        d.insert("goals".into(), running(m.kind, &m.goals.slots));
+        d.insert("targets".into(), running(m.kind, &m.targets.slots));
+        if let Some(path) = m.nav.path.as_ref().filter(|p| !p.is_done()) {
+            let nodes: Vec<Value> = path
+                .nodes
+                .iter()
+                .map(|n| json!([n.x, n.y, n.z, path_type_name(n.kind)]))
+                .collect();
+            d.insert(
+                "path".into(),
+                json!({
+                    "to": [path.target.x, path.target.y, path.target.z],
+                    "next": path.next,
+                    "reach": path.reached,
+                    "nodes": nodes,
+                }),
+            );
+        }
+    }
+    (!d.is_empty()).then_some(d)
 }
 
 /// The running goals by Vanilla class name, sorted.
@@ -1097,6 +1166,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         },
         ("Wildlife", "Puff") => "PufferfishPuffGoal",
         ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
+        ("Wildlife", "GolemStroll") => "GolemRandomStrollInVillageGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
         ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
         (_, variant) => leak(if variant.ends_with("Goal") {
@@ -1914,12 +1984,12 @@ fn visible_light(chunks: &Chunks, storing: &[bool], pos: BlockPos) -> u8 {
     sky << 4
 }
 
-fn inside(p: BlockPos, min: BlockPos, max: BlockPos) -> bool {
+pub(crate) fn inside(p: BlockPos, min: BlockPos, max: BlockPos) -> bool {
     p.x >= min.x && p.y >= min.y && p.z >= min.z && p.x <= max.x && p.y <= max.y && p.z <= max.z
 }
 
 /// Pending ticks inside `min..=max` in drain order, delays relative to the game time.
-fn observe_ticks(
+pub(crate) fn observe_ticks(
     level: &Level,
     ticks: &LevelTicks,
     min: BlockPos,

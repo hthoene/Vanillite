@@ -1,3 +1,0 @@
-tick = 23
-cause = "after the hit on tick 20 the zombified piglin draws 2 numbers from its random on tick 23, Vanilla 4 (anger alert / target)"
-owner = "architect #120"

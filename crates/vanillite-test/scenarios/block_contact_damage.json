@@ -1,0 +1,423 @@
+{
+  "description": "Living entities touching blocks (entityInside / stepOn): a pig against a cactus, in a grown sweet berry bush, on a lit campfire, in a wither rose, freezing in powder snow (ticks_frozen, freeze damage), on magma and on redstone ore (lit by stepOn), the hurt pigs with Resistance III so they live; players on a campfire, in powder snow and in a wither rose.",
+  "tier": "fast",
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      22,
+      -58,
+      8
+    ]
+  ],
+  "ticks": 200,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        22,
+        -58,
+        8
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        2,
+        -58,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        2
+      ],
+      "to": [
+        5,
+        -58,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        2
+      ],
+      "block": "minecraft:sweet_berry_bush[age=3]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        8,
+        -60,
+        2
+      ],
+      "to": [
+        8,
+        -58,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        2
+      ],
+      "block": "minecraft:campfire[lit=true]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        2
+      ],
+      "to": [
+        11,
+        -58,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        2
+      ],
+      "block": "minecraft:wither_rose"
+    },
+    {
+      "op": "fill",
+      "from": [
+        14,
+        -60,
+        2
+      ],
+      "to": [
+        14,
+        -58,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -60,
+        2
+      ],
+      "block": "minecraft:powder_snow"
+    },
+    {
+      "op": "fill",
+      "from": [
+        17,
+        -60,
+        2
+      ],
+      "to": [
+        17,
+        -58,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        20,
+        -60,
+        2
+      ],
+      "to": [
+        20,
+        -58,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -61,
+        2
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        2
+      ],
+      "block": "minecraft:cactus"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -59,
+        2
+      ],
+      "block": "minecraft:cactus"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -61,
+        2
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        20,
+        -61,
+        2
+      ],
+      "block": "minecraft:redstone_ore"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        6
+      ],
+      "to": [
+        2,
+        -58,
+        6
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        6
+      ],
+      "block": "minecraft:campfire[lit=true]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        6
+      ],
+      "to": [
+        5,
+        -58,
+        6
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        6
+      ],
+      "block": "minecraft:powder_snow"
+    },
+    {
+      "op": "fill",
+      "from": [
+        8,
+        -60,
+        6
+      ],
+      "to": [
+        8,
+        -58,
+        6
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:wither_rose"
+    }
+  ],
+  "entities": [
+    {
+      "name": "p_fire",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -59.5625,
+        6.5
+      ]
+    },
+    {
+      "name": "p_snow",
+      "type": "minecraft:player",
+      "pos": [
+        5.5,
+        -60.0,
+        6.5
+      ]
+    },
+    {
+      "name": "p_rose",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        6.5
+      ]
+    },
+    {
+      "name": "cactus",
+      "type": "minecraft:pig",
+      "pos": [
+        2.6,
+        -60.0,
+        2.5
+      ],
+      "seed": 21,
+      "finalize": false
+    },
+    {
+      "name": "berry",
+      "type": "minecraft:pig",
+      "pos": [
+        5.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 22,
+      "finalize": false
+    },
+    {
+      "name": "campfire",
+      "type": "minecraft:pig",
+      "pos": [
+        8.5,
+        -59.5625,
+        2.5
+      ],
+      "seed": 23,
+      "finalize": false
+    },
+    {
+      "name": "rose",
+      "type": "minecraft:pig",
+      "pos": [
+        11.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 24,
+      "finalize": false
+    },
+    {
+      "name": "snow",
+      "type": "minecraft:pig",
+      "pos": [
+        14.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 25,
+      "finalize": false
+    },
+    {
+      "name": "magma",
+      "type": "minecraft:pig",
+      "pos": [
+        17.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 26,
+      "finalize": false
+    },
+    {
+      "name": "ore",
+      "type": "minecraft:pig",
+      "pos": [
+        20.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 27,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "cactus",
+      "effect": "minecraft:resistance",
+      "duration": 400,
+      "amplifier": 2
+    },
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "campfire",
+      "effect": "minecraft:resistance",
+      "duration": 400,
+      "amplifier": 2
+    },
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "rose",
+      "effect": "minecraft:resistance",
+      "duration": 400,
+      "amplifier": 2
+    },
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "magma",
+      "effect": "minecraft:resistance",
+      "duration": 400,
+      "amplifier": 2
+    }
+  ]
+}

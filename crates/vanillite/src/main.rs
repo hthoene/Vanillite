@@ -14,6 +14,24 @@ use vanillite_server::ServerBuilder;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Returns freed memory of the allocator to the system.
+fn release_memory() {
+    #[cfg(target_env = "musl")]
+    {
+        // Part of the mimalloc library the global allocator links.
+        unsafe extern "C" {
+            fn mi_collect(force: bool);
+        }
+        // SAFETY: `mi_collect` may be called from any thread at any time.
+        unsafe { mi_collect(true) };
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` may be called from any thread at any time.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 const USAGE: &str = "\
 Usage: vanillite [command] [options]
 
@@ -87,6 +105,7 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
         .spawn(move || {
             let mut builder = ServerBuilder::new(dir);
             builder.version(version());
+            builder.memory_release(release_memory);
             let server = match builder.start() {
                 Ok(server) => server,
                 Err(e) => {

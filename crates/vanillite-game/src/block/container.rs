@@ -14,6 +14,7 @@ use vanillite_base::{Aabb, BlockPos, Direction, Vec3};
 use vanillite_data::block::{BlockId, BlockKind, BlockState};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_protocol::text::Component;
+use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::{PosExt, StateExt};
 
 use super::{BlockBehaviour, Interaction, UseContext, sound_id};
@@ -177,6 +178,12 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         }
         _ => {}
     }
+    if matches!(
+        kind,
+        Kind::Chest | Kind::TrappedChest | Kind::EnderChest | Kind::Barrel
+    ) {
+        b.tick = Some(recheck_openers);
+    }
     match kind {
         Kind::Chest
         | Kind::TrappedChest
@@ -188,6 +195,12 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
             b.analog_output = Some(super::dispenser::container_signal);
         }
         _ => {}
+    }
+    if matches!(
+        kind,
+        Kind::Chest | Kind::TrappedChest | Kind::Barrel | Kind::EnderChest
+    ) {
+        b.tick = Some(recheck_open);
     }
     if kind == Kind::TrappedChest {
         b.signal = Some(trapped_chest_signal);
@@ -562,7 +575,8 @@ pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockE
         BlockEntity::Shelf(s) => &s.items,
         _ => return,
     };
-    let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();
+    // Every slot draws its drop position, empty ones too.
+    let items: Vec<ItemStack> = items.to_vec();
     for stack in items {
         drop_item_stack(level, pos, stack);
     }
@@ -897,14 +911,104 @@ pub fn start_open(level: &mut Level, pos: BlockPos, spectator: bool) {
             c.openers += 1;
             let current = c.openers;
             openers_changed(level, state, pos, previous, current);
+            if previous == 0 {
+                schedule_recheck(level, state, pos);
+            }
         }
         Some(BlockEntity::EnderChest { openers }) => {
             let previous = *openers;
             *openers += 1;
             let current = *openers;
             openers_changed(level, state, pos, previous, current);
+            if previous == 0 {
+                schedule_recheck(level, state, pos);
+            }
         }
         _ => {}
+    }
+}
+
+/// `ContainerOpenersCounter.scheduleRecheck`: chests, barrels and ender chests count their
+/// viewers again in 5 ticks.
+fn schedule_recheck(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if matches!(
+        kind_of(state.block()),
+        Some(Kind::Chest | Kind::TrappedChest | Kind::Barrel | Kind::EnderChest)
+    ) {
+        level.schedule_block_tick(pos, state.block(), 5);
+    }
+}
+
+/// `tick` of chests, barrels and ender chests: `recheckOpen` (`recheckOpeners`): the viewers
+/// are counted again from the players and copper golems that have the container open near it
+/// (a viewer that left without closing no longer counts); while any remain, again in 5 ticks.
+fn recheck_open(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let previous = match level.block_entity(pos) {
+        Some(BlockEntity::Container(c)) => c.openers,
+        Some(BlockEntity::EnderChest { openers }) => *openers,
+        _ => return,
+    };
+    // `getEntitiesWithContainerOpen`: the box of the block inflated by the interaction range
+    // (a player's 4.5) plus 4.
+    let range = 4.5 + 4.0;
+    let (min, max) = (
+        Vec3::new(
+            f64::from(pos.x) - range,
+            f64::from(pos.y) - range,
+            f64::from(pos.z) - range,
+        ),
+        Vec3::new(
+            f64::from(pos.x) + 1.0 + range,
+            f64::from(pos.y) + 1.0 + range,
+            f64::from(pos.z) + 1.0 + range,
+        ),
+    );
+    let near = |level: &Level, id: EntityId| {
+        level.entities.store.get(id).is_some_and(|e| {
+            let b = e.aabb();
+            b.max_x > min.x
+                && b.min_x < max.x
+                && b.max_y > min.y
+                && b.min_y < max.y
+                && b.max_z > min.z
+                && b.min_z < max.z
+        })
+    };
+    let mut count = 0;
+    for (id, p) in level.entities.players.iter() {
+        if p.game_mode == vanillite_config::GameMode::Spectator || !near(level, id) {
+            continue;
+        }
+        let viewing = p.inventory.container.as_ref().is_some_and(|m| {
+            m.storage_positions()
+                .into_iter()
+                .flatten()
+                .any(|v| v == pos)
+        });
+        if viewing {
+            count += 1;
+        }
+    }
+    for (id, m) in level.entities.mobs.iter() {
+        if m.kind != crate::mob::Kind::CopperGolem || !near(level, id) {
+            continue;
+        }
+        let golem = crate::mob::fam::mount::copper_golem::golem(m);
+        let open = golem.opened_chest.is_some_and(|(opened, c)| {
+            opened == pos || matches!(c, ContainerRef::Double(a, b) if a == pos || b == pos)
+        });
+        if open {
+            count += 1;
+        }
+    }
+    match level.block_entity_mut(pos) {
+        Some(BlockEntity::Container(c)) => c.openers = count,
+        Some(BlockEntity::EnderChest { openers }) => *openers = count,
+        _ => return,
+    }
+    openers_changed(level, state, pos, previous, count);
+    if count > 0 {
+        schedule_recheck(level, state, pos);
     }
 }
 
@@ -931,6 +1035,23 @@ pub fn stop_open(level: &mut Level, pos: BlockPos, spectator: bool) {
     }
 }
 
+/// The delay of `ContainerOpenersCounter.scheduleRecheck`.
+const OPENERS_RECHECK_DELAY: i32 = 5;
+
+/// The scheduled tick of chests, ender chests and barrels (`recheckOpen`): an open container
+/// checks its viewers again every five ticks. The viewer count here is kept exact by
+/// [`start_open`] and [`stop_open`], so only the next check is scheduled.
+fn recheck_openers(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let open = match level.block_entity(pos) {
+        Some(BlockEntity::Container(c)) => c.openers > 0,
+        Some(BlockEntity::EnderChest { openers }) => *openers > 0,
+        _ => false,
+    };
+    if open {
+        level.schedule_block_tick(pos, state.block(), OPENERS_RECHECK_DELAY);
+    }
+}
+
 /// `onOpen` / `onClose` / `openerCountChanged` of the kinds that count viewers.
 fn openers_changed(
     level: &mut Level,
@@ -947,6 +1068,13 @@ fn openers_changed(
     let events = crate::level::game_event::events();
     if opened {
         level.game_event_at(None, events.container_open, pos);
+        // `ContainerOpenersCounter.scheduleRecheck`.
+        if matches!(
+            kind,
+            Kind::Chest | Kind::TrappedChest | Kind::EnderChest | Kind::Barrel
+        ) {
+            level.schedule_block_tick(pos, state.block(), OPENERS_RECHECK_DELAY);
+        }
     } else if closed {
         level.game_event_at(None, events.container_close, pos);
     }

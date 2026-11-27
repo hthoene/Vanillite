@@ -892,7 +892,9 @@ impl WorldMobs {
                 if !level.chunks.in_entity_ticking_range(chunk) {
                     continue;
                 }
-                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
+                if portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel) {
+                    continue;
+                }
                 crate::blocks::tick_item(
                     &mut ents,
                     &level.chunks,
@@ -902,7 +904,7 @@ impl WorldMobs {
                     items.settings,
                     &mut self.item_scratch,
                 );
-                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
+                portal::enter_portals(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
@@ -919,13 +921,24 @@ impl WorldMobs {
                     }
                     *left -= 1;
                 }
-                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
+                if portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel) {
+                    continue;
+                }
                 level.entities = ents;
-                vanillite_game::entities::tick_entity(level, id, kind);
+                if kind == ids::FALLING_BLOCK {
+                    // The entities a landing block hurts take the damage before it lands.
+                    if let Some(resume) = vanillite_game::block::falling::tick_until_hurt(level, id)
+                    {
+                        self.apply_explosion_hurts(level, survival, global, dimension);
+                        vanillite_game::block::falling::resume_tick(level, id, resume);
+                    }
+                } else {
+                    vanillite_game::entities::tick_entity(level, id, kind);
+                }
                 self.apply_explosion_hurts(level, survival, global, dimension);
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
-                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
+                portal::enter_portals(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             let is_mob = is_mob_kind(kind);
@@ -951,11 +964,13 @@ impl WorldMobs {
                 continue;
             }
             if kind == ids::EXPERIENCE_ORB {
-                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
+                if portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel) {
+                    continue;
+                }
                 level.entities = ents;
                 vanillite_game::entities::tick_entity(level, id, kind);
                 ents = std::mem::take(&mut level.entities);
-                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
+                portal::enter_portals(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             if is_mob && activation > 0.0 && !self.ticks.is_multiple_of(20) {
@@ -975,8 +990,9 @@ impl WorldMobs {
             }
             // Throwables handle portals inside their tick (`ThrowableProjectile.tick`).
             let throwable = is_missile && ents.missile(id).is_some_and(|d| d.kind.is_throwable());
-            if !throwable {
-                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
+            if !throwable && portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel)
+            {
+                continue;
             }
             {
                 let blocks = WorldBlocks(&level.chunks);
@@ -1038,7 +1054,7 @@ impl WorldMobs {
                 ents = std::mem::take(&mut level.entities);
             }
             if !throwable {
-                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
+                portal::enter_portals(level, &mut ents, id, &mut self.cx.gateways);
             }
             if ents.mob(id).is_some_and(|m| m.removed) {
                 ents.despawn(id);
@@ -1188,13 +1204,14 @@ impl WorldMobs {
         global: &Global,
         dimension: &str,
     ) {
-        if level.output().explosion_hurts.is_empty() {
+        if level.output().explosion_hurts.is_empty() && level.output().falling_hurts.is_empty() {
             return;
         }
         let state = &global.level;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let rules = state.rules().clone();
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
+        let falling = std::mem::take(&mut level.output().falling_hurts);
         let no_blocks = NoBlocks;
         let raining = |_| false;
         let mut no_gateway = |_| false;
@@ -1210,6 +1227,15 @@ impl WorldMobs {
             &names,
         );
         let mut ents = std::mem::take(&mut level.entities);
+        if !falling.is_empty() {
+            vanillite_game::block::falling::apply_falling_hurts(
+                level,
+                &mut ents,
+                &mut env,
+                &mut self.cx,
+                falling,
+            );
+        }
         for hurt in hurts {
             // `damageSources().explosion(source, indirect)`.
             let mut source = match (hurt.source, hurt.indirect) {
@@ -1516,6 +1542,9 @@ fn environment(
             bees_stay_in_hive: false,
             creaking_active: false,
             turtle_egg_hatch_chance: 0.002,
+            sun_angle: 0.0,
+            eyeblossom_open: None,
+            nether_portal_spawns_piglins: false,
         };
     }
     let w = survival.weather;

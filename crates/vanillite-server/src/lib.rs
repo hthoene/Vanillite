@@ -11,6 +11,7 @@ pub mod anti_xray;
 mod blocks;
 mod border;
 mod bossbars;
+pub mod budget;
 mod chat;
 mod chunk_tickets;
 mod clock;

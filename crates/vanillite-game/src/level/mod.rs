@@ -159,6 +159,8 @@ pub struct LevelSettings {
     pub send_command_feedback: bool,
     /// `mobGriefing` game rule (`MOB_GRIEFING`).
     pub mob_griefing: bool,
+    /// `projectiles_can_break_blocks` game rule.
+    pub projectiles_can_break_blocks: bool,
     /// `block_explosion_drop_decay` game rule.
     pub block_explosion_drop_decay: bool,
     /// `players_sleeping_percentage` game rule.
@@ -208,6 +210,7 @@ impl Default for LevelSettings {
             max_command_sequence_length: 65536,
             send_command_feedback: true,
             mob_griefing: true,
+            projectiles_can_break_blocks: true,
             block_explosion_drop_decay: true,
             players_sleeping_percentage: 100,
             bed_rule: crate::block::bed::BedRule::can_sleep_when_dark(),
@@ -259,6 +262,9 @@ impl LevelSettings {
         self.send_command_feedback = rules.bool(Rule::SEND_COMMAND_FEEDBACK);
         if let Some(v) = get("mob_griefing") {
             self.mob_griefing = v != 0;
+        }
+        if let Some(v) = get("projectiles_can_break_blocks") {
+            self.projectiles_can_break_blocks = v != 0;
         }
         self.block_explosion_drop_decay = rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY);
         if let Some(v) = get("players_sleeping_percentage") {
@@ -348,6 +354,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// The damage of the living entities falling blocks land on, for the mob system.
+    pub falling_hurts: Vec<crate::block::falling::FallingHurt>,
     /// Magic damage block entities deal (conduits): target and amount.
     pub magic_hurts: Vec<(vanillite_world::entity::EntityId, f32)>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
@@ -444,6 +452,9 @@ pub struct Level {
     /// `soundSeedGenerator`: the seeds of sounds without an explicit seed; separate from the
     /// level random so sounds do not shift the simulation's random sequence.
     sound_seeds: LegacyRandom,
+    /// The seed of the next entity [`Level::load_entity`] creates instead of one from its UUID
+    /// (an entity arriving from another world, [`Level::load_travelled_entity`]).
+    next_entity_seed: Option<i64>,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
     /// The server's named random sequences (loot tables).
@@ -543,6 +554,7 @@ impl Level {
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
             sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
+            next_entity_seed: None,
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             random_sequences: Arc::new(std::sync::Mutex::new(
                 crate::random_sequences::RandomSequences::new(seed),
@@ -1432,7 +1444,20 @@ impl Level {
         if block::beehive::is_beehive(state.block()) {
             block::beehive::neighbour_changed_shape(self, pos, state, neighbour_pos);
         }
-        shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state)
+        let new = shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state);
+        // `PotentSulfurBlock.validBlockState`: a block that becomes a periodic geyser starts a
+        // new countdown.
+        if state.block() == vanillite_data::block::ids::POTENT_SULFUR
+            && !matches!(
+                state.value("potent_sulfur_state"),
+                Some("erupting" | "dormant")
+            )
+            && new.value("potent_sulfur_state") == Some("dormant")
+            && let Some(BlockEntity::PotentSulfur { countdown }) = self.block_entity_mut(pos)
+        {
+            *countdown = -1;
+        }
+        new
     }
 
     /// `state.canSurvive(level, pos)`.
@@ -1533,14 +1558,19 @@ impl Level {
     /// random of its own, as Vanilla's entities draw it from theirs, so spawning entities does
     /// not shift the level random.
     pub fn new_uuid(&mut self) -> u128 {
+        self.new_uuid_and_seed().0
+    }
+
+    /// [`Self::new_uuid`] with the seed of the new entity's own random.
+    pub fn new_uuid_and_seed(&mut self) -> (u128, i64) {
         // A new entity: it takes its seed like Vanilla's constructor.
-        crate::mob::new_entity_seed();
+        let seed = crate::mob::new_entity_seed();
         let most = self.sound_seeds.next_long() as u64;
         let least = self.sound_seeds.next_long() as u64;
         // Version 4, IETF variant.
         let most = (most & !0xF000) | 0x4000;
         let least = (least & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;
-        (u128::from(most) << 64) | u128::from(least)
+        ((u128::from(most) << 64) | u128::from(least), seed)
     }
 
     /// Whether `pos` lies in a chunk where blocks tick.

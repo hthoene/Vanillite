@@ -23,7 +23,7 @@ use crate::template::structure::JointType;
 use crate::template::transform::{direction_by_name, transform};
 use crate::template::{
     BoundingBox, LiquidSettings, Mirror, Rotation, StructurePlaceSettings, StructureProcessor,
-    StructureTemplate,
+    StructureTemplate, StructureTemplateManager,
 };
 
 /// A jigsaw block of a pool element as `getShuffledJigsawBlocks` returns it
@@ -264,11 +264,13 @@ impl PoolElement {
     /// (its callers filter it out); this returns the block at `position` for it.
     pub fn bounding_box(&self, position: BlockPos, rotation: Rotation) -> BoundingBox {
         match self {
-            Self::Single(single) => {
-                single
-                    .template
-                    .bounding_box_with(position, rotation, BlockPos::ZERO, Mirror::None)
-            }
+            Self::Single(single) => StructureTemplate::bounding_box_of(
+                single.size,
+                position,
+                rotation,
+                BlockPos::ZERO,
+                Mirror::None,
+            ),
             Self::List(list) => {
                 let mut boxes = list
                     .elements
@@ -354,7 +356,10 @@ pub struct SinglePoolElement {
     pub projection: Projection,
     /// `overrideLiquidSettings`.
     pub override_liquid_settings: Option<LiquidSettings>,
-    template: Arc<StructureTemplate>,
+    /// The template's `getSize()`. The template itself comes from `templates` when the element
+    /// is placed (`getTemplate(manager)`), so only placed templates take memory.
+    size: BlockPos,
+    templates: Arc<StructureTemplateManager>,
     /// The processors of `getSettings` in Vanilla's order: the block ignore processor, jigsaw
     /// replacement, the element's list, the projection's (`gravity` for terrain matching); a
     /// legacy element moves the ignore processor (now also ignoring air) to the end.
@@ -375,7 +380,7 @@ impl SinglePoolElement {
             .as_str()
             .map(qualify)
             .ok_or_else(|| Error::new("pool element location is not a string"))?;
-        let template = parser.template(&location)?;
+        let template = parser.template_outline(&location)?;
         let processors_json = field(json, "processors")?;
         let list = parser.processor_list(processors_json)?;
         let override_liquid_settings = match json.get("override_liquid_settings") {
@@ -440,7 +445,8 @@ impl SinglePoolElement {
             },
             projection,
             override_liquid_settings,
-            template,
+            size: template.size(),
+            templates: Arc::clone(parser.template_manager()),
             processors,
             jigsaws,
         })
@@ -501,7 +507,12 @@ impl SinglePoolElement {
         } else {
             settings.add_processors(&self.processors);
         }
-        self.template.place_in_world(
+        // `StructureTemplateManager.tryLoad` treats a file that cannot be read as missing (it
+        // was read when the pools were parsed, so only a file changed since can fail here).
+        let Ok(template) = self.templates.get_or_create(&self.location) else {
+            return false;
+        };
+        template.place_in_world(
             ctx.level,
             position,
             reference,

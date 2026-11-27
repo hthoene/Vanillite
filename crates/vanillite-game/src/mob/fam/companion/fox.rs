@@ -237,6 +237,8 @@ pub fn register_goals(m: &mut MobData) {
     );
     m.can_pick_up_loot = true;
     m.nav.can_float = true;
+    let follow = m.attrs.follow_range;
+    m.nav.set_required_path_length(32.0, follow);
 }
 
 /// `setTargetGoals`: red foxes hunt land prey first, snow foxes fish.

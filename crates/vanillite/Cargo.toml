@@ -20,5 +20,8 @@ log.workspace = true
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = { version = "0.1", default-features = false }
 
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc.workspace = true
+
 [lints]
 workspace = true

@@ -13,7 +13,7 @@ use crate::level::Level;
 use crate::mob::animal::{self, Interaction};
 use crate::mob::fam::{FamGoal, Interact};
 use crate::mob::goals;
-use crate::mob::nav::{LookKind, MoveKind, NavKind, Operation};
+use crate::mob::nav::{LookKind, MoveKind, NavKind, NavVariant, Operation};
 use crate::mob::{MobData, Tick};
 use crate::player::encode::DataWriter;
 
@@ -72,6 +72,25 @@ pub fn init(m: &mut MobData) {
     setup_for_age(m);
 }
 
+/// `EntityTypes.HAPPY_GHAST.create(level, BREEDING)` and `setBaby(true)`: a ghastling
+/// (`ageBoundaryReached` runs `babyGhastSetup` on the brain made by the constructor).
+pub fn new_ghastling(seed: i64) -> MobData {
+    let mut m = MobData::new(crate::mob::Kind::HappyGhast, seed);
+    // The constructor's brain: the adult setup dropped it, so it is made again from the
+    // random as it was then (after the constructor's yaw draw), which ends where it is now.
+    let mut then = vanillite_base::random::LegacyRandom::new(seed);
+    let _ = then.next_float();
+    let now = std::mem::replace(&mut m.random, then);
+    m.brain = None;
+    super::ai::happy_ghast_brain(&mut m);
+    m.random = now;
+    m.baby = true;
+    m.age = -24000;
+    setup_for_age(&mut m);
+    register_goals(&mut m);
+    m
+}
+
 /// `adultGhastSetup` / `babyGhastSetup`: the controls of the age.
 fn setup_for_age(m: &mut MobData) {
     if m.baby {
@@ -81,8 +100,11 @@ fn setup_for_age(m: &mut MobData) {
         };
         m.look.kind = LookKind::Default;
         m.nav.kind = NavKind::Flying;
+        m.nav.variant = NavVariant::BabyHappyGhast;
         m.nav.can_float = true;
         m.nav.can_open_doors = false;
+        let follow = m.attrs.follow_range;
+        m.nav.set_required_path_length(48.0, follow);
         if m.brain.is_none() {
             super::ai::happy_ghast_brain(m);
         }
@@ -90,6 +112,9 @@ fn setup_for_age(m: &mut MobData) {
         m.move_ctl.kind = MoveKind::Custom;
         m.look.kind = LookKind::Custom;
         m.nav.kind = NavKind::Flying;
+        m.nav.variant = NavVariant::Default;
+        let follow = m.attrs.follow_range;
+        m.nav.set_required_path_length(16.0, follow);
         m.brain = None;
     }
 }

@@ -241,6 +241,12 @@ pub struct Survival {
     /// Game events of the player's moves (`STEP`, `SWIM`, `HIT_GROUND`) for the world to
     /// post: event, position and the affected block.
     pub game_events: Vec<(u16, Vec3, Option<vanillite_data::block::BlockState>)>,
+    /// World changes of the player's contact with blocks (trampled farmland, redstone ore
+    /// stepped on) for the world to apply.
+    pub world_actions: Vec<crate::mob::WorldAction>,
+    /// `getTicksFrozen` and `isInPowderSnow`.
+    pub ticks_frozen: i32,
+    pub in_powder_snow: bool,
     /// `lastHurtMob` with the tick it was hit (`lastHurtMobTimestamp`).
     pub last_hurt_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// `lastHurtByMob` with the tick it hit (`lastHurtByMobTimestamp`).
@@ -337,6 +343,9 @@ impl Default for Survival {
             move_dist: 0.0,
             next_step: 1.0,
             game_events: Vec::new(),
+            world_actions: Vec::new(),
+            ticks_frozen: 0,
+            in_powder_snow: false,
             last_hurt_mob: None,
             last_hurt_by_mob: None,
             using_item: None,
@@ -1418,8 +1427,7 @@ pub fn die(
             event: entity_event::DEATH,
         }),
     });
-    entity.set_pose(Pose::Dying);
-    entity.set_dims(crate::player::dimensions(Pose::Dying));
+    // `ServerPlayer.die` does not call `LivingEntity.die`: the pose (and the box) stay.
     let s = &mut player.survival;
     // `die`: a sleeper leaves its bed.
     if s.sleeping_pos.is_some() {
@@ -1569,6 +1577,7 @@ pub fn do_tick_ai(
     if let Some((kind, entry)) = player.survival.portal.handle(can_use_portal, portal_delay) {
         return Break(TickResult::Portal(kind, entry));
     }
+    player.survival.in_powder_snow = false;
     update_fluids(entity, player, env);
     update_swimming(entity, player);
     {
@@ -1702,6 +1711,7 @@ pub fn do_tick_ai(
         if !spectator {
             apply_block_effects(entity, player, env);
         }
+        tick_freezing(entity, player, env);
         if enter_portals(entity, player, env) {
             result = TickResult::Credits;
         }
@@ -1872,20 +1882,72 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
             vanillite_base::math::floor(pos.y - 0.2),
             vanillite_base::math::floor(pos.z),
         );
+        let on_state = env.blocks.block_state(on);
         // `MagmaBlock.stepOn`: careful (sneaking) players are safe.
-        if env
-            .blocks
-            .block_state(on)
-            .is_some_and(|s| env.facts.is_hot_floor(s))
+        if on_state.is_some_and(|s| env.facts.is_hot_floor(s))
             && !flags.contains(EntityFlags::CROUCHING)
         {
             let source = DamageSource::of(env.types.hot_floor);
             hurt(entity, player, env, source, 1.0);
+        } else if on_state.is_some_and(|s| crate::block::contact::has_step_on(s.block()))
+            && !flags.contains(EntityFlags::CROUCHING)
+        {
+            // `RedStoneOreBlock.stepOn`, sculk sensors and shriekers.
+            player
+                .survival
+                .world_actions
+                .push(crate::mob::WorldAction::StepOn(on, id));
         }
     }
     let was_on_fire = player.survival.fire_ticks > 0;
+    let was_freezing = player.survival.ticks_frozen > 0;
     let previous = player.survival.fire_ticks;
     let inside = blocks::inside_blocks(env.blocks, env.facts, aabb);
+    // The `entityInside` effects that act at once.
+    if inside.cactus {
+        let source = DamageSource::of(env.types.cactus);
+        hurt(entity, player, env, source, 1.0);
+    }
+    if inside.berry_bush == Some(true) {
+        // `SweetBerryBushBlock.entityInside`: the client reports the player's movement.
+        let moved = entity.as_ref().velocity();
+        if moved.x * moved.x + moved.z * moved.z > 0.0
+            && (moved.x.abs() >= f64::from(0.003_f32) || moved.z.abs() >= f64::from(0.003_f32))
+        {
+            let source = DamageSource::of(env.types.sweet_berry_bush);
+            hurt(entity, player, env, source, 1.0);
+        }
+    }
+    if let Some(damage) = inside.campfire {
+        let source = DamageSource::of(env.types.campfire);
+        hurt(entity, player, env, source, damage);
+    }
+    if inside.wither_rose
+        && env.difficulty != Difficulty::Peaceful
+        && !Abilities::of(player.game_mode).invulnerable
+        && !is_invulnerable_to(player, env, env.types.wither)
+    {
+        // `WitherRoseBlock.entityInside`.
+        let mut host = crate::effect::living::PlayerHost {
+            entity,
+            player,
+            env,
+            players: None,
+        };
+        crate::effect::active::add(
+            &mut host,
+            crate::effect::EffectInstance::new(crate::effect::MobEffect::WITHER, 40, 0),
+        );
+        crate::effect::living::sync_player(entity, player, env);
+    }
+    if inside.powder_snow.is_some() {
+        // `InsideBlockEffectType.FREEZE`.
+        player.survival.in_powder_snow = true;
+        if player_can_freeze(player) {
+            let s = &mut player.survival;
+            s.ticks_frozen = (s.ticks_frozen + 1).min(crate::mob::living::TICKS_TO_FREEZE);
+        }
+    }
     if let Some(damage) = inside.fire {
         // `BaseFireBlock.fireIgnite`, then the fire damage.
         let s = &mut player.survival;
@@ -1919,7 +1981,16 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
             );
         }
     }
-    if inside.water {
+    if let Some(snow) = inside.powder_snow
+        && player.survival.fire_ticks > 0
+    {
+        // A burning player melts the powder snow (`runBefore(EXTINGUISH)`).
+        player
+            .survival
+            .world_actions
+            .push(crate::mob::WorldAction::DestroyBlock(snow, false));
+    }
+    if inside.water || inside.powder_snow.is_some() {
         let s = &mut player.survival;
         s.fire_ticks = s.fire_ticks.min(0);
     }
@@ -1933,7 +2004,9 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         let s = &mut player.survival;
         s.fire_ticks = s.fire_ticks.min(0);
     }
-    if was_on_fire && player.survival.fire_ticks <= 0 {
+    if was_on_fire && player.survival.fire_ticks <= 0
+        || was_freezing && player.survival.ticks_frozen <= 0
+    {
         // `playEntityOnFireExtinguishedSound`.
         let pitch = 1.6 + (env.random.next_float() - env.random.next_float()) * 0.4;
         let seed = crate::survival::sound_seed();
@@ -1952,6 +2025,45 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     let s = &mut player.survival;
     if s.fire_ticks <= 0 && !ignited {
         s.fire_ticks = -FIRE_IMMUNE_TICKS;
+    }
+}
+
+/// `LivingEntity.canFreeze` of a player: not a spectator, no leather armor.
+fn player_can_freeze(player: &PlayerData) -> bool {
+    use crate::item::EquipmentSlot;
+    use vanillite_data::item::ids;
+    if player.game_mode == GameMode::Spectator {
+        return false;
+    }
+    let leather = [
+        ids::LEATHER_BOOTS,
+        ids::LEATHER_LEGGINGS,
+        ids::LEATHER_CHESTPLATE,
+        ids::LEATHER_HELMET,
+        ids::LEATHER_HORSE_ARMOR,
+    ];
+    ![
+        EquipmentSlot::Feet,
+        EquipmentSlot::Legs,
+        EquipmentSlot::Chest,
+        EquipmentSlot::Head,
+        EquipmentSlot::Body,
+    ]
+    .into_iter()
+    .any(|slot| leather.contains(&crate::item::item_id(player.inventory.equipment(slot))))
+}
+
+/// `LivingEntity.aiStep`'s freezing: thawing outside powder snow and the freeze damage every
+/// two seconds once fully frozen (the speed penalty is the client's).
+fn tick_freezing(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    let freezes = player_can_freeze(player);
+    let s = &mut player.survival;
+    if !s.in_powder_snow || !freezes {
+        s.ticks_frozen = (s.ticks_frozen - 2).max(0);
+    }
+    if s.tick_count % 40 == 0 && s.ticks_frozen >= crate::mob::living::TICKS_TO_FREEZE && freezes {
+        let source = DamageSource::of(env.types.freeze);
+        hurt(entity, player, env, source, 1.0);
     }
 }
 
@@ -2161,6 +2273,35 @@ fn check_fall_damage(
                     let kind = env.types.stalagmite;
                     cause_fall_damage(entity, player, env, fall + 2.5, 2.0, kind);
                 }
+                Landing::Bed => {
+                    let fall = fall * f64::from(1.0_f32 - 0.5);
+                    cause_fall_damage(entity, player, env, fall, 1.0, env.types.fall);
+                }
+                Landing::Farmland => {
+                    // `FarmlandBlock.fallOn` (spawn protection is not checked).
+                    if f64::from(env.random.next_float()) < fall - 0.5 {
+                        let dims = entity.as_ref().dims();
+                        if crate::block::contact::can_trample(dims.width, dims.height) {
+                            let id = entity.as_ref().id();
+                            player
+                                .survival
+                                .world_actions
+                                .push(crate::mob::WorldAction::TrampleFarmland(on_pos, id));
+                        }
+                    }
+                    cause_fall_damage(entity, player, env, fall, 1.0, env.types.fall);
+                }
+                Landing::PowderSnow => {
+                    if fall >= 4.0 {
+                        let id = entity.as_ref().id();
+                        let sound = if fall < 7.0 {
+                            "minecraft:entity.player.small_fall"
+                        } else {
+                            "minecraft:entity.player.big_fall"
+                        };
+                        player_sound(env, id, pos, sound);
+                    }
+                }
             }
         }
         reset_fall_distance(player);
@@ -2303,9 +2444,7 @@ fn simulate_travel(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     };
     let y = if v.y.abs() < 0.003 { 0.0 } else { v.y };
     entity.set_velocity(Vec3::new(x, y, z));
-    if player.survival.is_dead_or_dying() {
-        return;
-    }
+    // A dying player keeps moving (`travel` runs for immobile entities too).
     let fluids = player.survival.fluids;
     if fluids.in_water() || fluids.in_lava() {
         travel_in_fluid(entity, player, env);

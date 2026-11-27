@@ -196,8 +196,15 @@ impl FamilyHooks for Hooks {
     }
 
     fn ambient_sound_interval(kind: Kind) -> i32 {
-        // `Animal.getAmbientSoundInterval` is 120, `Mob`'s 80.
-        if Self::ageable(kind) { 120 } else { 80 }
+        match kind {
+            // `AbstractHorse`.
+            Kind::Camel | Kind::CamelHusk => 400,
+            // `Animal` and `AbstractGolem`.
+            Kind::CopperGolem => 120,
+            k if Self::ageable(k) => 120,
+            // `Mob`.
+            _ => 80,
+        }
     }
 
     fn burns_in_daylight(kind: Kind) -> bool {

@@ -75,6 +75,8 @@ pub fn init(m: &mut MobData) {
     m.nav.kind = NavKind::Flying;
     m.nav.can_open_doors = false;
     m.nav.can_float = true;
+    let follow = m.attrs.follow_range;
+    m.nav.set_required_path_length(48.0, follow);
     super::ai::allay_brain(m);
 }
 

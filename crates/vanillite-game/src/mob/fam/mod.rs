@@ -493,6 +493,8 @@ pub trait FamilyHooks {
     fn absorb(_m: &MobData, _source: &DamageSource, _env: &Env<'_>, damage: f32) -> f32 {
         damage
     }
+    /// `actuallyHurt` after the damage, before the knockback (the armadillo rolls up).
+    fn actually_hurt(_h: &mut Hurt<'_, '_>) {}
     /// After `hurtServer` hurt the mob (calls for help, teleports).
     fn after_hurt(_h: &mut Hurt<'_, '_>, _amount: f32) {}
     /// `die` before the loot (splitting, conversions, extra drops).
@@ -794,6 +796,7 @@ pub fn mob_spawn_part_last(kind: Kind) -> bool {
             | Kind::Camel
             | Kind::CamelHusk
             | Kind::Wolf
+            | Kind::Vex
     )
 }
 
@@ -890,6 +893,9 @@ pub fn hurt_filter(h: &mut Hurt<'_, '_>, kind: Kind, amount: f32) -> Option<f32>
 }
 pub fn absorb(m: &MobData, source: &DamageSource, env: &Env<'_>, damage: f32) -> f32 {
     by_family!(m.kind, damage, absorb(m, source, env, damage))
+}
+pub fn actually_hurt(h: &mut Hurt<'_, '_>, kind: Kind) {
+    by_family!(kind, (), actually_hurt(h));
 }
 pub fn after_hurt(h: &mut Hurt<'_, '_>, kind: Kind, amount: f32) {
     by_family!(kind, (), after_hurt(h, amount));

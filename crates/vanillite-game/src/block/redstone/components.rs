@@ -192,18 +192,81 @@ pub fn button_press(
     game_event(level, "block_activate", pos, player);
 }
 
-/// `ButtonBlock.tick` and `checkPressed`: without arrows in it the button pops out (arrows
-/// do not exist yet).
+/// `ButtonBlock.tick`.
 pub(super) fn button_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
-    if !powered(state) {
-        return;
+    if powered(state) {
+        button_check_pressed(level, state, pos);
     }
-    let should_be_pressed = false;
-    level.set_block_and_update(pos, state.set_flag("powered", should_be_pressed));
-    update_attached(level, state, pos);
-    let sound = BlockSet::of(state.block()).button_sound(should_be_pressed);
-    level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 1.0, 1.0);
-    game_event(level, "block_deactivate", pos, None);
+}
+
+/// `ButtonBlock.entityInside`: an arrow presses a wooden button.
+pub(super) fn button_entity_inside(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _: vanillite_world::entity::EntityId,
+) {
+    if BlockSet::of(state.block()).can_button_be_activated_by_arrows() && !powered(state) {
+        button_check_pressed(level, state, pos);
+    }
+}
+
+/// `ButtonBlock.checkPressed`: the button stays pressed while an arrow is in it.
+fn button_check_pressed(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let arrow = if BlockSet::of(state.block()).can_button_be_activated_by_arrows() {
+        first_arrow_in(level, state, pos)
+    } else {
+        None
+    };
+    let should_be_pressed = arrow.is_some();
+    if should_be_pressed != powered(state) {
+        level.set_block_and_update(pos, state.set_flag("powered", should_be_pressed));
+        update_attached(level, state, pos);
+        let sound = BlockSet::of(state.block()).button_sound(should_be_pressed);
+        level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 1.0, 1.0);
+        let event = if should_be_pressed {
+            "block_activate"
+        } else {
+            "block_deactivate"
+        };
+        game_event(level, event, pos, arrow);
+    }
+    if should_be_pressed {
+        level.schedule_block_tick(pos, state.block(), button_ticks(state.block()));
+    }
+}
+
+/// `level.getEntitiesOfClass(AbstractArrow.class, shape.bounds().move(pos))`'s first.
+fn first_arrow_in(
+    level: &Level,
+    state: BlockState,
+    pos: BlockPos,
+) -> Option<vanillite_world::entity::EntityId> {
+    let shape = state.outline_shape();
+    let first = shape.first()?;
+    let mut b = *first;
+    for s in shape {
+        for i in 0..3 {
+            b[i] = b[i].min(s[i]);
+            b[i + 3] = b[i + 3].max(s[i + 3]);
+        }
+    }
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let aabb =
+        vanillite_base::Aabb::new(x + b[0], y + b[1], z + b[2], x + b[3], y + b[4], z + b[5]);
+    let store = &level.entities.store;
+    let mut found = None;
+    store.for_each_in(&aabb, false, |id| {
+        if found.is_none()
+            && store.get(id).is_some_and(|e| {
+                crate::mob::projectile::is_arrow_kind(e.kind())
+                    || e.kind() == vanillite_data::entity::ids::TRIDENT
+            })
+        {
+            found = Some(id);
+        }
+    });
+    found
 }
 
 // --- Lamps, bulbs, rods -----------------------------------------------------------------------

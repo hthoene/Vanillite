@@ -808,7 +808,16 @@ pub(super) fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
 }
 
 pub(crate) fn set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
-    t.mob().target = target;
+    assign_target(t.mob(), target);
+}
+
+/// `Mob.setTarget` with the kinds' overrides: a zombified piglin rolls its anger sound delay
+/// and alert interval when it takes its first target.
+pub(crate) fn assign_target(m: &mut super::MobData, target: Option<EntityId>) {
+    if m.kind == super::Kind::ZombifiedPiglin && m.target.is_none() && target.is_some() {
+        super::fam::undead::zombies::piglin_first_target(m);
+    }
+    m.target = target;
 }
 
 fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
@@ -1374,7 +1383,7 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
             && m.target.is_none()
             && m.is_alive()
         {
-            m.target = Some(by);
+            assign_target(m, Some(by));
         }
     }
     t.cx.ids = ids;

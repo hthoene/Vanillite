@@ -2,7 +2,7 @@
 //! `load` with the keys of 26.3), as stored in the `entities/` region files.
 
 use vanillite_base::Vec3;
-use vanillite_base::random::{LegacyRandom, RandomSource};
+use vanillite_base::random::LegacyRandom;
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{EntityFlags, EntityRef, Rotation};
@@ -243,6 +243,9 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     {
         out.insert("Fire", m.fire_ticks.clamp(-32768, 32767) as i16);
         out.insert("Air", m.air.clamp(-32768, 32767) as i16);
+        if m.ticks_frozen > 0 {
+            out.insert("TicksFrozen", m.ticks_frozen);
+        }
         out.insert("HurtTime", m.hurt_time as i16);
         out.insert("DeathTime", m.death_time as i16);
     }
@@ -393,6 +396,7 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     }
     m.fire_ticks = int(tag, "Fire").unwrap_or(-1);
     m.air = int(tag, "Air").unwrap_or(300);
+    m.ticks_frozen = int(tag, "TicksFrozen").unwrap_or(0);
     m.fall_distance = match tag.get("fall_distance") {
         Some(Tag::Double(d)) if d.is_finite() => *d,
         _ => f64::from(float(tag, "FallDistance").unwrap_or(0.0)),
@@ -483,8 +487,6 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         Kind::Spider | Kind::Enderman => {}
         _ => super::fam::load(&mut m, tag),
     }
-    // A fresh random per loaded mob, like `Entity.random`.
-    let _ = m.random.next_int();
     Some(LoadedMob {
         pos,
         velocity,
