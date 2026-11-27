@@ -848,6 +848,13 @@ impl Digging {
         {
             level.output().piglin_anger.push((player, false));
         }
+        // `DoublePlantBlock.playerWillDestroy`: the broken half drops while the other half is
+        // still there (the `location_check` of tall grass and large ferns); `playerDestroy`
+        // then drops nothing.
+        let double_plant = is_double_plant(state);
+        if double_plant && !ctx.actor.creative() {
+            drop_resources(ctx, state, pos, &tool, None);
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -934,7 +941,9 @@ impl Digging {
             {
                 food.add_exhaustion(0.005);
             }
-            drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            if !double_plant {
+                drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            }
             // `TurtleEggBlock.playerDestroy`: one egg less (`decreaseEggs`).
             if state.block() == vanillite_data::block::ids::TURTLE_EGG
                 && let Some(level) = ctx.level.level_mut()
@@ -2240,6 +2249,20 @@ pub(crate) fn apply_block_state_component(
     (out != state).then_some(out)
 }
 
+/// `DoublePlantBlock` and its subclasses (tall flowers, tall grass, large fern, tall seagrass,
+/// small dripleaf, pitcher crop).
+fn is_double_plant(state: BlockState) -> bool {
+    use vanillite_data::block::BlockKind;
+    matches!(
+        state.block().info().kind,
+        BlockKind::DoublePlantBlock
+            | BlockKind::TallFlowerBlock
+            | BlockKind::TallSeagrassBlock
+            | BlockKind::SmallDripleafBlock
+            | BlockKind::PitcherCropBlock
+    )
+}
+
 /// `Block.dropResources` + `popResource`: loot table drops as item entities.
 fn drop_resources(
     ctx: &mut PlayContext<'_>,
@@ -2265,21 +2288,29 @@ fn drop_resources(
             entity: None,
             block_entity: Some(&components),
         };
-        // `LootContext.Builder.create`: the table's random sequence, else the level random.
-        match (
-            data.loot.block_sequence(state),
-            ctx.level.random_sequences(),
-        ) {
-            (Some(key), Some(sequences)) => {
-                let mut sequences = sequences
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                data.loot
-                    .block_drops(&loot, sequences.get(key), &mut stacks);
-            }
-            _ => {
-                let mut rng = LevelRandom(&mut *ctx.level);
-                data.loot.block_drops(&loot, &mut rng, &mut stacks);
+        // `LootContext.Builder.create`: the table's random sequence, else the level random;
+        // with the level, `location_check` sees the blocks around.
+        if let Some(level) = ctx.level.level_mut() {
+            let mut random = level.lend_random();
+            data.loot
+                .roll_block(level, pos, &loot, &mut random, &mut stacks);
+            level.restore_random(random);
+        } else {
+            match (
+                data.loot.block_sequence(state),
+                ctx.level.random_sequences(),
+            ) {
+                (Some(key), Some(sequences)) => {
+                    let mut sequences = sequences
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    data.loot
+                        .block_drops(&loot, sequences.get(key), &mut stacks);
+                }
+                _ => {
+                    let mut rng = LevelRandom(&mut *ctx.level);
+                    data.loot.block_drops(&loot, &mut rng, &mut stacks);
+                }
             }
         }
     }

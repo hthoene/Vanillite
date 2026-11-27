@@ -126,6 +126,9 @@ pub struct LootContext<'a> {
     /// Whether `this_entity` is set without an entity id: the breaker or the explosion source
     /// of block loot (`Block.dropResources(..., breaker, tool)`).
     pub this_present: bool,
+    /// The loaded block at an offset from the origin's block (`location_check` with a `block`
+    /// predicate); `None` without level access (the check holds).
+    pub neighbour: Option<&'a dyn Fn(i32, i32, i32) -> Option<BlockState>>,
     /// The entity parameters of entity loot (`LootContextParamSets.ENTITY`).
     pub entity: Option<&'a EntityLootContext<'a>>,
     /// `exploration_map` with level access: the filled map for the request at the origin, if
@@ -193,6 +196,7 @@ impl LootContext<'_> {
             holder_set: &no_holders,
             biome: None,
             this_present: false,
+            neighbour: None,
             entity: None,
             exploration_map: None,
         }
@@ -391,6 +395,18 @@ impl LootTables {
         rng: &mut dyn LootRandom,
         out: &mut Vec<ItemStack>,
     ) {
+        self.block_drops_at(ctx, None, rng, out);
+    }
+
+    /// [`Self::block_drops`] with level access: `neighbour` gives the loaded block at an
+    /// offset from the broken block (`location_check`).
+    pub fn block_drops_at(
+        &self,
+        ctx: &BlockLootContext<'_>,
+        neighbour: Option<&dyn Fn(i32, i32, i32) -> Option<BlockState>>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
         if !ctx.state.is_valid() {
             return;
         }
@@ -402,7 +418,10 @@ impl LootTables {
         else {
             return;
         };
-        let ctx = ctx.as_loot();
+        let ctx = LootContext {
+            neighbour,
+            ..ctx.as_loot()
+        };
         let mut eval = Eval {
             tables: self,
             ctx: &ctx,
@@ -687,13 +706,18 @@ impl LootTables {
     pub fn roll_block(
         &self,
         level: &crate::level::Level,
+        pos: vanillite_base::BlockPos,
         ctx: &BlockLootContext<'_>,
         fallback: &mut dyn LootRandom,
         out: &mut Vec<ItemStack>,
     ) {
+        let neighbour = |dx, dy, dz| level.chunks.block(pos.offset(dx, dy, dz)).map(BlockState);
+        let neighbour: &dyn Fn(i32, i32, i32) -> Option<BlockState> = &neighbour;
         match self.block_random_sequence(ctx.state) {
-            Some(key) => level.with_random_sequence(key, |r| self.block_drops(ctx, r, out)),
-            None => self.block_drops(ctx, fallback, out),
+            Some(key) => level.with_random_sequence(key, |r| {
+                self.block_drops_at(ctx, Some(neighbour), r, out);
+            }),
+            None => self.block_drops_at(ctx, Some(neighbour), fallback, out),
         }
     }
 
@@ -1049,6 +1073,8 @@ enum Cond {
     MatchBlock(Box<BlockPredicate>),
     /// `location_check` with `biomes`: holder set entries (`id` or `#tag`).
     Biome(Box<[Box<str>]>),
+    /// `location_check` with a `block` predicate, at a block offset from the origin.
+    LocationBlock([i32; 3], Box<BlockPredicate>),
     /// `entity_properties` with a non-empty predicate (entity loot).
     Entity(EntityTarget, Box<crate::predicate::EntityPredicate>),
     /// `entity_properties` on `this` with an empty predicate.
@@ -1650,11 +1676,28 @@ impl Parser<'_> {
                         .filter(|k| !matches!(*k, "block" | "fluid" | "biomes"))
                         .collect();
                     if other.is_empty() {
-                        match p.get("biomes") {
-                            Some(b) => Cond::Biome(holder_entries(b)?),
-                            // No level access: the neighbourhood is assumed to be as Vanilla
-                            // left it.
-                            None => Cond::Const(true),
+                        let offset = |k: &str| {
+                            o.get(k)
+                                .and_then(Value::as_i64)
+                                .and_then(|v| i32::try_from(v).ok())
+                                .unwrap_or(0)
+                        };
+                        let offset = [offset("offsetX"), offset("offsetY"), offset("offsetZ")];
+                        let mut terms = Vec::new();
+                        if let Some(b) = p.get("biomes") {
+                            terms.push(Cond::Biome(holder_entries(b)?));
+                        }
+                        // A block predicate this parser does not know holds (the
+                        // neighbourhood is assumed to be as Vanilla left it).
+                        if let Some(b) = p.get("block")
+                            && let Some(block) = self.block_predicate(object(b)?)?
+                        {
+                            terms.push(Cond::LocationBlock(offset, Box::new(block)));
+                        }
+                        match terms.len() {
+                            0 => Cond::Const(true),
+                            1 => terms.pop().unwrap_or(Cond::Const(true)),
+                            _ => Cond::AllOf(terms.into()),
                         }
                     } else {
                         self.unsupported(format!(
@@ -2549,6 +2592,11 @@ impl<'t> Eval<'t, '_> {
                 .ctx
                 .block_state
                 .is_some_and(|state| block_matches(p, state)),
+            // Without level access the neighbour is assumed to be as Vanilla left it.
+            Cond::LocationBlock([dx, dy, dz], p) => self
+                .ctx
+                .neighbour
+                .is_none_or(|at| at(*dx, *dy, *dz).is_some_and(|s| block_matches(p, s))),
             Cond::Biome(biomes) => {
                 self.ctx.origin.is_some()
                     && self
