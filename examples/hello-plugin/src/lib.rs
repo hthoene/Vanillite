@@ -1,5 +1,6 @@
-//! Example Vanillite plugin: a `/hello` command with suggestions, a join message from its
-//! config, and a simple flat generator that replaces the `chunk-generator` slot when
+//! Example Vanillite plugin: a `/hello` command with suggestions, `/hello pad` (bulk block
+//! access by numeric id from a task on the player's owner), a join message from its config,
+//! and a simple flat generator that replaces the `chunk-generator` slot when
 //! `generator.enabled` is set in `plugins/hello/config.toml`.
 //!
 //! Build it with `cargo build -p vanillite-example-hello` and put `plugin.toml` and the library
@@ -40,6 +41,27 @@ impl Plugin for Hello {
                     };
                     Ok(greet(hello, ctx, invocation, &name))
                 })
+                .then(
+                    Command::literal("pad").executes(|_: &mut Hello, ctx, invocation| {
+                        let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
+                            return Ok(0);
+                        };
+                        // Commands cannot touch blocks: the player's owner does it in a task.
+                        let server = ctx.server();
+                        let (Some(world), Some(glass)) = (
+                            server.player_world(player),
+                            server.block_state_id("minecraft:glass"),
+                        ) else {
+                            return Ok(0);
+                        };
+                        let air = server.block_state_id("minecraft:air").unwrap_or(0);
+                        let task =
+                            server.schedule(Owner::Entity(world, player), 0, 0, move |ctx| {
+                                let _ = pad(ctx, world, player, glass, air);
+                            });
+                        Ok(i32::from(task.is_ok()))
+                    }),
+                )
                 .then(
                     Command::argument("name", ArgType::Word)
                         .suggests(|_, ctx, _| {
@@ -107,6 +129,31 @@ fn greet(
         Text::colored(&template.replace("{name}", name), "aqua"),
     );
     i32::try_from(hello.greetings).unwrap_or(i32::MAX)
+}
+
+/// `/hello pad`: fills the air of the 5 × 5 layer under the player with glass, reading and
+/// writing the whole layer in one call each, by numeric block state id.
+fn pad(ctx: &mut Ctx<'_>, world: World, player: Uuid, glass: u32, air: u32) -> Result<(), Error> {
+    let at = ctx.player_position(player)?;
+    let (x, y, z) = (
+        at.x.floor() as i32,
+        at.y.floor() as i32 - 1,
+        at.z.floor() as i32,
+    );
+    let area = BlockBox::new(
+        BlockPos::new(x - 2, y, z - 2),
+        BlockPos::new(x + 2, y, z + 2),
+    );
+    let mut blocks = ctx.blocks(world, area)?;
+    for state in &mut blocks {
+        *state = if *state == air {
+            glass
+        } else {
+            vanillite_plugin::NO_BLOCK
+        };
+    }
+    ctx.set_blocks(world, area, &blocks, SetMode::Update)?;
+    Ok(())
 }
 
 /// Flat stone with a grass surface in one dimension.

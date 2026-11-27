@@ -62,15 +62,15 @@ pub use events::{BlockChange, EntityDamage, PlayerJoin, PlayerLeave, PlayerText,
 pub use generator::{ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, WorldInfo};
 pub use registrar::{Permission, Registrar};
 pub use server::{Ctx, Owner, Server, TaskId};
-pub use types::{BlockPos, Error, Text, Uuid, Vec3, World};
+pub use types::{BlockBox, BlockPos, Error, NO_BLOCK, SetMode, Text, Uuid, Vec3, World};
 pub use vanillite_abi as abi;
 pub use vanillite_abi::priority;
 
 /// The usual imports of a plugin.
 pub mod prelude {
     pub use crate::{
-        ArgType, BlockPos, Command, Ctx, Error, Owner, Permission, Plugin, Registrar, Server, Text,
-        Uuid, Vec3, World, priority,
+        ArgType, BlockBox, BlockPos, Command, Ctx, Error, Owner, Permission, Plugin, Registrar,
+        Server, SetMode, Text, Uuid, Vec3, World, priority,
     };
 }
 

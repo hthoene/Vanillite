@@ -9,7 +9,9 @@ use vanillite_base::BlockPos;
 use vanillite_config::{Config, RuleSet};
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_game::hooks::GameHooks;
-use vanillite_plugin_host::{PluginHost, ServerAccess, Settings, Text, WorldAccess};
+use vanillite_plugin_host::{
+    BlockBox, PluginHost, ServerAccess, SetMode, Settings, Text, WorldAccess,
+};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
 use vanillite_protocol::text::Component;
 
@@ -220,6 +222,11 @@ impl ServerAccess for Services {
         parse_state(state).map(|s| u32::from(s.0))
     }
 
+    fn block_state_name(&self, state: u32) -> Option<String> {
+        let state = BlockState(u16::try_from(state).ok()?);
+        state.is_valid().then(|| state_text(state))
+    }
+
     fn rule(&self, key: &str) -> Option<String> {
         self.rules.get(key).cloned()
     }
@@ -280,6 +287,66 @@ impl WorldAccess for PluginWorld<'_> {
     fn has_entity(&self, entity: u128) -> bool {
         let entities = self.0.entities();
         crate::commands::find_player(entities, entity).is_some()
+    }
+
+    fn block_id(&self, [x, y, z]: [i32; 3]) -> Option<u32> {
+        let pos = BlockPos::new(x, y, z);
+        let level = self.0.level();
+        level.is_loaded(pos).then(|| u32::from(level.block(pos).0))
+    }
+
+    fn set_block_id(
+        &mut self,
+        [x, y, z]: [i32; 3],
+        state: u32,
+        mode: SetMode,
+    ) -> Result<bool, i32> {
+        use vanillite_abi::status;
+        let state = plugin_state(state).ok_or(status::INVALID_ARGUMENT)?;
+        let pos = BlockPos::new(x, y, z);
+        let level = self.0.level_mut();
+        if !level.is_loaded(pos) {
+            return Err(status::NOT_FOUND);
+        }
+        Ok(level.set_block(pos, state, set_flags(mode)))
+    }
+
+    fn set_blocks(&mut self, area: BlockBox, states: &[u32], mode: SetMode) -> Result<usize, i32> {
+        use vanillite_abi::{limits, status};
+        if states
+            .iter()
+            .any(|&s| s != limits::NO_BLOCK && plugin_state(s).is_none())
+        {
+            return Err(status::INVALID_ARGUMENT);
+        }
+        let flags = set_flags(mode);
+        let level = self.0.level_mut();
+        let mut changed = 0;
+        for ([x, y, z], &state) in area.positions().zip(states) {
+            let pos = BlockPos::new(x, y, z);
+            if let Some(state) = plugin_state(state)
+                && level.is_loaded(pos)
+                && level.set_block(pos, state, flags)
+            {
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+}
+
+/// A block state id from a plugin, if it is one.
+fn plugin_state(state: u32) -> Option<BlockState> {
+    let state = BlockState(u16::try_from(state).ok()?);
+    state.is_valid().then_some(state)
+}
+
+/// The `setBlock` flags of a plugin's block change.
+fn set_flags(mode: SetMode) -> u32 {
+    use vanillite_game::level::update;
+    match mode {
+        SetMode::Update => update::ALL,
+        SetMode::NoPhysics => update::CLIENTS | update::KNOWN_SHAPE,
     }
 }
 
