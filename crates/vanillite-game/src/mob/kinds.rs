@@ -9,6 +9,7 @@ use vanillite_data::entity::{EntityTypeId, ids as entity_ids};
 use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::{Dimensions, EntityFlags, EntityId};
 
+use super::fam::classic;
 use super::goals::{Goal, MeleeKind};
 use super::path::{MalusTable, PathType};
 use super::physics::{self, Blocks};
@@ -482,7 +483,7 @@ pub fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
     if !m.kind.classic() {
         return fam::ambient_sound(m);
     }
-    if m.kind == Kind::Enderman && m.creepy {
+    if m.kind == Kind::Enderman && classic::enderman(m).creepy {
         return Some("minecraft:entity.enderman.scream");
     }
     m.kind.ambient_sound()
@@ -788,7 +789,8 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                 FarmClimate::Warm => 2,
             };
             if m.kind == Kind::Sheep {
-                m.sheep_color = sheep_color(climate, &mut m.random);
+                let color = sheep_color(climate, &mut m.random);
+                classic::sheep_mut(m).color = color;
             }
         }
         _ => {}
@@ -834,7 +836,7 @@ pub fn zombie_chicken_jockey(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
             ..*ctx
         };
         finalize_spawn(&mut chicken, &mut inner, &mut m.random);
-        chicken.chicken_jockey = true;
+        classic::chicken_mut(&mut chicken).jockey = true;
         ctx.extra.push(fam::ExtraMob {
             mob: chicken,
             offset: Vec3::ZERO,
@@ -947,19 +949,19 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
     }
     match t.mob_ref().kind {
         Kind::Creeper if t.mob_ref().is_alive() => {
-            let m = t.mob();
-            m.old_swell = m.swell;
-            if m.ignited {
-                m.swell_dir = 1;
+            let c = classic::creeper_mut(t.mob());
+            c.old_swell = c.swell;
+            if c.ignited {
+                c.swell_dir = 1;
             }
-            let dir = m.swell_dir;
-            if dir > 0 && m.swell == 0 {
+            let (dir, swell) = (c.swell_dir, c.swell);
+            if dir > 0 && swell == 0 {
                 play_sound(t, "minecraft:entity.creeper.primed", 1.0, 0.5);
             }
-            let m = t.mob();
-            m.swell = (m.swell + dir).max(0);
-            if m.swell >= m.max_swell {
-                m.swell = m.max_swell;
+            let c = classic::creeper_mut(t.mob());
+            c.swell = (c.swell + dir).max(0);
+            if c.swell >= c.max_swell {
+                c.swell = c.max_swell;
                 explode_creeper(t);
             }
         }
@@ -981,9 +983,10 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
 /// `Creeper.explodeCreeper`.
 fn explode_creeper(t: &mut Tick<'_, '_>) {
     let m = t.mob();
-    let multiplier = if m.powered { 2.0 } else { 1.0 };
+    let c = classic::creeper(m);
+    let multiplier = if c.powered { 2.0 } else { 1.0 };
     #[allow(clippy::cast_precision_loss)]
-    let radius = m.explosion_radius as f32 * multiplier;
+    let radius = c.explosion_radius as f32 * multiplier;
     m.dead = true;
     m.removed = true;
     let pos = t.pos();
@@ -1094,7 +1097,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         return;
     }
     if t.cx.env.is_bright_outside()
-        && t.mob_ref().tick_count >= t.mob_ref().target_change_time + 600
+        && t.mob_ref().tick_count >= classic::enderman(t.mob_ref()).target_change_time + 600
     {
         let br = t.light_magic_value();
         let sky = super::can_see_sky(t.level, t.block_pos());
@@ -1114,12 +1117,12 @@ pub fn on_fall_damage(t: &mut Tick<'_, '_>, distance: f64) {
         return;
     }
     if t.mob_ref().kind == Kind::Creeper {
-        let m = t.mob();
+        let c = classic::creeper_mut(t.mob());
         #[allow(clippy::cast_possible_truncation)]
         let add = (distance * 1.5) as i32;
-        m.swell += add;
-        if m.swell > m.max_swell - 5 {
-            m.swell = m.max_swell - 5;
+        c.swell += add;
+        if c.swell > c.max_swell - 5 {
+            c.swell = c.max_swell - 5;
         }
     }
 }
@@ -1210,16 +1213,16 @@ pub fn look_at_entity(t: &mut Tick<'_, '_>, o: Other, y_max: f32, x_max: f32) {
 
 /// `Creeper.setSwellDir`.
 pub fn set_swell_dir(t: &mut Tick<'_, '_>, dir: i32) {
-    if t.mob_ref().swell_dir != dir {
-        t.mob().swell_dir = dir;
+    if classic::creeper(t.mob_ref()).swell_dir != dir {
+        classic::creeper_mut(t.mob()).swell_dir = dir;
         t.core_mut().mark_data_dirty();
     }
 }
 
 /// `EnderMan.setBeingStaredAt` / the creepy flag (open mouth).
 pub fn set_creepy(t: &mut Tick<'_, '_>, on: bool) {
-    if t.mob_ref().creepy != on {
-        t.mob().creepy = on;
+    if classic::enderman(t.mob_ref()).creepy != on {
+        classic::enderman_mut(t.mob()).creepy = on;
         t.core_mut().mark_data_dirty();
     }
 }
@@ -1501,7 +1504,11 @@ pub fn death_loot(m: &mut MobData, killed_by_player: bool) -> Vec<crate::item::I
             }
         }
         Kind::Sheep if !m.sheared => {
-            push(SHEEP_WOOL[usize::from(m.sheep_color & 15)], 1, &mut out);
+            push(
+                SHEEP_WOOL[usize::from(classic::sheep(m).color & 15)],
+                1,
+                &mut out,
+            );
         }
         _ => {}
     }
@@ -1516,7 +1523,7 @@ pub fn enderman_leave_block(t: &mut Tick<'_, '_>) {
     let y = vanillite_base::math::floor(p.y + m.random.next_double() * 2.0);
     let z = vanillite_base::math::floor(p.z - 1.0 + m.random.next_double() * 2.0);
     let pos = BlockPos::new(x, y, z);
-    let Some(carried) = t.mob_ref().carried else {
+    let Some(carried) = classic::enderman(t.mob_ref()).carried else {
         return;
     };
     let here = t.level.block(pos);
@@ -1545,7 +1552,7 @@ pub fn enderman_leave_block(t: &mut Tick<'_, '_>) {
         return;
     }
     t.cx.actions.push(WorldAction::SetBlock(pos, carried, 3));
-    t.mob().carried = None;
+    classic::enderman_mut(t.mob()).carried = None;
     t.core_mut().mark_data_dirty();
 }
 
@@ -1579,7 +1586,7 @@ pub fn enderman_take_block(t: &mut Tick<'_, '_>) {
     // `removeBlock(pos, false)`.
     t.cx.actions
         .push(WorldAction::SetBlock(pos, BlockState::AIR, 3));
-    t.mob().carried = Some(state.block().default_state());
+    classic::enderman_mut(t.mob()).carried = Some(state.block().default_state());
     t.core_mut().mark_data_dirty();
 }
 

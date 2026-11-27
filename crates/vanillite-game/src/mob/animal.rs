@@ -11,6 +11,7 @@ use vanillite_protocol::packets::play::clientbound::{EntityEvent, SoundSource};
 use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::{EntityId, NetworkIds, Rotation};
 
+use super::fam::classic;
 use super::{Kind, MobContext, MobData, combat, kinds};
 use crate::entities::Entities;
 use crate::inventory::OFFHAND;
@@ -149,7 +150,8 @@ pub fn breed(
         return;
     };
     let kind = a.kind;
-    let (va, vb, ca, cb) = (a.variant, b.variant, a.sheep_color, b.sheep_color);
+    let (va, vb) = (a.variant, b.variant);
+    let (ca, cb) = (classic::sheep(a).color, classic::sheep(b).color);
     let cause = a.love_cause.or(b.love_cause);
     let Some(pos) = ents.store.get(parent).map(|e| e.pos()) else {
         return;
@@ -168,7 +170,7 @@ pub fn breed(
         .unwrap_or(true);
     child.variant = if pick { va } else { vb };
     if kind == Kind::Sheep {
-        child.sheep_color = offspring_color(ca, cb, pick);
+        classic::sheep_mut(&mut child).color = offspring_color(ca, cb, pick);
     }
     if kind.family() != super::Family::Classic
         && let (Some(a), Some(b)) = (ents.mob(parent), ents.mob(partner))
@@ -808,7 +810,7 @@ fn shear_sheep(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
         return;
     };
     m.sheared = true;
-    let color = usize::from(m.sheep_color & 15);
+    let color = usize::from(classic::sheep(m).color & 15);
     let count = m.random.next_int_between_inclusive(1, 3);
     let wool = kinds::SHEEP_WOOL[color];
     let Some(item) = vanillite_data::registry::ITEM.id(wool) else {
@@ -975,7 +977,9 @@ fn spawn_offspring(
     child.baby = true;
     if let Some(m) = ents.mob(target) {
         child.variant = m.variant;
-        child.sheep_color = m.sheep_color;
+        if let Some(c) = classic::try_sheep_mut(&mut child) {
+            c.color = classic::sheep(m).color;
+        }
     }
     let stack = held(ents, player, hand);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {

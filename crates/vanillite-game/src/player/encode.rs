@@ -657,13 +657,14 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             boolean(out, data_id::KIND_18, converting);
         }
         Kind::Creeper => {
-            if all || mob.swell_dir != -1 {
+            let c = crate::mob::fam::classic::creeper(mob);
+            if all || c.swell_dir != -1 {
                 item(out, data_id::KIND_16, serializer::INT, |o| {
-                    write_varint(o, mob.swell_dir);
+                    write_varint(o, c.swell_dir);
                 });
             }
-            boolean(out, data_id::KIND_17, mob.powered);
-            boolean(out, data_id::KIND_18, mob.ignited);
+            boolean(out, data_id::KIND_17, c.powered);
+            boolean(out, data_id::KIND_18, c.ignited);
         }
         Kind::Spider => {
             let f = u8::from(mob.climbing);
@@ -672,17 +673,18 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             }
         }
         Kind::Enderman => {
-            if all || mob.carried.is_some() {
+            let e = crate::mob::fam::classic::enderman(mob);
+            if all || e.carried.is_some() {
                 item(
                     out,
                     data_id::KIND_16,
                     serializer::OPTIONAL_BLOCK_STATE,
                     |o| {
-                        write_varint(o, mob.carried.map_or(0, |s| i32::from(s.0)));
+                        write_varint(o, e.carried.map_or(0, |s| i32::from(s.0)));
                     },
                 );
             }
-            boolean(out, data_id::KIND_17, mob.creepy);
+            boolean(out, data_id::KIND_17, e.creepy);
         }
         Kind::Skeleton => boolean(
             out,
@@ -693,7 +695,8 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             boolean(out, data_id::KIND_16, mob.baby);
             match mob.kind {
                 Kind::Sheep => {
-                    let wool = (mob.sheep_color & 0x0F) | if mob.sheared { 0x10 } else { 0 };
+                    let color = crate::mob::fam::classic::sheep(mob).color;
+                    let wool = (color & 0x0F) | if mob.sheared { 0x10 } else { 0 };
                     if all || wool != 0 {
                         item(out, data_id::KIND_18, serializer::BYTE, |o| o.push(wool));
                     }
