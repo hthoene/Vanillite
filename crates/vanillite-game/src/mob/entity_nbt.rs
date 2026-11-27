@@ -487,11 +487,7 @@ pub fn save_full(entities: &Entities, id: EntityId) -> Option<Compound> {
     // Decorations, mobs (armor stands and mannequins too) and minecarts with all their
     // stored data.
     let full = crate::decoration::save(entities, id)
-        .or_else(|| {
-            entities
-                .mob(id)
-                .map(|m| super::nbt::save_mob(&e, m))
-        })
+        .or_else(|| entities.mob(id).map(|m| super::nbt::save_mob(&e, m)))
         .or_else(|| {
             entities
                 .minecart(id)
@@ -522,10 +518,7 @@ pub fn save_full(entities: &Entities, id: EntityId) -> Option<Compound> {
     out.insert("Air", Tag::Short(300));
     out.insert(
         "OnGround",
-        Tag::Byte(i8::from(
-            e.flags()
-                .contains(EntityFlags::ON_GROUND),
-        )),
+        Tag::Byte(i8::from(e.flags().contains(EntityFlags::ON_GROUND))),
     );
     save_flags(e.flags(), &mut out);
     out.insert("PortalCooldown", Tag::Int(0));
@@ -550,14 +543,15 @@ pub fn save_full(entities: &Entities, id: EntityId) -> Option<Compound> {
         // `ServerPlayer.addAdditionalSaveData`'s other live state.
         out.insert(
             "FallFlying",
-            Tag::Byte(i8::from(
-                e.flags()
-                    .contains(EntityFlags::FALL_FLYING),
-            )),
+            Tag::Byte(i8::from(e.flags().contains(EntityFlags::FALL_FLYING))),
         );
         out.insert(
             "abilities",
-            Tag::Compound(abilities_nbt(p.game_mode, p.survival.flying, Compound::new())),
+            Tag::Compound(abilities_nbt(
+                p.game_mode,
+                p.survival.flying,
+                Compound::new(),
+            )),
         );
         out.insert("recipeBook", p.recipe_book.save());
         out.insert(

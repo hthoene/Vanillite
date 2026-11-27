@@ -750,6 +750,7 @@ impl GameWorld {
                 difficulty: self.difficulty,
                 game_time: level.game_time(),
                 min_y: MIN_Y,
+                logical_height: 384,
                 dimension: "minecraft:overworld",
                 raining_at: &raining,
                 border: None,

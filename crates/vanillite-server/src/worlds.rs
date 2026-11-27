@@ -311,6 +311,10 @@ impl WorldFactory {
             dimension,
             &global.level,
             bounds,
+            global
+                .dimensions
+                .facts(id)
+                .map_or(i32::try_from(bounds.1).unwrap_or(384), |f| f.logical_height),
             player_range,
             climate,
         );

@@ -719,7 +719,9 @@ impl ItemPredicate {
         self.exact.iter().all(|(_, v)| v.is_some())
             && self.predicates.iter().all(|p| match p {
                 SubPredicate::Unsupported => false,
-                SubPredicate::Items { items: Some(c), .. } => c.all().all(ItemPredicate::is_supported),
+                SubPredicate::Items { items: Some(c), .. } => {
+                    c.all().all(ItemPredicate::is_supported)
+                }
                 _ => true,
             })
     }
@@ -767,10 +769,7 @@ impl<P> CollectionPredicate<P> {
                 Some(other) => Err(format!("{k} is not a list: {other}")),
             }
         };
-        let contains = list("contains")?
-            .iter()
-            .map(&element)
-            .collect::<Res<_>>()?;
+        let contains = list("contains")?.iter().map(&element).collect::<Res<_>>()?;
         let counts = list("count")?
             .iter()
             .map(|e| {
@@ -797,12 +796,7 @@ impl<P> CollectionPredicate<P> {
                 left.retain(|p| !matches(p, v));
                 left.is_empty()
             });
-        let count = |p: &P| {
-            values
-                .iter()
-                .filter(|v| matches(p, v))
-                .count()
-        };
+        let count = |p: &P| values.iter().filter(|v| matches(p, v)).count();
         contains_ok
             && self.counts.iter().all(|(p, bounds)| {
                 bounds.matches(f64::from(u32::try_from(count(p)).unwrap_or(u32::MAX)))
@@ -813,7 +807,9 @@ impl<P> CollectionPredicate<P> {
     }
 
     fn all(&self) -> impl Iterator<Item = &P> {
-        self.contains.iter().chain(self.counts.iter().map(|(p, _)| p))
+        self.contains
+            .iter()
+            .chain(self.counts.iter().map(|(p, _)| p))
     }
 }
 
@@ -1682,10 +1678,9 @@ impl EntityPredicate {
                             Value::String(s) if name.contains('/') => {
                                 Some(vanillite_nbt::Tag::String(qualify(s)))
                             }
-                            other => normalized_component(
-                                &name,
-                                &crate::item_nbt::json_to_nbt(other),
-                            ),
+                            other => {
+                                normalized_component(&name, &crate::item_nbt::json_to_nbt(other))
+                            }
                         };
                         out.push((name, expected));
                     }
@@ -2313,7 +2308,10 @@ mod tests {
         data.insert("quest", Tag::Int(1));
         let mut nbt = Compound::new();
         nbt.insert("data", Tag::Compound(data));
-        nbt.insert("Tags", Tag::List(vanillite_nbt::List(vec![Tag::String("a".into())])));
+        nbt.insert(
+            "Tags",
+            Tag::List(vanillite_nbt::List(vec![Tag::String("a".into())])),
+        );
         v.nbt = Some(Box::new(nbt));
         v.tags = vec!["a".into()];
         assert!(p.matches(&v, &Flat, None));

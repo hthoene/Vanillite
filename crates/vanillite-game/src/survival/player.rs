@@ -498,6 +498,8 @@ pub struct Env<'a> {
     pub game_time: i64,
     /// The world's lowest block.
     pub min_y: i32,
+    /// `logicalHeight` of the world's dimension type.
+    pub logical_height: i32,
     /// The world's dimension, e.g. `minecraft:overworld`.
     pub dimension: &'a str,
     /// `Level.isRainingAt`.

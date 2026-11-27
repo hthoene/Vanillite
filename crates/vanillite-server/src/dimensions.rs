@@ -229,6 +229,15 @@ impl Dimensions {
         self.get(world).map(|d| d.kind.as_str())
     }
 
+    /// `logicalHeight` of the dimension type of the world with dimension key `dimension`
+    /// (384, the overworld's, for an unknown key).
+    pub fn logical_height_of(&self, dimension: &str) -> i32 {
+        (0..self.len())
+            .filter_map(|i| self.slot(i))
+            .find(|d| d.id == dimension)
+            .map_or(384, |d| d.facts.logical_height)
+    }
+
     /// What the server needs of a world's dimension type.
     pub fn facts(&self, world: WorldId) -> Option<DimensionFacts> {
         self.get(world).map(|d| d.facts)
@@ -323,6 +332,24 @@ fn type_facts(packs: Option<&LoadedPacks>, kind: &str) -> (DimensionFacts, Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `logicalHeight` comes from the dimension type (chorus fruit clamp, I1-04 of #272).
+    #[test]
+    fn logical_height_by_dimension_type() {
+        let dims = Dimensions::vanilla();
+        assert_eq!(dims.logical_height_of("minecraft:overworld"), 384);
+        assert_eq!(dims.logical_height_of("minecraft:the_nether"), 128);
+        assert_eq!(dims.logical_height_of("minecraft:the_end"), 256);
+        dims.register(
+            "minecraft:caves",
+            "minecraft:the_nether",
+            Some("caves"),
+            None,
+            0,
+        )
+        .unwrap();
+        assert_eq!(dims.logical_height_of("minecraft:caves"), 128);
+    }
 
     #[test]
     fn extra_worlds_keep_their_index() {
