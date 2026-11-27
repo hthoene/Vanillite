@@ -301,7 +301,7 @@ fn burn_odds(state: BlockState) -> i32 {
 }
 
 /// `FireBlock.getIgniteOdds(state)`.
-fn ignite_odds(state: BlockState) -> i32 {
+pub fn ignite_odds(state: BlockState) -> i32 {
     if waterlogged(state) {
         0
     } else {

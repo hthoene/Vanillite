@@ -369,6 +369,23 @@ pub trait ServerAccess: Send + Sync {
     fn block_state_id(&self, state: &str) -> Option<u32>;
     /// The text of a numeric block state id.
     fn block_state_name(&self, state: u32) -> Option<String>;
+    /// Whether fire can spread to a block state (`FireBlock.getIgniteOdds` above 0).
+    fn block_burnable(&self, _state: u32) -> bool {
+        false
+    }
+    /// The entry names of a data-driven registry in protocol id order, `None` for an unknown one.
+    fn registry_entries(&self, _registry: &str) -> Option<Vec<String>> {
+        None
+    }
+    /// The tag names of a registry (`tag` empty) or the entries of one tag, `None` for an
+    /// unknown registry or tag.
+    fn registry_tag(&self, _registry: &str, _tag: &str) -> Option<Vec<String>> {
+        None
+    }
+    /// Sends an online player its command tree again; `false` when offline.
+    fn update_commands(&self, _player: u128) -> bool {
+        false
+    }
     /// A `vanillite.toml` rule as TOML text.
     fn rule(&self, key: &str) -> Option<String>;
     /// Queues a console command.

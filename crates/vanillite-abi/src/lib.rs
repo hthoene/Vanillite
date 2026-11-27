@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 9;
+pub const ABI_MINOR: u16 = 10;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -1081,6 +1081,38 @@ abi! {
             /// An extra world (own folder); otherwise a dimension of the default world.
             EXTRA = 2,
         }
+        /// Flags of [`BlockTypeInfo`]. Since ABI 1.10.
+        pub mod block_type_flag: u32 {
+            /// An air block.
+            AIR = 1,
+            /// Blocks motion (`BlockState.blocksMotion`).
+            SOLID = 2,
+            /// A redstone conductor (a full, opaque block).
+            OCCLUDING = 4,
+            /// Ignited by lava.
+            FLAMMABLE = 8,
+            /// Fire can spread to it (ignite odds above 0).
+            BURNABLE = 16,
+            /// Falls when unsupported (`Fallable`).
+            GRAVITY = 32,
+            /// Has a block entity.
+            BLOCK_ENTITY = 64,
+            /// Replaceable when placing a block.
+            REPLACEABLE = 128,
+            /// A liquid.
+            LIQUID = 256,
+            /// Has an item.
+            ITEM = 512,
+        }
+        /// Flags of [`ItemTypeInfo`]. Since ABI 1.10.
+        pub mod item_type_flag: u32 {
+            /// Has a default `food` component.
+            EDIBLE = 1,
+            /// Has a default `jukebox_playable` component (a music disc).
+            RECORD = 2,
+            /// Has a default `compostable` component.
+            COMPOSTABLE = 4,
+        }
         /// Why an entity turns into another ([`event::ENTITY_TRANSFORM`]). Since ABI 1.6.
         pub mod transform_reason: u32 {
             /// Anything else.
@@ -2055,6 +2087,45 @@ abi! {
             /// The numeric id of its type (`entity_type_name` names it).
             pub kind: u32,
         }
+        /// Static facts of a block type, as `block_type_info` reports them. Since ABI 1.10.
+        pub struct BlockTypeInfo {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// Its default block state id.
+            pub default_state: u32,
+            /// The number of its block states.
+            pub state_count: u32,
+            /// Flags from [`block_type_flag`] (of the default state).
+            pub flags: u32,
+            /// Destroy time (`-1` for unbreakable blocks).
+            pub hardness: f32,
+            /// Explosion resistance.
+            pub blast_resistance: f32,
+            /// Friction (slipperiness).
+            pub friction: f32,
+            /// Speed factor of entities on it.
+            pub speed_factor: f32,
+            /// Jump factor of entities on it.
+            pub jump_factor: f32,
+        }
+        /// Static facts of an item type, as `item_type_info` reports them. Since ABI 1.10.
+        pub struct ItemTypeInfo {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// The default maximum stack size.
+            pub max_stack_size: u32,
+            /// The default durability, 0 without one.
+            pub max_damage: u32,
+            /// The default block state of the block it places, `u32::MAX` for none.
+            pub block_state: u32,
+            /// Flags from [`item_type_flag`] (of its default components).
+            pub flags: u32,
+            /// The default rarity: 0 common, 1 uncommon, 2 rare, 3 epic.
+            pub rarity: u32,
+            /// The `EquipmentSlot` ordinal of the default `equippable` component (mainhand,
+            /// offhand, feet, legs, chest, head, body, saddle), `u32::MAX` for none.
+            pub equip_slot: u32,
+        }
         /// What `world_info` tells about a world. Since ABI 1.8.
         pub struct WorldDetails {
             /// Size of this record in bytes.
@@ -2800,6 +2871,23 @@ abi! {
             /// The name of an entity type by its numeric id ([`EntityInfo::kind`]), e.g.
             /// `minecraft:zombie`. Since ABI 1.9.
             pub entity_type_name: unsafe extern "C" fn(PluginId, u32, *mut StrBuf) -> Status,
+            /// Static facts of a block type by name (e.g. `minecraft:stone`); `NOT_FOUND` for
+            /// an unknown block. Since ABI 1.10.
+            pub block_type_info: unsafe extern "C" fn(PluginId, Str, *mut BlockTypeInfo) -> Status,
+            /// Static facts of an item type by name (e.g. `minecraft:diamond_sword`);
+            /// `NOT_FOUND` for an unknown item. Since ABI 1.10.
+            pub item_type_info: unsafe extern "C" fn(PluginId, Str, *mut ItemTypeInfo) -> Status,
+            /// The entry names of a registry (e.g. `minecraft:enchantment`), static or loaded
+            /// from the data packs, one per line in protocol id order; `NOT_FOUND` for an
+            /// unknown registry. Since ABI 1.10.
+            pub registry_entries: unsafe extern "C" fn(PluginId, Str, *const ByteSink) -> Status,
+            /// The tags of a registry loaded from the data packs: with an empty tag the tag
+            /// names, else the entry names of that tag (resolved), one per line; `NOT_FOUND` for
+            /// an unknown registry or tag. Since ABI 1.10.
+            pub registry_tag: unsafe extern "C" fn(PluginId, Str, Str, *const ByteSink) -> Status,
+            /// Sends an online player its command tree again (after its permissions changed),
+            /// from any thread; `NOT_FOUND` for a player who is offline. Since ABI 1.10.
+            pub player_update_commands: unsafe extern "C" fn(PluginId, Uuid) -> Status,
         }
     }
 }
