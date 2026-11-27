@@ -36,8 +36,8 @@ pub struct Beacon {
     beam_sections: u32,
     /// `CustomName`.
     pub custom_name: Option<vanillite_protocol::text::Component>,
-    /// `lock` as stored.
-    lock: Option<Tag>,
+    /// `lock` (`LockCode`).
+    pub lock: Option<Tag>,
 }
 
 impl Default for Beacon {
@@ -115,7 +115,7 @@ impl Beacon {
         self.primary = filter(effect("primary_effect"));
         self.secondary = filter(effect("secondary_effect"));
         self.custom_name = super::container::load_name(nbt);
-        self.lock = nbt.get("lock").cloned();
+        self.lock = super::lock::load(nbt);
     }
 
     /// `saveAdditional`.
@@ -128,9 +128,7 @@ impl Beacon {
         }
         nbt.insert("Levels", self.levels);
         super::container::save_name(&self.custom_name, nbt);
-        if let Some(lock) = &self.lock {
-            nbt.insert("lock", lock.clone());
-        }
+        super::lock::save(&self.lock, nbt);
     }
 }
 

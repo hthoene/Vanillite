@@ -1228,6 +1228,52 @@ pub fn open(
     open_with(inv, level, request, who, drops, sink, None);
 }
 
+/// `ServerPlayer.openMenu` without a menu for a spectator: `container.spectatorCantOpen`.
+fn spectator_cant_open(sink: &dyn PacketSink) {
+    use vanillite_protocol::text::{Color, NamedColor};
+    sink.send(
+        &vanillite_protocol::packets::play::clientbound::SystemChat {
+            content: Component::translatable("container.spectatorCantOpen", Vec::new())
+                .color(Color::Named(NamedColor::Red)),
+            overlay: true,
+        },
+    );
+}
+
+/// `BaseContainerBlockEntity.sendChestLockedNotifications`: the `container.isLocked` overlay
+/// and `block.chest.locked` at the block's centre (between the halves of a double chest).
+fn send_chest_locked(
+    level: &mut Level,
+    positions: [Option<BlockPos>; 2],
+    title: &Component,
+    sink: &dyn PacketSink,
+) {
+    sink.send(
+        &vanillite_protocol::packets::play::clientbound::SystemChat {
+            content: Component::translatable("container.isLocked", vec![title.clone()]),
+            overlay: true,
+        },
+    );
+    let center = |p: BlockPos| {
+        (
+            f64::from(p.x) + 0.5,
+            f64::from(p.y) + 0.5,
+            f64::from(p.z) + 0.5,
+        )
+    };
+    let Some(first) = positions[0] else {
+        return;
+    };
+    let (mut x, y, mut z) = center(first);
+    if let Some(second) = positions[1] {
+        let (x2, _, z2) = center(second);
+        x += (x2 - x) / 2.0;
+        z += (z2 - z) / 2.0;
+    }
+    let sound = crate::block::sound_id("block.chest.locked");
+    level.play_sound(None, x, y, z, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
+}
+
 /// [`open`]; `plugin_items` makes it a plugin menu whose container slots are these (the
 /// menu's own) stacks.
 fn open_with(
@@ -1242,6 +1288,9 @@ fn open_with(
     if inv.container.is_some() {
         close(inv, level, who, drops, Some(sink));
     }
+    // `nextContainerCounter` comes before `createMenu`, also for a menu that does not open.
+    inv.container_counter = inv.container_counter % 100 + 1;
+    let id = inv.container_counter;
     // `RandomizableContainerBlockEntity.canOpen`: spectators cannot open containers with a
     // loot table; `createMenu` rolls the tables for the player (both halves of a chest).
     let positions = match request.storage {
@@ -1259,7 +1308,21 @@ fn open_with(
             .flatten()
             .any(|&p| crate::block::chest_loot::has_loot(level, p))
     {
+        spectator_cant_open(sink);
         return;
+    }
+    // `LockCode.canUnlock`: a locked block opens only with a matching main-hand item
+    // (`BaseContainerBlockEntity.createMenu`, the double chest's menu provider).
+    if !who.spectator {
+        let key = inv.selected_item().clone();
+        if positions
+            .iter()
+            .flatten()
+            .any(|&p| !crate::block::lock::can_open(level, p, &key))
+        {
+            send_chest_locked(level, positions, &request.title, sink);
+            return;
+        }
     }
     for p in positions.into_iter().flatten() {
         crate::block::chest_loot::unpack(level, p, request.player);
@@ -1272,8 +1335,6 @@ fn open_with(
         }
         crate::block::chest_loot::unpack_entity(level, id, request.player);
     }
-    inv.container_counter = inv.container_counter % 100 + 1;
-    let id = inv.container_counter;
     let kind = request.menu;
     let player = match (level.hooks(), request.player) {
         (Some(_), Some(p)) => level.entities.store.get(p).map_or(0, |e| e.uuid()),

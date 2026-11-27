@@ -47,6 +47,7 @@ pub mod hopper;
 pub mod interact;
 pub mod jukebox;
 pub mod lectern;
+pub mod lock;
 pub mod note;
 pub mod piston;
 pub mod place;
