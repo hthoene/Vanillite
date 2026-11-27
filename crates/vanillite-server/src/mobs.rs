@@ -470,6 +470,7 @@ impl WorldMobs {
         global: &Global,
         dimension: &str,
         spawn_point: Option<BlockPos>,
+        tiles: Option<&vanillite_game::level::tiles::TileRun<'_>>,
     ) {
         let env = environment(
             global,
@@ -534,7 +535,12 @@ impl WorldMobs {
             },
             natural,
         };
-        spawn::tick(level, &table, &mut self.spawner, &input, persistent);
+        match tiles {
+            Some(run) => {
+                spawn::tick_tiled(level, &table, &mut self.spawner, &input, persistent, run);
+            }
+            None => spawn::tick(level, &table, &mut self.spawner, &input, persistent),
+        }
         if dimension == "minecraft:overworld" {
             self.custom_spawners(
                 level,

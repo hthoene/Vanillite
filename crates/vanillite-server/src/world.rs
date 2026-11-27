@@ -9,6 +9,7 @@ use vanillite_base::hash::FxHashMap;
 use vanillite_config::{TrackingRules, WorldRules};
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
+use vanillite_game::level::tiles::TileRun;
 use vanillite_world::chunks::{Chunks, FULL_LEVEL, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
@@ -706,14 +707,28 @@ impl ServerWorld {
             let (spawn, _) = effective_spawn(level, self.players.level.spawn);
             let spawn_point = (self.dimension == "minecraft:overworld")
                 .then(|| vanillite_base::BlockPos::containing(spawn.x, spawn.y, spawn.z));
+            // `performance.region-threading`: spawning and random ticks run per tile on the
+            // compute pool; off, both keep Vanilla's serial order.
+            let compute = ctx.compute;
+            let fork = move |n: usize, job: &(dyn Fn(usize) + Sync)| compute.for_each(n, job);
+            let region = &self.rules.region_threading;
+            let tiles = region.enabled.then(|| TileRun {
+                size: i32::from(region.tile_size),
+                min_chunks: vanillite_game::level::tiles::MIN_CHUNKS,
+                fork: &fork,
+            });
             self.mobs.spawn(
                 level,
                 &self.survival,
                 ctx.global,
                 &self.dimension,
                 spawn_point,
+                tiles.as_ref(),
             );
-            level.tick_chunks(&mut self.scratch);
+            match &tiles {
+                Some(run) => level.tick_chunks_tiled(&mut self.scratch, run),
+                None => level.tick_chunks(&mut self.scratch),
+            }
             level.run_block_events();
         }
         level.set_handling_tick(false);
