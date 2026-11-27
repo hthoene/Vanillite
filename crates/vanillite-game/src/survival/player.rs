@@ -2143,15 +2143,24 @@ fn update_fluids(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut 
         }
         // `isPushedByFluid` (not flying): `applyCurrentTo(WATER, 0.014)`.
         if !player.survival.flying && player.game_mode != GameMode::Spectator {
-            push_by_water(entity, env);
+            push_by_fluid(entity, env, true, 0.014);
         }
+    }
+    // `applyCurrentTo(LAVA, ...)`: three times as hard where lava is fast (the Nether).
+    if contact.in_lava() && !player.survival.flying && player.game_mode != GameMode::Spectator {
+        let scale = if env.dimension == "minecraft:the_nether" {
+            0.007
+        } else {
+            0.002_333_333_333_333_333_5
+        };
+        push_by_fluid(entity, env, false, scale);
     }
 }
 
-/// `EntityFluidInteraction.update` and `applyCurrentTo(WATER, entity, 0.014)` for a player:
-/// the flows of the water the box touches (scaled by the height of the water so far below
-/// 0.4), averaged (other entities take the direction instead).
-fn push_by_water(entity: &mut EntityMut<'_>, env: &Env<'_>) {
+/// `EntityFluidInteraction.update` and `applyCurrentTo(fluid, entity, scale)` for a player:
+/// the flows of the water (or lava) the box touches (scaled by the height of that fluid so far
+/// below 0.4), averaged (other entities take the direction instead).
+fn push_by_fluid(entity: &mut EntityMut<'_>, env: &Env<'_>, water: bool, scale: f64) {
     let e = entity.as_ref();
     let aabb = e.aabb();
     let b = aabb.inflate(-0.001, -0.001, -0.001);
@@ -2167,7 +2176,12 @@ fn push_by_water(entity: &mut EntityMut<'_>, env: &Env<'_>) {
                     return;
                 };
                 let fluid = state.fluid_state();
-                if !env.facts.is_water(fluid) {
+                let same = if water {
+                    env.facts.is_water(fluid)
+                } else {
+                    env.facts.is_lava(fluid)
+                };
+                if !same {
                     continue;
                 }
                 let top = f64::from(y)
@@ -2176,7 +2190,7 @@ fn push_by_water(entity: &mut EntityMut<'_>, env: &Env<'_>) {
                     continue;
                 }
                 height = height.max(top - aabb.min_y);
-                let mut flow = crate::mob::living::fluid_flow(&flows, env.facts, pos, fluid, true);
+                let mut flow = crate::mob::living::fluid_flow(&flows, env.facts, pos, fluid, water);
                 if height < 0.4 {
                     flow = flow * height;
                 }
@@ -2189,7 +2203,7 @@ fn push_by_water(entity: &mut EntityMut<'_>, env: &Env<'_>) {
         return;
     }
     let old = e.velocity();
-    let mut impulse = sum * (1.0 / f64::from(count)) * 0.014;
+    let mut impulse = sum * (1.0 / f64::from(count)) * scale;
     if old.x.abs() < 0.003 && old.z.abs() < 0.003 && impulse.length() < 0.004_500_000_000_000_000_5
     {
         impulse = impulse.normalize() * 0.004_500_000_000_000_000_5;

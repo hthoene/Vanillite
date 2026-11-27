@@ -115,6 +115,13 @@ impl BlockFacts {
         )
     }
 
+    /// [`without_tags`](Self::without_tags), built once: enough for what only needs water and
+    /// lava (`EntityFluidInteraction` of entities outside the mob tick).
+    pub fn fluids_only() -> &'static BlockFacts {
+        static FACTS: std::sync::OnceLock<BlockFacts> = std::sync::OnceLock::new();
+        FACTS.get_or_init(BlockFacts::without_tags)
+    }
+
     fn has(v: &[bool], block: BlockId) -> bool {
         v.get(usize::from(block.0)).copied().unwrap_or(false)
     }

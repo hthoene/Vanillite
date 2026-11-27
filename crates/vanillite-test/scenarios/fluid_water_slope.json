@@ -1,0 +1,260 @@
+{
+  "description": "Water slope finding (FlowingFluid.getSpread, slope distance 4): a nearer hole wins over farther ones, a hole five blocks away is found and six away is not, equally near holes both get water, no hole in reach spreads to all sides, and the search walks around a wall to a hole behind it. Holes fill and the streams stop above them.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      79,
+      -60,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -61,
+        10
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -62,
+        10
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        28,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        28,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        39,
+        -61,
+        10
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        36,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        39,
+        -62,
+        10
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        36,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        55,
+        -61,
+        1
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        55,
+        -62,
+        1
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        69,
+        -60,
+        9
+      ],
+      "to": [
+        73,
+        -60,
+        9
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        71,
+        -61,
+        11
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        71,
+        -62,
+        11
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        23,
+        -60,
+        7
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        39,
+        -60,
+        7
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        55,
+        -60,
+        7
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        71,
+        -60,
+        7
+      ],
+      "block": "minecraft:water"
+    }
+  ]
+}
