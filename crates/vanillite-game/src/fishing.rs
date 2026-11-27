@@ -856,7 +856,7 @@ fn retrieve(
         }
         let mut own = LegacyRandom::from_state(d.random_state);
         for stack in items {
-            let (uuid, y_rot, _) = crate::mob::new_item_entity();
+            let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
             let (xa, ya, za) = (opos.x - bpos.x, opos.y - bpos.y, opos.z - bpos.z);
             let velocity = Vec3::new(
                 xa * 0.1,
@@ -866,6 +866,7 @@ fn retrieve(
             let fish = crate::player::play::game_data()
                 .is_some_and(|data| data.item_in_tag(stack.item, "minecraft:fishes"));
             env.out.push(crate::survival::Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos: bpos,
                 velocity,

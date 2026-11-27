@@ -390,8 +390,9 @@ fn drop_above(ix: &mut Interact<'_, '_>, pos: vanillite_base::Vec3, stack: ItemS
     if stack.is_empty() {
         return;
     }
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     ix.env.out.push(crate::survival::Effect::DropItem {
+        random: item_random,
         uuid,
         pos: vanillite_base::Vec3::new(pos.x, pos.y + 1.5, pos.z),
         velocity,

@@ -13,8 +13,6 @@ use vanillite_world::chunks::{Chunks, FULL_LEVEL, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
 
-use vanillite_base::random::XoroshiroRandom;
-
 use crate::blocks::LevelEffects;
 use crate::compute::Compute;
 use crate::global::Global;
@@ -99,8 +97,6 @@ pub struct ServerWorld {
     packets: ChunkPackets,
     /// Sounds and crack progress of the player handlers.
     effects: LevelEffects,
-    /// The random of the item entities (`Entity.random`).
-    item_random: XoroshiroRandom,
     /// The counters of the world access rules at the last report ([`Self::report_rules`]).
     reported: RuleCounters,
     updates: WorldUpdates,
@@ -210,11 +206,6 @@ impl ServerWorld {
         if dimension == "minecraft:overworld" {
             mobs.init_trader_spawner(&data);
         }
-        // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as i64)
-            ^ i64::from(id.0);
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
@@ -241,7 +232,6 @@ impl ServerWorld {
             focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
-            item_random: XoroshiroRandom::new(seed),
             reported: RuleCounters::default(),
             scratch: Vec::new(),
             survival,
@@ -989,7 +979,6 @@ impl ServerWorld {
         self.mobs
             .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
         let items = crate::mobs::ItemTick {
-            random: &mut self.item_random,
             settings: crate::blocks::ItemSettings {
                 lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
                 merge_radius: self.rules.items.merge_radius,

@@ -1144,6 +1144,7 @@ fn spawn_drops(
         }
         if let Effect::DropItem {
             uuid,
+            random: item_random,
             pos,
             velocity,
             y_rot,
@@ -1157,7 +1158,12 @@ fn spawn_drops(
                 *pos,
                 *velocity,
                 *y_rot,
-                vanillite_game::item_entity::ItemData::new(stack.clone(), *pickup_delay, None),
+                vanillite_game::item_entity::ItemData::new(
+                    stack.clone(),
+                    *pickup_delay,
+                    None,
+                    *item_random,
+                ),
             );
             entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
         }

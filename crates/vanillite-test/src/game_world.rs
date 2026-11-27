@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
-use vanillite_base::random::{LegacyRandom, RandomSource};
+use vanillite_base::random::LegacyRandom;
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::light::LightNibbles;
@@ -236,8 +236,6 @@ pub struct GameWorld {
     clock_time: i64,
     /// The entities the ticking lightning bolt strikes.
     bolt_hits: Vec<EntityId>,
-    /// The own random of item entities (not seeded per entity yet).
-    item_random: LegacyRandom,
     item_scratch: vanillite_server::ItemScratch,
     /// The packet-level players, in join order.
     clients: Vec<Client>,
@@ -557,7 +555,6 @@ impl GameWorld {
             level_rng: spec.level_rng,
             clock_time: spec.time.unwrap_or(0),
             bolt_hits: Vec::new(),
-            item_random: LegacyRandom::new(spec.seed),
             item_scratch: vanillite_server::ItemScratch::default(),
             clients: Vec::new(),
             network_names: Vec::new(),
@@ -694,7 +691,6 @@ impl GameWorld {
             }
             if kind == ids::ITEM {
                 let level = &mut self.level;
-                let random = &mut self.item_random;
                 let (types, facts) = PACK.get().expect("installed");
                 let mut ents = std::mem::take(&mut level.entities);
                 let burn = {
@@ -703,7 +699,6 @@ impl GameWorld {
                         &mut ents,
                         &level.chunks,
                         id,
-                        &mut || random.next_float(),
                         MIN_Y,
                         vanillite_server::ItemSettings {
                             lifetime: ITEM_LIFETIME,
@@ -895,6 +890,7 @@ impl GameWorld {
             }
             if let Effect::DropItem {
                 uuid,
+                random: item_random,
                 pos,
                 velocity,
                 y_rot,
@@ -908,7 +904,7 @@ impl GameWorld {
                     pos,
                     velocity,
                     y_rot,
-                    ItemData::new(stack, pickup_delay, None),
+                    ItemData::new(stack, pickup_delay, None, item_random),
                 );
             }
         }
