@@ -1,3 +1,3 @@
-tick = 0
-cause = "the freshly generated End has no end crystals on its spikes; later the dragon does not spawn and the client gets no boss bar (#195, client view #196)"
+tick = 2
+cause = "the end crystals on the spikes reach the client one tick early (tick 2 instead of 3) after the teleport into the End; later the dragon does not spawn and the client gets no boss bar (#195, client view #196)"
 owner = "world-developer #195"
