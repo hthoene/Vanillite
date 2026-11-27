@@ -1086,7 +1086,8 @@ fn clear_transition(t: &Tick<'_, '_>, dims: crate::mob::Dimensions, a: Vec3, b: 
         } else {
             p + n * (min * f64::from(0.9_f32))
         };
-        if !crate::mob::physics::no_collision(t.level, &dims.bounding_box(p), &mut scratch) {
+        if !crate::mob::physics::no_collision(&t.level.view(), &dims.bounding_box(p), &mut scratch)
+        {
             return false;
         }
     }

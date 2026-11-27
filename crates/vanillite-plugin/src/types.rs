@@ -74,6 +74,84 @@ impl BlockPos {
     }
 }
 
+/// A box of block positions, both corners inclusive. Block arrays over a box
+/// ([`Ctx::blocks`](crate::Ctx::blocks), [`Ctx::set_blocks`](crate::Ctx::set_blocks)) are
+/// ordered by Y, then Z, then X (X fastest): see [`BlockBox::index`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BlockBox {
+    /// The lowest corner.
+    pub min: BlockPos,
+    /// The highest corner.
+    pub max: BlockPos,
+}
+
+impl BlockBox {
+    /// The box between two corners in any order.
+    pub fn new(a: BlockPos, b: BlockPos) -> BlockBox {
+        BlockBox {
+            min: BlockPos::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z)),
+            max: BlockPos::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z)),
+        }
+    }
+
+    /// Its size in blocks along X, Y and Z.
+    pub fn size(&self) -> [usize; 3] {
+        let len = |lo: i32, hi: i32| hi.abs_diff(lo) as usize + 1;
+        [
+            len(self.min.x, self.max.x),
+            len(self.min.y, self.max.y),
+            len(self.min.z, self.max.z),
+        ]
+    }
+
+    /// Its number of blocks.
+    pub fn volume(&self) -> usize {
+        let [x, y, z] = self.size();
+        x * y * z
+    }
+
+    /// The array index of a position inside the box.
+    pub fn index(&self, pos: BlockPos) -> usize {
+        let [sx, _, sz] = self.size();
+        let (x, y, z) = (
+            pos.x.abs_diff(self.min.x) as usize,
+            pos.y.abs_diff(self.min.y) as usize,
+            pos.z.abs_diff(self.min.z) as usize,
+        );
+        (y * sz + z) * sx + x
+    }
+
+    pub(crate) fn to_abi(self) -> abi::BlockBox {
+        abi::BlockBox {
+            min: self.min.to_abi(),
+            max: self.max.to_abi(),
+        }
+    }
+}
+
+/// How block changes by numeric id update the world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SetMode {
+    /// Vanilla's `setBlock` with neighbour and shape updates, like [`Ctx::set_block`](crate::Ctx::set_block).
+    #[default]
+    Update,
+    /// Without neighbour and shape updates (no physics); clients still see the change.
+    NoPhysics,
+}
+
+impl SetMode {
+    pub(crate) fn to_abi(self) -> u32 {
+        match self {
+            SetMode::Update => abi::set_mode::UPDATE,
+            SetMode::NoPhysics => abi::set_mode::NO_PHYSICS,
+        }
+    }
+}
+
+/// A block state id that is no block: [`Ctx::blocks`](crate::Ctx::blocks) reads it outside
+/// loaded chunks, [`Ctx::set_blocks`](crate::Ctx::set_blocks) leaves such entries unchanged.
+pub const NO_BLOCK: u32 = abi::limits::NO_BLOCK;
+
 /// A position.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Vec3 {

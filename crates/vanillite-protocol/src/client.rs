@@ -223,7 +223,8 @@ impl<S: Read + Write> TestClient<S> {
                     self.send(&csb::SelectKnownPacks { packs: p.packs })?;
                 }
                 ClientboundConfiguration::KeepAlive(k) => {
-                    self.send(&csb::KeepAlive { id: k.id })?
+                    self.send(&csb::KeepAlive { id: k.id })?;
+                    self.received.push("keep_alive");
                 }
                 ClientboundConfiguration::Ping(p) => self.send(&csb::Pong { id: p.id })?,
                 ClientboundConfiguration::CodeOfConduct(_) => {

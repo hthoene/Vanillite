@@ -358,7 +358,7 @@ pub fn tick_arrow(
         let falls = a.last_state != Some(state) && {
             let probe =
                 Aabb::new(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z).inflate(0.06, 0.06, 0.06);
-            physics::no_collision(level, &probe, &mut cx.boxes)
+            physics::no_collision(&level.view(), &probe, &mut cx.boxes)
         };
         if falls {
             a.in_ground = false;
@@ -592,6 +592,7 @@ pub fn tick_arrow(
             pos = at - offset;
             velocity = Vec3::ZERO;
             a.last_state = Some(level.block(hit_pos));
+            super::missile::hit_block(level, cx, id, hit_pos, at);
             let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
             let seed = crate::survival::sound_seed();
             play_sound(

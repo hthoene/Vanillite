@@ -33,6 +33,7 @@ pub mod player_data;
 pub mod region;
 pub mod saved_data;
 pub mod service;
+pub mod unreadable;
 pub mod upgrade;
 pub mod vwr;
 pub mod writer;
@@ -54,6 +55,7 @@ pub use crate::layout::WorldLayout;
 pub use crate::own_codec::OwnCodec;
 pub use crate::saved_data::{read_saved_data, saved_data_path, write_saved_data};
 pub use crate::service::{IoPool, RegionStore, RegionStoreProvider, StoreSettings, StoreStats};
+pub use crate::unreadable::KeepUnreadable;
 
 /// The folder of a dimension inside a world folder (26.x layout):
 /// `dimensions/<namespace>/<path>`.

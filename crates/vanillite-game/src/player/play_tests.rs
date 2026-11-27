@@ -23,6 +23,7 @@ use crate::player::world::{PlayLevel, SoundSource};
 #[derive(Default)]
 struct TestLevel {
     changed: HashMap<BlockPos, BlockState>,
+    sounds: Vec<u16>,
 }
 
 impl PlayLevel for TestLevel {
@@ -48,7 +49,9 @@ impl PlayLevel for TestLevel {
     }
     fn level_event(&mut self, _: Option<i32>, _: i32, _: BlockPos, _: i32) {}
     fn destroy_progress(&mut self, _: i32, _: BlockPos, _: i32) {}
-    fn play_sound(&mut self, _: Option<i32>, _: Vec3, _: u16, _: SoundSource, _: f32, _: f32) {}
+    fn play_sound(&mut self, _: Option<i32>, _: Vec3, sound: u16, _: SoundSource, _: f32, _: f32) {
+        self.sounds.push(sound);
+    }
     fn spawn_item(&mut self, _: Vec3, _: ItemStack, _: Vec3, _: i16, _: Option<u128>) {}
     fn is_unobstructed(&self, _: BlockState, _: BlockPos) -> bool {
         true
@@ -283,4 +286,68 @@ fn creative_slots_need_creative_mode() {
         );
     });
     assert!(inventory.items[0].is_empty());
+}
+
+/// `SolidBucketItem`: placing powder snow leaves an empty bucket (the full one in creative)
+/// and plays `item.bucket.empty_powder_snow`, not the block's place sound (#119).
+#[test]
+fn powder_snow_bucket_leaves_an_empty_bucket() {
+    let bucket = ItemStack::new(vanillite_data::item::ids::POWDER_SNOW_BUCKET.0, 1);
+    let above = BlockPos::new(1, 0, 0);
+    for (mode, left) in [
+        (GameMode::Survival, vanillite_data::item::ids::BUCKET),
+        (
+            GameMode::Creative,
+            vanillite_data::item::ids::POWDER_SNOW_BUCKET,
+        ),
+    ] {
+        let mut level = TestLevel::default();
+        let sink = Sink::default();
+        let mut digging = Digging::new();
+        let inventory = with_ctx(&mut level, mode, bucket.clone(), |ctx| {
+            digging.use_item_on(ctx, &use_on(FLOOR, 1.0), &sink);
+        });
+        assert!(level.block(above).is(blocks::POWDER_SNOW), "{mode:?}");
+        assert_eq!(inventory.items[0].item, left.0, "{mode:?}");
+        assert_eq!(inventory.items[0].count, 1, "{mode:?}");
+        assert_eq!(
+            level.sounds,
+            vec![crate::block::sound_id("item.bucket.empty_powder_snow")],
+            "{mode:?}"
+        );
+    }
+}
+
+/// `GameMasterBlockItem`: command, structure, jigsaw and test blocks are only placed by
+/// creative players with permission level 2 (#119).
+#[test]
+fn game_master_blocks_need_creative_and_op() {
+    use vanillite_data::item::ids as items;
+    let above = BlockPos::new(1, 0, 0);
+    for item in [
+        items::COMMAND_BLOCK,
+        items::CHAIN_COMMAND_BLOCK,
+        items::REPEATING_COMMAND_BLOCK,
+        items::STRUCTURE_BLOCK,
+        items::JIGSAW,
+        items::TEST_BLOCK,
+        items::TEST_INSTANCE_BLOCK,
+    ] {
+        for (mode, permission, placed) in [
+            (GameMode::Survival, 4, false),
+            (GameMode::Creative, 1, false),
+            (GameMode::Creative, 2, true),
+        ] {
+            let mut level = TestLevel::default();
+            let sink = Sink::default();
+            let mut digging = Digging::new();
+            let inventory = with_ctx(&mut level, mode, ItemStack::new(item.0, 1), |ctx| {
+                ctx.actor.permission_level = permission;
+                digging.use_item_on(ctx, &use_on(FLOOR, 1.0), &sink);
+            });
+            let what = format!("{} {mode:?} {permission}", item.name());
+            assert_eq!(!level.block(above).is_air(), placed, "{what}");
+            assert_eq!(inventory.items[0].count, 1, "{what}");
+        }
+    }
 }

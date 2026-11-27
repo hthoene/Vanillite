@@ -1,0 +1,97 @@
+{
+  "description": "A snow golem stands in the middle of a block in a one-block pen next to a sculk sensor: all four positions of its snow trail are the same block, so like Vanilla it places the snow once (a mob tick reads its own queued block changes) and the block_place game event activates the sensor.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      8,
+      -58,
+      5
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:sculk_sensor"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -60,
+        2
+      ],
+      "to": [
+        4,
+        -58,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        2
+      ],
+      "to": [
+        6,
+        -58,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        1
+      ],
+      "to": [
+        5,
+        -58,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        3
+      ],
+      "to": [
+        5,
+        -58,
+        3
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "snow_golem",
+      "type": "minecraft:snow_golem",
+      "pos": [
+        5.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 21,
+      "finalize": false
+    }
+  ]
+}

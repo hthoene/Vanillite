@@ -870,7 +870,7 @@ fn safe_dismount(
         at.z + half,
     );
     let mut scratch = Vec::new();
-    crate::mob::physics::no_collision(level, &aabb, &mut scratch).then_some(at)
+    crate::mob::physics::no_collision(&level.view(), &aabb, &mut scratch).then_some(at)
 }
 
 fn dir_xz(d: vanillite_base::Direction) -> (i32, i32) {

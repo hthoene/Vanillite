@@ -12,11 +12,13 @@
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
 //! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
 //! cargo xtask egg [--check] | egg smoke [--image <ref>]
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
-//! cargo xtask bench list | report | nightly [--no-push]
+//! cargo xtask bench list | report | publish <time|latest|results.json> | nightly [--no-push]
+//! cargo xtask setup [--global] | regen
 //! ```
 
 mod bench;
@@ -26,6 +28,7 @@ mod docker;
 mod egg;
 mod golden;
 mod loadtest;
+mod merge;
 mod multiversion;
 mod normalize;
 mod vanilla;
@@ -86,8 +89,12 @@ pub const USAGE: &str = "usage:
       The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
   cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent);
-      status lists the services, ports and the last auto-deploys; the others act on
+      status lists the services, ports, the last auto-deploys and incidents; the others act on
       vanillite@<port> (default 30001).
+  cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
+      Crashes and suspicious disconnects that vanillite-incidents saved on the test server:
+      list the newest (default 20), show one (summary and backtrace), or download bundles into
+      target/incidents/<id>/ (without ids: all not downloaded yet).
   cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
       Build the server image (Dockerfile) for linux/amd64 and linux/arm64, tagged dev and the
       short commit hash, as $VANILLITE_IMAGE (default docker.hthoene.de/vanillite/vanillite).
@@ -133,14 +140,25 @@ pub const USAGE: &str = "usage:
       TNT, fluids, light) use console commands and one observer bot. A server that lacks a
       command is reported as n/a. Writes target/bench/<time>/results.json and keeps the raw
       results under /opt/vanillite/bench/suite on the test server; --publish also updates
-      benchmarks/results/latest.json and history.json and regenerates benchmarks/README.md.
+      benchmarks/results/ (latest.json, history.json, runs/<time>.json) and regenerates
+      benchmarks/README.md with regressions and improvements against the previous run.
       --servers limits the run to these servers; --no-deploy uses the binaries installed there.
+  cargo xtask bench publish <time|latest|results.json>
+      Publishes a finished run like --publish: a local results.json or the suite directory
+      /opt/vanillite/bench/suite/<time>/ on the test server (latest: the newest).
   cargo xtask bench report
       Regenerates benchmarks/README.md from benchmarks/results/.
   cargo xtask bench nightly [--no-push]
       When origin/dev has code newer than the published results: runs `bench all --publish` in
       the worktree target/bench/tree and commits the results on the branch
-      bench/results-<date> (pushed unless --no-push; then hand it to the normal landing).";
+      bench/results-<date> (pushed unless --no-push; then hand it to the normal landing).
+  cargo xtask setup [--global]
+      Install the git merge driver `vanillite` for the files .gitattributes marks (Cargo.lock,
+      golden KEYS.toml, the egg, Cargo.toml, module lists, the rule catalogue): parallel
+      additions there merge without conflicts. --global: for all clones of this user.
+  cargo xtask regen
+      After a merge: rewrite the generated files (vanillite-data codegen, the egg) from their
+      sources; cargo updates Cargo.lock on the way.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -162,6 +180,11 @@ fn main() -> ExitCode {
         ["egg", rest @ ..] => egg::run(&repo_root(), rest),
         ["loadtest", rest @ ..] => loadtest::run(&repo_root(), rest),
         ["bench", rest @ ..] => bench::run(&repo_root(), rest),
+        ["setup", rest @ ..] => merge::setup(rest),
+        ["regen"] => merge::regen(&repo_root()),
+        ["merge-driver", base, ours, theirs, marker, path] => {
+            merge::driver(base, ours, theirs, marker, path)
+        }
         _ => Err(USAGE.to_owned()),
     };
     match result {

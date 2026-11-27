@@ -279,7 +279,7 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     }
     let fall_speed = v.y;
     // `move(MoverType.SELF, delta)`.
-    let movement = crate::block::falling::collide(level, aabb, v);
+    let movement = crate::block::falling::collide(&level.view(), aabb, v);
     let new_pos = pos + movement;
     let hit_x = (v.x - movement.x).abs() >= 1.0e-5;
     let hit_z = (v.z - movement.z).abs() >= 1.0e-5;

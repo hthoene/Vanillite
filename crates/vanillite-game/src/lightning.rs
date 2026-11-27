@@ -534,7 +534,11 @@ pub fn thunder_hit(
         e.mark_data_dirty();
     }
     combat::hurt(level, ents, env, cx, target, source, 5.0);
-    if creeper && let Some(m) = ents.mob_mut(target) {
-        m.powered = true;
+    if creeper
+        && let Some(c) = ents
+            .mob_mut(target)
+            .and_then(crate::mob::fam::classic::try_creeper_mut)
+    {
+        c.powered = true;
     }
 }

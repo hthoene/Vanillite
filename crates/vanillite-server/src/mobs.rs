@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, VanillaOr, WorldRules};
 use vanillite_data::entity::ids;
@@ -129,6 +130,19 @@ pub(crate) struct WorldMobs {
     /// `WanderingTraderSpawner` (overworld) and its saved data.
     traders: Option<vanillite_game::mob::fam::village::trader::spawner::TraderSpawner>,
     trader_data: Option<Arc<TraderSavedData>>,
+    /// Reused buffers of the item entities' tick.
+    item_scratch: crate::blocks::ItemScratch,
+    /// World changes entity ticks queued and that were applied after their tick, since the
+    /// world started.
+    deferred_actions: u64,
+}
+
+/// What the item entities' tick needs from the world.
+pub(crate) struct ItemTick<'a> {
+    /// The random the items draw from (Vanilla: each item's own, unseeded).
+    pub(crate) random: &'a mut vanillite_base::random::XoroshiroRandom,
+    /// Despawn and merge rules.
+    pub(crate) settings: crate::blocks::ItemSettings,
 }
 
 impl WorldMobs {
@@ -136,6 +150,8 @@ impl WorldMobs {
         WorldMobs {
             fight: None,
             fight_data: None,
+            item_scratch: crate::blocks::ItemScratch::default(),
+            deferred_actions: 0,
             cx: MobContext::default(),
             spawner: Spawner::default(),
             table,
@@ -349,6 +365,12 @@ impl WorldMobs {
         }
         self.cx.dragon_fight = Some(fight.view());
         self.store_fight();
+    }
+
+    /// World changes entity ticks queued and that were applied after their tick, since the
+    /// world started (see `docs/architecture/world-access.md`).
+    pub(crate) fn deferred_actions(&self) -> u64 {
+        self.deferred_actions
     }
 
     /// What the entities' tick asked of the world (tickets, gateway exits, pearl owners).
@@ -800,6 +822,7 @@ impl WorldMobs {
         survival: &mut WorldSurvival,
         global: &Global,
         dimension: &str,
+        items: ItemTick<'_>,
     ) {
         self.ticks += 1;
         level.flush_poi_changes();
@@ -860,6 +883,26 @@ impl WorldMobs {
                 level.entities = ents;
                 self.tick_bolt(level, survival, global, dimension, id);
                 ents = std::mem::take(&mut level.entities);
+                continue;
+            }
+            if kind == ids::ITEM {
+                // `ItemEntity.tick` in the same list as every other entity: `baseTick` handles
+                // the portal before the item moves.
+                let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+                if !level.chunks.in_entity_ticking_range(chunk) {
+                    continue;
+                }
+                portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
+                crate::blocks::tick_item(
+                    &mut ents,
+                    &level.chunks,
+                    id,
+                    &mut || items.random.next_float(),
+                    level.min_y(),
+                    items.settings,
+                    &mut self.item_scratch,
+                );
+                portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
             if kind == ids::FALLING_BLOCK || kind == ids::TNT {
@@ -1070,7 +1113,9 @@ impl WorldMobs {
         dimension: &str,
         rules: &vanillite_game::survival::rules::GameRules,
     ) {
-        for action in std::mem::take(&mut self.cx.actions) {
+        let actions = std::mem::take(&mut self.cx.actions);
+        self.deferred_actions += actions.len() as u64;
+        for action in actions {
             match action {
                 WorldAction::ExplodeWith {
                     source,

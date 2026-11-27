@@ -391,7 +391,7 @@ pub fn create_path_to_any(
     let mut random = m.random.clone();
     let path =
         t.cx.finder
-            .find_path(t.level, &mob, targets, search, &mut random);
+            .find_path(&t.level.view(), &mob, targets, search, &mut random);
     t.mob().random = random;
     let visited = t.cx.finder.take_visited();
     if t.cx.path_budget != u64::MAX {

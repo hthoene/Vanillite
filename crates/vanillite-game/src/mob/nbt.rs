@@ -302,15 +302,16 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             super::fam::undead::zombies::save_conversion(m, &mut out);
         }
         Kind::Creeper => {
+            let c = super::fam::classic::creeper(m);
             #[allow(clippy::cast_possible_truncation)]
             {
-                out.insert("Fuse", m.max_swell as i16);
-                out.insert("ExplosionRadius", m.explosion_radius as i8);
+                out.insert("Fuse", c.max_swell as i16);
+                out.insert("ExplosionRadius", c.explosion_radius as i8);
             }
-            if m.powered {
+            if c.powered {
                 out.insert("powered", true);
             }
-            out.insert("ignited", m.ignited);
+            out.insert("ignited", c.ignited);
         }
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             out.insert("Age", m.age);
@@ -323,14 +324,15 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             match m.kind {
                 Kind::Sheep => {
                     #[allow(clippy::cast_possible_wrap)]
-                    out.insert("Color", m.sheep_color as i8);
+                    out.insert("Color", super::fam::classic::sheep(m).color as i8);
                     out.insert("Sheared", m.sheared);
                 }
                 _ => {
                     out.insert("variant", variant_name(m.variant));
                     if m.kind == Kind::Chicken {
-                        out.insert("EggLayTime", m.egg_time);
-                        out.insert("IsChickenJockey", m.chicken_jockey);
+                        let c = super::fam::classic::chicken(m);
+                        out.insert("EggLayTime", c.egg_time);
+                        out.insert("IsChickenJockey", c.jockey);
                     }
                 }
             }
@@ -446,10 +448,11 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
             super::fam::undead::zombies::load_conversion(&mut m, tag);
         }
         Kind::Creeper => {
-            m.max_swell = int(tag, "Fuse").unwrap_or(30);
-            m.explosion_radius = int(tag, "ExplosionRadius").unwrap_or(3);
-            m.powered = boolean(tag, "powered");
-            m.ignited = boolean(tag, "ignited");
+            let c = super::fam::classic::creeper_mut(&mut m);
+            c.max_swell = int(tag, "Fuse").unwrap_or(30);
+            c.explosion_radius = int(tag, "ExplosionRadius").unwrap_or(3);
+            c.powered = boolean(tag, "powered");
+            c.ignited = boolean(tag, "ignited");
         }
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             m.age = int(tag, "Age").unwrap_or(0);
@@ -458,7 +461,8 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
             m.love_cause = uuid_key(tag, "LoveCause");
             m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
             if kind == Kind::Sheep {
-                m.sheep_color = u8::try_from(int(tag, "Color").unwrap_or(0) & 15).unwrap_or(0);
+                super::fam::classic::sheep_mut(&mut m).color =
+                    u8::try_from(int(tag, "Color").unwrap_or(0) & 15).unwrap_or(0);
                 m.sheared = boolean(tag, "Sheared");
             } else {
                 m.variant = match tag.get("variant").and_then(Tag::as_str) {
@@ -466,12 +470,13 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
                     Some("minecraft:warm" | "warm") => 2,
                     _ => 1,
                 };
-                if kind == Kind::Chicken
-                    && let Some(t) = int(tag, "EggLayTime")
-                {
-                    m.egg_time = t;
+                if kind == Kind::Chicken {
+                    let c = super::fam::classic::chicken_mut(&mut m);
+                    if let Some(t) = int(tag, "EggLayTime") {
+                        c.egg_time = t;
+                    }
+                    c.jockey = boolean(tag, "IsChickenJockey");
                 }
-                m.chicken_jockey = kind == Kind::Chicken && boolean(tag, "IsChickenJockey");
             }
         }
         Kind::Skeleton => super::fam::undead::skeletons::load_conversion(&mut m, tag),

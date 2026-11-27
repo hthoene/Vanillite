@@ -10,7 +10,7 @@ use super::super::super::goals::{self, Goal as MobGoal};
 use super::super::super::kinds::{self, Kind};
 use super::super::super::missile::{self, MissileData, MissileKind};
 use super::super::super::{MobData, Tick};
-use super::super::{SpawnContext, SpawnReason};
+use super::super::{SpawnContext, SpawnReason, classic};
 use super::raider::{self, Ignore, LookFilter};
 use super::{
     Goal, dirty, fam, look_at_player, sound, st, st_mut, target_mobs, target_players, with_memory,
@@ -233,12 +233,13 @@ pub fn tick(t: &mut Tick<'_, '_>, s: &mut UseSpell) {
                 dirty(t);
             }
             _ => {
-                if let Some(target) = t.mob_ref().target
-                    && let Some(m) = t.ents.mob_mut(target)
-                {
-                    // Players get the blindness with the effect system (#74).
-                    effects::living::add_to_mob(
-                        m,
+                if let Some(target) = t.mob_ref().target {
+                    effects::living::add_to_entity(
+                        t.level,
+                        t.ents,
+                        t.env,
+                        t.cx,
+                        target,
                         EffectInstance::new(MobEffect::BLINDNESS, 400, 0),
                     );
                 }
@@ -414,13 +415,12 @@ fn wololo_can_use(t: &mut Tick<'_, '_>, s: &UseSpell) -> bool {
     {
         let ents = &*t.ents;
         ents.store.for_each_in(&area, false, |id| {
-            if ents
-                .mob(id)
-                .is_some_and(|m| m.kind == Kind::Sheep && m.is_alive() && m.sheep_color == 11)
-                && ents
-                    .store
-                    .get(id)
-                    .is_some_and(|e| e.pos().distance_to_sqr(p) <= 256.0)
+            if ents.mob(id).is_some_and(|m| {
+                m.kind == Kind::Sheep && m.is_alive() && classic::sheep(m).color == 11
+            }) && ents
+                .store
+                .get(id)
+                .is_some_and(|e| e.pos().distance_to_sqr(p) <= 256.0)
             {
                 sheep.push(id);
             }
@@ -444,8 +444,9 @@ fn wololo(t: &mut Tick<'_, '_>) {
     };
     if let Some(m) = t.ents.mob_mut(sheep)
         && m.is_alive()
+        && let Some(c) = classic::try_sheep_mut(m)
     {
-        m.sheep_color = 14;
+        c.color = 14;
         if let Some(mut e) = t.ents.store.get_mut(sheep) {
             e.mark_data_dirty();
         }

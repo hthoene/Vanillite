@@ -7,6 +7,29 @@
 - Optional: [sccache](https://github.com/mozilla/sccache) as `RUSTC_WRAPPER` shares compiled
   dependencies between checkouts.
 - A JDK 25 is needed only for `cargo xtask vanilla update` and golden regeneration.
+- `cargo xtask setup` once per clone (`--global`: for every clone of this user): installs the
+  merge driver for generated and collective files (see [Merging](#merging)).
+
+## Merging
+
+Many branches land in parallel, so files that every branch extends are built to merge without
+conflicts:
+
+- **Merge driver** `vanillite` (`xtask/src/merge.rs`, installed by `cargo xtask setup`, a copy
+  of the xtask binary under `.git/vanillite/` or with `--global` under
+  `~/.local/share/vanillite/`). `.gitattributes` lists the files it merges: `Cargo.lock` (per
+  package; dependency lists as sets), the golden `KEYS.toml` files (per entry), the Pterodactyl
+  egg (per field and per variable), `Cargo.toml` files and the rule catalogue (two insertions at
+  the same place keep both; TOML must still parse, Rust must pass rustfmt) and `lib.rs`,
+  `mod.rs`, `main.rs` (the same for `mod`/`use` lines). Any other conflict stays a normal
+  conflict. Run `cargo xtask setup` again after the driver changes.
+- **After a merge** run `cargo xtask regen`: it rewrites the generated files from their sources
+  (codegen and the egg; cargo updates `Cargo.lock` while building xtask). A conflict in a
+  generated file is resolved by taking either side and running it.
+- **One file per entry** where a list grows with every change: parity scenarios
+  (`scenarios/*.json`) and their known divergences (`scenarios/divergences/<scenario>.toml`).
+  Keep new registries that way (directory scanning), or sorted with one entry per line and a
+  trailing separator.
 
 ## Everyday commands
 
@@ -21,6 +44,7 @@
 | `cargo xtask codegen --check` | Generated tables match `data/vanilla/`. |
 | `cargo xtask egg --check` | The Pterodactyl egg matches the configuration schema (`cargo xtask egg` regenerates it). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
+| `cargo xtask regen` | After a merge: rewrite generated files (codegen, egg). |
 
 ## New Minecraft versions
 
@@ -69,6 +93,67 @@ these ports by hand: landing on dev is enough. For a test before landing, use a 
 | `cargo xtask testserver status` | Services, listening ports and the last auto-deploys. |
 | `cargo xtask testserver logs [<port>]` | Follow the log. |
 | `cargo xtask testserver start\|stop\|restart [<port>]` | Control a server; stop also disables it. |
+| `cargo xtask testserver incidents [list [<count>]]` | The newest crashes and suspicious disconnects. |
+| `cargo xtask testserver incidents show <id>` | Summary and backtrace of an incident. |
+| `cargo xtask testserver incidents fetch [<id>...]` | Download bundles to `target/incidents/<id>/` (no ids: all not downloaded yet). |
+
+### Incidents
+
+No log digging: `vanillite-incidents` (a systemd service on the test server) follows the journal
+of every `vanillite@<port>` and of `vanillite-proxy` and saves an incident bundle in
+`/var/lib/vanillite-incidents/<id>/` for
+
+- every **crash**: a panic, a crashed world thread, an exit with an error, a kill or an OOM kill
+  (systemd restarts the instance as before);
+- every **suspicious disconnect**: a log line starting with `Suspicious disconnect` (the
+  server's disconnect diagnosis), a player who loses the connection within 10 s of logging in,
+  or a disconnect with an error as reason. Not on the load test instance 30901; at most one per
+  instance and player in 10 minutes.
+
+A bundle has `summary.txt` (time, instance, signature, deployed commit and binary, the players
+online with their world and login position, the trigger lines, the Vanillite frames of the
+backtrace), `backtrace.txt`, `journal.log` (the instance's journal from 5 minutes before a crash,
+2 minutes before a disconnect, to 30 seconds after) and `meta.json`. The signature is the panic
+location (the first Vanillite frame when the panic is inside std), the exit status or the
+disconnect reason; `list` marks the first incident of a signature `new`, so known crashes stand
+out from new ones. Bundles are kept 60 days, at most 300. `cargo xtask testserver status` shows
+the last five. On the test server itself: `vanillite-incidents list|show <id>`, and
+`vanillite-incidents scan <since> [<until>]` collects a past time range after the fact.
+
+## Benchmarks
+
+`cargo xtask bench all|<scenario>...` runs the benchmark suite on the test server against
+Vanillite (vanillite@30901), Paper, Vanilla and Pumpkin (`cargo xtask bench list` shows the
+scenarios; the test server is locked with `vanillite-bench lock` while it runs, about 3.5 h for
+`all`). Raw results stay on the test server under `/opt/vanillite/bench/suite/<time>/`
+(`<scenario>-<server>.json` plus `run.json`, the whole run).
+
+**The repository is the source of truth for the published numbers** (the documentation site
+reads them from there). Nobody copies numbers by hand:
+
+| File | What |
+|---|---|
+| `benchmarks/README.md` | Generated summary: regressions and improvements of Vanillite against the previous run at the top, then per scenario tables and mermaid charts, with date, dev commit, versions and hardware. Never edit it. |
+| `benchmarks/results/latest.json` | The newest result of every scenario (each with its own date and commit). |
+| `benchmarks/results/history.json` | One line per run: the numbers the regression check compares. |
+| `benchmarks/results/runs/<time>.json` | Every published run as measured, one line per scenario. |
+
+Values that a server cannot measure are marked n/a (with the reason), broken runs error and
+servers that did not reach the load failed; nothing is filled in. A change counts as a
+regression or improvement when it exceeds 10 % and a small absolute step per unit (0.5 ms,
+0.3 s, 16 MiB, 2 %), or three robust deviations (MAD) of the last 10 runs where the number
+scatters more. Changes of the reference servers are listed separately as an indicator of the
+machine's own noise.
+
+- `cargo xtask bench <scenarios> --publish` (clean checkout only) or, for a finished run,
+  `cargo xtask bench publish <time|latest|path/to/results.json>` writes these files.
+  `cargo xtask bench report` regenerates the README from them.
+- **Nightly, unattended:** PlainBoard schedule 29 starts the Tooling Developer agent at 03:00
+  CET. It runs `cargo xtask bench nightly`: when origin/dev has code newer than the published
+  results, it runs `bench all --publish` in the worktree `target/bench/tree`, commits
+  `benchmarks/` on the branch `bench/results-<date>` and pushes it. The agent hands that branch
+  to `merge_when_green`, which lands it on dev like any other branch. When a run breaks
+  half-way, `cargo xtask bench publish <time>` publishes what it measured.
 
 ## Docker image
 
@@ -172,7 +257,7 @@ Adding a mob:
    the first random call Vanillite makes differently (a missing goal, a draw from the wrong
    random, a different call order). The number of draws between two `rng` states shows how
    many calls each side made.
-4. Fix it, or record what is left in `scenarios/divergences.toml` (tick, cause, owner): the
+4. Fix it, or record what is left in `scenarios/divergences/<scenario>.toml` (tick, cause, owner): the
    check then stays green while the first difference is at exactly that tick, fails when it
    moves earlier (a regression) and asks to raise the tick when it moves later. Editing that
    file needs no new recording.

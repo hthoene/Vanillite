@@ -545,36 +545,6 @@ impl ServerWorld {
             .insert(chunk, (until, ticket, simulation));
     }
 
-    /// `handlePortal` and `EndGatewayBlock.entityInside` of the item entities, which tick on
-    /// their own.
-    pub(super) fn item_portals(&mut self) {
-        let level = &mut self.level;
-        if !level.block_entities.has_gateways() && level.entities.portals.is_empty() {
-            return;
-        }
-        let in_end = self.dimension == END_DIMENSION;
-        let mut ents = std::mem::take(&mut level.entities);
-        let items: Vec<EntityId> = ents.items.iter().map(|(id, _)| id).collect();
-        let mut travel = Vec::new();
-        let mut taken = Vec::new();
-        for id in items {
-            portal::tick_portal(level, &mut ents, id, in_end, &mut travel);
-            portal::enter_gateway(level, &mut ents, id, &mut taken);
-        }
-        level.entities = ents;
-        for pos in taken {
-            let state = level.block(pos);
-            portal_blocks::trigger_gateway_cooldown(level, pos, state);
-        }
-        for request in travel {
-            match request {
-                TravelRequest::PortalTicket(pos) => self.place_portal_ticket(pos),
-                TravelRequest::Gateway { entity, entry } => self.enter_gateway(entity, entry),
-                TravelRequest::PearlTicket(_) | TravelRequest::PearlOwner { .. } => {}
-            }
-        }
-    }
-
     fn place_arrivals(&mut self, global: &Global) {
         if self.arrivals.is_empty() {
             return;

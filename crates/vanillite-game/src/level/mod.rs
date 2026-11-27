@@ -26,6 +26,7 @@ pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
 mod tick;
 pub mod update;
+pub mod view;
 
 pub use crate::random_sequences::RandomSequences;
 
@@ -897,8 +898,8 @@ impl Level {
 
     // --- Reading -------------------------------------------------------------------------
 
-    /// `getBlockState(pos)`: void air below and above the world, air in chunks that are not
-    /// live.
+    /// `getBlockState(pos)` of the world thread (the tick view, see [`view`]): void air below
+    /// and above the world, air in chunks that are not live.
     #[inline]
     pub fn block(&self, pos: BlockPos) -> BlockState {
         match self.chunks.block(pos) {
@@ -906,6 +907,13 @@ impl Level {
             None if self.in_height(pos.y) => BlockState::AIR,
             None => block::VOID_AIR,
         }
+    }
+
+    /// The pure read view ([`view`]): reads without side effects for collision, path finding
+    /// and code on other threads.
+    #[inline]
+    pub fn view(&self) -> view::LevelView<'_> {
+        view::LevelView::new(self.chunks.view(), &self.border, self.min_y, self.max_y)
     }
 
     /// `getBlockState(pos)` with the chunk loaded first like Vanilla: a chunk that is not

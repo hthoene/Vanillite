@@ -359,6 +359,11 @@ fn weathering_of(name: &str) -> Option<Weathering> {
     })
 }
 
+/// `WeatheringCopper.getPrevious`: the block one weathering age younger.
+pub fn previous_weathering(block: BlockId) -> Option<BlockId> {
+    weathering(block)?.previous
+}
+
 /// Whether a block is weathering copper of any age (`instanceof WeatheringCopper`).
 pub fn is_weathering_copper(block: BlockId) -> bool {
     weathering(block).is_some()

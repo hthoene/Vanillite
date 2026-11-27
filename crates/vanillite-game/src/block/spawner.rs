@@ -235,7 +235,7 @@ pub fn center(pos: BlockPos) -> Vec3 {
 pub fn no_collision_at(level: &Level, type_id: EntityTypeId, pos: Vec3) -> bool {
     let aabb = Dimensions::of(type_id).bounding_box(pos);
     let mut scratch = Vec::new();
-    physics::no_collision(level, &aabb, &mut scratch)
+    physics::no_collision(&level.view(), &aabb, &mut scratch)
 }
 
 /// `SpawnPlacements.checkSpawnRules(type, level, SPAWNER or TRIAL_SPAWNER, pos, random)`:
@@ -382,6 +382,23 @@ impl MobSpawner {
             required_player_range: int(nbt, "RequiredPlayerRange", 16),
             spawn_range: int(nbt, "SpawnRange", 4),
         }
+    }
+
+    /// `BaseSpawner.setEntityId` (a spawn egg used on the spawner): the next spawn data,
+    /// drawn from the potentials if there is none, spawns `name`.
+    pub fn set_entity_id(&mut self, name: &str, random: &mut impl RandomSource) {
+        let mut data = match self.next_spawn_data.take() {
+            Some(data) => data,
+            None => self
+                .spawn_potentials
+                .get_random(random)
+                .cloned()
+                .unwrap_or_else(|| SpawnData::from_nbt(Compound::new())),
+        };
+        if let Some(Tag::Compound(entity)) = data.0.get_mut("entity") {
+            entity.insert("id", Tag::String(name.to_owned()));
+        }
+        self.next_spawn_data = Some(data);
     }
 
     /// `BaseSpawner.save`; `with_potentials` is false for the update tag.

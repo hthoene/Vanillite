@@ -13,7 +13,8 @@ use vanillite_chunk::slots::{
 use vanillite_command::Dispatcher;
 use vanillite_data::block::BlockId;
 use vanillite_plugin_host::{
-    Arg, ArgValue, PluginHost, Sender, ServerAccess, Settings, Text, WorldAccess, loader,
+    Arg, ArgValue, BlockBox, PluginHost, Sender, ServerAccess, SetMode, Settings, Text,
+    WorldAccess, loader,
 };
 
 const PLAYER: u128 = 0x069a_79f4_44e9_4726_a5be_fca9_0e38_aaf5;
@@ -59,6 +60,10 @@ impl ServerAccess for FakeServer {
         let name = state.split('[').next()?;
         Some(u32::from(BlockId::by_name(name)?.default_state().0))
     }
+    fn block_state_name(&self, state: u32) -> Option<String> {
+        let state = vanillite_data::block::BlockState(u16::try_from(state).ok()?);
+        state.is_valid().then(|| state.block().name().to_owned())
+    }
     fn rule(&self, _: &str) -> Option<String> {
         None
     }
@@ -88,6 +93,15 @@ impl WorldAccess for FakeWorld {
     }
     fn has_entity(&self, entity: u128) -> bool {
         entity == PLAYER
+    }
+    fn block_id(&self, _: [i32; 3]) -> Option<u32> {
+        None
+    }
+    fn set_block_id(&mut self, _: [i32; 3], _: u32, _: SetMode) -> Result<bool, i32> {
+        Ok(false)
+    }
+    fn set_blocks(&mut self, _: BlockBox, _: &[u32], _: SetMode) -> Result<usize, i32> {
+        Ok(0)
     }
 }
 

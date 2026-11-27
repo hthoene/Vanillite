@@ -19,9 +19,14 @@
 #   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
 #   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
 # - vanillite-autodeploy (timer, every 30 minutes): builds the newest green dev commit in
-#   /opt/vanillite-build and deploys it to 30001, 30002 and the proxy on 30010, with a chat
+#   /opt/vanillite-build and deploys it to 30001, 30002, 30030 and the proxy on 30010, with a chat
 #   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Manual deploys of a
 #   branch go to 30003-30099.
+# - Vanillite 30030: chunk generation test server (own world, flight allowed, all server-side
+#   movement checks off so fast flying is never teleported back; drop-in chunk-test.conf).
+# - vanillite-incidents (service): saves every crash and suspicious disconnect of the Vanillite
+#   instances and the proxy as a bundle in /var/lib/vanillite-incidents (`vanillite-incidents
+#   list|show`, `cargo xtask testserver incidents`).
 # Only ports 30000-30999 are reachable by players.
 set -euo pipefail
 
@@ -383,7 +388,7 @@ write_if_changed /usr/local/bin/vanillite-deploy 755 <<'EOF'
 # this test setup needs into server.properties, copies Paper's whitelist and ops and (re)starts
 # vanillite@<port>.service. Port 30901 is the load test instance: offline mode without
 # whitelist, started but not enabled (`cargo xtask loadtest` stops it after the run).
-# 30001 and 30002 belong to vanillite-autodeploy (newest green dev), which sets
+# 30001, 30002 and 30030 belong to vanillite-autodeploy (newest green dev), which sets
 # VANILLITE_DEPLOY_AUTO=1 and the MOTD in VANILLITE_DEPLOY_MOTD.
 # Installed by scripts/testserver/provision.sh.
 set -euo pipefail
@@ -392,8 +397,9 @@ if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 30001 ] || [ "$port" -gt 30999 ]
     echo "port must be 30001-30999 (30000 is Paper)" >&2
     exit 2
 fi
-if { [ "$port" = 30001 ] || [ "$port" = 30002 ]; } && [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
-    echo "30001 and 30002 run the newest green dev (vanillite-autodeploy): land on dev instead," >&2
+if { [ "$port" = 30001 ] || [ "$port" = 30002 ] || [ "$port" = 30030 ]; } \
+    && [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
+    echo "30001, 30002 and 30030 run the newest green dev (vanillite-autodeploy): land on dev instead," >&2
     echo "or test a branch on a port in 30003-30099 and stop it afterwards" >&2
     exit 2
 fi
@@ -1045,16 +1051,21 @@ print(json.dumps({"version": v.get("name"), "protocol": v.get("protocol")}))
         sed 's/^.*) //' "/proc/$pid/stat" | awk -v hz="$(getconf CLK_TCK)" '{ printf "{\"cpu_s\": %.2f}\n", ($12 + $13) / hz }'
         ;;
     chunks)
-        # Chunks stored in the overworld region files (header entries in use).
+        # Chunks stored in the overworld region files: Anvil header entries in use, or entries
+        # with data in the newer index copy of Vanillite's own format (.vwr, see vwr.rs).
         python3 -c '
-import glob, json, sys
+import glob, json, struct, sys
 n = 0
-for f in glob.glob(sys.argv[1] + "/world*/**/region/r.*.mca", recursive=True):
+for f in glob.glob(sys.argv[1] + "/world*/**/region/r.*.*", recursive=True):
     if "nether" in f or "the_end" in f or "DIM" in f:
         continue
     with open(f, "rb") as h:
-        head = h.read(4096)
-    n += sum(1 for i in range(0, len(head), 4) if head[i:i + 4] != b"\0\0\0\0")
+        head = h.read(4096 + 2 * 24832)
+    if f.endswith(".mca"):
+        n += sum(1 for i in range(0, 4096, 4) if head[i:i + 4] != b"\0\0\0\0")
+    elif f.endswith(".vwr") and len(head) == 4096 + 2 * 24832:
+        index = max((4096, 4096 + 24832), key=lambda o: struct.unpack_from("<Q", head, o)[0])
+        n += sum(1 for i in range(1024) if struct.unpack_from("<I", head, index + 16 + 24 * i + 6)[0])
 print(json.dumps({"chunks": n}))
 ' "$(dir_of "$target")"
         ;;
@@ -1287,7 +1298,26 @@ sleep 1
 systemctl --no-pager --lines=10 status vanillite-proxy.service || true
 EOF
 
-echo "== auto-deploy of dev (vanillite-autodeploy: 30001, 30002, proxy 30010)"
+echo "== chunk generation test server (Vanillite 30030: flight, no movement checks)"
+# Players fly fast through new terrain to test chunk generation and loading: the server never
+# teleports them back ("moved too quickly") and never kicks them for flying.
+install -d /etc/systemd/system/vanillite@30030.service.d
+write_if_changed /etc/systemd/system/vanillite@30030.service.d/chunk-test.conf <<'EOF'
+[Service]
+Environment=VANILLITE_MOVEMENT__TOO_FAST_CHECK=false
+Environment=VANILLITE_MOVEMENT__ELYTRA_TOO_FAST_CHECK=false
+Environment=VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK=false
+Environment=VANILLITE_MOVEMENT__FLYING_KICK=false
+EOF
+install -d -o vanillite -g vanillite /opt/vanillite/30030
+props30030=/opt/vanillite/30030/server.properties
+[ -f "$props30030" ] || install -o vanillite -g vanillite -m 644 /dev/null "$props30030"
+for kv in allow-flight=true view-distance=16 simulation-distance=10 spawn-protection=0; do
+    grep -q "^${kv%%=*}=" "$props30030" && sed -i "s|^${kv%%=*}=.*|$kv|" "$props30030" \
+        || echo "$kv" >> "$props30030"
+done
+
+echo "== auto-deploy of dev (vanillite-autodeploy: 30001, 30002, 30030, proxy 30010)"
 id vanillite-build > /dev/null 2>&1 \
     || useradd --system --home-dir /opt/vanillite-build --create-home --shell /usr/sbin/nologin vanillite-build
 install -d -o vanillite-build -g vanillite-build /opt/vanillite-build
@@ -1302,7 +1332,7 @@ write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 # run (vanillite-autodeploy.timer, every 30 minutes): takes the newest dev commit whose CI
 # workflow passed (dev lands often, so the head itself is often still running or cancelled); if
 # it is newer than the deployed one, builds vanillite and vanillite-proxy (release-fast) in
-# /opt/vanillite-build, announces the restart in chat 10 s ahead, deploys 30001, 30002 and the
+# /opt/vanillite-build, announces the restart in chat 10 s ahead, deploys 30001, 30002, 30030 and the
 # proxy on 30010 (only those whose binary changed) and rolls all of them back to the previous
 # binaries if one does not come up. An unbuildable or rolled back commit is not tried again; the
 # next green one is.
@@ -1310,8 +1340,9 @@ write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 set -uo pipefail
 repo=https://github.com/hthoene/Vanillite.git
 api=https://api.github.com/repos/hthoene/Vanillite
-ports=(30001 30002)
-declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import")
+ports=(30001 30002 30030)
+declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import"
+    [30030]="Vanillite test: chunk generation, no movement checks")
 build=/opt/vanillite-build
 state=/var/lib/vanillite-autodeploy
 logfile=/var/log/vanillite-autodeploy.log
@@ -1488,6 +1519,424 @@ AccuracySec=10s
 WantedBy=timers.target
 EOF
 
+echo "== incidents (vanillite-incidents: crashes and suspicious disconnects)"
+install -d -m 755 /var/lib/vanillite-incidents
+write_if_changed /usr/local/bin/vanillite-incidents 755 <<'EOF'
+#!/usr/bin/env python3
+"""Crash and disconnect incidents of the Vanillite test servers.
+
+Usage: vanillite-incidents watch | scan <since> [<until>] | list [<count>] | show <id>
+  watch  (vanillite-incidents.service) follows the journal of vanillite@*.service and
+         vanillite-proxy.service and saves an incident bundle for every crash (panic, crashed
+         world thread, exit with an error, kill, OOM kill) and every suspicious disconnect (a log
+         line starting with "Suspicious disconnect", a player who loses the connection within
+         10 s of logging in or with an error as reason; not on the load test instance 30901)
+  scan   the same for a past time range (journalctl --since/--until syntax)
+  list   the newest incidents (default 20); "new" marks the first one of its signature
+  show   the summary and the backtrace of an incident
+Bundles: /var/lib/vanillite-incidents/<id>/ with summary.txt, journal.log (the instance's
+journal around the event), backtrace.txt, meta.json; index.tsv lists all incidents.
+Retention: 60 days, at most 300 bundles. Installed by scripts/testserver/provision.sh.
+"""
+import hashlib
+import json
+import os
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+
+ROOT = os.environ.get("VANILLITE_INCIDENTS_DIR", "/var/lib/vanillite-incidents")
+CURSOR = os.path.join(ROOT, ".cursor")
+INDEX = os.path.join(ROOT, "index.tsv")
+UNITS = ["-u", "vanillite@*.service", "-u", "vanillite-proxy.service"]
+AUTODEPLOYED = {
+    "vanillite@30001.service",
+    "vanillite@30002.service",
+    "vanillite@30030.service",
+    "vanillite-proxy.service",
+}
+NO_DISCONNECT = {"vanillite@30901.service"}  # load test bots come and go
+SETTLE = 30  # seconds after the last trigger line before the bundle is written
+BEFORE = {"crash": 300, "disconnect": 120}  # journal seconds before the first trigger line
+EARLY = 10  # a disconnect this soon after the login is suspicious
+COOLDOWN = 600  # at most one disconnect incident per instance and player in this time
+KEEP_DAYS, KEEP_MAX = 60, 300
+MAX_LINES = 5000
+
+LOG = re.compile(r"^\[\d\d:\d\d:\d\d\] \[(?P<thread>[^\]]+?)/(?P<level>[A-Z]+)\]: (?P<text>.*)$")
+PANIC = re.compile(r"^thread '(?P<thread>[^']*)'(?: \(\d+\))? panicked at (?P<loc>.+?):?$")
+FRAME = re.compile(r"^\s*\d+: (?P<sym><?vanillite\S*)")
+LOGIN = re.compile(r"^(?P<name>\S+)\[(?P<addr>[^\]]*)\] logged in with entity id \d+ at \((?P<pos>[^)]*)\)")
+LOST = re.compile(r"^(?P<name>\S+) (?:lost connection: (?P<reason>.*)|left the game)")
+EXIT = re.compile(r"Main process exited, code=(?P<code>\w+), status=(?P<status>\S+)")
+SUSPICIOUS = "Suspicious disconnect"
+
+
+def message(entry):
+    msg = entry.get("MESSAGE", "")
+    if isinstance(msg, list):
+        msg = bytes(msg).decode("utf-8", "replace")
+    return msg or ""
+
+
+def unit_of(entry):
+    return entry.get("_SYSTEMD_UNIT") if entry.get("_PID") != "1" else entry.get("UNIT")
+
+
+def iso(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def journal(args):
+    out = subprocess.run(["journalctl", "--no-pager", "-q", *args], capture_output=True, text=True,
+                         errors="replace")
+    return out.stdout
+
+
+class Watcher:
+    def __init__(self):
+        self.pending = {}  # key -> incident in the making
+        self.last_pid = {}  # unit -> main pid
+        self.logins = {}  # (unit, name) -> login time
+        self.cooldown = {}  # (unit, name) -> time of the last disconnect incident
+
+    def trigger(self, key, kind, unit, ts, line, **extra):
+        inc = self.pending.get(key)
+        if inc is None:
+            inc = self.pending[key] = {"kind": kind, "unit": unit, "t0": ts, "pid": self.last_pid.get(unit),
+                                       "triggers": [], **extra}
+        inc["t1"] = ts
+        inc["wall"] = time.time()
+        if len(inc["triggers"]) < 20:
+            inc["triggers"].append(line)
+
+    def feed(self, entry):
+        unit = unit_of(entry)
+        if not unit:
+            return
+        ts = int(entry.get("__REALTIME_TIMESTAMP", "0")) / 1e6
+        msg = message(entry)
+        if entry.get("_PID") == "1":
+            m = EXIT.search(msg)
+            crashed = m and not (m["code"] == "exited" and m["status"].startswith("0/")) \
+                and not (m["code"] == "killed" and m["status"] in ("15/TERM", "2/INT"))
+            if crashed or "OOM killer" in msg:
+                self.trigger((unit, "crash"), "crash", unit, ts, msg)
+            return
+        self.last_pid[unit] = entry.get("_PID")
+        first = msg.split("\n", 1)[0]
+        log = LOG.match(first)
+        text = log["text"] if log else first
+        if PANIC.match(first) or "crashed; stopping the server" in text:
+            self.trigger((unit, "crash"), "crash", unit, ts, first)
+        elif text.startswith(SUSPICIOUS) and unit not in NO_DISCONNECT:
+            name = text[len(SUSPICIOUS):].lstrip(": ").split(" ", 1)[0]
+            self.trigger((unit, "disconnect", name), "disconnect", unit, ts, first, player=name,
+                         reason="suspicious")
+        elif m := LOGIN.match(text):
+            if not m["addr"].startswith("127.0.0.1"):
+                self.logins[(unit, m["name"])] = ts
+        elif (m := LOST.match(text)) and unit not in NO_DISCONNECT:
+            login = self.logins.pop((unit, m["name"]), None)
+            key = (unit, m["name"])
+            early = login is not None and ts - login <= EARLY
+            error = re.search(r"(?i)error|exception|invalid|decode", m["reason"] or "")
+            if (early or error) and ts - self.cooldown.get(key, 0) > COOLDOWN:
+                self.cooldown[key] = ts
+                note = f" ({ts - login:.1f} s after the login)" if early else ""
+                self.trigger((unit, "disconnect", m["name"]), "disconnect", unit, ts, first + note,
+                             player=m["name"], reason=m["reason"] or "left the game")
+
+    def flush(self, now_journal, force=False):
+        for key, inc in list(self.pending.items()):
+            if force or time.time() - inc["wall"] >= SETTLE or now_journal - inc["t1"] >= SETTLE:
+                del self.pending[key]
+                try:
+                    collect(inc)
+                except Exception as e:  # never stop watching because of one bundle
+                    print(f"collecting {key} failed: {e!r}", file=sys.stderr)
+
+
+def binary_of(unit):
+    if unit == "vanillite-proxy.service":
+        return "/opt/vanillite-proxy/vanillite-proxy"
+    port = unit.split("@", 1)[1].split(".", 1)[0]
+    return f"/opt/vanillite/{port}/vanillite"
+
+
+def deployed(unit):
+    info = {}
+    if unit in AUTODEPLOYED:
+        try:
+            with open("/var/lib/vanillite-autodeploy/deployed") as f:
+                info["commit"] = f.read().strip()
+        except OSError:
+            pass
+    path = binary_of(unit)
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        info["binary"] = path
+        info["binary_sha256"] = h.hexdigest()
+        info["binary_mtime"] = iso(os.stat(path).st_mtime)
+    except OSError:
+        pass
+    return info
+
+
+def backtraces(lines):
+    """Panic blocks (message and backtrace) among the instance's own journal lines."""
+    blocks, block = [], None
+    for msg in lines:
+        if PANIC.match(msg):
+            block = [msg]
+            blocks.append(block)
+        elif block is not None:
+            if LOG.match(msg) or len(block) > 400:
+                block = None
+            else:
+                block.append(msg)
+    return blocks
+
+
+def signature(inc, blocks):
+    if inc["kind"] == "disconnect":
+        return f"disconnect: {inc['reason']}", ""
+    if blocks:
+        block = blocks[0]
+        loc = PANIC.match(block[0])["loc"]
+        if loc.startswith("/rustc/") or "/.cargo/" in loc:
+            frame = next((m["sym"] for line in block if (m := FRAME.match(line))), None)
+            if frame:
+                loc = re.sub(r"::<.*$", "", frame)
+        text = block[1] if len(block) > 1 and not block[1].startswith("stack backtrace") else ""
+        return f"panic at {loc}", text[:160]
+    for line in inc["triggers"]:
+        if m := EXIT.search(line):
+            return f"exit {m['code']} {m['status']}", ""
+        if "OOM killer" in line:
+            return "oom kill", ""
+    return "crash", inc["triggers"][0][:160]
+
+
+def players(inc, until):
+    """Players online in the instance's process at the event, with their last world and login position."""
+    if inc["unit"] == "vanillite-proxy.service" or not inc["pid"]:
+        return []
+    text = journal([f"_SYSTEMD_UNIT={inc['unit']}", f"_PID={inc['pid']}", "--until", f"@{until:.0f}", "-o", "cat"])
+    online = {}
+    for line in text.splitlines():
+        log = LOG.match(line)
+        if not log:
+            continue
+        body = log["text"]
+        if m := LOGIN.match(body):
+            online[m["name"]] = {"name": m["name"], "address": m["addr"], "login_position": m["pos"],
+                                 "login": line[1:9], "world": None}
+        elif m := LOST.match(body):
+            if m["name"] in online and m["name"] != inc.get("player"):
+                del online[m["name"]]
+        name = body.lstrip("[").split("[", 1)[0].split(" ", 1)[0].rstrip(":")
+        if name in online and log["thread"].startswith("World "):
+            online[name]["world"] = log["thread"][6:]
+    if inc.get("player"):
+        return [p for n, p in online.items() if n == inc["player"]]
+    return list(online.values())
+
+
+def collect(inc):
+    os.makedirs(ROOT, exist_ok=True)
+    t0, t1 = inc["t0"], inc["t1"]
+    until = t1 + SETTLE
+    entries = journal(["-u", inc["unit"], "--since", f"@{t0 - BEFORE[inc['kind']]:.0f}",
+                       "--until", f"@{until:.0f}", "-o", "json"]).splitlines()[-MAX_LINES:]
+    log_lines, own = [], []
+    for raw in entries:
+        try:
+            e = json.loads(raw)
+        except ValueError:
+            continue
+        ts = int(e.get("__REALTIME_TIMESTAMP", "0")) / 1e6
+        msg = message(e)
+        stamp = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        log_lines.append(f"{stamp} {e.get('SYSLOG_IDENTIFIER', '?')}[{e.get('_PID', '?')}]: {msg}")
+        if e.get("_PID") != "1":
+            own.extend(msg.split("\n"))
+    blocks = backtraces(own)
+    sig, text = signature(inc, blocks)
+    online = players(inc, until if inc["kind"] == "crash" else t1 + 1)
+    info = deployed(inc["unit"])
+
+    instance = inc["unit"].split("@", 1)[1].split(".", 1)[0] if "@" in inc["unit"] else "proxy"
+    base = f"{datetime.fromtimestamp(t0, timezone.utc):%Y%m%d-%H%M%S}-{instance}-{inc['kind']}"
+    ident, n = base, 1
+    while os.path.exists(os.path.join(ROOT, ident)):
+        n += 1
+        ident = f"{base}-{n}"
+    seen = []
+    if os.path.exists(INDEX):
+        with open(INDEX) as f:
+            seen = [line.rstrip("\n").split("\t") for line in f if line.strip()]
+    earlier = [row[0] for row in seen if len(row) > 5 and row[5] == sig]
+
+    tmp = os.path.join(ROOT, f".{ident}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    with open(os.path.join(tmp, "journal.log"), "w") as f:
+        f.write("\n".join(log_lines) + "\n")
+    if blocks:
+        with open(os.path.join(tmp, "backtrace.txt"), "w") as f:
+            f.write("\n\n".join("\n".join(b) for b in blocks) + "\n")
+    commit = info.get("commit", "")
+    meta = {"id": ident, "kind": inc["kind"], "unit": inc["unit"], "pid": inc["pid"], "time": iso(t0),
+            "signature": sig, "message": text, "first_of_signature": not earlier,
+            "earlier": earlier[-10:], "triggers": inc["triggers"], "players": online, **info}
+    with open(os.path.join(tmp, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+        f.write("\n")
+    summary = [f"Incident {ident}",
+               f"Time:      {iso(t0)}",
+               f"Instance:  {inc['unit']} (pid {inc['pid'] or '?'})",
+               f"Kind:      {inc['kind']}",
+               f"Signature: {sig}" + (f"  ({text})" if text else ""),
+               f"Seen:      " + (f"{len(earlier)} time(s) before, last {earlier[-1]}" if earlier else "first time"),
+               f"Commit:    {commit or 'not an auto-deployed instance'}"
+               + (f"; binary {info['binary']} from {info['binary_mtime']}" if "binary" in info else ""),
+               "Players:   " + ("none logged" if not online else "")]
+    for p in online:
+        summary.append(f"  {p['name']} in {p['world'] or '?'}, logged in at {p['login']} UTC"
+                       f" at ({p['login_position']})")
+    summary.append("Trigger:")
+    summary.extend(f"  {line}" for line in inc["triggers"][:10])
+    if blocks:
+        frames = [line.strip() for line in blocks[0] if FRAME.match(line)][:8]
+        if frames:
+            summary.append("Backtrace (Vanillite frames, full in backtrace.txt):")
+            summary.extend(f"  {line}" for line in frames)
+    summary.append("Files: summary.txt, journal.log, meta.json" + (", backtrace.txt" if blocks else ""))
+    with open(os.path.join(tmp, "summary.txt"), "w") as f:
+        f.write("\n".join(summary) + "\n")
+    os.rename(tmp, os.path.join(ROOT, ident))
+    with open(INDEX, "a") as f:
+        f.write("\t".join([ident, iso(t0), inc["unit"], inc["kind"], commit[:12] or "-", sig,
+                           "new" if not earlier else "seen", text.replace("\t", " ")]) + "\n")
+    print(f"incident {ident}: {sig}", flush=True)
+    prune()
+
+
+def prune():
+    ids = sorted(d for d in os.listdir(ROOT) if d[:1].isdigit())
+    cutoff = datetime.fromtimestamp(time.time() - KEEP_DAYS * 86400, timezone.utc).strftime("%Y%m%d")
+    for i, ident in enumerate(ids):
+        if i < len(ids) - KEEP_MAX or ident[:8] < cutoff:
+            shutil.rmtree(os.path.join(ROOT, ident), ignore_errors=True)
+
+
+def run(args, follow):
+    proc = subprocess.Popen(["journalctl", "--no-pager", "-o", "json", *UNITS, *args],
+                            stdout=subprocess.PIPE, text=True, errors="replace")
+    lines = queue.Queue()
+
+    def reader():
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=reader, daemon=True).start()
+    w = Watcher()
+    now, cursor, saved = 0.0, None, 0.0
+    while True:
+        try:
+            line = lines.get(timeout=1)
+        except queue.Empty:
+            line = ""
+        if line is None:
+            break
+        if line:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            now = int(entry.get("__REALTIME_TIMESTAMP", "0")) / 1e6
+            cursor = entry.get("__CURSOR", cursor)
+            w.feed(entry)
+        w.flush(now)
+        # The cursor only moves on while nothing is pending: a restart replays an unsaved incident.
+        if follow and cursor and not w.pending and time.time() - saved > 10:
+            with open(CURSOR + ".tmp", "w") as f:
+                f.write(cursor)
+            os.replace(CURSOR + ".tmp", CURSOR)
+            saved = time.time()
+    w.flush(now, force=True)
+    return proc.wait()
+
+
+def rows():
+    if not os.path.exists(INDEX):
+        return []
+    with open(INDEX) as f:
+        return [r for r in (line.rstrip("\n").split("\t") for line in f) if len(r) >= 7
+                and os.path.isdir(os.path.join(ROOT, r[0]))]
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else ""
+    if cmd == "watch":
+        os.makedirs(ROOT, exist_ok=True)
+        cursor = open(CURSOR).read().strip() if os.path.exists(CURSOR) else ""
+        if cursor and subprocess.run(["journalctl", "-q", "-n", "1", "--after-cursor", cursor],
+                                     capture_output=True).returncode != 0:
+            cursor = ""
+        return run(["-f", *(["--after-cursor", cursor] if cursor else ["-n", "0"])], follow=True)
+    if cmd == "scan" and len(argv) in (3, 4):
+        return run(["--since", argv[2], *(["--until", argv[3]] if len(argv) == 4 else [])], follow=False)
+    if cmd == "list" and len(argv) <= 3:
+        for r in rows()[-int(argv[2] if len(argv) == 3 else 20):]:
+            print(f"{r[0]:<36} {r[4]:<12} {r[6]:<4} {r[5]}" + (f"  ({r[7][:80]})" if len(r) > 7 and r[7] else ""))
+        return 0
+    if cmd == "show" and len(argv) == 3:
+        d = os.path.join(ROOT, os.path.basename(argv[2]))
+        if not os.path.isdir(d):
+            print(f"no incident {argv[2]}", file=sys.stderr)
+            return 1
+        for name in ("summary.txt", "backtrace.txt"):
+            if os.path.exists(os.path.join(d, name)):
+                print(open(os.path.join(d, name)).read())
+        return 0
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+EOF
+write_if_changed /etc/systemd/system/vanillite-incidents.service <<'EOF'
+[Unit]
+Description=Save crashes and suspicious disconnects of Vanillite and the proxy (vanillite-incidents)
+After=systemd-journald.service
+[Service]
+ExecStart=/usr/local/bin/vanillite-incidents watch
+Restart=always
+RestartSec=10
+Nice=10
+CPUWeight=20
+MemoryMax=256M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/vanillite-incidents
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
 systemctl enable --quiet paper.service paper-proxy.service
 systemctl is-active --quiet paper.service || systemctl start paper.service
@@ -1499,6 +1948,9 @@ for dir in /opt/vanillite/30[0-9][0-9][0-9]; do
     [ "$port" = 30901 ] || systemctl enable --quiet --now "vanillite-creative@$port.path"
 done
 systemctl enable --quiet --now vanillite-autodeploy.timer
+# Resumes from its saved journal cursor: nothing between two provisions is lost.
+systemctl enable --quiet vanillite-incidents.service
+systemctl restart vanillite-incidents.service
 
 echo "== players (whitelisted and OP 4 on Paper; copied into Vanillite instances on deploy)"
 for _ in $(seq 60); do

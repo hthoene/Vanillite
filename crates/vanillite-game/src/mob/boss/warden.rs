@@ -833,7 +833,7 @@ fn spawn_emerging(level: &mut Level, pos: BlockPos) -> bool {
     );
     let mut scratch = Vec::new();
     if crate::mob::physics::contains_any_liquid(level, &aabb)
-        || !crate::mob::physics::no_collision(level, &aabb, &mut scratch)
+        || !crate::mob::physics::no_collision(&level.view(), &aabb, &mut scratch)
     {
         return false;
     }

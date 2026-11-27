@@ -377,6 +377,52 @@ enum Check {
     Full,
 }
 
+/// A pure, read-only view of a world's full chunks (`getChunkNow` without the chunk cache):
+/// its reads have no side effects, so it is `Send + Sync` and phases that only read (collision,
+/// path finding, tracking, AI proposals) can share it across threads while the world thread
+/// does not write. It does not touch tickets: a synchronous load's `unknown` ticket is kept
+/// alive only by [`Chunks::block`].
+#[derive(Clone, Copy)]
+pub struct ChunkView<'a> {
+    holders: &'a FxHashMap<ChunkPos, Holder>,
+}
+
+const _: () = {
+    const fn shareable<T: Send + Sync>() {}
+    shareable::<ChunkView<'static>>();
+};
+
+impl ChunkView<'_> {
+    /// The block state at `pos`, `None` outside full chunks and the build height.
+    #[inline]
+    pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
+        let chunk = self.holders.get(&pos.chunk())?.chunk.as_ref()?;
+        if chunk.status != ChunkStatus::Full {
+            return None;
+        }
+        chunk
+            .chunk
+            .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+    }
+
+    /// Whether the chunk is loaded as a full chunk.
+    #[inline]
+    pub fn is_full(&self, pos: ChunkPos) -> bool {
+        self.holders
+            .get(&pos)
+            .and_then(|h| h.chunk.as_ref())
+            .is_some_and(|c| c.status == ChunkStatus::Full)
+    }
+}
+
+impl fmt::Debug for ChunkView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChunkView")
+            .field("chunks", &self.holders.len())
+            .finish()
+    }
+}
+
 /// The chunk runtime of one world.
 pub struct Chunks {
     info: WorldInfo,
@@ -477,8 +523,18 @@ pub struct Chunks {
     /// chunks it read, newest first. A read that hits it does not reset an `unknown` ticket.
     /// Only kept while `unknown` tickets exist: a new one clears it.
     chunk_cache: Cell<[ChunkPos; 4]>,
-    /// Synchronous loads that had to wait, and the time the world thread waited for them.
-    sync_loads: (u64, Duration),
+    /// Synchronous loads that blocked the tick ([`Chunks::load_now`]).
+    sync_loads: SyncLoads,
+}
+
+/// Synchronous chunk loads that blocked the world thread (`getChunk(x, z, FULL, true)` of a
+/// chunk that was not accessible), counted since the world started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncLoads {
+    /// How many loads waited.
+    pub count: u64,
+    /// How long they waited together.
+    pub waited: Duration,
 }
 
 /// What the entities of a chunk do (Vanilla's `Visibility`, from the chunk's full status).
@@ -587,7 +643,7 @@ impl Chunks {
             visibility_changes: Vec::new(),
             unknown: FxHashMap::default(),
             chunk_cache: Cell::new([NO_CHUNK; 4]),
-            sync_loads: (0, Duration::ZERO),
+            sync_loads: SyncLoads::default(),
         }
     }
 
@@ -938,24 +994,38 @@ impl Chunks {
     /// level 33 (timeout 1 tick, [`Chunks::purge_stale_tickets`]) and is loaded or generated
     /// while the world thread waits (`managedBlock`). Returns whether it had to wait; the
     /// chunks that became live are in [`Chunks::take_promoted`].
+    ///
+    /// Every load that has to wait blocks the tick; it is counted in
+    /// [`Chunks::sync_loads`] (see `docs/architecture/world-access.md` for where it is
+    /// allowed).
     #[inline]
     pub fn load_now(&mut self, pos: ChunkPos) -> bool {
         if self.is_full_at(pos) {
             self.note_read(pos, true);
             return false;
         }
+        let started = Instant::now();
         self.load_blocking(pos);
+        let waited = started.elapsed();
+        self.sync_loads.count += 1;
+        self.sync_loads.waited += waited;
+        log::debug!(
+            "Synchronous load of chunk {}, {} in {} blocked the tick for {:.1} ms",
+            pos.x,
+            pos.z,
+            self.info.dimension,
+            waited.as_secs_f64() * 1000.0
+        );
         true
     }
 
-    /// Synchronous loads that had to wait since the start, and the time waited in total.
-    pub fn sync_loads(&self) -> (u64, Duration) {
+    /// The synchronous loads that blocked the tick since the world started.
+    pub fn sync_loads(&self) -> SyncLoads {
         self.sync_loads
     }
 
     #[cold]
     fn load_blocking(&mut self, pos: ChunkPos) {
-        let start = Instant::now();
         match self.unknown.get(&pos) {
             Some((_, left)) => left.set(1),
             None => {
@@ -1001,19 +1071,6 @@ impl Chunks {
         // The ticket changed levels, which cleared the cache; the chunk goes in.
         self.chunk_cache.set([NO_CHUNK; 4]);
         self.note_read(pos, false);
-        let waited = start.elapsed();
-        self.sync_loads.0 += 1;
-        self.sync_loads.1 += waited;
-        if log::log_enabled!(log::Level::Debug) {
-            log::debug!(
-                "Loaded chunk {}, {} in {} synchronously in {:.1} ms from\n{}",
-                pos.x,
-                pos.z,
-                self.info.dimension,
-                waited.as_secs_f64() * 1000.0,
-                std::backtrace::Backtrace::force_capture()
-            );
-        }
     }
 
     /// `TicketStorage.purgeStaleTickets` for the `unknown` tickets of synchronous loads: each
@@ -2243,7 +2300,10 @@ impl Chunks {
         }
     }
 
-    /// The block state at `pos`, `None` outside full chunks and the build height.
+    /// The block state at `pos`, `None` outside full chunks and the build height. This is
+    /// the world thread's read (`getBlockState`): it goes through Vanilla's chunk cache and
+    /// keeps a synchronous load's `unknown` ticket alive. Reads that Vanilla does without
+    /// tickets (collisions, path finding) and reads from other threads use [`Chunks::view`].
     pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
         let chunk_pos = pos.chunk();
         let holder = self.holders.get(&chunk_pos)?;
@@ -2257,6 +2317,15 @@ impl Chunks {
         chunk
             .chunk
             .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+    }
+
+    /// The pure read view of the full chunks: reads without side effects, shareable with
+    /// other threads while nothing writes.
+    #[inline]
+    pub fn view(&self) -> ChunkView<'_> {
+        ChunkView {
+            holders: &self.holders,
+        }
     }
 
     /// Sets a block state in a full chunk like `LevelChunk.setBlockState` (heightmaps follow,
