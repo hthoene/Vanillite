@@ -972,9 +972,16 @@ pub mod clientbound {
 
     impl Decode for RecipeBookAdd {
         fn decode(r: &mut Reader<'_>) -> Result<Self> {
-            // Only the test client reads it; the contents are skipped.
-            r.take_rest();
-            Ok(RecipeBookAdd::default())
+            let n = r.len_prefix("recipe book entries", 65_536, 3)?;
+            let mut entries = Vec::with_capacity(n);
+            for _ in 0..n {
+                let entry = crate::recipe_display::RecipeDisplayEntry::decode(r)?;
+                entries.push((entry, r.u8()?));
+            }
+            Ok(RecipeBookAdd {
+                entries,
+                replace: bool::decode(r)?,
+            })
         }
     }
 

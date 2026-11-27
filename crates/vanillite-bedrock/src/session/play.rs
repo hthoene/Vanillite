@@ -162,6 +162,7 @@ impl Session {
                     }
                     2 if frame.is_some() => self.attack(frame.unwrap_or(0)),
                     0 if (0..6).contains(&face) => {
+                        self.note_use(super::container::Used::Block(pos));
                         let sequence = self.next_sequence();
                         self.java_send(&psb::UseItemOn {
                             hand: Hand::MainHand,
@@ -208,6 +209,7 @@ impl Session {
                     return;
                 };
                 if action == 0 {
+                    self.note_use(super::container::Used::Entity(java));
                     // Use on the entity: mount, trade, feed, leash, ...
                     let sneaking = self.world.as_ref().is_some_and(|w| w.sneaking);
                     self.java_send(&psb::Interact {
@@ -266,6 +268,9 @@ impl Session {
     /// `container_close` from the client.
     pub(super) fn container_close(&mut self, body: &[u8]) -> crate::io::Result<()> {
         let window = bp::read_container_close(body)?;
+        if window != 0 && self.client_closed(window) {
+            return Ok(());
+        }
         if window == 0 {
             self.inventory_open = false;
             self.java_send(&psb::ContainerClose { container_id: 0 });
@@ -1246,6 +1251,30 @@ impl Session {
             ids::CONTAINER_CLOSE => {
                 if let Ok(container) = r.varint() {
                     self.java_container_closed(container);
+                    self.java_menu_closed(container);
+                }
+            }
+            ids::CONTAINER_SET_DATA => self.java_container_data(&mut r),
+            ids::SET_OBJECTIVE | ids::SET_DISPLAY_OBJECTIVE | ids::SET_SCORE | ids::RESET_SCORE => {
+                self.java_scoreboard(packet, &mut r);
+            }
+            ids::TELEPORT_ENTITY => self.java_teleport_entity(&mut r),
+            ids::BLOCK_ENTITY_DATA => self.java_block_entity(&mut r),
+            ids::OPEN_SIGN_EDITOR => {
+                if let Ok(o) = pcb::OpenSignEditor::decode(&mut r) {
+                    let pos = [o.pos.x, o.pos.y, o.pos.z];
+                    self.editing_sign = Some((pos, o.front));
+                    self.send(id::OPEN_SIGN, &bp::open_sign(pos, o.front));
+                }
+            }
+            ids::UPDATE_ATTRIBUTES => self.java_attributes(&mut r),
+            ids::BLOCK_EVENT => self.java_block_event(&mut r),
+            ids::RECIPE_BOOK_ADD => {
+                if let Ok(book) = pcb::RecipeBookAdd::decode(&mut r) {
+                    let items = self.version.palette.items();
+                    if let Some(body) = self.recipes.add(items, &book.entries, book.replace) {
+                        self.send(id::CRAFTING_DATA, &body);
+                    }
                 }
             }
             _ => {}

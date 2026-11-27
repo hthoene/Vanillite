@@ -355,8 +355,12 @@ impl ChunkCache {
     }
 }
 
+/// Most block entities of one chunk read.
+const MAX_BLOCK_ENTITIES: u32 = 1 << 16;
+
 /// Translates the body of a Java `level_chunk_with_light` (after x and z) into the body of a
-/// Bedrock `level_chunk` of version `v`.
+/// Bedrock `level_chunk` of version `v` and the `block_actor_data` bodies of its block
+/// entities ([`crate::blockentity`]).
 #[allow(clippy::too_many_arguments)]
 pub fn translate(
     v: &Version,
@@ -367,7 +371,7 @@ pub fn translate(
     biomes: &BiomeTable,
     biome_key: u64,
     cache: &ChunkCache,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
     let map = v.palette.blocks();
     let mut r = Reader::new(java);
     // Heightmaps.
@@ -385,6 +389,7 @@ pub fn translate(
 
     let mut translated: Vec<Option<Arc<Translated>>> =
         vec![None; usize::try_from(layout.bedrock_sections).unwrap_or(0)];
+    let mut java_blocks = Vec::with_capacity(usize::try_from(layout.java_sections).unwrap_or(0));
     for i in 0..layout.java_sections {
         let start = sections.clone();
         sections.take(4)?;
@@ -410,7 +415,9 @@ pub fn translate(
         *slot = Some(cache.get_or_insert(key, || {
             translate_section(&blocks, &biome_container, y, biomes, map)
         }));
+        java_blocks.push(blocks);
     }
+    let actors = block_entities(&mut r, x, z, layout.java_min_section, &java_blocks);
 
     // Sub-chunks up to the highest non-empty one; biomes for the whole dimension.
     let count = translated
@@ -463,7 +470,64 @@ pub fn translate(
     if !v.before_26_60() {
         out.push(0); // No client biome override.
     }
-    Ok(out)
+    Ok((out, actors))
+}
+
+/// The block entities after the sections that Bedrock needs block actor data for.
+fn block_entities(
+    r: &mut Reader<'_>,
+    cx: i32,
+    cz: i32,
+    min_section: i32,
+    sections: &[Container],
+) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let Ok(n) = java_varint(r) else {
+        return out;
+    };
+    for _ in 0..n.min(MAX_BLOCK_ENTITIES) {
+        let (Ok(xz), Ok(y), Ok(_kind)) = (r.u8(), r.array::<2>(), java_varint(r)) else {
+            break;
+        };
+        let y = i32::from(i16::from_be_bytes(y));
+        let (lx, lz) = (i32::from(xz >> 4), i32::from(xz & 15));
+        let state = y
+            .checked_shr(4)
+            .and_then(|s| usize::try_from(s.saturating_sub(min_section)).ok())
+            .and_then(|s| sections.get(s))
+            .map_or(0, |c| {
+                let i = (y & 15).wrapping_shl(8) | lz.wrapping_shl(4) | lx;
+                c.get(usize::try_from(i).unwrap_or(0))
+            });
+        let rest = r.rest();
+        let mut budget = vanillite_nbt::Budget::network();
+        let (nbt, used) = if crate::blockentity::needs_nbt(state) {
+            let mut input = rest;
+            match vanillite_nbt::read::read_network(&mut input, &mut budget) {
+                Ok(tag) => (tag, rest.len().saturating_sub(input.len())),
+                Err(_) => break,
+            }
+        } else {
+            match vanillite_nbt::read::skip_network(rest, &mut budget) {
+                Ok(used) => (None, used),
+                Err(_) => break,
+            }
+        };
+        *r = Reader::new(rest.get(used..).unwrap_or_default());
+        let pos = [
+            cx.wrapping_mul(16).wrapping_add(lx),
+            y,
+            cz.wrapping_mul(16).wrapping_add(lz),
+        ];
+        let compound = match &nbt {
+            Some(vanillite_nbt::Tag::Compound(c)) => Some(c),
+            _ => None,
+        };
+        if let Some(nbt) = crate::blockentity::translate(pos, state, compound) {
+            out.push(crate::packets::block_actor_data(pos, &nbt));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -536,7 +600,8 @@ mod tests {
         let java = chunk(&sections);
         let table = BiomeTable::new(&["minecraft:plains".to_owned()]);
         let cache = ChunkCache::new(16);
-        let out = translate(Version::latest(), 3, -2, &java, layout, &table, 0, &cache).unwrap();
+        let (out, _) =
+            translate(Version::latest(), 3, -2, &java, layout, &table, 0, &cache).unwrap();
         let mut r = Reader::new(&out);
         assert_eq!(
             (
@@ -566,7 +631,9 @@ mod tests {
         assert_eq!(p.rest(), [[0xffu8; 23].as_slice(), &[0]].concat());
         // A second translation hits the cache.
         assert_eq!(
-            translate(Version::latest(), 3, -2, &java, layout, &table, 0, &cache).unwrap(),
+            translate(Version::latest(), 3, -2, &java, layout, &table, 0, &cache)
+                .unwrap()
+                .0,
             out
         );
     }
