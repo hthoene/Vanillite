@@ -341,6 +341,7 @@ mod tests {
 
     use vanillite_base::hash::FxHashMap;
     use vanillite_base::{BlockPos, ChunkPos};
+    use vanillite_chunk::light::ChunkLight;
     use vanillite_chunk::slots::{
         FlatGenerator, LightEngine, Neighbours, NullCodec, NullStore, WorldInfo,
     };
@@ -356,7 +357,9 @@ mod tests {
     impl LightEngine for NoLight {
         fn initialize_light(&self, _: &mut [ProtoChunk]) {}
         fn light_chunks(&self, _: &mut [ProtoChunk], _: &mut Neighbours<'_>) {}
-        fn relight(&self, _: &[ChunkPos], _: &mut Neighbours<'_>) {}
+        fn relight(&self, _: &[BlockPos], _: &Neighbours<'_>) -> Vec<(ChunkPos, ChunkLight)> {
+            Vec::new()
+        }
     }
 
     /// Full classic superflat chunks around the origin (bedrock, two dirt layers, grass).

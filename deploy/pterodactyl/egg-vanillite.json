@@ -853,7 +853,7 @@
     },
     {
       "name": "Performance: Simulation › Max Relights Per Tick",
-      "description": "Chunks whose light is recomputed per tick after block changes, each as one background job over its 5 × 5 area. Lower values spread bursts over more ticks. Applies to every world. Range: 1 to 65536. Empty: the profile's value (vanilla profile: 1024). vanillite.toml: performance.simulation.max-relights-per-tick.",
+      "description": "Chunks whose light is updated together after block changes, in one background job that recomputes only the cells the changes reach; the rest follows in the next job. Lower values split bursts into smaller jobs. Applies to every world. Range: 1 to 65536. Empty: the profile's value (vanilla profile: 1024). vanillite.toml: performance.simulation.max-relights-per-tick.",
       "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK",
       "default_value": "",
       "user_viewable": true,

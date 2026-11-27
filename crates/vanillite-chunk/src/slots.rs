@@ -14,6 +14,7 @@ use vanillite_base::{BlockPos, ChunkPos};
 
 use crate::chunk::Chunk;
 use crate::facts::{BiomeId, BlockStateId};
+use crate::light::ChunkLight;
 
 pub use crate::store::{
     ChunkCodec, ChunkStore, ChunkStoreProvider, Completion, CompletionTarget, DimensionId,
@@ -489,8 +490,8 @@ impl ChunkGeneratorProvider for FlatGeneratorProvider {
     }
 }
 
-/// The `light-engine` slot. Results are combined by taking the maximum of every light level,
-/// so jobs of neighbouring chunks may run at the same time.
+/// The `light-engine` slot. Results of initial light are combined by taking the maximum of
+/// every light level, so jobs of neighbouring chunks may run at the same time.
 pub trait LightEngine: Send + Sync {
     /// Prepares the light layers of the targets (the step to `InitializeLight`): sky light
     /// layers at and below the highest non-empty section and all block light layers start at
@@ -502,9 +503,13 @@ pub trait LightEngine: Send + Sync {
     /// `InitializeLight` or later; light written into them is kept.
     fn light_chunks(&self, targets: &mut [ProtoChunk], neighbours: &mut Neighbours<'_>);
 
-    /// Recomputes the light after block changes in `changed`. `area` holds the chunks within
-    /// 2 of every changed chunk; the light of the chunks within 1 is replaced.
-    fn relight(&self, changed: &[ChunkPos], area: &mut Neighbours<'_>);
+    /// Updates the light after the block changes at `changes`. `area` holds the chunks within 1
+    /// of every changed chunk (light travels 15 blocks) with the blocks after the changes and
+    /// the light before them, which was right for the blocks before. Chunks before
+    /// `InitializeLight` have no light layers and take no light. Returns the new light of every
+    /// chunk whose light changes; the runtime applies it unless the light of one of them
+    /// changed meanwhile, in which case it asks again.
+    fn relight(&self, changes: &[BlockPos], area: &Neighbours<'_>) -> Vec<(ChunkPos, ChunkLight)>;
 
     /// Whether changing a block from `old` to `new` can change any light level. The runtime
     /// only recomputes the light around changes where this is `true` (the default).

@@ -327,7 +327,7 @@ view-distance = 8
 | `max-block-ticks` | performance |  | `65536` | `65536` | `65536` | `65536` | `65536` | Scheduled block ticks run per tick. Integer from 1 to 1000000. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_BLOCK_TICKS`. |
 | `max-fluid-ticks` | performance |  | `65536` | `65536` | `65536` | `65536` | `65536` | Scheduled fluid ticks run per tick. Integer from 1 to 1000000. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_FLUID_TICKS`. |
 | `max-chained-neighbor-updates` | performance |  | `"vanilla"` | `"vanilla"` | `"vanilla"` | `"vanilla"` | `"vanilla"` | Chained neighbour and shape updates of one block change before the rest is skipped; "vanilla" uses `max-chained-neighbor-updates` of server.properties. Integer from 1 to 100000000. Also accepts `"vanilla"`. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_CHAINED_NEIGHBOR_UPDATES`. |
-| `max-relights-per-tick` | performance |  | `1024` | `1024` | `1024` | `1024` | `1024` | Chunks whose light is recomputed per tick after block changes, each as one background job over its 5 × 5 area. Lower values spread bursts over more ticks. Integer from 1 to 65536. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK`. |
+| `max-relights-per-tick` | performance |  | `1024` | `1024` | `1024` | `1024` | `1024` | Chunks whose light is updated together after block changes, in one background job that recomputes only the cells the changes reach; the rest follows in the next job. Lower values split bursts into smaller jobs. Integer from 1 to 65536. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK`. |
 
 #### `[performance.collisions]`
 

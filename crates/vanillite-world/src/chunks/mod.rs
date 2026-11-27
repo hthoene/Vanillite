@@ -212,7 +212,8 @@ pub struct ChunkSettings {
     pub max_jobs: usize,
     /// Simulation distance in chunks (2..=32): chunks this far from a player tick.
     pub simulation_distance: i32,
-    /// Chunks whose light is recomputed per tick after block changes; the rest waits.
+    /// Chunks whose light is updated in one job after block changes; the rest waits for the
+    /// next job.
     pub max_relights: usize,
     /// Saving.
     pub save: SaveSettings,
@@ -402,9 +403,11 @@ enum Done {
         target: ChunkPos,
         written: Vec<ChunkPos>,
     },
+    /// A light update: the changed blocks per chunk, the chunks it read and the new light.
     Relit {
-        center: ChunkPos,
-        chunks: Vec<Arc<ProtoChunk>>,
+        changes: Vec<(ChunkPos, Vec<BlockPos>)>,
+        read: Vec<Arc<ProtoChunk>>,
+        light: Vec<(ChunkPos, ChunkLight)>,
     },
     /// An encode job submitted its records.
     Encoded {
@@ -537,11 +540,12 @@ pub struct Chunks {
     /// Chunks whose next step (spawn, full) waits for the next tick.
     due_next_tick: FxHashSet<ChunkPos>,
     unload_candidates: FxHashSet<ChunkPos>,
-    relight: FxHashSet<ChunkPos>,
-    /// Centres of relights in flight; a centre changed again waits in `relight` until its
-    /// running relight is applied, so results of one centre never overtake each other.
-    /// Relights do not count against the job budget of loading and generation.
-    relighting: FxHashSet<ChunkPos>,
+    /// Changed blocks whose light is still to update, per chunk.
+    relight: FxHashMap<ChunkPos, Vec<BlockPos>>,
+    /// A light update is in flight. The next one starts when it is applied, so every update
+    /// reads the light the one before left. Light updates do not count against the job budget
+    /// of loading and generation.
+    relighting: bool,
     /// Sections whose sky and block light changed, per full chunk.
     light_changes: FxHashMap<ChunkPos, LightChange>,
     block_changes: Vec<BlockPos>,
@@ -681,8 +685,8 @@ impl Chunks {
             loaded_between_ticks: Vec::new(),
             due_next_tick: FxHashSet::default(),
             unload_candidates: FxHashSet::default(),
-            relight: FxHashSet::default(),
-            relighting: FxHashSet::default(),
+            relight: FxHashMap::default(),
+            relighting: false,
             light_changes: FxHashMap::default(),
             block_changes: Vec::new(),
             tick: 0,
@@ -1574,29 +1578,14 @@ impl Chunks {
                     self.wake(pos);
                 }
             }
-            Done::Relit { center, chunks } => {
-                self.relighting.remove(&center);
-                for chunk in chunks {
-                    if chunk.pos.chessboard_distance(center) > 1 {
-                        continue;
-                    }
-                    if let Some(holder) = self.holders.get_mut(&chunk.pos)
-                        && let Some(current) = holder.chunk.as_mut()
-                    {
-                        let current = Arc::make_mut(current);
-                        let change =
-                            LightChange::between(current.chunk.light(), chunk.chunk.light());
-                        *current.chunk.light_mut() = chunk.chunk.light().clone();
-                        let full = current.status == ChunkStatus::Full;
-                        holder.touch(chunk.pos, &mut self.changed);
-                        if !change.is_empty() && full {
-                            self.light_changes
-                                .entry(chunk.pos)
-                                .or_default()
-                                .add(&change);
-                        }
-                    }
-                }
+            Done::Relit {
+                changes,
+                read,
+                light,
+            } => {
+                self.relighting = false;
+                self.apply_relit(changes, &read, light);
+                self.start_relights();
             }
             Done::Encoded {
                 round,
@@ -1632,6 +1621,56 @@ impl Chunks {
         if let Some(holder) = self.holders.get_mut(&pos) {
             holder.chunk = Some(chunk);
             holder.touch(pos, &mut self.changed);
+        }
+    }
+
+    /// Applies a light update, unless the light of a chunk it writes changed since the update
+    /// read it (initial light of a neighbour arrived): then its changes are queued again.
+    fn apply_relit(
+        &mut self,
+        changes: Vec<(ChunkPos, Vec<BlockPos>)>,
+        read: &[Arc<ProtoChunk>],
+        light: Vec<(ChunkPos, ChunkLight)>,
+    ) {
+        let current = |holders: &FxHashMap<ChunkPos, Holder>, pos: ChunkPos| {
+            holders
+                .get(&pos)
+                .filter(|holder| !holder.busy)
+                .and_then(|holder| holder.chunk.clone())
+        };
+        let unchanged = light.iter().all(|(pos, _)| {
+            let before = read.iter().find(|chunk| chunk.pos == *pos);
+            match (current(&self.holders, *pos), before) {
+                (Some(now), Some(before)) => now.chunk.light() == before.chunk.light(),
+                // Unloaded meanwhile: nothing to write.
+                (None, _) => !self.holders.contains_key(pos),
+                (Some(_), None) => false,
+            }
+        });
+        if !unchanged {
+            for (pos, blocks) in changes {
+                self.relight.entry(pos).or_default().extend(blocks);
+            }
+            return;
+        }
+        for (pos, light) in light {
+            let Some(holder) = self.holders.get_mut(&pos) else {
+                continue;
+            };
+            let Some(current) = holder.chunk.as_mut() else {
+                continue;
+            };
+            let change = LightChange::between(current.chunk.light(), &light);
+            if change.is_empty() {
+                continue;
+            }
+            let current = Arc::make_mut(current);
+            *current.chunk.light_mut() = light;
+            let full = current.status == ChunkStatus::Full;
+            holder.touch(pos, &mut self.changed);
+            if full {
+                self.light_changes.entry(pos).or_default().add(&change);
+            }
         }
     }
 
@@ -2379,7 +2418,7 @@ impl Chunks {
             return;
         }
         // Jobs that write chunks finish first, so no changed chunk is busy.
-        self.wait_until(|chunks| chunks.in_flight == 0 && chunks.relighting.is_empty());
+        self.wait_until(|chunks| chunks.in_flight == 0 && !chunks.relighting);
         // Relights applied while waiting changed chunks too.
         self.start_save_round(None);
         let pending: Vec<ChunkPos> = self
@@ -2511,7 +2550,7 @@ impl Chunks {
         holder.touch(chunk_pos, &mut self.changed);
         self.block_changes.push(pos);
         if self.slots.light.changes_light(old, state) {
-            self.relight.insert(chunk_pos);
+            self.relight.entry(chunk_pos).or_default().push(pos);
         }
         Some(old)
     }
@@ -2787,45 +2826,68 @@ impl Chunks {
         self.start_relights();
     }
 
-    /// Starts light recomputation around changed chunks whose 5 × 5 area is loaded.
+    /// Starts the light update for the blocks changed since the last one, as one job: at most
+    /// `max_relights` chunks, the rest follows when it is applied. A chunk waits while a job
+    /// writes one of the chunks its light can reach.
     fn start_relights(&mut self) {
-        if self.relight.is_empty() {
+        if self.relighting || self.relight.is_empty() {
             return;
         }
         let max = self.settings.max_relights.max(1);
-        let changed: Vec<ChunkPos> = self
-            .relight
-            .iter()
-            .copied()
-            .filter(|pos| !self.relighting.contains(pos))
-            .take(max)
-            .collect();
-        for center in changed {
-            self.relight.remove(&center);
-            self.relighting.insert(center);
-            let mut area = Vec::with_capacity(25);
-            for dz in -2..=2 {
-                for dx in -2..=2 {
-                    let pos = ChunkPos::new(center.x + dx, center.z + dz);
-                    if let Some(chunk) = self.holders.get(&pos).and_then(|h| h.chunk.as_ref()) {
-                        area.push(Arc::clone(chunk));
-                    }
+        let mut changes = Vec::new();
+        let mut read: Vec<Arc<ProtoChunk>> = Vec::new();
+        let pending: Vec<ChunkPos> = self.relight.keys().copied().collect();
+        for center in pending {
+            if changes.len() >= max {
+                break;
+            }
+            if self.holders.get(&center).and_then(Holder::status) != Some(ChunkStatus::Full) {
+                // Unloaded: its light was saved as it was.
+                self.relight.remove(&center);
+                continue;
+            }
+            let around = (-1..=1)
+                .flat_map(|dz| (-1..=1).map(move |dx| ChunkPos::new(center.x + dx, center.z + dz)));
+            let around: Vec<(ChunkPos, &Holder)> = around
+                .filter_map(|pos| Some((pos, self.holders.get(&pos)?)))
+                .filter(|(_, holder)| holder.chunk.is_some())
+                .collect();
+            if around.iter().any(|(_, holder)| holder.busy) {
+                continue;
+            }
+            for (pos, holder) in around {
+                if let Some(chunk) = &holder.chunk
+                    && !read.iter().any(|other| other.pos == pos)
+                {
+                    read.push(Arc::clone(chunk));
                 }
             }
-            let light = Arc::clone(&self.slots.light);
-            let tx = self.done_tx.clone();
-            self.slots.executor.spawn(
-                0,
-                Box::new(move || {
-                    let mut area = area;
-                    light.relight(&[center], &mut Neighbours::new(&mut area));
-                    tx.send(Done::Relit {
-                        center,
-                        chunks: area,
-                    });
-                }),
-            );
+            if let Some(blocks) = self.relight.remove(&center) {
+                changes.push((center, blocks));
+            }
         }
+        if changes.is_empty() {
+            return;
+        }
+        self.relighting = true;
+        let light = Arc::clone(&self.slots.light);
+        let tx = self.done_tx.clone();
+        self.slots.executor.spawn(
+            0,
+            Box::new(move || {
+                let mut read = read;
+                let blocks: Vec<BlockPos> = changes
+                    .iter()
+                    .flat_map(|(_, blocks)| blocks.iter().copied())
+                    .collect();
+                let light = light.relight(&blocks, &Neighbours::new(&mut read));
+                tx.send(Done::Relit {
+                    changes,
+                    read,
+                    light,
+                });
+            }),
+        );
     }
 }
 
