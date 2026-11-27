@@ -1,6 +1,6 @@
 //! A player's session after login: relays packet bodies between the client and its backend,
-//! handles the proxy's commands, switches servers through Vanilla's reconfiguration and falls
-//! back to the next server when a backend is lost.
+//! handles the proxy's commands and the BungeeCord plugin channel, switches servers through
+//! Vanilla's reconfiguration and falls back to the next server when a backend is lost.
 //!
 //! Only the few packets the proxy acts on are decoded; everything else is passed on as the
 //! frame decoder returned it, through reused buffers.
@@ -8,7 +8,9 @@
 use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use vanillite_protocol::codec::{Decode, Reader, write_varint};
@@ -20,11 +22,11 @@ use vanillite_protocol::text::{ClickEvent, Color, Component, HoverEvent, NamedCo
 use vanillite_protocol::types::{GameProfile, Identifier, RawBytes};
 use vanillite_protocol::{Packet, State};
 
-use crate::Shared;
 use crate::backend::{self, Backend};
 use crate::client::{End, Registered, kick, reason};
 use crate::link::{Rx, Tx};
 use crate::zlib;
+use crate::{Control, Shared, admin, bungee};
 
 // Serverbound ids the proxy looks at.
 const C_CFG_FINISH: i32 = cfg::serverbound::FinishConfiguration::ID;
@@ -41,6 +43,7 @@ const B_CFG_DISCONNECT: i32 = cfg::clientbound::Disconnect::ID;
 const B_PLAY_START_CFG: i32 = play::clientbound::StartConfiguration::ID;
 const B_PLAY_DISCONNECT: i32 = play::clientbound::Disconnect::ID;
 const B_PLAY_COMMANDS: i32 = play::clientbound::Commands::ID;
+const B_PLAY_PAYLOAD: i32 = play::clientbound::CustomPayload::ID;
 const B_CFG_PACK_PUSH: i32 = ids::configuration::clientbound::RESOURCE_PACK_PUSH;
 const B_CFG_PACK_POP: i32 = ids::configuration::clientbound::RESOURCE_PACK_POP;
 const B_PLAY_PACK_PUSH: i32 = ids::play::clientbound::RESOURCE_PACK_PUSH;
@@ -114,11 +117,14 @@ struct Session {
     last_error: String,
     last_client_read: Instant,
     last_backend_read: Instant,
-    may_switch: bool,
-    may_list: bool,
+    /// Read timeout of both sides.
+    timeout: Duration,
+    /// Orders from elsewhere on the proxy.
+    orders: mpsc::Receiver<Control>,
 }
 
 /// Runs the session to its end.
+#[allow(clippy::too_many_arguments)] // The parts of a finished login.
 pub(crate) async fn run(
     shared: Arc<Shared>,
     client_rx: Rx,
@@ -127,11 +133,9 @@ pub(crate) async fn run(
     address: IpAddr,
     host: String,
     registered: Registered,
+    orders: mpsc::Receiver<Control>,
 ) {
-    let uuid = profile.id.to_string();
-    let config = &shared.config;
-    let may_switch = config.permitted("server", &profile.name, &uuid);
-    let may_list = config.permitted("glist", &profile.name, &uuid);
+    let config = shared.config();
     let mut candidates: VecDeque<Arc<str>> = VecDeque::new();
     let forced = config.forced_hosts.get(&host).into_iter().flatten();
     for name in forced.chain(config.try_order.iter()) {
@@ -144,6 +148,7 @@ pub(crate) async fn run(
         profile,
         address,
         secret: config.secret.clone(),
+        forwarding: config.forwarding,
         compression_level: config.compression_level,
         // The threshold the client link really uses: virtual connections never compress.
         link_threshold: config.trusted_link.then(|| {
@@ -175,8 +180,8 @@ pub(crate) async fn run(
         last_error: "no server is configured".to_owned(),
         last_client_read: now,
         last_backend_read: now,
-        may_switch,
-        may_list,
+        timeout: config.limits.read_timeout,
+        orders,
     };
     let end = session.drive().await.err().unwrap_or(End::Closed);
     if let Some(p) = session.pending.take() {
@@ -193,7 +198,7 @@ pub(crate) async fn run(
                 .send(&play::clientbound::Disconnect { reason }),
         };
         if sent.is_ok() {
-            let _ = session.client_tx.flush(config.limits.read_timeout).await;
+            let _ = session.client_tx.flush(session.timeout).await;
         }
     } else {
         log::info!("{name} disconnected");
@@ -230,6 +235,7 @@ fn backend_intercepts(config: bool, id: i32) -> bool {
                 | B_PLAY_COMMANDS
                 | B_PLAY_PACK_PUSH
                 | B_PLAY_PACK_POP
+                | B_PLAY_PAYLOAD
         )
     }
 }
@@ -257,7 +263,7 @@ impl Session {
         }
         self.client_frames()?;
         loop {
-            let timeout = self.shared.config.limits.read_timeout;
+            let timeout = self.timeout;
             let client_deadline = self.last_client_read.checked_add(timeout);
             let backend_deadline = self
                 .backend
@@ -289,6 +295,7 @@ impl Session {
                         self.connected(p.name, p.kind, result)?;
                     }
                 }
+                Some(order) = self.orders.recv() => self.order(order)?,
                 () = tokio::time::sleep_until(wake) => {
                     let now = Instant::now();
                     if client_deadline.is_some_and(|d| now >= d) {
@@ -302,7 +309,7 @@ impl Session {
     }
 
     async fn flush(&mut self) -> Result<(), End> {
-        let timeout = self.shared.config.limits.read_timeout;
+        let timeout = self.timeout;
         if let Some(b) = self.backend.as_mut()
             && b.tx.flush(timeout).await.is_err()
         {
@@ -408,6 +415,8 @@ impl Session {
                 self.brand.clear();
                 self.brand.extend_from_slice(after_id(&self.scratch));
             }
+            // Answers on this channel come from the proxy only (backends trust them).
+            Ok(c) if c.as_str() == bungee::CHANNEL => return Ok(()),
             Ok(c) if c.as_str() == "minecraft:register" => {
                 let data = r.take_rest();
                 if self.channels.len().saturating_add(data.len()) < MAX_CHANNELS {
@@ -527,6 +536,18 @@ impl Session {
                     .map_or_else(|_| "disconnected".to_owned(), |d| d.reason.plain());
                 self.backend_lost(Some(reason))?;
             }
+            (false, B_PLAY_PAYLOAD) => {
+                let mut pr = Reader::new(after_id(&self.scratch));
+                match Identifier::decode(&mut pr) {
+                    Ok(c)
+                        if c.as_str() == bungee::CHANNEL && self.shared.config().bungee_channel =>
+                    {
+                        let data = pr.take_rest().to_vec();
+                        self.bungee(&data)?;
+                    }
+                    _ => self.client_tx.body(&self.scratch)?,
+                }
+            }
             (false, B_PLAY_COMMANDS) => match play::clientbound::Commands::decode(&mut r) {
                 Ok(mut commands) => {
                     self.inject_commands(&mut commands);
@@ -559,13 +580,16 @@ impl Session {
     /// Adds the proxy's commands the player may use to the backend's command tree, so the
     /// client completes them instead of marking them as unknown.
     fn inject_commands(&self, commands: &mut play::clientbound::Commands) {
+        let config = self.shared.config();
+        let name = &self.player.profile.name;
+        let uuid = self.player.profile.id.to_string();
         let tree = &mut commands.0;
         let Ok(root) = usize::try_from(tree.root) else {
             return;
         };
         let add = |tree: &mut vanillite_protocol::commands::CommandTree,
                    literal: &str,
-                   argument: Option<&str>| {
+                   argument: Option<(&str, StringKind)>| {
             let Some(root_node) = tree.nodes.get(root) else {
                 return;
             };
@@ -592,15 +616,17 @@ impl Session {
                 children,
                 redirect: None,
             });
-            if let Some(name) = argument {
+            if let Some((name, kind)) = argument {
                 tree.nodes.push(vanillite_protocol::commands::Node {
                     kind: NodeKind::Argument {
                         name: name.to_owned(),
                         parser: Parser {
                             name: "brigadier:string",
-                            props: ParserProps::String(StringKind::SingleWord),
+                            props: ParserProps::String(kind),
                         },
-                        suggestions: Identifier::new("minecraft:ask_server").ok(),
+                        suggestions: (kind == StringKind::SingleWord)
+                            .then(|| Identifier::new("minecraft:ask_server").ok())
+                            .flatten(),
                     },
                     executable: true,
                     restricted: false,
@@ -612,15 +638,21 @@ impl Session {
                 r.children.push(index);
             }
         };
-        if self.may_switch {
-            add(tree, "server", Some("server"));
-        }
-        if self.may_list {
-            add(tree, "glist", None);
+        let commands = [
+            ("server", Some(("server", StringKind::SingleWord))),
+            ("glist", Some(("server", StringKind::SingleWord))),
+            ("send", Some(("arguments", StringKind::GreedyPhrase))),
+            ("alert", Some(("message", StringKind::GreedyPhrase))),
+            ("proxy", Some(("action", StringKind::SingleWord))),
+        ];
+        for (command, argument) in commands {
+            if config.permitted(command, name, &uuid) {
+                add(tree, command, argument);
+            }
         }
     }
 
-    // ---- commands ----
+    // ---- commands and orders ----
 
     fn message(&mut self, text: String, color: NamedColor) -> Result<(), End> {
         self.chat(Component::text(text).color(Color::Named(color)))
@@ -636,11 +668,19 @@ impl Session {
         Ok(())
     }
 
+    /// Whether the player may use `command`.
+    fn may(&self, command: &str) -> bool {
+        let profile = &self.player.profile;
+        self.shared
+            .config()
+            .permitted(command, &profile.name, &profile.id.to_string())
+    }
+
     /// Runs a proxy command; `false` passes it on to the backend.
     fn command(&mut self, line: &str) -> Result<bool, End> {
         let mut words = line.split_whitespace();
         match words.next() {
-            Some("server") if self.may_switch => {
+            Some("server") if self.may("server") => {
                 match words.next() {
                     None => {
                         let list = self.server_list();
@@ -650,26 +690,84 @@ impl Session {
                 }
                 Ok(true)
             }
-            Some("glist") if self.may_list => {
-                let lines = self.player_list();
-                self.message(lines, NamedColor::Yellow)?;
-                Ok(true)
+            Some(_) => {
+                let player = Arc::clone(&self.player);
+                let uuid = player.profile.id.to_string();
+                let server = self.backend.as_ref().map(|b| Arc::clone(&b.name));
+                let sender = admin::Sender::Player {
+                    name: &player.profile.name,
+                    uuid: &uuid,
+                    server: server.as_deref(),
+                };
+                match admin::run(&self.shared, &sender, line) {
+                    Some(out) => {
+                        self.chat(out)?;
+                        Ok(true)
+                    }
+                    None => Ok(false),
+                }
             }
-            _ => Ok(false),
+            None => Ok(false),
         }
+    }
+
+    /// An order from another session, a command or a plugin message.
+    fn order(&mut self, order: Control) -> Result<(), End> {
+        match order {
+            Control::Send(server) => {
+                let here = self.backend.as_ref().is_some_and(|b| b.name == server);
+                if !here && self.pending.is_none() && self.phase == Phase::Play {
+                    self.switch(&server)?;
+                }
+                Ok(())
+            }
+            Control::Chat(message) => self.chat(message),
+            Control::Kick(reason) => Err(End::Kick(Box::new(reason))),
+            Control::Payload(data) => {
+                if self.phase == Phase::Play
+                    && let Some(b) = self.backend.as_mut()
+                {
+                    b.tx.send(&play::serverbound::CustomPayload {
+                        channel: Identifier::new(bungee::CHANNEL)?,
+                        data: RawBytes(data),
+                    })?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// A request of the backend on the BungeeCord channel.
+    fn bungee(&mut self, data: &[u8]) -> Result<(), End> {
+        let server = self.backend.as_ref().map(|b| Arc::clone(&b.name));
+        let me = bungee::Me {
+            id: self.player.profile.id,
+            server: server.as_deref(),
+        };
+        match bungee::handle(&self.shared, &me, data) {
+            bungee::Reply::Nothing => {}
+            bungee::Reply::Answer(answer) => self.order(Control::Payload(answer))?,
+            bungee::Reply::Connect(target) => {
+                if self.pending.is_none() && self.phase == Phase::Play {
+                    self.switch(&target)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `/server` without a name: the current server and every server to click on, with its
     /// player count, like Velocity.
     fn server_list(&self) -> Component {
+        let config = self.shared.config();
         let current = self.backend.as_ref().map(|b| Arc::clone(&b.name));
-        let mut counts = vec![0usize; self.shared.config.servers.len()];
+        let mut counts = vec![0usize; config.servers.len()];
         if let Ok(players) = self.shared.players.lock() {
             for p in players.values() {
                 let Some(server) = p.server.as_deref() else {
                     continue;
                 };
-                let index = self.shared.config.servers.keys().position(|s| s == server);
+                let index = config.servers.keys().position(|s| s == server);
                 if let Some(c) = index.and_then(|i| counts.get_mut(i)) {
                     *c = c.saturating_add(1);
                 }
@@ -682,7 +780,7 @@ impl Session {
         })
         .color(yellow)
         .append(Component::text("Available servers: ").color(yellow));
-        for (i, (name, count)) in self.shared.config.servers.keys().zip(counts).enumerate() {
+        for (i, (name, count)) in config.servers.keys().zip(counts).enumerate() {
             if i > 0 {
                 out = out.append(Component::text(", ").color(Color::Named(NamedColor::Gray)));
             }
@@ -707,27 +805,31 @@ impl Session {
         out
     }
 
-    /// Tab completion of `/server <name>`; `false` passes the request on to the backend.
+    /// Tab completion of the proxy's commands; `false` passes the request on to the backend.
     fn suggest(&mut self, request: &play::serverbound::CommandSuggestion) -> Result<bool, End> {
         let line = request
             .command
             .strip_prefix('/')
             .unwrap_or(&request.command);
-        let Some(partial) = line.strip_prefix("server ") else {
+        let Some((command, partial)) = line.split_once(' ') else {
             return Ok(false);
         };
-        if !self.may_switch || partial.contains(' ') {
-            return Ok(false);
-        }
+        let config = self.shared.config();
+        let candidates: Vec<String> = match command {
+            "server" | "glist" if !partial.contains(' ') && self.may(command) => {
+                config.servers.keys().cloned().collect()
+            }
+            "proxy" if !partial.contains(' ') && self.may(command) => {
+                vec!["info".to_owned(), "reload".to_owned()]
+            }
+            _ => return Ok(false),
+        };
         let lower = partial.to_ascii_lowercase();
-        let suggestions = self
-            .shared
-            .config
-            .servers
-            .keys()
+        let suggestions = candidates
+            .into_iter()
             .filter(|n| n.to_ascii_lowercase().starts_with(&lower))
-            .map(|n| play::clientbound::Suggestion {
-                text: n.clone(),
+            .map(|text| play::clientbound::Suggestion {
+                text,
                 tooltip: None,
             })
             .collect();
@@ -744,30 +846,9 @@ impl Session {
         Ok(true)
     }
 
-    fn player_list(&self) -> String {
-        let Ok(players) = self.shared.players.lock() else {
-            return String::new();
-        };
-        let mut out = String::new();
-        for server in self.shared.config.servers.keys() {
-            let mut names: Vec<&str> = players
-                .values()
-                .filter(|p| p.server.as_deref() == Some(server.as_str()))
-                .map(|p| p.name.as_str())
-                .collect();
-            names.sort_unstable();
-            out.push_str(&format!(
-                "[{server}] ({}): {}\n",
-                names.len(),
-                names.join(", ")
-            ));
-        }
-        out.push_str(&format!("{} players are online.", players.len()));
-        out
-    }
-
     fn switch(&mut self, target: &str) -> Result<(), End> {
-        let Some((name, _)) = self.shared.config.servers.get_key_value(target) else {
+        let config = self.shared.config();
+        let Some((name, _)) = config.servers.get_key_value(target) else {
             return self.message(
                 format!("There is no server named {target}."),
                 NamedColor::Red,
@@ -794,14 +875,15 @@ impl Session {
     // ---- backend connections ----
 
     fn start(&mut self, name: Arc<str>, kind: Kind) {
-        let Some(address) = self.shared.config.servers.get(&*name).cloned() else {
+        let config = self.shared.config();
+        let Some(address) = config.servers.get(&*name).cloned() else {
             return;
         };
         let task = tokio::spawn(backend::connect(
             Arc::clone(&name),
             address,
             Arc::clone(&self.player),
-            self.shared.config.limits.connect_timeout,
+            config.limits.connect_timeout,
         ));
         self.pending = Some(Pending { name, kind, task });
     }
@@ -916,7 +998,7 @@ impl Session {
         self.last_error = format!("Disconnected from {}: {why}", lost.name);
         self.candidates = self
             .shared
-            .config
+            .config()
             .try_order
             .iter()
             .filter(|n| n.as_str() != &*lost.name)

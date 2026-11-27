@@ -745,7 +745,20 @@ fn try_spawn_golem(t: &mut Tick<'_, '_>) -> bool {
             },
             mob,
         );
-        crate::mob::fam::undead::spawn_extras(t.ents, t.level, id, at, extra);
+        if !t
+            .ents
+            .spawned(id, vanillite_abi::spawn_reason::MOB_SUMMONED, 0)
+        {
+            return true;
+        }
+        crate::mob::fam::undead::spawn_extras(
+            t.ents,
+            t.level,
+            id,
+            at,
+            extra,
+            SpawnReason::MobSummoned,
+        );
         if let Some(sound) = t
             .ents
             .mob_mut(id)
@@ -941,28 +954,35 @@ fn killed_by_zombie(t: &mut Tick<'_, '_>, killer: EntityId) -> bool {
     let pos = t.block_pos();
     let mut random = std::mem::replace(t.env.random, LegacyRandom::new(0));
     let level = t.level;
-    let converted = crate::mob::fam::undead::convert_to(t, Kind::ZombieVillager, true, true, |z| {
-        crate::mob::fam::undead::zombies::set_villager_data(
-            z,
-            v.villager_type,
-            v.profession,
-            v.level,
-            v.data_finalized,
-        );
-        let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Conversion);
-        ctx.env = env;
-        ctx.pos = pos;
-        ctx.level = Some(level);
-        crate::mob::fam::undead::zombies::finalize_converted(z, &mut ctx, &mut random);
-        crate::mob::fam::undead::zombies::set_villager_data(
-            z,
-            v.villager_type,
-            v.profession,
-            v.level,
-            v.data_finalized,
-        );
-        crate::mob::fam::undead::zombies::set_villager_trades(z, v.gossips.clone(), offers, xp);
-    });
+    let converted = crate::mob::fam::undead::convert_to(
+        t,
+        Kind::ZombieVillager,
+        true,
+        true,
+        vanillite_abi::transform_reason::INFECTION,
+        |z| {
+            crate::mob::fam::undead::zombies::set_villager_data(
+                z,
+                v.villager_type,
+                v.profession,
+                v.level,
+                v.data_finalized,
+            );
+            let mut ctx = SpawnContext::simple(difficulty, SpawnReason::Conversion);
+            ctx.env = env;
+            ctx.pos = pos;
+            ctx.level = Some(level);
+            crate::mob::fam::undead::zombies::finalize_converted(z, &mut ctx, &mut random);
+            crate::mob::fam::undead::zombies::set_villager_data(
+                z,
+                v.villager_type,
+                v.profession,
+                v.level,
+                v.data_finalized,
+            );
+            crate::mob::fam::undead::zombies::set_villager_trades(z, v.gossips.clone(), offers, xp);
+        },
+    );
     *t.env.random = random;
     if converted.is_some()
         && !killer_silent
@@ -983,34 +1003,36 @@ fn struck_by_lightning(t: &mut Tick<'_, '_>) -> bool {
     if difficulty == Difficulty::Peaceful {
         return false;
     }
-    let uuid = t.core().uuid();
-    if !t
-        .env
-        .hooks
-        .entity_transform(uuid, "minecraft:villager", "minecraft:witch", "lightning")
-    {
-        return false;
-    }
-    release_all_pois(t);
     let env = t.cx.env;
     let pos = t.block_pos();
     let mut random = std::mem::replace(t.env.random, LegacyRandom::new(0));
     let level = t.level;
-    let id = crate::mob::fam::undead::convert_to(t, Kind::Witch, false, false, |w| {
-        crate::mob::spawn::finalize(
-            level,
-            None,
-            &env,
-            w,
-            pos,
-            difficulty,
-            0,
-            SpawnReason::Conversion,
-            &mut random,
-        );
-        w.persistent = true;
-    });
+    let id = crate::mob::fam::undead::convert_to(
+        t,
+        Kind::Witch,
+        false,
+        false,
+        vanillite_abi::transform_reason::LIGHTNING,
+        |w| {
+            crate::mob::spawn::finalize(
+                level,
+                None,
+                &env,
+                w,
+                pos,
+                difficulty,
+                0,
+                SpawnReason::Conversion,
+                &mut random,
+            );
+            w.persistent = true;
+        },
+    );
     *t.env.random = random;
+    if id.is_some() {
+        // `releaseAllPois` in the conversion callback: not when a plugin cancelled it.
+        release_all_pois(t);
+    }
     id.is_some()
 }
 
@@ -1393,6 +1415,20 @@ pub fn breed(t: &mut Tick<'_, '_>, partner: EntityId) -> Option<EntityId> {
     rebuild_brain(&mut child, Some((t.game_time(), t.cx.env.day_time)));
     let pos = t.pos();
     let uuid = crate::mob::new_uuid();
+    if let Some(hooks) = t.ents.hooks_for(vanillite_abi::event::ENTITY_BREED)
+        && crate::mob::animal::breed_event(
+            &*hooks,
+            t.ents,
+            (uuid, Kind::Villager),
+            t.id,
+            partner,
+            0,
+            0,
+        )
+        .is_none()
+    {
+        return None;
+    }
     let id = crate::mob::spawn(
         t.ents,
         t.level.network_ids(),
@@ -1401,6 +1437,13 @@ pub fn breed(t: &mut Tick<'_, '_>, partner: EntityId) -> Option<EntityId> {
         vanillite_world::entity::Rotation::default(),
         child,
     );
+    let parent = t.ents.store.get(t.id).map_or(0, |e| e.uuid());
+    if !t
+        .ents
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, parent)
+    {
+        return None;
+    }
     entity_event(t, id, 12);
     Some(id)
 }

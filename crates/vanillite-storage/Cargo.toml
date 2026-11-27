@@ -17,6 +17,7 @@ flate2.workspace = true
 libdeflater.workspace = true
 log.workspace = true
 lz4_flex.workspace = true
+serde_json.workspace = true
 zip.workspace = true
 twox-hash.workspace = true
 zstd.workspace = true

@@ -154,6 +154,7 @@ fn spawner_stops_at_max_nearby_entities() {
             mob,
             Vec3::new(f64::from(i) - 2.5, -60.0, 2.5),
             0.0,
+            crate::mob::fam::SpawnReason::Command,
         );
     }
     level.tick_block_entities();

@@ -137,7 +137,7 @@ fn try_spawn(level: &mut Level, siege: &VillageSiege, input: &SiegeInput<'_>) {
         )
     });
     let y_rot = level.random().next_float() * 360.0;
-    spawn::add_mob_with(level, zombie, pos, y_rot, extra);
+    spawn::add_mob_with(level, zombie, pos, y_rot, extra, SpawnReason::Event);
 }
 
 /// `findRandomSpawnPos`: up to ten tries within 8 blocks, in the village, where a zombie may

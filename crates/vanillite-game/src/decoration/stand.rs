@@ -250,7 +250,16 @@ pub fn use_on(
     let wrapped = vanillite_base::math::wrap_degrees_f(y_rot - 180.0);
     #[allow(clippy::cast_precision_loss)]
     let yaw = floor(f64::from((wrapped + 22.5) / 45.0)) as f32 * 45.0;
-    let id = spawn_stand(level, spawn, yaw, stack);
+    let id = spawn_stand(
+        level,
+        spawn,
+        yaw,
+        stack,
+        vanillite_abi::spawn_reason::SPAWN_ITEM_USE,
+    );
+    if !level.entities.store.contains(id) {
+        return true;
+    }
     if let Some(at) = level.entities.store.get(id).map(|e| e.pos()) {
         level.play_sound(
             None,
@@ -275,8 +284,16 @@ pub fn use_on(
     true
 }
 
-/// A new armor stand at `pos` with `yaw` and the stack's components (`createDefaultStackConfig`).
-pub fn spawn_stand(level: &mut Level, pos: Vec3, yaw: f32, stack: &ItemStack) -> EntityId {
+/// A new armor stand at `pos` with `yaw` and the stack's components (`createDefaultStackConfig`),
+/// spawned for `reason` (`vanillite_abi::spawn_reason`; a plugin may cancel it, the returned
+/// entity is then gone).
+pub fn spawn_stand(
+    level: &mut Level,
+    pos: Vec3,
+    yaw: f32,
+    stack: &ItemStack,
+    reason: u32,
+) -> EntityId {
     let mut m = MobData::new(Kind::ArmorStand, crate::mob::new_entity_seed());
     state_mut(&mut m);
     m.y_body_rot = yaw;
@@ -292,6 +309,7 @@ pub fn spawn_stand(level: &mut Level, pos: Vec3, yaw: f32, stack: &ItemStack) ->
     };
     let id = crate::mob::spawn(&mut level.entities, &network_ids, uuid, pos, rot, m);
     apply_entity_data_component(&mut level.entities, id, stack);
+    level.entities.spawned(id, reason, 0);
     id
 }
 

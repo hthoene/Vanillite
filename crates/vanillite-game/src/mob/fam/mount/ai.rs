@@ -643,7 +643,9 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     }
     // The mob's target follows `ATTACK_TARGET` (`getTargetFromBrain`).
     let target = brain_ref(t).entity(M::AttackTarget);
-    t.mob().target = target;
+    if crate::mob::brain::target_changed(t, target) {
+        t.mob().target = target;
+    }
     match kind {
         Kind::Camel | Kind::CamelHusk => {
             // `CamelPanic.start`: a panicking camel stands up at once.
@@ -1658,7 +1660,13 @@ mod tests {
             let mut level = crate::level::tests::flat_level();
             let mut m = MobData::new(kind, 11);
             m.persistent = true;
-            let id = crate::mob::spawn::add_mob(&mut level, m, Vec3::new(0.5, -60.0, 0.5), 0.0);
+            let id = crate::mob::spawn::add_mob(
+                &mut level,
+                m,
+                Vec3::new(0.5, -60.0, 0.5),
+                0.0,
+                crate::mob::fam::SpawnReason::Command,
+            );
             for time in 0..300 {
                 tick_mob(&mut level, id, time);
             }

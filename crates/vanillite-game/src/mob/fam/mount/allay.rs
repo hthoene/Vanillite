@@ -583,7 +583,7 @@ fn duplicate(ix: &mut Interact<'_, '_>) {
         e.mark_data_dirty();
     }
     let uuid = crate::mob::new_uuid();
-    crate::mob::spawn(
+    let id = crate::mob::spawn(
         ix.ents,
         ix.level.network_ids(),
         uuid,
@@ -591,6 +591,9 @@ fn duplicate(ix: &mut Interact<'_, '_>) {
         vanillite_world::entity::Rotation::default(),
         child,
     );
+    let parent = ix.ents.store.get(ix.target).map_or(0, |e| e.uuid());
+    ix.ents
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, parent);
 }
 
 /// The synched data: dancing 16, can duplicate 17.

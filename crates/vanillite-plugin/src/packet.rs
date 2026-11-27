@@ -376,7 +376,7 @@ unsafe extern "C" fn drop_listener(user: *mut c_void) {
 
 impl Server {
     /// Adds a packet listener. Allowed at any time and from any thread; see the
-    /// [module documentation](crate::packet) for cost, threads and limits. Since ABI 1.6.
+    /// [module documentation](crate::packet) for cost, threads and limits. Since ABI 1.7.
     pub fn on_packet(
         &self,
         filter: PacketFilter,
@@ -410,7 +410,7 @@ impl Server {
     }
 
     /// Adds a listener for the packet type `P` of `vanillite-protocol`, called with the
-    /// decoded packet. Packets that do not decode are skipped. Since ABI 1.6.
+    /// decoded packet. Packets that do not decode are skipped. Since ABI 1.7.
     #[cfg(feature = "packets")]
     pub fn on_packet_of<P: vanillite_protocol::Packet>(
         &self,
@@ -424,14 +424,14 @@ impl Server {
         })
     }
 
-    /// Removes a packet listener; calls that are running finish first. Since ABI 1.6.
+    /// Removes a packet listener; calls that are running finish first. Since ABI 1.7.
     pub fn remove_packet_listener(&self, listener: PacketListener) -> Result<(), Error> {
         // SAFETY: valid host function.
         Error::check(unsafe { (self.host().api.packet_unsubscribe)(self.host().id, listener.0) })
     }
 
     /// The id of a packet in this server's Minecraft version by its Vanilla name
-    /// (`set_entity_data` or `minecraft:set_entity_data`). Since ABI 1.6.
+    /// (`set_entity_data` or `minecraft:set_entity_data`). Since ABI 1.7.
     pub fn packet_id(&self, state: State, direction: Direction, name: &str) -> Option<i32> {
         let mut id = 0;
         // SAFETY: valid host function, string and output.
@@ -447,7 +447,7 @@ impl Server {
         (s == status::OK).then_some(id)
     }
 
-    /// The Vanilla name of a packet id, e.g. `minecraft:set_entity_data`. Since ABI 1.6.
+    /// The Vanilla name of a packet id, e.g. `minecraft:set_entity_data`. Since ABI 1.7.
     pub fn packet_name(&self, state: State, direction: Direction, id: i32) -> Option<String> {
         // SAFETY: valid host function and buffer.
         read_string(|out| unsafe {
@@ -462,7 +462,7 @@ impl Server {
         .ok()
     }
 
-    /// The protocol version packet bodies are encoded for. Since ABI 1.6.
+    /// The protocol version packet bodies are encoded for. Since ABI 1.7.
     pub fn protocol_version(&self) -> i32 {
         let mut version = 0;
         // SAFETY: valid host function and output.
@@ -471,12 +471,12 @@ impl Server {
     }
 
     /// Sends a play packet body (`id` + fields) to a player, in order with what the server
-    /// sends from this thread. Packet listeners see it like any packet. Since ABI 1.6.
+    /// sends from this thread. Packet listeners see it like any packet. Since ABI 1.7.
     pub fn send_packet(&self, player: Uuid, body: &[u8]) -> Result<(), Error> {
         self.send_packet_flags(player, body, 0)
     }
 
-    /// [`Server::send_packet`] past every packet listener. Since ABI 1.6.
+    /// [`Server::send_packet`] past every packet listener. Since ABI 1.7.
     pub fn send_packet_unlistened(&self, player: Uuid, body: &[u8]) -> Result<(), Error> {
         self.send_packet_flags(player, body, abi::packet_send::SKIP_LISTENERS)
     }
@@ -494,7 +494,7 @@ impl Server {
     }
 
     /// Sends a typed play packet of `vanillite-protocol` to a player
-    /// ([`Server::send_packet`]). Since ABI 1.6.
+    /// ([`Server::send_packet`]). Since ABI 1.7.
     #[cfg(feature = "packets")]
     pub fn send<P: vanillite_protocol::Packet>(
         &self,

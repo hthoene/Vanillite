@@ -333,6 +333,30 @@ fn pick(list: Weighted, random: &mut LegacyRandom) -> Option<&'static str> {
 
 /// `TreeGrower.growTree(level, generator, pos, state, level.random)`.
 pub fn grow_tree(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
+    grow_tree_by(level, pos, state, 0)
+}
+
+/// Whether plugins let the sapling, mushroom or fungus `state` at `pos` grow into its tree or
+/// huge plant (`STRUCTURE_GROW`, Bukkit's `StructureGrowEvent`); `player` (0 for none) used
+/// bone meal on it. `true` when no plugin listens.
+pub fn structure_may_grow(level: &Level, pos: BlockPos, state: BlockState, player: u128) -> bool {
+    let Some(hooks) = level.hooks_for(vanillite_abi::event::STRUCTURE_GROW) else {
+        return true;
+    };
+    let mut ev = crate::hooks::Event {
+        pos,
+        key: super::hook_events::state_text(state),
+        state: Some(state),
+        player,
+        ..crate::hooks::Event::new(vanillite_abi::event::STRUCTURE_GROW)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
+/// [`grow_tree`] by `player`'s bone meal (0 for a random tick); plugins may cancel it
+/// ([`structure_may_grow`]) after the tree is chosen: the sapling stays.
+pub fn grow_tree_by(level: &mut Level, pos: BlockPos, state: BlockState, player: u128) -> bool {
     let Some(grower) = grower(state.block()) else {
         return false;
     };
@@ -344,6 +368,9 @@ pub fn grow_tree(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
         && let Some(&id) = trees.ids.get(name)
         && let Some((dx, dz)) = two_by_two(level, state, pos)
     {
+        if !structure_may_grow(level, pos, state, player) {
+            return false;
+        }
         let saplings: Vec<(BlockState, BlockPos)> = [(0, 0), (1, 0), (0, 1), (1, 1)]
             .iter()
             .map(|&(x, z)| {
@@ -374,6 +401,9 @@ pub fn grow_tree(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
     let Some(&id) = trees.ids.get(name) else {
         return false;
     };
+    if !structure_may_grow(level, pos, state, player) {
+        return false;
+    }
     remove_sapling(level, pos);
     if place(level, &trees, id, pos) {
         true

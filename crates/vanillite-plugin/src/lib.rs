@@ -54,6 +54,7 @@
 mod command;
 mod events;
 mod ffi;
+mod game;
 mod generator;
 pub mod packet;
 mod registrar;
@@ -66,9 +67,10 @@ pub use events::{
     Login, LoginReason, PlayerDeath, PlayerJoin, PlayerLeave, PlayerText, PlayerWorld,
     PlayersMoved, PluginMessage,
 };
+pub use game::{ChunkPopulator, GameEvent, Goal, GoalAction, GoalMob};
 pub use generator::{ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, WorldInfo};
 pub use registrar::{Permission, PermissionDefault, Registrar};
-pub use server::{BossBar, Ctx, Owner, Server, TaskId};
+pub use server::{BossBar, Ctx, Owner, RayHit, Server, TaskId, WorldBorder};
 pub use types::{
     AccessList, BlockBox, BlockPos, DataValue, Effect, Error, GameMode, Hand, Location, NO_BLOCK,
     Particle, PlayerInfo, ServerStats, SetMode, Sound, Text, Uuid, Vec3, Weather, World,

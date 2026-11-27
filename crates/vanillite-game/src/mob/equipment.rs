@@ -436,6 +436,25 @@ pub fn pick_up_items(
         if !(rules.wants)(t.mob_ref(), &data.stack) {
             continue;
         }
+        // Bukkit's `EntityPickupItemEvent`: cancelled, the mob leaves the item.
+        if let Some(hooks) = t.level.hooks_for(vanillite_abi::event::ENTITY_PICKUP_ITEM) {
+            let (Some(me), Some(it)) = (t.ents.store.get(t.id), t.ents.store.get(id)) else {
+                continue;
+            };
+            let mut ev = crate::hooks::Event {
+                entity: me.uuid(),
+                entity_type: me.kind().name().to_owned(),
+                other: it.uuid(),
+                other_type: it.kind().name().to_owned(),
+                item: crate::hooks::item_snbt(&data.stack),
+                value: i64::from(data.stack.count),
+                ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_PICKUP_ITEM)
+            };
+            hooks.event(&mut ev);
+            if ev.cancelled {
+                continue;
+            }
+        }
         if let Some(f) = pick_up {
             f(t, id);
             continue;

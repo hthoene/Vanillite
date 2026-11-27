@@ -130,6 +130,7 @@ pub(crate) fn tick(entities: &mut Entities) {
 pub(crate) fn spectate(
     entities: &mut Entities,
     border: &vanillite_game::level::border::WorldBorder,
+    hooks: &dyn vanillite_game::hooks::GameHooks,
     player: EntityId,
     target: EntityId,
 ) {
@@ -138,6 +139,25 @@ pub(crate) fn spectate(
     };
     let block = vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z);
     if border.is_block_within_bounds(block) && pickable(entities, target) {
+        // Bukkit's `PlayerTeleportEvent` (`SPECTATE`) of the move to the camera: cancelled,
+        // the player keeps its view (the camera decides where it goes).
+        let watching = entities
+            .player(player)
+            .is_some_and(|p| p.connection.camera == Some(target));
+        if !watching && let Some(rot) = entities.store.get(player).map(|e| e.rot()) {
+            let to = vanillite_game::hooks::Place::looking(pos, rot.y_rot, rot.x_rot);
+            if vanillite_game::player::movement::teleport_event(
+                Some(hooks),
+                entities,
+                player,
+                vanillite_abi::teleport_cause::SPECTATE,
+                to,
+            )
+            .is_none()
+            {
+                return;
+            }
+        }
         set_camera(entities, player, Some(target));
     }
 }

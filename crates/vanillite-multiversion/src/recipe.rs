@@ -459,11 +459,81 @@ fn write_old_ingredient(out: &mut Vec<u8>, stacks: &[Vec<u8>]) {
     }
 }
 
+/// A stonecutter of a client before 1.21.2: it lists the recipes for its input sorted by the
+/// result's translation key, the server in the order of `update_recipes`; button clicks are
+/// mapped from the one list to the other.
+#[derive(Debug, Default)]
+pub(crate) struct Cutter {
+    /// Per stonecutter recipe in the server's order: the input items (older ids) and the
+    /// result's translation key (`None`: the client lacks the recipe).
+    pub recipes: Vec<(Vec<i32>, Option<String>)>,
+    /// The open stonecutter's container id.
+    pub container: Option<i32>,
+    /// The item in its input slot (older id).
+    pub input: Option<i32>,
+}
+
+impl Cutter {
+    /// The server's recipe index for the client's button `index` in container `container`;
+    /// the index unchanged for other containers.
+    pub(crate) fn server_index(&self, container: i32, index: i32) -> i32 {
+        if self.container != Some(container) {
+            return index;
+        }
+        let Some(input) = self.input else {
+            return index;
+        };
+        let matching: Vec<usize> = self
+            .recipes
+            .iter()
+            .enumerate()
+            .filter(|(_, (inputs, _))| inputs.contains(&input))
+            .map(|(i, _)| i)
+            .collect();
+        let key = |i: &usize| self.recipes.get(*i).and_then(|r| r.1.as_deref());
+        // Java's stable sort by the key, over the recipes the client has.
+        let mut client: Vec<usize> = matching
+            .iter()
+            .copied()
+            .filter(|i| key(i).is_some())
+            .collect();
+        client.sort_by(|a, b| key(a).cmp(&key(b)));
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| client.get(i))
+            .and_then(|pick| matching.iter().position(|m| m == pick))
+            .and_then(|p| i32::try_from(p).ok())
+            .unwrap_or(index)
+    }
+
+    /// Records the item of the stonecutter's input slot from an older-format stack.
+    pub(crate) fn set_input(&mut self, stack: &[u8]) {
+        let mut r = Reader::new(stack);
+        self.input = match r.varint() {
+            Ok(count) if count > 0 => r.varint().ok(),
+            _ => None,
+        };
+    }
+}
+
+/// The translation key of an item of protocol `protocol` (older id), as the client of that
+/// version sorts stonecutter recipes by it.
+fn description_key(protocol: i32, item: i32) -> Option<String> {
+    let id = crate::step::to_newest("minecraft:item", protocol, item)?;
+    let item = vanillite_data::item::ItemId(id);
+    Some(match item.block() {
+        Some(block) => format!("block.{}", block.name().replacen(':', ".", 1)),
+        None => format!("item.{}", item.name().replacen(':', ".", 1)),
+    })
+}
+
 /// The recipes and recipe book a client before 1.21.2 was sent (step 1.21.1 ↔ 1.21.2).
 #[derive(Debug, Default)]
 pub(crate) struct OldBook {
     /// Stonecutter recipes (`RecipeHolder`s) from `update_recipes`.
     stonecutter: Vec<Vec<u8>>,
+    /// Every stonecutter recipe of the server for [`Cutter::recipes`]; taken by the step.
+    pub(crate) cutter: Vec<(Vec<i32>, Option<String>)>,
     /// Display id → the recipe built from it and the display (in the newer version).
     book: BTreeMap<i32, (Vec<u8>, Vec<u8>)>,
     /// Book settings: open and filtering of the four book types.
@@ -488,6 +558,7 @@ impl OldBook {
         }
         let n = io::len(r, MAX_LIST, 2)?;
         self.stonecutter.clear();
+        self.cutter.clear();
         for i in 0..n {
             let mut input = Vec::new();
             let set = r.varint()?;
@@ -513,8 +584,26 @@ impl OldBook {
             }
             let results = items.old_display(r)?;
             let Some(result) = results.first() else {
+                self.cutter.push((Vec::new(), None));
                 continue;
             };
+            let inputs = input
+                .iter()
+                .filter_map(|s| {
+                    let mut r = Reader::new(s);
+                    r.varint().ok()?;
+                    r.varint().ok()
+                })
+                .collect();
+            let mut rr = Reader::new(result);
+            let key = match rr.varint() {
+                Ok(count) if count > 0 => rr
+                    .varint()
+                    .ok()
+                    .and_then(|item| description_key(items.t.protocol, item)),
+                _ => None,
+            };
+            self.cutter.push((inputs, key));
             let mut recipe = Vec::new();
             write_str(&mut recipe, &format!("vanillite:stonecutter/{i}"));
             write_varint(&mut recipe, STONECUTTING);

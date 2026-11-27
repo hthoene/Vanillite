@@ -932,9 +932,16 @@ fn drown_convert(t: &mut Tick<'_, '_>) {
     // `getCurrentDifficultyAt(converted.blockPosition())`: the converted mob is where this
     // one is.
     let special = crate::level::difficulty::at(t.level, t.block_pos()).special_multiplier();
-    let Some(id) = super::convert_to(t, to, true, true, |n| {
-        handle_attributes(n, special, SpawnReason::Conversion);
-    }) else {
+    let Some(id) = super::convert_to(
+        t,
+        to,
+        true,
+        true,
+        vanillite_abi::transform_reason::DROWNED,
+        |n| {
+            handle_attributes(n, special, SpawnReason::Conversion);
+        },
+    ) else {
         return;
     };
     let silent = t.ents.mob(id).is_some_and(|m| m.silent);
@@ -1006,24 +1013,31 @@ fn finish_curing(t: &mut Tick<'_, '_>) {
     }
     let silent = t.mob_ref().silent;
     let pos = t.block_pos();
-    let Some(id) = super::convert_to(t, Kind::Villager, false, false, |v| {
-        crate::mob::fam::village::villager::cured(
-            v,
-            z.villager_type,
-            z.profession,
-            z.villager_level,
-            z.data_finalized,
-            z.gossips.clone().unwrap_or_default(),
-            z.offers.clone(),
-            z.villager_xp,
-        );
-        let inv = &mut crate::mob::fam::village::state_mut(v).merchant.inventory;
-        for (i, stack) in kept {
-            if let Some(slot) = inv.get_mut(i) {
-                *slot = stack;
+    let Some(id) = super::convert_to(
+        t,
+        Kind::Villager,
+        false,
+        false,
+        vanillite_abi::transform_reason::CURED,
+        |v| {
+            crate::mob::fam::village::villager::cured(
+                v,
+                z.villager_type,
+                z.profession,
+                z.villager_level,
+                z.data_finalized,
+                z.gossips.clone().unwrap_or_default(),
+                z.offers.clone(),
+                z.villager_xp,
+            );
+            let inv = &mut crate::mob::fam::village::state_mut(v).merchant.inventory;
+            for (i, stack) in kept {
+                if let Some(slot) = inv.get_mut(i) {
+                    *slot = stack;
+                }
             }
-        }
-    }) else {
+        },
+    ) else {
         return;
     };
     // `finalizeSpawn(CONVERSION)`: the villager type of the biome unless final.
@@ -1414,7 +1428,21 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
             super::rotation(y_rot),
             new,
         );
-        super::spawn_extras(h.ents, h.level, id, at, ctx.extra);
+        let parent = h.ents.store.get(h.target).map_or(0, |e| e.uuid());
+        if !h
+            .ents
+            .spawned(id, vanillite_abi::spawn_reason::REINFORCEMENT, parent)
+        {
+            break;
+        }
+        super::spawn_extras(
+            h.ents,
+            h.level,
+            id,
+            at,
+            ctx.extra,
+            SpawnReason::Reinforcement,
+        );
         if let Some(m) = h.ents.mob_mut(h.target) {
             zs_mut(m).reinforcement -= 0.05;
         }

@@ -66,3 +66,116 @@ pub(crate) fn len(r: &mut Reader<'_>, max: usize, min: usize) -> Result<usize> {
 pub(crate) fn write_len(out: &mut Vec<u8>, n: usize) {
     vanillite_protocol::codec::write_len(out, n);
 }
+
+/// Copies a text component (network NBT). With `old_events` (a client before 1.21.5) its click
+/// and hover events are rewritten to the older shape, which the client reads instead of
+/// dropping the whole event.
+pub(crate) fn component(r: &mut Reader<'_>, out: &mut Vec<u8>, old_events: bool) -> Result<()> {
+    if !old_events {
+        return nbt(r, out);
+    }
+    let mut budget = vanillite_nbt::Budget::new(
+        vanillite_nbt::read::NETWORK_QUOTA,
+        vanillite_nbt::read::MAX_DEPTH,
+    );
+    let mut input = r.rest();
+    let before = input.len();
+    let tag = vanillite_nbt::read::read_network(&mut input, &mut budget)?;
+    r.skip(before.saturating_sub(input.len()))?;
+    match tag {
+        Some(mut tag) => {
+            text_events_to_old(&mut tag);
+            vanillite_nbt::write::write_network(&tag, out)?;
+        }
+        None => out.push(0),
+    }
+    Ok(())
+}
+
+/// 1.21.5 renamed `clickEvent`/`hoverEvent` to `click_event`/`hover_event` and gave each action
+/// its own fields; this writes them back as `{action, value}` and `{action, contents}`, in the
+/// component and its children. The depth is bounded by the NBT reader's.
+pub(crate) fn text_events_to_old(tag: &mut vanillite_nbt::Tag) {
+    use vanillite_nbt::{Compound, Tag};
+    match tag {
+        Tag::List(list) => list.0.iter_mut().for_each(text_events_to_old),
+        Tag::Compound(c) => {
+            for key in ["extra", "with", "separator"] {
+                if let Some(child) = c.get_mut(key) {
+                    text_events_to_old(child);
+                }
+            }
+            if let Some(Tag::Compound(click)) = c.remove("click_event") {
+                let action = click
+                    .get("action")
+                    .and_then(Tag::as_str)
+                    .unwrap_or_default();
+                let value = match action {
+                    "open_url" => click.get("url").and_then(Tag::as_str).map(str::to_owned),
+                    "open_file" => click.get("path").and_then(Tag::as_str).map(str::to_owned),
+                    "run_command" | "suggest_command" => click
+                        .get("command")
+                        .and_then(Tag::as_str)
+                        .map(str::to_owned),
+                    "change_page" => click
+                        .get("page")
+                        .and_then(Tag::as_i64)
+                        .map(|p| p.to_string()),
+                    "copy_to_clipboard" => {
+                        click.get("value").and_then(Tag::as_str).map(str::to_owned)
+                    }
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    c.insert(
+                        "clickEvent",
+                        Compound::new()
+                            .with("action", action.to_owned())
+                            .with("value", value),
+                    );
+                }
+            }
+            if let Some(Tag::Compound(mut hover)) = c.remove("hover_event") {
+                let action = hover
+                    .get("action")
+                    .and_then(Tag::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let contents = match action.as_str() {
+                    "show_text" => hover.remove("value").map(|mut v| {
+                        text_events_to_old(&mut v);
+                        v
+                    }),
+                    "show_item" => {
+                        hover.remove("action");
+                        Some(Tag::Compound(hover))
+                    }
+                    "show_entity" => {
+                        let mut e = Compound::new();
+                        if let Some(t) = hover.remove("id") {
+                            e.insert("type", t);
+                        }
+                        if let Some(u) = hover.remove("uuid") {
+                            e.insert("id", u);
+                        }
+                        if let Some(mut n) = hover.remove("name") {
+                            text_events_to_old(&mut n);
+                            e.insert("name", n);
+                        }
+                        Some(Tag::Compound(e))
+                    }
+                    _ => None,
+                };
+                if let Some(contents) = contents {
+                    c.insert(
+                        "hoverEvent",
+                        Compound::new()
+                            .with("action", action)
+                            .with("contents", contents),
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}

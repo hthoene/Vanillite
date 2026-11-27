@@ -501,6 +501,7 @@ fn water_that_would_flow(level: &Level, pos: BlockPos) -> bool {
 /// `RespawnAnchorBlock.explode`: the anchor goes and a fiery explosion of 5 takes its place;
 /// water next to it (or above) shields the blocks.
 pub fn explode_anchor(level: &mut Level, pos: BlockPos) {
+    let state = level.block(pos);
     level.remove_block(pos, false);
     let in_water = [
         Direction::North,
@@ -514,6 +515,7 @@ pub fn explode_anchor(level: &mut Level, pos: BlockPos) {
     explode_respawn_point(
         level,
         pos,
+        state,
         if in_water {
             BlockResistance::WaterAt(pos)
         } else {
@@ -529,12 +531,17 @@ pub fn explode_bed(level: &mut Level, head: BlockPos, state: BlockState) {
     if level.block(foot).block() == state.block() {
         level.remove_block(foot, false);
     }
-    explode_respawn_point(level, head, BlockResistance::Default);
+    explode_respawn_point(level, head, state, BlockResistance::Default);
 }
 
 /// `level.explode(null, badRespawnPointExplosion(center), calculator, center, 5, true,
-/// ExplosionInteraction.BLOCK)`.
-fn explode_respawn_point(level: &mut Level, pos: BlockPos, resistance: BlockResistance) {
+/// ExplosionInteraction.BLOCK)`. `state` is the exploding block before it went.
+fn explode_respawn_point(
+    level: &mut Level,
+    pos: BlockPos,
+    state: BlockState,
+    resistance: BlockResistance,
+) {
     let center = Vec3::new(
         f64::from(pos.x) + 0.5,
         f64::from(pos.y) + 0.5,
@@ -545,9 +552,8 @@ fn explode_respawn_point(level: &mut Level, pos: BlockPos, resistance: BlockResi
     } else {
         BlockInteraction::Destroy
     };
-    level.explode_with(
-        None,
-        None,
+    level.explode_block(
+        (pos, state),
         center,
         5.0,
         interaction,

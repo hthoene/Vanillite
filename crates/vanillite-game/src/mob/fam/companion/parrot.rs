@@ -269,7 +269,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         let tamed = ix
             .ents
             .mob_mut(ix.target)
-            .is_some_and(|m| m.random.next_int_bounded(10) == 0);
+            .is_some_and(|m| m.random.next_int_bounded(10) == 0)
+            && owner.is_none_or(|o| crate::mob::tame::tame_event(ix.ents, ix.target, o));
         if tamed {
             if let (Some(m), Some(o)) = (ix.ents.mob_mut(ix.target), owner) {
                 super::tame_by(m, o);

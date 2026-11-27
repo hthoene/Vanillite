@@ -13,6 +13,9 @@ use vanillite_abi::{self as abi, Status, status};
 
 use vanillite_nbt::Tag;
 
+mod v16;
+use v16::*;
+
 use crate::{
     AccessOp, BlockBox, BossBarOp, Inner, Location, Particles, Plugin, ScoreReply, ScoreboardOp,
     SetMode, Sound, Text, Title, WorldAccess,
@@ -129,6 +132,44 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     block_entity_merge,
     advancement_set,
     advancement_done,
+    entity_get,
+    entity_set,
+    entity_name,
+    entity_set_name,
+    entity_passengers,
+    entity_vehicle,
+    entity_mount,
+    entity_dismount,
+    entity_attribute,
+    entity_attribute_set_base,
+    entity_attribute_modifier,
+    mob_target,
+    mob_set_target,
+    mob_navigate,
+    mob_goal_add,
+    mob_goal_remove,
+    mob_goals_clear,
+    biome_get,
+    biome_set,
+    light_get,
+    chunk_state,
+    chunk_force_load,
+    chunk_ticket,
+    border_get,
+    border_set,
+    explode,
+    raytrace,
+    provide_chunk_populator,
+    menu_open,
+    menu_item,
+    menu_set_item,
+    menu_close,
+    item_component,
+    item_set_component,
+    item_data_get,
+    item_data_set,
+    item_data_remove,
+    item_data_keys,
     packet_subscribe,
     packet_unsubscribe,
     packet_id,
@@ -669,20 +710,39 @@ unsafe extern "C" fn schedule(
     spec: *const abi::TaskSpec,
     out: *mut u64,
 ) -> Status {
-    // SAFETY: the plugin passes a valid spec or null.
-    let Some(spec) = (unsafe { spec.as_ref() }) else {
+    if spec.is_null() {
+        return status::INVALID_ARGUMENT;
+    }
+    // SAFETY: non-null; every version of the record starts with `size`.
+    let size = unsafe { spec.cast::<u32>().read() } as usize;
+    let spec = if size >= size_of::<abi::TaskSpec>() {
+        // SAFETY: the plugin passes a record of at least this ABI's size.
+        unsafe { *spec }
+    } else if size >= std::mem::offset_of!(abi::TaskSpec, retired) {
+        // An ABI 1.5 record: everything before `retired`.
+        // SAFETY: the plugin passes `size` readable bytes, all fields read lie within them.
+        unsafe {
+            abi::TaskSpec {
+                size: size as u32,
+                owner: (&raw const (*spec).owner).read(),
+                delay: (&raw const (*spec).delay).read(),
+                period: (&raw const (*spec).period).read(),
+                run: (&raw const (*spec).run).read(),
+                drop: (&raw const (*spec).drop).read(),
+                user: (&raw const (*spec).user).read(),
+                retired: None,
+            }
+        }
+    } else {
         return status::INVALID_ARGUMENT;
     };
+    let spec = &spec;
     let drop_user = || {
         if let Some(drop) = spec.drop {
             // SAFETY: the plugin's drop function for its own user data.
             unsafe { drop(spec.user) };
         }
     };
-    if (spec.size as usize) < size_of::<abi::TaskSpec>() {
-        drop_user();
-        return status::INVALID_ARGUMENT;
-    }
     let result = with(id, |inner, plugin| {
         match inner.tasks.schedule(inner, plugin, spec) {
             Ok(task) => write(out, task),

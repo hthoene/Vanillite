@@ -620,10 +620,14 @@ impl Items<'_> {
                 io::varint(r, out)?;
                 let n = io::len(r, 1024, 2)?;
                 io::write_len(out, n);
+                // Pages may hold click events (1.21.5 changed their shape).
+                let old_events = self.clientbound
+                    && self.t.protocol < crate::step::V1_21_5
+                    && self.t.next_protocol >= crate::step::V1_21_5;
                 for _ in 0..n {
-                    io::nbt(r, out)?;
+                    io::component(r, out, old_events)?;
                     if io::boolean(r, out)? {
-                        io::nbt(r, out)?;
+                        io::component(r, out, old_events)?;
                     }
                 }
                 io::bytes(r, out, 1)?;

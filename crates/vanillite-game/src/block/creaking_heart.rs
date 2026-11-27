@@ -518,7 +518,14 @@ fn spawn_protector(level: &mut Level, pos: BlockPos) -> Option<EntityId> {
             continue;
         }
         creaking::set_transient(&mut mob, pos);
-        let id = crate::mob::spawn::add_mob_with(level, mob, at, y_rot, extra);
+        let id = crate::mob::spawn::add_mob_with(
+            level,
+            mob,
+            at,
+            y_rot,
+            extra,
+            crate::mob::fam::SpawnReason::Spawner,
+        );
         // `playAmbientSound`.
         if let Some(sound) = level
             .entities

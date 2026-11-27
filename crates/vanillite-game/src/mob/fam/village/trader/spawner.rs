@@ -220,7 +220,7 @@ fn spawn_event(
         )
     });
     let mob = std::mem::replace(mob, MobData::new(Kind::WanderingTrader, 0));
-    spawn::add_mob_with(level, mob, at, y_rot, extra)
+    spawn::add_mob_with(level, mob, at, y_rot, extra, SpawnReason::Event)
 }
 
 /// `Mth.wrapDegrees`.

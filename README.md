@@ -230,10 +230,12 @@ Vanillite.
   XUID.
 - **Older Java clients** (`multiversion.versions`): 1.20.5 to 26.2 by default, translated to
   26.3 and back; clients of the server's own version pay nothing.
-- **vanillite-proxy**: a Velocity-compatible proxy (modern forwarding, server switches without
-  reconnect, fallback when a server goes down) in front of Vanillite and Paper servers, with
-  the Bedrock frontend built in. Build it with `cargo build --release -p vanillite-proxy`; it
-  reads `proxy.toml` from its folder. On the server, set `proxy.velocity-secret`.
+- **vanillite-proxy**: a Velocity-compatible proxy (modern, BungeeCord or no forwarding, server
+  switches without reconnect, fallback when a server goes down, the BungeeCord plugin channel,
+  `/server`, `/glist`, `/send`, `/alert`, `/proxy reload`, a console) in front of Vanillite,
+  Paper and Spigot servers, with the Bedrock frontend built in. Build it with
+  `cargo build --release -p vanillite-proxy`; it reads `proxy.toml` from its folder. On the
+  server, set `proxy.velocity-secret`. It has no plugin API yet.
 
 ## Status and known limitations
 
