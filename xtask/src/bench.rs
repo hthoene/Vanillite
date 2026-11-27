@@ -1,8 +1,9 @@
 //! `cargo xtask bench`: the benchmark suite. Every scenario runs against Vanillite and the
-//! reference servers (Paper, Vanilla, Pumpkin; Velocity for the proxy) on the test server with
+//! reference servers (Paper, Vanilla, Pumpkin; Velocity for the proxy) on the benchmark server
+//! vanillite-bench (#186; `VANILLITE_BENCH_HOST` overrides it) with
 //! the same settings (`vanillite-bench props`: seed, normal world, peaceful, view and
 //! simulation distance 10, offline mode) and a fresh world per scenario. The load bots
-//! (`tools/loadbot`) run here, as in `cargo xtask loadtest`.
+//! (`tools/loadbot`) run on the benchmark server too, as in `cargo xtask loadtest`.
 //!
 //! Results: `target/bench/<time>/results.json` (full), raw per-server files under
 //! /opt/vanillite/bench/suite/<time>/ on the test server, and with `--publish` the summaries in
@@ -24,7 +25,9 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use crate::Result;
-use crate::loadtest::{self, Options, Session, Target, bench_cmd, bench_json, round, show};
+use crate::loadtest::{
+    self, Options, Session, Target, bench_cmd, bench_json, install, round, show,
+};
 
 const RESULTS: &str = "benchmarks/results";
 const REMOTE_RESULTS: &str = "/opt/vanillite/bench/suite";
@@ -501,7 +504,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
     }
     let stamp = loadtest::command_output(Command::new("date").args(["-u", "+%Y%m%dT%H%M%SZ"]))?;
     let mut ctx = Ctx {
-        host: std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into()),
+        host: loadtest::bench_host(),
         root,
         bin_dir: crate::target_dir(root).join("release-fast"),
         versions: BTreeMap::new(),
@@ -620,6 +623,7 @@ fn prepare(ctx: &Ctx, scenarios: &[&Scenario], deploy: bool) -> Result<()> {
         build.extend(["-p", "vanillite", "-p", "vanillite-proxy"]);
     }
     crate::devenv::run(Command::new(&cargo).current_dir(ctx.root).args(&build))?;
+    install(&ctx.host, "loadbot", &ctx.bin_dir.join("loadbot"))?;
     if deploy && scenarios.iter().any(|s| matches!(s.kind, Kind::Pregen)) {
         crate::devenv::run(Command::new(&cargo).current_dir(ctx.root).args([
             "build",
@@ -653,15 +657,6 @@ fn prepare(ctx: &Ctx, scenarios: &[&Scenario], deploy: bool) -> Result<()> {
             .stdin(Stdio::from(file)),
     )?;
     bench_cmd(&ctx.host, &["stop", "vanillite"]).map(drop)
-}
-
-fn install(host: &str, name: &str, file: &Path) -> Result<()> {
-    let f = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    crate::devenv::run(
-        Command::new("ssh")
-            .args([host, "vanillite-bench", "install", name])
-            .stdin(Stdio::from(f)),
-    )
 }
 
 fn run_one(ctx: &mut Ctx, scenario: &Scenario, server: &str) -> Result<Value> {
@@ -705,7 +700,7 @@ fn weak(
         let idle = bench_json(&ctx.host, &["idle", target.name(), "30"])?;
         let mut o = options(steps, settle, hold);
         o.join_rate = 1.0;
-        let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+        let mut session = Session::open(&ctx.host, target, &o, &[])?;
         let measured = loadtest::ramp(&o, &mut session);
         session.close();
         let measured = measured?;
@@ -841,7 +836,7 @@ fn players(
         )?;
     }
     let o = options(steps, settle, hold);
-    let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+    let mut session = Session::open(&ctx.host, target, &o, &[])?;
     let measured = loadtest::ramp(&o, &mut session);
     session.close();
     let measured = measured?;
@@ -921,13 +916,7 @@ fn built(
     let (x, y, z) = AREA;
     fresh_start(ctx, server, target, None)?;
     let o = options(&[(1, "still", None)], 0, 0);
-    let mut session = Session::open(
-        &ctx.host,
-        target,
-        &ctx.bin_dir,
-        &o,
-        &["--movement", "still"],
-    )?;
+    let mut session = Session::open(&ctx.host, target, &o, &["--movement", "still"])?;
     let result = (|| -> Result<Value> {
         session.bot("target 1")?;
         if !session.wait_online(1)? {
@@ -998,13 +987,7 @@ fn unsupported(reply: &Value) -> Value {
 fn save(ctx: &mut Ctx, server: &str, target: Target) -> Result<Value> {
     fresh_start(ctx, server, target, None)?;
     let o = options(&[(20, "straight:boat", None)], 0, 0);
-    let mut session = Session::open(
-        &ctx.host,
-        target,
-        &ctx.bin_dir,
-        &o,
-        &["--movement", "straight:boat"],
-    )?;
+    let mut session = Session::open(&ctx.host, target, &o, &["--movement", "straight:boat"])?;
     let flown = (|| -> Result<Value> {
         session.bot("target 20")?;
         session.wait_online(20)?;
@@ -1196,8 +1179,8 @@ fn environment(ctx: &Ctx) -> Value {
     let hw = &ctx.hardware;
     let host = if hw.is_object() {
         format!(
-            "test server: {} CPUs ({}) of an {}, {} GiB RAM, Linux {} ({}) on a host with {} CPUs \
-             and {} GiB; other test instances on it stay mostly idle during runs",
+            "benchmark server: {} CPUs ({}) of an {}, {} GiB RAM, Linux {} ({}) on a host with {} \
+             CPUs and {} GiB; nothing else runs on it during runs",
             hw["cpus"],
             hw["cpu_list"].as_str().unwrap_or("?"),
             hw["cpu_model"].as_str().unwrap_or("?"),
@@ -1217,11 +1200,19 @@ fn environment(ctx: &Ctx) -> Value {
         "limits": "every server (and the proxy's backend) runs in a cgroup pinned to the first 4 CPUs of the test server with a CPU quota of 400 % and 8 GiB memory, no swap (profile 4c8g; the weak scenario: 1 CPU, 1 GiB), so numbers stay comparable when the test server gets more cores or RAM",
         "load": "host load per CPU during each server's run (mean of the 1-minute load averages at its start and end and the 5-minute one at its end); above 1 the run is marked unreliable (⚠) and not used as the base of comparisons",
         "bots": format!(
-            "tools/loadbot on a separate machine in the same LAN (offline mode, no encryption){}",
-            hw["bots"]["cpus"]
-                .as_u64()
-                .map(|n| format!(", {n} CPUs ({} in the host's numbering)", hw["bots"]["cpu_list"].as_str().unwrap_or("?")))
-                .unwrap_or_default()
+            "tools/loadbot{} (offline mode, no encryption)",
+            if hw["bots"]["same_machine"] == true {
+                format!(
+                    " on the same machine over 127.0.0.1, on {} CPUs ({}) the server's profile leaves free",
+                    hw["bots"]["cpus"],
+                    hw["bots"]["cpu_list"].as_str().unwrap_or("?")
+                )
+            } else {
+                hw["bots"]["cpus"]
+                    .as_u64()
+                    .map(|n| format!(" on a separate machine in the same LAN, {n} CPUs ({} in the host's numbering)", hw["bots"]["cpu_list"].as_str().unwrap_or("?")))
+                    .unwrap_or_default()
+            }
         ),
         "settings": "seed -578941029922802438, normal world, peaceful, view distance 10, simulation distance 10, offline mode, pause-when-empty off, a new world per scenario",
         "servers": {
@@ -1611,7 +1602,7 @@ fn publish(root: &Path, source: &str) -> Result<()> {
     let run = if local.is_file() {
         crate::read_json(local)?
     } else {
-        let host = std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into());
+        let host = loadtest::bench_host();
         let stamp = if source == "latest" {
             let out = loadtest::command_output(
                 Command::new("ssh").args([&host, &format!("ls -1 {REMOTE_RESULTS}")]),
