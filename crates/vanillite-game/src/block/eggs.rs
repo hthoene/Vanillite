@@ -206,7 +206,7 @@ pub fn trample_turtle_egg(level: &mut Level, pos: BlockPos, can_destroy: bool, r
 }
 
 /// `TurtleEggBlock.decreaseEggs`.
-fn decrease_eggs(level: &mut Level, pos: BlockPos, state: BlockState) {
+pub fn decrease_eggs(level: &mut Level, pos: BlockPos, state: BlockState) {
     let pitch = egg_pitch(level);
     let sound = sound_id("block.turtle_egg.break");
     level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 0.7, pitch);

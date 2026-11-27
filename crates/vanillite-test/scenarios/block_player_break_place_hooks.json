@@ -1,0 +1,166 @@
+{
+  "description": "Player break and place hooks: breaking a block of three turtle eggs takes one egg each time (TurtleEggBlock.playerDestroy -> decreaseEggs: break sound pitch from the level random, block back with one egg less); kelp placed under water gets a random age (GrowingPlantHeadBlock.getStateForPlacement, level random); a coral block placed on land schedules its die tick 60 + nextInt(40) ticks ahead (CoralBlock.getStateForPlacement) and turns into a dead coral block.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        7
+      ],
+      "block": "minecraft:turtle_egg[eggs=3,hatch=0]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        8,
+        -61,
+        5
+      ],
+      "to": [
+        12,
+        -58,
+        9
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        9,
+        -61,
+        6
+      ],
+      "to": [
+        11,
+        -61,
+        8
+      ],
+      "block": "minecraft:sand"
+    },
+    {
+      "op": "fill",
+      "from": [
+        9,
+        -60,
+        6
+      ],
+      "to": [
+        11,
+        -58,
+        8
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        10
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "steve",
+      "effect": "minecraft:haste",
+      "duration": 1200,
+      "amplifier": 100
+    },
+    {
+      "tick": 3,
+      "op": "attack",
+      "entity": "steve",
+      "pos": [
+        5,
+        -60,
+        7
+      ],
+      "face": "east",
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 8,
+      "op": "attack",
+      "entity": "steve",
+      "pos": [
+        5,
+        -60,
+        7
+      ],
+      "face": "east",
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 12,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -61,
+        7
+      ],
+      "face": "up",
+      "item": "minecraft:kelp",
+      "count": 4
+    },
+    {
+      "tick": 14,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        9,
+        -61,
+        6
+      ],
+      "face": "up",
+      "item": "minecraft:kelp",
+      "count": 4
+    },
+    {
+      "tick": 16,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        7,
+        -60,
+        10
+      ],
+      "face": "up",
+      "item": "minecraft:tube_coral_block",
+      "count": 1
+    }
+  ]
+}

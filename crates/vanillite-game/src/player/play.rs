@@ -923,9 +923,20 @@ impl Digging {
             || ctx.data.tools.is_correct_for_drops(&tool, state);
         self.mine_block(ctx, state);
         if changed && correct {
-            // `Block.playerDestroy`.
+            // `Block.playerDestroy`: the statistic, exhaustion, the drops.
             ctx.award_stat(Stat::of(StatType::Mined, state.block().0), 1);
+            if !ctx.actor.creative()
+                && let Some(food) = ctx.food.as_deref_mut()
+            {
+                food.add_exhaustion(0.005);
+            }
             drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            // `TurtleEggBlock.playerDestroy`: one egg less (`decreaseEggs`).
+            if state.block() == vanillite_data::block::ids::TURTLE_EGG
+                && let Some(level) = ctx.level.level_mut()
+            {
+                crate::block::eggs::decrease_eggs(level, pos, state);
+            }
             if let Some(level) = ctx.level.level_mut() {
                 crate::block::break_hooks::ice_player_destroy(level, state, pos, &tool);
             }
@@ -987,12 +998,15 @@ impl Digging {
             return;
         }
         let new_damage = item::damage(tool).saturating_add(amount);
-        crate::advancements::view::apply_damage(
+        let broke = crate::advancements::view::apply_damage(
             ctx.advancements.as_deref_mut(),
             ctx.stats.as_deref_mut(),
             tool,
             new_damage,
         );
+        if broke {
+            equipment_broken(ctx, Hand::MainHand);
+        }
     }
 
     /// `handleUseItemOn`.
@@ -1659,6 +1673,35 @@ impl Digging {
         else {
             return false;
         };
+        // `GrowingPlantHeadBlock.getStateForPlacement`: a new head gets a random age.
+        {
+            use vanillite_data::block::ids;
+            use vanillite_worldgen::behaviour::StateExt;
+            if [
+                ids::KELP,
+                ids::WEEPING_VINES,
+                ids::TWISTING_VINES,
+                ids::CAVE_VINES,
+            ]
+            .contains(&state.block())
+            {
+                let age = ctx.level.random_int(25);
+                state = state.set_int("age", age);
+            }
+        }
+        // `CoralBlock.getStateForPlacement`: without water next to it the die tick is scheduled
+        // (`scanForWater`).
+        if vanillite_worldgen::behaviour::class_of_block(state.block())
+            == vanillite_worldgen::behaviour::Class::Coral
+            && !Direction::ALL
+                .iter()
+                .any(|&d| crate::mob::is_water(ctx.level.block(target.relative(d))))
+        {
+            let delay = ctx.level.random_int(40).saturating_add(60);
+            if let Some(level) = ctx.level.level_mut() {
+                level.schedule_block_tick(target, state.block(), delay);
+            }
+        }
         // `GameMasterBlockItem.getPlacementState`: only creative operators.
         if is_game_master_block(state) && !(ctx.actor.creative() && ctx.actor.permission_level >= 2)
         {
@@ -2131,12 +2174,34 @@ fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
         return;
     }
     let new_damage = item::damage(tool).saturating_add(damage);
-    crate::advancements::view::apply_damage(
+    let broke = crate::advancements::view::apply_damage(
         ctx.advancements.as_deref_mut(),
         ctx.stats.as_deref_mut(),
         tool,
         new_damage,
     );
+    if broke {
+        equipment_broken(ctx, hand);
+    }
+}
+
+/// `LivingEntity.onEquippedItemBroken`: entity event 47 (main hand) or 48 (off hand), the
+/// break sound and particles for the player and everyone tracking it.
+fn equipment_broken(ctx: &mut PlayContext<'_>, hand: Hand) {
+    let event = match hand {
+        Hand::MainHand => 47,
+        Hand::OffHand => 48,
+    };
+    let (network_id, pos) = (ctx.actor.network_id, ctx.actor.pos);
+    if let Some(level) = ctx.level.level_mut() {
+        let packet = vanillite_protocol::SharedPacket::of(
+            &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                entity_id: network_id,
+                event,
+            },
+        );
+        level.output().nearby_packets.push((pos, 128.0, packet));
+    }
 }
 
 /// `blockActionRestricted`: spectators never, adventure players only with a main hand item
