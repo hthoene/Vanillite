@@ -191,12 +191,46 @@ impl TickRateManager {
     }
 }
 
-/// `MinecraftServer.tickTimesNanos`: the durations of the last 100 ticks.
+/// `MinecraftServer.tickTimesNanos`: the durations of the last 100 ticks, plus the last
+/// [`HISTORY`] ticks' durations and start intervals for Vanillite's `tps`, `mspt` and `status`
+/// (5 s, 1 min and 5 min windows; two stores per tick into a buffer allocated once).
 #[derive(Debug)]
 pub struct TickTimes {
     samples: [u64; 100],
     sum: u64,
     ticks: u64,
+    history: Box<[TickSample]>,
+    last_start: Option<u64>,
+}
+
+/// Ticks of the longest window of [`TickTimes::window`] (5 minutes at 20 ticks per second).
+pub const HISTORY: usize = 6000;
+
+/// One tick of the history: its duration and the time since the previous tick started
+/// (nanoseconds, saturated; 0 = unknown).
+#[derive(Debug, Clone, Copy, Default)]
+struct TickSample {
+    nanos: u32,
+    interval: u32,
+}
+
+/// Tick figures over a window of recent ticks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TickWindow {
+    /// Ticks in the window.
+    pub ticks: usize,
+    /// Ticks per second (ticks over the time between their starts).
+    pub tps: f64,
+    /// Mean milliseconds per tick.
+    pub mean: f64,
+    /// Median milliseconds per tick.
+    pub p50: f64,
+    /// 95th percentile.
+    pub p95: f64,
+    /// Longest tick.
+    pub max: f64,
+    /// Shortest tick.
+    pub min: f64,
 }
 
 impl Default for TickTimes {
@@ -205,6 +239,8 @@ impl Default for TickTimes {
             samples: [0; 100],
             sum: 0,
             ticks: 0,
+            history: vec![TickSample::default(); HISTORY].into_boxed_slice(),
+            last_start: None,
         }
     }
 }
@@ -218,6 +254,70 @@ impl TickTimes {
             *slot = nanos;
         }
         self.ticks = tick;
+    }
+
+    /// Records tick number `tick` that started at `start` (clock nanoseconds) and took
+    /// `nanos`: [`TickTimes::record`] plus the history.
+    pub fn record_tick(&mut self, tick: u64, start: u64, nanos: u64) {
+        self.record(tick, nanos);
+        let interval = self.last_start.map_or(0, |last| start.saturating_sub(last));
+        self.last_start = Some(start);
+        let index = usize::try_from(tick % HISTORY as u64).unwrap_or(0);
+        if let Some(slot) = self.history.get_mut(index) {
+            *slot = TickSample {
+                nanos: u32::try_from(nanos).unwrap_or(u32::MAX),
+                interval: u32::try_from(interval).unwrap_or(u32::MAX),
+            };
+        }
+    }
+
+    /// The figures of the last `ticks` recorded ticks (fewer when fewer ran); `None` before
+    /// the first tick.
+    pub fn window(&self, ticks: usize) -> Option<TickWindow> {
+        let recorded = usize::try_from(self.ticks)
+            .unwrap_or(usize::MAX)
+            .min(HISTORY);
+        let n = ticks.min(recorded);
+        if n == 0 {
+            return None;
+        }
+        let mut nanos = Vec::with_capacity(n);
+        let mut intervals = 0u64;
+        let mut timed = 0u64;
+        for back in 0..n {
+            let tick = self.ticks.saturating_sub(back as u64);
+            let index = usize::try_from(tick % HISTORY as u64).unwrap_or(0);
+            let Some(sample) = self.history.get(index) else {
+                continue;
+            };
+            nanos.push(sample.nanos);
+            if sample.interval > 0 {
+                intervals += u64::from(sample.interval);
+                timed += 1;
+            }
+        }
+        nanos.sort_unstable();
+        let millis = |v: u32| f64::from(v) / 1e6;
+        let at = |q: f64| {
+            let last = nanos.len().saturating_sub(1);
+            let i = ((last as f64) * q).round() as usize;
+            nanos.get(i.min(last)).copied().map_or(0.0, millis)
+        };
+        let total: u64 = nanos.iter().map(|&v| u64::from(v)).sum();
+        let tps = if intervals > 0 {
+            timed as f64 * 1e9 / intervals as f64
+        } else {
+            0.0
+        };
+        Some(TickWindow {
+            ticks: nanos.len(),
+            tps,
+            mean: total as f64 / nanos.len().max(1) as f64 / 1e6,
+            p50: at(0.5),
+            p95: at(0.95),
+            max: nanos.last().copied().map_or(0.0, millis),
+            min: nanos.first().copied().map_or(0.0, millis),
+        })
     }
 
     /// The number of the last recorded tick.

@@ -299,6 +299,23 @@ impl BlockEntities {
         }
     }
 
+    /// The number of block entities per chunk (`/vanillite chunks`).
+    pub fn per_chunk(&self) -> impl Iterator<Item = (ChunkPos, usize)> + '_ {
+        self.chunks.iter().map(|(pos, map)| (*pos, map.len()))
+    }
+
+    /// The block entities that tick.
+    pub fn ticking(&self) -> usize {
+        self.tickers.len()
+    }
+
+    /// Bytes of the block entities' entries (`/vanillite memory`; data behind them not
+    /// counted).
+    pub fn memory_bytes(&self) -> usize {
+        self.len() * (size_of::<Entry>() + size_of::<BlockPos>() + 8)
+            + self.tickers.capacity() * size_of::<(BlockPos, u32)>()
+    }
+
     /// The block entities of a chunk.
     pub fn in_chunk(&self, chunk: ChunkPos) -> impl Iterator<Item = (BlockPos, &BlockEntity)> {
         self.chunks

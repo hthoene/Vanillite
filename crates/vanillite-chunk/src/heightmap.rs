@@ -140,6 +140,15 @@ pub struct Heightmaps {
 }
 
 impl Heightmaps {
+    /// Heap bytes of the heightmaps' data (`/vanillite memory`).
+    pub fn heap_bytes(&self) -> usize {
+        self.maps
+            .iter()
+            .flatten()
+            .map(|m| std::mem::size_of_val::<[Word]>(&m.data))
+            .sum()
+    }
+
     /// Heightmaps of the given types for a chunk of `height` blocks.
     pub fn new(height: u32, kinds: &[HeightmapKind]) -> Self {
         let mut maps = Self::default();
