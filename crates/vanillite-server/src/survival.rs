@@ -12,7 +12,6 @@ use vanillite_data::entity::ids;
 use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::Entities;
 use vanillite_game::level::block_entity::BlockEntity;
-use vanillite_game::player::join;
 use vanillite_game::portal::PortalKind;
 use vanillite_game::survival::Effect;
 use vanillite_game::survival::blocks::BlockAccess;
@@ -56,7 +55,6 @@ pub(crate) struct PortalRequests {
 /// The survival state of one world.
 #[derive(Debug)]
 pub(crate) struct WorldSurvival {
-    pub(crate) random: LegacyRandom,
     pub(crate) weather: LevelWeather,
     /// `canHaveWeather`: sky light and no ceiling (the overworld).
     can_have_weather: bool,
@@ -299,16 +297,12 @@ impl WorldSurvival {
     pub(crate) fn new(
         dimension: &str,
         level: &LevelState,
-        info: &join::LevelInfo,
         (min_y, _height): (i32, u32),
         player_range: i32,
         climate: Option<Climate>,
     ) -> WorldSurvival {
-        let (hashed_seed, sea_level) = (info.hashed_seed, info.sea_level);
         let overworld = dimension == "minecraft:overworld";
-        let random = LegacyRandom::new(hashed_seed ^ i64::from(sea_level));
         WorldSurvival {
-            random,
             weather: if overworld {
                 LevelWeather::prepare(&level.weather())
             } else {
@@ -341,32 +335,25 @@ impl WorldSurvival {
     }
 
     /// `advanceWeatherCycle` and `tickTime`, at the start of the world tick when it runs.
-    pub(crate) fn tick_level(&mut self, entities: &Entities, global: &Global) {
+    pub(crate) fn tick_level(&mut self, world: &mut vanillite_game::level::Level, global: &Global) {
+        let (entities, _, random) = world.entity_parts();
         let level = &global.level;
         let advance = level.rules().bool(Rule::ADVANCE_WEATHER);
         self.weather_out.clear();
         if self.can_have_weather {
             if advance && global.plugins.wants(vanillite_abi::event::WEATHER_CHANGE) {
-                weather_change_event(global, &mut self.random);
+                weather_change_event(global, random);
                 let mut data = level.weather();
-                self.weather.advance(
-                    Some(&mut data),
-                    false,
-                    &mut self.random,
-                    &mut self.weather_out,
-                );
+                self.weather
+                    .advance(Some(&mut data), false, random, &mut self.weather_out);
             } else {
                 let mut data = level.weather();
-                self.weather.advance(
-                    Some(&mut data),
-                    advance,
-                    &mut self.random,
-                    &mut self.weather_out,
-                );
+                self.weather
+                    .advance(Some(&mut data), advance, random, &mut self.weather_out);
             }
         } else {
             self.weather
-                .advance(None, advance, &mut self.random, &mut self.weather_out);
+                .advance(None, advance, random, &mut self.weather_out);
         }
         for packet in self.weather_out.drain(..) {
             match packet {
@@ -386,10 +373,12 @@ impl WorldSurvival {
         }
     }
 
-    /// The survival `Env` over this world's state.
+    /// The survival `Env` over this world's state; `random` is the level random
+    /// ([`vanillite_game::level::Level::lend_random`] while the level is borrowed).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn env<'a>(
         &'a mut self,
+        random: &'a mut LegacyRandom,
         level: &'a LevelState,
         rules: &'a GameRules,
         blocks: &'a dyn BlockAccess,
@@ -412,7 +401,7 @@ impl WorldSurvival {
             raining_at,
             border: None,
             enter_gateway,
-            random: &mut self.random,
+            random,
             out: &mut self.effects,
             hooks,
             display_name,
@@ -424,13 +413,14 @@ impl WorldSurvival {
     /// exhaustion (`handleMovePlayer`).
     pub(crate) fn moves(
         &mut self,
-        entities: &mut Entities,
-        chunks: &Chunks,
+        world: &mut vanillite_game::level::Level,
         global: &Global,
         dimension: &str,
     ) {
         let level = &global.level;
         let rules = level.rules().clone();
+        let mut random = world.lend_random();
+        let (entities, chunks) = (&mut world.entities, &world.chunks);
         let blocks = WorldBlocks(chunks);
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
@@ -439,6 +429,7 @@ impl WorldSurvival {
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = self.env(
+            &mut random,
             level,
             &rules,
             &blocks,
@@ -466,7 +457,8 @@ impl WorldSurvival {
             moves.clear();
             data.connection.movement.moves = moves;
         }
-        self.deliver(entities, global);
+        world.restore_random(random);
+        self.deliver(world, global);
     }
 
     /// The entity tick of players (`ServerPlayer.tick`).
@@ -525,6 +517,7 @@ impl WorldSurvival {
         // The players' `pushEntities` and `touch` see the level without its entities, as the
         // mob ticks do.
         let mut ents = std::mem::take(&mut world_mut.entities);
+        let mut random = world_mut.lend_random();
         let entities = &mut ents;
         let world: &vanillite_game::level::Level = world_mut;
         let (chunks, block_entities) = (&world.chunks, &world.block_entities);
@@ -551,6 +544,7 @@ impl WorldSurvival {
                 ready
             };
             let mut env = self.env(
+                &mut random,
                 level,
                 &rules,
                 &blocks,
@@ -648,8 +642,9 @@ impl WorldSurvival {
         }
         self.scratch = removed;
         world_mut.entities = ents;
+        world_mut.restore_random(random);
         crate::scoreboard::update_criteria(global, &mut world_mut.entities);
-        self.deliver(&mut world_mut.entities, global);
+        self.deliver(world_mut, global);
     }
 
     /// Kills a player (`/kill`) and delivers the effects at once.
@@ -722,7 +717,7 @@ impl WorldSurvival {
         let state = &global.level;
         let rules = state.rules().clone();
         // The level random, as in the world's tick (`level.random` of Vanilla).
-        let mut random = std::mem::replace(level.random(), LegacyRandom::new(0));
+        let mut random = level.lend_random();
         let mut out = Vec::new();
         let mut cx = vanillite_game::mob::MobContext::default();
         let mut ents = std::mem::take(&mut level.entities);
@@ -754,7 +749,7 @@ impl WorldSurvival {
             f(level, &mut ents, &mut env, &mut cx)
         };
         level.entities = ents;
-        *level.random() = random;
+        level.restore_random(random);
         for action in std::mem::take(&mut cx.actions) {
             use vanillite_game::mob::WorldAction;
             match action {
@@ -879,10 +874,11 @@ impl WorldSurvival {
     /// Sends what the survival logic produced to its receivers. Each receiver lookup visits
     /// the players near the source only: all players when there are few, else the chunks in
     /// range.
-    pub(crate) fn deliver(&mut self, entities: &mut Entities, global: &Global) {
+    pub(crate) fn deliver(&mut self, world: &mut vanillite_game::level::Level, global: &Global) {
         if self.effects.is_empty() {
             return;
         }
+        let (entities, _, random) = world.entity_parts();
         let effects = std::mem::take(&mut self.effects);
         collect_game_events(&effects, &mut self.game_events);
         self.build_grid(entities);
@@ -985,13 +981,7 @@ impl WorldSurvival {
         }
         out.flush(entities);
         self.outgoing = out;
-        spawn_drops(
-            &effects,
-            entities,
-            &global.network_ids,
-            &mut self.random,
-            global,
-        );
+        spawn_drops(&effects, entities, &global.network_ids, random, global);
     }
 
     /// The player rows of the chunks within `range` of `pos` (all players when that is

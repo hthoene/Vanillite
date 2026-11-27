@@ -808,7 +808,10 @@ impl ScenarioWorld for ServerWorld {
         let target = op
             .target
             .as_deref()
-            .map(|t| self.network_id(t))
+            .map(|t| {
+                let uuid = self.names.iter().find(|(_, n)| n == t).map(|(u, _)| *u);
+                Ok::<_, String>((self.network_id(t)?, uuid.unwrap_or_default()))
+            })
             .transpose()?;
         let packet_id = vanillite_protocol::ids::play::serverbound::NAMES
             .iter()

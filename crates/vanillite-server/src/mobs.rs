@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use vanillite_base::random::LegacyRandom;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, VanillaOr, WorldRules};
 use vanillite_data::entity::ids;
@@ -215,7 +216,7 @@ impl WorldMobs {
             out: &mut survival.effects,
         };
         vanillite_game::raid::Raids::tick(level, &mut cx);
-        survival.deliver(&mut level.entities, global);
+        survival.deliver(level, global);
         if let Some(data) = &self.raids_data
             && std::mem::take(&mut level.entities.raids.dirty)
         {
@@ -295,7 +296,11 @@ impl WorldMobs {
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        // The fight has the whole level and draws `level.getRandom()` from it; its `Env`
+        // random is the unseeded `RandomSource.create()` of the spikes and gateways.
+        let mut random = LegacyRandom::new(vanillite_game::mob::new_unique_seed());
         let mut env = survival.env(
+            &mut random,
             state,
             &rules,
             &no_blocks,
@@ -314,7 +319,7 @@ impl WorldMobs {
         self.store_fight();
         self.apply_explosion_hurts(level, survival, global, dimension);
         self.apply_actions(level, survival, global, dimension);
-        survival.deliver(&mut level.entities, global);
+        survival.deliver(level, global);
     }
 
     /// Hands the fight's changed state to its saved data.
@@ -349,7 +354,10 @@ impl WorldMobs {
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        // As in `tick_dragon_fight`: the fight draws the level random from the level.
+        let mut random = LegacyRandom::new(vanillite_game::mob::new_unique_seed());
         let mut env = survival.env(
+            &mut random,
             state,
             &rules,
             &no_blocks,
@@ -417,6 +425,7 @@ impl WorldMobs {
         let rules = state.rules().clone();
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
         let mut ents = std::mem::take(&mut level.entities);
+        let mut random = level.lend_random();
         {
             let blocks = WorldBlocks(&level.chunks);
             let (weather, climate) = (survival.weather, survival.climate().cloned());
@@ -426,6 +435,7 @@ impl WorldMobs {
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = survival.env(
+                &mut random,
                 state,
                 &rules,
                 &blocks,
@@ -452,10 +462,11 @@ impl WorldMobs {
                 player_vehicle_input(level, &mut ents, &mut env, &mut self.cx, player, input);
             }
         }
+        level.restore_random(random);
         level.entities = ents;
         self.apply_actions(level, survival, global, dimension);
         vanillite_game::menu::container::open_requests(level, std::mem::take(&mut self.cx.menus));
-        survival.deliver(&mut level.entities, global);
+        survival.deliver(level, global);
     }
 
     /// `updateSkyBrightness`: this tick's environment (sky darkness from the day time and the
@@ -861,6 +872,7 @@ impl WorldMobs {
             {
                 continue;
             }
+            let mut random = level.lend_random();
             {
                 let blocks = WorldBlocks(&level.chunks);
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
@@ -870,6 +882,7 @@ impl WorldMobs {
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
                 let mut env = survival.env(
+                    &mut random,
                     state,
                     &rules,
                     &blocks,
@@ -917,6 +930,7 @@ impl WorldMobs {
                     );
                 }
             }
+            level.restore_random(random);
             if !self.cx.actions.is_empty() || !self.cx.dragon_events.is_empty() {
                 level.entities = ents;
                 self.apply_actions(level, survival, global, dimension);
@@ -935,6 +949,7 @@ impl WorldMobs {
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
         riding::ride_tick(&mut ents);
+        let mut random = level.lend_random();
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
@@ -942,6 +957,7 @@ impl WorldMobs {
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = survival.env(
+                &mut random,
                 state,
                 &rules,
                 &blocks,
@@ -958,6 +974,7 @@ impl WorldMobs {
                 ents.despawn(d);
             }
         }
+        level.restore_random(random);
         level.entities = ents;
         if !self.cx.actions.is_empty() {
             self.apply_actions(level, survival, global, dimension);
@@ -968,7 +985,7 @@ impl WorldMobs {
             vanillite_game::block::portal::trigger_gateway_cooldown(level, pos, state);
         }
         vanillite_game::player::using::tick_brushes(level);
-        survival.deliver(&mut level.entities, global);
+        survival.deliver(level, global);
     }
 
     /// The damage of an explosion made outside the entity tick (a plugin's `explode`) and
@@ -982,7 +999,7 @@ impl WorldMobs {
     ) {
         self.apply_explosion_hurts(level, survival, global, dimension);
         self.apply_actions(level, survival, global, dimension);
-        survival.deliver(&mut level.entities, global);
+        survival.deliver(level, global);
     }
 
     /// The mob context of the players' ticks (their `pushEntities` and `touch`); afterwards
@@ -1006,7 +1023,7 @@ impl WorldMobs {
             return;
         }
         self.apply_actions(level, survival, global, dimension);
-        survival.deliver(&mut level.entities, global);
+        survival.deliver(level, global);
     }
 
     /// Applies what the last mob tick queued: explosions and block changes.
@@ -1128,7 +1145,9 @@ impl WorldMobs {
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let mut random = level.lend_random();
         let mut env = survival.env(
+            &mut random,
             state,
             &rules,
             &no_blocks,
@@ -1214,6 +1233,7 @@ impl WorldMobs {
             );
         }
         level.entities = ents;
+        level.restore_random(random);
         // `interactWithBlocks` after `hurtEntities`.
         level.finish_explosion();
         self.finish_removals(level);
@@ -1242,6 +1262,7 @@ impl WorldMobs {
         let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let mut ents = std::mem::take(&mut level.entities);
+        let mut random = level.lend_random();
         {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
@@ -1249,6 +1270,7 @@ impl WorldMobs {
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = survival.env(
+                &mut random,
                 state,
                 &rules,
                 &blocks,
@@ -1262,6 +1284,7 @@ impl WorldMobs {
             vanillite_game::spear::tick_players(level, &mut ents, &mut env, &mut self.cx);
             vanillite_game::trident::tick_spin_attacks(level, &mut ents, &mut env, &mut self.cx);
         }
+        level.restore_random(random);
         level.entities = ents;
         if !self.cx.actions.is_empty() {
             self.apply_actions(level, survival, global, dimension);
@@ -1288,7 +1311,9 @@ impl WorldMobs {
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let mut random = level.lend_random();
         let mut env = survival.env(
+            &mut random,
             state,
             &rules,
             &no_blocks,
@@ -1313,6 +1338,7 @@ impl WorldMobs {
             );
         }
         level.entities = ents;
+        level.restore_random(random);
         self.finish_removals(level);
     }
 
@@ -1331,6 +1357,7 @@ impl WorldMobs {
             let state = &global.level;
             let rules = state.rules().clone();
             let mut ents = std::mem::take(&mut level.entities);
+            let mut random = level.lend_random();
             {
                 let blocks = WorldBlocks(&level.chunks);
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
@@ -1341,6 +1368,7 @@ impl WorldMobs {
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
                 let mut env = survival.env(
+                    &mut random,
                     state,
                     &rules,
                     &blocks,
@@ -1355,9 +1383,10 @@ impl WorldMobs {
                     lightning::thunder_hit(level, &mut ents, &mut env, &mut self.cx, target, id);
                 }
             }
+            level.restore_random(random);
             level.entities = ents;
             self.finish_removals(level);
-            survival.deliver(&mut level.entities, global);
+            survival.deliver(level, global);
         }
         self.bolt_hits = hits;
     }
