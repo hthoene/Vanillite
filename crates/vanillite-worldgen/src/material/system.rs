@@ -84,7 +84,7 @@ struct FoldKey {
 type FoldTables = Arc<(Vec<FoldedY>, Vec<FoldedY>)>;
 
 /// Most fold tables kept; a full cache starts over.
-const FOLD_CACHE_MAX: usize = 256;
+const FOLD_CACHE_MAX: usize = 64;
 
 /// The surface builder of one world's noise settings (`MaterialSystem`) together with its
 /// parsed material rule (`NoiseGeneratorSettings.material_rule`).

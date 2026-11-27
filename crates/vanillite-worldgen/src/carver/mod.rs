@@ -346,31 +346,41 @@ impl Cuts for CarverPlan {
 /// generation context.
 #[derive(Debug, Default)]
 pub struct CarverPlans {
-    /// By packed source position: the plans per carver list (the list comes from a biome
-    /// lookup that may differ between target chunks in rare ties).
-    plans: Mutex<FxHashMap<i64, Vec<PlanEntry>>>,
+    plans: Mutex<PlanCache>,
+}
+
+/// The plans by packed source position, per carver list (the list comes from a biome lookup
+/// that may differ between target chunks in rare ties), and how many cuts they hold.
+#[derive(Debug, Default)]
+struct PlanCache {
+    sources: FxHashMap<i64, Vec<PlanEntry>>,
+    cuts: usize,
 }
 
 impl CarverPlans {
-    /// Most source chunks kept; a full cache starts over.
-    const MAX: usize = 1 << 13;
+    /// Most cuts kept (about 5 MiB); beyond, only the sources near the chunk being carved stay.
+    const MAX_CUTS: usize = 1 << 16;
+    /// Chunks (on each axis) from the chunk being carved within which sources stay.
+    const KEEP_RANGE: i32 = SOURCE_RANGE + 4;
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, FxHashMap<i64, Vec<PlanEntry>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PlanCache> {
         self.plans.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The plan of `source` with `carvers`; `None` if it depends on more than the source (a
-    /// carver drew a Gaussian, whose cache `WorldgenRandom` keeps across sources).
+    /// The plan of `source` with `carvers` for carving `chunk`; `None` if it depends on more
+    /// than the source (a carver drew a Gaussian, whose cache `WorldgenRandom` keeps across
+    /// sources).
     fn get(
         &self,
         registry: &CarverRegistry,
         carvers: &[CarverId],
         seed: i64,
         source: ChunkPos,
+        chunk: ChunkPos,
         context: &WorldGenerationContext,
     ) -> Option<Arc<CarverPlan>> {
         let key = source.as_long();
-        if let Some(entries) = self.lock().get(&key)
+        if let Some(entries) = self.lock().sources.get(&key)
             && let Some((_, plan)) = entries.iter().find(|(ids, _)| **ids == *carvers)
         {
             return plan.clone();
@@ -384,12 +394,31 @@ impl CarverPlans {
                 carver.carve_into(context, &mut random, source, &mut plan);
             }
         }
+        plan.cuts.shrink_to_fit();
+        let cuts = plan.cuts.len();
         let plan = (!random.drew_gaussian).then(|| Arc::new(plan));
-        let mut plans = self.lock();
-        if plans.len() >= Self::MAX {
-            plans.clear();
+        let mut cache = self.lock();
+        if cache.cuts + cuts > Self::MAX_CUTS {
+            let near = |key: &i64| {
+                let pos = ChunkPos::from_long(*key);
+                (pos.x - chunk.x).abs() <= Self::KEEP_RANGE
+                    && (pos.z - chunk.z).abs() <= Self::KEEP_RANGE
+            };
+            cache.sources.retain(|key, _| near(key));
+            cache.cuts = cache
+                .sources
+                .values()
+                .flatten()
+                .map(|(_, plan)| plan.as_ref().map_or(0, |plan| plan.cuts.len()))
+                .sum();
+            if cache.cuts + cuts > Self::MAX_CUTS {
+                cache.sources.clear();
+                cache.cuts = 0;
+            }
         }
-        plans
+        cache.cuts += cuts;
+        cache
+            .sources
             .entry(key)
             .or_default()
             .push((carvers.into(), plan.clone()));
@@ -511,7 +540,14 @@ pub fn carve_chunk<'a>(
         for dx in -SOURCE_RANGE..=SOURCE_RANGE {
             for dz in -SOURCE_RANGE..=SOURCE_RANGE {
                 let source = ChunkPos::new(chunk.x + dx, chunk.z + dz);
-                match plans.get(registry, biome_carvers(source), seed, source, context) {
+                match plans.get(
+                    registry,
+                    biome_carvers(source),
+                    seed,
+                    source,
+                    chunk,
+                    context,
+                ) {
                     Some(plan) => sources.push(plan),
                     // A source whose plan depends on the carvers before it: the whole chunk
                     // the way Vanilla carves it.
