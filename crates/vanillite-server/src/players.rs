@@ -673,7 +673,6 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
-        let border = level.border.clone();
         let (movement_check, elytra_movement_check) = {
             use vanillite_game::survival::rules::Rule;
             let game_rules = global.level.rules();
@@ -685,8 +684,13 @@ impl WorldPlayers {
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
-            border: Some(&border),
             no_wrong_move_check: false,
+            no_physics: false,
+            dims: vanillite_world::entity::Dimensions {
+                width: 0.6,
+                height: 1.8,
+            },
+            blocks: None,
             movement_check,
             elytra_movement_check,
         };
@@ -746,7 +750,7 @@ impl WorldPlayers {
                 .map(|r| r.pos);
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
-            let aabb = entity.aabb();
+            let (aabb, dims) = (entity.aabb(), entity.dims());
             let mut drops: Vec<Drop> = Vec::new();
             let mut hands: Vec<Hand> = Vec::new();
             let handled = {
@@ -781,6 +785,8 @@ impl WorldPlayers {
                             player.game_mode,
                             GameMode::Spectator | GameMode::Creative
                         ),
+                        no_physics: player.game_mode == GameMode::Spectator,
+                        dims,
                         ..ctx
                     },
                     chat,
@@ -816,7 +822,7 @@ impl WorldPlayers {
                             .award(Stat::of(StatType::Dropped, item), drop.stack.count);
                         player.stats.award(custom::DROP, 1);
                     }
-                    throw_item(&mut level, &actor, drop);
+                    throw_item(&mut level, &actor, drop, &mut player.survival.own_random);
                 }
                 handled
             };
@@ -858,6 +864,9 @@ impl WorldPlayers {
             let body = state.body;
             if body.pos != before.body.pos {
                 entity.set_pos(body.pos);
+            }
+            if body.velocity != before.body.velocity {
+                entity.set_velocity(body.velocity);
             }
             if body.y_rot != before.body.y_rot || body.x_rot != before.body.x_rot {
                 entity.set_rot(Rotation {
@@ -1274,7 +1283,7 @@ impl WorldPlayers {
                         dimension: dimension_name,
                     };
                     for drop in drops {
-                        throw_item(&mut world, &actor, drop);
+                        throw_item(&mut world, &actor, drop, &mut player.survival.own_random);
                     }
                 }
             } else {

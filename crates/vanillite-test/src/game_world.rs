@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
-use vanillite_base::random::LegacyRandom;
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::ProtoChunk;
 use vanillite_chunk::light::LightNibbles;
@@ -639,7 +639,6 @@ impl GameWorld {
         // What block entities (beehives) read of the world after the entities.
         self.level.spawner_env.env = self.env;
         self.level.entities.day_time = self.env.day_time;
-        minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
             if !vanillite_game::entities::in_ticking_range(&self.level, id) {
@@ -1058,6 +1057,11 @@ impl GameWorld {
         // Nobody moves the mock player: the server does, like Vanilla's. A client player
         // moves by its packets.
         data.survival.simulate_movement = !spec.client;
+        // The recorder seeds the player's own random with the spec's seed
+        // (`ParityHooks.seedNext`), then the `LivingEntity` constructor draws the yaw from it.
+        let mut own = LegacyRandom::new(spec.seed);
+        let _ = own.next_float();
+        data.survival.own_random = own.state();
         data.survival.y_body_rot = spec.rot[0];
         let id =
             self.level
@@ -2375,12 +2379,16 @@ impl GameWorld {
                 vanillite_config::Profile::Vanilla,
             )
             .movement;
-        let border = self.level.border.clone();
         let ctx = MoveContext {
             runs_normally: true,
             rules: &movement_rules,
-            border: Some(&border),
             no_wrong_move_check: false,
+            no_physics: false,
+            dims: vanillite_world::entity::Dimensions {
+                width: 0.6,
+                height: 1.8,
+            },
+            blocks: None,
             movement_check: self.rules.bool(Rule::PLAYER_MOVEMENT_CHECK),
             elytra_movement_check: self.rules.bool(Rule::ELYTRA_MOVEMENT_CHECK),
         };
@@ -2421,7 +2429,7 @@ impl GameWorld {
                 0,
                 &self.level.chunks,
             );
-            let (aabb, uuid) = (entity.aabb(), entity.uuid());
+            let (aabb, uuid, dims) = (entity.aabb(), entity.uuid(), entity.dims());
             let mut effects = vanillite_server::LevelEffects::default();
             let mut drops = Vec::new();
             let mut swings = Vec::new();
@@ -2457,6 +2465,8 @@ impl GameWorld {
                             player.game_mode,
                             GameMode::Spectator | GameMode::Creative
                         ),
+                        no_physics: player.game_mode == GameMode::Spectator,
+                        dims,
                         ..ctx
                     },
                     ChatContext {
@@ -2469,7 +2479,12 @@ impl GameWorld {
                 );
                 let actor = play.actor;
                 for drop in drops {
-                    vanillite_game::player::play::throw_item(&mut world, &actor, drop);
+                    vanillite_game::player::play::throw_item(
+                        &mut world,
+                        &actor,
+                        drop,
+                        &mut player.survival.own_random,
+                    );
                 }
                 handled
             };
@@ -2485,6 +2500,9 @@ impl GameWorld {
             let body = state.body;
             if body.pos != before.body.pos {
                 entity.set_pos(body.pos);
+            }
+            if body.velocity != before.body.velocity {
+                entity.set_velocity(body.velocity);
             }
             if body.y_rot != before.body.y_rot || body.x_rot != before.body.x_rot {
                 entity.set_rot(Rotation {

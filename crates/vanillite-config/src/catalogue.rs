@@ -400,9 +400,9 @@ rules! {
             /// The "moved too quickly" check also applies while gliding with an elytra.
             /// Vanilla's `elytraMovementCheck` game rule.
             elytra_too_fast_check: bool = "elytra-too-fast-check", Security, vanilla = true;
-            /// Players whose movement does not match the server's collision result are
-            /// teleported back ("moved wrongly"). Not enforced yet: it needs block collision
-            /// (milestone 3).
+            /// Players whose movement does not match the server's collision result ("moved
+            /// wrongly") or that move into a block are teleported back, like Vanilla's
+            /// `handleMovePlayer`. Off accepts every move that passes the other checks.
             wrong_movement_check: bool = "wrong-movement-check", Security, vanilla = true;
             /// Players floating in the air longer than Vanilla allows are kicked unless
             /// `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3).

@@ -377,6 +377,59 @@ pub fn collide_in_context(
     step
 }
 
+/// `ServerGamePacketListenerImpl.isEntityCollidingWithAnythingNew` against blocks: whether
+/// the box `new` (deflated by `1.0E-5F`) collides with a block whose collision shape does not
+/// already collide with `old` (deflated the same way), i.e. the move enters a block.
+pub fn collides_with_anything_new(blocks: &dyn Blocks, old: &Aabb, new: &Aabb) -> bool {
+    let d = f64::from(1.0e-5_f32);
+    let (old, new) = (old.inflate(-d, -d, -d), new.inflate(-d, -d, -d));
+    let min_x = floor(new.min_x - EPSILON) - 1;
+    let max_x = floor(new.max_x + EPSILON) + 1;
+    let min_y = floor(new.min_y - EPSILON) - 1;
+    let max_y = floor(new.max_y + EPSILON) + 1;
+    let min_z = floor(new.min_z - EPSILON) - 1;
+    let max_z = floor(new.max_z + EPSILON) + 1;
+    for x in min_x..=max_x {
+        for z in min_z..=max_z {
+            for y in min_y..=max_y {
+                let edges = i32::from(x == min_x || x == max_x)
+                    + i32::from(y == min_y || y == max_y)
+                    + i32::from(z == min_z || z == max_z);
+                if edges == 3 {
+                    continue;
+                }
+                let state = blocks.state(BlockPos::new(x, y, z));
+                if state.is_air()
+                    || (edges == 1 && !state.has(flags::LARGE_COLLISION_SHAPE))
+                    || (edges == 2 && state.block() != ids::MOVING_PISTON)
+                {
+                    continue;
+                }
+                let (ox, oy, oz) = (f64::from(x), f64::from(y), f64::from(z));
+                let boxes = state.collision_shape().iter().map(|b| Aabb {
+                    min_x: ox + b[0],
+                    min_y: oy + b[1],
+                    min_z: oz + b[2],
+                    max_x: ox + b[3],
+                    max_y: oy + b[4],
+                    max_z: oz + b[5],
+                });
+                // The whole block shape counts: new when it touches `new` but not `old`.
+                let mut hits_new = false;
+                let mut hits_old = false;
+                for b in boxes {
+                    hits_new |= b.intersects(&new);
+                    hits_old |= b.intersects(&old);
+                }
+                if hits_new && !hits_old {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// `noCollision(entity, box)` against blocks only.
 pub fn no_collision(blocks: &dyn Blocks, aabb: &Aabb, scratch: &mut Vec<Aabb>) -> bool {
     scratch.clear();

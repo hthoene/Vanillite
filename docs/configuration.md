@@ -297,7 +297,7 @@ view-distance = 8
 |---|---|---|---|---|---|---|---|---|
 | `too-fast-check` | security |  | `true` | `true` | `true` | `true` | `true` | Players that move faster than Vanilla allows are teleported back ("moved too quickly"). Vanilla's `playerMovementCheck` game rule. Environment: `VANILLITE_MOVEMENT__TOO_FAST_CHECK`. |
 | `elytra-too-fast-check` | security |  | `true` | `true` | `true` | `true` | `true` | The "moved too quickly" check also applies while gliding with an elytra. Vanilla's `elytraMovementCheck` game rule. Environment: `VANILLITE_MOVEMENT__ELYTRA_TOO_FAST_CHECK`. |
-| `wrong-movement-check` | security |  | `true` | `true` | `true` | `true` | `true` | Players whose movement does not match the server's collision result are teleported back ("moved wrongly"). Not enforced yet: it needs block collision (milestone 3). Environment: `VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK`. |
+| `wrong-movement-check` | security |  | `true` | `true` | `true` | `true` | `true` | Players whose movement does not match the server's collision result ("moved wrongly") or that move into a block are teleported back, like Vanilla's `handleMovePlayer`. Off accepts every move that passes the other checks. Environment: `VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK`. |
 | `flying-kick` | security |  | `true` | `true` | `true` | `true` | `true` | Players floating in the air longer than Vanilla allows are kicked unless `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3). Environment: `VANILLITE_MOVEMENT__FLYING_KICK`. |
 
 #### `[performance.chunks]`

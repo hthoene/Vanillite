@@ -698,7 +698,6 @@ impl WorldMobs {
             spawn_monsters: rules.bool(Rule::SPAWN_MONSTERS),
         };
         let activation = f64::from(self.settings.activation_range);
-        minecart::players_push(&mut level.entities);
         let in_end = dimension == END_DIMENSION;
         let mut cursor = level.entities.store.tick_cursor();
         let mut tnt_left = self.settings.max_tnt_per_tick;
@@ -1580,9 +1579,25 @@ pub fn player_entity_action(
                 p.survival.attack_ticker = 0;
             }
         }
-        EntityAction::UseItem(hand) => {
+        EntityAction::Punch => {
+            // `handlePunch`: `resetAttackStrengthTicker` (also for spectators).
+            if let Some(p) = ents.player_mut(player) {
+                p.survival.attack_ticker = 0;
+            }
+        }
+        EntityAction::UseItem {
+            hand,
+            known_movement,
+        } => {
             if usable {
+                // The item sees the known movement of its packet's time (thrown projectiles).
+                let known = ents.player_mut(player).map(|p| {
+                    std::mem::replace(&mut p.connection.movement.known_movement, known_movement)
+                });
                 item_use::use_item(level, ents, env, cx, network_ids, player, hand);
+                if let (Some(k), Some(p)) = (known, ents.player_mut(player)) {
+                    p.connection.movement.known_movement = k;
+                }
             }
         }
         EntityAction::UseItemOn {
