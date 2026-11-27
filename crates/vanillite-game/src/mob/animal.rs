@@ -655,14 +655,15 @@ fn mob_interact(
             return r;
         }
     }
-    if let Some(egg_kind) = spawn_egg_kind(stack) {
-        let own = ents.mob(target).map(|m| m.kind);
-        if own == Some(egg_kind) && ents.mob(target).is_some_and(|m| m.kind.ageable()) {
-            spawn_offspring(level, ents, player, target, hand, egg_kind);
-            interacted(ents, env);
-            return Interaction::Success;
-        }
-        return Interaction::Pass;
+    // `checkAndHandleImportantInteractions`: an egg of the mob's own type makes a baby of every
+    // mob that can be one (ageable mobs, the zombies, piglins and zoglins); otherwise the
+    // interaction goes on (leads, mounting, trading).
+    if let Some(egg_kind) = spawn_egg_kind(stack)
+        && ents.mob(target).is_some_and(|m| m.kind == egg_kind && can_be_baby(m.kind))
+    {
+        spawn_offspring(level, ents, player, target, hand, egg_kind);
+        interacted(ents, env);
+        return Interaction::Success;
     }
     // `Entity.interact`: leads (with their own game events).
     let r = super::tame::leash_interact(ents, env, player, target, hand, sneaking);
@@ -1113,8 +1114,33 @@ fn name_tag(
 pub fn spawn_egg_kind(stack: &ItemStack) -> Option<Kind> {
     let name = item::item_id(stack).name();
     let base = name.strip_suffix("_spawn_egg")?;
+    // `SpawnEggItem.getType`: the type of the stack's `entity_data` (a patched one may name
+    // another mob), else the egg's own.
+    use vanillite_protocol::components::ids;
+    if let Some(wire) = stack.component(ids::ENTITY_DATA)
+        && let Ok(vanillite_nbt::Tag::Compound(data)) = vanillite_protocol::components_nbt::to_nbt(
+            ids::ENTITY_DATA,
+            wire,
+            &vanillite_protocol::item::InstalledRegistries,
+        )
+        && let Some(id) = data.get("id").and_then(vanillite_nbt::Tag::as_str)
+    {
+        let qualified = if id.contains(':') {
+            id.to_owned()
+        } else {
+            format!("minecraft:{id}")
+        };
+        return vanillite_data::entity::EntityTypeId::by_name(&qualified).and_then(Kind::of);
+    }
     let ty = vanillite_data::entity::EntityTypeId::by_name(base)?;
     Kind::of(ty)
+}
+
+/// Whether `setBaby(true)` makes a baby of the kind.
+fn can_be_baby(kind: Kind) -> bool {
+    kind.ageable()
+        || crate::mob::fam::undead::zombies::is_zombie(kind)
+        || matches!(kind, Kind::Piglin | Kind::Zoglin)
 }
 
 /// `SpawnEggItem.spawnOffspringFromSpawnEgg`: a baby of the same kind.
@@ -1131,8 +1157,12 @@ fn spawn_offspring(
     };
     let seed = crate::mob::new_entity_seed();
     let mut child = MobData::new(kind, seed);
-    child.age = -24000;
-    child.baby = true;
+    if kind.ageable() {
+        child.age = -24000;
+        child.baby = true;
+    } else {
+        crate::mob::fam::undead::set_baby(&mut child, true);
+    }
     if let Some(m) = ents.mob(target) {
         child.variant = m.variant;
         if let Some(c) = classic::try_sheep_mut(&mut child) {

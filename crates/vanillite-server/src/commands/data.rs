@@ -369,6 +369,9 @@ pub(crate) fn apply_entity_nbt(
             rot.y_head_rot = *y;
             e.set_rot(rot);
         }
+        if let Some(v) = data.get("NoGravity").and_then(Tag::as_i64) {
+            e.set_flags(vanillite_world::entity::EntityFlags::NO_GRAVITY, v != 0);
+        }
         e.mark_data_dirty();
     }
     if e_kind_is_item(entities, id)
@@ -382,6 +385,9 @@ pub(crate) fn apply_entity_nbt(
         }
         if let Some(Tag::Compound(c)) = data.get("Item") {
             item.stack = vanillite_game::inventory::stack_from_nbt(c);
+        }
+        if let Some(v) = data.get("Invulnerable").and_then(Tag::as_i64) {
+            item.invulnerable = v != 0;
         }
     }
     Ok(())

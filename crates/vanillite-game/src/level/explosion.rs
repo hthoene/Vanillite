@@ -706,8 +706,14 @@ impl Level {
                     continue;
                 }
             }
-            // `pushFromExplosion`.
-            if let Some(mut entity) = self.entities.store.get_mut(id)
+            // `pushFromExplosion`; `AbstractArrow.push` does nothing in the ground (arrows and
+            // tridents).
+            let stuck = self.entities.arrow(id).is_some_and(|a| a.in_ground)
+                || self.entities.missile(id).is_some_and(|d| {
+                    d.kind == crate::mob::missile::MissileKind::Trident && d.in_ground
+                });
+            if !stuck
+                && let Some(mut entity) = self.entities.store.get_mut(id)
                 && knockback.x.is_finite()
                 && knockback.y.is_finite()
                 && knockback.z.is_finite()

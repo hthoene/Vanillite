@@ -747,6 +747,7 @@ impl Level {
         if kind == ids::ITEM {
             let data = self.entities.item(id)?;
             nbt.insert("Health", data.health);
+            nbt.insert("Invulnerable", Tag::Byte(i8::from(data.invulnerable)));
             #[allow(clippy::cast_possible_truncation)]
             nbt.insert("Fire", data.fire_ticks.clamp(0, 32767) as i16);
             nbt.insert("Age", data.age);
