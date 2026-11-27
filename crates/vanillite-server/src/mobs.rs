@@ -15,6 +15,7 @@ use vanillite_game::level::Level;
 use vanillite_game::level::explosion::BlockInteraction;
 use vanillite_game::lightning::{self, StrikeInput};
 use vanillite_game::minecart::{self, MinecartKind};
+use vanillite_game::mob::activation::{ActivationSettings, Decision, WakeUp};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
@@ -118,6 +119,10 @@ pub(crate) struct WorldMobs {
     generated: Vec<(ChunkPos, u32)>,
     scratch: Vec<ChunkPos>,
     ticks: u64,
+    /// The activation range state (`performance.activation-range`).
+    activation: vanillite_game::mob::activation::Activation,
+    /// The players of the tick that activate mobs, reused.
+    activation_players: Vec<(EntityId, Vec3)>,
     /// The entities the ticking lightning bolt strikes.
     bolt_hits: Vec<EntityId>,
     /// The custom spawners of the overworld (`ServerLevel.customSpawners`).
@@ -159,6 +164,8 @@ impl WorldMobs {
             generated: Vec::new(),
             scratch: Vec::new(),
             ticks: 0,
+            activation: Default::default(),
+            activation_players: Vec::new(),
             bolt_hits: Vec::new(),
             phantoms: Default::default(),
             patrols: Default::default(),
@@ -725,7 +732,22 @@ impl WorldMobs {
             spawn_mobs: rules.bool(Rule::SPAWN_MOBS),
             spawn_monsters: rules.bool(Rule::SPAWN_MONSTERS),
         };
-        let activation = f64::from(self.settings.activation_range);
+        self.activation_players.clear();
+        if self.settings.activation.enabled() {
+            let ents = &level.entities;
+            self.activation_players.extend(
+                ents.players
+                    .iter()
+                    .filter(|(_, p)| p.game_mode != GameMode::Spectator)
+                    .filter_map(|(id, _)| ents.store.get(id).map(|e| (id, e.pos()))),
+            );
+        }
+        self.activation.begin_tick(
+            self.settings.activation,
+            self.ticks,
+            &self.activation_players,
+        );
+        let activation = self.activation.enabled();
         let in_end = dimension == END_DIMENSION;
         let mut cursor = level.entities.store.tick_cursor();
         let mut tnt_left = self.settings.max_tnt_per_tick;
@@ -851,24 +873,25 @@ impl WorldMobs {
                 portal::enter_portals(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
-            if is_mob && activation > 0.0 && !self.ticks.is_multiple_of(20) {
-                let area = Aabb::new(
-                    pos.x - activation,
-                    pos.y - activation,
-                    pos.z - activation,
-                    pos.x + activation,
-                    pos.y + activation,
-                    pos.z + activation,
-                );
-                let mut near = false;
-                ents.store.for_each_in(&area, true, |_| near = true);
-                if !near {
-                    continue;
+            // `performance.activation-range`: inactive mobs only age or think.
+            let mut think = false;
+            if is_mob && activation {
+                match self.activation.check(&mut ents, id) {
+                    Decision::Active => {}
+                    Decision::Inactive => {
+                        if let Some(m) = ents.mob_mut(id) {
+                            vanillite_game::mob::activation::age(m);
+                        }
+                        continue;
+                    }
+                    Decision::Think => think = true,
                 }
             }
             // Throwables handle portals inside their tick (`ThrowableProjectile.tick`).
             let throwable = is_missile && ents.missile(id).is_some_and(|d| d.kind.is_throwable());
-            if !throwable && portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel)
+            if !throwable
+                && !think
+                && portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel)
             {
                 continue;
             }
@@ -894,7 +917,9 @@ impl WorldMobs {
                     &teams,
                 );
                 let level_ref: &Level = level;
-                if is_mob {
+                if think {
+                    mob::think(level_ref, &mut ents, &mut env, &mut self.cx, id);
+                } else if is_mob {
                     mob::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
                 } else if is_special {
                     special::tick(level_ref, &mut ents, &mut env, &mut self.cx, id);
@@ -936,7 +961,7 @@ impl WorldMobs {
                 self.apply_actions(level, survival, global, dimension);
                 ents = std::mem::take(&mut level.entities);
             }
-            if !throwable {
+            if !throwable && !think {
                 portal::enter_portals(level, &mut ents, id, &mut self.cx.gateways);
             }
             if ents.mob(id).is_some_and(|m| m.removed) {
@@ -1404,7 +1429,7 @@ fn settings(rules: &WorldRules) -> MobSettings {
     let spawning = &rules.spawning;
     MobSettings {
         path_nodes_per_tick: rules.mobs.path_nodes_per_tick,
-        activation_range: u32::from(rules.mobs.activation_range),
+        activation: activation_settings(rules),
         max_entity_collisions: match rules.collisions.max_entity_collisions {
             VanillaOr::Vanilla => None,
             VanillaOr::Value(n) => Some(n),
@@ -1415,6 +1440,43 @@ fn settings(rules: &WorldRules) -> MobSettings {
             .soft_despawn_range
             .map_or(vanilla.soft_despawn_range, f64::from),
         max_tnt_per_tick: rules.explosions.max_tnt_per_tick.get(),
+    }
+}
+
+/// The activation range of `performance.activation-range`.
+fn activation_settings(rules: &WorldRules) -> ActivationSettings {
+    let a = &rules.activation;
+    let w = &rules.wake_up;
+    let wake = |max_per_tick, every, ticks: u16| WakeUp {
+        max_per_tick,
+        every,
+        ticks: u32::from(ticks),
+    };
+    let none = WakeUp::default();
+    ActivationSettings {
+        // In `Group` order.
+        ranges: [
+            a.animals,
+            a.monsters,
+            a.raiders,
+            a.misc,
+            a.water,
+            a.villagers,
+            a.flying,
+        ],
+        wake_up: [
+            wake(w.animals_max_per_tick, w.animals_every, w.animals_for),
+            wake(w.monsters_max_per_tick, w.monsters_every, w.monsters_for),
+            none,
+            none,
+            none,
+            wake(w.villagers_max_per_tick, w.villagers_every, w.villagers_for),
+            wake(w.flying_max_per_tick, w.flying_every, w.flying_for),
+        ],
+        villager_work_after: u32::from(a.villagers_work_immunity_after),
+        villager_work_for: u32::from(a.villagers_work_immunity_for),
+        villager_panic: a.villagers_active_for_panic,
+        goal_throttle: a.inactive_mob_goal_selector_throttle.get(),
     }
 }
 

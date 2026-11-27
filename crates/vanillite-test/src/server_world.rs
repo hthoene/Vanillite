@@ -446,13 +446,36 @@ impl ServerWorld {
             .find(|(_, n)| n == name)
             .map(|(u, _)| *u)
             .ok_or_else(|| format!("no scenario entity `{name}`"))?;
-        for id in self.server.global().dimensions.worlds() {
+        self.network_id_of(uuid)
+            .ok_or_else(|| format!("the entity `{name}` is in no world"))
+    }
+
+    /// The network id of the entity `uuid` in any world.
+    fn network_id_of(&self, uuid: u128) -> Option<i32> {
+        self.server.global().dimensions.worlds().find_map(|id| {
             let columns = self.server.world_ref(id).level().entities.store.columns();
-            if let Some(row) = columns.uuid.iter().position(|&u| u == uuid) {
-                return Ok(columns.network_id[row].0);
-            }
+            let row = columns.uuid.iter().position(|&u| u == uuid)?;
+            columns.network_id.get(row).map(|n| n.0)
+        })
+    }
+
+    /// The network id and UUID of a packet target: a scenario entity, `uuid:<hex>` or `none`
+    /// (a target that does not exist is the id -1).
+    fn packet_target(&self, name: &str) -> Result<(i32, u128), String> {
+        if name == "none" {
+            return Ok((-1, 0));
         }
-        Err(format!("the entity `{name}` is in no world"))
+        if let Some(hex) = name.strip_prefix("uuid:") {
+            let uuid = u128::from_str_radix(hex, 16).map_err(|_| format!("bad target `{name}`"))?;
+            return Ok((self.network_id_of(uuid).unwrap_or(-1), uuid));
+        }
+        let uuid = self
+            .names
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(u, _)| *u)
+            .ok_or_else(|| format!("no scenario entity `{name}`"))?;
+        Ok((self.network_id(name)?, uuid))
     }
 
     /// Queues a packet of the scenario player `name`; the server handles it in its next tick.
@@ -808,10 +831,7 @@ impl ScenarioWorld for ServerWorld {
         let target = op
             .target
             .as_deref()
-            .map(|t| {
-                let uuid = self.names.iter().find(|(_, n)| n == t).map(|(u, _)| *u);
-                Ok::<_, String>((self.network_id(t)?, uuid.unwrap_or_default()))
-            })
+            .map(|t| self.packet_target(t))
             .transpose()?;
         let packet_id = vanillite_protocol::ids::play::serverbound::NAMES
             .iter()

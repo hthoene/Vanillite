@@ -6,6 +6,7 @@
 //! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
+pub mod activation;
 pub mod animal;
 pub mod attack;
 pub mod boss;
@@ -258,6 +259,9 @@ pub struct MobData {
     pub next_flap: f32,
     /// The state of bosses and the other kinds with their own machinery.
     pub boss: boss::Ext,
+    /// The last world tick the mob counts as active for `performance.activation-range` (in
+    /// range of a player, immune or woken up; see [`activation`]). Not saved.
+    pub active_until: u64,
 }
 
 /// What holds a leash in entity NBT (`leash`).
@@ -380,6 +384,7 @@ impl MobData {
             fly_dist: 0.0,
             next_flap: 1.0,
             boss: boss::new_ext(kind),
+            active_until: 0,
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
@@ -667,9 +672,8 @@ pub fn day_sky_factor(ticks: i64) -> f32 {
 pub struct MobSettings {
     /// Path finding nodes all mobs of a world may visit per tick; `0` = unlimited (Vanilla).
     pub path_nodes_per_tick: u32,
-    /// Mobs farther than this from every player run their AI only every 20th tick; `0` =
-    /// off (Vanilla).
-    pub activation_range: u32,
+    /// The activation range (`performance.activation-range.*`); off by default (Vanilla).
+    pub activation: activation::ActivationSettings,
     /// Entities a mob pushes per tick; `None` = all (Vanilla).
     pub max_entity_collisions: Option<u32>,
     /// Ticks an arrow stays stuck in a block (Vanilla 1200).
@@ -687,7 +691,7 @@ impl Default for MobSettings {
     fn default() -> Self {
         MobSettings {
             path_nodes_per_tick: 0,
-            activation_range: 0,
+            activation: activation::ActivationSettings::default(),
             max_entity_collisions: None,
             arrow_despawn_ticks: 1200,
             hard_despawn_range: None,
@@ -1446,6 +1450,41 @@ pub fn tick(
     }
     t.mob().tick_count += 1;
     living::tick(&mut t);
+}
+
+/// The tick of an inactive mob that thinks (`performance.activation-range`, the goal
+/// selector throttle): [`activation::age`], then the goal and target selectors choose and tick
+/// their goals. Navigation and movement wait for the mob's next full tick. Mobs with a brain
+/// only age.
+pub fn think(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    id: EntityId,
+) {
+    let mut t = Tick {
+        level,
+        ents,
+        env,
+        cx,
+        id,
+    };
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
+    activation::age(t.mob());
+    let m = t.mob();
+    if m.no_ai || m.brain.is_some() || !m.is_alive() {
+        return;
+    }
+    m.seen.clear();
+    m.unseen.clear();
+    goals::tick_selector(&mut t, goals::Which::Targets);
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
+    goals::tick_selector(&mut t, goals::Which::Goals);
 }
 
 #[cfg(test)]

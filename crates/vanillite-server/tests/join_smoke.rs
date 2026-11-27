@@ -186,13 +186,13 @@ fn join(player: &mut Player) -> (f64, f64, f64) {
         !player.client.received.contains(&"keep_alive"),
         "keepalive during configuration"
     );
-    player.until("login", |p| {
-        assert!(
-            !matches!(p, ClientboundPlay::KeepAlive(_)),
-            "keepalive before login"
-        );
-        matches!(p, ClientboundPlay::Login(_)).then_some(())
-    });
+    // `login` comes first: the client has no level before it and fails on other play packets,
+    // also on broadcasts that reach a player already listed (#199).
+    let first = player.recv();
+    assert!(
+        matches!(first, ClientboundPlay::Login(_)),
+        "first play packet is not login: {first:?}"
+    );
     let mut roots = Vec::new();
     let teleport = player.until("player_position", |p| match p {
         ClientboundPlay::Commands(tree) => {

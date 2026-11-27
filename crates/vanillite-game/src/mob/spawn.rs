@@ -1660,6 +1660,53 @@ pub fn default_spawn_rules(
     }
 }
 
+/// The entity types built with `notInPeaceful()` (`EntityType.isAllowedInPeaceful`).
+pub const NOT_IN_PEACEFUL: [&str; 38] = [
+    "blaze",
+    "bogged",
+    "breeze",
+    "cave_spider",
+    "creaking",
+    "creeper",
+    "drowned",
+    "elder_guardian",
+    "enderman",
+    "endermite",
+    "evoker",
+    "ghast",
+    "giant",
+    "guardian",
+    "hoglin",
+    "husk",
+    "illusioner",
+    "magma_cube",
+    "parched",
+    "phantom",
+    "piglin_brute",
+    "pillager",
+    "ravager",
+    "silverfish",
+    "skeleton",
+    "slime",
+    "spider",
+    "stray",
+    "vex",
+    "vindicator",
+    "warden",
+    "witch",
+    "wither",
+    "wither_skeleton",
+    "zoglin",
+    "zombie",
+    "zombie_villager",
+    "zombified_piglin",
+];
+
+/// `EntityType.isAllowedInPeaceful` of the type `path` (without namespace).
+pub fn allowed_in_peaceful(path: &str) -> bool {
+    !NOT_IN_PEACEFUL.contains(&path)
+}
+
 /// `EntitySpawnReason.isSpawner`.
 pub fn is_spawner(reason: SpawnReason) -> bool {
     matches!(reason, SpawnReason::Spawner | SpawnReason::TrialSpawner)

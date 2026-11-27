@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 8;
+pub const ABI_MINOR: u16 = 9;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -2042,6 +2042,19 @@ abi! {
             /// Flags from [`world_create_flag`].
             pub flags: u32,
         }
+        /// An entity as `entities_in_box` reports it. Since ABI 1.9.
+        pub struct EntityInfo {
+            /// Its UUID.
+            pub uuid: Uuid,
+            /// Its position.
+            pub pos: Vec3,
+            /// Yaw in degrees.
+            pub yaw: f32,
+            /// Pitch in degrees.
+            pub pitch: f32,
+            /// The numeric id of its type (`entity_type_name` names it).
+            pub kind: u32,
+        }
         /// What `world_info` tells about a world. Since ABI 1.8.
         pub struct WorldDetails {
             /// Size of this record in bytes.
@@ -2769,6 +2782,24 @@ abi! {
             /// not decode, [`status::NOT_FOUND`] for a player who is offline and
             /// [`status::ERROR`] while too many fed packets wait. Since ABI 1.8.
             pub packet_receive: unsafe extern "C" fn(PluginId, Uuid, Bytes, u32) -> Status,
+            /// The entities of the owned world whose bounding box intersects the box from
+            /// `min` to `max` (each side at most 2048 blocks), in the order of the world's
+            /// entity sections, optionally of one type (empty: any): writes up to `cap`
+            /// records and the total count, one call for Bukkit's `getNearbyEntities`.
+            /// Since ABI 1.9.
+            pub entities_in_box: unsafe extern "C" fn(
+                *mut Context,
+                u32,
+                Vec3,
+                Vec3,
+                Str,
+                *mut EntityInfo,
+                usize,
+                *mut usize,
+            ) -> Status,
+            /// The name of an entity type by its numeric id ([`EntityInfo::kind`]), e.g.
+            /// `minecraft:zombie`. Since ABI 1.9.
+            pub entity_type_name: unsafe extern "C" fn(PluginId, u32, *mut StrBuf) -> Status,
         }
     }
 }

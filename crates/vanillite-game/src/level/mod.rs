@@ -1036,6 +1036,17 @@ impl Level {
         }
     }
 
+    /// [`Level::block`] if the position is loaded ([`Level::is_loaded`]), with one chunk
+    /// lookup inside the build height.
+    #[inline]
+    pub fn loaded_block(&self, pos: BlockPos) -> Option<BlockState> {
+        if self.in_height(pos.y) {
+            self.chunks.accessible_block(pos).map(BlockState)
+        } else {
+            self.is_loaded(pos).then_some(block::VOID_AIR)
+        }
+    }
+
     /// The pure read view ([`view`]): reads without side effects for collision, path finding
     /// and code on other threads.
     #[inline]

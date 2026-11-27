@@ -239,9 +239,16 @@ pub fn no_collision_at(level: &Level, type_id: EntityTypeId, pos: Vec3) -> bool 
 }
 
 /// `SpawnPlacements.checkSpawnRules(type, level, SPAWNER or TRIAL_SPAWNER, pos, random)`:
-/// monsters need darkness (not for trial spawners), animals grass and light; the floor of
-/// monsters is not checked for spawners.
+/// nothing that is not allowed in Peaceful spawns there (no random drawn); monsters need
+/// darkness (not for trial spawners), animals grass and light; the floor of monsters is not
+/// checked for spawners.
 pub fn spawner_spawn_rules(level: &mut Level, kind: Kind, pos: BlockPos, trial: bool) -> bool {
+    let name = kind.type_id().info().name;
+    if level.spawner_env.difficulty == Difficulty::Peaceful
+        && !spawn::allowed_in_peaceful(name.trim_start_matches("minecraft:"))
+    {
+        return false;
+    }
     let env = level.spawner_env.env;
     let mut random = level.random().clone();
     let ok = if kind.is_monster() {

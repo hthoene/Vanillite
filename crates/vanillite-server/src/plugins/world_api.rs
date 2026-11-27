@@ -38,10 +38,7 @@ const MAX_EXHAUSTION: f32 = 40.0;
 
 /// A player or another entity of this world by UUID.
 pub(super) fn any_entity(entities: &Entities, uuid: u128) -> Result<EntityId> {
-    entities
-        .player_by_uuid(uuid)
-        .or_else(|| crate::commands::find_uuid(entities, uuid))
-        .ok_or(status::NOT_FOUND)
+    entities.store.by_uuid(uuid).ok_or(status::NOT_FOUND)
 }
 
 /// A player of this world by UUID.
@@ -351,6 +348,39 @@ pub(super) fn remove_entity(w: &mut PluginWorld<'_>, entity: u128) -> Result<()>
     }
     entities.despawn(id);
     Ok(())
+}
+
+/// The entities whose bounding box intersects the box from `min` to `max`, in section order.
+pub(super) fn entities_in_box(
+    w: &PluginWorld<'_>,
+    min: [f64; 3],
+    max: [f64; 3],
+    kind: Option<&str>,
+    found: &mut dyn FnMut(vanillite_plugin_host::EntityInfo),
+) {
+    let kind = match kind {
+        Some(name) => match EntityTypeId::by_name(&qualified(name)) {
+            Some(kind) => Some(kind),
+            None => return,
+        },
+        None => None,
+    };
+    let store = &w.0.entities().store;
+    let area = vanillite_base::Aabb::new(min[0], min[1], min[2], max[0], max[1], max[2]);
+    store.for_each_in(&area, false, |id| {
+        if let Some(e) = store.get(id)
+            && kind.is_none_or(|k| e.kind() == k)
+        {
+            let (pos, rot) = (e.pos(), e.rot());
+            found(vanillite_plugin_host::EntityInfo {
+                uuid: e.uuid(),
+                pos: [pos.x, pos.y, pos.z],
+                yaw: rot.y_rot,
+                pitch: rot.x_rot,
+                kind: u32::from(e.kind().0),
+            });
+        }
+    });
 }
 
 /// The entities whose position lies within `radius` of `center`, nearest first, through the

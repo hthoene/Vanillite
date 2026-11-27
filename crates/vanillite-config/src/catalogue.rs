@@ -502,13 +502,97 @@ rules! {
             /// budget fail and are retried later. 0 = unlimited (Vanilla).
             path_nodes_per_tick: u32 = "path-nodes-per-tick", Performance,
                 range = [0, 10_000_000], vanilla = 0, performance = 50_000;
-            /// Mobs farther than this many blocks from every player tick only every 20th tick
-            /// (activation range). Saves most of the mob tick on servers with many mobs away
-            /// from players. Deviation: such mobs move, path-find, grow up and breed at 1/20 of
-            /// Vanilla's speed (farms and breeders outside the range slow down). 0 = off
-            /// (Vanilla: every mob in simulation distance ticks).
-            activation_range: u16 = "activation-range", Performance, range = [0, 512],
-                vanilla = 0, paper = 32, spigot = 32, performance = 32;
+        }
+        /// Activation range: mobs farther from every player than their group's range (in
+        /// blocks on the X and Z axes, at any height; spectators do not count) are inactive.
+        /// An inactive mob gets a full tick only every 20th tick; in between it only ages
+        /// (babies grow up and breeding cooldowns end in time). Saves most of the mob tick on
+        /// servers with many mobs away from players. Deviation: inactive mobs move,
+        /// path-find and breed at about 1/20 of Vanilla's speed. Mobs stay active while
+        /// they are new (10 seconds), leashed, burning, hurt, in water, falling, riding or
+        /// ridden, have a target, were attacked recently or are in love, and villagers while
+        /// they panic or work (see below). Bosses always tick. 0 = the group always ticks
+        /// (Vanilla); at most 128.
+        activation: ActivationRules = "performance.activation-range" {
+            /// Range of animals (`creature` and `ambient` mobs: cows, sheep, bats, ...).
+            animals: u16 = "animals", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Range of monsters (`monster` mobs that are no raiders or flyers).
+            monsters: u16 = "monsters", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Range of raiders (pillagers, vindicators, evokers, illusioners, witches and ravagers).
+            raiders: u16 = "raiders", Performance, range = [0, 128], vanilla = 0,
+                paper = 64, spigot = 48, performance = 64;
+            /// Range of the other mobs (golems, armor stands, ...).
+            misc: u16 = "misc", Performance, range = [0, 128], vanilla = 0,
+                paper = 16, spigot = 16, performance = 16;
+            /// Range of water mobs (fish, squid, dolphins, axolotls, ...).
+            water: u16 = "water", Performance, range = [0, 128], vanilla = 0,
+                paper = 16, spigot = 16, performance = 16;
+            /// Range of villagers and wandering traders.
+            villagers: u16 = "villagers", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Range of flying monsters (ghasts, phantoms, blazes, vexes).
+            flying: u16 = "flying", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Ticks an inactive villager must have been inactive before it becomes active
+            /// while it works at its job site, so workstations keep restocking trades; 0 =
+            /// never.
+            villagers_work_immunity_after: u16 = "villagers-work-immunity-after", Performance,
+                range = [0, 12000], vanilla = 0, paper = 100, spigot = 100, performance = 100;
+            /// Ticks a working villager then stays active.
+            villagers_work_immunity_for: u16 = "villagers-work-immunity-for", Performance,
+                range = [0, 12000], vanilla = 0, paper = 20, spigot = 20, performance = 20;
+            /// Panicking villagers stay active (they flee and alarm the village, which spawns
+            /// iron golems).
+            villagers_active_for_panic: bool = "villagers-active-for-panic", Performance,
+                vanilla = false, paper = true, spigot = true, performance = true;
+            /// Ticks between the goal and target selector runs of an inactive mob between its
+            /// full ticks: it notices targets, food and partners sooner, but does not move
+            /// before its next full tick. Lower values cost more. "disabled": inactive mobs
+            /// choose goals only in their full ticks (cheapest).
+            inactive_mob_goal_selector_throttle: DisabledOr<u32> =
+                "inactive-mob-goal-selector-throttle", Performance, range = [1, 20],
+                vanilla = DisabledOr::Disabled, paper = DisabledOr::Value(10);
+        }
+        /// Wake-up plan of the activation range: mobs of a group that were inactive for
+        /// `<group>-every` ticks tick fully for `<group>-for` ticks, so breeders, villages and
+        /// far mobs still progress a little. About one mob per group and tick is woken up,
+        /// at most `<group>-max-per-tick` in one tick after ticks without any. A max of 0
+        /// wakes none.
+        wake_up: WakeUpRules = "performance.activation-range.wake-up-inactive" {
+            /// Animals woken up per tick at most.
+            animals_max_per_tick: u16 = "animals-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 4, spigot = 4, performance = 4;
+            /// Ticks animals must have been inactive before they may be woken up.
+            animals_every: u32 = "animals-every", Performance, range = [1, 1_728_000],
+                vanilla = 1200;
+            /// Ticks woken up animals stay active.
+            animals_for: u16 = "animals-for", Performance, range = [1, 12000], vanilla = 100;
+            /// Villagers woken up per tick at most.
+            villagers_max_per_tick: u16 = "villagers-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 4, spigot = 4, performance = 4;
+            /// Ticks villagers must have been inactive before they may be woken up.
+            villagers_every: u32 = "villagers-every", Performance, range = [1, 1_728_000],
+                vanilla = 600;
+            /// Ticks woken up villagers stay active.
+            villagers_for: u16 = "villagers-for", Performance, range = [1, 12000], vanilla = 100;
+            /// Monsters woken up per tick at most.
+            monsters_max_per_tick: u16 = "monsters-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 8, spigot = 8, performance = 8;
+            /// Ticks monsters must have been inactive before they may be woken up.
+            monsters_every: u32 = "monsters-every", Performance, range = [1, 1_728_000],
+                vanilla = 400;
+            /// Ticks woken up monsters stay active.
+            monsters_for: u16 = "monsters-for", Performance, range = [1, 12000], vanilla = 100;
+            /// Flying woken up per tick at most.
+            flying_max_per_tick: u16 = "flying-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 8, spigot = 8, performance = 8;
+            /// Ticks flying must have been inactive before they may be woken up.
+            flying_every: u32 = "flying-every", Performance, range = [1, 1_728_000],
+                vanilla = 200;
+            /// Ticks woken up flying stay active.
+            flying_for: u16 = "flying-for", Performance, range = [1, 12000], vanilla = 100;
         }
         /// Item entities (dropped items).
         items: ItemRules = "performance.items" {

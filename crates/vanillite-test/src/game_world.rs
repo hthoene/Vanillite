@@ -1705,7 +1705,7 @@ fn path_type_name(t: mob::path::PathType) -> String {
     out
 }
 
-/// The overworld's environment at `day` ticks of the day.
+/// The overworld's environment at `day` ticks of the day with the given weather levels.
 fn day_environment(sea_level: i32, day: i64, rain: f32, thunder: f32) -> Environment {
     Environment {
         sea_level,
