@@ -750,7 +750,9 @@ fn summon_one(
             ]),
         );
         full.insert("UUID", vanillite_game::mob::nbt::uuid_tag(uuid));
-        if !env.level.load_entity(full) {
+        // An arrow's own random starts from the seed its constructor took.
+        let seed = fresh_seed.filter(|_| vanillite_game::mob::projectile::is_arrow_kind(kind));
+        if !env.level.load_entity_seeded(full, seed) {
             return Err(failed());
         }
         let entities = &mut env.level.entities;

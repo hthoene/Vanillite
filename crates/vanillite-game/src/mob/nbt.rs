@@ -744,8 +744,12 @@ fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
     }
 }
 
-/// An arrow from entity NBT (its owner is not resolved).
-pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
+/// An arrow from entity NBT (its owner is not resolved). Its own random starts from `seed`,
+/// the seed its constructor already took, or else from the next entity seed.
+pub fn load_arrow(
+    tag: &Compound,
+    seed: Option<i64>,
+) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
     let kind = type_of(tag)?;
     if !super::projectile::is_arrow_kind(kind) {
         return None;
@@ -783,7 +787,8 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             last_state: None,
             tick_count: 0,
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
-            random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
+            random_state: LegacyRandom::new(seed.unwrap_or_else(crate::mob::new_entity_seed))
+                .state(),
             knockback: 0.0,
             fire: int(tag, "Fire").unwrap_or(0).max(0),
             touching_water: false,
