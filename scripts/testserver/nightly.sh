@@ -47,7 +47,7 @@ started_at=$(date +%s)
 
 rustup toolchain install --profile minimal > /dev/null 2>&1
 step build 30 bash -c 'cargo build --locked -q -p xtask -p vanillite-test --bins &&
-    cargo build --locked -q --profile release-fast -p vanillite-test --bin parity_soak &&
+    cargo build --locked -q --profile release-fast -p vanillite-test --bin parity_soak --bin parity_fuzz &&
     cargo test --locked -q --release -p vanillite-worldgen --test vanilla_sweep --no-run &&
     cargo test --locked -q --release -p vanillite-light --test vanilla_light_sweep --no-run'
 
@@ -66,7 +66,7 @@ step light-sweep 20 cargo xtask light sweep --seed "$(($(date -u +%s) / 86400 + 
 
 # Session replays (#152, #257): the recordings of the players on vanillite-test 30001 that no
 # nightly replayed yet, against Vanilla.
-step session-replay 50 bash scripts/testserver/replay-recordings.sh "$HOME/recordings" "$out"
+step session-replay 50 env VANILLITE_PARITY_PROFILE=release-fast bash scripts/testserver/replay-recordings.sh "$HOME/recordings" "$out"
 
 # Soak parity runs (#166): game days against Vanilla, per-tick checksums; Vanilla's run is
 # recorded once per golden key, so only a new jar, harness or scenario costs its recording.

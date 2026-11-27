@@ -39,6 +39,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use vanillite_base::BlockPos;
@@ -137,8 +138,9 @@ impl EntityObs {
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
     pub tick: u32,
-    /// Palette index per block of the region, y, z, x order.
-    pub blocks: Vec<u32>,
+    /// Palette index per block of the region, y, z, x order; shared with the frame before when
+    /// no block changed (long replays of large regions would not fit into memory otherwise).
+    pub blocks: Arc<Vec<u32>>,
     pub block_ticks: Vec<TickObs>,
     pub fluid_ticks: Vec<TickObs>,
     pub entities: Vec<EntityObs>,
@@ -228,7 +230,7 @@ impl Trace {
         {
             trace.intern(s.as_str().ok_or("palette entries are strings")?);
         }
-        let mut last: Vec<u32> = Vec::new();
+        let mut last: Arc<Vec<u32>> = Arc::default();
         for f in v.get("frames").and_then(Value::as_array).ok_or("frames")? {
             let frame = trace.frame_of(f, &last)?;
             last.clone_from(&frame.blocks);
@@ -238,7 +240,7 @@ impl Trace {
     }
 
     /// A frame of the trace from its JSON object; `last` holds the blocks of the frame before.
-    fn frame_of(&mut self, f: &Value, last: &[u32]) -> Result<Frame, String> {
+    fn frame_of(&mut self, f: &Value, last: &Arc<Vec<u32>>) -> Result<Frame, String> {
         let view = self.view_of(f)?;
         let trace = &*self;
         let volume: usize = trace.size().iter().product();
@@ -257,20 +259,24 @@ impl Trace {
                     .ok_or("run palette index")? as u32;
                 blocks.extend(std::iter::repeat_n(p, count));
             }
-            blocks
+            Arc::new(blocks)
         } else {
-            let mut blocks = last.to_vec();
-            for c in f
+            let changes = f
                 .get("changes")
                 .and_then(Value::as_array)
-                .ok_or("changes")?
-            {
-                let p = pos(c)?;
-                let i = trace.index_of(p).ok_or("change outside the region")?;
-                let state = c.get(3).and_then(Value::as_u64).ok_or("change state")?;
-                *blocks.get_mut(i).ok_or("changes before a full frame")? = state as u32;
+                .ok_or("changes")?;
+            if changes.is_empty() {
+                Arc::clone(last)
+            } else {
+                let mut blocks = Vec::clone(last);
+                for c in changes {
+                    let p = pos(c)?;
+                    let i = trace.index_of(p).ok_or("change outside the region")?;
+                    let state = c.get(3).and_then(Value::as_u64).ok_or("change state")?;
+                    *blocks.get_mut(i).ok_or("changes before a full frame")? = state as u32;
+                }
+                Arc::new(blocks)
             }
-            blocks
         };
         if blocks.len() != volume || blocks.iter().any(|&b| b as usize >= trace.palette.len()) {
             return Err(format!("frame {tick}: blocks do not match the region"));
@@ -347,7 +353,7 @@ impl Trace {
 
     /// The next frame of a streamed trace: adds the palette entries it carries; `last` holds
     /// the blocks of the frame before (empty before the first).
-    pub fn stream_frame(&mut self, line: &str, last: &[u32]) -> Result<Frame, String> {
+    pub fn stream_frame(&mut self, line: &str, last: &Arc<Vec<u32>>) -> Result<Frame, String> {
         let f: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
         if let Some(added) = f.get("palette").and_then(Value::as_array) {
             for s in added {
@@ -367,7 +373,7 @@ impl Trace {
         let mut h = Checksum::default();
         h.add(u64::from(frame.tick));
         h.add(frame.blocks.len() as u64);
-        for &b in &frame.blocks {
+        for &b in frame.blocks.iter() {
             h.add(names[b as usize]);
         }
         for list in [&frame.block_ticks, &frame.fluid_ticks] {
@@ -430,7 +436,7 @@ impl Trace {
             let _ = write!(s, "{}\n\"{p}\"", if i == 0 { "" } else { "," });
         }
         s.push_str("],\n\"frames\":[");
-        let mut last: Option<&Vec<u32>> = None;
+        let mut last: Option<&[u32]> = None;
         for (fi, f) in self.frames.iter().enumerate() {
             let _ = write!(
                 s,
@@ -465,7 +471,7 @@ impl Trace {
                     }
                 }
             }
-            last = Some(&f.blocks);
+            last = Some(f.blocks.as_slice());
             s.push_str("],\"block_ticks\":");
             write_ticks(&mut s, &f.block_ticks);
             s.push_str(",\"fluid_ticks\":");
@@ -550,7 +556,7 @@ impl Trace {
         }
         for (e, a) in self.frames.iter().zip(&actual.frames) {
             let t = e.tick;
-            for (i, (&eb, &ab)) in e.blocks.iter().zip(&a.blocks).enumerate() {
+            for (i, (&eb, &ab)) in e.blocks.iter().zip(a.blocks.iter()).enumerate() {
                 let (es, as_) = (&self.palette[eb as usize], &actual.palette[ab as usize]);
                 if es != as_ {
                     let p = self.pos_of(i);

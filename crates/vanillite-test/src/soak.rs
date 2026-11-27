@@ -422,7 +422,7 @@ fn vanilla(
     let result: Result<bool, String> = (|| {
         let mut line = String::new();
         let mut trace: Option<Trace> = None;
-        let mut last: Vec<u32> = Vec::new();
+        let mut last: std::sync::Arc<Vec<u32>> = std::sync::Arc::default();
         loop {
             line.clear();
             if reader

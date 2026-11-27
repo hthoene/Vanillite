@@ -11,7 +11,7 @@
 set -uo pipefail
 state=${1:?usage: replay-recordings.sh <state dir> <out dir>}
 out=${2:?usage: replay-recordings.sh <state dir> <out dir>}
-max_recordings=${MAX_RECORDINGS:-8}
+max_recordings=${MAX_RECORDINGS:-6}
 max_ticks=${MAX_TICKS:-6000}
 mkdir -p "$state"
 touch "$state/replayed"

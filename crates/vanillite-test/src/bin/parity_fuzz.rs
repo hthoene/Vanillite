@@ -297,9 +297,14 @@ fn evaluate(
     let started = Instant::now();
     let vanilla = record_vanilla(args, recorders, dir, &names);
     let vanilla_time = started.elapsed();
-    // Vanillite runs on all cores; scenarios are independent.
+    // Vanillite runs on all cores; scenarios are independent. Session replays are large: as
+    // many at once as recorders, so their traces fit into memory.
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let threads = if names.iter().any(|n| n.starts_with("session_")) {
+        args.jobs.max(1)
+    } else {
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+    };
     let mut outcomes: Vec<(usize, Outcome)> = std::thread::scope(|s| {
         let workers: Vec<_> = (0..threads.min(batch.len()))
             .map(|_| {

@@ -162,17 +162,21 @@ pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
     adopt_found(root)
 }
 
-/// Runs the `parity_fuzz` driver with the recorder's class path.
+/// Runs the `parity_fuzz` driver with the recorder's class path; built with the cargo profile
+/// `VANILLITE_PARITY_PROFILE` (default `dev`; the nightly replays with `release-fast`).
 fn driver(root: &Path, pass: &[&str]) -> Result<()> {
     let (classpath, agent, work_dir) = recorder(root)?;
     let out = root.join("target/parity-fuzz");
     remove_dir(&out)?;
+    let profile = std::env::var("VANILLITE_PARITY_PROFILE").unwrap_or_else(|_| "dev".to_owned());
     run(
         Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .current_dir(root)
             .args([
                 "run",
                 "-q",
+                "--profile",
+                &profile,
                 "-p",
                 "vanillite-test",
                 "--bin",

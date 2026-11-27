@@ -27,7 +27,7 @@ const MIN_Y: i32 = -64;
 const MAX_Y: i32 = 319;
 /// The largest region a replay observes (blocks per frame); a session is cut before its players
 /// leave it.
-pub const LARGE_REGION: i64 = 2_000_000;
+pub const LARGE_REGION: i64 = 1_000_000;
 
 /// Packets whose body starts with the position of the player or its vehicle (three doubles).
 const MOVES: &[&str] = &["move_player_pos", "move_player_pos_rot", "move_vehicle"];
