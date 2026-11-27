@@ -10,6 +10,7 @@
 
 pub mod boss;
 pub mod brainy;
+pub mod classic;
 pub mod companion;
 pub mod decor;
 pub mod illager;
@@ -582,6 +583,8 @@ pub trait FamilyHooks {
 pub enum Ext {
     #[default]
     None,
+    /// A classic kind with state of its own (creeper, sheep, chicken, enderman).
+    Classic(classic::State),
     Undead(undead::State),
     Illager(illager::State),
     Brainy(brainy::State),
@@ -675,7 +678,7 @@ pub fn remove_when_far_away_mob(m: &MobData, dist_sqr: f64) -> bool {
     by_family!(
         m.kind,
         if m.kind == Kind::Chicken {
-            m.chicken_jockey
+            classic::chicken(m).jockey
         } else {
             m.kind.remove_when_far_away()
         },
