@@ -196,6 +196,7 @@ These apply to the whole server.
 | `max-selector-options` | security |  | `64` | `64` | `64` | `64` | `64` | Options inside one entity selector `[...]`. Integer from 1 to 1024. Environment: `VANILLITE_COMMANDS__MAX_SELECTOR_OPTIONS`. |
 | `max-message-selectors` | security |  | `16` | `16` | `16` | `16` | `16` | Entity selectors inside one message argument. Integer from 0 to 256. Environment: `VANILLITE_COMMANDS__MAX_MESSAGE_SELECTORS`. |
 | `max-redirect-depth` | security |  | `64` | `64` | `64` | `64` | `64` | Nested redirects followed while parsing one command. Integer from 1 to 1024. Environment: `VANILLITE_COMMANDS__MAX_REDIRECT_DEPTH`. |
+| `bukkit-commands` | setting | yes | `false` | `false` | `true` | `true` | `false` | Paper's `/version` (also `/ver` and `/about`): the server's version or that of a plugin, for everyone with `bukkit.command.version` (all players by default); Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is Vanilla's command for operators. `/plugins` is always there. Environment: `VANILLITE_COMMANDS__BUKKIT_COMMANDS`. |
 
 #### `[performance.survival]`
 

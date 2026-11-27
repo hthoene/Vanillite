@@ -213,6 +213,12 @@ rules! {
             /// Nested redirects followed while parsing one command.
             max_redirect_depth: u32 = "max-redirect-depth", Security, range = [1, 1024],
                 vanilla = 64;
+            /// Paper's `/version` (also `/ver` and `/about`): the server's version or that of
+            /// a plugin, for everyone with `bukkit.command.version` (all players by default);
+            /// Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is
+            /// Vanilla's command for operators. `/plugins` is always there.
+            bukkit_commands: bool = "bukkit-commands", Setting, restart = true,
+                vanilla = false, paper = true, spigot = true;
         }
         /// Survival: time and weather.
         survival: SurvivalRules = "performance.survival" {

@@ -553,7 +553,10 @@ impl ServerBuilder {
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
-        let mut commands = crate::commands::build_dispatcher(command_limits(&config));
+        let mut commands = crate::commands::build_dispatcher(
+            command_limits(&config),
+            config.server.commands.bukkit_commands,
+        );
         plugins.register_commands(&mut commands, vanillite_game::commands::CommandId::Plugin);
         let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
         vanillite_game::player::play::install_game_data(Arc::clone(&game));
@@ -607,6 +610,7 @@ impl ServerBuilder {
             broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
             broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
+            version: self.version.clone(),
             motd: std::sync::Mutex::new(None),
             this: this.clone(),
         });
@@ -1571,6 +1575,11 @@ impl Server {
                 }
                 if properties.enable_query {
                     net.query.set(players.into_iter().map(|p| p.name).collect());
+                    net.query
+                        .set_plugins(crate::commands::plugins_cmd::query_plugins(
+                            &self.global.version,
+                            &self.global.plugins.list(),
+                        ));
                 }
             }
         }

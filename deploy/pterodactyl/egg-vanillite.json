@@ -1642,6 +1642,16 @@
       "field_type": "text"
     },
     {
+      "name": "Commands: Bukkit Commands",
+      "description": "Paper's `/version` (also `/ver` and `/about`): the server's version or that of a plugin, for everyone with `bukkit.command.version` (all players by default); Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is Vanilla's command for operators. `/plugins` is always there. default: the profile's value (vanilla profile: false). vanillite.toml: commands.bukkit-commands.",
+      "env_variable": "VANILLITE_COMMANDS__BUKKIT_COMMANDS",
+      "default_value": "default",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:default,true,false",
+      "field_type": "text"
+    },
+    {
       "name": "Chat: Max Pending Messages",
       "description": "Signed messages a player may have received without acknowledging them before it is kicked (`too_many_pending_chats`). Range: 64 to 65536. Empty: the profile's value (vanilla profile: 4096). vanillite.toml: chat.max-pending-messages.",
       "env_variable": "VANILLITE_CHAT__MAX_PENDING_MESSAGES",
