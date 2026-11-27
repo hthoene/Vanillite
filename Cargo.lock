@@ -1666,6 +1666,7 @@ dependencies = [
  "libdeflater",
  "log",
  "lz4_flex",
+ "serde_json",
  "twox-hash",
  "vanillite-base",
  "vanillite-chunk",
