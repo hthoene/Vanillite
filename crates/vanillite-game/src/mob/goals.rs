@@ -15,6 +15,8 @@ use super::{Tick, combat, kinds, nav, projectile};
 use crate::survival::damage::tag;
 use crate::survival::rules::{Difficulty, Rule};
 
+pub mod plugin;
+
 /// `Goal.Flag` bits.
 pub mod flag {
     pub const MOVE: u8 = 1;
@@ -509,76 +511,168 @@ fn start_slot(t: &mut Tick<'_, '_>, which: Which, i: usize) {
     with_goal(t, which, i, start);
 }
 
-/// `GoalSelector.tick`.
-pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
+/// One goal of a selector as the selector sees it: the Vanilla slots first, then the mob's
+/// plugin goals ([`plugin`]), as Paper appends custom goals to `availableGoals`.
+#[derive(Clone, Copy, Debug)]
+struct Unit {
+    running: bool,
+    flags: u8,
+    priority: i32,
+    interruptable: bool,
+    every_tick: bool,
+}
+
+/// Goal `i` of a selector whose first `n` goals are its Vanilla slots.
+fn unit(t: &Tick<'_, '_>, which: Which, n: usize, i: usize) -> Option<Unit> {
+    if i >= n {
+        return plugin::unit(t, which, i - n);
+    }
+    let slot = selector_ref(t, which).slots.get(i)?;
+    Some(Unit {
+        running: slot.running,
+        flags: slot.goal.flags(),
+        priority: i32::from(slot.priority),
+        interruptable: slot.goal.interruptable(),
+        every_tick: slot.goal.every_tick(),
+    })
+}
+
+fn unit_can_use(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) -> bool {
+    if i >= n {
+        return plugin::can_use(t, which, i - n);
+    }
+    with_goal(t, which, i, can_use).unwrap_or(false)
+}
+
+fn unit_can_continue(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) -> bool {
+    if i >= n {
+        return plugin::can_continue(t, which, i - n);
+    }
+    with_goal(t, which, i, can_continue).unwrap_or(false)
+}
+
+fn start_unit(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) {
+    if i >= n {
+        plugin::start(t, which, i - n);
+    } else {
+        start_slot(t, which, i);
+    }
+}
+
+fn stop_unit(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) {
+    if i >= n {
+        plugin::stop(t, which, i - n);
+    } else {
+        stop_slot(t, which, i);
+    }
+}
+
+fn tick_unit(t: &mut Tick<'_, '_>, which: Which, n: usize, i: usize) {
+    if i >= n {
+        plugin::tick(t, which, i - n);
+    } else {
+        with_goal(t, which, i, tick);
+    }
+}
+
+/// `GoalSelector.removeAllGoals` of the Vanilla goals a plugin cleared (`mob_goals_clear`):
+/// the running ones stop, the locks of the plugin goals move with them.
+fn clear_vanilla(t: &mut Tick<'_, '_>, which: Which) {
+    if !plugin::take_clear(t, which) {
+        return;
+    }
     let n = selector_ref(t, which).slots.len();
     for i in 0..n {
         if !t.exists() {
             return;
         }
-        let (running, flags, disabled) = {
-            let s = selector_ref(t, which);
-            let slot = s.slots[i];
-            (slot.running, slot.goal.flags(), s.disabled)
+        stop_slot(t, which, i);
+    }
+    if !t.exists() {
+        return;
+    }
+    let s = selector(t, which);
+    s.slots.clear();
+    for l in &mut s.locked {
+        if *l != NO_SLOT {
+            let i = usize::from(*l);
+            *l = if i < n {
+                NO_SLOT
+            } else {
+                u8::try_from(i - n).unwrap_or(NO_SLOT)
+            };
+        }
+    }
+}
+
+/// `GoalSelector.tick`.
+pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
+    clear_vanilla(t, which);
+    let n = selector_ref(t, which).slots.len();
+    let total = n + plugin::count(t, which);
+    for i in 0..total {
+        if !t.exists() {
+            return;
+        }
+        let disabled = selector_ref(t, which).disabled;
+        let Some(u) = unit(t, which, n, i) else {
+            continue;
         };
-        if running {
-            let stop_it =
-                flags & disabled != 0 || !with_goal(t, which, i, can_continue).unwrap_or(false);
+        if u.running {
+            let stop_it = u.flags & disabled != 0 || !unit_can_continue(t, which, n, i);
             if stop_it {
-                stop_slot(t, which, i);
+                stop_unit(t, which, n, i);
             }
         }
     }
     if !t.exists() {
         return;
     }
-    {
-        let s = selector(t, which);
-        for l in &mut s.locked {
-            if *l != NO_SLOT && !s.slots.get(usize::from(*l)).is_some_and(|x| x.running) {
-                *l = NO_SLOT;
-            }
+    for b in 0..4 {
+        let l = selector_ref(t, which).locked[b];
+        if l != NO_SLOT && !unit(t, which, n, usize::from(l)).is_some_and(|x| x.running) {
+            selector(t, which).locked[b] = NO_SLOT;
         }
     }
-    for i in 0..n {
+    for i in 0..total {
         if !t.exists() {
             return;
         }
-        let (running, flags, priority, disabled, replaceable) = {
-            let s = selector_ref(t, which);
-            let slot = s.slots[i];
-            let flags = slot.goal.flags();
+        let Some(u) = unit(t, which, n, i) else {
+            continue;
+        };
+        let (disabled, replaceable) = {
+            let view: &Tick<'_, '_> = t;
+            let s = selector_ref(view, which);
             let replaceable = (0..4).all(|b| {
-                if flags & (1 << b) == 0 {
+                if u.flags & (1 << b) == 0 {
                     return true;
                 }
                 let l = s.locked[b];
                 // `canBeReplacedBy`: interruptable and a lower priority.
                 l == NO_SLOT
-                    || s.slots
-                        .get(usize::from(l))
-                        .is_none_or(|o| o.goal.interruptable() && slot.priority < o.priority)
+                    || unit(view, which, n, usize::from(l))
+                        .is_none_or(|o| o.interruptable && u.priority < o.priority)
             });
-            (slot.running, flags, slot.priority, s.disabled, replaceable)
+            (s.disabled, replaceable)
         };
-        let _ = priority;
-        if running || flags & disabled != 0 || !replaceable {
+        if u.running || u.flags & disabled != 0 || !replaceable {
             continue;
         }
-        if !with_goal(t, which, i, can_use).unwrap_or(false) {
+        if !unit_can_use(t, which, n, i) {
             continue;
         }
         for b in 0..4 {
-            if flags & (1 << b) == 0 {
+            if u.flags & (1 << b) == 0 {
                 continue;
             }
             let current = selector_ref(t, which).locked[b];
             if current != NO_SLOT {
-                stop_slot(t, which, usize::from(current));
+                stop_unit(t, which, n, usize::from(current));
             }
             selector(t, which).locked[b] = u8::try_from(i).unwrap_or(NO_SLOT);
         }
-        start_slot(t, which, i);
+        start_unit(t, which, n, i);
     }
     tick_running(t, which, true);
 }
@@ -586,15 +680,16 @@ pub fn tick_selector(t: &mut Tick<'_, '_>, which: Which) {
 /// `GoalSelector.tickRunningGoals`.
 pub fn tick_running(t: &mut Tick<'_, '_>, which: Which, force: bool) {
     let n = selector_ref(t, which).slots.len();
-    for i in 0..n {
+    let total = n + plugin::count(t, which);
+    for i in 0..total {
         if !t.exists() || t.mob_ref().removed {
             return;
         }
-        let Some(slot) = selector_ref(t, which).slots.get(i).copied() else {
+        let Some(u) = unit(t, which, n, i) else {
             return;
         };
-        if slot.running && (force || slot.goal.every_tick()) {
-            with_goal(t, which, i, tick);
+        if u.running && (force || u.every_tick) {
+            tick_unit(t, which, n, i);
         }
     }
 }

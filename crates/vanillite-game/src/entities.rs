@@ -135,6 +135,9 @@ pub struct Entities {
     /// Decoration kind data: item frames, paintings, cushions, markers, interactions and
     /// displays (see [`crate::decoration`]).
     pub decor: Dense<crate::decoration::Decor>,
+    /// The goals plugins added to mobs, out of line: mobs without any keep Vanilla's goals
+    /// (see [`crate::mob::goals::plugin`]).
+    pub plugin_goals: crate::mob::goals::plugin::PluginGoals,
 }
 
 /// Who rides what (`Entity.vehicle`, `Entity.passengers`).
@@ -654,6 +657,10 @@ impl Entities {
         }
         self.tags.remove(&id);
         self.persistent.remove(&id);
+        if !self.plugin_goals.is_empty() {
+            // Dropping them frees the plugins' data.
+            self.plugin_goals.remove_mob(id);
+        }
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
             if removed.kind == ids::ENDER_DRAGON {
