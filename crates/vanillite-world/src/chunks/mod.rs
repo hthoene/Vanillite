@@ -318,6 +318,9 @@ struct Holder {
     /// Mirrors `Chunks::visibility` containing this position (the chunk is accessible), so
     /// [`Chunks::accessible_block`] needs one map lookup.
     accessible: bool,
+    /// Mirrors `chunk` being a full chunk ([`Holder::sync_full`] after every change of it), so
+    /// the ticking checks of the eight neighbours read the holder only, not the chunk.
+    full: bool,
 }
 
 impl Holder {
@@ -329,6 +332,19 @@ impl Holder {
 
     fn status(&self) -> Option<ChunkStatus> {
         self.chunk.as_ref().map(|c| c.status)
+    }
+
+    /// Follows a change of the chunk or its status in [`Holder::full`].
+    #[inline]
+    fn sync_full(&mut self) {
+        self.full = self.status() == Some(ChunkStatus::Full);
+    }
+
+    /// Whether the chunk is full, from the mirror.
+    #[inline]
+    fn is_full(&self) -> bool {
+        debug_assert_eq!(self.full, self.status() == Some(ChunkStatus::Full));
+        self.full
     }
 
     /// Marks the chunk changed; the first change since the last save queues it for the next
@@ -864,12 +880,10 @@ impl Chunks {
     /// Whether a chunk is full and loaded to block ticking (Vanilla's ticking chunk: its
     /// ticking future completes once the 3 × 3 chunks around it are full).
     fn is_ticking_chunk(&self, pos: ChunkPos) -> bool {
-        self.holders.get(&pos).is_some_and(|h| {
-            h.level <= BLOCK_TICKING_LEVEL
-                && h.chunk
-                    .as_ref()
-                    .is_some_and(|c| c.status == ChunkStatus::Full)
-        }) && neighbours_full(&self.holders, pos)
+        self.holders
+            .get(&pos)
+            .is_some_and(|h| h.level <= BLOCK_TICKING_LEVEL && h.is_full())
+            && neighbours_full(&self.holders, pos)
     }
 
     /// Whether scheduled ticks run in a chunk (`isPositionTickingWithEntitiesLoaded`).
@@ -1543,6 +1557,7 @@ impl Chunks {
         }
         if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.chunk = Some(Arc::new(chunk));
+            holder.sync_full();
             holder.busy = false;
             holder.entities_stored = entities_stored;
             if dirty {
@@ -1598,6 +1613,7 @@ impl Chunks {
                         current.chunk.light_mut().merge_max(target.chunk.light());
                         current.light_on = true;
                         current.status = ChunkStatus::Light;
+                        holder.sync_full();
                         holder.busy = false;
                         holder.touch(pos, &mut self.changed);
                     }
@@ -1661,6 +1677,7 @@ impl Chunks {
     fn put_back(&mut self, pos: ChunkPos, chunk: Arc<ProtoChunk>) {
         if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.chunk = Some(chunk);
+            holder.sync_full();
             holder.touch(pos, &mut self.changed);
         }
     }
@@ -1878,6 +1895,7 @@ impl Chunks {
         if let Some(encoding) = self.encoding.get(&pos) {
             // A save being encoded answers the load.
             holder.chunk = Some(Arc::clone(encoding));
+            holder.sync_full();
             holder.entities_stored = true;
             holder.touch(pos, &mut self.changed);
             holder.touch_entities(pos, &mut self.changed);
@@ -1924,6 +1942,7 @@ impl Chunks {
                         chunk.generation = None;
                         self.generated_full.push(pos);
                     }
+                    holder.sync_full();
                     holder.touch(pos, &mut self.changed);
                     if next == ChunkStatus::Spawn {
                         self.generated.push(pos);
@@ -2809,6 +2828,7 @@ impl Chunks {
             return None;
         }
         let result = f(Arc::make_mut(chunk));
+        holder.sync_full();
         holder.dirty = true;
         // The packet cache drops chunks with block changes.
         self.block_changes
@@ -3045,13 +3065,9 @@ fn tick_check(
     pos: ChunkPos,
 ) -> bool {
     simulation.level(pos) <= BLOCK_TICKING_LEVEL
-        && holders.get(&pos).is_some_and(|h| {
-            h.entities_loaded
-                && h.level <= BLOCK_TICKING_LEVEL
-                && h.chunk
-                    .as_ref()
-                    .is_some_and(|c| c.status == ChunkStatus::Full)
-        })
+        && holders
+            .get(&pos)
+            .is_some_and(|h| h.entities_loaded && h.level <= BLOCK_TICKING_LEVEL && h.is_full())
         && neighbours_full(holders, pos)
 }
 
@@ -3064,7 +3080,7 @@ fn neighbours_full(holders: &FxHashMap<ChunkPos, Holder>, pos: ChunkPos) -> bool
             (dx == 0 && dz == 0)
                 || holders
                     .get(&ChunkPos::new(pos.x + dx, pos.z + dz))
-                    .is_some_and(|h| h.status() == Some(ChunkStatus::Full))
+                    .is_some_and(Holder::is_full)
         })
     })
 }
