@@ -181,6 +181,10 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                 let m = t.mob();
                 m.air = (m.air + 4).min(300);
             }
+            if t.exists() {
+                let id = t.id;
+                crate::riding::dismount_underwater(t.ents, t.env, id);
+            }
         } else if t.mob_ref().air < 300 {
             let m = t.mob();
             m.air = (m.air + 4).min(300);
@@ -807,7 +811,15 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     }
     if t.mob_ref().kind.burns_in_daylight() && t.mob_ref().is_alive() && is_sun_burn_tick(t) {
         // `burnUndead`: a helmet takes the sun (and wears), else `igniteForSeconds(8)`.
-        let head = crate::item::EquipmentSlot::Head;
+        // `sunProtectionSlot`: the body armour of zombie horses and zombie nautiluses.
+        let head = if matches!(
+            t.mob_ref().kind,
+            super::Kind::ZombieHorse | super::Kind::ZombieNautilus
+        ) {
+            crate::item::EquipmentSlot::Body
+        } else {
+            crate::item::EquipmentSlot::Head
+        };
         let helmet = t.mob_ref().equipment.get(head).clone();
         if helmet.is_empty() {
             let m = t.mob();
@@ -1133,7 +1145,14 @@ fn travel_in_air(t: &mut Tick<'_, '_>, input: Vec3) {
         return;
     }
     let mut movement = t.velocity();
-    if (t.mob_ref().horizontal_collision || t.mob_ref().jumping) && climbable {
+    // `onClimbable() || wasInPowderSnow && PowderSnowBlock.canEntityWalkOnPowderSnow(this)`.
+    let snow_climb = t.mob_ref().was_in_powder_snow && {
+        let m = t.mob_ref();
+        crate::effect::entity_in_tag(m.kind.type_id(), "minecraft:powder_snow_walkable_mobs")
+            || m.equipment.get(crate::item::EquipmentSlot::Feet).item
+                == vanillite_data::item::ids::LEATHER_BOOTS.0
+    };
+    if (t.mob_ref().horizontal_collision || t.mob_ref().jumping) && (climbable || snow_climb) {
         movement.y = 0.2;
     }
     let mut y = movement.y;

@@ -1,0 +1,106 @@
+{
+  "description": "Leashes read from NBT (Leashable.restoreLeashFromSave): a cow tied to a no-AI pig and a trader llama tied to its wandering trader find their holders by UUID (any entity, not only players); a sheep whose holder never appears drops a lead after 100 ticks. The llama follows at followLeashSpeed 2.0.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 115,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:pig 4.5 -60 4.5 {UUID:[I;1,2,3,4],NoAI:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:wandering_trader 4.5 -60 11.5 {UUID:[I;5,6,7,8],NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:cow 8.5 -60 4.5 {leash:{UUID:[I;1,2,3,4]}}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:trader_llama 9.5 -60 11.5 {leash:{UUID:[I;5,6,7,8]}}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:sheep 11.5 -60 8.5 {leash:{UUID:[I;9,9,9,9]}}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

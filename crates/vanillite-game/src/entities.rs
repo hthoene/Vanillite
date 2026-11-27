@@ -124,6 +124,8 @@ pub struct Entities {
     pub players_by_uuid: FxHashMap<u128, EntityId>,
     /// Leashed mobs and what holds them (`leashHolder`): a player, mob or leash knot.
     pub leashes: FxHashMap<EntityId, EntityId>,
+    /// `LeashData.angularMomentum` of the leashed entities.
+    pub leash_momentum: FxHashMap<EntityId, f64>,
     /// Players that left for another world ([`Entities::despawn_player`]) by their id here,
     /// with their UUID and the game time they left: the world's boss bars hold the id until
     /// their next player update and still reach the player through it, like Vanilla's

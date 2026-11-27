@@ -106,6 +106,14 @@ fn set_flag(m: &mut MobData, bit: u8, on: bool) {
     }
 }
 
+/// `AbstractHorse.onElasticLeashPull`: a pulled horse stops eating (`setEating(false)`).
+pub fn stop_eating(t: &mut Tick<'_, '_>) {
+    if has_flag(t.mob_ref(), EATING) {
+        set_flag(t.mob(), EATING, false);
+        t.core_mut().mark_data_dirty();
+    }
+}
+
 fn has_flag(m: &MobData, bit: u8) -> bool {
     st(m).horse_flags & bit != 0
 }
@@ -1087,13 +1095,6 @@ pub fn skeleton_spawn_rules(level: &Level, pos: BlockPos, reason: SpawnReason) -
     } else {
         super::animal_spawn_rules(level, pos, reason)
     }
-}
-
-/// The zombie horse spawns like a monster in the dark (`Monster.checkMonsterSpawnRules`
-/// is not used; it uses the animal rules on grass at night by its spawn list).
-pub fn zombie_spawn_rules(level: &Level, pos: BlockPos, reason: SpawnReason) -> bool {
-    let below = level.block(BlockPos::new(pos.x, pos.y - 1, pos.z));
-    below.block() == vanillite_data::block::ids::GRASS_BLOCK || reason != SpawnReason::Natural
 }
 
 // --- Goals --------------------------------------------------------------------------------

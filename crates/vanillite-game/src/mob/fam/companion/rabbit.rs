@@ -71,6 +71,7 @@ pub fn register_goals(m: &mut MobData) {
     set_speed_modifier(m, 0.0);
     let g = &mut m.goals;
     g.add(1, G::Float);
+    g.add(1, fam(FamGoal::ClimbPowderSnow));
     g.add(1, fam(FamGoal::Rabbit(Goal::Panic { pos: Vec3::ZERO })));
     g.add(2, G::breed(0.8));
     g.add(3, G::tempt(1.0, TemptItems::Tag("minecraft:rabbit_food")));
@@ -390,7 +391,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if !panics {
                 return false;
             }
-            match crate::mob::randompos::default_pos(t, 5, 4) {
+            match crate::mob::animal::panic_pos(t) {
                 Some(p) => {
                     *pos = p;
                     true

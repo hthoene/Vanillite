@@ -631,6 +631,10 @@ pub(crate) fn summon_for(
             // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
             return Err(failed());
         }
+        // `Entity.load` of the given data: its `UUID` replaces the constructor's.
+        if matches!(nbt.get("UUID"), Some(Tag::IntArray(i)) if i.len() == 4) {
+            env.level.entities.store.set_uuid(id, uuid);
+        }
         // The given tags on top of what the mob has (like `data merge`).
         let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
         super::data_cmd::merge_compound(&mut loaded, nbt);

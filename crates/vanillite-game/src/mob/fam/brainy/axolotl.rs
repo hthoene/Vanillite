@@ -212,8 +212,44 @@ fn find_attack_target(t: &mut Tick<'_, '_>) -> Option<EntityId> {
     brain_ref(t).entity(M::NearestAttackable)
 }
 
-/// `Axolotl.onStopAttacking`: killing for a nearby player buffs it (#74: player effects).
-fn on_stop_attacking(_t: &mut Tick<'_, '_>, _target: EntityId) {}
+/// `Axolotl.onStopAttacking`: a target that died to a player within 20 blocks gives that
+/// player `applySupportingEffects`.
+fn on_stop_attacking(t: &mut Tick<'_, '_>, target: EntityId) {
+    let now = t.game_time();
+    let Some(player) = t
+        .ents
+        .mob(target)
+        .filter(|m| m.is_dead_or_dying() && m.last_damage_source(now).is_some())
+        .and_then(|m| m.last_damage_by)
+        .filter(|&p| t.ents.player(p).is_some())
+    else {
+        return;
+    };
+    let area = t.aabb().inflate(20.0, 20.0, 20.0);
+    if !t
+        .ents
+        .store
+        .get(player)
+        .is_some_and(|e| e.aabb().intersects(&area))
+    {
+        return;
+    }
+    // `applySupportingEffects`: Regeneration (100 ticks more, up to 2400) unless it lasts
+    // longer than 2399 ticks, and no Mining Fatigue.
+    use crate::effect::{EffectInstance, MobEffect};
+    let regen = t
+        .ents
+        .player(player)
+        .and_then(|p| p.survival.effects.get(MobEffect::REGENERATION).cloned());
+    if regen.as_ref().is_none_or(|r| r.ends_within(2399)) {
+        let previous = regen.map_or(0, |r| r.duration);
+        let new = EffectInstance::new(MobEffect::REGENERATION, (100 + previous).min(2400), 0);
+        crate::effect::living::add_to_entity(t.level, t.ents, t.env, t.cx, player, new);
+    }
+    crate::effect::living::with_host(t.level, t.ents, t.env, t.cx, player, |host| {
+        host.effects().remove(MobEffect::MINING_FATIGUE)
+    });
+}
 
 /// `AxolotlAttackablesSensor`.
 pub fn attackables_sensor(t: &mut Tick<'_, '_>) {

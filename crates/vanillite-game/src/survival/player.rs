@@ -2078,7 +2078,8 @@ pub fn do_tick_end(
     crate::elytra::update_player_pose(entity, player.survival.spin_attack.is_some());
     player.survival.last_box = Some(entity.as_ref().aabb());
     // `Player.aiStep`: `handleShoulderEntities`.
-    super::shoulder::handle(entity, player, env, false);
+    let sleeping = player.survival.sleeping_pos.is_some();
+    super::shoulder::handle(entity, player, env, sleeping);
     // `FoodData.tick`.
     let s = &mut player.survival;
     let action = s.food.tick(

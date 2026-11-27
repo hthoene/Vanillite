@@ -501,6 +501,7 @@ fn hurt_mob_inner(
     }
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
+        m.last_damage_by = source.cause;
     }
     // `onMobHurt` of the effects (Infested).
     let view = ents.store.get(target).map(|e| (e.rot(), e.dims().height));

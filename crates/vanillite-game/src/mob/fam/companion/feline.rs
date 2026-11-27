@@ -56,13 +56,107 @@ pub enum Goal {
         target: Option<EntityId>,
         attack_time: i32,
     },
+    /// `Cat.CatTemptGoal` (scares, only untamed cats, a selected player is not scary).
+    CatTempt(Tempt),
+    /// `Ocelot.OcelotTemptGoal` (scares while not trusting).
+    OcelotTempt(Tempt),
+}
+
+/// The state of a feline `TemptGoal(canScare = true)`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Tempt {
+    player: Option<EntityId>,
+    calm_down: i32,
+    /// `px`, `py`, `pz`: the player's position while it is farther than 6 blocks.
+    at: Vec3,
+    /// `pRotX`, `pRotY`.
+    rot: (f32, f32),
+    /// `CatTemptGoal.selectedPlayer`.
+    selected: Option<EntityId>,
+}
+
+/// Whether the feline's tempt goal runs.
+pub fn is_tempted(m: &MobData) -> bool {
+    m.goals.slots.iter().any(|s| {
+        s.running
+            && matches!(
+                s.goal,
+                G::Fam(crate::mob::fam::FamGoal::Companion(FamGoal::Feline(
+                    Goal::CatTempt(_) | Goal::OcelotTempt(_)
+                )))
+            )
+    })
+}
+
+/// `TemptGoal.canUse` with `CatTemptGoal`'s `!isTame`.
+fn tempt_can_use(t: &mut Tick<'_, '_>, s: &mut Tempt, cat: bool) -> bool {
+    if s.calm_down > 0 {
+        s.calm_down -= 1;
+        return false;
+    }
+    let food = if cat {
+        "minecraft:cat_food"
+    } else {
+        "minecraft:ocelot_food"
+    };
+    s.player = crate::mob::goals::tempting_player(t, TemptItems::Tag(food));
+    s.player.is_some() && !(cat && t.mob_ref().tame)
+}
+
+/// `TemptGoal.canContinueToUse` with `canScare`: the player must stand still within 6
+/// blocks.
+fn tempt_can_continue(t: &mut Tick<'_, '_>, s: &mut Tempt, cat: bool) -> bool {
+    let scare = if cat {
+        !(s.selected.is_some() && s.selected == s.player)
+    } else {
+        !st(t.mob_ref()).trusting
+    };
+    if scare && let Some(e) = s.player.and_then(|p| t.ents.store.get(p)) {
+        let (pos, rot) = (e.pos(), e.rot());
+        if t.pos().distance_to_sqr(pos) < 36.0 {
+            if pos.distance_to_sqr(s.at) > 0.010_000_000_000_000_002 {
+                return false;
+            }
+            if (rot.x_rot - s.rot.0).abs() > 5.0 || (rot.y_rot - s.rot.1).abs() > 5.0 {
+                return false;
+            }
+        } else {
+            s.at = pos;
+        }
+        s.rot = (rot.x_rot, rot.y_rot);
+    }
+    tempt_can_use(t, s, cat)
+}
+
+/// `TemptGoal.tick` (stop distance 2.5) and `CatTemptGoal`'s player selection.
+fn tempt_tick(t: &mut Tick<'_, '_>, s: &mut Tempt, cat: bool) {
+    if let Some(o) = s.player.and_then(|p| t.other(p)) {
+        // `getMaxHeadYRot() + 20`, `getMaxHeadXRot()`.
+        let y_max = crate::mob::kinds::max_head_y_rot(t.mob_ref()) + 20.0;
+        let x_max = crate::mob::kinds::max_head_x_rot(t.mob_ref());
+        t.mob()
+            .look
+            .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), y_max, x_max);
+        if o.pos.distance_to_sqr(t.pos()) < 6.25 {
+            t.mob().nav.stop();
+        } else {
+            nav::move_to_entity(t, o.pos, 1, 0.6);
+        }
+    }
+    if cat {
+        if s.selected.is_none() && t.mob().random.next_int_bounded(reduced(600)) == 0 {
+            s.selected = s.player;
+        } else if t.mob().random.next_int_bounded(reduced(500)) == 0 {
+            s.selected = None;
+        }
+    }
 }
 
 pub fn flags(g: &Goal) -> u8 {
     match g {
         Goal::RelaxOnOwner { .. } => 0,
         Goal::LieOnBlock(_) | Goal::SitOnBlock(_) => flag::MOVE | flag::JUMP,
-        Goal::Attack { .. } => flag::MOVE | flag::LOOK,
+        Goal::Attack { .. } | Goal::CatTempt(_) | Goal::OcelotTempt(_) => flag::MOVE | flag::LOOK,
     }
 }
 
@@ -89,11 +183,6 @@ fn survival_player(t: &Tick<'_, '_>, id: EntityId) -> bool {
 /// `registerGoals` of cats and ocelots (with the avoid goal `reassess*Goals` adds).
 pub fn register_goals(m: &mut MobData) {
     let cat = m.kind == Kind::Cat;
-    let food = if cat {
-        "minecraft:cat_food"
-    } else {
-        "minecraft:ocelot_food"
-    };
     let g = &mut m.goals;
     if cat {
         g.add(1, G::Float);
@@ -114,7 +203,7 @@ pub fn register_goals(m: &mut MobData) {
                 on_bed_ticks: 0,
             })),
         );
-        g.add(4, G::tempt(0.6, TemptItems::Tag(food)));
+        g.add(4, fam(FamGoal::Feline(Goal::CatTempt(Tempt::default()))));
         let mut lie = MoveToBlock::new(1.1, 8, 6);
         lie.vertical_search_start = -2;
         g.add(5, fam(FamGoal::Feline(Goal::LieOnBlock(lie))));
@@ -127,7 +216,7 @@ pub fn register_goals(m: &mut MobData) {
         );
     } else {
         g.add(1, G::Float);
-        g.add(3, G::tempt(0.6, TemptItems::Tag(food)));
+        g.add(3, fam(FamGoal::Feline(Goal::OcelotTempt(Tempt::default()))));
     }
     g.add(
         if cat { 8 } else { 7 },
@@ -258,12 +347,7 @@ pub fn cat_ambient_sound(m: &mut MobData) -> Option<&'static str> {
 
 /// `Cat.tick`: begging while tempted and purring while lying.
 pub fn cat_tick(t: &mut Tick<'_, '_>) {
-    let tempted = t
-        .mob_ref()
-        .goals
-        .slots
-        .iter()
-        .any(|s| s.running && matches!(s.goal, G::Tempt { .. }));
+    let tempted = is_tempted(t.mob_ref());
     if tempted && !t.mob_ref().tame && t.mob_ref().tick_count % 100 == 0 {
         let s = cat_sound(t.mob_ref(), "beg_for_food");
         crate::mob::kinds::play_sound(t, s, 1.0, 1.0);
@@ -379,11 +463,7 @@ pub fn ocelot_interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let Some(m) = ix.ents.mob(ix.target) else {
         return Interaction::Pass;
     };
-    let tempted = m
-        .goals
-        .slots
-        .iter()
-        .any(|s| s.running && matches!(s.goal, G::Tempt { .. }));
+    let tempted = is_tempted(m);
     let close = match (ix.ents.store.get(ix.player), ix.ents.store.get(ix.target)) {
         (Some(p), Some(o)) => p.pos().distance_to_sqr(o.pos()) < 9.0,
         _ => false,
@@ -601,6 +681,8 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             *target = t.mob_ref().target;
             target.is_some()
         }
+        Goal::CatTempt(s) => tempt_can_use(t, s, true),
+        Goal::OcelotTempt(s) => tempt_can_use(t, s, false),
     }
 }
 
@@ -626,6 +708,8 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             }
             !t.mob_ref().nav.is_done() || t.mob_ref().target.is_some()
         }
+        Goal::CatTempt(s) => tempt_can_continue(t, s, true),
+        Goal::OcelotTempt(s) => tempt_can_continue(t, s, false),
     }
 }
 
@@ -643,14 +727,28 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             crate::mob::tame::set_in_sitting_pose(t, false);
         }
         Goal::Attack { .. } => {}
+        Goal::CatTempt(s) | Goal::OcelotTempt(s) => {
+            if let Some(p) = s.player.and_then(|p| t.ents.store.get(p)) {
+                s.at = p.pos();
+            }
+        }
     }
 }
 
 pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
     match g {
-        Goal::RelaxOnOwner { on_bed_ticks, .. } => {
+        Goal::RelaxOnOwner {
+            owner,
+            on_bed_ticks,
+            ..
+        } => {
             set_lying(t, false);
-            // The morning gift needs the owner's sleep timer, which players do not track yet.
+            let slept = owner
+                .and_then(|o| t.ents.player(o))
+                .is_some_and(|p| p.survival.sleep_timer >= 100);
+            if slept && t.env.random.next_float() < t.cx.env.cat_waking_up_gift_chance {
+                give_morning_gift(t);
+            }
             *on_bed_ticks = 0;
             set_relax(t, false);
             t.mob().nav.stop();
@@ -661,6 +759,52 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *target = None;
             t.mob().nav.stop();
         }
+        Goal::CatTempt(s) | Goal::OcelotTempt(s) => {
+            s.player = None;
+            t.mob().nav.stop();
+            s.calm_down = reduced(100);
+        }
+    }
+}
+
+/// `CatRelaxOnOwnerGoal.giveMorningGift`: the cat teleports near its spot (or its leash
+/// holder) and drops `gameplay/cat_morning_gift` in front of it.
+fn give_morning_gift(t: &mut Tick<'_, '_>) {
+    let around = crate::mob::tame::leash_holder(t.ents, t.id)
+        .and_then(|h| t.ents.store.get(h).map(|e| e.pos()))
+        .unwrap_or_else(|| t.pos());
+    let p = BlockPos::containing(around.x, around.y, around.z);
+    let r = &mut t.mob().random;
+    let x = p.x + r.next_int_bounded(11) - 5;
+    let y = p.y + r.next_int_bounded(5) - 2;
+    let z = p.z + r.next_int_bounded(11) - 5;
+    let to = Vec3::new(f64::from(x), f64::from(y), f64::from(z));
+    let id = t.id;
+    crate::mob::teleport::random_teleport(
+        t.level,
+        t.ents,
+        id,
+        to,
+        "minecraft:cat_does_not_teleport_to",
+    );
+    let at = t.block_pos();
+    let body = t.mob_ref().y_body_rot * (std::f32::consts::PI / 180.0);
+    let pos = Vec3::new(
+        f64::from(at.x) - f64::from(vanillite_base::math::sin(f64::from(body))),
+        f64::from(at.y),
+        f64::from(at.z) + f64::from(vanillite_base::math::cos(f64::from(body))),
+    );
+    for stack in crate::mob::fam::brainy::gift_loot(t, "minecraft:gameplay/cat_morning_gift") {
+        let (uuid, y_rot, velocity, random) = crate::mob::new_item_entity();
+        t.env.out.push(crate::survival::Effect::DropItem {
+            random,
+            uuid,
+            pos,
+            velocity,
+            y_rot,
+            pickup_delay: 0,
+            stack,
+        });
     }
 }
 
@@ -736,5 +880,7 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 crate::mob::combat::mob_attack(t, id);
             }
         }
+        Goal::CatTempt(s) => tempt_tick(t, s, true),
+        Goal::OcelotTempt(s) => tempt_tick(t, s, false),
     }
 }
