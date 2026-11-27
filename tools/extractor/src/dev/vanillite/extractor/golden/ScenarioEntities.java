@@ -85,6 +85,31 @@ final class ScenarioEntities {
   private Map<String, Integer> packetIds;
   /** Every scenario player, for their connection tick. */
   private final List<ServerPlayer> tickedPlayers = new ArrayList<>();
+  /** The channel of every scenario player's connection, by name ({@code "client_view"}). */
+  private final Map<String, EmbeddedChannel> channels = new LinkedHashMap<>();
+  /** Vanilla's clientbound play codec, for {@link #packets()}. */
+  private net.minecraft.network.ProtocolInfo<
+          net.minecraft.network.protocol.game.ClientGamePacketListener>
+      clientbound;
+  /**
+   * The clientbound packets the client view normalizes ({@code client_view.rs} in {@code
+   * vanillite-test}); the others are left out of the trace.
+   */
+  private static final java.util.Set<String> VIEW_PACKETS =
+      java.util.Set.of(
+          "add_entity",
+          "remove_entities",
+          "boss_event",
+          "login",
+          "respawn",
+          "block_update",
+          "section_blocks_update",
+          "player_abilities",
+          "game_event",
+          "container_set_content",
+          "container_set_slot",
+          "set_player_inventory",
+          "set_held_slot");
 
   ScenarioEntities(ParityServer server, ServerLevel level) {
     this.server = server;
@@ -135,7 +160,7 @@ final class ScenarioEntities {
     ServerPlayer player =
         new ServerPlayer(server, level, cookie.gameProfile(), cookie.clientInformation());
     Connection connection = new Connection(PacketFlow.SERVERBOUND);
-    new EmbeddedChannel(connection);
+    channels.put(name, new EmbeddedChannel(connection));
     server.getPlayerList().placeNewPlayer(connection, player, cookie);
     String mode = spec.has("game_mode") ? spec.get("game_mode").getAsString() : "survival";
     player.setGameMode(
@@ -462,11 +487,97 @@ final class ScenarioEntities {
     players.clear();
   }
 
+  /**
+   * {@code ,"packets":{"<player>":["<id + body hex>", ...]}}: the clientbound play packets every
+   * scenario player's connection sent since the last call (bundles as their packets), those
+   * of {@link #VIEW_PACKETS} only, encoded by Vanilla's codec. Each player's client then
+   * acknowledges the chunk batches it got.
+   */
+  String packets() {
+    List<ServerPlayer> acknowledging = new ArrayList<>();
+    if (clientbound == null) {
+      clientbound =
+          net.minecraft.network.protocol.game.GameProtocols.CLIENTBOUND_TEMPLATE.bind(
+              net.minecraft.network.RegistryFriendlyByteBuf.decorator(server.registryAccess()));
+    }
+    StringBuilder sb = new StringBuilder(",\"packets\":{");
+    boolean firstPlayer = true;
+    for (Map.Entry<String, EmbeddedChannel> entry : channels.entrySet()) {
+      EmbeddedChannel channel = entry.getValue();
+      channel.flushOutbound();
+      List<net.minecraft.network.protocol.Packet<?>> sent = new ArrayList<>();
+      Object m;
+      while ((m = channel.readOutbound()) != null) {
+        if (m instanceof net.minecraft.network.protocol.BundlePacket<?> bundle) {
+          bundle.subPackets().forEach(sent::add);
+        } else if (m instanceof net.minecraft.network.protocol.Packet<?> packet) {
+          sent.add(packet);
+        }
+      }
+      sb.append(firstPlayer ? "" : ",").append('"').append(entry.getKey()).append("\":[");
+      firstPlayer = false;
+      boolean first = true;
+      for (net.minecraft.network.protocol.Packet<?> packet : sent) {
+        if (packet
+            instanceof net.minecraft.network.protocol.game.ClientboundChunkBatchFinishedPacket) {
+          acknowledging.add((ServerPlayer) byName.get(entry.getKey()));
+        }
+        if (!VIEW_PACKETS.contains(packet.type().id().getPath())) {
+          continue;
+        }
+        io.netty.buffer.ByteBuf buf = io.netty.buffer.Unpooled.buffer();
+        @SuppressWarnings("unchecked")
+        net.minecraft.network.protocol.Packet<
+                ? super net.minecraft.network.protocol.game.ClientGamePacketListener>
+            typed =
+                (net.minecraft.network.protocol.Packet<
+                        ? super net.minecraft.network.protocol.game.ClientGamePacketListener>)
+                    packet;
+        clientbound.codec().encode(buf, typed);
+        byte[] bytes = new byte[buf.readableBytes()];
+        buf.readBytes(bytes);
+        sb.append(first ? "" : ",")
+            .append('"')
+            .append(java.util.HexFormat.of().formatHex(bytes))
+            .append('"');
+        first = false;
+      }
+      sb.append(']');
+    }
+    // The client acknowledges every chunk batch it got, so chunks keep coming.
+    for (ServerPlayer p : acknowledging) {
+      handle(
+          p,
+          new net.minecraft.network.protocol.game.ServerboundChunkBatchReceivedPacket(
+              CHUNKS_PER_TICK));
+    }
+    return sb.append('}').toString();
+  }
+
+  /** The chunk rate the scenario clients ask for ({@code chunk_batch_received}). */
+  private static final float CHUNKS_PER_TICK = 64.0F;
+
   /** {@code ServerPlayer.doTick} of the players, as their connections would. */
   void tickPlayers() {
-    for (ServerPlayer p : tickedPlayers) {
+    for (int i = 0; i < tickedPlayers.size(); i++) {
+      ServerPlayer p = tickedPlayers.get(i);
       if (p.isRemoved()) {
-        continue;
+        // A respawned player is a new `ServerPlayer` on the same connection.
+        ServerPlayer now = server.getPlayerList().getPlayer(p.getUUID());
+        if (now == null || now == p) {
+          continue;
+        }
+        String name = name(p);
+        if (name != null) {
+          byName.put(name, now);
+          names.put(now, name);
+        }
+        int client = clients.indexOf(p);
+        if (client >= 0) {
+          clients.set(client, now);
+        }
+        tickedPlayers.set(i, now);
+        p = now;
       }
       if (clients.contains(p)) {
         // The whole connection tick of a client (`tickPlayer`: `resetPosition`, `doTick`,

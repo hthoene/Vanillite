@@ -285,7 +285,14 @@ public final class ScenarioRecorder {
       datapack =
           scenarioDir.getParent().resolve("datapacks").resolve(scenario.get("datapack").getAsString());
     }
-    ParityServer server = ParityServer.start(dir, seed, layers, biome, dimensions, datapack);
+    // `"end": "normal"`: the End generates like a new Vanilla world (spikes, crystals, the
+    // dragon fight).
+    boolean normalEnd = scenario.has("end") && scenario.get("end").getAsString().equals("normal");
+    if (normalEnd && !dimensions) {
+      throw new IllegalArgumentException("\"end\" needs \"dimensions\"");
+    }
+    ParityServer server =
+        ParityServer.start(dir, seed, layers, biome, dimensions, datapack, normalEnd);
     ScenarioEntities entities = null;
     try {
       rules(server, scenario);
@@ -398,7 +405,12 @@ public final class ScenarioRecorder {
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
       boolean levelRng = scenario.has("level_rng") && scenario.get("level_rng").getAsBoolean();
+      boolean clientView = scenario.has("client_view") && scenario.get("client_view").getAsBoolean();
+      if (clientView && !dimensions) {
+        throw new IllegalArgumentException("\"client_view\" needs \"dimensions\"");
+      }
       Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views, stream);
+      trace.clientView = clientView;
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
@@ -804,6 +816,8 @@ public final class ScenarioRecorder {
     /** The dimension of the region. */
     private final String dimension;
     private final List<View> views;
+    /** Frames hold the raw packets of the players' clients ({@code "client_view"}). */
+    boolean clientView;
 
     Trace(
         BlockPos min,
@@ -926,6 +940,9 @@ public final class ScenarioRecorder {
       }
       if (names.hasEntities() || levelRng) {
         sb.append(",\"level_rng\":").append(ScenarioEntities.state(level.getRandom()));
+      }
+      if (clientView) {
+        sb.append(names.packets());
       }
       if (stream != null) {
         stream.println(sb.append('}'));

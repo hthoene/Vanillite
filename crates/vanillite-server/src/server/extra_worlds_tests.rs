@@ -114,7 +114,7 @@ fn extra_worlds_load_move_players_and_unload() {
 
     // A player goes into the lobby and back; a world with players stays loaded.
     let uuid = 0x1234;
-    let _inbound = server.join_unread("Traveller", uuid);
+    let _inbound = server.join_unread("Traveller", uuid, None);
     for _ in 0..3 {
         server.step_once();
     }

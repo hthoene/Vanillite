@@ -1,0 +1,3 @@
+tick = 0
+cause = "the freshly generated End has no end crystals on its spikes; later the dragon does not spawn and the client gets no boss bar (#195, client view #196)"
+owner = "world-developer #195"

@@ -1,0 +1,21 @@
+{
+  "description": "Client view (#196): a player teleports above a freshly generated End's main island and the dragon is killed (/kill at tick 30): the exit portal is lit, the dragon egg is placed on it and the first end gateway appears on the ring at y 75 (the region); the boss bar goes away.",
+  "dimensions": true,
+  "end": "normal",
+  "client_view": true,
+  "dimension": "minecraft:the_end",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-97, 75, -97], [97, 75, 97]],
+  "views": [{"dimension": "minecraft:the_end", "region": [[-16, 0, -16], [15, 255, 31]]}],
+  "ticks": 60,
+  "setup": [
+    {"op": "fill", "dimension": "minecraft:the_end", "from": [-2, 99, 14], "to": [2, 99, 18], "block": "minecraft:obsidian"}
+  ],
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "client": true, "pos": [8.5, -60.0, 8.5], "rot": [0, 0]}
+  ],
+  "actions": [
+    {"tick": 2, "op": "command", "command": "execute in minecraft:the_end run tp steve 0.5 100.0 16.5"},
+    {"tick": 30, "op": "command", "command": "kill @e[type=minecraft:ender_dragon]"}
+  ]
+}

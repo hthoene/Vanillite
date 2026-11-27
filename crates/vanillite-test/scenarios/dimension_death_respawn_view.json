@@ -1,0 +1,18 @@
+{
+  "description": "Client view (#196): a client player is teleported to the Nether and dies there (/kill at tick 10); its client asks to respawn (client_command at tick 15) and it respawns at the overworld spawn (respawn_radius 0): the client gets the death and the respawn into the overworld.",
+  "dimensions": true,
+  "client_view": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {"spawn_monsters": "false", "respawn_radius": "0"},
+  "region": [[-2, 0, -2], [5, 10, 5]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[-10, -64, -10], [10, -50, 10]]}],
+  "ticks": 30,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "client": true, "pos": [8.5, -60.0, 8.5], "rot": [0, 0]}
+  ],
+  "actions": [
+    {"tick": 3, "op": "command", "command": "execute in minecraft:the_nether run tp steve 1.5 4.0 1.5"},
+    {"tick": 10, "op": "command", "command": "kill steve"},
+    {"tick": 15, "op": "packet", "entity": "steve", "packet": "client_command", "data": "00", "what": "ClientCommand { action: PerformRespawn }"}
+  ]
+}
