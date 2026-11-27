@@ -9,6 +9,7 @@ use vanillite_worldgen::behaviour as shared;
 
 use super::{BlockEvent, Level, update};
 use crate::block::{self, fluid};
+use vanillite_data::block::BlockState;
 
 impl Level {
     /// `tickTime`: the game time advances.
@@ -110,25 +111,54 @@ impl Level {
             return;
         }
         let min_section = self.min_y >> 4;
+        // The section being ticked and the picks it has left. The next randomly ticking
+        // section is found when the loop gets there (ticks of lower sections may change it);
+        // each pick reads the section in place (`section.getBlockState`) until one ticks, and
+        // the chunk is looked up again after a tick, which may change it.
         let mut next = 0;
+        let mut index = 0;
+        let mut left = 0;
         loop {
-            // The next randomly ticking section, read when the loop gets there (ticks of lower
-            // sections may change it); the sections in between are skipped with one lookup.
-            let found = self.chunks.chunk(chunk).and_then(|c| {
-                let sections = c.chunk.sections().get(next..)?;
-                let offset = sections
-                    .iter()
-                    .position(|section| section.summary().is_randomly_ticking())?;
-                Some(next + offset)
-            });
-            let Some(index) = found else {
+            let mut hit = None;
+            let rand_value = &mut self.rand_value;
+            let Some(c) = self.chunks.chunk(chunk) else {
+                // Not loaded any more: air, nothing ticks; the picks are still drawn.
+                let min_y = (min_section + index as i32) * 16;
+                for _ in 0..left {
+                    random_pos(rand_value, min_x, min_y, min_z, 15);
+                }
                 break;
             };
-            next = index + 1;
+            let sections = c.chunk.sections();
+            if left == 0 {
+                let Some(offset) = sections.get(next..).and_then(|rest| {
+                    rest.iter()
+                        .position(|section| section.summary().is_randomly_ticking())
+                }) else {
+                    break;
+                };
+                index = next + offset;
+                next = index + 1;
+                left = speed;
+            }
+            let section = &sections[index];
             let min_y = (min_section + index as i32) * 16;
-            for _ in 0..speed {
-                let pos = self.block_random_pos(min_x, min_y, min_z, 15);
-                self.random_tick_at(pos);
+            while left > 0 {
+                left -= 1;
+                let pos = random_pos(rand_value, min_x, min_y, min_z, 15);
+                #[allow(clippy::cast_sign_loss)]
+                let state = BlockState(section.block(
+                    (pos.x & 15) as u32,
+                    (pos.y & 15) as u32,
+                    (pos.z & 15) as u32,
+                ));
+                if state.random_ticks() || state.fluid_state().info().random_ticks {
+                    hit = Some((pos, state));
+                    break;
+                }
+            }
+            if let Some((pos, state)) = hit {
+                self.random_tick_state(pos, state);
             }
         }
     }
@@ -137,6 +167,12 @@ impl Level {
     #[inline]
     pub(super) fn random_tick_at(&mut self, pos: BlockPos) {
         let state = self.block(pos);
+        self.random_tick_state(pos, state);
+    }
+
+    /// [`Level::random_tick_at`] with the block state at `pos` already read.
+    #[inline]
+    fn random_tick_state(&mut self, pos: BlockPos, state: BlockState) {
         if state.random_ticks()
             && let Some(random_tick) = self.behaviours.get(state.block()).random_tick
         {

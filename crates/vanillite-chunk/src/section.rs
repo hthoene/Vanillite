@@ -19,6 +19,8 @@ pub struct SectionSummary {
     pub ticking_fluids: u16,
     /// Blocks with a special collision shape (not empty, not a full cube, or dynamic).
     pub special_collision: u16,
+    /// Redstone conductors (`isRedstoneConductor`).
+    pub conductors: u16,
 }
 
 impl SectionSummary {
@@ -41,6 +43,9 @@ impl SectionSummary {
         if flags & facts::SPECIAL_COLLISION != 0 {
             self.special_collision = self.special_collision.wrapping_add(count);
         }
+        if flags & facts::CONDUCTOR != 0 {
+            self.conductors = self.conductors.wrapping_add(count);
+        }
     }
 
     #[inline]
@@ -53,6 +58,12 @@ impl SectionSummary {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.non_air == 0
+    }
+
+    /// Every block of the section is a redstone conductor.
+    #[inline]
+    pub fn all_conductors(&self) -> bool {
+        usize::from(self.conductors) == 4096
     }
 
     /// Any randomly ticking block or fluid (`isRandomlyTicking`).
