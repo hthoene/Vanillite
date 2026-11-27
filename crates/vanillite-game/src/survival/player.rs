@@ -2275,6 +2275,16 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     for (block, state) in honey {
         honey_slide(entity, player, env, block, state);
     }
+    // `makeStuckInBlock` of cobwebs, sweet berry bushes and powder snow the feet are in:
+    // the fall so far does not count (`Player`: unless flying); the slowdown is the client's.
+    let feet_in_snow = inside.powder_snow.is_some()
+        && env
+            .blocks
+            .block_state(BlockPos::containing(pos.x, pos.y, pos.z))
+            .is_some_and(|s| s.block() == vanillite_data::block::ids::POWDER_SNOW);
+    if (inside.cobweb || inside.berry_bush.is_some() || feet_in_snow) && !player.survival.flying {
+        crate::advancements::tracking::reset_fall_distance(player);
+    }
     // The `entityInside` effects that act at once.
     if inside.cactus {
         let source = DamageSource::of(env.types.cactus);

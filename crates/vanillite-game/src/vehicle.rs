@@ -397,6 +397,18 @@ pub fn tick_boat(
     if dirty && let Some(mut e) = ents.store.get_mut(id) {
         e.mark_data_dirty();
     }
+    // `applyEffectsFromBlocks`: lily pads break, plates and tripwire react, on the boat's way
+    // this tick.
+    if let Some(e) = ents.store.get(id) {
+        let way = [crate::survival::inside::Movement::plain(
+            e.old_pos(),
+            e.pos(),
+        )];
+        crate::block::plate::for_each_inside(level, e.dims(), &way, |pos| {
+            cx.actions
+                .push(crate::mob::WorldAction::EntityInside(pos, id));
+        });
+    }
     // Living entities pushed against a boat no player steers get in.
     if !controlled {
         board_nearby(ents, env, id);

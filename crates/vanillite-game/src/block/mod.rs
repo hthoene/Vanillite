@@ -367,6 +367,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     } else if weather::weathers(block) {
         b.random_tick = Some(weather::copper_random_tick);
     }
+    if block == ids::LILY_PAD {
+        b.entity_inside = Some(contact::lily_pad_entity_inside);
+    }
     if decor::is_skull(block) {
         b.neighbor_changed = Some(decor::skull_neighbor_changed);
     }

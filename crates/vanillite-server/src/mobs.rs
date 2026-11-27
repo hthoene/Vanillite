@@ -784,6 +784,7 @@ impl WorldMobs {
                             facts: &state.block_facts,
                             types: &state.damage_types,
                             raining_at: &raining,
+                            reacts: &|s| level.has_entity_inside(s),
                         },
                     )
                 };
