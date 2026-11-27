@@ -81,16 +81,6 @@ impl GlobalFluidPicker {
         Self::new(settings.sea_level, settings.default_fluid)
     }
 
-    /// The lowest Y from which up the global fluid is not lava where it is not air.
-    fn lava_free_from(&self) -> i32 {
-        let low = LAVA_LEVEL.min(self.sea_level);
-        if self.sea.fluid_type.block() == ids::LAVA {
-            low.max(self.sea.fluid_level)
-        } else {
-            low
-        }
-    }
-
     /// `computeFluid(blockX, blockY, blockZ)`.
     #[inline]
     pub fn compute_fluid(&self, _x: i32, y: i32, _z: i32) -> FluidStatus {
@@ -447,22 +437,6 @@ pub struct NoiseBasedAquifer {
     /// cells: whether it schedules a fluid update is then worked out when asked (generation
     /// only asks for fluids).
     air_above_fluids: Option<(i32, i32, i32)>,
-    /// The Y range of a column whose blocks that are not solid are all air above the fluids of
-    /// the current anchor, found by the last such result.
-    air_run: Option<AirRun>,
-}
-
-/// Blocks of column `(x, z)` with `y_low <= y <= y_high` that are not solid by their density
-/// are air above every fluid level of `anchor` (the path of `compute_fluid_substance` that
-/// sets `air_above_fluids`): their anchor is `anchor`, which has its summary, they are not
-/// above the sampling limit and their global fluid is not lava.
-#[derive(Clone, Copy, Debug)]
-struct AirRun {
-    x: i32,
-    z: i32,
-    anchor: (i32, i32, i32),
-    y_low: i32,
-    y_high: i32,
 }
 
 impl NoiseBasedAquifer {
@@ -507,7 +481,6 @@ impl NoiseBasedAquifer {
             anchor_cells: [(0, 0, 0, 0); 12],
             anchor_summaries: vec![AnchorState::Asked(0); total].into_boxed_slice(),
             air_above_fluids: None,
-            air_run: None,
         };
         let max_surface = aquifer.max_surface_level(
             program,
@@ -662,16 +635,6 @@ impl NoiseBasedAquifer {
             self.should_schedule_fluid_update = false;
             return None;
         }
-        if let Some(run) = self.air_run
-            && block_x == run.x
-            && block_z == run.z
-            && (run.y_low..=run.y_high).contains(&block_y)
-            && self.anchor == Some(run.anchor)
-        {
-            // As `compute_fluid_substance` finds it.
-            self.air_above_fluids = Some((block_x, block_y, block_z));
-            return Some(ids::AIR.default_state());
-        }
         self.compute_fluid_substance(program, ctx, block_x, block_y, block_z, density)
     }
 
@@ -713,19 +676,6 @@ impl NoiseBasedAquifer {
             // (five blocks above the higher level), so it is negative and adds no density.
             if block_y >= summary.max_fluid_level.saturating_add(5) {
                 self.air_above_fluids = Some((block_x, block_y, block_z));
-                // The same for the blocks of this column and anchor that pass the checks
-                // above: from the anchor's lowest Y (`gridY(y + 1)` is the anchor's) and the
-                // lowest without a lava global fluid up to the sampling limit.
-                let anchor_low = from_grid_y(anchor.1, 0) - 1;
-                self.air_run = Some(AirRun {
-                    x: block_x,
-                    z: block_z,
-                    anchor,
-                    y_low: anchor_low
-                        .max(summary.max_fluid_level.saturating_add(5))
-                        .max(self.fluid_picker.lava_free_from()),
-                    y_high: (anchor_low + 11).min(self.skip_sampling_above_y),
-                });
                 return Some(ids::AIR.default_state());
             }
             // With one and the same fluid in all cells around, the block gets that fluid:

@@ -12,7 +12,6 @@ homepage.workspace = true
 [dependencies]
 vanillite-config.workspace = true
 vanillite-data.workspace = true
-vanillite-plugin-host.workspace = true
 vanillite-server.workspace = true
 vanillite-storage.workspace = true
 ctrlc.workspace = true
@@ -26,12 +25,6 @@ mimalloc = { version = "0.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-mimalloc = { version = "0.1", default-features = false, optional = true }
-
-[features]
-# vanillite-gnu (the glibc build of the release archives and the Docker image that loads
-# plugins): the same allocator as the static build.
-mimalloc = ["dep:mimalloc"]
 
 [lints]
 workspace = true

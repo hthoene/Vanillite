@@ -592,7 +592,7 @@ fn clear_grid<S: MenuSlots + ?Sized>(
 ) {
     for &slot in &grid.clear {
         let stack = s.item(slot).clone();
-        s.inventory().place_back(stack, creative, drops);
+        s.inventory().place_back_unsent(stack, creative, drops);
         set_grid(s, grid, slot, ItemStack::EMPTY);
     }
     for &slot in &grid.clear_content {

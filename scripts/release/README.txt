@@ -27,10 +27,6 @@ The server keeps its files (configuration, worlds, cache) in the current folder;
 
 Stop the server with the console command `stop` or Ctrl+C: both save the worlds.
 
-Paper and Spigot plugins: put the plugin jars into plugins/ and start the server.
-It installs what they need (the Bukkit layer and, if missing, a Java 25 runtime)
-into plugins/bukkit/ and says every step in the log.
-
 Settings: server.properties as in Vanilla, plus vanillite.toml. Every key can also
 be set as an environment variable VANILLITE_<KEY>, e.g. VANILLITE_SERVER_PORT=25566.
 

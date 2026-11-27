@@ -196,6 +196,29 @@ impl Decode for RegistryTags {
     }
 }
 
+/// One entry of `custom_report_details` (key at most 128, value at most 4096 characters).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportDetail {
+    pub key: String,
+    pub value: String,
+}
+
+impl Encode for ReportDetail {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.key.encode(out);
+        self.value.encode(out);
+    }
+}
+
+impl Decode for ReportDetail {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        Ok(Self {
+            key: String::decode_limited(r, 128)?,
+            value: String::decode_limited(r, 4096)?,
+        })
+    }
+}
+
 /// Defines the serverbound packets that configuration and play share, for one state.
 #[macro_export]
 #[doc(hidden)]
@@ -267,6 +290,15 @@ macro_rules! common_clientbound {
         #[packet(state = $state, dir = Clientbound, name = "cookie_request")]
         pub struct CookieRequest {
             pub key: $crate::types::Identifier,
+        }
+
+        /// `custom_report_details`: extra lines for the client's crash reports (at most 32;
+        /// Vanilla's dedicated server never sends it).
+        #[derive(Debug, Clone, PartialEq, Eq, $crate::Packet)]
+        #[packet(state = $state, dir = Clientbound, name = "custom_report_details")]
+        pub struct CustomReportDetails {
+            #[field(max_len = 32)]
+            pub details: Vec<$crate::packets::common::ReportDetail>,
         }
 
         /// `custom_payload` (plugin message, e.g. `minecraft:brand`).

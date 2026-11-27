@@ -815,7 +815,7 @@ fn send_changes(
                 let change = velocity.distance_to_sqr(sync.movement);
                 if change > 1.0e-7 || (change > 0.0 && velocity.length_sqr() == 0.0) {
                     sync.movement = velocity;
-                    broadcast(out, EntityUpdate::Motion(velocity));
+                    broadcast(out, EntityUpdate::TrackedMotion(velocity));
                 }
             }
             if let Some(packet) = packet {

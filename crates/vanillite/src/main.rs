@@ -3,7 +3,6 @@
 mod cpu;
 mod health;
 mod logger;
-mod runtime;
 mod terminal;
 
 use std::path::PathBuf;
@@ -11,15 +10,14 @@ use std::process::ExitCode;
 
 use vanillite_server::{ServerBuilder, StartError};
 
-// musl's allocator is slow with many threads; the static (Docker) build uses mimalloc, and so
-// does its glibc build for plugins (vanillite-gnu, feature `mimalloc`).
-#[cfg(any(target_env = "musl", feature = "mimalloc"))]
+// musl's allocator is slow with many threads; the static (Docker) build uses mimalloc.
+#[cfg(target_env = "musl")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Returns freed memory of the allocator to the system.
 fn release_memory() {
-    #[cfg(any(target_env = "musl", feature = "mimalloc"))]
+    #[cfg(target_env = "musl")]
     {
         // Part of the mimalloc library the global allocator links.
         unsafe extern "C" {
@@ -28,7 +26,7 @@ fn release_memory() {
         // SAFETY: `mi_collect` may be called from any thread at any time.
         unsafe { mi_collect(true) };
     }
-    #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: `malloc_trim` may be called from any thread at any time.
     unsafe {
         libc::malloc_trim(0);
@@ -107,11 +105,8 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             }
         }
     }
-    // The plugin runtime first: with plugins, the static build gives way to `vanillite-gnu`.
-    let runtime = runtime::dispatch(&dir, &version());
     let baseline = cpu::dispatch();
     logger::init();
-    runtime.log();
     match baseline {
         Some(why) => log::info!("CPU build: {} ({why})", cpu::level()),
         None => log::info!("CPU build: {}", cpu::level()),

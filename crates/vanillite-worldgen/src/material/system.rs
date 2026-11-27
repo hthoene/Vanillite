@@ -292,24 +292,6 @@ impl MaterialSystem {
                 .collect()
         };
         let below_surface = fold(FoldMode::BelowSurface);
-        // Per Y: how many blocks from it down (itself included) the tree provably does nothing
-        // to, whatever the column (no ore vein to test).
-        // The same in a column where no ore vein may place a block inside the expected volume
-        // (`MaterialRuleContext::column_ore_free`).
-        let runs = |quiet: &dyn Fn(i32, &FoldedY) -> bool| -> Vec<u32> {
-            let mut runs: Vec<u32> = Vec::with_capacity(below_surface.len());
-            for (y, folded) in (end_y..).zip(&below_surface) {
-                let run = if matches!(folded.outcome, BelowSurface::Nothing) && quiet(y, folded) {
-                    runs.last().map_or(1, |run| run + 1)
-                } else {
-                    0
-                };
-                runs.push(run);
-            }
-            runs
-        };
-        let quiet_below = runs(&|_, folded| folded.ores == 0);
-        let quiet_ore_free = runs(&|y, folded| folded.ores == 0 || context.in_expected_rows(y));
         // The same for blocks so deep in stone that every stone depth condition is false:
         // most blocks between a column's surface layers and its minimum surface level.
         let deep_in_stone = fold(FoldMode::DeepInStone);
@@ -331,11 +313,6 @@ impl MaterialSystem {
                 let gradient_z = surface_gradient_z(chunk, x, z);
                 context.update_xz(block_x, block_z, gradient_x, gradient_z);
                 let (floor_reach, ceiling_reach) = context.stone_depth_reach(rules.stone_depths());
-                let quiet_runs = if context.column_ore_free() {
-                    &quiet_ore_free
-                } else {
-                    &quiet_below
-                };
                 let mut stone_above_depth = 0;
                 let mut water_height = i32::MIN;
                 let mut next_ceiling_stone_y = i32::MAX;
@@ -391,22 +368,6 @@ impl MaterialSystem {
                                 // the same bottom again), as long as Y alone decides them.
                                 let mut handled = false;
                                 loop {
-                                    // A run of blocks the tree does nothing to: stepped over
-                                    // at once, to its bottom or to the end of the stone run.
-                                    let quiet = quiet_runs[(y - end_y) as usize] as i32;
-                                    if quiet > 0 {
-                                        let limit = next_ceiling_stone_y.max(end_y);
-                                        let lowest = y - quiet + 1;
-                                        if lowest <= limit {
-                                            let to = limit.min(y);
-                                            stone_above_depth += y - to;
-                                            y = to;
-                                            handled = true;
-                                            break;
-                                        }
-                                        stone_above_depth += y - lowest + 1;
-                                        y = lowest - 1;
-                                    }
                                     let folded = below_surface[(y - end_y) as usize];
                                     if folded.ores != 0 && context.ore_may_place(folded.ores, y) {
                                         break;

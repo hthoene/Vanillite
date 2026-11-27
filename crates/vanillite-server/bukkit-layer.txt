@@ -1,7 +1,0 @@
-# The vanillite-bukkit release that `plugins.bukkit.auto-setup` installs for this Vanillite
-# version: a line `version <x.y.z>`, then the lines of the release's SHA256SUMS
-# (`<sha256>  vanillite-bukkit-<version>-<target>.tar.gz`). A target without a line gets a log
-# line that says how to build and install the layer by hand.
-version 0.1.0
-f18af660eef24ebbc64a987523c0dcd8ba645d526b591931a35d5f93fc64999f  vanillite-bukkit-0.1.0-aarch64-unknown-linux-gnu.tar.gz
-4c18ae25d6a44c8c58fa6ae95659cbe38195814475bf7f601c3cc2664fcbd43b  vanillite-bukkit-0.1.0-x86_64-unknown-linux-gnu.tar.gz

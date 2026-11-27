@@ -1147,7 +1147,8 @@ impl WorldPlayers {
             player.connection.chat.chat_spam.tick();
             player.connection.chat.command_spam.tick();
         }
-        self.waypoints.tick(entities, global);
+        self.waypoints
+            .tick(entities, global, compute, global.plugins.packet_tap());
         // `PlayerList.tick`: latencies for the tab list. The first world sends them for all.
         if tick.is_multiple_of(LATENCY_UPDATE_TICKS)
             && self.level.dimension.as_str() == "minecraft:overworld"
