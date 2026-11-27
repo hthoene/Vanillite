@@ -131,7 +131,31 @@ fn base_inner(ents: &Entities, id: EntityId, with_target: bool) -> Option<Entity
     v.fall_flying = flags.contains(EntityFlags::FALL_FLYING);
     if let Some(bolt) = ents.bolt(id) {
         v.lightning_fires = Some(bolt.blocks_set_on_fire);
+        if with_target {
+            v.struck = bolt
+                .hit_entities
+                .iter()
+                .filter(|&&h| crate::lightning::alive(ents, h))
+                .filter_map(|&h| base_inner(ents, h, false))
+                .collect();
+        }
     }
+    v.tags = ents.tags_of(id).to_vec();
+    let nbt = super::predicate::entity_nbt_wanted()
+        .then(|| crate::mob::entity_nbt::save_full(ents, id))
+        .flatten();
+    if let Some(villager) = nbt
+        .as_ref()
+        .and_then(|n| n.get("VillagerData"))
+        .and_then(|d| match d {
+            vanillite_nbt::Tag::Compound(c) => c.get("type").and_then(vanillite_nbt::Tag::as_str),
+            _ => None,
+        })
+    {
+        v.components
+            .push(("minecraft:villager/variant", villager.to_owned()));
+    }
+    v.nbt = nbt.map(Box::new);
     let m = crate::spear::known_movement(ents, id);
     v.movement = vanillite_base::Vec3::new(m.x * 20.0, m.y * 20.0, m.z * 20.0);
     if let Some(b) = ents.missile(id).and_then(|d| d.bobber.as_deref()) {

@@ -1833,40 +1833,9 @@ struct Abilities {
 impl Abilities {
     /// `Abilities.Packed.CODEC` over the saved compound: the speeds the server does not
     /// change stay as saved.
-    fn save(self, mut out: vanillite_nbt::Compound) -> vanillite_nbt::Compound {
-        let creative = self.mode == GameMode::Creative;
-        let spectator = self.mode == GameMode::Spectator;
-        out.insert("invulnerable", Tag::Byte(i8::from(creative || spectator)));
-        out.insert("flying", Tag::Byte(i8::from(self.flying)));
-        out.insert(
-            "mayfly",
-            Tag::Byte(i8::from(
-                vanillite_game::survival::player::Abilities::of(self.mode).mayfly,
-            )),
-        );
-        out.insert("instabuild", Tag::Byte(i8::from(creative)));
-        // `isBlockPlacingRestricted`.
-        out.insert(
-            "mayBuild",
-            Tag::Byte(i8::from(matches!(
-                self.mode,
-                GameMode::Survival | GameMode::Creative
-            ))),
-        );
-        if !matches!(out.get("flySpeed"), Some(Tag::Float(_))) {
-            out.insert("flySpeed", Tag::Float(0.05));
-        }
-        if !matches!(out.get("walkSpeed"), Some(Tag::Float(_))) {
-            out.insert("walkSpeed", Tag::Float(0.1));
-        }
-        out
+    fn save(self, out: vanillite_nbt::Compound) -> vanillite_nbt::Compound {
+        vanillite_game::mob::entity_nbt::abilities_nbt(self.mode, self.flying, out)
     }
-}
-
-/// The `abilities` compound of a player in `mode` (`Abilities.Packed`) with the default
-/// speeds.
-pub(crate) fn abilities_nbt(mode: GameMode, flying: bool) -> vanillite_nbt::Compound {
-    Abilities { mode, flying }.save(vanillite_nbt::Compound::new())
 }
 
 /// `Entity.load`'s `Tags`.

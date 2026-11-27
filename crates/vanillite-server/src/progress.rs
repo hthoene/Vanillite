@@ -92,6 +92,22 @@ impl World for LevelWorld<'_> {
         self.level.max_local_raw_brightness(pos)
     }
 
+    fn block_components(&self, pos: BlockPos) -> Option<Vec<(u16, Box<[u8]>)>> {
+        self.level.chunks.block(pos)?;
+        let entity = self.level.block_entities.get(pos)?;
+        let kept = self.level.block_entities.kept_components(pos);
+        let types =
+            u16::try_from(vanillite_data::registry::DATA_COMPONENT_TYPE.len()).unwrap_or(u16::MAX);
+        Some(
+            (0..types)
+                .filter_map(|t| {
+                    vanillite_game::level::block_entity::collect_component_with(entity, kept, t)
+                        .map(|v| (t, v))
+                })
+                .collect(),
+        )
+    }
+
     fn can_see_sky(&self, pos: BlockPos) -> bool {
         vanillite_game::mob::can_see_sky(self.level, pos)
     }
