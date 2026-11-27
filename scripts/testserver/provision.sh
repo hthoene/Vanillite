@@ -19,9 +19,11 @@
 #   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
 #   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
 # - vanillite-autodeploy (timer, every 30 minutes): builds the newest green dev commit in
-#   /opt/vanillite-build and deploys it to 30001, 30002 and the proxy on 30010, with a chat
+#   /opt/vanillite-build and deploys it to 30001, 30002, 30030 and the proxy on 30010, with a chat
 #   announcement and rollback; log in /var/log/vanillite-autodeploy.log. Manual deploys of a
 #   branch go to 30003-30099.
+# - Vanillite 30030: chunk generation test server (own world, flight allowed, all server-side
+#   movement checks off so fast flying is never teleported back; drop-in chunk-test.conf).
 # - vanillite-incidents (service): saves every crash and suspicious disconnect of the Vanillite
 #   instances and the proxy as a bundle in /var/lib/vanillite-incidents (`vanillite-incidents
 #   list|show`, `cargo xtask testserver incidents`).
@@ -386,7 +388,7 @@ write_if_changed /usr/local/bin/vanillite-deploy 755 <<'EOF'
 # this test setup needs into server.properties, copies Paper's whitelist and ops and (re)starts
 # vanillite@<port>.service. Port 30901 is the load test instance: offline mode without
 # whitelist, started but not enabled (`cargo xtask loadtest` stops it after the run).
-# 30001 and 30002 belong to vanillite-autodeploy (newest green dev), which sets
+# 30001, 30002 and 30030 belong to vanillite-autodeploy (newest green dev), which sets
 # VANILLITE_DEPLOY_AUTO=1 and the MOTD in VANILLITE_DEPLOY_MOTD.
 # Installed by scripts/testserver/provision.sh.
 set -euo pipefail
@@ -395,8 +397,9 @@ if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 30001 ] || [ "$port" -gt 30999 ]
     echo "port must be 30001-30999 (30000 is Paper)" >&2
     exit 2
 fi
-if { [ "$port" = 30001 ] || [ "$port" = 30002 ]; } && [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
-    echo "30001 and 30002 run the newest green dev (vanillite-autodeploy): land on dev instead," >&2
+if { [ "$port" = 30001 ] || [ "$port" = 30002 ] || [ "$port" = 30030 ]; } \
+    && [ "${VANILLITE_DEPLOY_AUTO:-}" != 1 ]; then
+    echo "30001, 30002 and 30030 run the newest green dev (vanillite-autodeploy): land on dev instead," >&2
     echo "or test a branch on a port in 30003-30099 and stop it afterwards" >&2
     exit 2
 fi
@@ -1276,7 +1279,26 @@ sleep 1
 systemctl --no-pager --lines=10 status vanillite-proxy.service || true
 EOF
 
-echo "== auto-deploy of dev (vanillite-autodeploy: 30001, 30002, proxy 30010)"
+echo "== chunk generation test server (Vanillite 30030: flight, no movement checks)"
+# Players fly fast through new terrain to test chunk generation and loading: the server never
+# teleports them back ("moved too quickly") and never kicks them for flying.
+install -d /etc/systemd/system/vanillite@30030.service.d
+write_if_changed /etc/systemd/system/vanillite@30030.service.d/chunk-test.conf <<'EOF'
+[Service]
+Environment=VANILLITE_MOVEMENT__TOO_FAST_CHECK=false
+Environment=VANILLITE_MOVEMENT__ELYTRA_TOO_FAST_CHECK=false
+Environment=VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK=false
+Environment=VANILLITE_MOVEMENT__FLYING_KICK=false
+EOF
+install -d -o vanillite -g vanillite /opt/vanillite/30030
+props30030=/opt/vanillite/30030/server.properties
+[ -f "$props30030" ] || install -o vanillite -g vanillite -m 644 /dev/null "$props30030"
+for kv in allow-flight=true view-distance=16 simulation-distance=10 spawn-protection=0; do
+    grep -q "^${kv%%=*}=" "$props30030" && sed -i "s|^${kv%%=*}=.*|$kv|" "$props30030" \
+        || echo "$kv" >> "$props30030"
+done
+
+echo "== auto-deploy of dev (vanillite-autodeploy: 30001, 30002, 30030, proxy 30010)"
 id vanillite-build > /dev/null 2>&1 \
     || useradd --system --home-dir /opt/vanillite-build --create-home --shell /usr/sbin/nologin vanillite-build
 install -d -o vanillite-build -g vanillite-build /opt/vanillite-build
@@ -1291,7 +1313,7 @@ write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 # run (vanillite-autodeploy.timer, every 30 minutes): takes the newest dev commit whose CI
 # workflow passed (dev lands often, so the head itself is often still running or cancelled); if
 # it is newer than the deployed one, builds vanillite and vanillite-proxy (release-fast) in
-# /opt/vanillite-build, announces the restart in chat 10 s ahead, deploys 30001, 30002 and the
+# /opt/vanillite-build, announces the restart in chat 10 s ahead, deploys 30001, 30002, 30030 and the
 # proxy on 30010 (only those whose binary changed) and rolls all of them back to the previous
 # binaries if one does not come up. An unbuildable or rolled back commit is not tried again; the
 # next green one is.
@@ -1299,8 +1321,9 @@ write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 set -uo pipefail
 repo=https://github.com/hthoene/Vanillite.git
 api=https://api.github.com/repos/hthoene/Vanillite
-ports=(30001 30002)
-declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import")
+ports=(30001 30002 30030)
+declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import"
+    [30030]="Vanillite test: chunk generation, no movement checks")
 build=/opt/vanillite-build
 state=/var/lib/vanillite-autodeploy
 logfile=/var/log/vanillite-autodeploy.log
@@ -1512,7 +1535,12 @@ ROOT = os.environ.get("VANILLITE_INCIDENTS_DIR", "/var/lib/vanillite-incidents")
 CURSOR = os.path.join(ROOT, ".cursor")
 INDEX = os.path.join(ROOT, "index.tsv")
 UNITS = ["-u", "vanillite@*.service", "-u", "vanillite-proxy.service"]
-AUTODEPLOYED = {"vanillite@30001.service", "vanillite@30002.service", "vanillite-proxy.service"}
+AUTODEPLOYED = {
+    "vanillite@30001.service",
+    "vanillite@30002.service",
+    "vanillite@30030.service",
+    "vanillite-proxy.service",
+}
 NO_DISCONNECT = {"vanillite@30901.service"}  # load test bots come and go
 SETTLE = 30  # seconds after the last trigger line before the bundle is written
 BEFORE = {"crash": 300, "disconnect": 120}  # journal seconds before the first trigger line
