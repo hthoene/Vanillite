@@ -277,7 +277,8 @@ abi! {
             /// ([`BlockEvent`]); cancellable. Since ABI 1.3.
             PLAYER_SPAWN_CHANGE = 11,
             /// A player logs in, after the server's own checks (bans, whitelist, player limit)
-            /// and before it joins a world ([`LoginEvent`]); runs on the global owner.
+            /// in the login state, before configuration ([`LoginEvent`]); a refusal is a login
+            /// disconnect. Runs on the global owner.
             /// Cancelled means refused: handlers may refuse with a message or let a refused
             /// player in. Since ABI 1.4.
             PLAYER_LOGIN = 12,

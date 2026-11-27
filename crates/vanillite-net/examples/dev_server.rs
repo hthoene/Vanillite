@@ -30,11 +30,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         description: Component::text("Vanillite").color(Color::Named(NamedColor::Gold)),
         ..StatusInfo::default()
     };
-    let (network, joins) = Network::start(config, status, configuration, None)?;
+    let (network, arrivals) = Network::start(config, status, configuration, None)?;
     log::info!("dev server ready on {}", network.local_addr());
     let mut players = Vec::new();
     loop {
-        while let Ok(j) = joins.try_recv() {
+        // No bans, whitelist or player limit here.
+        while let Ok(check) = arrivals.logins.try_recv() {
+            check.admit(false);
+        }
+        while let Ok(j) = arrivals.joins.try_recv() {
             log::info!("{} entered play ({:?})", j.profile.name, j.client_info);
             // Play is not implemented here: confirm the finished configuration and disconnect.
             j.outbound.send(&Disconnect {
