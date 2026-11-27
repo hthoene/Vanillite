@@ -195,6 +195,9 @@ pub struct MobData {
     pub goal_path: Option<path::Path>,
     /// Index into the `minecraft:*_variant` registry (pigs, cows, chickens); 0 = default.
     pub variant: i32,
+    /// Index into the `minecraft:{pig,cow,chicken}_sound_variant` registry (`classic` by
+    /// default, see [`kinds::classic_sound_variant`]).
+    pub sound_variant: u8,
     pub xp_reward: i32,
     /// The last block position (`lastPos`).
     pub last_pos: BlockPos,
@@ -341,6 +344,7 @@ impl MobData {
             goal_path: None,
             // Chickens, cows and pigs start as the temperate variant (registry index 1).
             variant: i32::from(matches!(kind, Kind::Chicken | Kind::Cow | Kind::Pig)),
+            sound_variant: kinds::classic_sound_variant(kind),
             xp_reward: 0,
             effects: crate::effect::ActiveEffects::default(),
             absorption: 0.0,
