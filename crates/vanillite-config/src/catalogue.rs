@@ -555,10 +555,11 @@ rules! {
                 "inactive-mob-goal-selector-throttle", Performance, range = [1, 20],
                 vanilla = DisabledOr::Disabled, paper = DisabledOr::Value(10);
         }
-        /// Wake-up plan of the activation range: each tick at most `<group>-max-per-tick` mobs
-        /// of a group that were inactive for `<group>-every` ticks tick fully for
-        /// `<group>-for` ticks, so breeders, villages and far mobs still progress a little.
-        /// A max of 0 wakes none.
+        /// Wake-up plan of the activation range: mobs of a group that were inactive for
+        /// `<group>-every` ticks tick fully for `<group>-for` ticks, so breeders, villages and
+        /// far mobs still progress a little. About one mob per group and tick is woken up,
+        /// at most `<group>-max-per-tick` in one tick after ticks without any. A max of 0
+        /// wakes none.
         wake_up: WakeUpRules = "performance.activation-range.wake-up-inactive" {
             /// Animals woken up per tick at most.
             animals_max_per_tick: u16 = "animals-max-per-tick", Performance, range = [0, 1000],

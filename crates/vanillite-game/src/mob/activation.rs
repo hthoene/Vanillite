@@ -71,10 +71,11 @@ impl Group {
     }
 }
 
-/// The wake-up plan of one group (`wake-up-inactive.<group>-*`).
+/// The wake-up plan of one group (`wake-up-inactive.<group>-*`): one wake-up per tick on
+/// average, up to `max_per_tick` in one tick when earlier ticks woke none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WakeUp {
-    /// Mobs of the group woken up per tick at most; 0 = none.
+    /// Mobs of the group woken up in one tick at most; 0 = none.
     pub max_per_tick: u16,
     /// Ticks a mob must have been inactive before it may be woken up.
     pub every: u32,
@@ -167,8 +168,9 @@ impl Activation {
         self.nearby
             .set_radius(i32::from(max.min(MAX_RANGE)) / 16 + 1);
         self.nearby.update(players);
+        // One more wake-up per tick, saved up to the maximum: about one per tick on average.
         for (budget, wake) in self.budget.iter_mut().zip(&settings.wake_up) {
-            *budget = wake.max_per_tick;
+            *budget = budget.saturating_add(1).min(wake.max_per_tick);
         }
     }
 
