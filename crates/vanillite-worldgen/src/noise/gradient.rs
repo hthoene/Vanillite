@@ -114,12 +114,6 @@ impl Pair {
     }
 }
 
-/// `Gradient.dot(x, y, z)` of a gradient.
-#[inline(always)]
-pub(super) fn dot(g: &[f32; 3], x: f32, y: f32, z: f32) -> f32 {
-    g[0] * x + g[1] * y + g[2] * z
-}
-
 /// `Gradient.dotXz(x, z)`.
 #[inline(always)]
 pub(super) fn dot_xz(g: &[f32; 3], x: f32, z: f32) -> f32 {

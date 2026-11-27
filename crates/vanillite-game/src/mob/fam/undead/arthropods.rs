@@ -297,10 +297,12 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
             _ => 0,
         };
         if seconds > 0 {
+            let me = t.id;
             super::add_effect(
                 t.ents,
                 target,
                 EffectInstance::new(effects::MobEffect::POISON, seconds * 20, 0),
+                Some(me),
             );
         }
     }

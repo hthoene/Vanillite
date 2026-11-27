@@ -281,7 +281,7 @@ pub(crate) fn execute(
         }
         CommandId::Help | CommandId::HelpCommand => {
             let command = parsed.args.string("command").map(String::as_str);
-            let lines = global.commands.help_lines(command, source)?;
+            let lines = global.commands().help_lines(command, source)?;
             for line in &lines {
                 source.send_success(global, Component::text(line.as_str()), false);
             }
@@ -586,8 +586,9 @@ pub(crate) fn plugin_args(
     use vanillite_command::{ArgValue as V, ArgumentType as T, NodeKind};
     use vanillite_plugin_host::{Arg, ArgValue};
     let mut out = Vec::new();
+    let commands = source.global.commands();
     for a in args.iter() {
-        let ty = match source.global.commands.node(a.node).map(|n| &n.kind) {
+        let ty = match commands.node(a.node).map(|n| &n.kind) {
             Some(NodeKind::Argument { ty, .. }) => Some(ty),
             _ => None,
         };

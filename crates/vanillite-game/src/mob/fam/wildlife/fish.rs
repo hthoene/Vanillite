@@ -166,10 +166,17 @@ pub(super) fn surface_water_rules(level: &Level, pos: BlockPos) -> bool {
             == vanillite_data::block::ids::WATER
 }
 
-/// `TropicalFish.checkTropicalFishSpawnRules` (the biomes of
-/// `#allows_tropical_fish_spawns_at_any_height` are not known here: surface rules apply).
+/// `TropicalFish.checkTropicalFishSpawnRules`: water below and above, and either a biome of
+/// `#allows_tropical_fish_spawns_at_any_height` (lush caves) or the surface rules.
 pub(super) fn tropical_rules(level: &Level, pos: BlockPos) -> bool {
-    surface_water_rules(level, pos)
+    is_water(level.block(BlockPos::new(pos.x, pos.y - 1, pos.z)))
+        && level.block(BlockPos::new(pos.x, pos.y + 1, pos.z)).block()
+            == vanillite_data::block::ids::WATER
+        && (crate::mob::fam::undead::zombies::biome_is(
+            level,
+            pos,
+            "minecraft:allows_tropical_fish_spawns_at_any_height",
+        ) || surface_water_rules(level, pos))
 }
 
 /// `AbstractFish.aiStep` before `super.aiStep()`: a fish on land flops.
@@ -563,7 +570,8 @@ pub(super) fn puffer_ai_step(t: &mut Tick<'_, '_>) {
         }
         let source = combat::entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
         if combat::hurt(t.level, t.ents, t.env, t.cx, id, source, damage) {
-            add_effect(t.ents, id, MobEffect::POISON, 60 * puff, 0);
+            let me = t.id;
+            add_effect(t.ents, id, MobEffect::POISON, 60 * puff, 0, Some(me));
             if !is_player {
                 crate::mob::kinds::play_sound(t, "minecraft:entity.puffer_fish.sting", 1.0, 1.0);
             }

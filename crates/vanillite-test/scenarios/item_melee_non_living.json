@@ -1,0 +1,136 @@
+{
+  "description": "Players hit entities that are not living (#230 I3-03): a ghast fireball and a wind charge fly off along the hitting player's look as its projectiles (AIM_DEFLECT), a shulker bullet is destroyed, an end crystal explodes.",
+  "tier": "fast",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 26,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        -90,
+        0
+      ],
+      "client": true
+    },
+    {
+      "name": "sam",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        -90,
+        0
+      ],
+      "client": true
+    },
+    {
+      "name": "kim",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        14.5
+      ],
+      "rot": [
+        -90,
+        10
+      ],
+      "client": true
+    },
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        26.5
+      ],
+      "rot": [
+        -90,
+        0
+      ],
+      "client": true
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:fireball 6.5 -59.0 2.5 {UUID:[I;0,0,0,1],Motion:[0.0,0.0,0.0],ExplosionPower:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:wind_charge 6.5 -59.0 14.5 {UUID:[I;0,0,0,3],Motion:[0.0,0.0,0.0],acceleration_power:0.0d}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:end_crystal 6.5 -60.0 26.5 {UUID:[I;0,0,0,4],ShowBottom:0b}"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "summon minecraft:shulker_bullet 6.5 -59.0 8.5 {UUID:[I;0,0,0,2],NoGravity:1b,Motion:[0.0,0.0,0.0]}"
+    },
+    {
+      "tick": 10,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000000000000000000000000000001",
+      "what": "Attack fireball"
+    },
+    {
+      "tick": 10,
+      "op": "packet",
+      "entity": "sam",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000000000000000000000000000002",
+      "what": "Attack shulker bullet"
+    },
+    {
+      "tick": 14,
+      "op": "packet",
+      "entity": "kim",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000000000000000000000000000003",
+      "what": "Attack wind charge"
+    },
+    {
+      "tick": 16,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000000000000000000000000000004",
+      "what": "Attack end crystal"
+    }
+  ]
+}

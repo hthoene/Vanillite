@@ -252,6 +252,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     if m.silent {
         out.insert("Silent", true);
     }
+    out.insert("Invulnerable", m.invulnerable);
     out.insert("Health", m.health);
     out.insert("AbsorptionAmount", m.absorption);
     if let Some(list) = m.effects.save() {
@@ -303,6 +304,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             out.insert("IsBaby", m.baby);
             out.insert("CanBreakDoors", m.can_break_doors);
             super::fam::undead::zombies::save_conversion(m, &mut out);
+            super::fam::undead::zombies::save_attributes(m, &mut out);
         }
         Kind::Creeper => {
             let c = super::fam::classic::creeper(m);
@@ -346,7 +348,15 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
             }
         }
         Kind::Skeleton => super::fam::undead::skeletons::save_conversion(m, &mut out),
-        Kind::Spider | Kind::Enderman => {}
+        Kind::Enderman => {
+            if let Some(state) = super::fam::classic::enderman(m).carried {
+                out.insert(
+                    "carriedBlockState",
+                    crate::level::block_entity::write_state_codec(state),
+                );
+            }
+        }
+        Kind::Spider => {}
         _ => super::fam::save(m, &mut out),
     }
     out
@@ -422,6 +432,10 @@ pub fn apply_mob(m: &mut MobData, tag: &Compound, game_time: i64, day_time: i64)
 /// The saved state of a mob (`readAdditionalSaveData` of the entity classes) from `tag`.
 fn read_mob(m: &mut MobData, tag: &Compound) {
     let kind = m.kind;
+    // The saved attributes of the zombies before the health (`attributes` comes first).
+    if super::fam::undead::zombies::is_zombie(kind) {
+        super::fam::undead::zombies::load_attributes(m, tag);
+    }
     // Effects first: their modifiers (Health Boost) raise the maximum health.
     m.effects.load(tag.get("active_effects"));
     if !m.effects.is_empty() {
@@ -448,6 +462,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
         || kind == Kind::ElderGuardian && tag.get("PersistenceRequired").is_none();
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
+    m.invulnerable = boolean(tag, "Invulnerable");
     m.custom_name = tag.get("CustomName").and_then(tag_component);
     super::fam::reload_brain(m, tag);
     super::equipment::load(m, tag);
@@ -477,13 +492,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     m.tame = m.owner.is_some();
     m.order_to_sit = boolean(tag, "Sitting");
     m.in_sitting_pose = m.order_to_sit;
-    m.pending_leash = match tag.get("leash") {
-        Some(Tag::Compound(c)) => uuid_of(c).map(super::LeashRef::Entity),
-        Some(Tag::IntArray(v)) if v.len() == 3 => Some(super::LeashRef::Knot(
-            vanillite_base::BlockPos::new(v[0], v[1], v[2]),
-        )),
-        _ => None,
-    };
+    m.pending_leash = leash_ref(tag);
     match kind {
         Kind::Zombie => {
             super::fam::undead::set_baby(m, boolean(tag, "IsBaby"));
@@ -535,7 +544,14 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
             }
         }
         Kind::Skeleton => super::fam::undead::skeletons::load_conversion(m, tag),
-        Kind::Spider | Kind::Enderman => {}
+        Kind::Enderman => {
+            let carried = tag
+                .get("carriedBlockState")
+                .and_then(crate::level::block_entity::read_state_codec)
+                .filter(|s| !s.is_air());
+            super::fam::classic::enderman_mut(m).carried = carried;
+        }
+        Kind::Spider => {}
         _ => super::fam::load(m, tag),
     }
 }
@@ -576,6 +592,10 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)>
             health: int(tag, "Health").unwrap_or(5),
             following: None,
             tick_count: 0,
+            fire_ticks: 0,
+            // A summon replaces it with the seed its constructor took.
+            random_state: vanillite_base::random::LegacyRandom::new(crate::mob::new_unique_seed())
+                .state(),
             fall_distance: match tag.get("fall_distance") {
                 Some(Tag::Double(v)) => *v,
                 _ => 0.0,
@@ -677,7 +697,15 @@ pub fn save_arrow(
     let mut out = Compound::new();
     save_entity(core, &mut out);
     out.insert("fall_distance", 0.0_f64);
-    out.insert("Fire", if a.fire { 2000_i16 } else { -1_i16 });
+    #[allow(clippy::cast_possible_truncation)]
+    out.insert(
+        "Fire",
+        if a.fire > 0 {
+            a.fire.min(i32::from(i16::MAX)) as i16
+        } else {
+            -1_i16
+        },
+    );
     out.insert("Air", 300_i16);
     #[allow(clippy::cast_possible_truncation)]
     {
@@ -757,7 +785,8 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
             random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
             knockback: 0.0,
-            fire: int(tag, "Fire").is_some_and(|f| f > 0),
+            fire: int(tag, "Fire").unwrap_or(0).max(0),
+            touching_water: false,
             item,
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),
@@ -765,6 +794,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             pierce_level: u8::try_from(int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127))
                 .unwrap_or(0),
             pierced: Vec::new(),
+            pierced_killed: Vec::new(),
             crossbow_sound: matches!(
                 tag.get("SoundEvent"),
                 Some(Tag::String(s)) if s.as_str() == "minecraft:item.crossbow.hit"
@@ -809,12 +839,24 @@ pub fn save_boat(
     out
 }
 
+/// The `leash` of entity NBT: a holder UUID or a knot position.
+fn leash_ref(tag: &Compound) -> Option<super::LeashRef> {
+    match tag.get("leash") {
+        Some(Tag::Compound(c)) => uuid_of(c).map(super::LeashRef::Entity),
+        Some(Tag::IntArray(v)) if v.len() == 3 => Some(super::LeashRef::Knot(
+            vanillite_base::BlockPos::new(v[0], v[1], v[2]),
+        )),
+        _ => None,
+    }
+}
+
 /// A boat from entity NBT.
 pub fn load_boat(tag: &Compound, seed: i64) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
     let kind = crate::vehicle::BoatKind::of(type_of(tag)?)?;
     let e = load_entity(tag)?;
     let mut b = crate::vehicle::BoatData::new(kind, seed);
     b.custom_name = tag.get("CustomName").and_then(tag_component);
+    b.pending_leash = leash_ref(tag);
     if kind.chest {
         b.loot_table = load_chest_vehicle(tag, &mut b.items);
     }

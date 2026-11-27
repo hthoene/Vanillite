@@ -319,18 +319,20 @@ pub enum Goal {
 /// `Goal.Flag` bits.
 use crate::mob::goals::flag;
 
-/// Adds a status effect to a mob (players get theirs with #74).
+/// Adds a status effect to a mob or player, applied by `source`.
 pub(crate) fn add_effect(
     ents: &mut crate::entities::Entities,
     target: EntityId,
     effect: crate::effect::MobEffect,
     duration: i32,
     amplifier: u8,
+    source: Option<EntityId>,
 ) {
-    effects::living::add_detached(
+    effects::living::add_detached_from(
         ents,
         target,
         EffectInstance::new(effect, duration, i32::from(amplifier)),
+        source,
     );
 }
 

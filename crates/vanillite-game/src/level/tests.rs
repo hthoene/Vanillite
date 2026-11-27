@@ -282,6 +282,21 @@ mod pistons {
     }
 
     #[test]
+    fn piston_event_names_the_moved_blocks_and_lends_the_level() {
+        let mut level = level();
+        let hooks = std::sync::Arc::new(super::hook_reads::Reads::default());
+        level.set_hooks(hooks.clone());
+        level.set_block_and_update(at(0), piston(ids::PISTON, Direction::East));
+        level.set_block_and_update(at(1), ids::STONE.default_state());
+        level.set_block_and_update(BlockPos::new(0, Y, 1), ids::REDSTONE_BLOCK.default_state());
+        run(&mut level, 4);
+        let seen = hooks.seen(vanillite_abi::event::BLOCK_PISTON);
+        let (state, text) = seen.first().expect("piston event");
+        assert!(state.is_some_and(|s| s.is(ids::PISTON)), "{state:?}");
+        assert_eq!(text, &format!("1,{Y},0"));
+    }
+
+    #[test]
     fn piston_extends_and_retracts() {
         let mut level = level();
         level.set_block_and_update(at(0), piston(ids::PISTON, Direction::East));
@@ -612,4 +627,109 @@ fn dispenser_triggers_and_fails_empty_and_hopper_locks() {
     let events = &level.output().level_events;
     assert_eq!(events.len(), 1);
     assert_eq!((events[0].event, events[0].pos), (1001, dispenser));
+}
+
+/// Plugin hooks that read the world they are lent while the level fires its events.
+mod hook_reads {
+    use std::sync::Mutex;
+
+    use vanillite_base::{BlockPos, Vec3};
+    use vanillite_data::block::{BlockState, ids};
+
+    use vanillite_worldgen::behaviour::StateExt;
+
+    use super::{flat_level, tick, update};
+    use crate::hooks::{Event, GameHooks, HookWorld, NewText};
+    use crate::level::explosion::BlockInteraction;
+
+    /// Records per event the block at the event's position as read through the lent level
+    /// and the event text; empties the block list of explosions when `keep_blocks`.
+    #[derive(Default)]
+    pub(super) struct Reads {
+        seen: Mutex<Vec<(u32, Option<BlockState>, String)>>,
+        pub(super) keep_blocks: bool,
+    }
+
+    impl Reads {
+        pub(super) fn seen(&self, kind: u32) -> Vec<(Option<BlockState>, String)> {
+            let seen = self.seen.lock().unwrap();
+            seen.iter()
+                .filter(|s| s.0 == kind)
+                .map(|s| (s.1, s.2.clone()))
+                .collect()
+        }
+    }
+
+    impl GameHooks for Reads {
+        fn wants(&self, kind: u32) -> bool {
+            use vanillite_abi::event;
+            matches!(
+                kind,
+                event::ENTITY_EXPLODE | event::BLOCK_FLUID_FLOW | event::BLOCK_PISTON
+            )
+        }
+
+        fn event(&self, world: HookWorld<'_>, event: &mut Event) {
+            let state = world.level.and_then(|l| l.loaded_block(event.pos));
+            self.seen
+                .lock()
+                .unwrap()
+                .push((event.kind, state, event.text.clone()));
+            if event.kind == vanillite_abi::event::ENTITY_EXPLODE && self.keep_blocks {
+                event.text_out = Some(NewText::Plain(String::new()));
+            }
+        }
+    }
+
+    #[test]
+    fn explosion_names_its_blocks_and_a_plugin_can_keep_them() {
+        let mut level = flat_level();
+        let hooks = std::sync::Arc::new(Reads {
+            keep_blocks: true,
+            ..Reads::default()
+        });
+        level.set_hooks(hooks.clone());
+        let target = BlockPos::new(0, -60, 0);
+        level.set_block(target, ids::STONE.default_state(), update::ALL);
+        level.explode(
+            None,
+            None,
+            Vec3::new(0.5, -59.5, 0.5),
+            3.0,
+            BlockInteraction::Destroy,
+        );
+        let seen = hooks.seen(vanillite_abi::event::ENTITY_EXPLODE);
+        let (state, text) = seen.first().expect("explosion event");
+        assert!(
+            state.is_some_and(|s| s.is(ids::STONE)),
+            "read in the handler: {state:?}"
+        );
+        assert!(text.split(';').any(|p| p == "0,-60,0"), "{text}");
+        assert!(
+            level.block(target).is(ids::STONE),
+            "the plugin kept every block"
+        );
+        assert!(level.block(BlockPos::new(0, -61, 0)).is(ids::GRASS_BLOCK));
+    }
+
+    #[test]
+    fn fluid_flow_lends_the_level() {
+        let mut level = flat_level();
+        let hooks = std::sync::Arc::new(Reads::default());
+        level.set_hooks(hooks.clone());
+        level.set_block(
+            BlockPos::new(0, -60, 0),
+            ids::WATER.default_state(),
+            update::ALL,
+        );
+        for _ in 0..10 {
+            tick(&mut level);
+        }
+        let seen = hooks.seen(vanillite_abi::event::BLOCK_FLUID_FLOW);
+        assert!(!seen.is_empty(), "no flow event");
+        assert!(
+            seen.iter().all(|(state, _)| state.is_some()),
+            "every handler could read the level"
+        );
+    }
 }

@@ -144,9 +144,10 @@ pub fn is_missile_kind(t: EntityTypeId) -> bool {
 #[derive(Clone, Debug)]
 pub struct MissileData {
     pub kind: MissileKind,
-    /// The entity that shot it (`Projectile.owner`), when loaded.
+    /// The entity that shot it (`Projectile.owner`), when loaded; looked up again by
+    /// `owner_uuid` every tick ([`resolve_owner`]).
     pub owner: Option<EntityId>,
-    /// The owner's UUID (kept when the owner is not loaded).
+    /// The owner's UUID (`EntityReference`; kept when the owner is not loaded).
     pub owner_uuid: Option<u128>,
     /// `leftOwner`.
     pub left_owner: bool,
@@ -415,9 +416,17 @@ pub fn tick(
     cx: &mut MobContext,
     id: EntityId,
 ) {
-    let Some(kind) = ents.missile(id).map(|d| d.kind) else {
+    let Some((kind, owner, owner_uuid)) = ents.missile(id).map(|d| (d.kind, d.owner, d.owner_uuid))
+    else {
         return;
     };
+    // `getOwner()`: a respawned or relogged owner is a new entity, a gone one none.
+    let resolved = resolve_owner(ents, owner, owner_uuid);
+    if resolved != owner
+        && let Some(d) = ents.missile_mut(id)
+    {
+        d.owner = resolved;
+    }
     {
         let mut t = MissileTick {
             level,
@@ -448,6 +457,23 @@ pub fn tick(
     if ents.missile(id).is_some_and(|d| d.removed) {
         cx.discarded.push(id);
     }
+}
+
+/// `Projectile.getOwner` (`EntityReference.getEntity`): the entity `owner` while it is still
+/// the one with `uuid`, else the entity of this world with that UUID now (a respawned or
+/// relogged player, a mob of a reloaded chunk); `None` while there is none (an offline owner).
+/// Without a UUID the entity itself while it exists.
+pub fn resolve_owner(
+    ents: &Entities,
+    owner: Option<EntityId>,
+    uuid: Option<u128>,
+) -> Option<EntityId> {
+    let Some(uuid) = uuid else {
+        return owner.filter(|&o| ents.store.contains(o));
+    };
+    owner
+        .filter(|&o| ents.store.get(o).is_some_and(|e| e.uuid() == uuid))
+        .or_else(|| ents.store.by_uuid(uuid))
 }
 
 /// What a projectile is about to hit, for [`hit_event`].
@@ -481,19 +507,16 @@ pub fn reverse(
     rot: Rotation,
     random: &mut impl vanillite_base::random::RandomSource,
 ) -> (Vec3, Rotation) {
-    if let Some(e) = ents.store.get(deflector) {
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
-            env.out,
-            None,
-            e.pos(),
-            "minecraft:entity.breeze.deflect",
-            vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
-            1.0,
-            1.0,
-            seed,
-        );
-    }
+    crate::survival::play_entity_sound(
+        env.out,
+        ents,
+        None,
+        deflector,
+        "minecraft:entity.breeze.deflect",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+        1.0,
+        1.0,
+    );
     let turn = 170.0 + random.next_float() * 20.0;
     (
         velocity * -0.5,
@@ -544,7 +567,7 @@ pub fn hit_event(
             ev.to = crate::hooks::Place::at(at);
         }
     }
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::split(level, ents), &mut ev);
     !ev.cancelled
 }
 

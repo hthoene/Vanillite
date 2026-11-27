@@ -1,0 +1,101 @@
+{
+  "description": "A charged creeper explodes next to a zombie, a skeleton and a creeper: Creeper.killedEntity rolls charged_creeper/root for the first kill only (droppedSkulls).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:obsidian"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:obsidian"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:obsidian"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:obsidian"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:zombie 6.5 -60 7.5 {UUID:[I;1,2,3,6],NoAI:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:skeleton 8.5 -60 7.5 {UUID:[I;1,2,3,7],NoAI:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:creeper 7.5 -60 9.5 {UUID:[I;1,2,3,8],NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:creeper 7.5 -60 6.5 {UUID:[I;1,2,3,9],powered:1b,Fuse:2,ignited:1b}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

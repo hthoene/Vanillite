@@ -1,0 +1,95 @@
+{
+  "description": "An oak boat on the ground tied to a fence knot 9 blocks away (leash from NBT): Leashable.tickLeash runs for boats too (four-point capable leashee, elastic pull towards the knot, angular momentum).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        8
+      ],
+      "block": "minecraft:oak_fence"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:oak_boat 11.5 -60 8.5 {UUID:[I;1,2,3,1],leash:[I;2,-60,8]}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

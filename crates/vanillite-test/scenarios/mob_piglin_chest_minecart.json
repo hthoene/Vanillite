@@ -1,0 +1,125 @@
+{
+  "description": "A player in golden boots opens a chest minecart next to an idle piglin: MinecartChest.interact calls PiglinAi.angerNearbyPiglins, so the piglin gets angry.",
+  "tier": "fast",
+  "player_state": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -57,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -57,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -57,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -57,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ],
+      "inventory": [
+        [
+          36,
+          "minecraft:golden_boots",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "piglin",
+      "type": "minecraft:piglin",
+      "pos": [
+        7.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 11,
+      "finalize": false
+    },
+    {
+      "name": "cart",
+      "type": "minecraft:chest_minecart",
+      "pos": [
+        9.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 13,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 10,
+      "op": "interact",
+      "entity": "steve",
+      "target": "cart"
+    }
+  ]
+}

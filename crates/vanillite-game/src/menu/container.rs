@@ -1159,7 +1159,7 @@ impl ContainerView<'_> {
                 value: i64::from(xp),
                 ..crate::hooks::Event::new(vanillite_abi::event::FURNACE_EXTRACT)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
             xp = i32::try_from(ev.value.clamp(0, MAX_XP)).unwrap_or(0);
         }
         let at = self.player_pos;
@@ -1358,7 +1358,7 @@ fn open_with(
             },
             ..crate::hooks::Event::new(vanillite_abi::event::INVENTORY_OPEN)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
         if ev.cancelled {
             return;
         }
@@ -1652,7 +1652,7 @@ pub fn close(
     if let Some(hooks) = level.hooks_for(vanillite_abi::event::INVENTORY_CLOSE) {
         let mut ev = menu_event(&menu, vanillite_abi::event::INVENTORY_CLOSE);
         ev.pos = menu.pos;
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
     }
     if let Some(sink) = sink {
         sink.send(&ContainerCloseClientbound {

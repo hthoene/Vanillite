@@ -208,6 +208,6 @@ pub fn player_event(
         ..crate::hooks::Event::new(kind)
     };
     fill(&mut event);
-    hooks.event(&mut event);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut event);
     Some(event)
 }

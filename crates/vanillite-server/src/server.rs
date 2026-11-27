@@ -324,12 +324,12 @@ impl ServerBuilder {
         // Plugins load first: they register commands, events and slot providers.
         let plugins = crate::plugins::load(&dir, &config);
         let parallel = config.server.tick.parallel_dimensions;
-        // One core stays with the tick threads: dimensions without players sleep between their
-        // ticks, so they do not take a core each (Vanilla: cores minus the server thread).
-        let budget = Arc::new(Budget::new(Limits::detect(
-            config.server.budget.cpu,
-            config.server.budget.memory,
-        )));
+        // One worker per core at a lower OS priority: the tick threads take a core whenever they
+        // need one, generation gets every core they leave.
+        let budget = Arc::new(Budget::new(
+            Limits::detect(config.server.budget.cpu, config.server.budget.memory),
+            config.server.threads.compute_nice,
+        ));
         if let Some(release) = self.memory_release {
             budget.set_memory_release(release);
         }
@@ -350,7 +350,8 @@ impl ServerBuilder {
             "Slot scheduler: {origin} ({} compute workers)",
             scheduler.workers()
         );
-        let compute = Compute::new(Arc::from(scheduler));
+        let compute = Compute::new(Arc::from(scheduler))
+            .with_phase_threads(usize::from(config.server.threads.tick_phases));
         let (tracker_provider, origin) = self
             .entity_tracker
             .take()
@@ -574,6 +575,7 @@ impl ServerBuilder {
         let random_sequences = Arc::new(std::sync::Mutex::new(
             vanillite_game::random_sequences::RandomSequences::new(seed),
         ));
+        let server_icon = crate::admin::server_icon_png(&dir, &config.properties.level_name);
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
@@ -587,7 +589,7 @@ impl ServerBuilder {
                 config.properties.enforce_whitelist,
             ),
             handle: std::sync::OnceLock::new(),
-            commands,
+            commands: std::sync::RwLock::new(Arc::new(commands)),
             online_mode: config.properties.online_mode,
             dimensions: dimensions.clone(),
             level,
@@ -612,6 +614,11 @@ impl ServerBuilder {
             plugins,
             version: self.version.clone(),
             motd: std::sync::Mutex::new(None),
+            server_data: std::sync::RwLock::new(crate::admin::server_data(
+                vanillite_protocol::text::Component::text(config.properties.motd.clone()),
+                server_icon.clone(),
+            )),
+            server_icon,
             this: this.clone(),
         });
         global
@@ -1279,6 +1286,28 @@ impl Server {
             }
         }
         self.global.plugins.run_global_tasks(self.tick_count);
+        self.add_late_plugin_commands();
+    }
+
+    /// Commands plugins registered after the start (Bukkit plugins in `onEnable`), collected
+    /// over the tick: a new tree with them appended, sent to every player again.
+    fn add_late_plugin_commands(&self) {
+        let current = self.global.commands();
+        let Some(next) = self
+            .global
+            .plugins
+            .add_late_commands(&current, vanillite_game::commands::CommandId::Plugin)
+        else {
+            return;
+        };
+        *self
+            .global
+            .commands
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
+        for player in self.global.players.snapshot() {
+            crate::commands::permissions_changed(&self.global, player.uuid.0);
+        }
     }
 
     /// `tickChildren`'s clocks and the game time sync every second (by default).
@@ -1557,6 +1586,12 @@ impl Server {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             if let Some(motd) = motd {
+                let data = crate::admin::server_data(motd.clone(), self.global.server_icon.clone());
+                *self
+                    .global
+                    .server_data
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = data;
                 net.set_motd(motd);
             }
             // `rebuildServerStatus` every 5 seconds; the Query names every second.
@@ -2494,6 +2529,7 @@ impl Server {
             inbox: Arc::new(Mutex::new(
                 vanillite_game::player::chat::ChatInbox::default(),
             )),
+            transferred: false,
         };
         self.place_new_player(arrival, "127.0.0.1".to_owned());
         tx

@@ -268,10 +268,15 @@ fn drops(
                 ));
             }
             let entity = env.level.block_entity(pos).cloned();
+            let kept = env.level.block_entities.kept_components(pos).cloned();
             let components = |id: u16| {
-                entity
-                    .as_ref()
-                    .and_then(|e| vanillite_game::level::block_entity::collect_component(e, id))
+                entity.as_ref().and_then(|e| {
+                    vanillite_game::level::block_entity::collect_component_with(
+                        e,
+                        kept.as_ref(),
+                        id,
+                    )
+                })
             };
             let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
             let tool_level = |name: &str| data.enchantment_level(&tool, name);

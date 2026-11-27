@@ -702,6 +702,7 @@ impl Digging {
                 // the block as it is and corrects the client.
                 if ctx.hooks.wants(vanillite_abi::event::PLAYER_INTERACT)
                     && !ctx.hooks.player_interact(
+                        ctx.level.hook_world(),
                         ctx.actor.uuid,
                         vanillite_abi::interact::LEFT_CLICK_BLOCK,
                         hand_index(Hand::MainHand),
@@ -832,7 +833,10 @@ impl Digging {
         if block_action_restricted(ctx, pos) {
             return false;
         }
-        if !ctx.hooks.block_break(ctx.actor.uuid, pos, state) {
+        if !ctx
+            .hooks
+            .block_break(ctx.level.hook_world(), ctx.actor.uuid, pos, state)
+        {
             block_update(sink, ctx.level, pos);
             return false;
         }
@@ -894,7 +898,7 @@ impl Digging {
         // then drops nothing.
         let double_plant = is_double_plant(state);
         if double_plant && !ctx.actor.creative() {
-            drop_resources(ctx, state, pos, &tool, None);
+            drop_resources(ctx, state, pos, &tool, None, None);
         }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks. `BaseFireBlock` sends the extinguish sound to everyone instead.
@@ -952,6 +956,10 @@ impl Digging {
             .level
             .level_mut()
             .and_then(|l| l.block_entity(pos).cloned());
+        let kept = ctx
+            .level
+            .level_mut()
+            .and_then(|l| l.block_entities.kept_components(pos).cloned());
         if ctx.actor.creative()
             && let Some(entity) = &entity
             && let Some(level) = ctx.level.level_mut()
@@ -994,7 +1002,7 @@ impl Digging {
                 food.add_exhaustion(0.005);
             }
             if !double_plant {
-                drop_resources(ctx, state, pos, &tool, entity.as_ref());
+                drop_resources(ctx, state, pos, &tool, entity.as_ref(), kept.as_ref());
             }
             // `TurtleEggBlock.playerDestroy`: one egg less (`decreaseEggs`).
             if state.block() == vanillite_data::block::ids::TURTLE_EGG
@@ -1122,6 +1130,7 @@ impl Digging {
                 // `mayInteract` refuses: Vanilla answers with the build limit message.
                 build_limit_message(sink, true, max_y);
             } else if !ctx.hooks.player_interact(
+                ctx.level.hook_world(),
                 ctx.actor.uuid,
                 vanillite_abi::interact::USE_ON_BLOCK,
                 hand_index(p.hand),
@@ -1343,7 +1352,7 @@ impl Digging {
             return false;
         }
         let used = item::item_id(&stack);
-        if used == vanillite_data::item::ids::FILLED_MAP
+        if crate::map::is_map_item(used.0)
             && let Some(level) = ctx.level.level_mut()
             && let Some(ok) = crate::map::use_on_banner(level, &stack, pos)
         {
@@ -1437,6 +1446,20 @@ impl Digging {
             ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
             any_block_use(ctx, hand, pos);
             return true;
+        }
+        // `BrushItem.useOn`: the click's ray hit this block, brushing starts (`CONSUME`: no
+        // swing, but the statistic and the triggers of a used item).
+        if used == vanillite_data::item::ids::BRUSH {
+            if ctx.actor.game_mode == GameMode::Adventure
+                && !item_use::can_place_on(ctx, &stack, pos)
+            {
+                return false;
+            }
+            self.start_using = Some(hand);
+            ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+            ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
+            any_block_use(ctx, hand, pos);
+            return false;
         }
         let click = item_use::Click { hand, pos, face };
         if let Some(result) = item_use::use_on(ctx, click, sink) {
@@ -1664,7 +1687,7 @@ impl Digging {
                 state: Some(ctx.level.block(target)),
                 ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_IGNITE)
             };
-            ctx.hooks.event(&mut ev);
+            ctx.hooks.event(ctx.level.hook_world(), &mut ev);
             if ev.cancelled {
                 return false;
             }
@@ -1788,7 +1811,10 @@ impl Digging {
         if !ctx.level.is_unobstructed(state, target) {
             return false;
         }
-        if !ctx.hooks.block_place(ctx.actor.uuid, target, state) {
+        if !ctx
+            .hooks
+            .block_place(ctx.level.hook_world(), ctx.actor.uuid, target, state)
+        {
             return false;
         }
         if !ctx.level.set_block(target, state, update::ALL_IMMEDIATE) {
@@ -2011,6 +2037,7 @@ impl Digging {
             return false;
         }
         if !ctx.hooks.player_interact(
+            ctx.level.hook_world(),
             ctx.actor.uuid,
             vanillite_abi::interact::USE_ITEM,
             hand_index(hand),
@@ -2363,14 +2390,16 @@ fn drop_resources(
     pos: BlockPos,
     tool: &ItemStack,
     entity: Option<&crate::level::BlockEntity>,
+    kept: Option<&vanillite_nbt::Compound>,
 ) {
     let mut stacks = Vec::new();
     {
         let data = ctx.data;
         let enchantment_level = |name: &str| data.enchantment_level(tool, name);
         let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
-        let components =
-            |id: u16| entity.and_then(|e| crate::level::block_entity::collect_component(e, id));
+        let components = |id: u16| {
+            entity.and_then(|e| crate::level::block_entity::collect_component_with(e, kept, id))
+        };
         let loot = BlockLootContext {
             state,
             tool,

@@ -53,9 +53,21 @@ impl Instrument {
     }
 }
 
-/// The `instrument` of a stack: a registry entry or a direct one.
+/// The `instrument` of a stack: a registry entry or a direct one; a goat horn without a patch
+/// has its default `ponder_goat_horn`.
 pub fn instrument(stack: &ItemStack) -> Option<Instrument> {
-    let value = stack.component(ids::INSTRUMENT)?;
+    let Some(value) = stack.component(ids::INSTRUMENT) else {
+        if stack.item != vanillite_data::item::ids::GOAT_HORN.0
+            || stack.patch().is_some_and(|p| p.is_removed(ids::INSTRUMENT))
+        {
+            return None;
+        }
+        let data = super::play::game_data()?;
+        let id = *data
+            .holder_set("minecraft:instrument", "minecraft:ponder_goat_horn")
+            .first()?;
+        return data.instruments.get(usize::try_from(id).ok()?).cloned();
+    };
     let mut r = Reader::new(value);
     let id = r.varint().ok()?;
     if id != 0 {
@@ -132,7 +144,8 @@ pub fn drop_from_player(
     };
     let pos = e.pos();
     let rot = e.rot();
-    let eye_y = pos.y + crate::survival::player::eye_height(e.dims().height) - 0.3;
+    // `getEyeY() - 0.3F`.
+    let eye_y = pos.y + crate::survival::player::eye_height(e.dims().height) - f64::from(0.3f32);
     let deg = std::f32::consts::PI / 180.0;
     let sin_x = vanillite_base::math::sin(f64::from(rot.x_rot * deg));
     let cos_x = vanillite_base::math::cos(f64::from(rot.x_rot * deg));
@@ -242,7 +255,7 @@ pub fn use_item(
         super::using::start(ents, env, network_ids, player, hand);
         return true;
     }
-    if stack.component(ids::INSTRUMENT).is_some() {
+    if instrument(&stack).is_some() {
         use_instrument(ents, env, network_ids, player, hand, &stack, creative, pos);
         return true;
     }
@@ -330,15 +343,15 @@ fn use_empty_map(
         p.stats.award(Stat::of(StatType::Used, stack.item), 1);
         p.inventory.get(i).clone()
     };
-    play_sound(
+    crate::survival::play_entity_sound(
         env.out,
+        ents,
         None,
-        pos,
+        player,
         "minecraft:ui.cartography_table.take_result",
         SoundSource::Players,
         1.0,
         1.0,
-        sound_seed(),
     );
     let at = crate::player::play::block_pos_of(pos);
     let map = crate::map::create(maps, at.x, at.z, 0, true, false, env.dimension.to_owned());
@@ -368,15 +381,15 @@ fn use_instrument(
         return;
     };
     super::using::start(ents, env, network_ids, player, hand);
-    play_sound(
+    crate::survival::play_entity_sound(
         env.out,
+        ents,
         Some(player),
-        pos,
+        player,
         &instrument.sound,
         SoundSource::Records,
         instrument.range / 16.0,
         1.0,
-        sound_seed(),
     );
     let i = hand_index(ents, player, hand);
     let Some(p) = ents.player_mut(player) else {

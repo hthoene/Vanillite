@@ -1,0 +1,85 @@
+{
+  "description": "Kills with a crossbow and by a player (#230): a Piercing IV arrow kills five mobs of five types in a row (killed_by_arrow with the arrow's kill list: arbalistic and two victims), and a player kills a pillager wearing the ominous banner with a head drop chance of 2 (player_killed_entity before the death loot: voluntary_exile).",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_predicates",
+  "progress_state": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -56,
+      11
+    ]
+  ],
+  "ticks": 5,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:chicken 2.5 -58.9 4.5 {NoAI:1b,NoGravity:1b,Silent:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:rabbit 2.5 -58.8 5.5 {NoAI:1b,NoGravity:1b,Silent:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:parrot 2.5 -58.9 6.5 {NoAI:1b,NoGravity:1b,Silent:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:salmon 2.5 -58.7 7.5 {NoAI:1b,NoGravity:1b,Silent:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:cod 2.5 -58.65 8.5 {NoAI:1b,NoGravity:1b,Silent:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:pillager 6.5 -60 1.5 {NoAI:1b,Silent:1b,equipment:{head:{id:\"minecraft:white_banner\",count:1,components:{\"minecraft:banner_patterns\":[{color:\"cyan\",pattern:\"minecraft:rhombus\"},{color:\"light_gray\",pattern:\"minecraft:stripe_bottom\"},{color:\"gray\",pattern:\"minecraft:stripe_center\"},{color:\"light_gray\",pattern:\"minecraft:border\"},{color:\"black\",pattern:\"minecraft:stripe_middle\"},{color:\"light_gray\",pattern:\"minecraft:half_horizontal\"},{color:\"light_gray\",pattern:\"minecraft:circle\"},{color:\"black\",pattern:\"minecraft:border\"}],\"minecraft:item_name\":{translate:\"block.minecraft.ominous_banner\"}}}},drop_chances:{head:2.0f}}"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:crossbow",
+      "components": "{\"minecraft:charged_projectiles\":[{id:\"minecraft:arrow\",count:1}],\"minecraft:enchantments\":{\"minecraft:piercing\":4}}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "damage @e[type=minecraft:pillager,limit=1] 100 minecraft:player_attack by @p"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false",
+    "spawn_mobs": "false",
+    "mob_drops": "false"
+  }
+}

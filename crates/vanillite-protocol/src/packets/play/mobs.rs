@@ -107,7 +107,8 @@ pub struct MoveVehicleBack {
     pub x_rot: f32,
 }
 
-/// `animate`: an entity animation (4 = critical hit, 5 = magic critical hit).
+/// `animate`: an entity animation (0 = wake up, players only: the client casts the entity to
+/// a player; 1 = critical hit, 2 = magic critical hit). Hand swings are `swing_animation`.
 #[derive(Debug, Clone, PartialEq, Eq, Packet)]
 #[packet(state = Play, dir = Clientbound, name = "animate")]
 pub struct Animate {

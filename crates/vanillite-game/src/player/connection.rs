@@ -796,6 +796,7 @@ impl Connection {
                 // swing.
                 let swing = !play.hooks.wants(vanillite_abi::event::PLAYER_INTERACT)
                     || play.hooks.player_interact(
+                        play.level.hook_world(),
                         play.actor.uuid,
                         vanillite_abi::interact::LEFT_CLICK_AIR,
                         vanillite_abi::hand::MAIN,

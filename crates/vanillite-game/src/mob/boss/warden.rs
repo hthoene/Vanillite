@@ -189,8 +189,8 @@ fn is_digging_or_emerging(ents: &Entities, id: EntityId) -> bool {
         .is_some_and(|e| matches!(e.pose(), Pose::Digging | Pose::Emerging))
 }
 
-/// `canTargetEntity(entity)`: a living entity that is not creative or spectating, not a
-/// warden, alive.
+/// `canTargetEntity(entity)`: a living entity that is not creative or spectating, not an
+/// armour stand or a warden, alive.
 pub fn can_target_entity(ents: &Entities, entity: Option<EntityId>) -> bool {
     let Some(entity) = entity else {
         return false;
@@ -200,7 +200,7 @@ pub fn can_target_entity(ents: &Entities, entity: Option<EntityId>) -> bool {
             && matches!(p.game_mode, GameMode::Survival | GameMode::Adventure);
     }
     ents.mob(entity)
-        .is_some_and(|m| m.is_alive() && m.kind != Kind::Warden)
+        .is_some_and(|m| m.is_alive() && !matches!(m.kind, Kind::Warden | Kind::ArmorStand))
 }
 
 /// `getTarget()`: the attack target memory.
@@ -363,7 +363,6 @@ pub fn apply_darkness_around(
     source: Option<EntityId>,
     radius: f64,
 ) {
-    let _ = source;
     let darkness = EffectInstance::with_flags(
         MobEffect::DARKNESS,
         DARKNESS_DURATION,
@@ -391,7 +390,7 @@ pub fn apply_darkness_around(
         }
     }
     for id in targets {
-        ents.add_effect(id, darkness.clone(), true);
+        crate::effect::living::add_detached_from(ents, id, darkness.clone(), source);
     }
 }
 

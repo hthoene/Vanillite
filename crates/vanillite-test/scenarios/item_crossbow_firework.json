@@ -1,0 +1,93 @@
+{
+  "description": "A crossbow loaded with firework rockets (#230, I3-33): CrossbowItem.createProjectile makes a FireworkRocketEntity shot at an angle from eyeY-0.15 with power 1.6. A rocket with a star explodes on the pig it hits (5+2 damage), a starless one fired into a wall glides along and explodes when its lifetime ends; each costs the crossbow 3 durability.",
+  "tier": "fast",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "time": 6000,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        1
+      ],
+      "to": [
+        10,
+        -56,
+        5
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        9.5
+      ],
+      "rot": [
+        -90,
+        10
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        3.5
+      ],
+      "rot": [
+        -90,
+        0
+      ]
+    },
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        7.5,
+        -60.0,
+        9.5
+      ],
+      "seed": 3,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:crossbow",
+      "components": "{\"minecraft:charged_projectiles\":[{id:\"minecraft:firework_rocket\",count:1,components:{\"minecraft:fireworks\":{flight_duration:1,explosions:[{shape:\"small_ball\",colors:[I;16711680]}]}}}]}"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:crossbow",
+      "components": "{\"minecraft:charged_projectiles\":[{id:\"minecraft:firework_rocket\",count:1}]}"
+    }
+  ]
+}

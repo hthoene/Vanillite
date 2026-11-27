@@ -182,6 +182,10 @@ pub(super) fn piglin_brain() -> BrainSpec {
         vec![
             Spec::look_at_target_sink(45, 90),
             Spec::move_to_target_sink(),
+            Spec::of(bh::Behavior::InteractWithDoor {
+                last_node: None,
+                cooldown: 0,
+            }),
             Spec::copy_with_expiry(is_baby, M::NearestVisibleNemesis, M::AvoidTarget, 100, 140),
             Spec::copy_with_expiry(
                 is_near_zombified,
@@ -352,6 +356,10 @@ pub(super) fn brute_brain() -> BrainSpec {
         vec![
             Spec::look_at_target_sink(45, 90),
             Spec::move_to_target_sink(),
+            Spec::of(bh::Behavior::InteractWithDoor {
+                last_node: None,
+                cooldown: 0,
+            }),
             Spec::of(bh::Behavior::StopBeingAngryIfTargetDead),
         ],
     );

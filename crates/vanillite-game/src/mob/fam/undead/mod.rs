@@ -193,6 +193,8 @@ pub enum Goal {
     HurtByIgnoringDrowned(HurtBy),
     /// `SpearUseGoal(mob, 1.0, 1.0, 10.0F, 2.0F)` of the zombies.
     SpearUse(zombies::SpearUse),
+    /// `MoveThroughVillageGoal(mob, 1.0, true, 4, canBreakDoors)` of the zombies.
+    MoveThroughVillage { poi: BlockPos },
     /// The melee goal of a skeleton without a bow (`AbstractSkeleton.meleeGoal`).
     SkeletonMelee(Melee),
     /// `Spider.SpiderTargetGoal` for other targets than players.
@@ -273,7 +275,8 @@ fn goal_group(g: &Goal) -> Group {
         | Goal::DrownedGoToBeach(_)
         | Goal::DrownedSwimUp { .. }
         | Goal::HurtByIgnoringDrowned(_)
-        | Goal::SpearUse(_) => Group::Zombie,
+        | Goal::SpearUse(_)
+        | Goal::MoveThroughVillage { .. } => Group::Zombie,
         Goal::SkeletonMelee(_) => Group::Skeleton,
         Goal::SpiderTarget(_)
         | Goal::SilverfishWakeUpFriends
@@ -849,13 +852,14 @@ pub fn living_cause(h: &Hurt<'_, '_>, source: &DamageSource) -> Option<EntityId>
         .filter(|&c| h.ents.mob(c).is_some() || h.ents.player(c).is_some())
 }
 
-/// Adds an effect to a living target (mob or player).
+/// Adds an effect to a living target (mob or player) from `source`.
 pub fn add_effect(
     ents: &mut crate::entities::Entities,
     target: EntityId,
     effect: crate::effect::EffectInstance,
+    source: Option<EntityId>,
 ) {
-    crate::effect::living::add_detached(ents, target, effect);
+    crate::effect::living::add_detached_from(ents, target, effect, source);
 }
 
 /// The rotation of a freshly spawned mob looking along `y_rot`.

@@ -104,8 +104,9 @@ pub fn spawn_rocket(
     missile::spawn(ents, network_ids, uuid, pos, velocity, rot, d)
 }
 
-/// The rocket random of a crossbow shot: the rocket is made first (its random draws the start
-/// motion and lifetime), then `shoot` draws the spread from it.
+/// A crossbow's rocket (`CrossbowItem.createProjectile`, `shootProjectile`): the rocket is made
+/// first (its random draws the start motion and lifetime), then `shoot` draws the spread from
+/// it and sets the motion.
 #[allow(clippy::too_many_arguments)]
 pub fn crossbow_rocket(
     ents: &mut Entities,
@@ -125,7 +126,7 @@ pub fn crossbow_rocket(
     d.owner = Some(owner);
     d.owner_uuid = ents.store.get(owner).map(|e| e.uuid());
     let uuid = crate::mob::new_uuid();
-    missile::spawn(
+    let id = missile::spawn(
         ents,
         network_ids,
         uuid,
@@ -136,7 +137,12 @@ pub fn crossbow_rocket(
             ..rot
         },
         d,
-    )
+    );
+    // `shoot`: `needsSync`.
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.set_flags(EntityFlags::HAS_IMPULSE, true);
+    }
+    id
 }
 
 /// `FireworkRocketItem.useOn`: a rocket from the clicked point, 0.15 off the face (gliding
@@ -192,16 +198,15 @@ pub fn use_while_gliding(
     }
     // `dropAllLeashConnections`: the player's leashed mobs go free.
     if crate::mob::tame::drop_leashes_of(ents, env, player) {
-        let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
-        play_sound(
+        crate::survival::play_entity_sound(
             env.out,
+            ents,
             None,
-            pos,
+            player,
             "minecraft:item.lead.break",
             SoundSource::Neutral,
             1.0,
             1.0,
-            crate::survival::sound_seed(),
         );
     }
     let Some(pos) = ents.store.get(player).map(|e| e.pos()) else {

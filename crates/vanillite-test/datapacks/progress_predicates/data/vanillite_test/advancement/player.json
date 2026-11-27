@@ -1,0 +1,199 @@
+{
+  "criteria": {
+    "food": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:type_specific/player": {
+              "food": {
+                "level": 20
+              }
+            }
+          }
+        }
+      }
+    },
+    "recipe": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:type_specific/player": {
+              "recipes": {
+                "minecraft:diamond_block": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "advancement": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:type_specific/player": {
+              "advancements": {
+                "minecraft:husbandry/root": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "criterion": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:type_specific/player": {
+              "advancements": {
+                "minecraft:husbandry/root": {
+                  "consumed_item": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "input": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:type_specific/player": {
+              "input": {
+                "forward": false,
+                "jump": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "input_other": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:type_specific/player": {
+              "input": {
+                "jump": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "sky": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:location": {
+              "can_see_sky": true,
+              "light": {
+                "light": {
+                  "min": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "water": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:location": {
+              "fluid": {
+                "fluids": "minecraft:water",
+                "state": {
+                  "falling": "false"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "fortress": {
+      "trigger": "minecraft:tick",
+      "conditions": {
+        "player": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:location": {
+              "structures": "minecraft:fortress"
+            }
+          }
+        }
+      }
+    },
+    "effect_from_player": {
+      "trigger": "minecraft:effects_changed",
+      "conditions": {
+        "source": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "minecraft:player"
+          }
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "food"
+    ],
+    [
+      "recipe"
+    ],
+    [
+      "advancement"
+    ],
+    [
+      "criterion"
+    ],
+    [
+      "input"
+    ],
+    [
+      "input_other"
+    ],
+    [
+      "sky"
+    ],
+    [
+      "water"
+    ],
+    [
+      "fortress"
+    ],
+    [
+      "effect_from_player"
+    ]
+  ]
+}

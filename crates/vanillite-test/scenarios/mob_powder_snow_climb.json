@@ -1,0 +1,105 @@
+{
+  "description": "A rabbit and a fox stuck in a powder snow pit: ClimbOnTopOfPowderSnowGoal (#powder_snow_walkable_mobs) jumps them out.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -63,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 19,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -62,
+        3
+      ],
+      "to": [
+        12,
+        -61,
+        12
+      ],
+      "block": "minecraft:powder_snow"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:rabbit 5.5 -62 5.5"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:fox 9.5 -62 9.5"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

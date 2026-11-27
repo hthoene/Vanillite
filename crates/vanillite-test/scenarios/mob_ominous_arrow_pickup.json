@@ -1,0 +1,39 @@
+{
+  "description": "An ominous item spawner shoots its arrow down (OminousItemSpawner.spawnProjectile sets itself as the owner): the arrow cannot be picked up (AbstractArrow.setOwner: Pickup.DISALLOWED), so it stays next to the player.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 50,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        9.0,
+        -60.0,
+        8.5
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:ominous_item_spawner 8.0 -57.0 8.5 {item:{id:\"minecraft:arrow\",count:1},spawn_item_after_ticks:5L}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

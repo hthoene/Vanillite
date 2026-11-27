@@ -3,11 +3,9 @@
 //! `charged_projectiles` component (Multishot draws extra free copies, Quick Charge shortens
 //! the charge and changes the sounds); a loaded crossbow fires all its projectiles at once,
 //! spread by Multishot's angle, as arrows that pierce (Piercing) and hit with the crossbow
-//! sound.
+//! sound, or as firework rockets shot at an angle ([`crate::firework::crossbow_rocket`]).
 //!
-//! Firework rockets load like Vanilla but are not shot: firework rocket entities are not
-//! simulated, so a loaded rocket only costs the crossbow its 3 durability. Spectral and tipped
-//! arrows fly as plain arrows (as from bows).
+//! Spectral and tipped arrows fly as plain arrows (as from bows).
 
 use vanillite_base::Vec3;
 use vanillite_base::random::LegacyRandom;
@@ -460,8 +458,21 @@ pub fn shoot(
             }
             None => shot_vector_view(shooter.x_rot, shooter.y_rot, angle),
         };
-        if !rocket {
-            let start = Vec3::new(shooter.pos.x, start_y, shooter.pos.z);
+        let start = Vec3::new(shooter.pos.x, start_y, shooter.pos.z);
+        if rocket {
+            // `new FireworkRocketEntity(level, projectile, shooter, x, eyeY - 0.15, z, true)`.
+            let id = crate::firework::crossbow_rocket(
+                ents,
+                network_ids,
+                shooter.id,
+                start,
+                projectile,
+                to_vec3(dir),
+                power,
+                uncertainty,
+            );
+            ents.launched(id, Some(shooter.id));
+        } else {
             // `Arrow(owner)`: players' arrows can be picked up, free ones in creative only.
             let pickup = if !shooter.player {
                 0

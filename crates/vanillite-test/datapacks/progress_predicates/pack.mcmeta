@@ -1,0 +1,7 @@
+{
+  "pack": {
+    "description": "Vanillite parity test: advancement predicates (item sub-predicates, player and location predicates, effect sources)",
+    "min_format": 121,
+    "max_format": 121
+  }
+}

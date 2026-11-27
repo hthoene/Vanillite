@@ -49,8 +49,10 @@ const MAX_BODY: usize = 64 << 10;
 /// Signaling connections at the same time.
 const MAX_HTTP: usize = 64;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
-/// Payload of one segment; a message has at most 255 segments.
-const SEGMENT: usize = 64 << 10;
+/// Payload of one segment; a message has at most 255 segments. A segment and its count byte
+/// must fit str0m's limit for outgoing messages: its direct API never learns the client's
+/// `a=max-message-size` and keeps the 64 KiB default, refusing anything larger (#182).
+const SEGMENT: usize = (64 << 10) - 1;
 /// `a=max-message-size` the server accepts.
 const MAX_MESSAGE: u32 = 256 << 10;
 /// Data the SCTP layer may hold unacknowledged.
@@ -441,75 +443,15 @@ async fn accept(
         .await
         .filter(|a| !a.ip().is_unspecified())
         .ok_or_else(|| bad("cannot resolve the Host header"))?;
-    let candidate =
-        Candidate::host(candidate_addr, "udp").map_err(|e| bad(&format!("candidate: {e}")))?;
-
-    let now = Instant::now();
-    let rtc = Rtc::builder()
-        .set_ice_lite(true)
-        .set_sctp_max_message_size(MAX_MESSAGE)
-        .set_sctp_max_buffered_amount(SCTP_BUFFER)
-        .build(now);
-    let fingerprint: Fingerprint = offer
-        .fingerprint
-        .parse()
-        .map_err(|e: String| bad(&format!("fingerprint: {e}")))?;
-    let segment = usize::try_from(offer.max_message)
-        .unwrap_or(usize::MAX)
-        .saturating_sub(1)
-        .clamp(1, SEGMENT);
-    let mut conn = NetConn {
-        rtc,
-        destination: candidate_addr,
-        reliable: None,
-        incoming: Vec::new(),
-        remaining: None,
-        queue: std::collections::VecDeque::new(),
-        queued: 0,
-        segment,
-        max_message: shared.config.max_batch_size,
-        out: Vec::new(),
-        game: Vec::new(),
-        closed: None,
-        next_timeout: now,
-        last_receive: now,
-        client_key,
-    };
-    // The client offers `actpass` (or `active`): the server is the DTLS server then.
-    let dtls_active = offer.setup == "passive";
-    // str0m wants its output drained after every change.
-    conn.rtc.direct_api().set_ice_controlling(false);
-    conn.drain();
-    conn.rtc.direct_api().set_remote_ice_credentials(IceCreds {
-        ufrag: offer.ufrag.to_owned(),
-        pass: offer.pwd.to_owned(),
-    });
-    conn.drain();
-    conn.rtc.direct_api().set_remote_fingerprint(fingerprint);
-    conn.drain();
-    conn.rtc
-        .direct_api()
-        .start_dtls(dtls_active)
-        .map_err(|e| (503, format!("DTLS: {e}")))?;
-    conn.drain();
-    conn.rtc.direct_api().start_sctp(dtls_active);
-    conn.drain();
-    if conn.rtc.add_local_candidate(candidate).is_none() {
-        return Err(bad("unusable candidate address"));
-    }
-    conn.drain();
-    let local_creds = conn.rtc.direct_api().local_ice_credentials();
-    let local_fingerprint = conn.rtc.direct_api().local_dtls_fingerprint().to_string();
-    let answer = answer_sdp(
+    let (conn, answer) = connect(
         &offer,
-        &local_creds,
-        &local_fingerprint,
         candidate_addr,
-        dtls_active,
+        client_key,
+        shared.config.max_batch_size,
         &hub.key,
-    );
-
-    let ufrag = local_creds.ufrag.clone();
+        Instant::now(),
+    )?;
+    let ufrag = conn.ufrag.clone();
     let (tx, rx) = mpsc::channel(512);
     {
         let mut sessions = hub.sessions.lock().map_err(|_| (503, "poisoned".into()))?;
@@ -537,6 +479,86 @@ async fn accept(
         hub.leave(&ufrag, from.ip());
     });
     Ok(answer)
+}
+
+/// The server side of an offer: its connection and the answer.
+fn connect(
+    offer: &Offer<'_>,
+    candidate_addr: SocketAddr,
+    client_key: Option<p384::PublicKey>,
+    max_message: usize,
+    key: &p384::SecretKey,
+    now: Instant,
+) -> Result<(NetConn, String), (u16, String)> {
+    let bad = |why: &str| (400u16, why.to_owned());
+    let candidate =
+        Candidate::host(candidate_addr, "udp").map_err(|e| bad(&format!("candidate: {e}")))?;
+    let rtc = Rtc::builder()
+        .set_ice_lite(true)
+        .set_sctp_max_message_size(MAX_MESSAGE)
+        .set_sctp_max_buffered_amount(SCTP_BUFFER)
+        .build(now);
+    let fingerprint: Fingerprint = offer
+        .fingerprint
+        .parse()
+        .map_err(|e: String| bad(&format!("fingerprint: {e}")))?;
+    let segment = usize::try_from(offer.max_message)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(1)
+        .clamp(1, SEGMENT);
+    let mut conn = NetConn {
+        rtc,
+        destination: candidate_addr,
+        reliable: None,
+        incoming: Vec::new(),
+        remaining: None,
+        queue: std::collections::VecDeque::new(),
+        queued: 0,
+        segment,
+        max_message,
+        out: Vec::new(),
+        game: Vec::new(),
+        closed: None,
+        next_timeout: now,
+        last_receive: now,
+        client_key,
+        ufrag: String::new(),
+    };
+    // The client offers `actpass` (or `active`): the server is the DTLS server then.
+    let dtls_active = offer.setup == "passive";
+    // str0m wants its output drained after every change.
+    conn.rtc.direct_api().set_ice_controlling(false);
+    conn.drain();
+    conn.rtc.direct_api().set_remote_ice_credentials(IceCreds {
+        ufrag: offer.ufrag.to_owned(),
+        pass: offer.pwd.to_owned(),
+    });
+    conn.drain();
+    conn.rtc.direct_api().set_remote_fingerprint(fingerprint);
+    conn.drain();
+    conn.rtc
+        .direct_api()
+        .start_dtls(dtls_active)
+        .map_err(|e| (503, format!("DTLS: {e}")))?;
+    conn.drain();
+    conn.rtc.direct_api().start_sctp(dtls_active);
+    conn.drain();
+    if conn.rtc.add_local_candidate(candidate).is_none() {
+        return Err(bad("unusable candidate address"));
+    }
+    conn.drain();
+    let local_creds = conn.rtc.direct_api().local_ice_credentials();
+    let local_fingerprint = conn.rtc.direct_api().local_dtls_fingerprint().to_string();
+    let answer = answer_sdp(
+        offer,
+        &local_creds,
+        &local_fingerprint,
+        candidate_addr,
+        dtls_active,
+        key,
+    );
+    conn.ufrag = local_creds.ufrag;
+    Ok((conn, answer))
 }
 
 fn answer_sdp(
@@ -733,6 +755,8 @@ pub(crate) struct NetConn {
     pub last_receive: Instant,
     /// The key the client proved in its offer.
     pub client_key: Option<p384::PublicKey>,
+    /// The local ICE username (the session's key in the hub).
+    ufrag: String,
 }
 
 impl std::fmt::Debug for NetConn {
@@ -808,10 +832,15 @@ impl NetConn {
         if let Some(id) = self.reliable {
             while let Some(seg) = self.queue.front() {
                 let len = seg.len();
-                let accepted = self
-                    .rtc
-                    .channel(id)
-                    .is_some_and(|mut c| c.write(true, seg).unwrap_or(false));
+                let accepted = match self.rtc.channel(id).map(|mut c| c.write(true, seg)) {
+                    Some(Ok(accepted)) => accepted,
+                    Some(Err(e)) => {
+                        // A refused write would stall the queue for good: end the session.
+                        self.closed = Some(format!("SCTP refused a {len} byte message: {e}"));
+                        false
+                    }
+                    None => false,
+                };
                 self.drain();
                 if !accepted {
                     break;
@@ -829,6 +858,26 @@ impl NetConn {
         for (to, d) in self.out.drain(..) {
             send(to, &d);
         }
+    }
+
+    /// The transport state for disconnect logs.
+    pub fn describe(&mut self, now: Instant) -> String {
+        let buffered = self
+            .reliable
+            .and_then(|id| self.rtc.channel(id).map(|mut c| c.buffered_amount()));
+        format!(
+            "NetherNet: last datagram {:.1}s ago, {} segments ({} bytes) waiting, SCTP buffered {}, channel {}",
+            now.saturating_duration_since(self.last_receive)
+                .as_secs_f32(),
+            self.queue.len(),
+            self.queued,
+            buffered.map_or_else(|| "-".into(), |b| b.to_string()),
+            if self.reliable.is_some() {
+                "open"
+            } else {
+                "not open"
+            },
+        )
     }
 
     /// Why the connection ended, if it did.
@@ -908,6 +957,7 @@ impl NetConn {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -919,6 +969,100 @@ mod tests {
         let got = verify_identity(&attr, fp).ok();
         assert_eq!(got, Some(key.public_key()));
         assert!(verify_identity(&attr, "sha-256 AA:BB:CD").is_err());
+    }
+
+    /// Drains a client's output: datagrams for the server, received messages.
+    fn drain_client(client: &mut Rtc, out: &mut Vec<Vec<u8>>, got: &mut Vec<Vec<u8>>) -> Instant {
+        loop {
+            match client.poll_output().expect("client output") {
+                Output::Timeout(t) => return t,
+                Output::Transmit(t) => out.push(t.contents.into()),
+                Output::Event(Event::ChannelData(d)) => got.push(d.data),
+                Output::Event(_) => {}
+            }
+        }
+    }
+
+    /// A batch over 64 KiB crosses ICE, DTLS and SCTP in segments str0m accepts (#182: larger
+    /// segments were refused and the session stalled before `start_game`).
+    #[test]
+    fn large_batch_reaches_a_webrtc_client() {
+        let start = Instant::now();
+        let client_addr: SocketAddr = "127.0.0.1:40000".parse().expect("addr");
+        let server_addr: SocketAddr = "127.0.0.1:40001".parse().expect("addr");
+        let mut client = Rtc::builder()
+            .set_sctp_max_message_size(MAX_MESSAGE)
+            .build(start);
+        client.add_local_candidate(Candidate::host(client_addr, "udp").expect("candidate"));
+        let mut api = client.sdp_api();
+        let _ = api.add_channel(RELIABLE.into());
+        let (offer, pending) = api.apply().expect("offer");
+        let sdp = offer.to_sdp_string();
+        let parsed = parse_offer(&sdp).expect("offer parses");
+        let key = <p384::SecretKey as p384::elliptic_curve::Generate>::generate();
+        let (mut conn, answer) =
+            connect(&parsed, server_addr, None, 1 << 20, &key, start).expect("connect");
+        let answer = str0m::change::SdpAnswer::from_sdp_string(&answer).expect("answer parses");
+        client
+            .sdp_api()
+            .accept_answer(pending, answer)
+            .expect("answer accepted");
+
+        let payload: Vec<u8> = (0..200_000u32)
+            .map(|i| u8::try_from(i % 251).unwrap_or(0))
+            .collect();
+        let (mut now, mut sent, mut got) = (start, false, Vec::new());
+        let mut segments: Vec<Vec<u8>> = Vec::new();
+        let mut to_server = Vec::new();
+        for _ in 0..4000 {
+            let mut wake = drain_client(&mut client, &mut to_server, &mut got);
+            for d in to_server.drain(..) {
+                conn.receive(client_addr, &d, now).expect("server receive");
+            }
+            if conn.reliable.is_some() && !sent {
+                conn.send_game(&payload);
+                sent = true;
+            }
+            let mut to_client: Vec<Vec<u8>> = Vec::new();
+            conn.flush(now, |_, d| to_client.push(d.to_vec()));
+            assert_eq!(conn.closed(), None);
+            for d in to_client {
+                let contents = d.as_slice().try_into().expect("datagram");
+                client
+                    .handle_input(Input::Receive(
+                        now,
+                        Receive {
+                            proto: Protocol::Udp,
+                            source: server_addr,
+                            destination: client_addr,
+                            contents,
+                        },
+                    ))
+                    .expect("client receive");
+                wake = drain_client(&mut client, &mut to_server, &mut got);
+            }
+            segments.append(&mut got);
+            if segments.first().is_some_and(|s| s.first() == Some(&0))
+                || segments.last().is_some_and(|s| s.first() == Some(&0))
+            {
+                break;
+            }
+            now += Duration::from_millis(5);
+            if now >= wake {
+                client
+                    .handle_input(Input::Timeout(now))
+                    .expect("client timeout");
+            }
+        }
+        assert!(sent, "the reliable channel never opened");
+        assert!(segments.iter().all(|s| s.len() <= 64 << 10));
+        let counts: Vec<u8> = segments.iter().filter_map(|s| s.first().copied()).collect();
+        assert_eq!(counts, vec![3, 2, 1, 0]);
+        let joined: Vec<u8> = segments
+            .iter()
+            .flat_map(|s| s.get(1..).unwrap_or_default().iter().copied())
+            .collect();
+        assert_eq!(joined, payload);
     }
 
     #[test]

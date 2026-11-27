@@ -319,7 +319,7 @@ impl StatsCounter {
                 extra: old.saturating_sub(back),
                 ..crate::hooks::Event::new(event::PLAYER_STATISTIC)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
             if ev.cancelled {
                 *taken_back.entry(stat).or_insert(0) = back.saturating_add(i64::from(count));
             }

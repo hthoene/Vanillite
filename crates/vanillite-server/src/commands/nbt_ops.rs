@@ -10,25 +10,10 @@ use vanillite_nbt::{Compound, List, Tag};
 const MAX_DEPTH: usize = 512;
 
 /// `NbtUtils.compareNbt(expected, actual, true)`.
-pub(crate) fn matches(expected: &Tag, actual: &Tag) -> bool {
-    match (expected, actual) {
-        (Tag::Compound(e), Tag::Compound(a)) => compound_matches(e, a),
-        (Tag::List(e), Tag::List(a)) => {
-            if e.0.is_empty() {
-                return a.0.is_empty();
-            }
-            e.0.iter().all(|x| a.0.iter().any(|y| matches(x, y)))
-        }
-        (e, a) => e == a,
-    }
-}
+pub(crate) use vanillite_game::item_nbt::compare_nbt as matches;
 
 /// `compareNbt` of two compounds.
-pub(crate) fn compound_matches(expected: &Compound, actual: &Compound) -> bool {
-    expected
-        .iter()
-        .all(|(k, v)| actual.get(k).is_some_and(|a| matches(v, a)))
-}
+pub(crate) use vanillite_game::item_nbt::compare_compounds as compound_matches;
 
 /// The elements of a collection tag (lists and arrays).
 fn elements(tag: &Tag) -> Option<Vec<Tag>> {

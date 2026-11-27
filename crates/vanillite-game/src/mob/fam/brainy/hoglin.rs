@@ -417,10 +417,8 @@ fn hurt_and_throw(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
 /// `HoglinBase.throwTarget`.
 pub fn throw_target(t: &mut Tick<'_, '_>, target: EntityId) {
     let power = t.mob_ref().attrs.attack_knockback;
-    let resistance = t
-        .ents
-        .mob(target)
-        .map_or(0.0, |m| m.attrs.knockback_resistance);
+    // `getAttributeValue(KNOCKBACK_RESISTANCE)`: players count their armour too.
+    let resistance = crate::mob::attack::knockback_resistance(t.ents, target);
     let effective = power - resistance;
     if effective <= 0.0 {
         return;

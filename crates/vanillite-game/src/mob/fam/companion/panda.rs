@@ -653,7 +653,7 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if !env {
                 return false;
             }
-            match crate::mob::randompos::default_pos(t, 5, 4) {
+            match crate::mob::animal::panic_pos(t) {
                 Some(p) => {
                     *pos = p;
                     true

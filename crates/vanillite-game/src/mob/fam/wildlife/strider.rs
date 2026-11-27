@@ -8,7 +8,7 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_world::entity::EntityFlags;
 
-use super::{Goal, ageable_group_baby, block_tags, st, st_mut};
+use super::{Goal, block_tags, st, st_mut};
 use crate::item::EquipmentSlot;
 use crate::level::Level;
 use crate::mob::animal::{Interaction, animal_interact, use_item};
@@ -25,7 +25,10 @@ pub(super) fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     g.add(1, MobGoal::panic(1.65));
     g.add(2, MobGoal::breed(1.0));
-    g.add(3, MobGoal::tempt(1.4, TemptItems::Food));
+    g.add(
+        3,
+        MobGoal::tempt(1.4, TemptItems::Tag("minecraft:strider_tempt_items")),
+    );
     g.add(
         4,
         MobGoal::Fam(FamGoal::Wildlife(Goal::StriderGoToLava(MoveToBlock::new(
@@ -116,9 +119,8 @@ pub(super) fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
             offset: Vec3::ZERO,
             relation: Relation::RidesIt,
         });
-    } else {
-        ageable_group_baby(m, ctx, 0.5);
     }
+    // Otherwise a fresh `AgeableMobGroupData(0.5F)` of group size 0: never a baby, no draw.
 }
 
 /// Sets `DATA_SUFFOCATING` and the suffocating speed modifier (-34 % of the base).

@@ -802,7 +802,8 @@ unsafe extern "C" fn subscribe(
 
 unsafe extern "C" fn register_command(id: abi::PluginId, spec: *const abi::CommandSpec) -> Status {
     with(id, |inner, plugin| {
-        if !inner.may_register(plugin) {
+        // Since ABI 1.12 also after `load`: the server adds the tree in its next tick.
+        if !inner.may_register(plugin) && !inner.is_running() {
             return status::WRONG_PHASE;
         }
         // SAFETY: the plugin passes a valid spec or null.

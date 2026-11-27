@@ -8,7 +8,7 @@ use vanillite_nbt::Compound;
 use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::{EntityFlags, EntityId, Pose};
 
-use super::{SpawnContext, entity_event, nbt_bool, sound_at, spec, state, state_mut, voice_pitch};
+use super::{SpawnContext, entity_event, nbt_bool, spec, state, state_mut, voice_pitch};
 use crate::mob::animal::Interaction;
 use crate::mob::brain::behavior::{Shape, Spec};
 use crate::mob::brain::memory::MemoryStatus as S;
@@ -298,18 +298,17 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         } else {
             "minecraft:entity.goat.eat"
         };
-        if let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) {
+        if ix.ents.store.get(ix.target).is_some() {
             let pitch = 0.8 + ix.env.random.next_float() * 0.4;
-            let seed = crate::survival::sound_seed();
-            crate::survival::play_sound(
+            crate::survival::play_entity_sound(
                 ix.env.out,
+                ix.ents,
                 None,
-                pos,
+                ix.target,
                 sound,
                 SoundSource::Neutral,
                 1.0,
                 pitch,
-                seed,
             );
         }
     }
@@ -581,7 +580,7 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, now: i64) {
                         Jumper::Goat => "minecraft:entity.goat.long_jump",
                         Jumper::Frog => "minecraft:entity.frog.long_jump",
                     };
-                    sound_at(t, sound, SoundSource::Neutral, 1.0, 1.0);
+                    super::entity_sound_at(t, sound, SoundSource::Neutral, 1.0, 1.0);
                 }
             } else {
                 *tries -= 1;
@@ -609,7 +608,7 @@ pub fn stop(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
                     Jumper::Goat => "minecraft:entity.goat.step",
                     Jumper::Frog => "minecraft:entity.frog.step",
                 };
-                sound_at(t, sound, SoundSource::Neutral, 2.0, 1.0);
+                super::entity_sound_at(t, sound, SoundSource::Neutral, 2.0, 1.0);
             }
             t.mob().discard_friction = false;
             t.core_mut().set_pose(Pose::Standing);
@@ -720,7 +719,7 @@ fn prepare_ram_tick(
                 "minecraft:entity.goat.prepare_ram"
             };
             let pitch = voice_pitch(t.mob());
-            sound_at(t, sound, SoundSource::Neutral, 1.0, pitch);
+            super::entity_sound_at(t, sound, SoundSource::Neutral, 1.0, pitch);
             *candidate = None;
         }
     }
@@ -780,11 +779,11 @@ fn ram_tick(t: &mut Tick<'_, '_>, direction: Vec3) {
             None,
         );
         finish_ram(t);
-        sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
+        super::entity_sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
     } else if rammed_horn_breaking_block(t) {
-        sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
+        super::entity_sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);
         if drop_horn(t) {
-            sound_at(
+            super::entity_sound_at(
                 t,
                 "minecraft:entity.goat.horn_break",
                 SoundSource::Neutral,
@@ -864,7 +863,7 @@ fn drop_horn(t: &mut Tick<'_, '_>) -> bool {
     let dz = f64::from(-0.2 + r.next_float() * 0.4);
     let pos = t.pos();
     let (uuid, y_rot, item_random) = crate::mob::new_item_entity_with_motion();
-    let stack = crate::mob::equipment::stack("minecraft:goat_horn");
+    let stack = create_horn(t.core().uuid(), state(t.mob_ref()).screaming);
     t.env.out.push(crate::survival::Effect::DropItem {
         random: item_random,
         uuid,
@@ -1095,4 +1094,48 @@ fn clear_transition(t: &Tick<'_, '_>, dims: crate::mob::Dimensions, a: Vec3, b: 
         }
     }
     true
+}
+
+/// `Goat.createHorn`: a goat horn with an instrument of `#regular_goat_horns` or
+/// `#screaming_goat_horns`, picked by a random seeded from the goat's UUID hash.
+fn create_horn(uuid: u128, screaming: bool) -> crate::item::ItemStack {
+    let mut stack = crate::mob::equipment::stack("minecraft:goat_horn");
+    let tag = if screaming {
+        "#minecraft:screaming_goat_horns"
+    } else {
+        "#minecraft:regular_goat_horns"
+    };
+    let Some(ids) =
+        crate::player::play::game_data().map(|d| d.holder_set("minecraft:instrument", tag))
+    else {
+        return stack;
+    };
+    if ids.is_empty() {
+        return stack;
+    }
+    // `UUID.hashCode`.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    let hash = {
+        let hilo = ((uuid >> 64) as u64) ^ (uuid as u64);
+        ((hilo >> 32) as i32) ^ (hilo as i32)
+    };
+    let mut random = vanillite_base::random::LegacyRandom::new(i64::from(hash));
+    let len = i32::try_from(ids.len()).unwrap_or(i32::MAX);
+    let pick = usize::try_from(vanillite_base::random::RandomSource::next_int_bounded(
+        &mut random,
+        len,
+    ))
+    .unwrap_or(0);
+    if let Some(&id) = ids.get(pick) {
+        let mut out = Vec::new();
+        vanillite_protocol::codec::write_varint(
+            &mut out,
+            i32::try_from(id).unwrap_or(-1).wrapping_add(1),
+        );
+        stack.patch_mut().set(
+            vanillite_protocol::components::ids::INSTRUMENT,
+            out.into_boxed_slice(),
+        );
+    }
+    stack
 }

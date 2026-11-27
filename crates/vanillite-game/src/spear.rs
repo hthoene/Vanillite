@@ -7,8 +7,7 @@
 //! generated item data (the seven spears). A charge remembers the entities it hit with the game
 //! time (`recentKineticEnemies`) so each is hit once per contact cool-down.
 //!
-//! Not ported: the Lunge enchantment (`post_piercing_attack` effects), dragon parts and
-//! interaction entities as targets.
+//! Not ported: dragon parts as targets.
 
 use std::borrow::Cow;
 
@@ -436,26 +435,26 @@ fn root_vehicle(ents: &Entities, id: EntityId) -> EntityId {
     root
 }
 
-/// `PiercingWeapon.canHitEntity(jabber, target)`: living entities that are alive (not
-/// spectators), boats, minecarts, armour stands and end crystals, not passengers of the
-/// jabber's vehicle.
-fn can_hit(ents: &Entities, jabber: EntityId, target: EntityId) -> bool {
-    let Some(e) = ents.store.get(target) else {
+/// `PiercingWeapon.canHitEntity(jabber, target)`: interaction entities, and what projectiles
+/// can hit (`canBeHitByProjectile`) but the players a jabbing player may not hurt
+/// (`canHarmPlayer`) and the passengers of the jabber's vehicle.
+fn can_hit(ents: &Entities, env: &Env<'_>, jabber: EntityId, target: EntityId) -> bool {
+    if ents
+        .decor(target)
+        .is_some_and(|d| matches!(d.data, crate::decoration::DecorData::Interaction(_)))
+    {
+        return true;
+    }
+    if !crate::mob::projectile::can_be_hit_by_projectile(ents, target) {
         return false;
-    };
-    let pickable = if let Some(p) = ents.player(target) {
-        p.game_mode != GameMode::Spectator && !p.survival.is_dead_or_dying()
-    } else if let Some(m) = ents.mob(target) {
-        m.is_alive()
-    } else {
-        use vanillite_data::entity::ids;
-        let kind = e.kind();
-        crate::vehicle::BoatKind::of(kind).is_some()
-            || crate::minecart::MinecartKind::of(kind).is_some()
-            || kind == ids::END_CRYSTAL
-            || kind == ids::ARMOR_STAND
-    };
-    pickable && root_vehicle(ents, jabber) != root_vehicle(ents, target)
+    }
+    if ents.player(target).is_some()
+        && ents.player(jabber).is_some()
+        && !crate::mob::attack::can_harm_player(ents, env, jabber, target)
+    {
+        return false;
+    }
+    root_vehicle(ents, jabber) != root_vehicle(ents, target)
 }
 
 // --- The hit search ---------------------------------------------------------------------------
@@ -466,6 +465,7 @@ fn can_hit(ents: &Entities, jabber: EntityId, target: EntityId) -> bool {
 pub fn hit_entities_along(
     level: &Level,
     ents: &Entities,
+    env: &Env<'_>,
     a: &Attacker,
     range: &AttackRange,
     out: &mut Vec<(EntityId, Vec3)>,
@@ -502,7 +502,7 @@ pub fn hit_entities_along(
         }
     });
     for id in candidates {
-        if !can_hit(ents, a.id, id) {
+        if !can_hit(ents, env, a.id, id) {
             continue;
         }
         let Some(bb) = ents.store.get(id).map(|e| e.aabb()) else {
@@ -616,8 +616,17 @@ fn cause_extra_knockback(
     }
 }
 
-/// `LivingEntity.stabAttack(slot, target, baseDamage, dealsDamage, dealsKnockback,
-/// dismounts)`: whether the target was affected.
+/// What a stab does (the flags of `stabAttack`).
+#[derive(Clone, Copy, Debug)]
+pub struct Stab {
+    pub deals_damage: bool,
+    pub deals_knockback: bool,
+    pub dismounts: bool,
+}
+
+/// `stabAttack(slot, target, baseDamage, dealsDamage, dealsKnockback, dismounts)` of a mob
+/// (`LivingEntity`) or a player (`Player`): whether the target was affected. `weapon` is the
+/// item in `slot`.
 #[allow(clippy::too_many_arguments)]
 pub fn stab_attack(
     level: &Level,
@@ -626,12 +635,30 @@ pub fn stab_attack(
     cx: &mut MobContext,
     a: &Attacker,
     weapon: &ItemStack,
+    slot: item::EquipmentSlot,
     target: EntityId,
     base_damage: f32,
-    deals_damage: bool,
-    deals_knockback: bool,
-    dismounts: bool,
+    stab: Stab,
 ) -> bool {
+    if a.is_player {
+        return player_stab_attack(
+            level,
+            ents,
+            env,
+            cx,
+            a,
+            weapon,
+            slot,
+            target,
+            base_damage,
+            stab,
+        );
+    }
+    let Stab {
+        deals_damage,
+        deals_knockback,
+        dismounts,
+    } = stab;
     let source = weapon_source(ents, env, a.id, weapon);
     let combat = combat_data();
     let (enchants, tags): (
@@ -657,7 +684,6 @@ pub fn stab_attack(
         affected = true;
         crate::riding::stop_riding(ents, env, target);
     }
-    crate::mob::attack::weapon_used_stat(ents, a.id, weapon, target);
     if dealt {
         post_attack(level, ents, env, cx, target, &source, Some(weapon));
     }
@@ -667,8 +693,112 @@ pub fn stab_attack(
     // `setLastHurtMob`.
     if let Some(m) = ents.mob_mut(a.id) {
         m.last_hurt_mob = Some(target);
-    } else if let Some(p) = ents.player_mut(a.id) {
-        p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
+    }
+    true
+}
+
+/// `Player.stabAttack`: a jab (the item not in use in `slot`) scales the damage by the attack
+/// strength; an affected target gets the magic crit, the weapon's use and durability
+/// (`itemAttackInteraction`), the damage statistic and 0.1 exhaustion.
+#[allow(clippy::too_many_arguments)]
+fn player_stab_attack(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    a: &Attacker,
+    weapon: &ItemStack,
+    slot: item::EquipmentSlot,
+    target: EntityId,
+    base_damage: f32,
+    stab: Stab,
+) -> bool {
+    use crate::mob::attack;
+    // `cannotAttack`: block-attached entities and interactions take the attack themselves.
+    if !attack::is_attackable(ents, target)
+        || ents.decor(target).is_some()
+            && crate::decoration::attack(level, ents, env, cx, a.id, target)
+    {
+        return false;
+    }
+    let Some(p) = ents.player(a.id) else {
+        return false;
+    };
+    // `getWeaponItem` (the main hand) for `getEnchantedDamage` and `getKnockback`.
+    let main = p
+        .survival
+        .spin_attack
+        .as_ref()
+        .map_or_else(|| p.inventory.selected_item().clone(), |s| s.item.clone());
+    let using_slot = p.survival.using_item.is_some_and(|u| {
+        slot == match u.hand {
+            Hand::MainHand => item::EquipmentSlot::MainHand,
+            Hand::OffHand => item::EquipmentSlot::OffHand,
+        }
+    });
+    let source = weapon_source(ents, env, a.id, weapon);
+    let combat = combat_data();
+    let (enchants, tags): (
+        &crate::enchant::Enchantments,
+        &dyn crate::predicate::EntityTags,
+    ) = (&combat.enchants, &*combat);
+    let mut magic_boost = {
+        let ecx = damage_context(ents, env.types, tags, target, &source);
+        enchants.modify_damage(&main, &ecx, env.random, base_damage) - base_damage
+    };
+    let mut base_damage = base_damage;
+    if !using_slot {
+        let scale = attack::attack_strength_scale(ents, a.id, 0.5);
+        magic_boost *= scale;
+        base_damage *= 0.2 + scale * scale * 0.8;
+    }
+    if stab.deals_knockback && attack::deflect_projectile(ents, env, a.id, target) {
+        return true;
+    }
+    let total = if stab.deals_damage {
+        base_damage + magic_boost
+    } else {
+        0.0
+    };
+    let old_health = attack::living_health(ents, target);
+    let old_movement = ents.store.get(target).map(|e| e.velocity());
+    let hurt = stab.deals_damage && combat::hurt(level, ents, env, cx, target, source, total);
+    if stab.deals_knockback {
+        cause_extra_knockback(ents, env, a, target, 0.4, old_movement, (total, false));
+        let amount = knockback_amount(ents, env, a.id, target, &main, &source);
+        cause_extra_knockback(ents, env, a, target, amount, old_movement, (total, true));
+    }
+    let dismountable = ents.store.get(target).is_some_and(|e| {
+        !crate::effect::entity_in_tag(e.kind(), "minecraft:cannot_be_dismounted_by_item_usage")
+    });
+    let mut dismounted = false;
+    if stab.dismounts && ents.vehicle_of(target).is_some() && dismountable {
+        dismounted = true;
+        crate::riding::stop_riding(ents, env, target);
+    }
+    if !hurt && !stab.deals_knockback && !dismounted {
+        return false;
+    }
+    // `attackVisualEffects`: a stab makes no attack sound, only the magic crit.
+    if magic_boost > 0.0 {
+        let network_id = ents.store.get(target).map_or(0, |e| e.network_id().0);
+        attack::animate(env, target, network_id, attack::MAGIC_CRITICAL_HIT);
+    }
+    let living = attack::is_living_target(ents, target);
+    if let Some(p) = ents.player_mut(a.id) {
+        p.survival.last_hurt_mob = living.then_some((target, p.survival.tick_count));
+    }
+    // `itemAttackInteraction(target, weapon, source, wasHurt)`.
+    crate::mob::attack::weapon_used_stat(ents, a.id, weapon, target);
+    if hurt {
+        post_attack(level, ents, env, cx, target, &source, Some(weapon));
+    }
+    if ents.mob(target).is_some() || ents.player(target).is_some() {
+        attack::hurt_weapon_in(ents, env, a.id, weapon, slot);
+    }
+    attack::damage_stats_and_hearts(ents, cx, a.id, target, old_health);
+    if let Some(p) = ents.player_mut(a.id) {
+        crate::survival::player::cause_food_exhaustion(p, 0.1);
     }
     true
 }
@@ -722,6 +852,7 @@ pub fn damage_entities(
     cx: &mut MobContext,
     user: EntityId,
     weapon: &ItemStack,
+    slot: item::EquipmentSlot,
     kinetic: &KineticWeapon,
     ticks_used: i32,
 ) {
@@ -742,7 +873,7 @@ pub fn damage_entities(
         ents.mob(user).map_or(0.0, |m| m.attrs.attack_damage as f32)
     };
     let mut hits = Vec::new();
-    hit_entities_along(level, ents, &a, &range, &mut hits);
+    hit_entities_along(level, ents, env, &a, &range, &mut hits);
     let mut affected = false;
     let now = env.game_time;
     for (target, _) in hits {
@@ -765,9 +896,12 @@ pub fn damage_entities(
             let dealt = base_damage
                 + vanillite_base::math::floor(relative * f64::from(kinetic.damage_multiplier))
                     as f32;
-            affected |= stab_attack(
-                level, ents, env, cx, &a, weapon, target, dealt, damage, knockback, dismount,
-            );
+            let stab = Stab {
+                deals_damage: damage,
+                deals_knockback: knockback,
+                dismounts: dismount,
+            };
+            affected |= stab_attack(level, ents, env, cx, &a, weapon, slot, target, dealt, stab);
         }
     }
     if affected {
@@ -884,9 +1018,14 @@ fn piercing_attack(
     };
     let range = attack_range(weapon, 3.0);
     let mut hits = Vec::new();
-    hit_entities_along(level, ents, &a, &range, &mut hits);
+    hit_entities_along(level, ents, env, &a, &range, &mut hits);
     let mut hit_something = false;
     for (target, _) in hits {
+        let stab = Stab {
+            deals_damage: true,
+            deals_knockback: piercing.deals_knockback,
+            dismounts: piercing.dismounts,
+        };
         hit_something |= stab_attack(
             level,
             ents,
@@ -894,17 +1033,17 @@ fn piercing_attack(
             cx,
             &a,
             weapon,
+            item::EquipmentSlot::MainHand,
             target,
             damage,
-            true,
-            piercing.deals_knockback,
-            piercing.dismounts,
+            stab,
         );
     }
     // `onAttack`: `resetOnlyAttackStrengthTicker`.
     if let Some(p) = ents.player_mut(attacker) {
         p.survival.attack_ticker = 0;
     }
+    crate::mob::attack::post_piercing_attack(level, ents, env, cx, attacker);
     if hit_something {
         make_hit_sound(ents, env, attacker, piercing.hit_sound.as_ref());
     }
@@ -948,8 +1087,22 @@ pub fn tick_players(level: &Level, ents: &mut Entities, env: &mut Env<'_>, cx: &
         let Some(kinetic) = kinetic_weapon(&weapon) else {
             continue;
         };
+        let slot = match u.hand {
+            Hand::MainHand => item::EquipmentSlot::MainHand,
+            Hand::OffHand => item::EquipmentSlot::OffHand,
+        };
         // `onUseTick` sees the ticks used before this one.
-        damage_entities(level, ents, env, cx, id, &weapon, &kinetic, u.ticks - 1);
+        damage_entities(
+            level,
+            ents,
+            env,
+            cx,
+            id,
+            &weapon,
+            slot,
+            &kinetic,
+            u.ticks - 1,
+        );
     }
 }
 
@@ -966,7 +1119,10 @@ pub fn mob_use_tick(t: &mut crate::mob::Tick<'_, '_>, used: i32) {
         return;
     };
     let id = t.id;
-    damage_entities(t.level, t.ents, t.env, t.cx, id, &weapon, &kinetic, used);
+    let main = item::EquipmentSlot::MainHand;
+    damage_entities(
+        t.level, t.ents, t.env, t.cx, id, &weapon, main, &kinetic, used,
+    );
 }
 
 /// `computeDamageUseDuration` of the mob's main hand kinetic weapon (0 without one).

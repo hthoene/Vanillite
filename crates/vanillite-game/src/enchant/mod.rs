@@ -4,6 +4,7 @@
 
 mod effects;
 mod items;
+pub mod location;
 
 pub use effects::*;
 

@@ -259,6 +259,122 @@ fn step_1_21_11_interact() {
     );
 }
 
+/// `client_command` (respawn, statistics) reaches the server from every version: 26.1 only
+/// appended an action, so older clients could not respawn when the step dropped the packet.
+#[test]
+fn client_command_every_version() {
+    for v in vanillite_multiversion::SUPPORTED {
+        let ids = Ids::load(v.id);
+        let (mut s, _) = ids.halves();
+        for action in [0, 1] {
+            assert_eq!(
+                sb(&mut s, &ids.old_sb("client_command", &[action])),
+                Some(ids.new_sb("client_command", &[action])),
+                "{} action {action}",
+                v.id
+            );
+        }
+    }
+}
+
+/// Entity types an older version lacks show as a stand-in instead of not at all.
+#[test]
+fn new_entity_types_have_stand_ins_every_version() {
+    let cases: &[(&str, &[&str])] = &[
+        ("parched", &["skeleton"]),
+        ("camel_husk", &["camel"]),
+        ("zombie_nautilus", &["nautilus", "turtle"]),
+        ("nautilus", &["turtle"]),
+        ("sulfur_cube", &["slime"]),
+        ("happy_ghast", &["ghast"]),
+        ("copper_golem", &["iron_golem"]),
+        ("mannequin", &["armor_stand"]),
+        ("creaking", &["enderman"]),
+        ("bamboo_raft", &["boat"]),
+        ("cushion", &["interaction"]),
+    ];
+    for v in vanillite_multiversion::SUPPORTED {
+        let ids = Ids::load(v.id);
+        let old = ids.old["minecraft:entity_type"]["entries"]
+            .as_array()
+            .unwrap();
+        let has = |n: &str| {
+            old.iter()
+                .any(|e| e.as_str() == Some(&format!("minecraft:{n}")))
+        };
+        let (_, mut c) = ids.halves();
+        for (name, stand_ins) in cases {
+            let want = std::iter::once(name)
+                .chain(stand_ins.iter())
+                .find(|n| has(n))
+                .unwrap_or_else(|| panic!("{}: no stand-in for {name}", v.id));
+            let mut new = varint(3);
+            new.extend([0x11; 16]);
+            new.extend(varint(ids.new_id("minecraft:entity_type", name)));
+            new.extend(f64s([1.0, 2.0, 3.0]));
+            new.push(0);
+            new.extend([4, 5, 6]);
+            new.push(0);
+            let out = cb(&mut c, &ids.new_cb("add_entity", &new))
+                .unwrap_or_else(|| panic!("{}: {name} not sent", v.id));
+            let mut r = vanillite_protocol::codec::Reader::new(&out);
+            r.varint().unwrap();
+            r.varint().unwrap();
+            r.skip(16).unwrap();
+            assert_eq!(
+                r.varint().unwrap(),
+                ids.old_id("minecraft:entity_type", want),
+                "{}: {name} should show as {want}",
+                v.id
+            );
+        }
+    }
+}
+
+/// Items an older version lacks show as a related item rather than as stone.
+#[test]
+fn new_items_have_stand_ins() {
+    use vanillite_multiversion::generated as g;
+    let cases = [
+        (
+            &g::v1_21_10::TABLES,
+            "1.21.10",
+            "1.21.11",
+            "netherite_spear",
+            "netherite_sword",
+        ),
+        (
+            &g::v1_21_10::TABLES,
+            "1.21.10",
+            "1.21.11",
+            "copper_spear",
+            "copper_sword",
+        ),
+        (
+            &g::v1_21_5::TABLES,
+            "1.21.5",
+            "1.21.6",
+            "white_harness",
+            "saddle",
+        ),
+        (
+            &g::v1_21_5::TABLES,
+            "1.21.5",
+            "1.21.6",
+            "music_disc_tears",
+            "music_disc_13",
+        ),
+    ];
+    for (step, older, newer, item, want) in cases {
+        let (older, newer) = (Ids::load(older), Ids::load(newer));
+        assert_eq!(
+            step.older("minecraft:item", newer.old_id("minecraft:item", item)),
+            Some(older.old_id("minecraft:item", want)),
+            "{item}"
+        );
+    }
+}
+
 /// Step 1.21.8 ↔ 1.21.9: velocities as three shorts at the end of `add_entity`.
 #[test]
 fn step_1_21_8_velocity() {

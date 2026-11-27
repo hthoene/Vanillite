@@ -155,6 +155,7 @@ fn schooling_fish(t: &Tick<'_, '_>, id: EntityId) -> bool {
 pub fn register_goals(m: &mut MobData) {
     let g = &mut m.goals;
     g.add(0, fam(FamGoal::Fox(Goal::Float)));
+    g.add(0, fam(FamGoal::ClimbPowderSnow));
     g.add(1, fam(FamGoal::Fox(Goal::Faceplant { countdown: 0 })));
     g.add(2, fam(FamGoal::Fox(Goal::Panic { pos: Vec3::ZERO })));
     g.add(3, G::breed(1.0));

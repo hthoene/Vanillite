@@ -28,8 +28,8 @@ pub struct Global {
     pub access: Access,
     /// A handle to the server for work on other worlds and `/stop`; set once the server runs.
     pub handle: OnceLock<ServerHandle>,
-    /// The command tree.
-    pub(crate) commands: crate::commands::CommandDispatcher,
+    /// The command tree; replaced (append-only) when plugins add commands after the start.
+    pub(crate) commands: std::sync::RwLock<Arc<crate::commands::CommandDispatcher>>,
     /// `online-mode`.
     pub(crate) online_mode: bool,
     /// The dimensions; a world's index here is its [`WorldId`].
@@ -72,11 +72,26 @@ pub struct Global {
     pub(crate) version: String,
     /// A message of the day a plugin set, for the server list to take over.
     pub(crate) motd: std::sync::Mutex<Option<vanillite_protocol::text::Component>>,
+    /// `server_data` with the server list's MOTD and icon, sent to joining players
+    /// (`ServerPlayer.sendServerStatus`).
+    pub(crate) server_data: std::sync::RwLock<Arc<vanillite_protocol::SharedPacket>>,
+    /// The server icon (a 64x64 PNG) of `server_data`.
+    pub(crate) server_icon: Option<Vec<u8>>,
     /// This value itself, for work handed to other worlds.
     pub(crate) this: Weak<Global>,
 }
 
 impl Global {
+    /// The current command tree.
+    pub(crate) fn commands(&self) -> Arc<crate::commands::CommandDispatcher> {
+        Arc::clone(
+            &self
+                .commands
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// The current game data (loot tables, recipes, tags), replaced by `/reload`.
     pub(crate) fn game(&self) -> Arc<vanillite_game::player::play::GameData> {
         vanillite_game::player::play::game_data().unwrap_or_else(|| Arc::clone(&self.game_at_start))

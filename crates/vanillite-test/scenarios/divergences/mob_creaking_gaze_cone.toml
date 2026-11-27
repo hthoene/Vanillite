@@ -1,3 +1,0 @@
-tick = 11
-cause = "the creaking activates one tick before Vanilla (Vanilla at tick 12): its NEAREST_PLAYERS memory is read before the sensor of the same tick in Vanilla's aiStep order; the fixed 60 degree gaze cone itself matches (Vanilla activates too)"
-owner = "gameplay-developer #221"

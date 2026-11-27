@@ -59,13 +59,20 @@ impl SleepStatus {
         let (old_active, old_sleeping) = (self.active, self.sleeping);
         self.active = 0;
         self.sleeping = 0;
+        let mut ignored = 0;
         for (_, p) in level.entities.players.iter() {
             if p.game_mode != GameMode::Spectator {
                 self.active += 1;
                 if p.survival.sleeping_pos.is_some() {
                     self.sleeping += 1;
+                } else if p.survival.sleeping_ignored {
+                    ignored += 1;
                 }
             }
+        }
+        // Bukkit: players ignored as sleeping count once someone really sleeps.
+        if self.sleeping > 0 {
+            self.sleeping += ignored;
         }
         (old_sleeping > 0 || self.sleeping > 0)
             && (old_active != self.active || old_sleeping != self.sleeping)
@@ -608,7 +615,10 @@ pub fn skip_night(level: &mut Level, hooks: &dyn GameHooks) -> bool {
         .entities
         .players
         .iter()
-        .filter(|(_, p)| p.survival.sleeping_pos.is_some() && p.survival.sleep_timer >= 100)
+        .filter(|(_, p)| {
+            (p.survival.sleeping_pos.is_some() && p.survival.sleep_timer >= 100)
+                || (p.survival.sleeping_ignored && p.survival.sleeping_pos.is_none())
+        })
         .count();
     if i32::try_from(deep).unwrap_or(i32::MAX) < status.sleepers_needed(percentage) {
         return false;

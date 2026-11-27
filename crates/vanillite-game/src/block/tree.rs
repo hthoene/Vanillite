@@ -357,7 +357,7 @@ pub fn structure_may_grow(level: &Level, pos: BlockPos, state: BlockState, playe
         player,
         ..crate::hooks::Event::new(vanillite_abi::event::STRUCTURE_GROW)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
     !ev.cancelled
 }
 

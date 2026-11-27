@@ -165,8 +165,11 @@ impl Section {
     pub fn set_block(&mut self, x: u32, y: u32, z: u32, state: BlockStateId) -> BlockStateId {
         let old = self.blocks.set_at(x, y, z, state);
         if old != state {
-            self.summary.remove(facts::block_flags(old));
-            self.summary.add(facts::block_flags(state), 1);
+            let (old_flags, new_flags) = (facts::block_flags(old), facts::block_flags(state));
+            if old_flags != new_flags {
+                self.summary.remove(old_flags);
+                self.summary.add(new_flags, 1);
+            }
         }
         old
     }

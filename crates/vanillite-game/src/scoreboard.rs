@@ -408,6 +408,24 @@ impl Team {
     }
 }
 
+/// What the game needs of a holder's team (`Entity.getTeam`): its name (teams are the same
+/// when their names are, `Team.isAlliedTo`) and `isAllowFriendlyFire`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeamFacts {
+    pub name: Box<str>,
+    pub friendly_fire: bool,
+}
+
+impl Team {
+    /// The facts the game reads of this team.
+    pub fn facts(&self) -> TeamFacts {
+        TeamFacts {
+            name: self.name.as_str().into(),
+            friendly_fire: self.allow_friendly_fire,
+        }
+    }
+}
+
 /// The named text colour of a `ChatFormatting` colour id.
 pub fn named_color(id: u8) -> Option<vanillite_protocol::text::NamedColor> {
     vanillite_protocol::text::NamedColor::from_name(color_name(id))

@@ -153,6 +153,9 @@ struct Entry {
     entity: BlockEntity,
     /// The ticker slot of this block entity, if it ticks.
     ticker: Option<u32>,
+    /// `BlockEntity.components`: the item components the block entity keeps without using them
+    /// (`item_name`, `lore`, `custom_data`, ...), in their saved form (`"components"`).
+    components: Option<Box<Compound>>,
 }
 
 /// The block entities of a level, per chunk.
@@ -232,7 +235,14 @@ impl BlockEntities {
         };
         let new_listener = listener_of(pos, &entity);
         let gateway = matches!(entity, BlockEntity::EndGateway(_));
-        let old = entries.insert(pos, Entry { entity, ticker });
+        let old = entries.insert(
+            pos,
+            Entry {
+                entity,
+                ticker,
+                components: None,
+            },
+        );
         let old_gateway = matches!(
             old,
             Some(Entry {
@@ -269,6 +279,24 @@ impl BlockEntities {
             self.listeners.unregister(listener);
         }
         Some(removed.entity)
+    }
+
+    /// The components the block entity at `pos` keeps (`BlockEntity.components`).
+    pub fn kept_components(&self, pos: BlockPos) -> Option<&Compound> {
+        self.chunks
+            .get(&pos.chunk())?
+            .get(&pos)?
+            .components
+            .as_deref()
+    }
+
+    /// Sets the components the block entity at `pos` keeps.
+    pub fn set_kept_components(&mut self, pos: BlockPos, components: Option<Compound>) {
+        let chunk = pos.chunk();
+        if let Some(e) = self.chunks.get_mut(&chunk).and_then(|c| c.get_mut(&pos)) {
+            e.components = components.filter(|c| !c.is_empty()).map(Box::new);
+            self.touched.insert(chunk);
+        }
     }
 
     /// The block entities of a chunk.
@@ -1011,7 +1039,12 @@ impl Level {
                 Some(BlockEntity::CommandBlock(c)) => Some(c.auto),
                 _ => None,
             };
+            let statue = matches!(entity, BlockEntity::CopperGolemStatue(_));
             self.block_entities.insert(pos, entity);
+            if !statue {
+                self.block_entities
+                    .set_kept_components(pos, saved_components(nbt));
+            }
             crate::block::technical::command_block::loaded(self, pos, previous_auto);
         } else {
             let mut data = nbt.clone();
@@ -1068,7 +1101,13 @@ impl Level {
                 continue;
             };
             if let Some(entity) = load(state, &nbt) {
+                let statue = matches!(entity, BlockEntity::CopperGolemStatue(_));
                 self.block_entities.insert(data.pos, entity);
+                if !statue && let Some(kept) = saved_components(&nbt) {
+                    self.block_entities
+                        .set_kept_components(data.pos, Some(kept));
+                    self.block_entities.touched.remove(&chunk);
+                }
             }
         }
         self.block_entities.touched.remove(&chunk);
@@ -1090,7 +1129,10 @@ impl Level {
             .collect();
         for (pos, entity) in self.block_entities.in_chunk(chunk) {
             let state = self.block(pos);
-            let nbt = save(entity, state, pos);
+            let mut nbt = save(entity, state, pos);
+            if let Some(kept) = self.block_entities.kept_components(pos) {
+                nbt.insert("components", Tag::Compound(kept.clone()));
+            }
             let mut bytes = Vec::new();
             if vanillite_nbt::write::write_network_compound(&nbt, &mut bytes).is_err() {
                 continue;
@@ -1130,7 +1172,7 @@ impl Level {
                     pos: BlockPos::new(chunk.x, 0, chunk.z),
                     ..crate::hooks::Event::new(vanillite_abi::event::CHUNK_UNLOAD)
                 };
-                hooks.event(&mut ev);
+                hooks.event(crate::hooks::HookWorld::of(self), &mut ev);
             }
         }
         for &chunk in &chunks {
@@ -1164,7 +1206,7 @@ impl Level {
                 flags: u32::from(self.chunks.generated_now(chunk)),
                 ..crate::hooks::Event::new(vanillite_abi::event::CHUNK_LOAD)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::of(self), &mut ev);
         }
     }
 
@@ -1260,7 +1302,61 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
 // --- Components ------------------------------------------------------------------------------
 
 /// `BlockEntity.collectComponents`: the value of component `id` the block entity puts on the
-/// item it drops (loot `copy_components`), as a wire value.
+/// item it drops (loot `copy_components`), as a wire value: its own (implicit) value, else the
+/// one it keeps (`kept`, [`BlockEntities::kept_components`]).
+pub fn collect_component_with(
+    entity: &BlockEntity,
+    kept: Option<&Compound>,
+    id: u16,
+) -> Option<Box<[u8]>> {
+    if let Some(v) = collect_component(entity, id) {
+        return Some(v);
+    }
+    let kept = kept?;
+    let name = crate::item_nbt::component_type_name(id)?;
+    crate::item_nbt::component_from_nbt(id, kept.get(name)?)
+}
+
+/// The `"components"` of saved block entity data.
+fn saved_components(nbt: &Compound) -> Option<Compound> {
+    match nbt.get("components") {
+        Some(Tag::Compound(c)) if !c.is_empty() => Some(c.clone()),
+        _ => None,
+    }
+}
+
+/// The components a block entity uses itself (`applyImplicitComponents`); the others of the
+/// placed stack it keeps.
+const IMPLICIT_COMPONENTS: [u16; 11] = [
+    components::BLOCK_ENTITY_DATA,
+    components::BLOCK_STATE,
+    components::CUSTOM_NAME,
+    components::LOCK,
+    components::CONTAINER,
+    components::CONTAINER_LOOT,
+    components::BANNER_PATTERNS,
+    components::PROFILE,
+    components::NOTE_BLOCK_SOUND,
+    components::POT_DECORATIONS,
+    components::BEES,
+];
+
+/// `BlockEntity.applyComponents`: the stack's component patch without the implicit
+/// components, in its saved form.
+fn kept_of(stack: &ItemStack) -> Option<Compound> {
+    let patch = stack.patch()?;
+    let mut kept = patch.clone();
+    for id in IMPLICIT_COMPONENTS {
+        kept.unset(id);
+        if let Ok(i) = kept.removed.binary_search(&id) {
+            kept.removed.remove(i);
+        }
+    }
+    let (nbt, _) = crate::item_nbt::patch_to_nbt(&kept);
+    (!nbt.is_empty()).then_some(nbt)
+}
+
+/// [`collect_component_with`] without kept components.
 pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
     if id == components::LOCK {
         let lock = crate::block::lock::slot(entity)?.as_ref()?;
@@ -1388,6 +1484,14 @@ pub fn apply_block_entity_data(
 
 /// `BlockEntity.applyComponentsFromItemStack` of a placed block item.
 pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
+    if !matches!(
+        level.block_entity(pos),
+        None | Some(BlockEntity::CopperGolemStatue(_))
+    ) {
+        level
+            .block_entities
+            .set_kept_components(pos, kept_of(stack));
+    }
     let contents = || {
         stack
             .component(components::CONTAINER)

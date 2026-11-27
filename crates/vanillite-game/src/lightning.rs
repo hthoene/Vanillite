@@ -262,6 +262,7 @@ fn alive(ents: &Entities, id: EntityId) -> bool {
         return item.health > 0;
     }
     living_alive(ents, id)
+        || ents.experience_orb(id).is_some()
         || ents.boat(id).is_some()
         || ents.minecart(id).is_some()
         || ents.decor(id).is_some()
@@ -518,6 +519,14 @@ pub fn thunder_hit(
     }
     let source = DamageSource::of(env.types.lightning_bolt);
     if let Some(d) = ents.item_mut(target) {
+        d.health -= 5;
+        if d.health <= 0 {
+            cx.discarded.push(target);
+        }
+        return;
+    }
+    if let Some(d) = ents.experience_orb_mut(target) {
+        // `ExperienceOrb.hurtServer`: the bolt's 5 damage is an orb's whole health.
         d.health -= 5;
         if d.health <= 0 {
             cx.discarded.push(target);

@@ -42,7 +42,7 @@ pub fn allows(level: &Level, kind: u32, pos: BlockPos, new: BlockState) -> bool 
                 state: Some(new),
                 ..Event::new(kind)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
             !ev.cancelled
         }
     }
@@ -77,7 +77,7 @@ pub fn may_ignite(level: &Level, pos: BlockPos, cause: u32, entity: u128, player
                 state: Some(level.block(pos)),
                 ..Event::new(vanillite_abi::event::BLOCK_IGNITE)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
             !ev.cancelled
         }
     }

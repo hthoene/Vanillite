@@ -384,13 +384,15 @@ const DOLPHIN_LOCATED: &[&str] = &[
 
 /// `player.addEffect(new MobEffectInstance(DOLPHINS_GRACE, 100), dolphin)`.
 fn dolphins_grace(t: &mut Tick<'_, '_>, player: EntityId) {
-    crate::effect::living::add_to_entity(
+    let dolphin = t.id;
+    crate::effect::living::add_to_entity_from(
         t.level,
         t.ents,
         t.env,
         t.cx,
         player,
         crate::effect::EffectInstance::new(crate::effect::MobEffect::DOLPHINS_GRACE, 100, 0),
+        Some(dolphin),
     );
 }
 

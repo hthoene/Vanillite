@@ -1,0 +1,108 @@
+{
+  "description": "A tame wolf kills a cow and a zombie (/damage by the wolf): LivingEntity.resolvePlayerResponsibleForDamage credits the wolf's owner, so both drop experience and the player kill loot.",
+  "tier": "fast",
+  "time": 6000,
+  "difficulty": "normal",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -60,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -59.0,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "wolf",
+      "type": "minecraft:wolf",
+      "pos": [
+        8.5,
+        -59.0,
+        4.5
+      ],
+      "seed": 3,
+      "finalize": false
+    },
+    {
+      "name": "cow",
+      "type": "minecraft:cow",
+      "pos": [
+        8.5,
+        -59.0,
+        8.5
+      ],
+      "seed": 5,
+      "finalize": false
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        11.5,
+        -59.0,
+        11.5
+      ],
+      "seed": 7,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:wolf,limit=1] {Owner:[I;1447120457,1,0,0],NoAI:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:zombie,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "damage @e[type=minecraft:cow,limit=1] 30 minecraft:mob_attack by @e[type=minecraft:wolf,limit=1]"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "damage @e[type=minecraft:zombie,limit=1] 30 minecraft:mob_attack by @e[type=minecraft:wolf,limit=1]"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

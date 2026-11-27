@@ -602,7 +602,7 @@ fn ignites_tnt(ents: &Entities, env: &Env<'_>, source: &DamageSource) -> bool {
     if let Some(direct) = source.direct
         && let Some(arrow) = ents.arrow(direct)
     {
-        return arrow.fire;
+        return arrow.fire > 0;
     }
     let tags = env.types.get(source.kind).tags;
     tags & (tag::IS_FIRE | tag::IS_EXPLOSION) != 0
@@ -628,7 +628,7 @@ pub fn hurt(
     if kind == MinecartKind::Tnt
         && let Some(direct) = source.direct
         && let Some(arrow) = ents.arrow(direct)
-        && arrow.fire
+        && arrow.fire > 0
     {
         let speed = ents
             .store
@@ -700,6 +700,7 @@ fn destroy_minecart(
     };
     let (pos, velocity) = (e.pos(), e.velocity());
     let ignites = ignites_tnt(ents, env, source);
+    let by_player = source.direct.filter(|&d| ents.player(d).is_some());
     let Some(m) = ents.minecart_mut(id) else {
         return;
     };
@@ -719,6 +720,10 @@ fn destroy_minecart(
     }
     let items = std::mem::take(&mut m.items);
     let loot = m.loot_table.take();
+    // `chestVehicleDestroyed`: a player breaking a container minecart angers piglins.
+    let anger = matches!(m.kind, MinecartKind::Chest | MinecartKind::Hopper)
+        && env.rules.bool(Rule::ENTITY_DROPS)
+        && by_player.is_some();
     let drop = m.kind.drop_item();
     let name = m.custom_name.clone();
     crate::riding::eject_passengers(ents, env, id);
@@ -741,6 +746,9 @@ fn destroy_minecart(
                 drop: Some(stack),
                 entity_drops,
             })));
+        if anger && let Some(p) = by_player {
+            cx.actions.push(WorldAction::PiglinAnger(p));
+        }
         return;
     }
     // `kill` → `remove(KILLED)`: a container drops its contents (whatever the rules say).
@@ -751,6 +759,9 @@ fn destroy_minecart(
             // `chestVehicleDestroyed` drops the (now empty) contents once more.
             drop_contents(env, pos, &vec![ItemStack::EMPTY; items.len()]);
         }
+    }
+    if anger && let Some(p) = by_player {
+        cx.actions.push(WorldAction::PiglinAnger(p));
     }
 }
 

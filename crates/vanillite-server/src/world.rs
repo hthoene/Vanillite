@@ -572,6 +572,9 @@ impl ServerWorld {
     /// connection tick.
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
+        if self.survival.compute.is_none() {
+            self.survival.compute = Some(ctx.compute.clone());
+        }
         self.place_ready_spawns(ctx.global);
         if self.memory_released && self.level.entities.players.iter().next().is_some() {
             // Players are back: the generator is built ahead, off the tick.
@@ -857,6 +860,7 @@ impl ServerWorld {
                 effects: &mut self.effects,
                 tracker: &*self.tracker,
             },
+            ctx.compute,
         );
         self.effects.flush(&self.level.entities);
         crate::scoreboard::flush(ctx.global);
@@ -1174,9 +1178,10 @@ impl ServerWorld {
         self.players.save_all(&self.level);
         if !skip_chunks {
             if let Some(hooks) = self.level.hooks_for(vanillite_abi::event::WORLD_SAVE) {
-                hooks.event(&mut vanillite_game::hooks::Event::new(
-                    vanillite_abi::event::WORLD_SAVE,
-                ));
+                hooks.event(
+                    vanillite_game::hooks::HookWorld::NONE,
+                    &mut vanillite_game::hooks::Event::new(vanillite_abi::event::WORLD_SAVE),
+                );
             }
             if let Some(border) = self.level.border.take_dirty() {
                 self.data.write(crate::border::SAVED_DATA, border.to_nbt());

@@ -33,6 +33,9 @@ pub(super) enum Subset {
 #[derive(Debug, Default)]
 struct Section {
     all: Vec<EntityId>,
+    /// The bounding boxes of `all`, in the same order: box queries test them in one sweep
+    /// instead of looking up every entity.
+    boxes: Vec<Aabb>,
     players: Vec<EntityId>,
     others: Vec<EntityId>,
 }
@@ -62,7 +65,13 @@ pub struct SectionIndex {
 const REGION: i32 = 3;
 
 impl SectionIndex {
-    pub(super) fn insert(&mut self, section: SectionPos, class: EntityClass, id: EntityId) {
+    pub(super) fn insert(
+        &mut self,
+        section: SectionPos,
+        class: EntityClass,
+        id: EntityId,
+        aabb: Aabb,
+    ) {
         let entry = self.sections.entry(section.as_long()).or_insert_with(|| {
             let ys = self.columns.entry((section.x, section.z)).or_default();
             if let Err(index) = ys.binary_search(&section.y) {
@@ -71,6 +80,7 @@ impl SectionIndex {
             Section::default()
         });
         entry.all.push(id);
+        entry.boxes.push(aabb);
         match class {
             EntityClass::Player => {
                 entry.players.push(id);
@@ -88,7 +98,10 @@ impl SectionIndex {
         let Some(entry) = self.sections.get_mut(&key) else {
             return;
         };
-        remove_ordered(&mut entry.all, id);
+        if let Some(index) = entry.all.iter().position(|&e| e == id) {
+            entry.all.remove(index);
+            entry.boxes.remove(index);
+        }
         match class {
             EntityClass::Player => {
                 remove_ordered(&mut entry.players, id);
@@ -115,6 +128,16 @@ impl SectionIndex {
                     self.columns.remove(&column);
                 }
             }
+        }
+    }
+
+    /// Records the new bounding box of `id` in `section`.
+    #[inline]
+    pub(super) fn set_box(&mut self, section: SectionPos, id: EntityId, aabb: Aabb) {
+        if let Some(entry) = self.sections.get_mut(&section.as_long())
+            && let Some(index) = entry.all.iter().position(|&e| e == id)
+        {
+            entry.boxes[index] = aabb;
         }
     }
 
@@ -159,6 +182,25 @@ impl SectionIndex {
     /// (`forEachAccessibleNonEmptySection`: X ascending, then the packed section key, which
     /// orders Z and Y as unsigned fields). The caller filters by bounding box.
     pub(super) fn for_each_near(&self, aabb: &Aabb, subset: Subset, mut f: impl FnMut(EntityId)) {
+        self.for_each_section_near(aabb, |section| {
+            section.list(subset).iter().copied().for_each(&mut f);
+        });
+    }
+
+    /// Calls `f` for every entity whose bounding box intersects `aabb`, in the order of
+    /// [`Self::for_each_near`].
+    pub(super) fn for_each_intersecting(&self, aabb: &Aabb, mut f: impl FnMut(EntityId)) {
+        self.for_each_section_near(aabb, |section| {
+            for (&id, b) in section.all.iter().zip(&section.boxes) {
+                if b.intersects(aabb) {
+                    f(id);
+                }
+            }
+        });
+    }
+
+    /// The non-empty sections near `aabb` in the order of [`Self::for_each_near`].
+    fn for_each_section_near(&self, aabb: &Aabb, mut f: impl FnMut(&Section)) {
         let min_x = floor(aabb.min_x - 2.0) >> 4;
         let min_y = floor(aabb.min_y - 4.0) >> 4;
         let min_z = floor(aabb.min_z - 2.0) >> 4;
@@ -184,7 +226,7 @@ impl SectionIndex {
                     for y in unsigned(min_y, max_y) {
                         let key = SectionPos::new(x, y, z).as_long();
                         if let Some(section) = self.sections.get(&key) {
-                            section.list(subset).iter().copied().for_each(&mut f);
+                            f(section);
                         }
                     }
                 }
@@ -202,7 +244,7 @@ impl SectionIndex {
         keys.sort_unstable();
         for key in keys {
             if let Some(section) = self.sections.get(&key) {
-                section.list(subset).iter().copied().for_each(&mut f);
+                f(section);
             }
         }
     }
@@ -273,7 +315,13 @@ mod tests {
         for _ in 0..count {
             let section = SectionPos::new(next(12), next(8), next(12));
             let id = ids.insert(());
-            index.insert(section, class, id);
+            let low = (
+                f64::from(section.x * 16),
+                f64::from(section.y * 16),
+                f64::from(section.z * 16),
+            );
+            let aabb = Aabb::new(low.0, low.1, low.2, low.0 + 1.0, low.1 + 1.0, low.2 + 1.0);
+            index.insert(section, class, id, aabb);
             placed.push((section, id));
         }
         (index, placed)

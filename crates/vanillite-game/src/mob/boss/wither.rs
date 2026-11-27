@@ -483,14 +483,9 @@ fn test_target(t: &mut Tick<'_, '_>, target: EntityId, range: f64) -> bool {
         return false;
     }
     let target_pos = e.pos();
-    let crouching = e.flags().contains(EntityFlags::CROUCHING);
     if range > 0.0 {
-        // `getVisibilityPercent`: sneaking players at 80 %.
-        let modifier = if crouching && t.ents.player(target).is_some() {
-            0.8
-        } else {
-            1.0
-        };
+        // `getVisibilityPercent`: sneaking, invisibility with the armour cover, mob heads.
+        let modifier = crate::mob::brain::sensing::visibility_percent(t, target);
         let visible = (range * modifier).max(2.0);
         if t.pos().distance_to_sqr(target_pos) > visible * visible {
             return false;
@@ -1425,7 +1420,11 @@ pub fn filter_hurt(
     if s.invulnerable_ticks > 0 && !env.types.is(source.kind, tag::BYPASSES_INVULNERABILITY) {
         return None;
     }
-    if is_powered(m) && source.direct.is_some_and(|d| ents.arrow(d).is_some()) {
+    if is_powered(m)
+        && source
+            .direct
+            .is_some_and(|d| crate::mob::projectile::is_arrow_or_wind_charge(ents, d))
+    {
         return None;
     }
     if let Some(cause) = source.cause
@@ -1764,7 +1763,12 @@ fn skull_hit_entity(t: &mut SpecialTick<'_, '_>, skull: &Skull, target: EntityId
         let seconds = wither_seconds(t.env.difficulty);
         if seconds > 0 {
             let effect = EffectInstance::new(MobEffect::WITHER, 20 * seconds, 1);
-            t.ents.add_effect(target, effect, true);
+            // `getEffectSource()`: the owner, else the skull.
+            let by = skull
+                .owner
+                .filter(|&o| t.ents.store.contains(o))
+                .or(Some(id));
+            crate::effect::living::add_detached_from(t.ents, target, effect, by);
         }
     }
 }

@@ -427,10 +427,13 @@ fn run_block_effect(
             ));
         }
         EntityEffect::PlaySound {
-            sound: s,
+            sounds,
             volume,
             pitch,
         } => {
+            let Some(s) = sounds.first() else {
+                return;
+            };
             play_sound(
                 t.env.out,
                 None,
@@ -466,8 +469,11 @@ pub fn try_pickup(
     if d.kind != MissileKind::Trident || d.removed {
         return false;
     }
-    let owned = d.owner == Some(player_id);
-    if !(owned || d.owner.is_none()) {
+    // `ownedBy` compares the UUID; `getOwner() == null` for an owner that is not here.
+    let player_uuid = ents.store.get(player_id).map(|e| e.uuid());
+    let owned = d.owner_uuid.is_some() && d.owner_uuid == player_uuid;
+    let ownerless = crate::mob::missile::resolve_owner(ents, d.owner, d.owner_uuid).is_none();
+    if !(owned || ownerless) {
         return false;
     }
     let returning = d.ints[2] & RETURNING != 0;

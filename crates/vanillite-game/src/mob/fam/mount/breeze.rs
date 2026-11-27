@@ -19,6 +19,25 @@ pub struct Breeze {
     pub jump_trail: i32,
     /// `setDiscardFriction` during a long jump.
     pub discard_friction: bool,
+    /// `positivesLeft` of the fight's `Sensor.wasEntityAttackableLastNTicks(body, 100)`.
+    pub attackable_left: i32,
+}
+
+/// `Sensor.wasEntityAttackableLastNTicks(body, 100)` (`rememberPositives`): an attackable
+/// target counts for the next 100 checks after it was last seen.
+pub fn was_attackable_last_100(
+    t: &mut Tick<'_, '_>,
+    target: vanillite_world::entity::EntityId,
+) -> bool {
+    let attackable = crate::mob::brain::sensing::is_attackable(t, target);
+    let b = breeze_mut(t.mob());
+    if attackable {
+        b.attackable_left = 100;
+        true
+    } else {
+        b.attackable_left -= 1;
+        b.attackable_left >= 0
+    }
 }
 
 fn breeze_mut(m: &mut MobData) -> &mut Breeze {

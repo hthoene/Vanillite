@@ -475,7 +475,7 @@ fn check_burn_out(level: &mut Level, pos: BlockPos, chance: i32, age: i32) {
             state: Some(old),
             ..crate::hooks::Event::new(BLOCK_BURN)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
         if ev.cancelled {
             return;
         }

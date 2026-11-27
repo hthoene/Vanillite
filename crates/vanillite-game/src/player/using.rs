@@ -72,10 +72,7 @@ fn class_use_duration(stack: &ItemStack) -> i32 {
     if name == "minecraft:spyglass" {
         return 1200;
     }
-    if stack
-        .component(vanillite_protocol::components::ids::INSTRUMENT)
-        .is_some()
-    {
+    if super::items::instrument(stack).is_some() {
         return super::items::instrument_use_ticks(stack);
     }
     0
@@ -255,6 +252,26 @@ pub fn living_flags(u: Option<UsingItem>) -> u8 {
 /// `updatingUsingItem` of a player, between its base tick and `aiStep`: stops when the hand
 /// changed, runs the per-tick behaviour and finishes consumables.
 pub fn tick(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
+    // The end of `LivingEntity.baseTick` (just before): eyes under water (no bubble column)
+    // leave a `#dismounts_underwater` vehicle.
+    let underwater = ents
+        .player(player)
+        .is_some_and(|p| p.survival.fluids.eye_in_water && !p.survival.is_dead_or_dying())
+        && ents.vehicle_of(player).is_some()
+        && ents.store.get(player).is_some_and(|e| {
+            let p = e.pos();
+            let eye = vanillite_base::BlockPos::containing(
+                p.x,
+                p.y + crate::survival::player::eye_height(e.dims().height),
+                p.z,
+            );
+            !env.blocks
+                .block_state(eye)
+                .is_some_and(|s| env.facts.is_bubble_column(s))
+        });
+    if underwater {
+        crate::riding::dismount_underwater(ents, env, player);
+    }
     let Some(u) = ents.player(player).and_then(|p| p.survival.using_item) else {
         return;
     };
@@ -579,6 +596,7 @@ fn with_host(
             player: data,
             env: &mut *env,
             players: None,
+            names: &[],
         };
         f(&mut host);
     }
@@ -710,8 +728,8 @@ fn consume(
     if !creative {
         let remainder = crate::consumable::use_remainder(stack);
         let i = hand_index(ents, player, hand);
+        let mut extra = None;
         if let Some(p) = ents.player_mut(player) {
-            let mut extra = None;
             if let Some(s) = p.inventory.get_mut(i) {
                 s.shrink(1);
                 if let Some(rest) = remainder {
@@ -722,9 +740,15 @@ fn consume(
                     }
                 }
             }
-            if let Some(mut rest) = extra {
-                p.inventory.add(None, &mut rest, false);
+            // `handleExtraItemsCreatedOnUse`: `inventory.add`, else `drop(extra, false)`.
+            if let Some(rest) = &mut extra
+                && p.inventory.add(None, rest, false)
+            {
+                extra = None;
             }
+        }
+        if let Some(rest) = extra.filter(|r| !r.is_empty()) {
+            super::items::drop_from_player(ents, env, player, rest, false);
         }
     }
     // The `use_cooldown` of the used stack.
