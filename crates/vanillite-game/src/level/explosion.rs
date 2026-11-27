@@ -437,11 +437,11 @@ impl Level {
         destroys: bool,
     ) -> Vec<(EntityId, Vec3)> {
         let mut hit_players = Vec::new();
-        let wind = source
+        let source_kind = source
             .and_then(|s| self.entities.store.get(s))
-            .is_some_and(|e| {
-                e.kind() == entity_ids::WIND_CHARGE || e.kind() == entity_ids::BREEZE_WIND_CHARGE
-            });
+            .map(|e| e.kind());
+        let player_wind_charge = source_kind == Some(entity_ids::WIND_CHARGE);
+        let wind = player_wind_charge || source_kind == Some(entity_ids::BREEZE_WIND_CHARGE);
         if radius < 1.0e-5 {
             return hit_players;
         }
@@ -562,13 +562,25 @@ impl Level {
             let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
-            // `onExplosionHit`: where the explosion hit the player and what caused it.
+            // `onExplosionHit`: where the explosion hit the player and what caused it; a
+            // player's wind charge spares the fall back to that height
+            // (`setIgnoreFallDamageFromCurrentImpulse`), other explosions end the grace.
             if let Some(p) = self.entities.player_mut(id) {
                 crate::advancements::tracking::explosion_hit(p, pos, source);
+                let s = &mut p.survival;
+                if player_wind_charge {
+                    s.impulse_grace = s.impulse_grace.max(40);
+                    s.impulse_impact = Some(pos);
+                } else {
+                    s.impulse_grace = 0;
+                }
             }
             let player = self.entities.player(id);
             if let Some(p) = player {
-                hit_players.push((id, knockback));
+                // `hitPlayers`: not a creative player who flies.
+                if !(p.game_mode == vanillite_config::GameMode::Creative && p.survival.flying) {
+                    hit_players.push((id, knockback));
+                }
                 // A client moves the player by the packet, unless the server moves it itself.
                 if !p.survival.simulate_movement {
                     continue;

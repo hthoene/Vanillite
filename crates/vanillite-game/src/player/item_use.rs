@@ -143,6 +143,7 @@ pub fn use_item(
             &mut stack,
             hand,
         ) {
+            award_used(ents, player, item);
             Used::Success
         } else {
             Used::Pass

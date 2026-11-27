@@ -729,6 +729,111 @@ pub fn inside_blocks(
     });
 }
 
+/// How a projectile takes a bubble column's drag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BubbleDrag {
+    /// `Projectile.onAbove/InsideBubbleColumn`: the drag adds to the motion, uncapped.
+    Projectile,
+    /// `Entity.handleOnAbove/InsideBubbleColumn` (ender pearls): capped like any entity's.
+    Entity,
+}
+
+/// `BubbleColumnBlock.entityInside` (only `isPrecise`) of the bubble columns a throwable
+/// passes: on the way `from` to where it is now (`applyEffectsFromBlocks`), or, with `from` =
+/// `None`, those in its box (`ThrowableProjectile.handleFirstTickBubbleColumn`). Each pushes the
+/// motion up or down, more on the column's top (`onAboveBubbleColumn`, with splash and bubble
+/// particles drawn from the level's `random`) than inside it (`onInsideBubbleColumn`).
+pub fn bubble_columns(
+    level: &Level,
+    ents: &mut Entities,
+    random: &mut LegacyRandom,
+    cx: &mut MobContext,
+    id: EntityId,
+    from: Option<Vec3>,
+    drag: BubbleDrag,
+) {
+    use vanillite_base::math::floor;
+    use vanillite_data::block::ids::BUBBLE_COLUMN;
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    let (pos, dims, aabb) = (e.pos(), e.dims(), e.aabb());
+    let mut columns: Vec<(BlockPos, bool)> = Vec::new();
+    let drag_down = |state: BlockState| state.value("drag") == Some("true");
+    match from {
+        Some(from) => {
+            let way = [crate::survival::inside::Movement::plain(from, pos)];
+            let view = level.view();
+            let walker = crate::survival::inside::Walker {
+                blocks: &view,
+                facts: None,
+                dims,
+                fast_fall: false,
+            };
+            walker.walk(&way, |cell| {
+                if cell.in_block && cell.precise && cell.state.block() == BUBBLE_COLUMN {
+                    columns.push((cell.pos, drag_down(cell.state)));
+                }
+                true
+            });
+        }
+        None => {
+            // `findBlocksIn(getBoundingBox())`: Y, then Z, then X.
+            for y in floor(aabb.min_y)..=floor(aabb.max_y) {
+                for z in floor(aabb.min_z)..=floor(aabb.max_z) {
+                    for x in floor(aabb.min_x)..=floor(aabb.max_x) {
+                        let at = BlockPos::new(x, y, z);
+                        let state = level.block(at);
+                        if state.block() == BUBBLE_COLUMN {
+                            columns.push((at, drag_down(state)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (at, down) in columns {
+        let above = level.block(BlockPos::new(at.x, at.y + 1, at.z));
+        let nothing_above = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+        let Some(mut e) = ents.store.get_mut(id) else {
+            return;
+        };
+        let v = e.as_ref().velocity();
+        let y = match (drag, nothing_above, down) {
+            (BubbleDrag::Projectile, _, true) => v.y - 0.03,
+            (BubbleDrag::Projectile, true, false) => v.y + 0.1,
+            (BubbleDrag::Projectile, false, false) => v.y + 0.06,
+            (BubbleDrag::Entity, true, true) => (v.y - 0.03).max(-0.9),
+            (BubbleDrag::Entity, true, false) => (v.y + 0.1).min(1.8),
+            (BubbleDrag::Entity, false, true) => (v.y - 0.03).max(-0.3),
+            (BubbleDrag::Entity, false, false) => (v.y + 0.06).min(0.7),
+        };
+        e.set_velocity(Vec3::new(v.x, y, v.z));
+        if nothing_above {
+            bubble_column_particles(random, cx, at);
+        }
+    }
+}
+
+/// `Entity.sendBubbleColumnParticles`: splashes and bubbles at random spots on the column's
+/// top, drawn from the level's random.
+fn bubble_column_particles(random: &mut LegacyRandom, cx: &mut MobContext, pos: BlockPos) {
+    use crate::level::particles::simple;
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y + 1), f64::from(pos.z));
+    for _ in 0..2 {
+        let at = Vec3::new(x + random.next_double(), y, z + random.next_double());
+        cx.send_particles(simple("minecraft:splash"), at, 1, Vec3::ZERO, 1.0);
+        let at = Vec3::new(x + random.next_double(), y, z + random.next_double());
+        cx.send_particles(
+            simple("minecraft:bubble"),
+            at,
+            1,
+            Vec3::new(0.0, 0.01, 0.0),
+            0.2,
+        );
+    }
+}
+
 /// `soundEvent`: what the arrow sounds like when it hits.
 fn hit_sound(a: &ArrowData) -> &'static str {
     if a.crossbow_sound {
