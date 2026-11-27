@@ -1,0 +1,248 @@
+{
+  "criteria": {
+    "potion": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:potion",
+            "predicates": {
+              "minecraft:potion_contents": {
+                "potions": "minecraft:healing"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "potion_other": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:potion",
+            "predicates": {
+              "minecraft:potion_contents": {
+                "potions": [
+                  "minecraft:swiftness",
+                  "minecraft:water"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "custom_data": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "predicates": {
+              "minecraft:custom_data": "{vt:1b}"
+            }
+          }
+        ]
+      }
+    },
+    "custom_data_other": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "predicates": {
+              "minecraft:custom_data": {
+                "vt": 2
+              }
+            }
+          }
+        ]
+      }
+    },
+    "damage": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:diamond_sword",
+            "predicates": {
+              "minecraft:damage": {
+                "damage": {
+                  "min": 5
+                },
+                "durability": {
+                  "min": 1000
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "damage_exact": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "components": {
+              "minecraft:damage": 10
+            }
+          }
+        ]
+      }
+    },
+    "enchantments": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "predicates": {
+              "minecraft:enchantments": [
+                {
+                  "enchantments": "minecraft:sharpness",
+                  "levels": {
+                    "min": 2
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "stored_enchantments": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:enchanted_book",
+            "predicates": {
+              "minecraft:stored_enchantments": [
+                {
+                  "enchantments": "minecraft:mending"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "trim": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "predicates": {
+              "minecraft:trim": {
+                "material": "minecraft:gold",
+                "pattern": "minecraft:sentry"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "trim_other": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "predicates": {
+              "minecraft:trim": {
+                "material": "minecraft:iron"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "banner": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": "minecraft:white_banner",
+            "components": {
+              "minecraft:banner_patterns": [
+                {
+                  "color": "cyan",
+                  "pattern": "minecraft:rhombus"
+                }
+              ],
+              "minecraft:item_name": {
+                "translate": "block.minecraft.ominous_banner"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "jukebox_song": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "predicates": {
+              "minecraft:jukebox_playable": {
+                "song": "minecraft:13"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "food_present": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "predicates": {
+              "minecraft:food": {}
+            }
+          }
+        ]
+      }
+    }
+  },
+  "requirements": [
+    [
+      "potion"
+    ],
+    [
+      "potion_other"
+    ],
+    [
+      "custom_data"
+    ],
+    [
+      "custom_data_other"
+    ],
+    [
+      "damage"
+    ],
+    [
+      "damage_exact"
+    ],
+    [
+      "enchantments"
+    ],
+    [
+      "stored_enchantments"
+    ],
+    [
+      "trim"
+    ],
+    [
+      "trim_other"
+    ],
+    [
+      "banner"
+    ],
+    [
+      "jukebox_song"
+    ],
+    [
+      "food_present"
+    ]
+  ]
+}
