@@ -88,6 +88,9 @@ pub(crate) struct Traveller {
     tags: Vec<String>,
     /// The plugins' persistent data.
     persistent: Option<vanillite_nbt::Compound>,
+    /// The vehicle (by UUID) it rides again on arrival: it came along with it through a portal
+    /// (`teleportCrossDimension`, `startRiding(newEntity, true, false)`).
+    mount: Option<u128>,
 }
 
 /// Where a traveller goes in its new world.
@@ -128,6 +131,11 @@ pub(crate) struct EntityTraveller {
     /// `portalCooldown`, which `restoreFrom` takes over.
     cooldown: i32,
     route: Route,
+    /// The stored data of the mobs and other entities riding it: they come along and ride it
+    /// again.
+    passengers: Vec<vanillite_nbt::Compound>,
+    /// The players riding it: they come along and ride it again.
+    riders: Vec<Traveller>,
 }
 
 /// An entity waiting for the chunks around its destination.
@@ -372,6 +380,23 @@ impl ServerWorld {
             .portals
             .get(&id)
             .map_or(0, |p| p.cooldown);
+        // `teleportCrossDimension`: the passengers get off and come along (players by their
+        // own teleport), then ride the new entity again.
+        let mut passengers = Vec::new();
+        let mut riders = Vec::new();
+        for p in self.level.entities.riding.passengers_of(id).to_vec() {
+            if self.level.entities.player(p).is_some() {
+                if let Some(mut rider) = self.take_player(p, Route::Back) {
+                    rider.mount = vanillite_game::mob::nbt::uuid_of(&nbt);
+                    ctx.global.players.set_world(Uuid(rider.uuid), target);
+                    riders.push(rider);
+                }
+            } else if let Some(mut tag) = self.level.save_entity(p) {
+                tag.remove("Passengers");
+                self.level.entities.despawn(p);
+                passengers.push(tag);
+            }
+        }
         self.level.entities.despawn(id);
         let traveller = EntityTraveller {
             nbt,
@@ -379,6 +404,8 @@ impl ServerWorld {
             height,
             cooldown,
             route,
+            passengers,
+            riders,
         };
         let Some(global) = ctx.global.arc() else {
             return;
@@ -418,6 +445,8 @@ impl ServerWorld {
             height,
             cooldown,
             route,
+            passengers,
+            riders,
         } = traveller;
         let landing = match &route {
             Route::NetherPortal {
@@ -491,6 +520,10 @@ impl ServerWorld {
             _ => None,
         };
         let Some(landing) = landing else {
+            // No place for the vehicle: its riders go back where they came from.
+            for rider in riders {
+                self.send_back(global, rider);
+            }
             return;
         };
         use vanillite_nbt::{List, Tag};
@@ -515,6 +548,7 @@ impl ServerWorld {
             _ => Vec::new(),
         };
         // `teleportSetPosition` (`PositionMoveRotation.calculateAbsolute`).
+        let old_pos: Vec<f64> = doubles(nbt.get("Pos"));
         let motion: Vec<f64> = doubles(nbt.get("Motion"));
         let rotation: Vec<f32> = floats(nbt.get("Rotation"));
         let keep = |flag: i32, i: usize| {
@@ -556,16 +590,45 @@ impl ServerWorld {
             "Rotation",
             Tag::List(List(vec![Tag::Float(y_rot), Tag::Float(x_rot)])),
         );
-        let Some(id) = self.level.load_travelled_entity(nbt) else {
+        let vehicle_uuid = vanillite_game::mob::nbt::uuid_of(&nbt);
+        // `teleportCrossDimension`: the passengers arrive first (`calculatePassengerTransition`:
+        // their offset to the vehicle kept), then the vehicle.
+        let mut arrived = Vec::new();
+        for mut tag in passengers {
+            let own: Vec<f64> = doubles(tag.get("Pos"));
+            let offset = |i: usize| {
+                own.get(i).copied().unwrap_or(0.0) - old_pos.get(i).copied().unwrap_or(0.0)
+            };
+            tag.insert(
+                "Pos",
+                Tag::List(List(vec![
+                    Tag::Double(landing.pos.x + offset(0)),
+                    Tag::Double(landing.pos.y + offset(1)),
+                    Tag::Double(landing.pos.z + offset(2)),
+                ])),
+            );
+            let Some(p) = self.level.load_travelled_entity(tag) else {
+                continue;
+            };
+            if self
+                .level
+                .entities
+                .spawned(p, vanillite_abi::spawn_reason::DIMENSION_TRAVEL, 0)
+            {
+                arrived.push(p);
+            }
+        }
+        let placed = self.level.load_travelled_entity(nbt).filter(|&id| {
+            self.level
+                .entities
+                .spawned(id, vanillite_abi::spawn_reason::DIMENSION_TRAVEL, 0)
+        });
+        let Some(id) = placed else {
+            for rider in riders {
+                self.send_back(global, rider);
+            }
             return;
         };
-        if !self
-            .level
-            .entities
-            .spawned(id, vanillite_abi::spawn_reason::DIMENSION_TRAVEL, 0)
-        {
-            return;
-        }
         ender_pearl::arrived(&mut self.level.entities, id, |uuid| {
             global.players.contains(Uuid(uuid))
         });
@@ -574,6 +637,42 @@ impl ServerWorld {
         }
         if let Some(pos) = landing.ticket {
             self.place_portal_ticket(pos);
+        }
+        // The passengers ride the new vehicle again (`startRiding(newEntity, true, false)`).
+        for p in arrived {
+            let dimension = self.dimension.clone();
+            crate::survival::WorldSurvival::with_entities(
+                &mut self.level,
+                global,
+                &dimension,
+                |_, ents, env, _| vanillite_game::riding::start_riding(ents, env, p, id, true),
+            );
+        }
+        for mut rider in riders {
+            rider.mount = vehicle_uuid;
+            rider.route = Route::Command {
+                pos: landing.pos,
+                y_rot: rider.y_rot,
+                x_rot: rider.x_rot,
+            };
+            self.arrive(global, rider);
+        }
+    }
+
+    /// Sends a traveller back to the world it left (its destination had no place for it).
+    fn send_back(&mut self, global: &Global, mut traveller: Traveller) {
+        traveller.route = Route::Back;
+        traveller.mount = None;
+        let target = traveller.from;
+        if target == self.id {
+            self.place_back(traveller);
+            return;
+        }
+        global.players.set_world(Uuid(traveller.uuid), target);
+        if let Some(global_arc) = global.arc() {
+            global.run_in_world(target, move |world: &mut ServerWorld| {
+                world.arrive(&global_arc, traveller);
+            });
         }
     }
 
@@ -809,6 +908,7 @@ impl ServerWorld {
             route,
             tags,
             persistent,
+            mount: None,
         })
     }
 
@@ -1209,6 +1309,7 @@ impl ServerWorld {
             data,
             tags,
             persistent,
+            mount,
             ..
         } = traveller;
         let id = self.level.entities.spawn_player_as(
@@ -1273,6 +1374,18 @@ impl ServerWorld {
         }
         if let Some((arrival, from)) = pearl {
             self.pearl_landed(global, id, arrival, from);
+        }
+        // `startRiding(newEntity, true, false)` of a rider that came along with its vehicle.
+        if let Some(vehicle) = mount.and_then(|u| self.level.entities.store.by_uuid(u)) {
+            let dimension = self.dimension.clone();
+            crate::survival::WorldSurvival::with_entities(
+                &mut self.level,
+                global,
+                &dimension,
+                |_, ents, env, _| {
+                    vanillite_game::riding::start_riding(ents, env, id, vehicle, true)
+                },
+            );
         }
         if finish_tick {
             self.survival.finish_portal_tick(

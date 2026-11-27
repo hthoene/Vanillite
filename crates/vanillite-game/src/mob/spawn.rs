@@ -1994,7 +1994,32 @@ pub fn summon(
     reason: u32,
     finalize_spawn: bool,
 ) -> EntityId {
-    let seed = crate::mob::new_entity_seed();
+    summon_seeded(
+        level,
+        table,
+        kind,
+        pos,
+        difficulty,
+        reason,
+        finalize_spawn,
+        None,
+    )
+}
+
+/// [`summon`] of a mob whose constructor already took its seed from the entity seed stream
+/// (`seed`), else it takes the next one.
+#[allow(clippy::too_many_arguments)]
+pub fn summon_seeded(
+    level: &mut Level,
+    table: Option<&SpawnTable>,
+    kind: Kind,
+    pos: Vec3,
+    difficulty: Difficulty,
+    reason: u32,
+    finalize_spawn: bool,
+    seed: Option<i64>,
+) -> EntityId {
+    let seed = seed.unwrap_or_else(crate::mob::new_entity_seed);
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let env = Environment::default();
@@ -2015,6 +2040,8 @@ pub fn summon(
     } else {
         Vec::new()
     };
+    // `EntityType.loadEntityRecursive` of `{id}` reads no `Rotation`: yaw, head and body 0;
+    // `snapTo` keeps it (no draw from the level random).
     add_mob_with_code(level, mob, pos, 0.0, extra, reason)
 }
 

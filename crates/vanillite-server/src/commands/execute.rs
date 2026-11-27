@@ -614,8 +614,9 @@ pub(crate) fn summon_for(
         // Mobs with behaviour: `finalizeSpawn` with the command reason.
         let table = env.global.systems.mob_spawns.get().map(Arc::as_ref);
         let difficulty = env.global.level.difficulty();
-        let id = vanillite_game::mob::spawn::summon(
-            env.level, table, mob, pos, difficulty, reason, finalize,
+        // The constructor's seed is the one the fresh UUID's entity took.
+        let id = vanillite_game::mob::spawn::summon_seeded(
+            env.level, table, mob, pos, difficulty, reason, finalize, fresh_seed,
         );
         if !env.level.entities.store.contains(id) {
             // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
