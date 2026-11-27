@@ -633,12 +633,22 @@
     },
     {
       "name": "Performance: Threads › Compute",
-      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus one (the tick threads), at least 1. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
+      "description": "Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = the cores the server may use (`performance.budget.cpu`, the cgroup CPU quota and the CPU affinity): the workers run at a lower OS priority (`compute-nice`), so the tick threads still get a core whenever they need one. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.threads.compute.",
       "env_variable": "VANILLITE_PERFORMANCE__THREADS__COMPUTE",
       "default_value": "",
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|integer|between:0,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Threads › Compute Nice",
+      "description": "Nice value of the compute workers (Linux; the tick threads stay at 0). Higher values leave the CPU to the tick threads sooner: 10 gives a tick thread sharing a core with a worker about 90 % of it. 0 = the same priority as the tick threads. Range: 0 to 19. Empty: the profile's value (vanilla profile: 10). vanillite.toml: performance.threads.compute-nice.",
+      "env_variable": "VANILLITE_PERFORMANCE__THREADS__COMPUTE_NICE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,19",
       "field_type": "text"
     },
     {

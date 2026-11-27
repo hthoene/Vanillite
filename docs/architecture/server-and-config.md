@@ -45,8 +45,9 @@ contracts live in the crate that owns them (`Scheduler` here; world-scoped slots
 
 ## Threads and the tick loop
 
-- **Compute pool** (`compute.rs`, the `scheduler` slot): one pool, workers = cores minus one
-  (the tick threads; dimensions without players sleep between ticks; at least 1) unless `performance.threads.compute` is set. An urgent FIFO for
+- **Compute pool** (`compute.rs`, the `scheduler` slot): one pool, workers = cores (at least 1)
+  unless `performance.threads.compute` is set, at nice `performance.threads.compute-nice` (10)
+  so the tick threads win a shared core. An urgent FIFO for
   fork-join jobs of a running tick phase (`Compute::scope`; the waiting thread helps) and a
   background priority heap (lower number first, FIFO within a priority). `InlineScheduler`
   runs everything inline for deterministic tests.

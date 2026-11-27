@@ -324,12 +324,12 @@ impl ServerBuilder {
         // Plugins load first: they register commands, events and slot providers.
         let plugins = crate::plugins::load(&dir, &config);
         let parallel = config.server.tick.parallel_dimensions;
-        // One core stays with the tick threads: dimensions without players sleep between their
-        // ticks, so they do not take a core each (Vanilla: cores minus the server thread).
-        let budget = Arc::new(Budget::new(Limits::detect(
-            config.server.budget.cpu,
-            config.server.budget.memory,
-        )));
+        // One worker per core at a lower OS priority: the tick threads take a core whenever they
+        // need one, generation gets every core they leave.
+        let budget = Arc::new(Budget::new(
+            Limits::detect(config.server.budget.cpu, config.server.budget.memory),
+            config.server.threads.compute_nice,
+        ));
         if let Some(release) = self.memory_release {
             budget.set_memory_release(release);
         }

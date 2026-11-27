@@ -8,8 +8,10 @@
 //!   loading and generation, light, saving). With less than two cores ("scarce"), background
 //!   jobs start only between ticks (or while the tick waits for one of them, see
 //!   [`Budget::set_blocked`]), and only while the process stays below its CPU quota in the
-//!   current 100 ms period, so the kernel never throttles the tick. Workers also run at a lower
-//!   OS priority then.
+//!   current 100 ms period, so the kernel never throttles the tick.
+//! - The compute workers (one per core by default) run at a lower OS priority than the tick
+//!   threads ([`Budget::worker_started`]): the tick wins a core whenever both want it, and
+//!   generation still gets every core the tick leaves.
 //! - Caches size themselves from [`Budget::cache_bytes`].
 //! - [`Budget::release_memory`] hands freed memory back to the system (allocator specific,
 //!   registered by the binary).
@@ -28,8 +30,6 @@ const PERIOD: Duration = Duration::from_millis(100);
 const QUOTA_SHARE: f64 = 0.9;
 /// Background work waits for a running tick at most this long.
 const MAX_HOLD: Duration = Duration::from_millis(50);
-/// Nice value of the compute workers on scarce hardware (the tick threads stay at 0).
-const WORKER_NICE: i32 = 10;
 
 const AVAILABLE_CORES: &str = "available cores";
 
@@ -78,10 +78,11 @@ impl Limits {
         }
     }
 
-    /// Compute workers for `performance.threads.compute = 0`: the cores minus one for the
-    /// tick threads, at least one.
+    /// Compute workers for `performance.threads.compute = 0`: one per core, at least one. The
+    /// tick threads keep their share through the workers' lower priority
+    /// (`performance.threads.compute-nice`).
     pub fn default_workers(&self) -> usize {
-        (self.cpu.ceil() as usize).saturating_sub(1).max(1)
+        (self.cpu.ceil() as usize).max(1)
     }
 }
 
@@ -91,6 +92,8 @@ pub struct Budget {
     scarce: bool,
     /// The CPU limit is a quota (not whole cores): background work is paced per period.
     paced: bool,
+    /// Nice value of the compute workers.
+    worker_nice: i32,
     /// A tick is running.
     in_tick: AtomicBool,
     /// When the running tick started, in nanoseconds since `epoch`.
@@ -118,9 +121,10 @@ impl std::fmt::Debug for Budget {
 }
 
 impl Budget {
-    /// A budget for `limits`.
-    pub fn new(limits: Limits) -> Self {
+    /// A budget for `limits` whose compute workers run at nice value `worker_nice`.
+    pub fn new(limits: Limits, worker_nice: u8) -> Self {
         Budget {
+            worker_nice: i32::from(worker_nice),
             scarce: limits.cpu < SCARCE_CORES,
             paced: limits.cpu_source != AVAILABLE_CORES,
             limits,
@@ -262,11 +266,11 @@ impl Budget {
         }
     }
 
-    /// Called by every compute worker when it starts: lower OS priority on scarce hardware,
-    /// so the tick threads win the core whenever both want it.
+    /// Called by every compute worker when it starts: lower OS priority, so the tick threads
+    /// win the core whenever both want it.
     pub(crate) fn worker_started(&self) {
-        if self.scarce {
-            lower_thread_priority(WORKER_NICE);
+        if self.worker_nice > 0 {
+            lower_thread_priority(self.worker_nice);
         }
     }
 

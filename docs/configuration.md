@@ -105,7 +105,8 @@ These apply to the whole server.
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
-| `compute` | setting | yes | `0` | `0` | `0` | `0` | `0` | Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus one (the tick threads), at least 1. Integer from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__THREADS__COMPUTE`. |
+| `compute` | setting | yes | `0` | `0` | `0` | `0` | `0` | Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = the cores the server may use (`performance.budget.cpu`, the cgroup CPU quota and the CPU affinity): the workers run at a lower OS priority (`compute-nice`), so the tick threads still get a core whenever they need one. Integer from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__THREADS__COMPUTE`. |
+| `compute-nice` | setting | yes | `10` | `10` | `10` | `10` | `10` | Nice value of the compute workers (Linux; the tick threads stay at 0). Higher values leave the CPU to the tick threads sooner: 10 gives a tick thread sharing a core with a worker about 90 % of it. 0 = the same priority as the tick threads. Integer from 0 to 19. Environment: `VANILLITE_PERFORMANCE__THREADS__COMPUTE_NICE`. |
 
 #### `[performance.budget]`
 
