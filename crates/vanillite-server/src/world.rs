@@ -657,6 +657,12 @@ impl ServerWorld {
                 .settings
                 .apply_game_rules(&ctx.global.level.rules());
             self.skip_night(ctx.global);
+            self.mobs.update_environment(
+                &mut self.level,
+                &self.survival,
+                ctx.global,
+                &self.dimension,
+            );
             self.level.settings.difficulty = ctx.global.level.difficulty();
             self.level.settings.overworld_clock_time =
                 crate::mobs::overworld_clock_time(ctx.global);
@@ -719,7 +725,6 @@ impl ServerWorld {
             });
             self.mobs.spawn(
                 level,
-                &self.survival,
                 ctx.global,
                 &self.dimension,
                 spawn_point,
