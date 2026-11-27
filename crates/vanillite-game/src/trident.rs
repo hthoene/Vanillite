@@ -206,13 +206,11 @@ pub fn release(
         .player(player)
         .is_some_and(|p| p.survival.simulate_movement);
     if let Some(mut e) = ents.store.get_mut(player) {
-        // `push`: the motion grows and the client hears of it (`hasImpulse`).
+        // `push`: the motion grows and the players tracking it hear of it (`needsSync`); the
+        // riptiding player's client launches itself.
         let v = e.as_ref().velocity();
         e.set_velocity(v + push);
         e.set_flags(EntityFlags::HAS_IMPULSE, true);
-        if !simulated {
-            e.set_flags(EntityFlags::HURT_MARKED, true);
-        }
     }
     start_spin_attack(ents, env, player, 20, 8.0, stack.clone(), hand_index);
     if on_ground && simulated {
