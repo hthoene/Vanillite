@@ -77,7 +77,7 @@ fn look_target_same_medium(t: &mut Tick<'_, '_>) -> bool {
     crate::mob::is_water(t.level.block(pos)) == in_water(t)
 }
 
-fn brain_spec() -> BrainSpec {
+pub(super) fn brain_spec() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,

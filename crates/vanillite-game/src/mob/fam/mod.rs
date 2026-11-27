@@ -1044,6 +1044,33 @@ pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut FamGoal) {
     by_goal!(g, goal_tick(t, @g));
 }
 
+/// `LivingEntity.readAdditionalSaveData`: a saved `Brain` makes a new brain
+/// (`makeBrain(packed)`): sensors with new random delays from the mob's random, every
+/// behaviour stopped, only the saved memories.
+pub fn reload_brain(m: &mut MobData, tag: &Compound) {
+    if m.brain.is_none() || tag.get("Brain").is_none() {
+        return;
+    }
+    match m.kind {
+        Kind::Camel | Kind::CamelHusk => mount::ai::camel_brain(m),
+        Kind::HappyGhast => mount::ai::happy_ghast_brain(m),
+        Kind::Nautilus | Kind::ZombieNautilus => mount::ai::nautilus_brain(m),
+        Kind::Allay => mount::ai::allay_brain(m),
+        Kind::CopperGolem => mount::ai::copper_golem_brain(m),
+        Kind::Breeze => mount::ai::breeze_brain(m),
+        Kind::Creaking => mount::ai::creaking_brain(m),
+        Kind::Warden => crate::mob::boss::warden::ai::make_brain(m),
+        Kind::Villager => {
+            m.brain = None;
+            village::villager::rebuild_brain(m, None);
+        }
+        _ => brainy::make_brain(m),
+    }
+    if let Some(b) = m.brain.as_deref_mut() {
+        super::brain::load(b, tag);
+    }
+}
+
 /// `Bucketable.saveDefaultDataToBucketTag`: the bucket `item` with the mob's custom name, and
 /// the default `bucket_entity_data` the kind adds to before [`set_bucket_data`].
 pub(crate) fn bucket_default(m: &MobData, item: &str) -> (ItemStack, Compound) {
@@ -1136,6 +1163,13 @@ pub fn load_from_bucket(m: &mut MobData, stack: &crate::item::ItemStack) {
             }
             s.playing_dead = flag("AgeLocked").unwrap_or(false);
             s.from_bucket = true;
+        }
+        Kind::SulfurCube => {
+            let age = match tag.get("age") {
+                Some(vanillite_nbt::Tag::Int(age)) => *age,
+                _ => 0,
+            };
+            undead::cubes::load_from_bucket(m, age, flag("age_locked").unwrap_or(false));
         }
         _ => {}
     }

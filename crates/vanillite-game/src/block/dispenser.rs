@@ -161,10 +161,11 @@ pub enum Behaviour {
     /// `DefaultDispenseItemBehavior`: the item drops.
     Default,
     /// An entity kind that is not simulated yet: projectiles, fireworks, fire and wind
-    /// charges, boats, armour stands, spawn eggs and mob buckets. Falls back to
-    /// [`Behaviour::Default`].
+    /// charges, boats and armour stands. Falls back to [`Behaviour::Default`].
     Entity,
-    /// Water and lava buckets (`DispensibleContainerItem`).
+    /// `SpawnEggItemBehavior`.
+    SpawnEgg,
+    /// Water, lava and mob buckets (`DispensibleContainerItem`).
     FilledBucket,
     /// The powder snow bucket (`SolidBucketItem`).
     PowderSnowBucket,
@@ -219,7 +220,7 @@ pub fn behaviour_of(stack: &ItemStack) -> Behaviour {
         Behaviour::Equipment
     } else if name.ends_with("_spawn_egg") {
         // `SpawnEggItemBehavior` (spawn eggs carry `entity_data`).
-        Behaviour::Entity
+        Behaviour::SpawnEgg
     } else {
         // `#minecraft:sulfur_cube_swallowable` items find no sulfur cube and drop.
         Behaviour::Default
@@ -257,7 +258,6 @@ fn registered(id: ItemId) -> Option<Behaviour> {
         return Some(B::Minecart);
     }
     let name = id.name();
-    // Mob buckets (`MobBucketItem`) place water, then spawn their mob.
     let shot = [
         items::ARROW,
         items::TIPPED_ARROW,
@@ -276,11 +276,10 @@ fn registered(id: ItemId) -> Option<Behaviour> {
     let spawns_entity = projectiles.contains(&id)
         || id == items::ARMOR_STAND
         || name.ends_with("_boat")
-        || name.ends_with("_raft")
-        || mob_buckets.contains(&id);
+        || name.ends_with("_raft");
     Some(if spawns_entity {
         B::Entity
-    } else if id == items::WATER_BUCKET || id == items::LAVA_BUCKET {
+    } else if id == items::WATER_BUCKET || id == items::LAVA_BUCKET || mob_buckets.contains(&id) {
         B::FilledBucket
     } else if id == items::POWDER_SNOW_BUCKET {
         B::PowderSnowBucket
@@ -404,13 +403,52 @@ fn execute(
                 dispense(level, source, stack, B::Default)
             }
         }
+        B::SpawnEgg => {
+            let Some(kind) = crate::mob::animal::spawn_egg_kind(&stack) else {
+                return stack;
+            };
+            let spawned = crate::mob::animal::spawn_from_item(
+                level,
+                kind,
+                &stack,
+                target,
+                crate::mob::fam::SpawnReason::Dispenser,
+                source.facing != Direction::Up,
+                false,
+            );
+            if spawned.is_some() {
+                stack.shrink(1);
+                level.game_event_at(None, events().entity_place, source.pos);
+            }
+            stack
+        }
         B::FilledBucket => {
-            let fluid = if item::item_id(&stack) == items::LAVA_BUCKET {
+            let id = item::item_id(&stack);
+            let fluid = if id == items::LAVA_BUCKET {
                 ids::LAVA
             } else {
                 ids::WATER
             };
-            if empty_bucket_contents(level, fluid, target) {
+            let mob = crate::player::play::item_use::mob_bucket_kind(id);
+            let emptied = match mob {
+                // `MobBucketItem.emptyContents` of `Fluids.EMPTY`: only the empty sound.
+                Some(kind @ crate::mob::Kind::SulfurCube) => {
+                    let sound = crate::player::play::item_use::mob_bucket_sound(kind);
+                    play_empty_sound(level, None, fluid, target, Some(sound));
+                    true
+                }
+                Some(kind) => {
+                    let sound = crate::player::play::item_use::mob_bucket_sound(kind);
+                    empty_bucket_contents_by(level, None, fluid, target, None, false, Some(sound))
+                }
+                None => empty_bucket_contents(level, fluid, target),
+            };
+            if emptied {
+                // `MobBucketItem.checkExtraContent`.
+                if let Some(kind) = mob {
+                    crate::player::play::item_use::release_mob(level, kind, &stack, target);
+                    level.game_event_at(None, events().entity_place, target);
+                }
                 consume_with_remainder(level, source, stack, ItemStack::new(items::BUCKET.0, 1))
             } else {
                 dispense(level, source, stack, B::Default)

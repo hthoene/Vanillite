@@ -63,7 +63,7 @@ pub fn reset_sniffing(t: &mut Tick<'_, '_>) {
     transition_to(t, IDLING);
 }
 
-fn brain_spec() -> BrainSpec {
+pub(super) fn brain_spec() -> BrainSpec {
     let mut panic = Spec::animal_panic(2.0);
     panic.set_on_start(reset_sniffing);
     let core = ActivitySpec::new(
