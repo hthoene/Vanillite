@@ -38,6 +38,7 @@ mod system_cmd;
 pub(crate) mod teams;
 mod text;
 mod tracker;
+mod vanillite_cmd;
 mod world_cmd;
 
 use std::collections::HashMap;
@@ -67,6 +68,7 @@ pub(crate) use select::{find_uuid, local as local_target};
 pub(crate) use sound::{send_post_effects, sound_source};
 pub(crate) use source::{CommandSource, SourceKind};
 pub(crate) use survival::{Weather, clock_changed, on_game_rule_changed, set_weather};
+pub(crate) use vanillite_cmd::profile_finished;
 pub(crate) use world_cmd::sprint_finished;
 
 use crate::global::Global;
@@ -759,6 +761,18 @@ impl vanillite_game::block::technical::command_block::CommandRunner for BlockCom
 }
 
 /// A command of the console or RCON with the owner permission level.
+/// A command whose feedback goes to `buffer`, also when it arrives after the command
+/// (`/vanillite` answers between the ticks).
+#[cfg(test)]
+pub(crate) fn run_collected(
+    world: &mut ServerWorld,
+    global: &Global,
+    line: &str,
+    buffer: &Arc<std::sync::Mutex<String>>,
+) {
+    run_server_command(world, global, line, SourceKind::Rcon(Arc::clone(buffer)));
+}
+
 fn run_server_command(world: &mut ServerWorld, global: &Global, line: &str, kind: SourceKind) {
     let command = line.trim().trim_start_matches('/');
     if command.is_empty() {

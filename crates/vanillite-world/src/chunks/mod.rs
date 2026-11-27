@@ -827,6 +827,32 @@ impl Chunks {
         self.holders.len()
     }
 
+    /// Number of full chunks (`/vanillite status`).
+    pub fn full(&self) -> usize {
+        self.holders
+            .values()
+            .filter(|h| {
+                h.chunk
+                    .as_ref()
+                    .is_some_and(|c| c.status == ChunkStatus::Full)
+            })
+            .count()
+    }
+
+    /// Heap bytes of the loaded chunks' block, light and heightmap data (`/vanillite
+    /// memory`); walks every chunk, only on demand.
+    pub fn memory_bytes(&self) -> usize {
+        self.holders
+            .values()
+            .map(|h| {
+                size_of::<Holder>()
+                    + h.chunk
+                        .as_ref()
+                        .map_or(0, |c| size_of::<ProtoChunk>() + c.chunk.heap_bytes())
+            })
+            .sum()
+    }
+
     // --- Tickets -------------------------------------------------------------------------
 
     /// Adds a ticket: chunks within `33 - level` of `pos` become full, one ring further at

@@ -433,6 +433,8 @@ pub(crate) struct Arrival {
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
     /// Transferred from another server: no `server_data` at join.
     pub(crate) transferred: bool,
+    /// Protocol, brand and packet counts of a network connection.
+    pub(crate) details: Option<Arc<vanillite_net::ClientDetails>>,
 }
 
 /// The players' side of a world.

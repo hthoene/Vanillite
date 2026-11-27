@@ -56,8 +56,10 @@ pub struct Global {
     pub(crate) templates: Arc<vanillite_worldgen::template::StructureTemplateManager>,
     /// `/tick`'s state; the server loop reads it once per tick.
     pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
-    /// The durations of the last ticks (`/tick query`).
+    /// The durations of the last ticks (`/tick query`, `/vanillite tps`).
     pub(crate) tick_times: std::sync::Mutex<crate::tick_rate::TickTimes>,
+    /// Uptime, CPU samples and the profiler of `/vanillite`.
+    pub(crate) diagnostics: crate::diagnostics::Diagnostics,
     /// Vanilla's English translations, for texts of the console and RCON.
     pub(crate) language: std::collections::HashMap<String, String>,
     /// `broadcast-console-to-ops`.

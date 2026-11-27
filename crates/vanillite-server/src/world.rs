@@ -144,6 +144,21 @@ pub struct ServerWorld {
     portal_requests: crate::survival::PortalRequests,
     /// The chunk tickets plugins hold (not saved).
     pub(crate) plugin_tickets: crate::plugins::PluginTickets,
+    /// A `/vanillite profile` runs this tick.
+    profiling: bool,
+    /// What this world measured for the running or last profile, until the server takes it.
+    profile: Option<Box<crate::profiler::WorldProfile>>,
+}
+
+/// The time since the last lap belongs to `$phase` (only while a profile runs).
+macro_rules! lap {
+    ($world:ident, $phase:ident) => {
+        if $world.profiling
+            && let Some(profile) = $world.profile.as_deref_mut()
+        {
+            profile.lap(crate::profiler::Phase::$phase);
+        }
+    };
 }
 
 impl fmt::Debug for ServerWorld {
@@ -259,6 +274,8 @@ impl ServerWorld {
             pearl_tickets: FxHashMap::default(),
             portal_requests: crate::survival::PortalRequests::default(),
             plugin_tickets: crate::plugins::PluginTickets::default(),
+            profiling: false,
+            profile: None,
         }
     }
 
@@ -582,6 +599,19 @@ impl ServerWorld {
         let positions = plugins
             .wants(vanillite_abi::event::PLAYERS_MOVED)
             .then(|| self.player_positions());
+        self.profiling = ctx.global.diagnostics.profiler.is_active();
+        self.mobs.profiling = self.profiling;
+        if self.profiling {
+            let loads = self.level.chunks.sync_loads();
+            self.profile
+                .get_or_insert_with(|| {
+                    Box::new(crate::profiler::WorldProfile::new((
+                        loads.count,
+                        loads.waited,
+                    )))
+                })
+                .begin_tick();
+        }
         let started = Instant::now();
         if self.players.recording.wants_start(&self.level.entities) {
             self.start_session_recording(ctx.global);
@@ -614,9 +644,13 @@ impl ServerWorld {
                     (*from != to).then_some((uuid, *from, to))
                 })
                 .collect();
+            lap!(self, NetworkIn);
             plugins.players_moved(&mut crate::plugins::PluginWorld(self, ctx.global), &moves);
+            lap!(self, Plugins);
         }
+        lap!(self, NetworkIn);
         plugins.run_world_tasks(&mut crate::plugins::PluginWorld(self, ctx.global), ctx.tick);
+        lap!(self, Plugins);
         self.survival
             .moves(&mut self.level, ctx.global, &self.dimension);
         self.post_player_game_events();
@@ -630,6 +664,7 @@ impl ServerWorld {
             self.respawn(ctx, id);
         }
         self.tick_travel(ctx.global);
+        lap!(self, Players);
         if self.id.0 == 0 && ctx.runs_normally {
             // `ServerFunctionManager.tick`: the data pack functions run as the server in the
             // overworld before the clocks and the worlds tick.
@@ -639,8 +674,10 @@ impl ServerWorld {
                 self.id,
                 ctx.other_levels().collect(),
             );
+            lap!(self, Functions);
         }
         self.players_inside_blocks();
+        lap!(self, Players);
         // The rules block behaviour reads (sculk shriekers).
         self.level.settings.peaceful =
             ctx.global.level.difficulty() == vanillite_game::survival::rules::Difficulty::Peaceful;
@@ -681,9 +718,11 @@ impl ServerWorld {
                     ctx.other_levels().collect(),
                 );
             }
+            lap!(self, WorldState);
             // Command blocks run here: `execute in` continues in the other world at once.
             self.lent
                 .with(ctx.other_levels(), || self.level.run_scheduled_ticks());
+            lap!(self, BlockTicks);
             // `raids.tick`.
             self.mobs.tick_raids(
                 &mut self.level,
@@ -691,6 +730,7 @@ impl ServerWorld {
                 ctx.global,
                 &self.dimension,
             );
+            lap!(self, Raids);
         }
         let spectators_generate_chunks = ctx
             .global
@@ -712,6 +752,8 @@ impl ServerWorld {
         }
         level.tick_chunk_runtime();
         level.post_process();
+        lap!(self, Chunks);
+        let level = &mut self.level;
         if ctx.runs_normally {
             let (spawn, _) = effective_spawn(level, self.players.level.spawn);
             let spawn_point = (self.dimension == "minecraft:overworld")
@@ -733,14 +775,18 @@ impl ServerWorld {
                 spawn_point,
                 tiles.as_ref(),
             );
+            lap!(self, Spawning);
             match &tiles {
                 Some(run) => level.tick_chunks_tiled(&mut self.scratch, run),
                 None => level.tick_chunks(&mut self.scratch),
             }
+            lap!(self, RandomTicks);
         }
         self.updates.chunk_source_tick(level);
+        lap!(self, Chunks);
         if ctx.runs_normally {
             level.run_block_events();
+            lap!(self, BlockEvents);
         }
         level.set_handling_tick(false);
         if ctx.runs_normally {
@@ -752,7 +798,9 @@ impl ServerWorld {
                 lent.with(ctx.other_levels(), || self.tick_entities(global));
             }
             self.entity_travel(ctx);
+            lap!(self, Entities);
             self.level.tick_block_entities();
+            lap!(self, BlockEntities);
             // `GameTestTicker.tick` for this world's tests.
             crate::commands::gametest::tick(&mut crate::commands::Env {
                 level: &mut self.level,
@@ -773,6 +821,7 @@ impl ServerWorld {
         }
         // `entityManager.tick()`: entities of chunks that became visible this tick load now.
         self.level.tick_entity_manager();
+        lap!(self, Entities);
         self.level.chunks.end_tick();
         let (light, ready) = self.updates.light_and_ready();
         self.level.chunks.take_light_changes(light);
@@ -783,6 +832,7 @@ impl ServerWorld {
             self.packets.invalidate_chunk(pos.chunk());
         }
         self.updates.broadcast(&mut self.level, ctx.global, self.id);
+        lap!(self, Chunks);
         self.track_entities();
         WorldPlayers::send_entity_updates(
             &self.level.entities,
@@ -791,6 +841,7 @@ impl ServerWorld {
             &mut self.fan_out,
             ctx.global.plugins.packet_tap(),
         );
+        lap!(self, Tracking);
         // `sendNextChunks` runs after `ChunkMap.tick`: entities in the chunks sent now are
         // still pending for this tick's tracking and become visible from the next one.
         WorldPlayers::send_chunks(
@@ -799,6 +850,7 @@ impl ServerWorld {
                 .packets
                 .source(&self.level.chunks, &self.level.block_entities),
         );
+        lap!(self, ChunkSending);
         let mut portals = std::mem::take(&mut self.portal_requests);
         // The omen effects see the village and raids at the players (they tick without the
         // level); raid omens that ran out start their raids right after the players' ticks.
@@ -848,6 +900,7 @@ impl ServerWorld {
         }
         self.portal_requests = portals;
         self.post_player_game_events();
+        lap!(self, PlayerTicks);
         self.players.tick_connections(
             &mut self.level,
             ctx.tick,
@@ -864,6 +917,7 @@ impl ServerWorld {
         for (_, player) in self.level.entities.players.iter() {
             player.connection.sink.flush();
         }
+        lap!(self, NetworkOut);
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
         self.report_rules();
@@ -872,6 +926,23 @@ impl ServerWorld {
         self.level
             .chunks
             .autosave_step(std::time::Duration::from_nanos(left));
+        lap!(self, Saving);
+    }
+
+    /// Takes what this world measured for the last profile (`/vanillite profile`), with its
+    /// dimension name.
+    pub(crate) fn take_profile(&mut self) -> Option<(String, crate::profiler::WorldProfile)> {
+        let mut profile = *self.profile.take()?;
+        if let Some(entities) = self.mobs.take_entity_profile() {
+            profile.entities = entities;
+        }
+        let loads = self.level.chunks.sync_loads();
+        let (count, waited) = profile.sync_loads_at_start;
+        profile.sync_loads = (
+            loads.count.saturating_sub(count),
+            loads.waited.saturating_sub(waited),
+        );
+        Some((self.dimension.clone(), profile))
     }
 
     /// `MinecraftServer.setInitialSpawn`'s search on this (the overworld's) level: the

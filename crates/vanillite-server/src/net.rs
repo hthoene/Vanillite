@@ -560,6 +560,7 @@ pub(crate) fn arrival(
         address: joined.address.to_string(),
         inbox,
         transferred: joined.transferred,
+        details: Some(joined.details),
     };
     (arrival, sink)
 }

@@ -139,6 +139,10 @@ pub(crate) struct WorldMobs {
     /// World changes entity ticks queued and that were applied after their tick, since the
     /// world started.
     deferred_actions: u64,
+    /// A `/vanillite profile` runs this tick (set by the world).
+    pub(crate) profiling: bool,
+    /// The entity times of the running or last profile.
+    entity_profile: Option<crate::profiler::EntityProfile>,
 }
 
 /// What the item entities' tick needs from the world.
@@ -174,7 +178,14 @@ impl WorldMobs {
             raids_data: None,
             traders: None,
             trader_data: None,
+            profiling: false,
+            entity_profile: None,
         }
+    }
+
+    /// Takes the entity times of the last profile.
+    pub(crate) fn take_entity_profile(&mut self) -> Option<crate::profiler::EntityProfile> {
+        self.entity_profile.take()
     }
 
     /// Loads the dimension's raids from their saved data (`Raids.TYPE`).
@@ -795,6 +806,12 @@ impl WorldMobs {
         let mut cursor = level.entities.store.tick_cursor();
         let mut tnt_left = self.settings.max_tnt_per_tick;
         let mut ents = std::mem::take(&mut level.entities);
+        // `/vanillite profile`: the time of each entity by type and chunk.
+        let mut profile = if self.profiling {
+            Some(self.entity_profile.take().unwrap_or_default())
+        } else {
+            None
+        };
         while let Some(id) = ents.store.next_to_tick(&mut cursor) {
             let Some(mut entity) = ents.store.get_mut(id) else {
                 continue;
@@ -802,6 +819,9 @@ impl WorldMobs {
             entity.set_old_pos();
             let kind = entity.as_ref().kind();
             let pos = entity.as_ref().pos();
+            if let Some(profile) = &mut profile {
+                profile.next(kind, BlockPos::containing(pos.x, pos.y, pos.z).chunk());
+            }
             if kind == ids::LIGHTNING_BOLT {
                 let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
                 if !level.chunks.in_entity_ticking_range(chunk) {
@@ -1025,6 +1045,10 @@ impl WorldMobs {
                 ents.despawn(d);
             }
         }
+        if let Some(profile) = &mut profile {
+            profile.finish();
+        }
+        self.entity_profile = profile;
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
         // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
         riding::ride_tick(&mut ents);

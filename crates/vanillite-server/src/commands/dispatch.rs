@@ -526,6 +526,7 @@ pub(crate) fn execute(
         | CommandId::DebugStop
         | CommandId::SetIdleTimeout
         | CommandId::Transfer => super::system_cmd::run(parsed, source, env),
+        CommandId::Vanillite(op) => super::vanillite_cmd::run(op, parsed, source, env),
         CommandId::SetBlock(mode) => super::blocks_cmd::set_block(mode, &parsed.args, source, env),
         CommandId::Fill(mode) => super::blocks_cmd::fill(mode, &parsed.args, source, env),
         CommandId::Clone {

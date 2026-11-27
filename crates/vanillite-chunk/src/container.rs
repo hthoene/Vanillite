@@ -157,6 +157,17 @@ impl<S: Strategy> fmt::Debug for PalettedContainer<S> {
 }
 
 impl<S: Strategy> PalettedContainer<S> {
+    /// Heap bytes of the palette and the data array (`/vanillite memory`).
+    pub fn heap_bytes(&self) -> usize {
+        match &self.data {
+            ContainerData::Single(_) => 0,
+            ContainerData::Indirect { palette, data, .. } => {
+                palette.capacity() * size_of::<u16>() + std::mem::size_of_val::<[Word]>(data)
+            }
+            ContainerData::Direct { data, .. } => std::mem::size_of_val::<[Word]>(data),
+        }
+    }
+
     #[inline]
     fn wrap(data: ContainerData) -> Self {
         Self {

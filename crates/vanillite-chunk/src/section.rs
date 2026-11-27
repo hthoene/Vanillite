@@ -82,6 +82,11 @@ pub struct Section {
 }
 
 impl Section {
+    /// Heap bytes of the section with its containers (`/vanillite memory`).
+    pub fn heap_bytes(&self) -> usize {
+        size_of::<Section>() + self.blocks.heap_bytes() + self.biomes.heap_bytes()
+    }
+
     /// A section filled with one block state and one biome.
     pub fn new(block: BlockStateId, biome: BiomeId) -> Self {
         Self::from_containers(PalettedContainer::new(block), PalettedContainer::new(biome))

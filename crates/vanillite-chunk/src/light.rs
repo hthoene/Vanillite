@@ -111,6 +111,21 @@ pub struct ChunkLight {
 }
 
 impl ChunkLight {
+    /// Heap bytes of the light arrays (shared arrays count fully; `/vanillite memory`).
+    pub fn heap_bytes(&self) -> usize {
+        let layer = |n: &LightNibbles| match n {
+            LightNibbles::Data(_) => NIBBLE_BYTES,
+            LightNibbles::Absent | LightNibbles::Uniform(_) => 0,
+        };
+        (self.sky.len() + self.block.len()) * size_of::<LightNibbles>()
+            + self
+                .sky
+                .iter()
+                .chain(self.block.iter())
+                .map(layer)
+                .sum::<usize>()
+    }
+
     /// Light for `section_count` sections, all absent. Without sky light the sky layers stay
     /// absent.
     pub fn new(section_count: usize) -> Self {
