@@ -165,10 +165,11 @@ pub fn try_spawn_golem(level: &mut Level, top: BlockPos) -> Option<EntityId> {
         super::fam::mount::copper_golem::golem_mut(&mut golem).weather = weather_of(copper.block());
         let spawn = m.block(0, 0);
         let id = spawn_golem(level, &m, golem, spawn);
-        // `replaceCopperBlockWithChest` (a single chest).
+        // `replaceCopperBlockWithChest`.
         if let Some(chest) = copper_chest_of(copper.block()) {
-            let state = chest.default_state().set_direction("facing", facing);
-            level.set_block(m.block(0, 1), state, update::CLIENTS);
+            let at = m.block(0, 1);
+            let state = crate::block::place::copper_chest_from_block(chest, facing, at, level);
+            level.set_block(at, state, update::CLIENTS);
         }
         // `CopperGolem.spawn`: `playSpawnSound`.
         let at = Vec3::new(
@@ -246,6 +247,11 @@ fn spawn_golem(level: &mut Level, m: &Match, golem: MobData, spawn: BlockPos) ->
         Rotation::default(),
         golem,
     );
+    // `SUMMONED_ENTITY` for the players within 5 blocks of the golem's box.
+    if let Some(b) = level.entities.store.get(id).map(|e| e.aabb()) {
+        let near = super::animal::players_in(&level.entities, &b.inflate(5.0, 5.0, 5.0));
+        super::animal::award_summoned(&mut level.entities, &near, id);
+    }
     // `updatePatternBlocks`.
     for x in 0..m.width {
         for y in 0..m.height {

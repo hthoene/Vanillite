@@ -212,7 +212,7 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
 }
 
 /// The compostable provider of a stack's item, if any.
-fn compostable(stack: &ItemStack) -> Option<IntProvider> {
+pub(super) fn compostable(stack: &ItemStack) -> Option<IntProvider> {
     if stack.is_empty() {
         return None;
     }
@@ -329,7 +329,7 @@ pub fn empty(
 }
 
 /// `ComposterBlock.addLayer`.
-fn add_layer(
+pub(super) fn add_layer(
     level: &mut Level,
     source: Option<EntityId>,
     state: BlockState,

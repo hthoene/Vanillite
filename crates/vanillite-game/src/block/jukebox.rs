@@ -348,8 +348,21 @@ pub fn tick(level: &mut Level, pos: BlockPos, state: BlockState) {
                 affected: Some(state),
             },
         );
-        // `spawnMusicParticles`: the note particle's colour roll.
-        let _ = level.random().next_int_bounded(4);
+        // `spawnMusicParticles`: a note above the jukebox in one of four colours.
+        #[allow(clippy::cast_precision_loss)]
+        let color = level.random().next_int_bounded(4) as f32 / 24.0;
+        let at = vanillite_base::Vec3::new(
+            f64::from(pos.x) + 0.5,
+            f64::from(pos.y) + f64::from(1.2f32),
+            f64::from(pos.z) + 0.5,
+        );
+        level.send_particles(
+            crate::level::particles::simple("minecraft:note"),
+            at,
+            0,
+            vanillite_base::Vec3::new(f64::from(color), 0.0, 0.0),
+            1.0,
+        );
     }
     if let Some(j) = jukebox_mut(level, pos) {
         j.ticks_since_song_started += 1;

@@ -55,6 +55,7 @@ pub mod sculk_catalyst;
 pub mod sculk_shrieker;
 pub mod sculk_vibration;
 pub mod sensor;
+pub mod shelf;
 pub mod sign;
 pub mod spawner;
 #[cfg(test)]
@@ -374,6 +375,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     portal::fill(block, &mut b);
     pot::fill(block, &mut b);
     bookshelf::fill(block, &mut b);
+    shelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
     cake::fill(block, &mut b);
     bed::fill(block, &mut b);

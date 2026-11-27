@@ -26,6 +26,7 @@ use crate::stats::{Stat, StatType, custom};
 mod item_use;
 
 pub use item_use::adventure_allows;
+pub(crate) use item_use::flush_equips;
 
 /// Static gameplay data the handlers read: tool rules, loot tables and enchantment ids.
 #[derive(Debug, Default)]
@@ -1017,6 +1018,29 @@ impl Digging {
                     any_block_use(ctx, hand, pos);
                     return true;
                 }
+            } else if hand == Hand::MainHand && crate::block::shelf::is_shelf(state.block()) {
+                // `ShelfBlock.useItemOn`: swaps with the hotbar, so it gets the inventory.
+                let before = ctx.inventory.selected_item().clone();
+                let selected = ctx.inventory.selected;
+                let infinite = ctx.actor.creative();
+                let result = match ctx.level.level_mut() {
+                    Some(level) => crate::block::shelf::use_item_on(
+                        level,
+                        state,
+                        pos,
+                        face,
+                        hit,
+                        infinite,
+                        &mut ctx.inventory.items[..9],
+                        selected,
+                    ),
+                    None => None,
+                };
+                if let Some(result) = result {
+                    ctx.trigger(Event::ItemUsedOnBlock(pos, before));
+                    any_block_use(ctx, hand, pos);
+                    return result == crate::block::Interaction::Success;
+                }
             } else {
                 // `state.useItemOn(stack, …)`, then `useWithoutItem` for the main hand when it
                 // tries with an empty hand.
@@ -1735,6 +1759,7 @@ impl Digging {
         if (1..=45).contains(&slot) && valid_data {
             ctx.inventory
                 .set_creative_slot(usize::try_from(slot).unwrap_or(0), stack);
+            flush_equips(ctx);
         } else if slot < 0 && valid_data && !stack.is_empty() {
             // `dropSpamThrottler`: 20 per tick, threshold 1480.
             if self.drop_spam < 1480 {

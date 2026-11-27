@@ -1284,9 +1284,14 @@ fn movement_emission(
     {
         let m = t.mob();
         m.move_dist += if climbing { moved } else { horizontal };
-        if m.move_dist <= m.next_step || supporting.is_air() {
-            return;
-        }
+        m.fly_dist += moved;
+    }
+    if supporting.is_air() {
+        process_flapping(t);
+        return;
+    }
+    if t.mob_ref().move_dist <= t.mob_ref().next_step {
+        return;
     }
     let on_ground = t.on_ground();
     let swimming = t
@@ -1332,6 +1337,47 @@ fn movement_emission(
         }
         post_game_event(t, crate::level::game_event::events().swim, pos, None);
     }
+}
+
+/// `Entity.processFlappingMovement`: bees flap every other tick in the air, chickens and
+/// parrots whenever their flight passes `nextFlap`, allays in the air, bats and phantoms on
+/// their beat; each flap is a `flap` game event.
+fn process_flapping(t: &mut Tick<'_, '_>) {
+    use super::Kind;
+    let kind = t.mob_ref().kind;
+    let flapping = match kind {
+        // `Bee.isFlapping`: `TICKS_PER_FLAP` is 2.
+        Kind::Bee => !t.on_ground() && t.mob_ref().tick_count % 2 == 0,
+        Kind::Chicken | Kind::Parrot => t.mob_ref().fly_dist > t.mob_ref().next_flap,
+        Kind::Allay => !t.on_ground(),
+        Kind::Bat => {
+            !super::fam::wildlife::st(t.mob_ref()).resting && t.mob_ref().tick_count % 10 == 0
+        }
+        // `getUniqueFlapTickOffset` is the entity id times 3; `TICKS_PER_FLAP` is 25.
+        Kind::Phantom => {
+            let id = t.core().network_id().0;
+            id.wrapping_mul(3).wrapping_add(t.mob_ref().tick_count) % 25 == 0
+        }
+        // Vexes move without physics: their moves make no events.
+        _ => false,
+    };
+    if !flapping {
+        return;
+    }
+    match kind {
+        Kind::Chicken => {
+            let m = t.mob();
+            m.next_flap = m.fly_dist + super::fam::classic::chicken(m).flap_speed / 2.0;
+        }
+        Kind::Parrot => {
+            kinds::play_sound(t, "minecraft:entity.parrot.fly", 0.15, 1.0);
+            let m = t.mob();
+            m.next_flap = m.fly_dist + super::fam::companion::st(m).flap / 2.0;
+        }
+        _ => {}
+    }
+    let pos = t.pos();
+    post_game_event(t, crate::level::game_event::events().flap, pos, None);
 }
 
 /// `getMovementEmission().emitsSounds()`: kinds whose moves make no sound.

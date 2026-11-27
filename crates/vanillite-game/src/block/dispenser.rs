@@ -109,7 +109,7 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let facing = state.direction("facing").unwrap_or(Direction::North);
     let source = Source { pos, facing, slot };
     let remaining = if dropper {
-        match ContainerRef::at(level, pos.relative(facing)) {
+        match ContainerRef::at_block(level, pos.relative(facing)) {
             // `DropperBlock.dispenseFrom`: one item into the container in front.
             Some(into) => {
                 let rest = super::hopper::add_item(

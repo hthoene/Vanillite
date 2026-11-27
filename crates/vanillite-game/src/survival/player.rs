@@ -1783,16 +1783,57 @@ pub fn do_tick_end(
 }
 
 /// `updateFluidInteraction`: the fluids around the player; touching water resets the fall
-/// distance.
-fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &Env<'_>) {
+/// distance, and entering it splashes.
+fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
     let e = entity.as_ref();
     let pos = e.pos();
     let eye = Vec3::new(pos.x, pos.y + eye_height(e.dims().height), pos.z);
     let contact = blocks::fluid_contact(env.blocks, env.facts, e.aabb(), eye);
+    let was_in_water = player.survival.fluids.in_water();
     player.survival.fluids = contact;
     if contact.in_water() {
         reset_fall_distance(player);
+        if !was_in_water && !player.survival.first_tick && player.game_mode != GameMode::Spectator {
+            water_splash(entity, env);
+        }
     }
+}
+
+/// `Player.doWaterSplashEffect`: the splash sound and the `splash` game event (the bubble and
+/// splash particles are the clients'; the player's own random is not modelled, so the pitch
+/// and the particle draws do not touch the level random).
+fn water_splash(entity: &EntityMut<'_>, env: &mut Env<'_>) {
+    let e = entity.as_ref();
+    let v = e.velocity();
+    let point_two = f64::from(0.2f32);
+    #[allow(clippy::cast_possible_truncation)]
+    let speed =
+        ((v.x * v.x * point_two + v.y * v.y + v.z * v.z * point_two).sqrt() as f32 * 0.2).min(1.0);
+    let sound = if speed < 0.25 {
+        "minecraft:entity.player.splash"
+    } else {
+        "minecraft:entity.player.splash.high_speed"
+    };
+    let seed = crate::survival::sound_seed();
+    let mut r = LegacyRandom::new(seed);
+    let pitch = 1.0 + (r.next_float() - r.next_float()) * 0.4;
+    let id = e.id();
+    crate::survival::play_sound(
+        env.out,
+        Some(id),
+        e.pos(),
+        sound,
+        SoundSource::Players,
+        speed,
+        pitch,
+        r.next_long(),
+    );
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().splash,
+        e.pos(),
+        Some(id),
+    );
 }
 
 /// `updateSwimming`: sprinting under water swims.
