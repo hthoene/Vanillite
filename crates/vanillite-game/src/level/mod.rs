@@ -1780,6 +1780,10 @@ impl BlockLevel for Level {
         Level::block(self, pos)
     }
 
+    fn moving_piston_boxes(&self, pos: BlockPos, out: &mut Vec<[f64; 6]>) {
+        block::piston::collision_boxes_at(&self.block_entities, pos, out);
+    }
+
     fn min_y(&self) -> i32 {
         Level::min_y(self)
     }

@@ -1445,7 +1445,7 @@ pub(crate) fn water_travel(t: &mut Tick<'_, '_>, input: Vec3, speed: f32, sink: 
     }
     let mut v = t.velocity() * 0.9;
     if t.mob_ref().target.is_none() && sink {
-        v.y -= 0.005;
+        v = v + Vec3::new(0.0, -0.005, 0.0);
     }
     t.set_velocity(v);
 }

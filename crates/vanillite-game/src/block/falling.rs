@@ -364,8 +364,8 @@ fn tick_move(level: &mut Level, id: EntityId) -> Option<Resume> {
     let entity = level.entities.store.get(id)?;
     let (pos, aabb) = (entity.pos(), entity.aabb());
     // `applyGravity` and `move(SELF, deltaMovement)`.
-    let mut velocity = entity.velocity();
-    velocity.y -= 0.04;
+    // Added as a vector: a -0.0 of x or z becomes 0.0 like in Java.
+    let mut velocity = entity.velocity() + Vec3::new(0.0, -0.04, 0.0);
     let mut delta = velocity;
     if data.stuck.length_sqr() > 1.0e-7 {
         // `stuckSpeedMultiplier`: the slowed move, then the block stands still.
@@ -444,13 +444,17 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
         time,
     } = r;
     let vertical = moved.y != delta.y;
-    let horizontal = moved.x != delta.x || moved.z != delta.z;
+    // `Mth.equal`: within the float 1.0E-5F.
+    let equal = |a: f64, b: f64| (b - a).abs() < f64::from(1.0e-5_f32);
+    let (x_collision, z_collision) = (!equal(delta.x, moved.x), !equal(delta.z, moved.z));
+    let horizontal = x_collision || z_collision;
     let on_ground = vertical && delta.y < 0.0;
-    if moved.x != delta.x {
-        velocity.x = 0.0;
+    // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps the sign bit.
+    if x_collision {
+        velocity.x = -velocity.x * 0.0;
     }
-    if moved.z != delta.z {
-        velocity.z = 0.0;
+    if z_collision {
+        velocity.z = -velocity.z * 0.0;
     }
     if vertical {
         // `Block.updateEntityMovementAfterFallOn`.
