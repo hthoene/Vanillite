@@ -512,7 +512,23 @@ pub fn attack_interaction(
         player: uuid,
         timestamp: time,
     });
-    if i.response {
+    let response = i.response;
+    // `PLAYER_HURT_ENTITY` with generic damage of 1.
+    let kind = crate::advancements::trigger::TriggerKind::PLAYER_HURT_ENTITY;
+    if crate::advancements::view::listens(ents, player, kind)
+        && let Some(target) = crate::advancements::view::snapshot(ents, id)
+    {
+        let source = crate::survival::damage::DamageSource::of(env.types.generic);
+        let damage =
+            crate::advancements::view::damage_event(ents, env.types, &source, 1.0, 1.0, false);
+        if let Some(p) = ents.player_mut(player) {
+            p.advancements
+                .trigger(crate::advancements::trigger::Event::PlayerHurtEntity(
+                    target, damage,
+                ));
+        }
+    }
+    if response {
         // The attack goes on and deals no damage (`ATTACK_NODAMAGE`).
         if let Some(p) = ents.store.get(player).map(|e| e.pos()) {
             crate::survival::play_sound(
