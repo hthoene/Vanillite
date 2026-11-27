@@ -341,6 +341,9 @@ const PREPARATION: u32 = 2;
 fn world_prep(work_dir: &Path, classpath: &str, args: &[&Path]) -> Result<String> {
     let output = Command::new(java_tool("java"))
         .current_dir(work_dir)
+        // A bounded heap: the JVM's default (a quarter of the memory the host reports) is more
+        // than a container may have, and the system kills it as soon as others need memory.
+        .arg("-Xmx3G")
         .arg("-cp")
         .arg(classpath)
         .arg("dev.vanillite.extractor.golden.WorldPrep")
@@ -722,7 +725,8 @@ fn vanilla_session(
                             "Failed",
                             "no template",
                         ],
-                        Duration::from_secs(120),
+                        // The largest schematics (p16_cpu) take minutes to place.
+                        Duration::from_secs(600),
                     )?;
                     if answer == "Loaded template" {
                         break;

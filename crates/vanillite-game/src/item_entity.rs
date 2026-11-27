@@ -644,14 +644,15 @@ fn block_boxes(
                 // movement below 1.0E-7.
                 let start = out.len();
                 let mut overlaps = false;
+                let (ox, oz) = crate::mob::physics::collision_offset(state, x, z);
                 for b in crate::mob::physics::context_shape(state, dy, Some(bottom)) {
                     let shape = Aabb::new(
-                        b[0] + dx,
+                        (b[0] + ox) + dx,
                         b[1] + dy,
-                        b[2] + dz,
-                        b[3] + dx,
+                        (b[2] + oz) + dz,
+                        (b[3] + ox) + dx,
                         b[4] + dy,
-                        b[5] + dz,
+                        (b[5] + oz) + dz,
                     );
                     overlaps |= shape.intersects(area);
                     out.push(shape);

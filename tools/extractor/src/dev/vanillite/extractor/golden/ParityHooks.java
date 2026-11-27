@@ -41,6 +41,7 @@ public final class ParityHooks {
   private static long unique;
   private static boolean scenario;
   private static RandomSource stream;
+  private static boolean seedLoads;
   private static Long next;
   private static final ThreadLocal<Long> LOAD_SEED = new ThreadLocal<>();
   private static boolean deferLoads;
@@ -87,7 +88,17 @@ public final class ParityHooks {
     scenario = true;
     unique = 0;
     stream = null;
+    seedLoads = false;
     next = null;
+  }
+
+  /**
+   * From now on, entities loaded from storage are seeded from their UUID and the game time even
+   * before the entity stream starts: the snapshot's own entities ({@code world.entities}) load
+   * while its chunks load.
+   */
+  public static synchronized void seedLoads() {
+    seedLoads = true;
   }
 
   /** The seed of the next entity created (a scenario entity). */
@@ -106,7 +117,8 @@ public final class ParityHooks {
    */
   public static synchronized void loading(Object input, Object level, Object request) {
     LOAD_SEED.remove();
-    if (stream == null || ((EntitySpawnRequest) request).reason() != EntitySpawnReason.LOAD) {
+    if ((stream == null && !seedLoads)
+        || ((EntitySpawnRequest) request).reason() != EntitySpawnReason.LOAD) {
       return;
     }
     long uuid =

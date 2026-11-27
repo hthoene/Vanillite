@@ -340,6 +340,11 @@ public final class ScenarioRecorder {
         // Without game ticks: the snapshot's scheduled ticks keep their delays from game time
         // 0, like in Vanillite's new level (a warm-up would move them later).
         Area loading = new Area(min, max);
+        if (snapshotEntities) {
+          // The entities load at game time 0, like in Vanillite's new level.
+          server.getWorldData().overworldData().setGameTime(0);
+          ParityHooks.seedLoads();
+        }
         for (int cx = loading.minX; cx <= loading.maxX; cx++) {
           for (int cz = loading.minZ; cz <= loading.maxZ; cz++) {
             level.setChunkForced(cx, cz, true);

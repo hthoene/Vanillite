@@ -363,9 +363,10 @@ pub(crate) fn apply_entity_nbt(
         if let Some(Tag::List(List(r))) = data.get("Rotation")
             && let [Tag::Float(y), Tag::Float(x)] = r.as_slice()
         {
+            // `setRot` keeps yaw and pitch modulo 360; the head keeps the stored yaw.
             let mut rot = e.as_ref().rot();
-            rot.y_rot = *y;
-            rot.x_rot = *x;
+            rot.y_rot = *y % 360.0;
+            rot.x_rot = *x % 360.0;
             rot.y_head_rot = *y;
             e.set_rot(rot);
         }

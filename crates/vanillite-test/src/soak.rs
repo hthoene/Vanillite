@@ -347,6 +347,39 @@ fn record_golden(
     deadline: Option<Instant>,
 ) -> Result<Option<Vec<u64>>, String> {
     std::fs::create_dir_all(snapshots).map_err(|e| format!("{}: {e}", snapshots.display()))?;
+    // A recorder the system kills (out of memory while other runs take the host's memory)
+    // records once more before the scenario counts as failed.
+    match record_sums(scenario, file, java, dir, snapshots, deadline) {
+        Err(e) if e.contains("SIGKILL") => {
+            eprintln!(
+                "{}: the Vanilla recorder was killed, recording again",
+                scenario.name
+            );
+            record_sums(scenario, file, java, dir, snapshots, deadline)
+        }
+        r => r,
+    }
+    .and_then(|sums| {
+        let Some(sums) = sums else {
+            return Ok(None);
+        };
+        let bytes: Vec<u8> = sums.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let tmp = sums_path.with_extension("sums.tmp");
+        std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, sums_path).map_err(|e| format!("{}: {e}", sums_path.display()))?;
+        Ok(Some(sums))
+    })
+}
+
+/// One recording of [`record_golden`]: the checksums, `None` if the deadline ended it.
+fn record_sums(
+    scenario: &Scenario,
+    file: &Path,
+    java: &Java,
+    dir: &Path,
+    snapshots: &Path,
+    deadline: Option<Instant>,
+) -> Result<Option<Vec<u64>>, String> {
     let mut sums = Vec::with_capacity(scenario.ticks as usize + 1);
     let mut names = Vec::new();
     let mut stopped = false;
@@ -382,10 +415,6 @@ fn record_golden(
             scenario.ticks + 1
         ));
     }
-    let bytes: Vec<u8> = sums.iter().flat_map(|s| s.to_le_bytes()).collect();
-    let tmp = sums_path.with_extension("sums.tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, sums_path).map_err(|e| format!("{}: {e}", sums_path.display()))?;
     Ok(Some(sums))
 }
 

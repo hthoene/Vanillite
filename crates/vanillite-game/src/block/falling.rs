@@ -795,9 +795,18 @@ fn collide_axis(
                     }
                     _ => crate::mob::physics::context_shape(state, origin[1], Some(bottom)),
                 };
+                let (ox, oz) = crate::mob::physics::collision_offset(state, x, z);
                 for b in shape {
-                    let box_min = [b[0] + origin[0], b[1] + origin[1], b[2] + origin[2]];
-                    let box_max = [b[3] + origin[0], b[4] + origin[1], b[5] + origin[2]];
+                    let box_min = [
+                        (b[0] + ox) + origin[0],
+                        b[1] + origin[1],
+                        (b[2] + oz) + origin[2],
+                    ];
+                    let box_max = [
+                        (b[3] + ox) + origin[0],
+                        b[4] + origin[1],
+                        (b[5] + oz) + origin[2],
+                    ];
                     let overlaps = (0..3)
                         .filter(|&a| a != axis)
                         .all(|a| box_max[a] - EPSILON > min[a] && box_min[a] + EPSILON < max[a]);
