@@ -13,7 +13,7 @@ use crate::level::Level;
 use crate::mob::animal::{self, Interaction};
 use crate::mob::fam::{FamGoal, Interact};
 use crate::mob::goals;
-use crate::mob::nav::{LookKind, MoveKind, NavKind, Operation};
+use crate::mob::nav::{LookKind, MoveKind, NavKind, NavVariant, Operation};
 use crate::mob::{MobData, Tick};
 use crate::player::encode::DataWriter;
 
@@ -100,6 +100,7 @@ fn setup_for_age(m: &mut MobData) {
         };
         m.look.kind = LookKind::Default;
         m.nav.kind = NavKind::Flying;
+        m.nav.variant = NavVariant::BabyHappyGhast;
         m.nav.can_float = true;
         m.nav.can_open_doors = false;
         let follow = m.attrs.follow_range;
@@ -111,6 +112,7 @@ fn setup_for_age(m: &mut MobData) {
         m.move_ctl.kind = MoveKind::Custom;
         m.look.kind = LookKind::Custom;
         m.nav.kind = NavKind::Flying;
+        m.nav.variant = NavVariant::Default;
         let follow = m.attrs.follow_range;
         m.nav.set_required_path_length(16.0, follow);
         m.brain = None;

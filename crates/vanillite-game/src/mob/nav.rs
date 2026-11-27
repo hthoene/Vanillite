@@ -92,6 +92,8 @@ pub enum NavVariant {
     Strider,
     /// The bee's flying navigation: a block below is a stable destination.
     Bee,
+    /// The baby happy ghast's `BabyFlyingPathNavigation`: fluids do not block a direct move.
+    BabyHappyGhast,
 }
 
 /// The state of a mob's `PathNavigation` (ground by default, see [`NavKind`]).
@@ -723,7 +725,7 @@ fn can_move_directly(t: &Tick<'_, '_>, start: Vec3, stop: Vec3) -> bool {
     let fluids = match m.nav.kind {
         NavKind::Water { .. } => false,
         NavKind::Amphibious if m.fluids.in_water() || m.fluids.in_lava() => false,
-        NavKind::Flying => true,
+        NavKind::Flying => m.nav.variant != NavVariant::BabyHappyGhast,
         _ => return false,
     };
     let height = f64::from(t.core().dims().height);
