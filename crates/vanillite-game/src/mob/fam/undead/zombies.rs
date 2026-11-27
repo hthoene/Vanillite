@@ -1651,10 +1651,7 @@ pub fn save_conversion(m: &MobData, out: &mut Compound) {
 
 /// Reads the conversion data of a zombie.
 pub fn load_conversion(m: &mut MobData, tag: &Compound) {
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => None,
-    };
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
     let z = zs_mut(m);
     z.in_water_time = int("InWaterTime").unwrap_or(0);
     match int("DrownedConversionTime") {
@@ -1725,9 +1722,9 @@ fn load_reinforcement(m: &mut MobData, tag: &Compound) {
         for t in &l.0 {
             if let Tag::Compound(c) = t
                 && c.get("id").and_then(Tag::as_str) == Some("minecraft:spawn_reinforcements")
-                && let Some(Tag::Double(v)) = c.get("base")
+                && let Some(v) = crate::mob::entity_nbt::get_double(c, "base")
             {
-                zs_mut(m).reinforcement = *v;
+                zs_mut(m).reinforcement = v;
             }
         }
     }
@@ -1748,17 +1745,14 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     if m.kind == Kind::Giant {
         return;
     }
-    let boolean = |k: &str| matches!(tag.get(k), Some(Tag::Byte(b)) if *b != 0);
+    let boolean = |k: &str| crate::mob::entity_nbt::get_bool(tag, k).unwrap_or(false);
     super::set_baby(m, boolean("IsBaby"));
     set_can_break_doors(m, boolean("CanBreakDoors"));
     load_conversion(m, tag);
     load_reinforcement(m, tag);
     match m.kind {
         Kind::ZombieVillager => {
-            let int = |k: &str| match tag.get(k) {
-                Some(Tag::Int(v)) => Some(*v),
-                _ => None,
-            };
+            let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
             let finalized = boolean("VillagerDataFinalized");
             let data = match tag.get("VillagerData") {
                 Some(Tag::Compound(c)) => Some(c.clone()),
@@ -1782,10 +1776,8 @@ pub fn load(m: &mut MobData, tag: &Compound) {
                         "profession",
                         "minecraft:none",
                     );
-                    z.villager_level = match d.get("level") {
-                        Some(Tag::Int(v)) => (*v).max(1),
-                        _ => 1,
-                    };
+                    z.villager_level =
+                        crate::mob::entity_nbt::get_int(&d, "level").map_or(1, |v| v.max(1));
                 }
             }
             z.villager_xp = int("Xp").unwrap_or(0);

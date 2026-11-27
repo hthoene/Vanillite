@@ -605,11 +605,25 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     }
     if let Some(Tag::Compound(c)) = tag.get("drop_chances") {
         for (i, name) in NAMES.iter().enumerate() {
-            if let Some(Tag::Float(v)) = c.get(name) {
-                m.equipment.drop_chances[i] = *v;
+            if let Some(v) = c.get(name).and_then(as_f64).filter(|v| v.is_finite()) {
+                m.equipment.drop_chances[i] = v as f32;
             }
         }
     }
+}
+
+/// A numeric tag as a double (vanilla `getFloat` accepts any number tag).
+#[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+fn as_f64(tag: &Tag) -> Option<f64> {
+    Some(match *tag {
+        Tag::Byte(v) => f64::from(v),
+        Tag::Short(v) => f64::from(v),
+        Tag::Int(v) => f64::from(v),
+        Tag::Long(v) => v as f64,
+        Tag::Float(v) => f64::from(v),
+        Tag::Double(v) => v,
+        _ => return None,
+    })
 }
 
 /// A random for equipment rolls in tests.
@@ -647,6 +661,33 @@ mod tests {
         let mut n = MobData::new(Kind::Zombie, 2);
         load(&mut n, &out);
         assert_eq!(n.equipment, m.equipment);
+    }
+
+    #[test]
+    fn drop_chances_accept_any_number_tag() {
+        let mut chances = Compound::new();
+        chances.insert("head", Tag::Int(1));
+        chances.insert("chest", Tag::Double(0.5));
+        chances.insert("legs", Tag::Byte(1));
+        chances.insert("feet", Tag::Short(0));
+        chances.insert("mainhand", Tag::Long(1));
+        chances.insert("offhand", Tag::Float(0.25));
+        chances.insert("body", Tag::Double(f64::NAN));
+        chances.insert("saddle", Tag::String("0.5".into()));
+        let mut tag = Compound::new();
+        tag.insert("drop_chances", chances);
+        let mut m = MobData::new(Kind::Zombie, 1);
+        load(&mut m, &tag);
+        let d = m.equipment.drop_chances;
+        assert_eq!(d[5], 1.0);
+        assert_eq!(d[4], 0.5);
+        assert_eq!(d[3], 1.0);
+        assert_eq!(d[2], 0.0);
+        assert_eq!(d[0], 1.0);
+        assert_eq!(d[1], 0.25);
+        // Non-finite and non-numeric values keep the default.
+        assert_eq!(d[6], DEFAULT_DROP_CHANCE);
+        assert_eq!(d[7], DEFAULT_DROP_CHANCE);
     }
 
     #[test]

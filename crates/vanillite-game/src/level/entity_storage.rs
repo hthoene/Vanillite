@@ -491,9 +491,11 @@ impl Level {
             Some(Tag::Compound(c)) => Some(c.clone()),
             _ => None,
         };
+        let base = nbt.clone();
         let Some(vehicle) = self.create_entity(nbt)? else {
             return Some(None);
         };
+        crate::mob::entity_nbt::load_base(&mut self.entities, vehicle, &base, false);
         self.entities.set_tags(vehicle, tags);
         self.entities.set_persistent_data(vehicle, persistent);
         loaded.push(vehicle);
@@ -647,6 +649,7 @@ impl Level {
     /// and kinds that are not saved. Its tags are saved with it.
     pub fn save_entity(&self, id: EntityId) -> Option<Compound> {
         let mut nbt = self.save_entity_kind(id)?;
+        crate::mob::entity_nbt::save_base(&self.entities, id, &mut nbt);
         let tags = self.entities.tags_of(id);
         if tags.is_empty() {
             nbt.remove("Tags");

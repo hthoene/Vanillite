@@ -629,6 +629,9 @@ pub fn hurt_boat(
     if cx.discarded.contains(&id) {
         return true;
     }
+    if crate::mob::entity_nbt::invulnerable_to(ents, env.types, id, &source) {
+        return false;
+    }
     let pos = ents.store.get(id).map(|e| e.pos());
     crate::minecart::damage_game_event(ents, cx, id, source.cause);
     let Some(b) = ents.boat_mut(id) else {

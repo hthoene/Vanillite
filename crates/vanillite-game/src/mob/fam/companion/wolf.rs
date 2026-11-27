@@ -524,10 +524,6 @@ pub fn load(m: &mut MobData, tag: &Compound) {
             st_mut(m).sound_variant = u8::try_from(i).unwrap_or(SOUND_CLASSIC);
         }
     }
-    // `setTame(..., true)` restores the tame health.
-    if m.tame {
-        m.attrs.max_health = 40.0;
-    }
 }
 
 /// `checkWolfSpawnRules`: `#wolves_spawnable_on` below and bright enough.

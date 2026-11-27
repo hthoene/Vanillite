@@ -295,6 +295,9 @@ pub fn hurt_mob(
     if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
         return crate::decoration::stand::hurt(level, ents, env, cx, target, &source);
     }
+    if super::entity_nbt::invulnerable_to(ents, types, target, &source) {
+        return false;
+    }
     if let Some(took) =
         super::fam::undead::cubes::sulfur_hurt(level, ents, env, target, &source, amount)
     {
@@ -1494,9 +1497,16 @@ fn table_loot(
     let data = crate::player::play::game_data()?;
     let name = ents.store.get(target)?.kind().info().name;
     let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
-    let table = format!("{ns}:entities/{path}");
+    // `Mob.getLootTable`: `DeathLootTable` replaces the type's table.
+    let (replaced, seed) = ents.extra(target).map_or((None, 0), |x| {
+        (x.death_loot_table.clone(), x.death_loot_seed)
+    });
+    let table = replaced
+        .clone()
+        .unwrap_or_else(|| format!("{ns}:entities/{path}"));
     if !data.loot.contains(&table) {
-        return None;
+        // An unknown table is the empty one: nothing drops.
+        return replaced.map(|_| Vec::new());
     }
     let this = super::attack::facts(ents, target)?;
     let attacker = source.cause.and_then(|c| super::attack::facts(ents, c));
@@ -1541,9 +1551,20 @@ fn table_loot(
         block_entity: None,
     };
     let mut out = Vec::new();
-    // `dropFromLootTable` without a loot table seed: the table's random sequence, else the
-    // level random.
-    data.loot
-        .roll_table(level, &table, &ctx, env.random, &mut out);
+    if seed == 0 {
+        // `dropFromLootTable` without a loot table seed: the table's random sequence, else
+        // the level random.
+        data.loot
+            .roll_table(level, &table, &ctx, env.random, &mut out);
+    } else {
+        let mut random = vanillite_base::random::LegacyRandom::new(seed);
+        data.loot.table_drops(&table, &ctx, &mut random, &mut out);
+    }
+    // `Mob.dropFromLootTable` forgets its `DeathLootTable`.
+    if replaced.is_some()
+        && let Some(x) = ents.extra_mut(target)
+    {
+        x.death_loot_table = None;
+    }
     Some(out)
 }

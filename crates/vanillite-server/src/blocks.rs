@@ -674,6 +674,7 @@ pub fn tick_item(
         return burn;
     }
     let row = entity.kind_row();
+    burn.invulnerable = entity.flags().contains(EntityFlags::INVULNERABLE);
     let input = item_entity::TickInput {
         pos: entity.pos(),
         velocity: entity.velocity(),

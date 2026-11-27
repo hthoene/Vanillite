@@ -547,6 +547,7 @@ pub(crate) fn summon_for(
     reason: u32,
 ) -> Result<Target, CommandError> {
     let target = summon_one(env, source, id, pos, nbt, finalize, reason)?;
+    super::data::join_team(env.global, target.uuid, nbt);
     // `EntityType.loadEntityRecursive`: the `Passengers` (each with its own `Passengers`)
     // are made at the same position and ride the entity (`startRiding(vehicle, true)`); one
     // that cannot be made is left out.
@@ -672,6 +673,10 @@ fn summon_one(
         }
         // The given tags on top of what the mob has (like `data merge`).
         let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
+        // `Entity.load` of the given tags: without `Health` the mob has its full health.
+        if !finalize {
+            loaded.remove("Health");
+        }
         super::data_cmd::merge_compound(&mut loaded, nbt);
         loaded.remove("Pos");
         data::apply_entity_nbt(&mut env.level.entities, id, &loaded)?;
@@ -716,6 +721,7 @@ fn summon_one(
             e.set_velocity(loaded.velocity);
         }
         env.level.entities.set_tags(id, tags);
+        vanillite_game::mob::entity_nbt::load_base(&mut env.level.entities, id, &full, true);
         if !env.level.entities.spawned(id, reason, 0) {
             return Err(failed());
         }

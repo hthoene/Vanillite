@@ -18,7 +18,7 @@ pub mod wind;
 
 use vanillite_base::random::LegacyRandom;
 use vanillite_base::{BlockPos, Vec3};
-use vanillite_nbt::{Compound, Tag};
+use vanillite_nbt::Compound;
 use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::{Dimensions, EntityId};
 
@@ -101,26 +101,15 @@ fn uuid_ints(uuid: u128) -> Vec<i32> {
 }
 
 fn int(tag: &Compound, key: &str) -> Option<i32> {
-    match tag.get(key) {
-        Some(Tag::Int(v)) => Some(*v),
-        Some(Tag::Short(v)) => Some(i32::from(*v)),
-        Some(Tag::Byte(v)) => Some(i32::from(*v)),
-        #[allow(clippy::cast_possible_truncation)]
-        Some(Tag::Long(v)) => Some(*v as i32),
-        _ => None,
-    }
+    crate::mob::entity_nbt::get_int(tag, key)
 }
 
 fn long(tag: &Compound, key: &str) -> Option<i64> {
-    match tag.get(key) {
-        Some(Tag::Long(v)) => Some(*v),
-        Some(Tag::Int(v)) => Some(i64::from(*v)),
-        _ => None,
-    }
+    tag.get(key).and_then(crate::mob::entity_nbt::long_value)
 }
 
 fn boolean(tag: &Compound, key: &str) -> bool {
-    matches!(tag.get(key), Some(Tag::Byte(b)) if *b != 0)
+    crate::mob::entity_nbt::get_bool(tag, key).unwrap_or(false)
 }
 
 /// `AgeableMob` and `Animal` NBT (`Age`, `ForcedAge`, `AgeLocked` for kinds that can be
@@ -142,7 +131,7 @@ fn load_ageable(m: &mut MobData, tag: &Compound, can_be_baby: bool) {
         m.age = int(tag, "Age").unwrap_or(0);
         m.baby = m.age < 0;
         m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
-        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+        m.age_locked = crate::mob::entity_nbt::get_bool(tag, "AgeLocked").unwrap_or(false);
     }
     m.in_love = int(tag, "InLove").unwrap_or(0);
     m.love_cause = super::super::nbt::uuid_key_of(tag, "LoveCause");

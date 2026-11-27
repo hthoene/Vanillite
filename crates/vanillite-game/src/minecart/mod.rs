@@ -624,6 +624,9 @@ pub fn hurt(
     let Some(kind) = ents.minecart(id).map(|m| m.kind) else {
         return false;
     };
+    if crate::mob::entity_nbt::invulnerable_to(ents, env.types, id, &source) {
+        return false;
+    }
     // `MinecartTNT.hurtServer`: a burning arrow sets it off.
     if kind == MinecartKind::Tnt
         && let Some(direct) = source.direct

@@ -14,6 +14,7 @@ pub mod boss;
 pub mod brain;
 pub mod combat;
 pub mod common;
+pub mod entity_nbt;
 pub mod equipment;
 pub mod fam;
 pub mod goals;

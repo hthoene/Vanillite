@@ -749,13 +749,8 @@ impl FamilyHooks for Hooks {
     fn load(m: &mut MobData, tag: &Compound) {
         let kind = m.kind;
         let s = st_mut(m);
-        let int = |k: &str| match tag.get(k) {
-            Some(Tag::Int(v)) => Some(*v),
-            Some(Tag::Byte(v)) => Some(i32::from(*v)),
-            Some(Tag::Short(v)) => Some(i32::from(*v)),
-            _ => None,
-        };
-        let boolean = |k: &str| matches!(tag.get(k), Some(Tag::Byte(v)) if *v != 0);
+        let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
+        let boolean = |k: &str| crate::mob::entity_nbt::get_bool(tag, k).unwrap_or(false);
         if is_raider(kind) {
             s.patrol_target = match tag.get("patrol_target") {
                 Some(Tag::IntArray(v)) if v.len() == 3 => Some(BlockPos::new(v[0], v[1], v[2])),
