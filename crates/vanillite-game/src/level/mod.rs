@@ -1015,6 +1015,17 @@ impl Level {
         }
     }
 
+    /// [`Level::block`] if the position is loaded ([`Level::is_loaded`]), with one chunk
+    /// lookup inside the build height.
+    #[inline]
+    pub fn loaded_block(&self, pos: BlockPos) -> Option<BlockState> {
+        if self.in_height(pos.y) {
+            self.chunks.accessible_block(pos).map(BlockState)
+        } else {
+            self.is_loaded(pos).then_some(block::VOID_AIR)
+        }
+    }
+
     /// The pure read view ([`view`]): reads without side effects for collision, path finding
     /// and code on other threads.
     #[inline]
@@ -1107,9 +1118,10 @@ impl Level {
     }
 
     /// `getMaxLocalRawBrightness(pos)`: like [`Self::raw_brightness`] with the sky darkened by
-    /// the time of day. The simulation has no day cycle yet, so this is the daytime value.
+    /// this tick's `skyDarken` (the time of day and the weather).
     pub fn max_local_raw_brightness(&self, pos: BlockPos) -> i32 {
-        self.raw_brightness(pos)
+        let (sky, block) = self.light(pos);
+        (sky - self.spawner_env.env.sky_darken).max(block)
     }
 
     // --- Scheduled ticks and events --------------------------------------------------------

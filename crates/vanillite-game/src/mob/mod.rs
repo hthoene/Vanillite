@@ -6,6 +6,7 @@
 //! readable for blocks and light); what changes blocks (explosions, a sheep eating grass) is
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
+pub mod activation;
 pub mod animal;
 pub mod attack;
 pub mod boss;
@@ -258,6 +259,9 @@ pub struct MobData {
     pub next_flap: f32,
     /// The state of bosses and the other kinds with their own machinery.
     pub boss: boss::Ext,
+    /// The last world tick the mob counts as active for `performance.activation-range` (in
+    /// range of a player, immune or woken up; see [`activation`]). Not saved.
+    pub active_until: u64,
 }
 
 /// What holds a leash in entity NBT (`leash`).
@@ -380,6 +384,7 @@ impl MobData {
             fly_dist: 0.0,
             next_flap: 1.0,
             boss: boss::new_ext(kind),
+            active_until: 0,
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
         // `LivingEntity`'s constructor turns the entity to a random yaw (`setYRot(random.nextFloat()
@@ -667,9 +672,8 @@ pub fn day_sky_factor(ticks: i64) -> f32 {
 pub struct MobSettings {
     /// Path finding nodes all mobs of a world may visit per tick; `0` = unlimited (Vanilla).
     pub path_nodes_per_tick: u32,
-    /// Mobs farther than this from every player run their AI only every 20th tick; `0` =
-    /// off (Vanilla).
-    pub activation_range: u32,
+    /// The activation range (`performance.activation-range.*`); off by default (Vanilla).
+    pub activation: activation::ActivationSettings,
     /// Entities a mob pushes per tick; `None` = all (Vanilla).
     pub max_entity_collisions: Option<u32>,
     /// Ticks an arrow stays stuck in a block (Vanilla 1200).
@@ -687,7 +691,7 @@ impl Default for MobSettings {
     fn default() -> Self {
         MobSettings {
             path_nodes_per_tick: 0,
-            activation_range: 0,
+            activation: activation::ActivationSettings::default(),
             max_entity_collisions: None,
             arrow_despawn_ticks: 1200,
             hard_despawn_range: None,
@@ -795,6 +799,12 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// `stepOn` of the block at the position for the entity standing on it.
     StepOn(BlockPos, EntityId),
+    /// `Mob.finalizeSpawn` of a mob made outside a spawn (a cured zombie villager): the
+    /// follow range bonus and left-handedness from the level random.
+    MobSpawnBonus(EntityId),
+    /// `HoneyBlock.maybeDoSlideEffects` of a sliding player: the slide sound and particles,
+    /// each one time in five by the level random.
+    HoneySlideEffects(EntityId),
     /// `onProjectileHit` of the block at the position, hit by the projectile at the point
     /// with the speed.
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
@@ -870,6 +880,49 @@ impl WorldAction {
             WorldAction::StepOn(pos, id) => {
                 if level.entities.store.contains(id) {
                     crate::block::contact::step_on(level, pos, id);
+                }
+            }
+            WorldAction::MobSpawnBonus(id) => {
+                let bonus = level.random().triangle(0.0, 0.114_850_000_000_000_01);
+                let left_handed = level.random().next_float() < 0.05;
+                if let Some(m) = level.entities.mob_mut(id) {
+                    m.attrs.follow_range *= 1.0 + bonus;
+                    m.left_handed = left_handed;
+                }
+            }
+            WorldAction::HoneySlideEffects(id) => {
+                let Some((pos, network_id)) = level
+                    .entities
+                    .store
+                    .get(id)
+                    .map(|e| (e.pos(), e.network_id().0))
+                else {
+                    return true;
+                };
+                if level.random().next_int_bounded(5) == 0
+                    && let Some(sound) = vanillite_data::registry::SOUND_EVENT
+                        .id("minecraft:block.honey_block.slide")
+                {
+                    // `Player.playSound`: heard by everyone but the player.
+                    level.play_sound(
+                        Some(id),
+                        pos.x,
+                        pos.y,
+                        pos.z,
+                        sound,
+                        crate::level::SOUND_PLAYERS,
+                        1.0,
+                        1.0,
+                    );
+                }
+                if level.random().next_int_bounded(5) == 0 {
+                    let packet = vanillite_protocol::SharedPacket::of(
+                        &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                            entity_id: network_id,
+                            event: 53,
+                        },
+                    );
+                    level.output().nearby_packets.push((pos, 160.0, packet));
                 }
             }
             WorldAction::TrampleFarmland(pos, id) => {
@@ -1446,6 +1499,41 @@ pub fn tick(
     }
     t.mob().tick_count += 1;
     living::tick(&mut t);
+}
+
+/// The tick of an inactive mob that thinks (`performance.activation-range`, the goal
+/// selector throttle): [`activation::age`], then the goal and target selectors choose and tick
+/// their goals. Navigation and movement wait for the mob's next full tick. Mobs with a brain
+/// only age.
+pub fn think(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    id: EntityId,
+) {
+    let mut t = Tick {
+        level,
+        ents,
+        env,
+        cx,
+        id,
+    };
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
+    activation::age(t.mob());
+    let m = t.mob();
+    if m.no_ai || m.brain.is_some() || !m.is_alive() {
+        return;
+    }
+    m.seen.clear();
+    m.unseen.clear();
+    goals::tick_selector(&mut t, goals::Which::Targets);
+    if !t.exists() || t.mob_ref().removed {
+        return;
+    }
+    goals::tick_selector(&mut t, goals::Which::Goals);
 }
 
 #[cfg(test)]

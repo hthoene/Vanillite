@@ -96,9 +96,14 @@ impl DecoratedPot {
     /// The sherd items of the four sides in the order a cracked pot drops them (left, back,
     /// front, right); sides without one are skipped.
     pub fn sherd_items(&self) -> Vec<ItemStack> {
-        let Some(value) = &self.sherds else {
-            return Vec::new();
-        };
+        self.sherds.as_deref().map(sherds_of).unwrap_or_default()
+    }
+}
+
+/// The sherd items of a `minecraft:pot_decorations` value in the order a cracked pot drops
+/// them (left, back, front, right); sides without one are skipped.
+pub fn sherds_of(value: &[u8]) -> Vec<ItemStack> {
+    {
         let mut r = vanillite_protocol::codec::Reader::new(value);
         // back, left, right, front
         let mut sides: [ItemStack; 4] = Default::default();

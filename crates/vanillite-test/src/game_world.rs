@@ -615,13 +615,9 @@ impl GameWorld {
             d => return Err(format!("unknown difficulty `{d}`")),
         };
         level.settings.difficulty = difficulty;
-        // The world starts at day time 0 unless the scenario sets one; time advances only with
-        // `advance_time` (see `step`).
-        let env = Environment {
-            sea_level: sea_level(spec),
-            day_time: spec.time.unwrap_or(0),
-            ..Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0)
-        };
+        // The world starts at day time 0 unless the scenario sets one; time advances with
+        // `advance_time` (off by default).
+        let env = day_environment(sea_level(spec), spec.time.unwrap_or(0), 0.0, 0.0);
         // What spawner blocks and creaking hearts read when the block entities tick.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
@@ -1656,6 +1652,11 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         ("Wildlife", "GolemStroll") => "GolemRandomStrollInVillageGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
         ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
+        ("Village", "Trader") => match word(2) {
+            "LookAt" if field("players") == "true" => "InteractGoal",
+            "LookAt" => "LookAtPlayerGoal",
+            inner => leak(format!("{inner}Goal")),
+        },
         (_, variant) => leak(if variant.ends_with("Goal") {
             variant.to_owned()
         } else {
@@ -1702,6 +1703,15 @@ fn path_type_name(t: mob::path::PathType) -> String {
         out.push(c.to_ascii_uppercase());
     }
     out
+}
+
+/// The overworld's environment at `day` ticks of the day with the given weather levels.
+fn day_environment(sea_level: i32, day: i64, rain: f32, thunder: f32) -> Environment {
+    Environment {
+        sea_level,
+        day_time: day,
+        ..Environment::overworld(day, rain, thunder)
+    }
 }
 
 /// The recorder's default game rules (`ScenarioRecorder.DEFAULT_RULES`: no random ticks, no
@@ -1964,24 +1974,27 @@ impl ScenarioWorld for GameWorld {
     /// ticks, the chunk source (post-processing, random ticks), block events, entities, block
     /// entities, entity management (pending entity loads).
     fn step(&mut self) {
-        // `ServerClockManager.tick` before the levels tick: with `advance_time` the day clock
-        // moves on, and the environment the level reads follows it.
+        // `MinecraftServer.tickChildren`: the clocks advance before the levels tick.
         if self.rules.bool(Rule::ADVANCE_TIME) {
-            let day = self.env.day_time + 1;
-            let weather = self.level.weather();
-            self.env = Environment {
-                sea_level: sea_level(&self.spec),
-                day_time: day,
-                ..Environment::overworld(day, weather.rain(), weather.thunder())
-            };
-            self.level.spawner_env.env = self.env;
-            self.level.entities.day_time = day;
+            self.clock_time += 1;
         }
-        // `ServerLevel.tick`: the night skip (weather stands still in scenarios).
+        // `ServerLevel.tick`: the night skip (the weather stands still in scenarios).
         vanillite_game::survival::sleep::skip_night(
             &mut self.level,
             &vanillite_game::hooks::NoHooks,
         );
+        // `updateSkyBrightness`: what this tick's block ticks read of the sky.
+        if self.env.day_time != self.clock_time {
+            let weather = self.level.weather();
+            self.env = day_environment(
+                sea_level(&self.spec),
+                self.clock_time,
+                weather.rain(),
+                weather.thunder(),
+            );
+            self.level.spawner_env.env = self.env;
+            self.level.entities.day_time = self.env.day_time;
+        }
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();

@@ -71,6 +71,11 @@ final class ScenarioEntities {
    * "sleep_state": true}).
    */
   boolean sleepState;
+  /**
+   * Frames hold the players' completed advancement criteria and statistics ({@code
+   * "progress_state": true}).
+   */
+  boolean progressState;
 
   /** The players removed from the chunk system, given back by {@link #release()}. */
   private final List<ServerPlayer> players = new ArrayList<>();
@@ -235,6 +240,55 @@ final class ScenarioEntities {
     }
   }
 
+  /** Statistics {@code progress_state} leaves out: the times and the distances. */
+  private static final java.util.Set<String> UNTRACED_STATS =
+      java.util.Set.of(
+          "minecraft.custom:minecraft.play_time",
+          "minecraft.custom:minecraft.total_world_time",
+          "minecraft.custom:minecraft.time_since_death",
+          "minecraft.custom:minecraft.time_since_rest",
+          "minecraft.custom:minecraft.crouch_time");
+
+  /**
+   * {@code ,"adv":[...],"stats":{...}}: the completed criteria as {@code advancement#criterion}
+   * (sorted) and the non-zero statistics by name (sorted).
+   */
+  @SuppressWarnings("unchecked")
+  private static void progress(ServerPlayer sp, StringBuilder sb) {
+    List<String> adv = new ArrayList<>();
+    for (net.minecraft.advancements.AdvancementHolder holder :
+        sp.level().getServer().getAdvancements().getAllAdvancements()) {
+      for (String criterion :
+          sp.getAdvancements().getOrStartProgress(holder).getCompletedCriteria()) {
+        adv.add(holder.id() + "#" + criterion);
+      }
+    }
+    java.util.Collections.sort(adv);
+    sb.append(",\"adv\":[");
+    for (int i = 0; i < adv.size(); i++) {
+      sb.append(i == 0 ? "" : ",").append('"').append(adv.get(i)).append('"');
+    }
+    sb.append("],\"stats\":{");
+    java.util.TreeMap<String, Integer> stats = new java.util.TreeMap<>();
+    for (it.unimi.dsi.fastutil.objects.Object2IntMap.Entry<net.minecraft.stats.Stat<?>> entry :
+        ((it.unimi.dsi.fastutil.objects.Object2IntMap<net.minecraft.stats.Stat<?>>)
+                field(net.minecraft.stats.StatsCounter.class, sp.getStats(), "stats"))
+            .object2IntEntrySet()) {
+      String name = entry.getKey().getName();
+      if (entry.getIntValue() != 0
+          && !UNTRACED_STATS.contains(name)
+          && !name.endsWith("_one_cm")) {
+        stats.put(name, entry.getIntValue());
+      }
+    }
+    boolean first = true;
+    for (Map.Entry<String, Integer> s : stats.entrySet()) {
+      sb.append(first ? "" : ",").append('"').append(s.getKey()).append("\":").append(s.getValue());
+      first = false;
+    }
+    sb.append('}');
+  }
+
   private static Object field(Class<?> c, Object o, String name) {
     try {
       Field f = c.getDeclaredField(name);
@@ -284,8 +338,8 @@ final class ScenarioEntities {
    */
   void packet(JsonObject action) {
     ServerPlayer p = (ServerPlayer) byName.get(action.get("entity").getAsString());
-    if (p == null || !clients.contains(p)) {
-      throw new IllegalArgumentException("packets need a client player: " + action);
+    if (p == null) {
+      throw new IllegalArgumentException("packets need a player: " + action);
     }
     if (packetIds == null) {
       packetIds = new java.util.HashMap<>();
@@ -720,6 +774,9 @@ final class ScenarioEntities {
             .append(']');
       }
       sb.append(",\"timer\":").append(sp.getSleepTimer()).append('}');
+    }
+    if (progressState && e instanceof ServerPlayer sp) {
+      progress(sp, sb);
     }
     if (e instanceof AbstractMinecart cart) {
       sb.append(",\"rot\":[")

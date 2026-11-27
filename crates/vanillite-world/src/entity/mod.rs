@@ -20,7 +20,7 @@ mod tick_order;
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use vanillite_base::hash::FxHashSet;
+use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::{Aabb, BlockPos, SectionPos, SlotMap, Vec3};
 use vanillite_data::entity::{EntityTypeId, ids};
 
@@ -342,6 +342,10 @@ pub struct EntityStore {
     /// Chunks whose entities tick (Vanilla's `Visibility.TICKING`), set by the world: only
     /// entities in these chunks are in the tick order.
     ticking_chunks: FxHashSet<(i32, i32)>,
+    /// UUID → entity (`EntityLookup.byUuid`). With duplicate UUIDs it names one of them.
+    by_uuid: FxHashMap<u128, EntityId>,
+    /// Entities whose UUID another live entity had when they were added (not in `by_uuid`).
+    duplicate_uuids: usize,
 }
 
 impl EntityStore {
@@ -372,6 +376,12 @@ impl EntityStore {
     #[inline]
     pub fn row(&self, id: EntityId) -> Option<usize> {
         self.rows.get(id).map(|&row| row as usize)
+    }
+
+    /// The entity with a UUID (`getEntity(UUID)`), through the index.
+    #[inline]
+    pub fn by_uuid(&self, uuid: u128) -> Option<EntityId> {
+        self.by_uuid.get(&uuid).copied()
     }
 
     /// The core columns for sweeps. Change entities through [`Self::get_mut`].
@@ -433,6 +443,12 @@ impl EntityStore {
         };
         self.order_slot.push(slot);
         self.sections.insert(section, class_of(new.kind), id);
+        match self.by_uuid.entry(new.uuid) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(id);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => self.duplicate_uuids += 1,
+        }
         id
     }
 
@@ -441,6 +457,7 @@ impl EntityStore {
     /// also logged for the tracker until [`Self::clear_removed`].
     pub fn despawn(&mut self, id: EntityId) -> Option<Removed> {
         let row = self.rows.remove(id)? as usize;
+        self.unindex_uuid(id, self.core.uuid[row]);
         let core = &mut self.core;
         let removed = Removed {
             id,
@@ -460,6 +477,30 @@ impl EntityStore {
         }
         self.removed.push(removed);
         Some(removed)
+    }
+
+    /// Removes `id` from the UUID index before it leaves the columns; another entity with the
+    /// same UUID takes its place.
+    fn unindex_uuid(&mut self, id: EntityId, uuid: u128) {
+        if self.by_uuid.get(&uuid) != Some(&id) {
+            self.duplicate_uuids = self.duplicate_uuids.saturating_sub(1);
+            return;
+        }
+        self.by_uuid.remove(&uuid);
+        if self.duplicate_uuids > 0 {
+            self.index_duplicate(id, uuid);
+        }
+    }
+
+    /// Indexes another live entity with `uuid` than `id`, if there is one (rare: duplicates).
+    #[cold]
+    fn index_duplicate(&mut self, id: EntityId, uuid: u128) {
+        let core = &self.core;
+        if let Some(other) = (0..core.id.len()).find(|&r| core.uuid[r] == uuid && core.id[r] != id)
+        {
+            self.by_uuid.insert(uuid, core.id[other]);
+            self.duplicate_uuids -= 1;
+        }
     }
 
     /// Records that the kind store moved `id` to `kind_row`.

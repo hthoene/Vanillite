@@ -342,7 +342,39 @@ view-distance = 8
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
 | `path-nodes-per-tick` | performance |  | `0` | `0` | `0` | `0` | `50000` | Path finding nodes all mobs of the world may visit per tick; searches over the budget fail and are retried later. 0 = unlimited (Vanilla). Integer from 0 to 10000000. Environment: `VANILLITE_PERFORMANCE__MOBS__PATH_NODES_PER_TICK`. |
-| `activation-range` | performance |  | `0` | `0` | `32` | `32` | `32` | Mobs farther than this many blocks from every player tick only every 20th tick (activation range). Saves most of the mob tick on servers with many mobs away from players. Deviation: such mobs move, path-find, grow up and breed at 1/20 of Vanilla's speed (farms and breeders outside the range slow down). 0 = off (Vanilla: every mob in simulation distance ticks). Integer from 0 to 512. Environment: `VANILLITE_PERFORMANCE__MOBS__ACTIVATION_RANGE`. |
+
+#### `[performance.activation-range]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `animals` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of animals (`creature` and `ambient` mobs: cows, sheep, bats, ...). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__ANIMALS`. |
+| `monsters` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of monsters (`monster` mobs that are no raiders or flyers). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__MONSTERS`. |
+| `raiders` | performance |  | `0` | `0` | `64` | `48` | `64` | Range of raiders (pillagers, vindicators, evokers, illusioners, witches and ravagers). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__RAIDERS`. |
+| `misc` | performance |  | `0` | `0` | `16` | `16` | `16` | Range of the other mobs (golems, armor stands, ...). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__MISC`. |
+| `water` | performance |  | `0` | `0` | `16` | `16` | `16` | Range of water mobs (fish, squid, dolphins, axolotls, ...). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WATER`. |
+| `villagers` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of villagers and wandering traders. Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS`. |
+| `flying` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of flying monsters (ghasts, phantoms, blazes, vexes). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__FLYING`. |
+| `villagers-work-immunity-after` | performance |  | `0` | `0` | `100` | `100` | `100` | Ticks an inactive villager must have been inactive before it becomes active while it works at its job site, so workstations keep restocking trades; 0 = never. Integer from 0 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_WORK_IMMUNITY_AFTER`. |
+| `villagers-work-immunity-for` | performance |  | `0` | `0` | `20` | `20` | `20` | Ticks a working villager then stays active. Integer from 0 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_WORK_IMMUNITY_FOR`. |
+| `villagers-active-for-panic` | performance |  | `false` | `false` | `true` | `true` | `true` | Panicking villagers stay active (they flee and alarm the village, which spawns iron golems). Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_ACTIVE_FOR_PANIC`. |
+| `inactive-mob-goal-selector-throttle` | performance |  | `"disabled"` | `"disabled"` | `10` | `"disabled"` | `"disabled"` | Ticks between the goal and target selector runs of an inactive mob between its full ticks: it notices targets, food and partners sooner, but does not move before its next full tick. Lower values cost more. "disabled": inactive mobs choose goals only in their full ticks (cheapest). Integer from 1 to 20. Also accepts `"disabled"`. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__INACTIVE_MOB_GOAL_SELECTOR_THROTTLE`. |
+
+#### `[performance.activation-range.wake-up-inactive]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `animals-max-per-tick` | performance |  | `0` | `0` | `4` | `4` | `4` | Animals woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_MAX_PER_TICK`. |
+| `animals-every` | performance |  | `1200` | `1200` | `1200` | `1200` | `1200` | Ticks animals must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_EVERY`. |
+| `animals-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up animals stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_FOR`. |
+| `villagers-max-per-tick` | performance |  | `0` | `0` | `4` | `4` | `4` | Villagers woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_MAX_PER_TICK`. |
+| `villagers-every` | performance |  | `600` | `600` | `600` | `600` | `600` | Ticks villagers must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_EVERY`. |
+| `villagers-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up villagers stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_FOR`. |
+| `monsters-max-per-tick` | performance |  | `0` | `0` | `8` | `8` | `8` | Monsters woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_MAX_PER_TICK`. |
+| `monsters-every` | performance |  | `400` | `400` | `400` | `400` | `400` | Ticks monsters must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_EVERY`. |
+| `monsters-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up monsters stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_FOR`. |
+| `flying-max-per-tick` | performance |  | `0` | `0` | `8` | `8` | `8` | Flying woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_MAX_PER_TICK`. |
+| `flying-every` | performance |  | `200` | `200` | `200` | `200` | `200` | Ticks flying must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_EVERY`. |
+| `flying-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up flying stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_FOR`. |
 
 #### `[performance.items]`
 

@@ -1,7 +1,8 @@
 //! Statistics and advancements of the players of a world, once per tick after their own tick:
 //! the triggers of `ServerPlayer.tick` (`tick`, `location`, `enter_block`, the inventory
-//! listener's `inventory_changed`, crafted results), `flushDirty`, the scores of the stat
-//! criteria (`Scoreboard.forAllObjectives`) and the rewards of completed advancements.
+//! listener's `inventory_changed`, crafted results), the scores of the stat criteria
+//! (`Scoreboard.forAllObjectives`), then per player the rewards of its completed advancements
+//! and `flushDirty`.
 
 use vanillite_base::BlockPos;
 use vanillite_config::GameMode;
@@ -156,7 +157,7 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
     }
     let mut players = std::mem::take(&mut level.entities.players);
     let mut scores = Vec::new();
-    let mut rewards = Vec::new();
+    let mut order = Vec::new();
     for (id, player) in players.iter_mut() {
         let Some(entity) = level.entities.store.get(id) else {
             continue;
@@ -213,12 +214,7 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
             };
             advancements.process(extra, &TriggerContext::new(&world, &view, inventory));
         }
-        if player.advancements.has_completed() {
-            rewards.push(id);
-        }
-        if let Some(packet) = player.advancements.flush(true) {
-            player.connection.sink.send(&packet);
-        }
+        order.push(id);
         let mut changes = player.stats.take_score_changes();
         if !changes.is_empty() && global.plugins.wants(vanillite_abi::event::PLAYER_STATISTIC) {
             let hooks = crate::plugins::Hooks::of(global, dimension);
@@ -238,8 +234,22 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         world,
         others: Vec::new(),
     };
-    for id in rewards {
-        grant_rewards(&mut env, id);
+    // `PlayerAdvancements.award`: the rewards and the announcement of what completed, then
+    // `flushDirty` at the end of `ServerPlayer.tick` (the progress and its toasts).
+    for id in order {
+        let completed = env
+            .level
+            .entities
+            .player(id)
+            .is_some_and(|p| p.advancements.has_completed());
+        if completed {
+            grant_rewards(&mut env, id);
+        }
+        if let Some(player) = env.level.entities.player_mut(id)
+            && let Some(packet) = player.advancements.flush(true)
+        {
+            player.connection.sink.send(&packet);
+        }
     }
 }
 
@@ -311,7 +321,8 @@ fn give_loot(env: &mut Env<'_>, id: EntityId, tables: &[String]) {
         let infinite = player.game_mode == vanillite_config::GameMode::Creative;
         if player.inventory.add(None, &mut stack, infinite) && stack.is_empty() {
             use vanillite_base::random::RandomSource;
-            let r = level.random();
+            // `player.getRandom()`.
+            let r = &mut player.survival.random;
             let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
             if let Some(sound) =
                 vanillite_data::registry::SOUND_EVENT.id("minecraft:entity.item.pickup")

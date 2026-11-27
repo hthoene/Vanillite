@@ -93,7 +93,9 @@
 //!   A copper golem takes the oxidation `weather_state` (`CopperGolem.setWeatherState`).
 //! - `entity_seed`: every entity created while the scenario runs (arrows, drops, orbs, babies,
 //!   spawned mobs) seeds its random with the next `nextLong()` of a legacy random seeded with
-//!   it, in creation order (default: the world seed). The Java recorder enforces this in
+//!   it, in creation order (default: the world seed). An entity loaded from storage (a
+//!   reloaded chunk's entities) takes the low 64 bits of its UUID xor the game time instead,
+//!   independent of the order the loads complete in. The Java recorder enforces this in
 //!   Vanilla with its agent (`ParityAgent.java`).
 //!
 //! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line
@@ -126,7 +128,12 @@
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
 //!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
-//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`). `"progress_state": true`
+//!   (with `dimensions`: only the server evaluates advancements) adds the players' completed
+//!   advancement criteria (`adv`: sorted `advancement#criterion`) and their non-zero statistics
+//!   (`stats`: `minecraft.used:minecraft.crossbow` and so on) without the time statistics
+//!   (`play_time`, `total_world_time`, `time_since_death`, `time_since_rest`, `crouch_time`) and
+//!   the distances (`*_one_cm`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` (SNBT
@@ -220,8 +227,9 @@ pub struct WorldSpec {
     pub region: (BlockPos, BlockPos),
     /// Chunks forced before the setup: the region's chunks and one chunk around them.
     pub forced: Vec<ChunkPos>,
-    /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
-    /// Block-only scenarios run without it, which is much faster.
+    /// Whether the world computes light: with entities (mobs see it), random ticks (crops,
+    /// grass and saplings check it) or `"light": true`. Other block-only scenarios run
+    /// without it, which is much faster.
     pub light: bool,
     /// Whether frames observe light (`"light": true`).
     pub observe_light: bool,
@@ -246,6 +254,8 @@ pub struct WorldSpec {
     pub sleep_state: bool,
     /// The data pack in the world from the start (`datapacks/<name>/` of this crate).
     pub datapack: Option<String>,
+    /// Whether frames hold the players' completed advancement criteria and statistics.
+    pub progress_state: bool,
 }
 
 /// The overworld's dimension id.
@@ -638,7 +648,7 @@ impl Scenario {
                 ("minecraft:grass_block".to_owned(), 1),
             ],
         };
-        let rules = v
+        let rules: BTreeMap<String, String> = v
             .get("rules")
             .and_then(Value::as_object)
             .map(|r| {
@@ -650,6 +660,9 @@ impl Scenario {
                     .collect()
             })
             .unwrap_or_default();
+        let random_ticks = rules
+            .get("random_tick_speed")
+            .is_some_and(|speed| speed != "0");
         let region = v.get("region").ok_or("region is missing")?;
         let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
         let forced = forced_around(min, max);
@@ -693,6 +706,13 @@ impl Scenario {
                     .to_owned(),
             );
         }
+        let progress_state = v
+            .get("progress_state")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if progress_state && !dimensions {
+            return Err("\"progress_state\" needs \"dimensions\"".to_owned());
+        }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -733,6 +753,7 @@ impl Scenario {
                 region: (pos(region.get(0))?, pos(region.get(1))?),
                 forced,
                 light: v.get("entities").is_some()
+                    || random_ticks
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 difficulty: v
@@ -762,6 +783,7 @@ impl Scenario {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 datapack,
+                progress_state,
             },
             min,
             max,
