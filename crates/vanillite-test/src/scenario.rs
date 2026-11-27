@@ -93,7 +93,9 @@
 //!   A copper golem takes the oxidation `weather_state` (`CopperGolem.setWeatherState`).
 //! - `entity_seed`: every entity created while the scenario runs (arrows, drops, orbs, babies,
 //!   spawned mobs) seeds its random with the next `nextLong()` of a legacy random seeded with
-//!   it, in creation order (default: the world seed). The Java recorder enforces this in
+//!   it, in creation order (default: the world seed). An entity loaded from storage (a
+//!   reloaded chunk's entities) takes the low 64 bits of its UUID xor the game time instead,
+//!   independent of the order the loads complete in. The Java recorder enforces this in
 //!   Vanilla with its agent (`ParityAgent.java`).
 //!
 //! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line

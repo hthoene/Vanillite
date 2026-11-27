@@ -303,6 +303,10 @@ public final class ScenarioRecorder {
       JsonArray region = scenario.getAsJsonArray("region");
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
+      // A soak run (`stream`) loads without warm-up ticks (see `loadRegion`); the scenario
+      // goldens keep the warm-up they were recorded with, which Vanillite's scenario world
+      // matches (its first ticks have no draws of the custom spawners).
+      boolean warmUp = dimensions || stream == null;
       if (snapshot != null) {
         // Without game ticks: the snapshot's scheduled ticks keep their delays from game time
         // 0, like in Vanillite's new level (a warm-up would move them later).
@@ -314,7 +318,7 @@ public final class ScenarioRecorder {
         }
         settle(server, level, loading);
       } else {
-        loadRegion(server, level, min, max);
+        loadRegion(server, level, min, max, warmUp);
       }
       if (snapshot != null) {
         // What chunk generation spawned: entity randoms and ids cannot match Vanillite's.
@@ -334,7 +338,7 @@ public final class ScenarioRecorder {
           JsonObject view = v.getAsJsonObject();
           JsonArray r = view.getAsJsonArray("region");
           View w = new View(view.get("dimension").getAsString(), pos(r.get(0)), pos(r.get(1)));
-          loadRegion(server, server.level(w.dimension), w.min, w.max);
+          loadRegion(server, server.level(w.dimension), w.min, w.max, warmUp);
           views.add(w);
         }
       }
@@ -531,8 +535,17 @@ public final class ScenarioRecorder {
             + (scenario.has("difficulty") ? scenario.get("difficulty").getAsString() : "normal"));
   }
 
-  /** Loads the region's chunks and their neighbours and steps until they all tick. */
-  private static void loadRegion(ParityServer server, ServerLevel level, BlockPos min, BlockPos max) {
+  /**
+   * Loads the region's chunks and their neighbours until they all tick. With {@code ticks} the
+   * server steps meanwhile (warm-up ticks); otherwise only the chunk system and the entity
+   * manager run ({@link #runChunkSystem}) and no game tick comes before the scenario. Over a
+   * soak run's tens of thousands of ticks the warm-up's count would show: it moves Vanilla's
+   * tick counters (autosave, the custom spawners, weather) by a number that depends on how fast
+   * the machine loads the chunks.
+   */
+  private static void loadRegion(
+      ParityServer server, ServerLevel level, BlockPos min, BlockPos max, boolean ticks)
+      throws Exception {
     List<Long> chunks = new ArrayList<>();
     for (int cx = (min.getX() >> 4) - 1; cx <= (max.getX() >> 4) + 1; cx++) {
       for (int cz = (min.getZ() >> 4) - 1; cz <= (max.getZ() >> 4) + 1; cz++) {
@@ -542,23 +555,35 @@ public final class ScenarioRecorder {
       }
     }
     // Entities load asynchronously on the IO worker, which can be slow on a busy machine: wait
-    // by wall time, not by a number of warm-up ticks.
+    // by wall time.
     long deadline = System.nanoTime() + 60_000_000_000L;
     while (true) {
+      if (!ticks) {
+        runChunkSystem(server, level);
+      }
       if (chunks.stream().allMatch(c -> level.shouldTickBlocksAt(c) && level.areEntitiesLoaded(c))) {
         return;
       }
       if (System.nanoTime() > deadline) {
         throw new IllegalStateException("the scenario region does not become ticking");
       }
-      server.step();
-      try {
-        Thread.sleep(1);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new IllegalStateException("interrupted while loading the scenario region", e);
+      if (ticks) {
+        server.step();
       }
+      Thread.sleep(1);
     }
+  }
+
+  /**
+   * One round of the chunk system (distance manager, loads, unloads and saves), the entity
+   * manager and every queued task, without a game tick.
+   */
+  private static void runChunkSystem(ParityServer server, ServerLevel level) throws Exception {
+    Field managerField = ServerLevel.class.getDeclaredField("entityManager");
+    managerField.setAccessible(true);
+    level.getChunkSource().tick(() -> true, false);
+    ((PersistentEntitySectionManager<?>) managerField.get(level)).tick();
+    server.drainEveryTask();
   }
 
   /** The chunks a settle checks: around every chunk a scenario forced or unforced. */
@@ -590,27 +615,48 @@ public final class ScenarioRecorder {
    * dropped above the highest loaded level.
    */
   private static void settle(ParityServer server, ServerLevel level, Area area) throws Exception {
-    Field managerField = ServerLevel.class.getDeclaredField("entityManager");
-    managerField.setAccessible(true);
-    PersistentEntitySectionManager<?> entities =
-        (PersistentEntitySectionManager<?>) managerField.get(level);
     Method holder = ChunkMap.class.getDeclaredMethod("getVisibleChunkIfPresent", long.class);
     holder.setAccessible(true);
     ServerChunkCache source = level.getChunkSource();
     long deadline = System.nanoTime() + 20_000_000_000L;
-    while (true) {
-      source.tick(() -> true, false);
-      entities.tick();
-      server.drainEveryTask();
-      String reason = unsettled(level, source, holder, area);
-      if (reason == null) {
-        return;
+    // Chunk entity loads wait until every chunk is loaded or unloaded, then run in chunk order:
+    // the entities take their ids (which `ItemEntity.tick` reads) in the same order every run.
+    ParityHooks.deferEntityLoads(true);
+    try {
+      while (true) {
+        runChunkSystem(server, level);
+        if (ParityHooks.hasDeferredEntityLoads() && chunksSettled(source, area)) {
+          ParityHooks.flushEntityLoads();
+          continue;
+        }
+        String reason = unsettled(level, source, holder, area);
+        if (reason == null && !ParityHooks.hasDeferredEntityLoads()) {
+          return;
+        }
+        if (System.nanoTime() > deadline) {
+          throw new IllegalStateException("the chunk system does not settle: " + reason);
+        }
+        Thread.sleep(1);
       }
-      if (System.nanoTime() > deadline) {
-        throw new IllegalStateException("the chunk system does not settle: " + reason);
-      }
-      Thread.sleep(1);
+    } finally {
+      ParityHooks.deferEntityLoads(false);
+      ParityHooks.flushEntityLoads();
     }
+  }
+
+  /** Whether every chunk of the area is accessible exactly when its ticket level is full. */
+  private static boolean chunksSettled(ServerChunkCache source, Area area) {
+    int margin = SETTLE_MARGIN;
+    for (int x = area.minX - margin; x <= area.maxX + margin; x++) {
+      for (int z = area.minZ - margin; z <= area.maxZ + margin; z++) {
+        int ticketLevel = source.chunkMap.getDistanceManager().getChunkLevel(ChunkPos.pack(x, z), false);
+        boolean full = ticketLevel <= ChunkLevel.byStatus(FullChunkStatus.FULL);
+        if ((source.getChunkNow(x, z) != null) != full) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   /** Why the area is not settled yet, {@code null} once it is. */
