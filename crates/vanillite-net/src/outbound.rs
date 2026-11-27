@@ -47,15 +47,20 @@ pub struct Outbound {
 const NO_COMPRESSION: usize = usize::MAX;
 
 impl Outbound {
-    pub(crate) fn new(max_bytes: usize) -> (Self, mpsc::UnboundedReceiver<Out>, Arc<AtomicUsize>) {
+    pub(crate) fn new(max_bytes: usize) -> (Self, OutReceiver, Arc<AtomicUsize>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
+        let rx = OutReceiver {
+            rx,
+            closed: Arc::clone(&closed),
+        };
         (
             Self {
                 tx,
                 queued: Arc::clone(&queued),
                 max_bytes,
-                closed: Arc::new(AtomicBool::new(false)),
+                closed,
                 threshold: Arc::new(AtomicUsize::new(NO_COMPRESSION)),
                 sent: Arc::new(SentLog::new()),
             },
@@ -132,9 +137,34 @@ impl Outbound {
         Arc::clone(&self.sent)
     }
 
-    /// Whether the connection was closed.
+    /// Whether the connection was closed (by [`Outbound::close`] or its writer ending).
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Relaxed) || self.tx.is_closed()
+        self.closed.load(Ordering::Relaxed)
+    }
+}
+
+/// The writer's end of an [`Outbound`]. Dropping it (the writer ended) closes the connection
+/// for the senders, so [`Outbound::is_closed`] reads one flag instead of the channel state
+/// the writer changes with every message.
+#[derive(Debug)]
+pub(crate) struct OutReceiver {
+    rx: mpsc::UnboundedReceiver<Out>,
+    closed: Arc<AtomicBool>,
+}
+
+impl OutReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<Out> {
+        self.rx.recv().await
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Result<Out, mpsc::error::TryRecvError> {
+        self.rx.try_recv()
+    }
+}
+
+impl Drop for OutReceiver {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
     }
 }
 
@@ -144,7 +174,7 @@ const IDLE_BUFFER_MAX: usize = 64 * 1024;
 /// Writes to a TCP socket.
 pub(crate) async fn tcp_writer(
     mut socket: tokio::net::tcp::OwnedWriteHalf,
-    mut rx: mpsc::UnboundedReceiver<Out>,
+    mut rx: OutReceiver,
     queued: Arc<AtomicUsize>,
     compression_level: i32,
     sent: Arc<SentLog>,
@@ -286,7 +316,7 @@ pub(crate) async fn tcp_writer(
 /// Forwards to a virtual connection: plain packet bodies, no framing, compression or cipher.
 pub(crate) async fn virtual_writer(
     tx: mpsc::Sender<Vec<u8>>,
-    mut rx: mpsc::UnboundedReceiver<Out>,
+    mut rx: OutReceiver,
     queued: Arc<AtomicUsize>,
     sent: Arc<SentLog>,
 ) {

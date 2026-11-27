@@ -196,6 +196,8 @@ pub struct Survival {
     /// `lastHurt`.
     pub last_hurt: f32,
     pub death_time: i32,
+    /// `isRemoved()`: `tickDeath` removed the dead player (once, until it respawns).
+    pub removed: bool,
     pub xp: Experience,
     /// `DATA_SCORE_ID`.
     pub score: i32,
@@ -331,6 +333,7 @@ impl Default for Survival {
             damage_cooldown: 0,
             last_hurt: 0.0,
             death_time: 0,
+            removed: false,
             xp: Experience::default(),
             score: 0,
             last_death: None,
@@ -1817,7 +1820,8 @@ fn tick_after_portal(
         // `tickDeath`.
         let s = &mut player.survival;
         s.death_time += 1;
-        if s.death_time >= 20 {
+        if s.death_time >= 20 && !s.removed {
+            s.removed = true;
             env.out.push(Effect::Tracking {
                 entity: id,
                 with_self: true,
