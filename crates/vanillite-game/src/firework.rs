@@ -337,6 +337,8 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         let mut scratch = Vec::new();
         let moved = physics::collide(t.level as &dyn Blocks, aabb, v, 0.0, false, &mut scratch);
         new_pos = pos + moved;
+        // `applyEffectsFromBlocks`.
+        crate::mob::projectile::inside_blocks(t.level, t.cx, t.id, aabb, pos, new_pos);
         let horizontal = (moved.x - v.x).abs() > 1.0e-7 || (moved.z - v.z).abs() > 1.0e-7;
         if let Some(m) = t.data() {
             m.ints[HORIZONTAL_COLLISION] = i32::from(horizontal);
@@ -348,18 +350,47 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         }
     }
     let mut exploded = false;
-    match hit {
-        Hit::Entity => {
-            explode(t, &d);
-            exploded = true;
-        }
-        Hit::Block => {
-            if fireworks(&d.item).1 > 0 {
-                explode(t, &d);
-                exploded = true;
+    // `hitTargetOrDeflectSelf`: a breeze turns the rocket back (once in a row) instead.
+    if let Hit::Entity(target, _) = hit
+        && missile::deflects(t.ents, target, vanillite_data::entity::ids::FIREWORK_ROCKET)
+    {
+        if d.last_deflected != Some(target) {
+            let mut own = vanillite_base::random::LegacyRandom::from_state(d.random_state);
+            let (rv, rrot) = missile::reverse(t.ents, t.env, target, v, rot, &mut own);
+            v = rv;
+            if let Some(mut e) = t.ents.store.get_mut(t.id) {
+                e.set_velocity(v);
+                e.set_rot(rrot);
+            }
+            if let Some(m) = t.data() {
+                m.last_deflected = Some(target);
+                m.random_state = own.state();
             }
         }
-        Hit::Miss => {}
+    } else {
+        match hit {
+            Hit::Entity(target, at) => {
+                // `Projectile.onHit`: a `#redirectable_projectile` flies off, `onHitEntity`
+                // explodes, then `PROJECTILE_LAND`.
+                crate::mob::attack::aim_deflect(t.ents, target, d.owner, d.owner);
+                explode(t, &d);
+                exploded = true;
+                missile::land_event(t.env.out, t.level, t.id, d.owner, None, at);
+            }
+            Hit::Block(block, at) => {
+                // `onHitBlock`: `entityInside` of the block, the explosion with stars, then
+                // `onProjectileHit` (target blocks, bells) and `PROJECTILE_LAND`.
+                t.cx.actions
+                    .push(crate::mob::WorldAction::EntityInside(block, t.id));
+                if fireworks(&d.item).1 > 0 {
+                    explode(t, &d);
+                    exploded = true;
+                }
+                missile::hit_block(t.level, t.cx, t.id, block, at);
+                missile::land_event(t.env.out, t.level, t.id, d.owner, Some(block), at);
+            }
+            Hit::Miss => {}
+        }
     }
     // `updateRotation`.
     let h = (v.x * v.x + v.z * v.z).sqrt();
@@ -400,8 +431,10 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
 /// What a rocket hits on its way.
 enum Hit {
     Miss,
-    Entity,
-    Block,
+    /// The entity and the hit location.
+    Entity(EntityId, Vec3),
+    /// The block and the hit location.
+    Block(vanillite_base::BlockPos, Vec3),
 }
 
 /// `ProjectileUtil.getHitResultOnMoveVector(this, canHitEntity)`: the first block on the way,
@@ -423,9 +456,11 @@ fn find_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, pos: Vec3, v: Vec3, le
             candidates.push(other);
         }
     });
-    let mut best: Option<(EntityId, f64)> = None;
+    let mut best: Option<(EntityId, f64, Vec3)> = None;
     for &other in &candidates {
-        if !crate::effect::thrown::can_be_hit(t.ents, other) || (!left && Some(other) == d.owner) {
+        if !crate::mob::projectile::can_be_hit_by_projectile(t.ents, other)
+            || (!left && Some(other) == d.owner)
+        {
             continue;
         }
         let Some(oe) = t.ents.store.get(other) else {
@@ -434,15 +469,15 @@ fn find_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, pos: Vec3, v: Vec3, le
         let grown = oe.aabb().inflate(m, m, m);
         if let Some(f) = crate::mob::projectile::segment_box(pos, end, &grown) {
             let dist = f * (end - pos).length();
-            if best.is_none_or(|(_, b)| dist < b) {
-                best = Some((other, dist));
+            if best.is_none_or(|(_, b, _)| dist < b) {
+                best = Some((other, dist, pos + (end - pos) * f));
             }
         }
     }
     t.cx.ids = candidates;
     match (best, block_hit) {
-        (Some(_), _) => Hit::Entity,
-        (None, Some(_)) => Hit::Block,
+        (Some((target, _, at)), _) => Hit::Entity(target, at),
+        (None, Some((block, at))) => Hit::Block(block, at),
         (None, None) => Hit::Miss,
     }
 }
@@ -460,6 +495,15 @@ fn explode(t: &mut MissileTick<'_, '_>, d: &MissileData) {
                 event: 17,
             }),
         });
+    }
+    // `gameEvent(EXPLODE, owner)`.
+    if let Some(pos) = t.core().map(|e| e.pos()) {
+        crate::survival::game_event(
+            t.env.out,
+            crate::level::game_event::events().explode,
+            pos,
+            d.owner,
+        );
     }
     deal_explosion_damage(t, d);
     if let Some(m) = t.data() {
