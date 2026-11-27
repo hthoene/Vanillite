@@ -571,6 +571,7 @@ impl ServerBuilder {
         let random_sequences = Arc::new(std::sync::Mutex::new(
             vanillite_game::random_sequences::RandomSequences::new(seed),
         ));
+        let server_icon = crate::admin::server_icon_png(&dir, &config.properties.level_name);
         let global = Arc::new_cyclic(|this| Global {
             clock,
             players: PlayerList::new(max_players),
@@ -608,6 +609,11 @@ impl ServerBuilder {
             broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
             motd: std::sync::Mutex::new(None),
+            server_data: std::sync::RwLock::new(crate::admin::server_data(
+                vanillite_protocol::text::Component::text(config.properties.motd.clone()),
+                server_icon.clone(),
+            )),
+            server_icon,
             this: this.clone(),
         });
         global
@@ -1553,6 +1559,12 @@ impl Server {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             if let Some(motd) = motd {
+                let data = crate::admin::server_data(motd.clone(), self.global.server_icon.clone());
+                *self
+                    .global
+                    .server_data
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = data;
                 net.set_motd(motd);
             }
             // `rebuildServerStatus` every 5 seconds; the Query names every second.
@@ -2485,6 +2497,7 @@ impl Server {
             inbox: Arc::new(Mutex::new(
                 vanillite_game::player::chat::ChatInbox::default(),
             )),
+            transferred: false,
         };
         self.place_new_player(arrival, "127.0.0.1".to_owned());
         tx

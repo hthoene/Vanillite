@@ -427,6 +427,8 @@ pub(crate) struct Arrival {
     pub(crate) advancements: Option<String>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
+    /// Transferred from another server: no `server_data` at join.
+    pub(crate) transferred: bool,
 }
 
 /// The players' side of a world.
@@ -443,6 +445,8 @@ pub(crate) struct WorldPlayers {
     respawns: Vec<EntityId>,
     /// `debug.session-recording` (overworld only).
     pub(crate) recording: crate::session_recording::SessionRecording,
+    /// The locator bar.
+    waypoints: crate::waypoints::Waypoints,
 }
 
 fn chunk_of(pos: Vec3) -> ChunkPos {
@@ -463,6 +467,7 @@ impl WorldPlayers {
             chatting: Vec::new(),
             respawns: Vec::new(),
             recording: crate::session_recording::SessionRecording::default(),
+            waypoints: crate::waypoints::Waypoints::default(),
         }
     }
 
@@ -677,6 +682,13 @@ impl WorldPlayers {
         connection
             .movement
             .teleport(&mut body, pos, rot.0, rot.1, sink.as_ref());
+        if !arrival.transferred {
+            let data = global
+                .server_data
+                .read()
+                .map_or_else(|e| Arc::clone(&e.into_inner()), |d| Arc::clone(&d));
+            sink.send_shared(&data);
+        }
         // The tab list: everyone to the new player (itself included), the new player to everyone else.
         let entries = global.players.info_entries();
         sink.send(&join::player_info_add(&entries));
@@ -1120,6 +1132,7 @@ impl WorldPlayers {
             player.connection.chat.chat_spam.tick();
             player.connection.chat.command_spam.tick();
         }
+        self.waypoints.tick(entities, global);
         // `PlayerList.tick`: latencies for the tab list. The first world sends them for all.
         if tick.is_multiple_of(LATENCY_UPDATE_TICKS)
             && self.level.dimension.as_str() == "minecraft:overworld"
