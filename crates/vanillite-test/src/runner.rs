@@ -32,6 +32,11 @@ pub fn record(
     let mut trace = Trace::new(scenario.min, scenario.max);
     observe(world.as_mut(), &mut trace, 0, scenario.world.observe_light);
     for tick in 1..=scenario.ticks {
+        for (i, spec) in scenario.entities.iter().enumerate() {
+            if spec.join == Some(tick) {
+                world.join(spec, i)?;
+            }
+        }
         world.client_begin()?;
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
             apply(world.as_mut(), op, true)?;

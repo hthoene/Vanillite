@@ -220,6 +220,19 @@ rules! {
             /// single tester sees other players. Virtual connections need no authentication,
             /// so keep this at 0 outside test servers.
             test_bots: u8 = "test-bots", Setting, range = [0, 16], restart = true, vanilla = 0;
+            /// Records the players' sessions in the overworld for `cargo xtask parity replay`,
+            /// which plays them again in Vanilla and Vanillite and compares both tick by tick.
+            /// When the first player joins, the world is saved and the overworld's chunks are
+            /// copied (the overworld tick waits for the copy); then every tick the players'
+            /// serverbound play packets are written, until the last player has left. Chat,
+            /// commands, signs, books and plugin messages are left out, and players get
+            /// anonymous ids instead of their names, addresses and UUIDs. For test servers.
+            session_recording: bool = "session-recording", Setting, restart = true,
+                vanilla = false;
+            /// Folder of the session recordings, relative to the server folder: one folder per
+            /// session (`<start time>/` with `world/`, `meta.json`, `packets.jsonl`).
+            session_recording_dir: String = "session-recording-dir", Setting, restart = true,
+                vanilla = "recordings".to_owned();
         }
         /// Player info forwarding from a proxy in front of the server (Velocity "modern"
         /// forwarding, also used by `vanillite-proxy`).

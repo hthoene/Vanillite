@@ -29,6 +29,7 @@ mod plugins;
 mod progress;
 mod scoreboard;
 mod server;
+mod session_recording;
 pub mod slot;
 mod spectator;
 mod survival;

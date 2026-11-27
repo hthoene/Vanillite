@@ -197,7 +197,13 @@ pub(crate) fn prepare(
                 hardcore: properties.hardcore,
                 online_mode: properties.online_mode,
             };
-            WorldPlayers::new(level, player_store.clone())
+            let mut players = WorldPlayers::new(level, player_store.clone());
+            if *dimension == "minecraft:overworld" && config.server.debug.session_recording {
+                players.recording = crate::session_recording::SessionRecording::new(Some(
+                    dir.join(&config.server.debug.session_recording_dir),
+                ));
+            }
+            players
         })
         .collect();
     let chat_type = |name: &str| {

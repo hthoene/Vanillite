@@ -119,6 +119,12 @@ pub trait ScenarioWorld {
         ))
     }
     /// The start of a client tick of every client player: accepts pending server teleports.
+    /// A player that joins while the scenario runs (`"join"`); `index` is its index in the
+    /// scenario's entities.
+    fn join(&mut self, _spec: &EntitySpec, _index: usize) -> Result<(), String> {
+        Err("this world has no players".to_owned())
+    }
+
     fn client_begin(&mut self) -> Result<(), String> {
         Ok(())
     }

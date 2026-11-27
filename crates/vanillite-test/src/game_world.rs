@@ -13,7 +13,7 @@
 //! survival random of the server world is the level random here, as in Vanilla (one
 //! `Level.random`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
@@ -117,6 +117,89 @@ static TREES: OnceLock<Arc<vanillite_game::block::tree::TreeFeatures>> = OnceLoc
 
 /// Sea level of Vanilla's flat worlds (`FlatLevelSource.getSeaLevel`).
 const FLAT_SEA_LEVEL: i32 = -63;
+/// Sea level of the normal overworld (snapshot worlds).
+const OVERWORLD_SEA_LEVEL: i32 = 63;
+/// The Vanilla data pack, for the noise generator of snapshot worlds.
+static PACKS: OnceLock<vanillite_datapack::LoadedPacks> = OnceLock::new();
+
+/// The sea level of a scenario world.
+fn sea_level(spec: &WorldSpec) -> i32 {
+    if spec.snapshot.is_some() {
+        OVERWORLD_SEA_LEVEL
+    } else {
+        FLAT_SEA_LEVEL
+    }
+}
+
+/// Chunks around the forced ones whose records a snapshot world takes from its files.
+const SNAPSHOT_MARGIN: i32 = 4;
+
+/// Puts the chunk and POI records of the snapshot's region files around the forced chunks
+/// into `store` (the entities stay out, see the scenario documentation).
+fn preload_snapshot(store: &MemoryStore, dir: &Path, forced: &[ChunkPos]) -> Result<(), String> {
+    use vanillite_chunk::store::{
+        ChunkStore, CompletionTarget, DimensionId, Priority, RecordKey, RecordMeta, StoreOp, Token,
+    };
+    if !dir.join("region").is_dir() {
+        return Err(format!("{}: no region folder", dir.display()));
+    }
+    let (Some(min_x), Some(max_x), Some(min_z), Some(max_z)) = (
+        forced.iter().map(|c| c.x).min(),
+        forced.iter().map(|c| c.x).max(),
+        forced.iter().map(|c| c.z).min(),
+        forced.iter().map(|c| c.z).max(),
+    ) else {
+        return Ok(());
+    };
+    let dimension = DimensionId(0);
+    let mut ops = Vec::new();
+    for (folder, poi) in [("region", false), ("poi", true)] {
+        let mut files = std::collections::HashMap::new();
+        for x in min_x - SNAPSHOT_MARGIN..=max_x + SNAPSHOT_MARGIN {
+            for z in min_z - SNAPSHOT_MARGIN..=max_z + SNAPSHOT_MARGIN {
+                let pos = ChunkPos::new(x, z);
+                let region = (x >> 5, z >> 5);
+                let file = match files.entry(region) {
+                    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        let path = dir
+                            .join(folder)
+                            .join(format!("r.{}.{}.mca", region.0, region.1));
+                        e.insert(
+                            vanillite_storage::region::RegionFile::open(&path, false)
+                                .map_err(|e| format!("{}: {e}", path.display()))?,
+                        )
+                    }
+                };
+                let Some(file) = file else {
+                    continue;
+                };
+                let Some(record) = file
+                    .read_record(pos)
+                    .map_err(|e| format!("{folder} {pos:?}: {e}"))?
+                else {
+                    continue;
+                };
+                let key = if poi {
+                    RecordKey::poi(dimension, pos)
+                } else {
+                    RecordKey::chunk(dimension, pos)
+                };
+                ops.push(StoreOp::Put {
+                    key,
+                    meta: RecordMeta {
+                        status: RecordMeta::STATUS_UNKNOWN,
+                        ..RecordMeta::default()
+                    },
+                    bytes: record.into(),
+                });
+            }
+        }
+    }
+    let (target, _done) = CompletionTarget::channel();
+    store.submit(Token(0), ops, Priority::Background, target);
+    Ok(())
+}
 
 /// Installs the chunk facts and the block tags behaviour reads from the Vanilla data pack
 /// (extracted into `$VANILLITE_CACHE`, default `<workspace>/target/vanilla-cache`), once.
@@ -173,6 +256,7 @@ fn install() {
         vanillite_game::player::play::install_game_data(Arc::new(vanillite_server::game_data(
             Some(&packs),
         )));
+        let _ = PACKS.set(packs);
     });
 }
 
@@ -273,6 +357,9 @@ impl GameWorld {
         // (`ParityHooks.shuffleRandom`).
         vanillite_game::mob::set_parity_shuffle_seed(Some(PARITY_SHUFFLE_SEED));
         let store = Arc::new(MemoryStore::default());
+        if let Some(snapshot) = &spec.snapshot {
+            preload_snapshot(&store, snapshot, &spec.forced)?;
+        }
         let (mut level, network_ids) = open_level(spec, Arc::clone(&store))?;
         let mut rules = GameRules::default();
         apply_rules(&mut LevelSettings::default(), &mut rules, &spec.rules)?;
@@ -286,7 +373,7 @@ impl GameWorld {
         level.settings.difficulty = difficulty;
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment {
-            sea_level: FLAT_SEA_LEVEL,
+            sea_level: sea_level(spec),
             ..Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0)
         };
         // What spawner blocks and creaking hearts read when the block entities tick.
@@ -319,6 +406,14 @@ impl GameWorld {
         world
             .set_forced(&spec.forced, true)
             .map_err(|_| "the scenario region does not become ticking".to_owned())?;
+        if spec.snapshot.is_some() {
+            // What chunk generation spawned (see the scenario documentation).
+            let spawned = world.level.entities.store.columns().id.clone();
+            for id in spawned {
+                world.level.entities.despawn(id);
+            }
+            world.level.tick_entity_manager();
+        }
         Ok(world)
     }
 
@@ -685,7 +780,13 @@ impl GameWorld {
                 name: spec.name.clone(),
                 properties: Vec::new(),
             },
-            game_mode: vanillite_config::GameMode::Survival,
+            game_mode: match spec.game_mode.as_deref() {
+                None | Some("survival") => vanillite_config::GameMode::Survival,
+                Some("creative") => vanillite_config::GameMode::Creative,
+                Some("adventure") => vanillite_config::GameMode::Adventure,
+                Some("spectator") => vanillite_config::GameMode::Spectator,
+                Some(m) => return Err(format!("unknown game mode `{m}`")),
+            },
             previous_game_mode: None,
             client: ClientInformation::default(),
             chunk_view: ChunkView {
@@ -1218,10 +1319,32 @@ fn open_level(
         layers.extend(std::iter::repeat_n(state.0, *height as usize));
     }
     let codec = AnvilCodec::new(&info, Compression::None);
+    let generator: Arc<dyn vanillite_chunk::slots::ChunkGenerator> = if spec.snapshot.is_some() {
+        let biome_source =
+            json!({"type": "minecraft:multi_noise", "preset": "minecraft:overworld"});
+        let terrain = vanillite_worldgen::TerrainGenerator::new(
+            PACKS.get().expect("installed"),
+            vanillite_worldgen::DimensionSpec {
+                noise_settings: "minecraft:overworld",
+                biome_source: &biome_source,
+                min_y: MIN_Y,
+                height: HEIGHT as i32,
+                has_sky_light: true,
+            },
+            spec.seed,
+        )
+        .map_err(|e| format!("overworld generator: {e}"))?;
+        Arc::new(
+            vanillite_worldgen::VanillaChunkGenerator::new(terrain, info.clone())
+                .with_structures(false),
+        )
+    } else {
+        Arc::new(FlatGenerator::new(&info, &layers))
+    };
     let slots = ChunkSlots {
         store,
         codec: Arc::new(codec),
-        generator: Arc::new(FlatGenerator::new(&info, &layers)),
+        generator,
         light: if spec.light {
             vanillite_light::BfsLightEngineProvider.create(&info)
         } else {
@@ -1244,7 +1367,7 @@ fn open_level(
     level.set_climate(Arc::new(Climate {
         biomes: BIOMES.get().expect("installed").clone(),
         manager: vanillite_worldgen::biome::BiomeManager::for_world_seed(spec.seed),
-        sea_level: FLAT_SEA_LEVEL,
+        sea_level: sea_level(spec),
     }));
     let (rain, thunder) = match spec.weather.as_str() {
         "clear" => (0.0, 0.0),
@@ -1523,7 +1646,7 @@ impl ScenarioWorld for GameWorld {
     /// Players, the level random reseeded with the world seed, then the other entities.
     fn add_entities(&mut self, entities: &[EntitySpec], entity_seed: i64) -> Result<(), String> {
         for (i, spec) in entities.iter().enumerate() {
-            if spec.is_player() {
+            if spec.is_player() && spec.join.is_none() {
                 self.add_player(spec, i)?;
             }
         }
@@ -1539,6 +1662,16 @@ impl ScenarioWorld for GameWorld {
             if let Some(e) = self.level.entities.store.get(*id) {
                 self.network_names.push((name.clone(), e.network_id().0));
             }
+        }
+        Ok(())
+    }
+
+    fn join(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
+        self.add_player(spec, index)?;
+        let id = self.named(&spec.name)?;
+        if let Some(e) = self.level.entities.store.get(id) {
+            self.network_names
+                .push((spec.name.clone(), e.network_id().0));
         }
         Ok(())
     }
@@ -1791,13 +1924,7 @@ impl ScenarioWorld for GameWorld {
     fn packet(&mut self, op: &crate::scenario::PacketOp) -> Result<(), String> {
         let id = self.named(&op.entity)?;
         let target = match &op.target {
-            Some(t) => Some(
-                self.network_names
-                    .iter()
-                    .find(|(n, _)| n == t)
-                    .map(|(_, id)| *id)
-                    .ok_or_else(|| format!("no scenario entity `{t}`"))?,
-            ),
+            Some(t) => Some(self.target(t)?),
             None => None,
         };
         let packet_id = vanillite_protocol::ids::play::serverbound::NAMES
@@ -1860,8 +1987,10 @@ impl ScenarioWorld for GameWorld {
         use vanillite_protocol::packets::play::serverbound::ClientTickEnd;
         use vanillite_protocol::sets::ServerboundPlay;
         let ids: Vec<EntityId> = self.clients.iter().map(|c| c.id).collect();
-        for id in ids {
-            self.send(id, ServerboundPlay::ClientTickEnd(ClientTickEnd))?;
+        if self.spec.client_tick_end {
+            for id in ids {
+                self.send(id, ServerboundPlay::ClientTickEnd(ClientTickEnd))?;
+            }
         }
         self.handle_clients()
     }
@@ -2010,6 +2139,37 @@ fn observe_ticks(
 /// world's tick (`WorldPlayers::handle_packets`, `WorldSurvival::moves`,
 /// `WorldMobs::player_actions`); keep them in step.
 impl GameWorld {
+    /// The network id and UUID of a packet target: a scenario entity, `uuid:<hex>` or `none`
+    /// (-1 and the nil UUID when there is no such entity).
+    fn target(&self, name: &str) -> Result<(i32, u128), String> {
+        let core = self.level.entities.store.columns();
+        let by_uuid = |uuid: u128| {
+            core.uuid
+                .iter()
+                .position(|u| *u == uuid)
+                .map_or((-1, uuid), |row| (core.network_id[row].0, uuid))
+        };
+        if name == "none" {
+            return Ok((-1, 0));
+        }
+        if let Some(hex) = name.strip_prefix("uuid:") {
+            let uuid = u128::from_str_radix(hex, 16).map_err(|_| format!("bad target `{name}`"))?;
+            return Ok(by_uuid(uuid));
+        }
+        let network_id = self
+            .network_names
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, id)| *id)
+            .ok_or_else(|| format!("no scenario entity `{name}`"))?;
+        let uuid = core
+            .network_id
+            .iter()
+            .position(|n| n.0 == network_id)
+            .map_or(0, |row| core.uuid[row]);
+        Ok((network_id, uuid))
+    }
+
     /// Queues a packet of the client player `id`.
     fn send(
         &mut self,
