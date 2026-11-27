@@ -286,47 +286,7 @@ fn end_islands(noise: &Noise, x: i32, z: i32) -> f32 {
 /// `RangeChoiceFunction`'s range test.
 #[inline]
 fn in_range(input: f32, min_inclusive: f32, max_exclusive: f32) -> bool {
-    (input >= min_inclusive) & (input < max_exclusive)
-}
-
-/// Keeps `out[i]` where `input[i]` is in range ([`in_range`]), else takes `other[i]`.
-#[inline]
-fn select_in_range(
-    out: &mut [f32],
-    input: &[f32],
-    other: &[f32],
-    min_inclusive: f32,
-    max_exclusive: f32,
-) {
-    let len = out.len();
-    let (input, other) = (&input[..len], &other[..len]);
-    let mut i = 0;
-    #[cfg(target_arch = "x86_64")]
-    {
-        use std::arch::x86_64::{
-            _mm_and_ps, _mm_andnot_ps, _mm_cmpge_ps, _mm_cmplt_ps, _mm_loadu_ps, _mm_or_ps,
-            _mm_set1_ps, _mm_storeu_ps,
-        };
-        // SAFETY: SSE is part of every x86-64 target; every access covers `i..i + 4` with
-        // `i + 4 <= len`, the length of all three slices.
-        unsafe {
-            let (min, max) = (_mm_set1_ps(min_inclusive), _mm_set1_ps(max_exclusive));
-            while i + 4 <= len {
-                let x = _mm_loadu_ps(input.as_ptr().add(i));
-                // All ones where `x >= min && x < max` (false for NaN, as the scalar test).
-                let keep = _mm_and_ps(_mm_cmpge_ps(x, min), _mm_cmplt_ps(x, max));
-                let kept = _mm_and_ps(keep, _mm_loadu_ps(out.as_ptr().add(i)));
-                let taken = _mm_andnot_ps(keep, _mm_loadu_ps(other.as_ptr().add(i)));
-                _mm_storeu_ps(out.as_mut_ptr().add(i), _mm_or_ps(kept, taken));
-                i += 4;
-            }
-        }
-    }
-    for i in i..len {
-        if !in_range(input[i], min_inclusive, max_exclusive) {
-            out[i] = other[i];
-        }
-    }
+    input >= min_inclusive && input < max_exclusive
 }
 
 /// `IntervalSelectFunction.Sampler.selectSamplerIndex(input)`.
@@ -1317,13 +1277,11 @@ impl Program {
                     &input_buffer,
                     |x| !chosen(x),
                 );
-                select_in_range(
-                    out,
-                    &input_buffer,
-                    &out_of_range,
-                    min_inclusive,
-                    max_exclusive,
-                );
+                for i in 0..out.len() {
+                    if !in_range(input_buffer[i], min_inclusive, max_exclusive) {
+                        out[i] = out_of_range[i];
+                    }
+                }
                 ctx.release(out_of_range);
                 ctx.release(input_buffer);
             }
@@ -1968,7 +1926,15 @@ fn fill_cell(
                 &mut c[..rows],
                 &mut d[..rows],
             );
-            fill_four_columns(&mut values, steps, [a, b, c, d]);
+            for row in 0..rows {
+                a[row] = values[0];
+                b[row] = values[1];
+                c[row] = values[2];
+                d[row] = values[3];
+                for (value, step) in values.iter_mut().zip(steps) {
+                    *value += step;
+                }
+            }
             x += 4;
         }
         while x <= x1 {
@@ -1979,57 +1945,6 @@ fn fill_cell(
                 value += step;
             }
             x += 1;
-        }
-    }
-}
-
-/// Writes four columns of `fill_cell` (`rows` values each, as many as every column holds):
-/// each lane is one column's chain `value += step`, started at `values`, which are left at the
-/// values after the last row.
-#[inline(always)]
-fn fill_four_columns(values: &mut [f32; 4], steps: [f32; 4], columns: [&mut [f32]; 4]) {
-    let rows = columns[0].len();
-    let [a, b, c, d] = columns;
-    let (b, c, d) = (&mut b[..rows], &mut c[..rows], &mut d[..rows]);
-    let mut row = 0;
-    #[cfg(target_arch = "x86_64")]
-    {
-        use std::arch::x86_64::{
-            _mm_add_ps, _mm_loadu_ps, _mm_movehl_ps, _mm_movelh_ps, _mm_storeu_ps, _mm_unpackhi_ps,
-            _mm_unpacklo_ps,
-        };
-        // SAFETY: SSE is part of every x86-64 target; every store writes rows `row..row + 4`
-        // of a column, and `row + 4 <= rows`, the length of each.
-        unsafe {
-            let step = _mm_loadu_ps(steps.as_ptr());
-            let mut value = _mm_loadu_ps(values.as_ptr());
-            while row + 4 <= rows {
-                // Four rows of the four lanes, then transposed into four rows of each column.
-                let r0 = value;
-                let r1 = _mm_add_ps(r0, step);
-                let r2 = _mm_add_ps(r1, step);
-                let r3 = _mm_add_ps(r2, step);
-                value = _mm_add_ps(r3, step);
-                let t0 = _mm_unpacklo_ps(r0, r1);
-                let t1 = _mm_unpacklo_ps(r2, r3);
-                let t2 = _mm_unpackhi_ps(r0, r1);
-                let t3 = _mm_unpackhi_ps(r2, r3);
-                _mm_storeu_ps(a.as_mut_ptr().add(row), _mm_movelh_ps(t0, t1));
-                _mm_storeu_ps(b.as_mut_ptr().add(row), _mm_movehl_ps(t1, t0));
-                _mm_storeu_ps(c.as_mut_ptr().add(row), _mm_movelh_ps(t2, t3));
-                _mm_storeu_ps(d.as_mut_ptr().add(row), _mm_movehl_ps(t3, t2));
-                row += 4;
-            }
-            *values = std::mem::transmute::<std::arch::x86_64::__m128, [f32; 4]>(value);
-        }
-    }
-    for row in row..rows {
-        a[row] = values[0];
-        b[row] = values[1];
-        c[row] = values[2];
-        d[row] = values[3];
-        for (value, step) in values.iter_mut().zip(steps) {
-            *value += step;
         }
     }
 }

@@ -1631,10 +1631,6 @@ impl Chunks {
             chunk.status = ChunkStatus::Features;
             dirty = true;
         }
-        let lit = chunk.status >= ChunkStatus::InitializeLight;
-        if lit && self.info.has_sky_light {
-            chunk.chunk.light_mut().reset_sky_sources();
-        }
         if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.chunk = Some(Arc::new(chunk));
             holder.sync_full();
@@ -1642,9 +1638,6 @@ impl Chunks {
             holder.entities_stored = entities_stored;
             if dirty {
                 holder.touch(pos, &mut self.changed);
-            }
-            if lit {
-                self.restore_kept_light(pos);
             }
             self.promote(pos);
             self.wake(pos);
@@ -1803,10 +1796,6 @@ impl Chunks {
             };
             let change = LightChange::between(current.chunk.light(), &light);
             if change.is_empty() {
-                // Only the sky light sources' state changed: nothing to save or send.
-                if *current.chunk.light() != light {
-                    *Arc::make_mut(current).chunk.light_mut() = light;
-                }
                 continue;
             }
             let current = Arc::make_mut(current);
@@ -2411,64 +2400,6 @@ impl Chunks {
                 {
                     *Arc::make_mut(chunk).chunk.light_mut() = light;
                     holder.touch(center, &mut self.changed);
-                }
-            }
-        }
-    }
-
-    /// The light the neighbours of a loaded chunk keep again because of it, as in Vanilla's
-    /// light engine ([`vanillite_chunk::light::restore_kept_light`]): like Vanilla, clients get
-    /// the created sections.
-    fn restore_kept_light(&mut self, pos: ChunkPos) {
-        let lit = |holder: &Holder| {
-            holder
-                .chunk
-                .as_ref()
-                .filter(|c| c.status >= ChunkStatus::InitializeLight)
-                .cloned()
-        };
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let center = ChunkPos::new(pos.x + dx, pos.z + dz);
-                if center == pos
-                    || !self
-                        .holders
-                        .get(&center)
-                        .is_some_and(|h| !h.busy && lit(h).is_some())
-                {
-                    continue;
-                }
-                let around: [Option<Arc<ProtoChunk>>; 9] = std::array::from_fn(|i| {
-                    let at =
-                        ChunkPos::new(center.x + i as i32 % 3 - 1, center.z + i as i32 / 3 - 1);
-                    self.holders.get(&at).and_then(lit)
-                });
-                let loaded_index = ((pos.z - center.z + 1) * 3 + (pos.x - center.x + 1)) as usize;
-                let area: [Option<&vanillite_chunk::Chunk>; 9] =
-                    std::array::from_fn(|i| around[i].as_ref().map(|c| &c.chunk));
-                let mut light = around[4].as_ref().map(|c| c.chunk.light().clone()).unwrap();
-                let restored =
-                    vanillite_chunk::light::restore_kept_light(&mut light, &area, loaded_index);
-                drop(around);
-                if restored.is_empty() {
-                    continue;
-                }
-                if let Some(holder) = self.holders.map_mut().get_mut(&center)
-                    && let Some(chunk) = holder.chunk.as_mut()
-                {
-                    let chunk = Arc::make_mut(chunk);
-                    *chunk.chunk.light_mut() = light;
-                    let full = chunk.status == ChunkStatus::Full;
-                    holder.touch(center, &mut self.changed);
-                    if full {
-                        self.light_changes
-                            .entry(center)
-                            .or_default()
-                            .add(&LightChange {
-                                sky: restored,
-                                block: restored,
-                            });
-                    }
                 }
             }
         }

@@ -6,8 +6,6 @@
 use vanillite_base::math::floor;
 use vanillite_base::random::RandomSource;
 
-#[cfg(target_arch = "x86_64")]
-use super::gradient::GRADIENT;
 use super::gradient::{GradientNoise, dot_xz, smoothstep, wrap};
 use super::lanes::F32x4;
 use super::stack::Octave;
@@ -202,69 +200,11 @@ const LANES: usize = 4;
 
 /// `addToVolume` at `points`, the outer loops and the cell interpolation of both Perlin noise
 /// kinds: `row_of(index_y)` gives a row's lattice cell, relative Y and alpha. Runs of
-/// consecutive (Z, X) columns go through the rows together, each lane doing exactly the
-/// arithmetic of one column: eight with AVX2, else four ([`LANES`]). A column's cell is
-/// computed when its Y cell changes at a needed point of any lane, so the values do not depend
-/// on which points are skipped, nor on how many columns go together.
+/// [`LANES`] consecutive (Z, X) columns go through the rows together, each lane doing exactly
+/// the arithmetic of one column. A column's cell is computed when its Y cell changes at a
+/// needed point of any lane, so the values do not depend on which points are skipped.
 #[inline(always)]
 fn add_columns<P: Points>(
-    noise: &GradientNoise,
-    buffer: &mut [f32],
-    volume: &DensityVolume,
-    xz_scale: f64,
-    amplitude: f32,
-    points: P,
-    row_of: impl FnMut(i32) -> (i32, f32, f32),
-) {
-    #[cfg(target_arch = "x86_64")]
-    if super::lanes::has_avx2() {
-        // SAFETY: the CPU supports AVX2.
-        unsafe {
-            avx2::add_columns(noise, buffer, volume, xz_scale, amplitude, points, row_of);
-        }
-        return;
-    }
-    add_columns_4(noise, buffer, volume, xz_scale, amplitude, points, row_of);
-}
-
-/// The column of `volume` at `column` (`x + z * size_x`), if any of its points is needed.
-#[inline(always)]
-fn column_at<P: Points>(
-    noise: &GradientNoise,
-    volume: &DensityVolume,
-    xz_scale: f64,
-    points: P,
-    column: usize,
-) -> Option<(Column, P)> {
-    let size_y = volume.size_y as usize;
-    let size_x = volume.size_x.max(0) as usize;
-    if !points.any(column * size_y, size_y) {
-        return None;
-    }
-    let (index_x, index_z) = ((column % size_x) as i32, (column / size_x) as i32);
-    let x = Lattice::new(
-        f64::from(volume.block_x(index_x)) * xz_scale,
-        noise.offset_x,
-    );
-    let z = Lattice::new(
-        f64::from(volume.block_z(index_z)) * xz_scale,
-        noise.offset_z,
-    );
-    let xs = noise.pair(x.floor);
-    Some((
-        Column {
-            x0: xs.first(),
-            x1: xs.second(),
-            x,
-            z,
-        },
-        points.column(column * size_y, size_y),
-    ))
-}
-
-/// [`add_columns`] four columns at a time (SSE2).
-#[inline(always)]
-fn add_columns_4<P: Points>(
     noise: &GradientNoise,
     buffer: &mut [f32],
     volume: &DensityVolume,
@@ -290,15 +230,27 @@ fn add_columns_4<P: Points>(
         let mut lanes: [Option<Column>; LANES] = [None; LANES];
         let mut lane_points = [points; LANES];
         for (l, (lane, lane_points)) in lanes.iter_mut().zip(&mut lane_points).enumerate() {
-            if l >= count {
+            let column = start + l;
+            if l >= count || !points.any(column * size_y, size_y) {
                 continue;
             }
-            if let Some((column, column_points)) =
-                column_at(noise, volume, xz_scale, points, start + l)
-            {
-                *lane = Some(column);
-                *lane_points = column_points;
-            }
+            let (index_x, index_z) = ((column % size_x) as i32, (column / size_x) as i32);
+            let x = Lattice::new(
+                f64::from(volume.block_x(index_x)) * xz_scale,
+                noise.offset_x,
+            );
+            let z = Lattice::new(
+                f64::from(volume.block_z(index_z)) * xz_scale,
+                noise.offset_z,
+            );
+            let xs = noise.pair(x.floor);
+            *lane = Some(Column {
+                x0: xs.first(),
+                x1: xs.second(),
+                x,
+                z,
+            });
+            *lane_points = points.column(column * size_y, size_y);
         }
         if lanes.iter().all(Option::is_none) {
             continue;
@@ -356,209 +308,6 @@ fn add_columns_4<P: Points>(
             for (l, (need, value)) in needed.into_iter().zip(values).enumerate() {
                 if need {
                     group[l * size_y + index_y] += value;
-                }
-            }
-        }
-    }
-}
-
-/// [`add_columns`] eight columns at a time, with the cell corners of all lanes computed in
-/// vectors too (AVX2: gathers from the permutation pairs, gradient components by permutes).
-#[cfg(target_arch = "x86_64")]
-mod avx2 {
-    use std::arch::x86_64::{
-        __m256, __m256i, _mm256_add_epi32, _mm256_add_ps, _mm256_and_si256, _mm256_blendv_ps,
-        _mm256_castsi256_ps, _mm256_i32gather_epi32, _mm256_loadu_ps, _mm256_loadu_si256,
-        _mm256_mul_ps, _mm256_permutevar8x32_ps, _mm256_set1_epi32, _mm256_set1_ps,
-        _mm256_setzero_ps, _mm256_slli_epi32, _mm256_srli_epi32, _mm256_storeu_ps, _mm256_sub_ps,
-    };
-
-    use super::{Column, DensityVolume, GRADIENT, GradientNoise, Points, Rows, column_at};
-
-    const LANES: usize = 8;
-
-    /// One component of the gradients of 16 indices, split in two halves of eight.
-    #[derive(Clone, Copy)]
-    struct Component(__m256, __m256);
-
-    impl Component {
-        #[inline]
-        #[target_feature(enable = "avx2")]
-        fn of(component: usize) -> Self {
-            let half = |from: usize| -> __m256 {
-                let values: [f32; 8] = std::array::from_fn(|i| GRADIENT[from + i][component]);
-                // SAFETY: `values` holds eight `f32`s.
-                unsafe { _mm256_loadu_ps(values.as_ptr()) }
-            };
-            Self(half(0), half(8))
-        }
-
-        /// The component of the gradients at `index` (`0..16`) per lane.
-        #[inline]
-        #[target_feature(enable = "avx2")]
-        fn at(self, index: __m256i) -> __m256 {
-            let low = _mm256_permutevar8x32_ps(self.0, index);
-            let high = _mm256_permutevar8x32_ps(self.1, index);
-            // Bit 3 of the index, moved to the sign bit, picks the half.
-            _mm256_blendv_ps(
-                low,
-                high,
-                _mm256_castsi256_ps(_mm256_slli_epi32::<28>(index)),
-            )
-        }
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn lerp(alpha: __m256, p0: __m256, p1: __m256) -> __m256 {
-        _mm256_add_ps(p0, _mm256_mul_ps(alpha, _mm256_sub_ps(p1, p0)))
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn load_i32(values: &[i32; LANES]) -> __m256i {
-        // SAFETY: `values` holds eight `i32`s.
-        unsafe { _mm256_loadu_si256(values.as_ptr().cast()) }
-    }
-
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn load_f32(values: &[f32; LANES]) -> __m256 {
-        // SAFETY: `values` holds eight `f32`s.
-        unsafe { _mm256_loadu_ps(values.as_ptr()) }
-    }
-
-    /// See [`super::add_columns`].
-    #[target_feature(enable = "avx2")]
-    pub(super) fn add_columns<P: Points>(
-        noise: &GradientNoise,
-        buffer: &mut [f32],
-        volume: &DensityVolume,
-        xz_scale: f64,
-        amplitude: f32,
-        points: P,
-        mut row_of: impl FnMut(i32) -> (i32, f32, f32),
-    ) {
-        let size_y = volume.size_y as usize;
-        let size_x = volume.size_x.max(0) as usize;
-        let columns = size_x * volume.size_z.max(0) as usize;
-        if size_y == 0 || columns == 0 {
-            return;
-        }
-        let mut rows = Rows::new(size_y);
-        let amplitude = _mm256_set1_ps(amplitude);
-        let (grad_x, grad_y, grad_z) = (Component::of(0), Component::of(1), Component::of(2));
-        let pairs = noise.pairs.as_ptr().cast::<i32>();
-        let low_byte = _mm256_set1_epi32(0xFF);
-        let low_nibble = _mm256_set1_epi32(15);
-        // `pairs[(index & 255)]` per lane.
-        let pair = |index: __m256i| -> __m256i {
-            // SAFETY: every index is masked to `0..256`, inside `pairs`.
-            unsafe { _mm256_i32gather_epi32::<4>(pairs, _mm256_and_si256(index, low_byte)) }
-        };
-        for (group_index, group) in buffer[..columns * size_y]
-            .chunks_mut(LANES * size_y)
-            .enumerate()
-        {
-            let start = group_index * LANES;
-            let count = group.len() / size_y;
-            let mut lanes: [Option<Column>; LANES] = [None; LANES];
-            let mut lane_points = [points; LANES];
-            for (l, (lane, lane_points)) in lanes.iter_mut().zip(&mut lane_points).enumerate() {
-                if l >= count {
-                    continue;
-                }
-                if let Some((column, column_points)) =
-                    column_at(noise, volume, xz_scale, points, start + l)
-                {
-                    *lane = Some(column);
-                    *lane_points = column_points;
-                }
-            }
-            if lanes.iter().all(Option::is_none) {
-                continue;
-            }
-            // Lanes without a column compute on zeros; their values are not stored.
-            let (mut x0, mut x1, mut floor_z) = ([0; LANES], [0; LANES], [0; LANES]);
-            let (mut rx, mut rz, mut alpha_x, mut alpha_z) =
-                ([0.0; LANES], [0.0; LANES], [0.0; LANES], [0.0; LANES]);
-            for (l, lane) in lanes.iter().enumerate() {
-                if let Some(column) = lane {
-                    x0[l] = column.x0;
-                    x1[l] = column.x1;
-                    floor_z[l] = column.z.floor;
-                    rx[l] = column.x.relative;
-                    rz[l] = column.z.relative;
-                    alpha_x[l] = column.x.alpha;
-                    alpha_z[l] = column.z.alpha;
-                }
-            }
-            let (x0, x1, floor_z) = (load_i32(&x0), load_i32(&x1), load_i32(&floor_z));
-            let (rx, rz) = (load_f32(&rx), load_f32(&rz));
-            let one = _mm256_set1_ps(1.0);
-            let (rx1, rz1) = (_mm256_sub_ps(rx, one), _mm256_sub_ps(rz, one));
-            let (alpha_x, alpha_z) = (load_f32(&alpha_x), load_f32(&alpha_z));
-            let (mut xz, mut gy) = ([_mm256_setzero_ps(); 8], [_mm256_setzero_ps(); 8]);
-            let mut last_floor_y = i32::MIN;
-            for index_y in 0..size_y {
-                let mut needed = [false; LANES];
-                for ((need, lane), lane_points) in needed.iter_mut().zip(&lanes).zip(lane_points) {
-                    *need = lane.is_some() && lane_points.has(index_y);
-                }
-                if !needed.contains(&true) {
-                    continue;
-                }
-                let row = rows.get(index_y, || row_of(index_y as i32));
-                if last_floor_y != row.floor {
-                    // `Cells::set` of every lane.
-                    let floor_y = _mm256_set1_epi32(row.floor);
-                    let xy0 = pair(_mm256_add_epi32(x0, floor_y));
-                    let xy1 = pair(_mm256_add_epi32(x1, floor_y));
-                    let first = |p: __m256i| _mm256_and_si256(p, low_byte);
-                    let second = |p: __m256i| _mm256_and_si256(_mm256_srli_epi32::<8>(p), low_byte);
-                    let corners = [
-                        (first(xy0), rx),
-                        (first(xy1), rx1),
-                        (second(xy0), rx),
-                        (second(xy1), rx1),
-                    ];
-                    for (i, (xy, cx)) in corners.into_iter().enumerate() {
-                        let xyz = pair(_mm256_add_epi32(xy, floor_z));
-                        let g = _mm256_and_si256(_mm256_srli_epi32::<16>(xyz), low_nibble);
-                        let g1 = _mm256_and_si256(_mm256_srli_epi32::<24>(xyz), low_nibble);
-                        // `dot_xz`: `g[0] * x + g[2] * z`.
-                        xz[i] = _mm256_add_ps(
-                            _mm256_mul_ps(grad_x.at(g), cx),
-                            _mm256_mul_ps(grad_z.at(g), rz),
-                        );
-                        gy[i] = grad_y.at(g);
-                        xz[i + 4] = _mm256_add_ps(
-                            _mm256_mul_ps(grad_x.at(g1), cx),
-                            _mm256_mul_ps(grad_z.at(g1), rz1),
-                        );
-                        gy[i + 4] = grad_y.at(g1);
-                    }
-                    last_floor_y = row.floor;
-                }
-                let ry = _mm256_set1_ps(row.relative);
-                let ry1 = _mm256_set1_ps(row.relative - 1.0);
-                let corner = |i: usize, ry: __m256| _mm256_add_ps(xz[i], _mm256_mul_ps(gy[i], ry));
-                let alpha_y = _mm256_set1_ps(row.alpha);
-                let lerp2 = |x00: __m256, x10: __m256, x01: __m256, x11: __m256| {
-                    lerp(alpha_y, lerp(alpha_x, x00, x10), lerp(alpha_x, x01, x11))
-                };
-                let value = lerp(
-                    alpha_z,
-                    lerp2(corner(0, ry), corner(1, ry), corner(2, ry1), corner(3, ry1)),
-                    lerp2(corner(4, ry), corner(5, ry), corner(6, ry1), corner(7, ry1)),
-                );
-                let mut values = [0.0f32; LANES];
-                // SAFETY: `values` holds eight `f32`s.
-                unsafe { _mm256_storeu_ps(values.as_mut_ptr(), _mm256_mul_ps(amplitude, value)) };
-                for (l, (need, value)) in needed.into_iter().zip(values).enumerate() {
-                    if need {
-                        group[l * size_y + index_y] += value;
-                    }
                 }
             }
         }
@@ -816,74 +565,5 @@ impl SmearedPerlinNoise {
             let fudged_ry = (ry - self.compute_fudge_y(original_y, ry)) as f32;
             (floor_y, fudged_ry, smoothstep(ry as f32))
         });
-    }
-}
-
-#[cfg(all(test, target_arch = "x86_64"))]
-mod tests {
-    use vanillite_base::random::LegacyRandom;
-
-    use super::*;
-
-    /// The eight-lane AVX2 path gives the bits of the four-lane path, with and without masks.
-    #[test]
-    fn avx2_columns_match_four_lanes() {
-        if !super::super::lanes::has_avx2() {
-            return;
-        }
-        let mut random = LegacyRandom::new(12345);
-        let noise = PerlinNoise::new(&mut random);
-        let smeared = SmearedPerlinNoise::new(&mut random, 0.37);
-        let volumes = [
-            DensityVolume::with_step(5, 49, 5, -16, -64, 32, 4, 8, 4),
-            DensityVolume::new(16, 23, 16, 1003, -17, -2050),
-            DensityVolume::new(3, 70, 7, -33_554_430, 5, 16_777_300),
-        ];
-        for (v, volume) in volumes.iter().enumerate() {
-            let mask: Vec<bool> = (0..volume.len()).map(|i| (i * 7 + v) % 5 < 2).collect();
-            for (scale, y_scale) in [(1.0, 1.0), (0.25, 0.125), (684.412 * 0.01, 3.7)] {
-                let run = |avx2: bool, masked: bool, smeared_noise: bool| -> Vec<u32> {
-                    let mut buffer = vec![0.5f32; volume.len()];
-                    let row = |index_y: i32| {
-                        let y = wrap(f64::from(volume.block_y(index_y)) * y_scale)
-                            + noise.base.offset_y;
-                        let floor_y = floor(y);
-                        let ry = (y - f64::from(floor_y)) as f32;
-                        (floor_y, ry, smoothstep(ry))
-                    };
-                    let n = if smeared_noise {
-                        &smeared.perlin.base
-                    } else {
-                        &noise.base
-                    };
-                    match (avx2, masked) {
-                        // SAFETY: AVX2 is available (checked above).
-                        (true, true) => unsafe {
-                            avx2::add_columns(n, &mut buffer, volume, scale, 0.75, &mask[..], row);
-                        },
-                        // SAFETY: as above.
-                        (true, false) => unsafe {
-                            avx2::add_columns(n, &mut buffer, volume, scale, 0.75, All, row);
-                        },
-                        (false, true) => {
-                            add_columns_4(n, &mut buffer, volume, scale, 0.75, &mask[..], row);
-                        }
-                        (false, false) => {
-                            add_columns_4(n, &mut buffer, volume, scale, 0.75, All, row);
-                        }
-                    }
-                    buffer.iter().map(|value| value.to_bits()).collect()
-                };
-                for masked in [false, true] {
-                    for smeared_noise in [false, true] {
-                        assert_eq!(
-                            run(true, masked, smeared_noise),
-                            run(false, masked, smeared_noise),
-                            "volume {v}, scale {scale}, masked {masked}"
-                        );
-                    }
-                }
-            }
-        }
     }
 }

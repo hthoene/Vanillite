@@ -93,6 +93,20 @@ pub mod clientbound {
         pub packs: Vec<KnownPack>,
     }
 
+    /// `show_dialog` (configuration): an inline dialog as NBT
+    /// (`Dialog.CONTEXT_FREE_STREAM_CODEC`; Vanilla only shows dialogs in play).
+    #[derive(Debug, Clone, PartialEq, Packet)]
+    #[packet(state = Configuration, dir = Clientbound, name = "show_dialog")]
+    pub struct ShowDialog {
+        #[field(max_len = 2_097_152)]
+        pub dialog: crate::types::Nbt,
+    }
+
+    /// `clear_dialog` (configuration).
+    #[derive(Debug, Clone, PartialEq, Eq, Packet)]
+    #[packet(state = Configuration, dir = Clientbound, name = "clear_dialog")]
+    pub struct ClearDialog;
+
     /// `code_of_conduct`: text the player has to accept.
     #[derive(Debug, Clone, PartialEq, Eq, Packet)]
     #[packet(state = Configuration, dir = Clientbound, name = "code_of_conduct")]

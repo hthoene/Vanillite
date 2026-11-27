@@ -737,6 +737,7 @@ impl ServerBuilder {
             memory_settle_ticks: 0,
             ticks_until_autosave: 0,
             average_tick_nanos: 0.0,
+            last_tick_nanos: 0,
             tick_log: open_tick_log(),
             running: true,
             heartbeat,
@@ -1019,6 +1020,8 @@ pub struct Server {
     memory_settle_ticks: u32,
     ticks_until_autosave: i64,
     average_tick_nanos: f64,
+    /// `lastTickNanos`: when the last full tick (tick and wait) ended.
+    last_tick_nanos: u64,
     /// Load test tick log (`VANILLITE_TICK_LOG`): one line with the duration in nanoseconds per
     /// tick. A stand-in for the metrics endpoint of architecture 3.8.
     tick_log: Option<io::BufWriter<File>>,
@@ -1133,6 +1136,7 @@ impl Server {
     pub fn run(mut self) {
         let clock = self.global.clock;
         self.next_tick = clock.now();
+        self.last_tick_nanos = self.next_tick;
         let mut last_overload_warning = self.next_tick;
         while self.running {
             let now = clock.now();
@@ -1167,11 +1171,19 @@ impl Server {
             };
             let sprinting = this_tick == 0;
             self.next_tick += this_tick;
+            let tick_started = clock.now();
             self.tick_server();
-            self.wait_until_next_tick(this_tick, sprinting);
+            let wait_started = clock.now();
+            let idle = self.wait_until_next_tick(this_tick, sprinting);
+            let waited = clock.now().saturating_sub(wait_started);
             if sprinting {
                 self.global.tick_rate().end_tick_work(clock.now());
             }
+            self.log_full_tick_time([
+                wait_started.saturating_sub(tick_started),
+                waited.saturating_sub(idle),
+                idle,
+            ]);
         }
         self.shutdown();
     }
@@ -1523,6 +1535,7 @@ impl Server {
             allows_listing: arrival.client.allows_listing,
             details: arrival.details.clone(),
             bedrock: arrival.virtual_connection && !arrival.memory_connection,
+            debug_subscriptions: 0,
         });
         let global = Arc::clone(&self.global);
         self.run_in_world(
@@ -1658,13 +1671,15 @@ impl Server {
 
     /// Runs messages between ticks until the next tick is due (Vanilla's `waitUntilNextTick`:
     /// when the tick ran late, queued work may still use up to one tick length).
-    fn wait_until_next_tick(&mut self, this_tick: u64, sprinting: bool) {
+    /// Returns the nanoseconds spent idle (waiting for messages).
+    fn wait_until_next_tick(&mut self, this_tick: u64, sprinting: bool) -> u64 {
         let clock = self.global.clock;
+        let mut idle = 0u64;
         if sprinting {
             while let Ok(msg) = self.receiver.try_recv() {
                 self.dispatch(msg);
             }
-            return;
+            return idle;
         }
         let task_deadline = (clock.now() + this_tick).max(self.next_tick);
         let mut may_have_delayed = true;
@@ -1686,14 +1701,47 @@ impl Server {
                     if now >= self.next_tick {
                         break;
                     }
-                    match self
+                    let received = self
                         .receiver
-                        .recv_timeout(Duration::from_nanos(self.next_tick - now))
-                    {
+                        .recv_timeout(Duration::from_nanos(self.next_tick - now));
+                    idle = idle.saturating_add(clock.now().saturating_sub(now));
+                    match received {
                         Ok(msg) => self.dispatch(msg),
                         Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
                     }
                 }
+            }
+        }
+        idle
+    }
+
+    /// `logFullTickTime` of the dedicated server's `RemoteSampleLogger`: the
+    /// `TpsDebugDimensions` sample (full tick; `tick` = `tickServer`, scheduled tasks and idle
+    /// time of the wait) goes to the operators that subscribed to
+    /// `dedicated_server_tick_time` (the F3 tick time chart).
+    fn log_full_tick_time(&mut self, [tick, tasks, idle]: [u64; 3]) {
+        use vanillite_protocol::packets::play::clientbound::{
+            DebugSample, DebugSampleType, debug_subscription,
+        };
+        let now = self.global.clock.now();
+        let full = now.saturating_sub(self.last_tick_nanos);
+        self.last_tick_nanos = now;
+        let receivers = self
+            .global
+            .players
+            .debug_subscribers(debug_subscription::DEDICATED_SERVER_TICK_TIME);
+        if receivers.is_empty() {
+            return;
+        }
+        let nanos = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        let packet = vanillite_protocol::SharedPacket::of(&DebugSample {
+            sample: vec![nanos(full), nanos(tick), nanos(tasks), nanos(idle)],
+            kind: DebugSampleType::TickTime,
+        });
+        for (uuid, sink) in receivers {
+            // `ServerDebugSubscribers.hasRequiredPermissions`: operators only.
+            if self.global.access.op_level(uuid.0).is_some() {
+                sink.send_shared(&packet);
             }
         }
     }

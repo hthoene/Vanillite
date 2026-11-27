@@ -2020,26 +2020,6 @@
       "user_editable": true,
       "rules": "nullable|string",
       "field_type": "text"
-    },
-    {
-      "name": "Plugins: Runtime",
-      "description": "Which build loads the plugins. The Linux release archives and the Docker image run a static build, which cannot load libraries, and ship `vanillite-gnu` (built from the same commit against glibc) next to it: `\"auto\"` starts `vanillite-gnu` in its place when `plugins/` holds plugins (packages or Paper/Spigot jars), `\"gnu\"` always, `\"static\"` never (plugins are then not loaded). Other builds load plugins themselves and ignore this. default: the profile's value (vanilla profile: auto). vanillite.toml: plugins.runtime.",
-      "env_variable": "VANILLITE_PLUGINS__RUNTIME",
-      "default_value": "default",
-      "user_viewable": true,
-      "user_editable": true,
-      "rules": "nullable|string|in:default,auto,gnu,static",
-      "field_type": "text"
-    },
-    {
-      "name": "Plugins: Bukkit › Auto Setup",
-      "description": "When `plugins/` holds Paper or Spigot plugins and the layer is not installed, download the layer release made for this Vanillite version into `plugins/bukkit/` and, without a Java 25 runtime, Eclipse Temurin into `plugins/bukkit/runtime/` (both checked by SHA-256). Off (offline servers): the log says what to download and where to put it. default: the profile's value (vanilla profile: true). vanillite.toml: plugins.bukkit.auto-setup.",
-      "env_variable": "VANILLITE_PLUGINS__BUKKIT__AUTO_SETUP",
-      "default_value": "default",
-      "user_viewable": true,
-      "user_editable": true,
-      "rules": "nullable|string|in:default,true,false",
-      "field_type": "text"
     }
   ]
 }
