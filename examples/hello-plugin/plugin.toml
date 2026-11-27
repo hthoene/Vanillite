@@ -2,6 +2,8 @@
 id = "hello"
 name = "Hello"
 version = "0.1.0"
+authors = ["Hannes Thöne"]
+website = "https://vanillite.org"
 # Plugin API (ABI) version the plugin needs.
 api = "1.5"
 # Base name of the library: libvanillite_example_hello.so, vanillite_example_hello.dll, ...

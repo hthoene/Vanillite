@@ -78,7 +78,7 @@ fn main() -> ExitCode {
         Some("export") => export(args),
         Some("upgrade-world") => upgrade_world(args),
         Some("version" | "--version" | "-V") => {
-            println!("{}", version());
+            println!("{}\n{}", version(), about());
             ExitCode::SUCCESS
         }
         Some("help" | "--help" | "-h") => {
@@ -154,6 +154,16 @@ fn version() -> String {
         env!("CARGO_PKG_VERSION"),
         vanillite_data::version::VERSION_ID,
         env!("VANILLITE_COMMIT")
+    )
+}
+
+/// The author, website and licence line of `vanillite --version`.
+fn about() -> String {
+    format!(
+        "by {}, {}, licensed under {}",
+        env!("CARGO_PKG_AUTHORS"),
+        env!("CARGO_PKG_HOMEPAGE"),
+        env!("CARGO_PKG_LICENSE")
     )
 }
 
