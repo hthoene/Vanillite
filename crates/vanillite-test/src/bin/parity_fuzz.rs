@@ -11,8 +11,13 @@
 //! ```text
 //! parity-fuzz --java <java> --agent <agent.jar> --classpath <cp> --work-dir <dir> --out <dir>
 //!             [--seed N] [--count N] [--minutes N] [--jobs N] [--shrink-rounds N]
-//!             [--replay <scenario.json>...]
+//!             [--replay <scenario.json>...] [--session <recording dir>... [--ticks N]]
 //! ```
+//!
+//! `--session` replays a recorded server session (`cargo xtask parity replay`, #152): the
+//! recording becomes a scenario on its world snapshot ([`vanillite_test::session`]), written
+//! to `<out>/sessions/<name>.json`, then compared and shrunk like a random one. `--ticks`
+//! replays only the first ticks of a long session.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,6 +47,8 @@ struct Args {
     jobs: usize,
     shrink_rounds: usize,
     replay: Vec<PathBuf>,
+    sessions: Vec<PathBuf>,
+    ticks: Option<u32>,
 }
 
 fn args() -> Result<Args, String> {
@@ -57,6 +64,8 @@ fn args() -> Result<Args, String> {
         jobs: std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(1, 8)),
         shrink_rounds: 40,
         replay: Vec::new(),
+        sessions: Vec::new(),
+        ticks: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -75,10 +84,12 @@ fn args() -> Result<Args, String> {
                 a.shrink_rounds = v()?.parse().map_err(|e| format!("--shrink-rounds: {e}"))?;
             }
             "--replay" => a.replay.push(PathBuf::from(v()?)),
+            "--session" => a.sessions.push(PathBuf::from(v()?)),
+            "--ticks" => a.ticks = Some(v()?.parse().map_err(|e| format!("--ticks: {e}"))?),
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    if a.count.is_none() && a.minutes.is_none() && a.replay.is_empty() {
+    if a.count.is_none() && a.minutes.is_none() && a.replay.is_empty() && a.sessions.is_empty() {
         a.count = Some(20);
     }
     Ok(a)
@@ -426,9 +437,42 @@ fn main() -> std::process::ExitCode {
     let recorders = Recorders::new(args.jobs);
     loop {
         let mut batch = Vec::new();
-        if !args.replay.is_empty() {
+        if !args.replay.is_empty() || !args.sessions.is_empty() {
             if ran > 0 {
                 break;
+            }
+            for dir in &args.sessions {
+                let json = match vanillite_test::session::scenario(dir, args.ticks) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        eprintln!("parity-fuzz: {e}");
+                        continue;
+                    }
+                };
+                let stem = dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("session");
+                let name = format!("session_{}", slug(stem));
+                let volume = vanillite_test::session::region_volume(&json);
+                println!(
+                    "{name}: {} players, {} packets, {} ticks, region {} blocks",
+                    json["entities"].as_array().map_or(0, Vec::len),
+                    json["actions"].as_array().map_or(0, Vec::len),
+                    json["ticks"],
+                    volume
+                );
+                if volume > vanillite_test::session::LARGE_REGION {
+                    println!(
+                        "{name}: the players went far; the region is large and the replay slow \
+                         (--ticks replays the start only)"
+                    );
+                }
+                let sessions = args.out.join("sessions");
+                let _ = std::fs::create_dir_all(&sessions);
+                let text = serde_json::to_string_pretty(&json).unwrap_or_default() + "\n";
+                let _ = std::fs::write(sessions.join(format!("{name}.json")), text);
+                batch.push((name, json, 0));
             }
             for p in &args.replay {
                 let Ok(text) = std::fs::read_to_string(p) else {
@@ -508,10 +552,22 @@ fn main() -> std::process::ExitCode {
         started.elapsed().as_secs_f64()
     );
     for (sig, (name, mut json, outcome, seed)) in found {
-        let file_name = format!("fuzz_{}", slug(&sig));
-        json["description"] = Value::String(format!(
-            "Random parity scenario (#132), seed {seed}, shrunk: {sig}."
-        ));
+        let prefix = if name.starts_with("session_") {
+            "session"
+        } else {
+            "fuzz"
+        };
+        let file_name = format!("{prefix}_{}", slug(&sig));
+        if !name.starts_with("session_") {
+            json["description"] = Value::String(format!(
+                "Random parity scenario (#132), seed {seed}, shrunk: {sig}."
+            ));
+        } else {
+            json["description"] = Value::String(format!(
+                "Session replay {name} (#152), shrunk: {sig}. Needs the recording's world \
+                 snapshot (`world.snapshot`)."
+            ));
+        }
         let text = serde_json::to_string_pretty(&json).unwrap_or_default() + "\n";
         let path = found_dir.join(format!("{file_name}.json"));
         let _ = std::fs::write(&path, text);
