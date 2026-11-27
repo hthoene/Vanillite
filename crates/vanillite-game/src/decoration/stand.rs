@@ -775,7 +775,7 @@ fn game_event(
 /// `ArmorStand.kill`: removed at once (no death animation).
 fn kill(
     ents: &mut Entities,
-    _env: &mut Env<'_>,
+    env: &mut Env<'_>,
     cx: &mut MobContext,
     id: EntityId,
     by: Option<EntityId>,
@@ -793,6 +793,21 @@ fn kill(
         crate::level::game_event::events().entity_die,
         by,
     );
+    // `CatalystListener` takes the source as the dying entity: a player's experience reward
+    // becomes charge at the stand (`Player.getBaseExperienceReward`), the stand's is 0; the
+    // nearest catalyst blooms.
+    if let Some(pos) = ents.store.get(id).map(|e| e.pos()) {
+        let experience = by
+            .and_then(|p| ents.player(p))
+            .filter(|p| {
+                p.game_mode != vanillite_config::GameMode::Spectator
+                    && !env.rules.bool(crate::survival::rules::Rule::KEEP_INVENTORY)
+            })
+            .map_or(0, |p| p.survival.xp.level.saturating_mul(7).min(100));
+        cx.actions.push(crate::mob::WorldAction::Level(
+            crate::mob::boss::warden::LevelAction::SculkDeath { pos, experience },
+        ));
+    }
     cx.discarded.push(id);
 }
 

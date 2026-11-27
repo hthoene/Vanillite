@@ -1570,6 +1570,28 @@ pub fn die(
         entity.as_ref().pos(),
         Some(id),
     );
+    // `CatalystListener.handleGameEvent(ENTITY_DIE)`: the nearest sculk catalyst takes the
+    // experience reward as charge (`skipDropExperience`: no orbs) and blooms.
+    let consumed =
+        crate::block::sculk_catalyst::catalyst_block_near(env.blocks, entity.as_ref().pos());
+    if consumed {
+        // `Player.getBaseExperienceReward`.
+        let reward =
+            if env.rules.bool(Rule::KEEP_INVENTORY) || player.game_mode == GameMode::Spectator {
+                0
+            } else {
+                player.survival.xp.level.saturating_mul(7).min(100)
+            };
+        player
+            .survival
+            .world_actions
+            .push(crate::mob::WorldAction::Level(
+                crate::mob::boss::warden::LevelAction::SculkDeath {
+                    pos: entity.as_ref().pos(),
+                    experience: reward,
+                },
+            ));
+    }
     env.out.push(Effect::PearlsVanish(uuid));
     let sink = std::sync::Arc::clone(&player.connection.sink);
     let mut death = crate::hooks::Death {
@@ -1626,7 +1648,7 @@ pub fn die(
             Vec3::new(pos.x, eye_y - f64::from(0.3_f32), pos.z),
             env,
         );
-        if amount > 0 {
+        if amount > 0 && !consumed {
             env.out.push(Effect::Experience { pos, amount });
         }
     }

@@ -558,11 +558,12 @@ pub fn hit_block_at_speed(
 
 /// `Projectile.onHit`'s `PROJECTILE_LAND` game event of `projectile`: at the hit point `at`
 /// for an entity hit (`block` = `None`), at the centre of the hit block with its state for a
-/// block hit.
+/// block hit. `owner` is the projectile's owner, which listeners still know once it is gone.
 pub fn land_event(
     out: &mut Vec<crate::survival::Effect>,
     level: &Level,
     projectile: EntityId,
+    owner: Option<EntityId>,
     block: Option<vanillite_base::BlockPos>,
     at: Vec3,
 ) {
@@ -578,6 +579,7 @@ pub fn land_event(
         ),
         None => (at, GameEventContext::of(Some(projectile))),
     };
+    let context = GameEventContext { owner, ..context };
     out.push(crate::survival::Effect::GameEvent {
         event: events().projectile_land,
         pos,

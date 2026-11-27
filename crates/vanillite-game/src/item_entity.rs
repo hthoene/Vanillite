@@ -45,6 +45,8 @@ pub struct ItemData {
     /// `finalMovementsThisTick`: the way of the last move, walked again while the item rests
     /// (`applyEffectsFromBlocksForLastMovements`; not saved).
     pub last_movement: Option<crate::survival::inside::Movement>,
+    /// `fallDistance` (not saved).
+    pub fall_distance: f64,
 }
 
 impl ItemData {
@@ -70,6 +72,7 @@ impl ItemData {
             in_water: false,
             stuck: Vec3::ZERO,
             last_movement: None,
+            fall_distance: 0.0,
         }
     }
 
@@ -152,6 +155,11 @@ pub struct Burn {
     pub destroyed: bool,
     /// The blocks with an `entityInside` of their own the item is in, in Vanilla's order.
     pub inside: [Option<BlockPos>; 4],
+    /// `checkFallDamage`: the item landed after a fall, at this position on this block
+    /// (`fallOn` and the `HIT_GROUND` game event).
+    pub landed: Option<(Vec3, BlockPos)>,
+    /// `applyEffectsFromBlocks` on the ground: the block with a `stepOn` of its own below it.
+    pub step_on: Option<BlockPos>,
 }
 
 impl Burn {
@@ -159,6 +167,8 @@ impl Burn {
     pub fn is_none(&self) -> bool {
         self.hurts == 0
             && self.inside[0].is_none()
+            && self.landed.is_none()
+            && self.step_on.is_none()
             && self.splash_before.is_none()
             && self.splash_after.is_none()
             && self.extinguished.is_none()
@@ -182,6 +192,9 @@ fn update_fluid_interaction(
     velocity: &mut Vec3,
 ) -> (bool, Option<Splash>) {
     let in_water = contact.in_water();
+    if in_water {
+        data.fall_distance = 0.0;
+    }
     let splash =
         (in_water && !data.in_water && !first_tick).then(|| water_splash(data, pos, *velocity));
     data.in_water = in_water;
@@ -285,10 +298,12 @@ fn inside_blocks_fire(
     if inside.cobweb {
         // `WebBlock.entityInside`.
         data.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
+        data.fall_distance = 0.0;
     }
     if inside.powder_snow.is_some() {
         // `PowderSnowBlock.entityInside`.
         data.stuck = Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+        data.fall_distance = 0.0;
     }
     if !inside.burns() && data.fire_ticks == 0 {
         return;
@@ -409,6 +424,25 @@ pub fn burn_effects(level: &mut crate::level::Level, id: EntityId, burn: Burn) {
             0.7,
             pitch,
         );
+    }
+    if let Some((at, on)) = burn.landed {
+        let on_state = level.block(on);
+        // `Block.fallOn`: only farmland draws for an item (`nextFloat() < fallDistance - 0.5`
+        // comes before its `LivingEntity` check).
+        if on_state.block() == vanillite_data::block::ids::FARMLAND {
+            let _ = vanillite_base::random::RandomSource::next_float(level.random());
+        }
+        level.game_event(
+            crate::level::game_event::events().hit_ground,
+            at,
+            crate::level::game_event::GameEventContext::with_state(Some(id), on_state),
+        );
+    }
+    if let Some(on) = burn.step_on
+        && level.entities.store.contains(id)
+        && crate::block::contact::has_step_on(level.block(on).block())
+    {
+        crate::block::contact::step_on(level, on, id);
     }
     if let Some(splash) = burn.splash_after {
         splash_effects(level, id, splash);
@@ -658,6 +692,15 @@ pub struct TickInput {
     pub fast_lava: bool,
 }
 
+/// `getOnPosLegacy` of an item (the block 0.2 below its feet).
+fn on_pos_legacy(pos: Vec3) -> BlockPos {
+    BlockPos::new(
+        floor(pos.x),
+        floor(pos.y - f64::from(0.2_f32)),
+        floor(pos.z),
+    )
+}
+
 /// The bounding box of an item entity at `pos`.
 fn body_at(pos: Vec3) -> Aabb {
     Aabb::new(
@@ -782,6 +825,18 @@ pub fn tick(
         };
         out.pos = moved.pos;
         out.on_ground = moved.hit_y && delta.y < 0.0;
+        // `checkFallDamage` (not in `noPhysics` moves).
+        if !no_physics {
+            if !data.in_water && moved.movement.y < 0.0 {
+                data.fall_distance -= moved.movement.y;
+            }
+            if out.on_ground {
+                if data.fall_distance > 0.0 {
+                    burn.landed = Some((out.pos, on_pos_legacy(out.pos)));
+                }
+                data.fall_distance = 0.0;
+            }
+        }
         // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps Java's signed
         // zeros.
         if moved.hit_x {
@@ -811,7 +866,13 @@ pub fn tick(
         }
     }
     // `applyEffectsFromBlocks` on the way of the move, for a resting item on the way of its
-    // last one (`isAffectedByBlocks`).
+    // last one (`isAffectedByBlocks`): `stepOn` of the block below, then `entityInside`.
+    if !no_physics && out.on_ground {
+        let on = on_pos_legacy(out.pos);
+        if crate::block::contact::has_step_on(block(on).block()) {
+            burn.step_on = Some(on);
+        }
+    }
     if !no_physics && let Some(movement) = data.last_movement {
         inside_blocks_fire(data, movement, out.pos, fire, burn);
     }

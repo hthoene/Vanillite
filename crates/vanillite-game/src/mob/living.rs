@@ -1418,6 +1418,7 @@ pub(crate) fn post_game_event(
     let context = crate::level::game_event::GameEventContext {
         source: Some(t.id),
         affected,
+        owner: None,
     };
     t.cx.actions.push(super::WorldAction::Level(
         super::boss::warden::LevelAction::GameEvent {

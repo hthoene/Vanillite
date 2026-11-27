@@ -174,12 +174,19 @@ impl ServerWorld {
         }
         // The players' contact with blocks: trampled farmland, redstone ore stepped on.
         for action in actions {
-            action.apply_to_level(&mut self.level);
+            match action {
+                // A sculk catalyst at a player's death.
+                vanillite_game::mob::WorldAction::Level(action) => action.apply(&mut self.level),
+                other => {
+                    other.apply_to_level(&mut self.level);
+                }
+            }
         }
         for (id, event, pos, affected) in pending {
             let context = vanillite_game::level::game_event::GameEventContext {
                 source: Some(id),
                 affected,
+                owner: None,
             };
             self.level.game_event(event, pos, context);
         }
