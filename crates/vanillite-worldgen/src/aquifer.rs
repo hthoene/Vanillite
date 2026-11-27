@@ -363,6 +363,10 @@ fn adjust_surface_level(level: i32) -> i32 {
 #[derive(Debug, Default)]
 pub struct SurfaceLevelCache {
     levels: Mutex<FxHashMap<i64, i32>>,
+    /// Fluid statuses of aquifer cells by the packed position of their centre, where a status
+    /// depends on the position alone (point-exact cell functions and position-only levels):
+    /// the aquifers of neighbouring chunks share most of their cells.
+    statuses: Mutex<FxHashMap<i64, FluidStatus>>,
 }
 
 impl SurfaceLevelCache {
@@ -392,6 +396,24 @@ impl SurfaceLevelCache {
         }
         levels.extend(entries.iter().copied());
     }
+
+    fn lock_statuses(&self) -> std::sync::MutexGuard<'_, FxHashMap<i64, FluidStatus>> {
+        self.statuses.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The status of the cell centred at `location`, if an aquifer has computed it.
+    fn status(&self, location: i64) -> Option<FluidStatus> {
+        self.lock_statuses().get(&location).copied()
+    }
+
+    /// Adds the computed status of the cell centred at `location`.
+    fn insert_status(&self, location: i64, status: FluidStatus) {
+        let mut statuses = self.lock_statuses();
+        if statuses.len() >= Self::MAX {
+            statuses.clear();
+        }
+        statuses.insert(location, status);
+    }
 }
 
 /// What the 12 cells of a grid anchor have in common.
@@ -410,6 +432,15 @@ enum AnchorState {
     Asked(u8),
     Summary(AnchorSummary),
 }
+
+/// The 12 cells of a grid anchor in search order: their centres and indices.
+type AnchorCells = [(i32, i32, i32, usize); 12];
+
+/// A grid anchor (if any) with its cells.
+type AnchorSlot = (Option<(i32, i32, i32)>, AnchorCells);
+
+/// Anchors whose cells are kept.
+const ANCHOR_SLOTS: usize = 4;
 
 /// How often an anchor is searched cell by cell before its summary is made.
 const SUMMARY_AFTER: u8 = 24;
@@ -436,11 +467,18 @@ pub struct NoiseBasedAquifer {
     surface_level_cache: FxHashMap<i64, i32>,
     /// The levels the generator's aquifers share, when levels depend on the position alone.
     shared_levels: Option<Arc<SurfaceLevelCache>>,
+    /// Whether cell statuses are shared through `shared_levels` too (they depend on the
+    /// position alone: `cells_point_exact` and position-only levels).
+    shared_statuses: bool,
     lava: BlockState,
     /// The grid anchor of the last fluid block and its 12 cells in search order: their centres
     /// and indices.
     anchor: Option<(i32, i32, i32)>,
-    anchor_cells: [(i32, i32, i32, usize); 12],
+    /// The cells of the last anchors (`anchor`'s at `current_slot`): the blocks of a noise
+    /// cell that straddles grid lines alternate between up to four anchors.
+    anchor_slots: [AnchorSlot; ANCHOR_SLOTS],
+    current_slot: usize,
+    next_slot: usize,
     /// Per grid anchor (indexed like the cells): its summary, once resolved.
     anchor_summaries: Box<[AnchorState]>,
     /// The block of the last result if it was air found without the search of the closest
@@ -502,9 +540,14 @@ impl NoiseBasedAquifer {
             shared_levels: shared_levels
                 .filter(|_| functions.surface_level_position_only)
                 .cloned(),
+            shared_statuses: shared_levels.is_some()
+                && functions.surface_level_position_only
+                && functions.cells_point_exact,
             lava: ids::LAVA.default_state(),
             anchor: None,
-            anchor_cells: [(0, 0, 0, 0); 12],
+            anchor_slots: [(None, [(0, 0, 0, 0); 12]); ANCHOR_SLOTS],
+            current_slot: 0,
+            next_slot: 0,
             anchor_summaries: vec![AnchorState::Asked(0); total].into_boxed_slice(),
             air_above_fluids: None,
             air_run: None,
@@ -748,7 +791,7 @@ impl NoiseBasedAquifer {
         }
         let mut distance_sqr = [i32::MAX; 4];
         let mut closest = [0_usize; 4];
-        for &(x, y, z, index) in &self.anchor_cells {
+        for &(x, y, z, index) in self.anchor_cells() {
             let dx = x.wrapping_sub(block_x);
             let dy = y.wrapping_sub(block_y);
             let dz = z.wrapping_sub(block_z);
@@ -861,7 +904,7 @@ impl NoiseBasedAquifer {
     fn air_schedules_update(&self, block_x: i32, block_y: i32, block_z: i32) -> bool {
         let mut distance_sqr = [i32::MAX; 4];
         let mut closest = [0_usize; 4];
-        for &(x, y, z, index) in &self.anchor_cells {
+        for &(x, y, z, index) in self.anchor_cells() {
             let dx = x.wrapping_sub(block_x);
             let dy = y.wrapping_sub(block_y);
             let dz = z.wrapping_sub(block_z);
@@ -908,7 +951,7 @@ impl NoiseBasedAquifer {
             }
             AnchorState::Asked(_) => {}
         }
-        let cells = self.anchor_cells;
+        let cells = *self.anchor_cells();
         let first = self.aquifer_status(program, ctx, cells[0].3);
         let mut summary = AnchorSummary {
             max_fluid_level: first.fluid_level,
@@ -928,6 +971,16 @@ impl NoiseBasedAquifer {
     /// Moves to grid anchor `(x_anchor, y_anchor, z_anchor)`: the centres of its 12 cells
     /// (`aquiferLocationCache`, computed on first use) in Vanilla's search order.
     fn set_anchor(&mut self, (x_anchor, y_anchor, z_anchor): (i32, i32, i32)) {
+        let anchor = Some((x_anchor, y_anchor, z_anchor));
+        self.anchor = anchor;
+        if let Some(slot) = self.anchor_slots.iter().position(|(a, _)| *a == anchor) {
+            self.current_slot = slot;
+            return;
+        }
+        let slot = self.next_slot;
+        self.next_slot = (slot + 1) % ANCHOR_SLOTS;
+        self.current_slot = slot;
+        self.anchor_slots[slot].0 = anchor;
         let mut cell = 0;
         for x1 in 0..=1 {
             for y1 in -1..=1 {
@@ -949,12 +1002,17 @@ impl NoiseBasedAquifer {
                         location
                     };
                     let pos = BlockPos::from_long(location);
-                    self.anchor_cells[cell] = (pos.x, pos.y, pos.z, index);
+                    self.anchor_slots[slot].1[cell] = (pos.x, pos.y, pos.z, index);
                     cell += 1;
                 }
             }
         }
-        self.anchor = Some((x_anchor, y_anchor, z_anchor));
+    }
+
+    /// The 12 cells of the current anchor: their centres and indices.
+    #[inline]
+    fn anchor_cells(&self) -> &AnchorCells {
+        &self.anchor_slots[self.current_slot].1
     }
 
     /// `calculatePressure(…)`: how strongly a barrier separates two aquifer cells at the block.
@@ -1037,9 +1095,20 @@ impl NoiseBasedAquifer {
         if let Some(status) = self.status_cache[index] {
             return status;
         }
-        let pos = BlockPos::from_long(self.location_cache[index]);
+        let location = self.location_cache[index];
+        let shared = || self.shared_levels.as_ref().filter(|_| self.shared_statuses);
+        if let Some(status) = shared().and_then(|shared| shared.status(location)) {
+            self.status_cache[index] = Some(status);
+            return status;
+        }
+        let pos = BlockPos::from_long(location);
         let status = self.compute_fluid(program, ctx, pos.x, pos.y, pos.z);
         self.status_cache[index] = Some(status);
+        if self.shared_statuses
+            && let Some(shared) = &self.shared_levels
+        {
+            shared.insert_status(location, status);
+        }
         status
     }
 

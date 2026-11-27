@@ -14,6 +14,9 @@ mod cave;
 mod mask;
 pub mod providers;
 
+use std::sync::{Arc, Mutex, PoisonError};
+
+use rustc_hash::FxHashMap;
 use serde_json::Value;
 use vanillite_base::ChunkPos;
 use vanillite_base::math::floor;
@@ -82,12 +85,320 @@ impl WorldCarver {
         source: ChunkPos,
         output: &mut CarvingMask,
     ) {
+        self.carve_into(context, random, source, &mut Direct { chunk, output });
+    }
+
+    /// `carve` with the ellipsoids going to `cuts`.
+    fn carve_into<R: RandomSource>(
+        &self,
+        context: &WorldGenerationContext,
+        random: &mut R,
+        source: ChunkPos,
+        cuts: &mut impl Cuts,
+    ) {
         match self {
-            Self::Cave(c) => c.carve(context, random, chunk, source, output),
-            Self::Canyon(c) => c.carve(context, random, chunk, source, output),
+            Self::Cave(c) => c.carve(context, random, source, cuts),
+            Self::Canyon(c) => c.carve(context, random, source, cuts),
         }
     }
 }
+
+/// How a carver decides to leave a block of an ellipsoid alone (`shouldSkip`).
+#[derive(Clone, Copy, Debug)]
+enum Skip<'a> {
+    /// `CaveWorldCarver.shouldSkip(xd, yd, zd, floorLevel)`.
+    Cave { floor_level: f64 },
+    /// The canyon's `shouldSkip`, over its squared width factor per Y above `min_gen_y`.
+    Canyon {
+        width_factor_per_height: &'a [f32],
+        min_gen_y: i32,
+    },
+}
+
+impl Skip<'_> {
+    #[inline]
+    fn skip(&self, xd: f64, yd: f64, zd: f64, y: i32) -> bool {
+        match *self {
+            Self::Cave { floor_level } => yd <= floor_level || xd * xd + yd * yd + zd * zd >= 1.0,
+            Self::Canyon {
+                width_factor_per_height,
+                min_gen_y,
+            } => {
+                let y_index = y - min_gen_y;
+                (xd * xd + zd * zd) * f64::from(width_factor_per_height[(y_index - 1) as usize])
+                    + yd * yd / 6.0
+                    >= 1.0
+            }
+        }
+    }
+}
+
+/// Where a carver's ellipsoids go: carved into a chunk's mask at once ([`Direct`]), or
+/// recorded for every chunk the carver may reach ([`CarverPlan`]).
+trait Cuts {
+    /// A room: `carveEllipsoid` without a reach test.
+    fn room(&mut self, x: f64, y: f64, z: f64, horizontal: f64, vertical: f64, skip: Skip<'_>);
+
+    /// A tunnel step with `(step, steps, thickness)`: `canReach`, then `carveEllipsoid`.
+    /// `false` if the tunnel cannot reach the chunk (it ends there).
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        &mut self,
+        reach: (i32, i32, f32),
+        x: f64,
+        y: f64,
+        z: f64,
+        horizontal: f64,
+        vertical: f64,
+        skip: Skip<'_>,
+    ) -> bool;
+
+    /// The number of cuts so far (where a tunnel starts or ends its own steps).
+    fn mark(&self) -> usize {
+        0
+    }
+
+    /// The tunnel whose own steps are the cuts `start..own_end` has ended, branches included.
+    fn close(&mut self, _start: usize, _own_end: usize) {}
+}
+
+/// Carves into the mask of `chunk`.
+struct Direct<'a> {
+    chunk: ChunkPos,
+    output: &'a mut CarvingMask,
+}
+
+impl Cuts for Direct<'_> {
+    fn room(&mut self, x: f64, y: f64, z: f64, horizontal: f64, vertical: f64, skip: Skip<'_>) {
+        carve_ellipsoid(
+            self.chunk,
+            x,
+            y,
+            z,
+            horizontal,
+            vertical,
+            self.output,
+            |xd, yd, zd, y| skip.skip(xd, yd, zd, y),
+        );
+    }
+
+    fn step(
+        &mut self,
+        (step, steps, thickness): (i32, i32, f32),
+        x: f64,
+        y: f64,
+        z: f64,
+        horizontal: f64,
+        vertical: f64,
+        skip: Skip<'_>,
+    ) -> bool {
+        if !can_reach(self.chunk, x, z, step, steps, thickness) {
+            return false;
+        }
+        self.room(x, y, z, horizontal, vertical, skip);
+        true
+    }
+}
+
+/// One recorded ellipsoid of a [`CarverPlan`].
+#[derive(Clone, Copy, Debug)]
+struct Cut {
+    x: f64,
+    y: f64,
+    z: f64,
+    horizontal: f64,
+    vertical: f64,
+    /// The reach test before it (tunnel steps): step, steps, thickness.
+    reach: Option<(i32, i32, f32)>,
+    /// Index past the last cut of its tunnel and the tunnel's branches: where a chunk the
+    /// tunnel cannot reach goes on.
+    tunnel_end: u32,
+    /// `Some(floor_level)` for caves; otherwise the canyon's width factors (`widths[index]`).
+    floor_level: Option<f64>,
+    widths: u32,
+}
+
+/// The ellipsoids the carvers started in one chunk cut, in order, independent of the chunk
+/// they are carved into: the carvers draw the same randoms for every target chunk, which only
+/// decides where each tunnel stops (`canReach`) and which blocks it marks.
+#[derive(Debug, Default)]
+pub struct CarverPlan {
+    cuts: Vec<Cut>,
+    widths: Vec<Vec<f32>>,
+    min_gen_y: i32,
+}
+
+impl CarverPlan {
+    fn push(&mut self, cut: Cut, skip: Skip<'_>) {
+        let mut cut = cut;
+        match skip {
+            Skip::Cave { floor_level } => cut.floor_level = Some(floor_level),
+            Skip::Canyon {
+                width_factor_per_height,
+                min_gen_y,
+            } => {
+                let known = self
+                    .widths
+                    .last()
+                    .is_some_and(|last| last.as_slice() == width_factor_per_height);
+                if !known {
+                    self.widths.push(width_factor_per_height.to_vec());
+                }
+                cut.widths = self.widths.len() as u32 - 1;
+                self.min_gen_y = min_gen_y;
+            }
+        }
+        self.cuts.push(cut);
+    }
+
+    /// Carves the plan into the mask of `chunk`, as the carvers would.
+    fn apply(&self, chunk: ChunkPos, output: &mut CarvingMask) {
+        let mut index = 0;
+        while let Some(cut) = self.cuts.get(index) {
+            if let Some((step, steps, thickness)) = cut.reach
+                && !can_reach(chunk, cut.x, cut.z, step, steps, thickness)
+            {
+                index = cut.tunnel_end as usize;
+                continue;
+            }
+            let skip = match cut.floor_level {
+                Some(floor_level) => Skip::Cave { floor_level },
+                None => Skip::Canyon {
+                    width_factor_per_height: &self.widths[cut.widths as usize],
+                    min_gen_y: self.min_gen_y,
+                },
+            };
+            carve_ellipsoid(
+                chunk,
+                cut.x,
+                cut.y,
+                cut.z,
+                cut.horizontal,
+                cut.vertical,
+                output,
+                |xd, yd, zd, y| skip.skip(xd, yd, zd, y),
+            );
+            index += 1;
+        }
+    }
+}
+
+impl Cuts for CarverPlan {
+    fn room(&mut self, x: f64, y: f64, z: f64, horizontal: f64, vertical: f64, skip: Skip<'_>) {
+        let tunnel_end = self.cuts.len() as u32 + 1;
+        self.push(
+            Cut {
+                x,
+                y,
+                z,
+                horizontal,
+                vertical,
+                reach: None,
+                tunnel_end,
+                floor_level: None,
+                widths: 0,
+            },
+            skip,
+        );
+    }
+
+    fn step(
+        &mut self,
+        reach: (i32, i32, f32),
+        x: f64,
+        y: f64,
+        z: f64,
+        horizontal: f64,
+        vertical: f64,
+        skip: Skip<'_>,
+    ) -> bool {
+        self.push(
+            Cut {
+                x,
+                y,
+                z,
+                horizontal,
+                vertical,
+                reach: Some(reach),
+                tunnel_end: 0,
+                floor_level: None,
+                widths: 0,
+            },
+            skip,
+        );
+        true
+    }
+
+    fn mark(&self) -> usize {
+        self.cuts.len()
+    }
+
+    fn close(&mut self, start: usize, own_end: usize) {
+        let end = self.cuts.len() as u32;
+        for cut in &mut self.cuts[start..own_end] {
+            cut.tunnel_end = end;
+        }
+    }
+}
+
+/// The [`CarverPlan`]s of a generator's source chunks, shared by the chunks they reach (each
+/// source is carved into the 17 × 17 chunks around it). One cache serves one seed and one
+/// generation context.
+#[derive(Debug, Default)]
+pub struct CarverPlans {
+    /// By packed source position: the plans per carver list (the list comes from a biome
+    /// lookup that may differ between target chunks in rare ties).
+    plans: Mutex<FxHashMap<i64, Vec<PlanEntry>>>,
+}
+
+impl CarverPlans {
+    /// Most source chunks kept; a full cache starts over.
+    const MAX: usize = 1 << 13;
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FxHashMap<i64, Vec<PlanEntry>>> {
+        self.plans.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The plan of `source` with `carvers`; `None` if it depends on more than the source (a
+    /// carver drew a Gaussian, whose cache `WorldgenRandom` keeps across sources).
+    fn get(
+        &self,
+        registry: &CarverRegistry,
+        carvers: &[CarverId],
+        seed: i64,
+        source: ChunkPos,
+        context: &WorldGenerationContext,
+    ) -> Option<Arc<CarverPlan>> {
+        let key = source.as_long();
+        if let Some(entries) = self.lock().get(&key)
+            && let Some((_, plan)) = entries.iter().find(|(ids, _)| **ids == *carvers)
+        {
+            return plan.clone();
+        }
+        let mut random = CarverRandom::new();
+        let mut plan = CarverPlan::default();
+        for (index, &id) in carvers.iter().enumerate() {
+            let carver = registry.get(id);
+            random.set_large_feature_seed(seed.wrapping_add(index as i64), source.x, source.z);
+            if carver.is_start_chunk(&mut random) {
+                carver.carve_into(context, &mut random, source, &mut plan);
+            }
+        }
+        let plan = (!random.drew_gaussian).then(|| Arc::new(plan));
+        let mut plans = self.lock();
+        if plans.len() >= Self::MAX {
+            plans.clear();
+        }
+        plans
+            .entry(key)
+            .or_default()
+            .push((carvers.into(), plan.clone()));
+        plan
+    }
+}
+
+/// A carver list with the plan it gives at one source.
+type PlanEntry = (Box<[CarverId]>, Option<Arc<CarverPlan>>);
 
 /// Handle of a carver in a [`CarverRegistry`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -182,15 +493,39 @@ impl CarverRegistry {
 /// `(QuartPos.fromBlock(source.minBlockX), 0, QuartPos.fromBlock(source.minBlockZ))` from an
 /// uncached biome resolver (`getBiomeGenerationSettingsForCarver`). The mask spans
 /// `min_gen_y + 1 ..= min_gen_y + gen_depth - 8` (a chunk that is not being upgraded).
+///
+/// With `plans`, each source's ellipsoids come from its shared [`CarverPlan`] where it has one.
 pub fn carve_chunk<'a>(
     registry: &CarverRegistry,
     biome_carvers: &dyn Fn(ChunkPos) -> &'a [CarverId],
     seed: i64,
     chunk: ChunkPos,
     context: &WorldGenerationContext,
+    plans: Option<&CarverPlans>,
 ) -> CarvingMask {
     let max_y = context.min_gen_y() + context.gen_depth() - 1 - PROTECTED_BLOCKS_ON_TOP;
     let mut mask = CarvingMask::new(context.min_gen_y() + 1, max_y);
+    if let Some(plans) = plans {
+        let side = (2 * SOURCE_RANGE + 1) as usize;
+        let mut sources = Vec::with_capacity(side * side);
+        for dx in -SOURCE_RANGE..=SOURCE_RANGE {
+            for dz in -SOURCE_RANGE..=SOURCE_RANGE {
+                let source = ChunkPos::new(chunk.x + dx, chunk.z + dz);
+                match plans.get(registry, biome_carvers(source), seed, source, context) {
+                    Some(plan) => sources.push(plan),
+                    // A source whose plan depends on the carvers before it: the whole chunk
+                    // the way Vanilla carves it.
+                    None => {
+                        return carve_chunk(registry, biome_carvers, seed, chunk, context, None);
+                    }
+                }
+            }
+        }
+        for plan in &sources {
+            plan.apply(chunk, &mut mask);
+        }
+        return mask;
+    }
     // Vanilla seeds this from `RandomSupport.generateUniqueSeed()`, but every use reseeds it.
     let mut random = CarverRandom::new();
     for dx in -SOURCE_RANGE..=SOURCE_RANGE {
@@ -217,6 +552,8 @@ pub fn carve_chunk<'a>(
 pub struct CarverRandom {
     inner: WorldgenRandom,
     next_next_gaussian: Option<f64>,
+    /// Whether `next_gaussian` was called.
+    drew_gaussian: bool,
 }
 
 impl CarverRandom {
@@ -225,6 +562,7 @@ impl CarverRandom {
         Self {
             inner: WorldgenRandom::new(0),
             next_next_gaussian: None,
+            drew_gaussian: false,
         }
     }
 
@@ -240,6 +578,7 @@ impl From<LegacyRandom> for CarverRandom {
         Self {
             inner: WorldgenRandom { random },
             next_next_gaussian: None,
+            drew_gaussian: false,
         }
     }
 }
@@ -311,6 +650,7 @@ impl RandomSource for CarverRandom {
 
     /// `MarsagliaPolarGaussian.nextGaussian()` over the outer object's own cache.
     fn next_gaussian(&mut self) -> f64 {
+        self.drew_gaussian = true;
         if let Some(value) = self.next_next_gaussian.take() {
             return value;
         }
