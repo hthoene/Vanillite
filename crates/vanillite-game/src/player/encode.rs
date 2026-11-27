@@ -344,7 +344,11 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
         }
     }
     if let Some(mob) = entities.mob(entity.id()) {
-        mob_data(&mut out, mob, all);
+        let arrows = entities
+            .stuck_arrows
+            .get(&entity.id())
+            .map_or(0, |a| a.count);
+        mob_data(&mut out, mob, arrows, all);
     }
     if let Some(special) = entities.special(entity.id()) {
         crate::mob::boss::special::entity_data(&mut out, special, all);
@@ -604,9 +608,11 @@ impl<'a> DataWriter<'a> {
 }
 
 /// `DATA_ARROW_COUNT_ID` of a living entity.
-fn arrow_count(out: &mut Vec<u8>, count: i32, all: bool) {
+fn arrow_count(out: &mut Vec<u8>, count: u16, all: bool) {
     if all || count != 0 {
-        item(out, 12, serializer::INT, |o| write_varint(o, count));
+        item(out, 12, serializer::INT, |o| {
+            write_varint(o, i32::from(count))
+        });
     }
 }
 
@@ -629,7 +635,7 @@ fn effect_data(out: &mut Vec<u8>, fx: &crate::effect::ActiveEffects, all: bool) 
 }
 
 /// The synched data of a mob after the entity's own: health, mob flags and the kind's values.
-fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
+fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, arrows: u16, all: bool) {
     use crate::mob::Kind;
     let living = crate::mob::kinds::living_flags(mob);
     if all || living != 0 {
@@ -643,7 +649,7 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
         });
     }
     effect_data(out, &mob.effects, all);
-    arrow_count(out, mob.arrows.count, all);
+    arrow_count(out, arrows, all);
     let flags =
         u8::from(mob.no_ai) | (u8::from(mob.left_handed) << 1) | (u8::from(mob.aggressive) << 2);
     // Armor stands and mannequins are no `Mob`: their own data starts at 15.
@@ -977,7 +983,7 @@ pub(crate) mod layout_tests {
             let name = kind.type_id().info().name;
             let fields = layout["types"][name].as_array().expect(name);
             WRITTEN.with_borrow_mut(Vec::clear);
-            super::mob_data(&mut Vec::new(), &crate::mob::MobData::new(kind, 1), true);
+            super::mob_data(&mut Vec::new(), &crate::mob::MobData::new(kind, 1), 0, true);
             for (id, serializer) in WRITTEN.take() {
                 let expected = fields.iter().find(|f| f[0].as_u64() == Some(u64::from(id)));
                 let actual = usize::try_from(serializer)

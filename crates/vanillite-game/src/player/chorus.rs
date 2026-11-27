@@ -147,7 +147,7 @@ pub fn teleport_randomly(
         // `levelEvent(2017, origin, clampedPackDifferenceInPosition(origin, target, 127..))`.
         let origin = BlockPos::containing(old.x, old.y, old.z);
         let target = BlockPos::containing(to.x, to.y, to.z);
-        let d = |a: i32, b: i32| (b - a).clamp(-127, 127) + 127 & 0xFF;
+        let d = |a: i32, b: i32| b.saturating_sub(a).clamp(-127, 127).wrapping_add(127) & 0xFF;
         let data = d(origin.x, target.x) << 16 | d(origin.y, target.y) << 8 | d(origin.z, target.z);
         env.out.push(crate::survival::Effect::Nearby {
             pos: Vec3::new(

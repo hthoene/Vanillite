@@ -114,6 +114,9 @@ pub struct Entities {
     /// Plugins' persistent data (`BukkitValues`, as Paper saves it) of the entities that have
     /// any.
     persistent: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
+    /// `DATA_ARROW_COUNT_ID` and `removeArrowTime` of the mobs with arrows stuck in them
+    /// (players keep theirs in their survival state).
+    pub stuck_arrows: FxHashMap<EntityId, crate::mob::projectile::StuckArrows>,
     /// `Entity.customData` (saved as `data`) of the entities that have any.
     custom_data: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
     /// Area effect cloud kind data.
@@ -825,6 +828,9 @@ impl Entities {
         self.tags.remove(&id);
         self.persistent.remove(&id);
         self.custom_data.remove(&id);
+        if !self.stuck_arrows.is_empty() {
+            self.stuck_arrows.remove(&id);
+        }
         if !self.plugin_goals.is_empty() {
             // Dropping them frees the plugins' data.
             self.plugin_goals.remove_mob(id);
@@ -857,6 +863,9 @@ impl Entities {
         self.tags.remove(&id);
         self.persistent.remove(&id);
         self.custom_data.remove(&id);
+        if !self.stuck_arrows.is_empty() {
+            self.stuck_arrows.remove(&id);
+        }
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
         }

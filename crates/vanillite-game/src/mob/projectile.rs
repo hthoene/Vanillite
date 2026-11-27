@@ -931,19 +931,20 @@ pub fn tick_arrow(
 /// `DATA_ARROW_COUNT_ID` and `removeArrowTime`: the arrows stuck in a living entity's body.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StuckArrows {
-    pub count: i32,
-    pub remove_time: i32,
+    pub count: u16,
+    /// At most `20 * 30` ticks.
+    pub remove_time: i16,
 }
 
 impl StuckArrows {
     /// The countdown of `LivingEntity.tick`: one arrow falls out after `20 * (30 - count)`
     /// ticks. Returns whether the count changed.
     pub fn tick(&mut self) -> bool {
-        if self.count <= 0 {
+        if self.count == 0 {
             return false;
         }
         if self.remove_time <= 0 {
-            self.remove_time = 20 * (30 - self.count);
+            self.remove_time = 20 * (30 - i16::try_from(self.count).unwrap_or(i16::MAX).min(30));
         }
         self.remove_time -= 1;
         if self.remove_time <= 0 {
@@ -956,10 +957,11 @@ impl StuckArrows {
 
 /// `setArrowCount(getArrowCount() + 1)` of a living entity.
 fn add_stuck_arrow(ents: &mut Entities, id: EntityId) {
-    if let Some(m) = ents.mob_mut(id) {
-        m.arrows.count += 1;
+    if ents.mob(id).is_some() {
+        let a = ents.stuck_arrows.entry(id).or_default();
+        a.count = a.count.saturating_add(1);
     } else if let Some(p) = ents.player_mut(id) {
-        p.survival.arrows.count += 1;
+        p.survival.arrows.count = p.survival.arrows.count.saturating_add(1);
     } else {
         return;
     }

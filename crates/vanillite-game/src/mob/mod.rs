@@ -130,8 +130,6 @@ pub struct MobData {
     pub health: f32,
     pub tick_count: i32,
     pub hurt_time: i32,
-    /// `DATA_ARROW_COUNT_ID`, `removeArrowTime`.
-    pub arrows: projectile::StuckArrows,
     /// `invulnerableTime` / `damageCooldownTime`.
     pub damage_cooldown: i32,
     pub last_hurt: f32,
@@ -304,7 +302,6 @@ impl MobData {
             health,
             tick_count: 0,
             hurt_time: 0,
-            arrows: projectile::StuckArrows::default(),
             damage_cooldown: 0,
             last_hurt: 0.0,
             death_time: 0,

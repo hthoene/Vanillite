@@ -202,7 +202,19 @@ fn base_tick(t: &mut Tick<'_, '_>) {
         if m.damage_cooldown > 0 {
             m.damage_cooldown -= 1;
         }
-        if m.arrows.tick() {
+    }
+    // `LivingEntity.tick`: stuck arrows fall out one by one.
+    if !t.ents.stuck_arrows.is_empty() {
+        let id = t.id;
+        let changed = t
+            .ents
+            .stuck_arrows
+            .get_mut(&id)
+            .is_some_and(super::projectile::StuckArrows::tick);
+        if t.ents.stuck_arrows.get(&id).is_some_and(|a| a.count == 0) {
+            t.ents.stuck_arrows.remove(&id);
+        }
+        if changed {
             t.core_mut().mark_data_dirty();
         }
     }
