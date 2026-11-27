@@ -207,7 +207,10 @@ pub fn player_attack(
     attacker: EntityId,
     target: EntityId,
 ) {
-    if attacker == target || !is_alive(ents, target) {
+    // End crystals are attackable too (`isAttackable`): the hit destroys them.
+    if attacker == target
+        || !(is_alive(ents, target) || super::boss::dragon::crystal::hittable(ents, target))
+    {
         return;
     }
     let Some(e) = ents.store.get(attacker) else {
@@ -349,7 +352,10 @@ pub fn player_attack(
     }
     weapon_used_stat(ents, attacker, &weapon, target);
     post_attack(level, ents, env, cx, target, &source, Some(&weapon));
-    hurt_weapon(ents, env, attacker, &weapon);
+    // `hurtEnemy` wears the weapon on living targets only.
+    if ents.mob(target).is_some() || ents.player(target).is_some() {
+        hurt_weapon(ents, env, attacker, &weapon);
+    }
     if smash && let Some(p) = ents.player_mut(attacker) {
         // `MaceItem.postHurtEnemy`: `resetFallDistance`.
         p.survival.fall_distance = 0.0;

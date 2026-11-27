@@ -15,10 +15,12 @@ use crate::advancements::trigger::{Event, TriggerKind};
 use crate::advancements::view;
 use crate::entities::Entities;
 use crate::level::Level;
+use crate::survival::combat::{AttackerName, SourceNames};
 use crate::survival::damage::{DamageKind, DamageSource, tag};
 use crate::survival::player::{self, Env};
 use crate::survival::rules::Rule;
 use crate::survival::{Effect, play_sound};
+use vanillite_protocol::text::{Component, HoverEvent};
 
 /// `LivingEntity.knockback(power, xd, zd)`: the new velocity, `None` when the resistance
 /// absorbs it.
@@ -133,6 +135,7 @@ pub fn hurt(
     } else {
         (None, None)
     };
+    let names = source_names(ents, env, &source);
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(target) else {
         return false;
@@ -150,6 +153,7 @@ pub fn hurt(
         amount,
         armor.as_deref(),
         attackers,
+        names,
     );
     let died = was_alive && data.survival.is_dead_or_dying();
     // The killer's type while it is still there (`ENTITY_KILLED_BY`).
@@ -834,7 +838,13 @@ fn die(
         )
         && env.rules.bool(Rule::SHOW_DEATH_MESSAGES)
     {
-        let name = mob_name(m);
+        let name = attacker_name(ents, env, target).map_or_else(|| mob_name(m), |a| a.name);
+        // `getKillCredit`.
+        let credit = m
+            .last_hurt_by_player
+            .or(m.last_hurt_by_mob)
+            .and_then(|c| attacker_name(ents, env, c))
+            .map(|a| a.name);
         if let Some(owner) = super::tame::owner_of(ents, m).filter(|&o| ents.player(o).is_some()) {
             let mut tracker = crate::survival::combat::CombatTracker::default();
             tracker.record_damage(
@@ -843,6 +853,7 @@ fn die(
                     damage: 0.0,
                     fall_location: None,
                     fall_distance: 0.0,
+                    names: source_names(ents, env, &source),
                 },
                 0,
                 false,
@@ -852,7 +863,7 @@ fn die(
                 player: owner,
                 packet: SharedPacket::of(
                     &vanillite_protocol::packets::play::clientbound::SystemChat {
-                        content: tracker.death_message(env.types, name),
+                        content: tracker.death_message(env.types, name, credit),
                         overlay: false,
                     },
                 ),
@@ -1122,15 +1133,107 @@ pub fn create_wither_rose(
 }
 
 /// `getDisplayName` of a mob without team: its custom name, else its type's name.
-fn mob_name(m: &super::MobData) -> vanillite_protocol::text::Component {
-    if let Some(bytes) = &m.custom_name {
-        let mut input = &bytes[..];
-        let mut budget = vanillite_nbt::Budget::file();
-        if let Ok(Some(tag)) = vanillite_nbt::read::read_network(&mut input, &mut budget) {
-            return vanillite_protocol::text::Component::from_nbt(&tag);
-        }
+fn mob_name(m: &super::MobData) -> Component {
+    if let Some(name) = m.custom_name.as_deref().and_then(nbt_name) {
+        return name;
     }
-    vanillite_protocol::text::Component::translatable(m.kind.translation_key(), vec![])
+    Component::translatable(m.kind.translation_key(), vec![])
+}
+
+/// A custom name as network NBT.
+fn nbt_name(bytes: &[u8]) -> Option<Component> {
+    let mut input = bytes;
+    let mut budget = vanillite_nbt::Budget::file();
+    match vanillite_nbt::read::read_network(&mut input, &mut budget) {
+        Ok(Some(tag)) => Some(Component::from_nbt(&tag)),
+        _ => None,
+    }
+}
+
+/// `Entity.getDisplayName` (entities that are no players without their team) with the
+/// custom-named item in a living entity's main hand, for death messages.
+pub fn attacker_name(ents: &Entities, env: &Env<'_>, id: EntityId) -> Option<AttackerName> {
+    let e = ents.store.get(id)?;
+    if let Some(p) = ents.player(id) {
+        return Some(AttackerName {
+            name: (env.display_name)(&p.profile.name, e.uuid()),
+            item: custom_named_item(p.inventory.selected_item()),
+        });
+    }
+    let type_name = e.kind().name();
+    let custom = ents
+        .mob(id)
+        .and_then(|m| m.custom_name.as_deref())
+        .or_else(|| crate::decoration::custom_name(ents, id))
+        .and_then(nbt_name);
+    // `getName`: the custom name, else the type's name.
+    let name = custom.unwrap_or_else(|| {
+        Component::translatable(format!("entity.{}", type_name.replace(':', ".")), vec![])
+    });
+    let display = name
+        .clone()
+        .hover(HoverEvent::ShowEntity {
+            id: type_name.to_owned(),
+            uuid: e.uuid(),
+            name: Some(name),
+        })
+        .insertion(vanillite_protocol::types::Uuid(e.uuid()).to_string());
+    let item = ents
+        .mob(id)
+        .and_then(|m| custom_named_item(m.equipment.get(crate::item::EquipmentSlot::MainHand)));
+    Some(AttackerName {
+        name: display,
+        item,
+    })
+}
+
+/// `ItemStack.getDisplayName` of a stack with a custom name: the italic name in brackets in
+/// the rarity colour, showing the item on hover.
+pub(crate) fn custom_named_item(stack: &crate::item::ItemStack) -> Option<Component> {
+    use vanillite_data::item::Rarity;
+    use vanillite_protocol::codec::DecodeLimited as _;
+    use vanillite_protocol::text::{Color, NamedColor};
+    if stack.is_empty() {
+        return None;
+    }
+    let bytes = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME)?;
+    let name = Component::decode_limited(
+        &mut vanillite_protocol::codec::Reader::new(bytes),
+        bytes.len(),
+    )
+    .ok()?;
+    let enchanted = !crate::item::enchantments(stack).is_empty();
+    let color = match (crate::item::item_id(stack).info().rarity, enchanted) {
+        (Rarity::Common, false) => NamedColor::White,
+        (Rarity::Uncommon, false) => NamedColor::Yellow,
+        (Rarity::Common | Rarity::Uncommon | Rarity::Rare, true) | (Rarity::Rare, false) => {
+            NamedColor::Aqua
+        }
+        (Rarity::Epic, _) => NamedColor::LightPurple,
+    };
+    let name = Component::empty().append(name).italic(true);
+    Some(
+        Component::translatable("chat.square_brackets", vec![name])
+            .color(Color::Named(color))
+            .hover(HoverEvent::ShowItem {
+                id: vanillite_data::registry::ITEM
+                    .name(stack.item)
+                    .unwrap_or("minecraft:air")
+                    .to_owned(),
+                count: stack.count,
+                components: None,
+            }),
+    )
+}
+
+/// The names of a damage source's entities for the death message of a player.
+pub fn source_names(ents: &Entities, env: &Env<'_>, source: &DamageSource) -> SourceNames {
+    let name = |id: Option<EntityId>| id.and_then(|id| attacker_name(ents, env, id));
+    SourceNames {
+        cause: name(source.cause),
+        direct: name(source.direct).map(|a| a.name),
+        responsible: name(source.responsible_player).map(|a| a.name),
+    }
 }
 
 /// `ExperienceOrb.award`: the world splits `amount` into orbs from the [`Effect::Experience`].

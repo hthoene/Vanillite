@@ -40,7 +40,9 @@ fn can_hit(t: &MissileTick<'_, '_>, id: EntityId, owner: Option<EntityId>, left:
     if let Some(p) = t.ents.player(id) {
         return p.game_mode != GameMode::Spectator && !p.survival.is_dead_or_dying();
     }
-    t.ents.mob(id).is_some_and(crate::mob::MobData::is_alive) || t.ents.boat(id).is_some()
+    t.ents.mob(id).is_some_and(crate::mob::MobData::is_alive)
+        || t.ents.boat(id).is_some()
+        || crate::mob::boss::dragon::crystal::hittable(t.ents, id)
 }
 
 /// The end of a throwable's flight this tick.

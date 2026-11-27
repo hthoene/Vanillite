@@ -440,7 +440,8 @@ pub fn tick_arrow(
                 || ents.player(other).is_some_and(|p| {
                     !p.survival.is_dead_or_dying()
                         && p.game_mode != vanillite_config::GameMode::Spectator
-                });
+                })
+                || super::boss::dragon::crystal::hittable(ents, other);
             if !alive {
                 return;
             }
@@ -506,9 +507,10 @@ pub fn tick_arrow(
             let mut source = combat::entity_source(ents, env.types.arrow, owner, id);
             source.position = Some(pos);
             source.projectile_motion = Some(velocity);
+            let living = ents.mob(target).is_some() || ents.player(target).is_some();
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
-            if hurt {
+            if hurt && living {
                 if a.fire {
                     super::attack::ignite(ents, target, 100);
                 }
@@ -572,6 +574,8 @@ pub fn tick_arrow(
                 {
                     m.last_hurt_mob = Some(target);
                 }
+            }
+            if hurt {
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
                 let seed = crate::survival::sound_seed();
                 play_sound(

@@ -83,7 +83,8 @@ fn can_hit(ents: &Entities, d: &MissileData, me: EntityId, target: EntityId) -> 
         .is_some_and(super::super::super::MobData::is_alive)
         || ents
             .player(target)
-            .is_some_and(|p| !p.survival.is_dead_or_dying() && p.game_mode != GameMode::Spectator);
+            .is_some_and(|p| !p.survival.is_dead_or_dying() && p.game_mode != GameMode::Spectator)
+        || crate::mob::boss::dragon::crystal::hittable(ents, target);
     alive && (d.left_owner || d.owner != Some(target))
 }
 

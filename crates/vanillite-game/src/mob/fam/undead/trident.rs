@@ -298,7 +298,8 @@ fn find_hit(
             || t.ents.player(other).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
                     && p.game_mode != vanillite_config::GameMode::Spectator
-            });
+            })
+            || crate::mob::boss::dragon::crystal::hittable(t.ents, other);
         if !alive {
             return;
         }

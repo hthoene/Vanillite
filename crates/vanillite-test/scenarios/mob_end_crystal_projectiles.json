@@ -1,0 +1,18 @@
+{
+  "description": "End crystals hit by projectiles (#231): an arrow and a snowball flying at a crystal hit its 2x2 box (canBeHitByProjectile), EndCrystal.hurtServer removes it and it explodes with power 6; a player's melee hit destroys a third crystal the same way. The player is in creative mode, so the explosions do not hurt it.",
+  "tier": "fast",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -62, 0], [44, -50, 24]],
+  "ticks": 40,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [36.5, -60.0, 9.5], "rot": [0, 0], "client": true, "game_mode": "creative"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:end_crystal 4.5 -60.0 12.5 {ShowBottom:0b}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:end_crystal 20.5 -60.0 12.5 {ShowBottom:0b}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:end_crystal 36.5 -60.0 12.5 {ShowBottom:0b,UUID:[I;1,2,3,4]}"},
+    {"tick": 2, "op": "command", "command": "summon minecraft:arrow 4.5 -59.0 3.5 {Motion:[0.0,0.0,1.5]}"},
+    {"tick": 2, "op": "command", "command": "summon minecraft:snowball 20.5 -59.0 3.5 {Motion:[0.0,0.0,1.5]}"},
+    {"tick": 20, "op": "packet", "entity": "steve", "packet": "attack", "data": "00", "target": "uuid:00000001000000020000000300000004", "what": "Attack { entity_id: 0 }"}
+  ]
+}
