@@ -3,12 +3,13 @@
 mod cpu;
 mod health;
 mod logger;
+mod terminal;
 
 use std::io::BufRead as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vanillite_server::ServerBuilder;
+use vanillite_server::{ServerBuilder, StartError};
 
 // musl's allocator is slow with many threads; the static (Docker) build uses mimalloc.
 #[cfg(target_env = "musl")]
@@ -114,14 +115,22 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
     let server_thread = std::thread::Builder::new()
         .name("Server thread".to_owned())
         .spawn(move || {
-            let mut builder = ServerBuilder::new(dir);
-            builder.version(version());
-            builder.memory_release(release_memory);
-            let server = match builder.start() {
-                Ok(server) => server,
-                Err(e) => {
-                    log::error!("Failed to start the server: {e}");
-                    return false;
+            let server = loop {
+                let mut builder = ServerBuilder::new(dir.clone());
+                builder.version(version());
+                builder.memory_release(release_memory);
+                match builder.start() {
+                    Ok(server) => break server,
+                    Err(e @ StartError::Eula(_)) => {
+                        log::error!("{e}");
+                        if !terminal::accept_eula(&dir) {
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to start the server: {e}");
+                        return false;
+                    }
                 }
             };
             let handle = server.handle();
@@ -133,17 +142,22 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             server.run();
             true
         });
-    match server_thread.map(|thread| thread.join()) {
-        Ok(Ok(true)) => ExitCode::SUCCESS,
-        Ok(Ok(false)) => ExitCode::FAILURE,
+    let started = match server_thread.map(|thread| thread.join()) {
+        Ok(Ok(started)) => started,
         Ok(Err(_)) => {
             log::error!("The server thread crashed");
-            ExitCode::FAILURE
+            false
         }
         Err(e) => {
             log::error!("Cannot start the server thread: {e}");
-            ExitCode::FAILURE
+            false
         }
+    };
+    if started {
+        ExitCode::SUCCESS
+    } else {
+        terminal::hold_window();
+        ExitCode::FAILURE
     }
 }
 
