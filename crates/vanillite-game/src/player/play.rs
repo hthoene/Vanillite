@@ -776,6 +776,26 @@ impl Digging {
         if let Some(level) = ctx.level.level_mut() {
             crate::block::break_hooks::player_will_destroy(level, state, pos, ctx.actor.creative());
         }
+        // `DecoratedPotBlock.playerWillDestroy`: a tool that breaks pots cracks it (unless
+        // enchanted against it); the cracked pot then breaks into its sherds.
+        let state = if state.block() == vanillite_data::block::ids::DECORATED_POT
+            && ctx
+                .data
+                .item_in_tag(tool.item, "minecraft:breaks_decorated_pots")
+            && !crate::block::break_hooks::has_enchantment_tag(
+                &tool,
+                "minecraft:prevents_decorated_pot_shattering",
+            ) {
+            let cracked = vanillite_worldgen::behaviour::StateExt::set_flag(state, "cracked", true);
+            ctx.level.set_block(
+                pos,
+                cracked,
+                update::INVISIBLE | update::SKIP_BLOCK_ENTITY_SIDEEFFECTS,
+            );
+            cracked
+        } else {
+            state
+        };
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
