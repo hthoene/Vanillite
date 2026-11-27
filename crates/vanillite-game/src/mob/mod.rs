@@ -799,12 +799,6 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// `stepOn` of the block at the position for the entity standing on it.
     StepOn(BlockPos, EntityId),
-    /// `Mob.finalizeSpawn` of a mob made outside a spawn (a cured zombie villager): the
-    /// follow range bonus and left-handedness from the level random.
-    MobSpawnBonus(EntityId),
-    /// `HoneyBlock.maybeDoSlideEffects` of a sliding player: the slide sound and particles,
-    /// each one time in five by the level random.
-    HoneySlideEffects(EntityId),
     /// `onProjectileHit` of the block at the position, hit by the projectile at the point
     /// with the speed.
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
@@ -880,49 +874,6 @@ impl WorldAction {
             WorldAction::StepOn(pos, id) => {
                 if level.entities.store.contains(id) {
                     crate::block::contact::step_on(level, pos, id);
-                }
-            }
-            WorldAction::MobSpawnBonus(id) => {
-                let bonus = level.random().triangle(0.0, 0.114_850_000_000_000_01);
-                let left_handed = level.random().next_float() < 0.05;
-                if let Some(m) = level.entities.mob_mut(id) {
-                    m.attrs.follow_range *= 1.0 + bonus;
-                    m.left_handed = left_handed;
-                }
-            }
-            WorldAction::HoneySlideEffects(id) => {
-                let Some((pos, network_id)) = level
-                    .entities
-                    .store
-                    .get(id)
-                    .map(|e| (e.pos(), e.network_id().0))
-                else {
-                    return true;
-                };
-                if level.random().next_int_bounded(5) == 0
-                    && let Some(sound) = vanillite_data::registry::SOUND_EVENT
-                        .id("minecraft:block.honey_block.slide")
-                {
-                    // `Player.playSound`: heard by everyone but the player.
-                    level.play_sound(
-                        Some(id),
-                        pos.x,
-                        pos.y,
-                        pos.z,
-                        sound,
-                        crate::level::SOUND_PLAYERS,
-                        1.0,
-                        1.0,
-                    );
-                }
-                if level.random().next_int_bounded(5) == 0 {
-                    let packet = vanillite_protocol::SharedPacket::of(
-                        &vanillite_protocol::packets::play::clientbound::EntityEvent {
-                            entity_id: network_id,
-                            event: 53,
-                        },
-                    );
-                    level.output().nearby_packets.push((pos, 160.0, packet));
                 }
             }
             WorldAction::TrampleFarmland(pos, id) => {

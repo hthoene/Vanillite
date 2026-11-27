@@ -2211,11 +2211,20 @@ fn honey_slide(
     };
     entity.set_velocity(velocity);
     crate::advancements::tracking::reset_fall_distance(player);
-    // `maybeDoSlideEffects` with the level random, once the world has the player's actions.
-    player
-        .survival
-        .world_actions
-        .push(crate::mob::WorldAction::HoneySlideEffects(id));
+    // `maybeDoSlideEffects` (the level random).
+    if env.random.next_int_bounded(5) == 0 {
+        player_sound(env, id, p, "minecraft:block.honey_block.slide");
+    }
+    if env.random.next_int_bounded(5) == 0 {
+        env.out.push(Effect::Tracking {
+            entity: id,
+            with_self: true,
+            packet: SharedPacket::of(&EntityEvent {
+                entity_id: entity.as_ref().network_id().0,
+                event: 53,
+            }),
+        });
+    }
 }
 
 /// `Entity.applyEffectsFromBlocks` at the player's position: the floor it stands on (magma),
