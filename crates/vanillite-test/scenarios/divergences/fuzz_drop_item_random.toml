@@ -1,3 +1,0 @@
-tick = 75
-cause = "the thrown item's spread comes from the level random in Vanillite; Vanilla uses the player's own random (Player.drop)"
-owner = "gameplay-developer #132"

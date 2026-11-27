@@ -425,7 +425,7 @@ impl WorldSurvival {
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut no_gateway = |_| false;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = self.env(
@@ -523,7 +523,7 @@ impl WorldSurvival {
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut removed = std::mem::take(&mut self.scratch);
         {
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let hooks = crate::plugins::Hooks::of(global, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             // `EndGatewayBlock.entityInside`: a gateway takes a player unless it cools down,
@@ -698,7 +698,7 @@ impl WorldSurvival {
             let blocks = WorldBlocks(&level.chunks);
             let raining = |_| false;
             let mut no_gateway = |_| false;
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+            let hooks = crate::plugins::Hooks::of(global, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
             let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = Env {
@@ -775,7 +775,7 @@ impl WorldSurvival {
         };
         let raining = |_| false;
         let mut no_gateway = |_| false;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
         let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = Env {
@@ -1108,10 +1108,7 @@ fn spawn_drops(
                 .rules()
                 .bool(vanillite_game::survival::rules::Rule::ENDER_PEARLS_VANISH_ON_DEATH)
         {
-            for i in 0..crate::server::DIMENSIONS.len() {
-                let Ok(index) = u16::try_from(i) else {
-                    continue;
-                };
+            for index in global.dimensions.worlds().map(|w| w.0) {
                 global.run_in_world(crate::world::WorldId(index), move |world| {
                     world.discard_pearls_of(uuid);
                 });
@@ -1162,6 +1159,7 @@ fn spawn_drops(
         }
         if let Effect::DropItem {
             uuid,
+            random: item_random,
             pos,
             velocity,
             y_rot,
@@ -1175,7 +1173,12 @@ fn spawn_drops(
                 *pos,
                 *velocity,
                 *y_rot,
-                vanillite_game::item_entity::ItemData::new(stack.clone(), *pickup_delay, None),
+                vanillite_game::item_entity::ItemData::new(
+                    stack.clone(),
+                    *pickup_delay,
+                    None,
+                    *item_random,
+                ),
             );
             entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
         }
@@ -1216,7 +1219,7 @@ fn weather_change_event(global: &Global, random: &mut LegacyRandom) {
         extra: i64::from(old_code),
         ..vanillite_game::hooks::Event::new(vanillite_abi::event::WEATHER_CHANGE)
     };
-    crate::plugins::Hooks::of(&global.plugins, "minecraft:overworld").event(&mut ev);
+    crate::plugins::Hooks::of(global, "minecraft:overworld").event(&mut ev);
     if ev.cancelled {
         let mut data = global.level.weather();
         data.raining = old.0;

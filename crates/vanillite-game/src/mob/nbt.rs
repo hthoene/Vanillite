@@ -607,7 +607,10 @@ pub fn save_item(core: &EntityRef<'_>, d: &crate::item_entity::ItemData) -> Comp
 }
 
 /// An item entity from entity NBT; `None` without a valid item.
-pub fn load_item(tag: &Compound) -> Option<(LoadedEntity, crate::item_entity::ItemData)> {
+pub fn load_item(
+    tag: &Compound,
+    seed: i64,
+) -> Option<(LoadedEntity, crate::item_entity::ItemData)> {
     if type_of(tag)? != ids::ITEM {
         return None;
     }
@@ -620,8 +623,12 @@ pub fn load_item(tag: &Compound) -> Option<(LoadedEntity, crate::item_entity::It
         return None;
     }
     let short = |k: &str| int(tag, k).map_or(0, |v| i16::try_from(v).unwrap_or(0));
-    let mut d =
-        crate::item_entity::ItemData::new(stack, short("PickupDelay"), uuid_key(tag, "Thrower"));
+    let mut d = crate::item_entity::ItemData::new(
+        stack,
+        short("PickupDelay"),
+        uuid_key(tag, "Thrower"),
+        crate::item_entity::loaded_random(seed),
+    );
     d.age = short("Age");
     d.health = int(tag, "Health").map_or(5, |v| i16::try_from(v).unwrap_or(5));
     d.fire_ticks = int(tag, "Fire").unwrap_or(0).max(0);

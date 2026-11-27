@@ -16,7 +16,6 @@ import net.minecraft.core.Holder;
 import net.minecraft.core.HolderGetter;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.HolderSet;
-import net.minecraft.core.MappedRegistry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
@@ -136,9 +135,36 @@ public final class ParityServer extends MinecraftServer {
    */
   public static ParityServer start(
       Path dir, long seed, List<Layer> layers, String biome, boolean flatOthers) throws Exception {
+    return start(dir, seed, layers, biome, flatOthers, null);
+  }
+
+  /**
+   * Like {@link #start(Path, long, List, String, boolean)}; {@code datapack} (a folder) is copied
+   * into the world's {@code datapacks/} first, so it is found and enabled like a new pack and its
+   * dimensions load.
+   */
+  public static ParityServer start(
+      Path dir, long seed, List<Layer> layers, String biome, boolean flatOthers, Path datapack)
+      throws Exception {
     Files.createDirectories(dir);
     LevelStorageSource.LevelStorageAccess access =
         LevelStorageSource.createDefault(dir).validateAndCreateAccess("world");
+    if (datapack != null) {
+      Path target =
+          access
+              .getLevelPath(net.minecraft.world.level.storage.LevelResource.DATAPACK_DIR)
+              .resolve(datapack.getFileName().toString());
+      try (var files = Files.walk(datapack)) {
+        for (Path from : (Iterable<Path>) files::iterator) {
+          Path to = target.resolve(datapack.relativize(from).toString());
+          if (Files.isDirectory(from)) {
+            Files.createDirectories(to);
+          } else {
+            Files.copy(from, to);
+          }
+        }
+      }
+    }
     PackRepository packs = ServerPacksSource.createPackRepository(access);
     packs.reload();
     WorldStem stem = loadStem(packs, seed, layers, biome, flatOthers);
@@ -204,12 +230,10 @@ public final class ParityServer extends MinecraftServer {
                                 new FlatLevelSource(flat(lookup, END_LAYERS, "minecraft:the_end"))));
                         dimensions = new WorldDimensions(stems);
                       }
+                      // The data packs' dimensions, like `Main.createNewWorldData`.
                       WorldDimensions.Complete complete =
                           dimensions.bake(
-                              new MappedRegistry<LevelStem>(
-                                      Registries.LEVEL_STEM,
-                                      com.mojang.serialization.Lifecycle.stable())
-                                  .freeze());
+                              ctx.datapackDimensions().lookupOrThrow(Registries.LEVEL_STEM));
                       PrimaryLevelData data =
                           new PrimaryLevelData(
                               settings, complete.specialWorldProperty(), complete.lifecycle());

@@ -3,7 +3,7 @@ Vanillite @VERSION@ for Minecraft Java Edition @MC@
 
 A Minecraft Java Edition server written in Rust that behaves like Vanilla in game.
 This is a beta: back up your worlds and report problems at
-https://github.com/hthoene/Vanillite/issues
+https://github.com/hthoene/vanillite/issues
 
 Start
 -----

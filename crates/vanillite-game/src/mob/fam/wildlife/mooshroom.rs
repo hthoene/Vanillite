@@ -255,9 +255,10 @@ fn shear(ix: &mut Interact<'_, '_>) {
     );
     // `shearing/mooshroom`: five mushrooms of its colour, one item entity each.
     for _ in 0..5 {
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         let stack: ItemStack = crate::mob::equipment::stack(mushroom);
         ix.env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: pos + Vec3::new(0.0, height, 0.0),
             velocity,

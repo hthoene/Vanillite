@@ -9,7 +9,7 @@ parity, so pick it by the Vanilla call it models.
 
 | Path | API | Vanilla | Side effect | Threads |
 |---|---|---|---|---|
-| Tick view | `Level::block`, `Level::fluid`, `Chunks::block`, `impl Blocks for Level` | `Level.getBlockState` (`getChunk(x, z, FULL, true)`) | Goes through the chunk cache and keeps the `unknown` ticket of a synchronously loaded chunk alive | World thread only |
+| Tick view | `Level::block`, `Level::fluid`, `Chunks::block`, `impl Blocks for Level` | `Level.getBlockState` (`getChunk(x, z, FULL, true)`) | Goes through the chunk cache and keeps the `unknown` ticket of a synchronously loaded chunk alive | World thread; tile jobs of the tile region mode share it read-only while no `unknown` ticket exists (`region-threading.md`) |
 | Read view | `Level::view()` → `LevelView`, `Chunks::view()` → `ChunkView` | `getChunkForCollisions`, `getChunkNow`, `PathNavigationRegion` | None | `Copy + Send + Sync`, shareable while the world thread does not write |
 
 - Collision (`mob::physics::{collide, collide_for, block_boxes, no_collision}`,

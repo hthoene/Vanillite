@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, VanillaOr, WorldRules};
 use vanillite_data::entity::ids;
@@ -137,9 +136,7 @@ pub(crate) struct WorldMobs {
 }
 
 /// What the item entities' tick needs from the world.
-pub(crate) struct ItemTick<'a> {
-    /// The random the items draw from (Vanilla: each item's own, unseeded).
-    pub(crate) random: &'a mut vanillite_base::random::XoroshiroRandom,
+pub(crate) struct ItemTick {
     /// Despawn and merge rules.
     pub(crate) settings: crate::blocks::ItemSettings,
 }
@@ -291,7 +288,7 @@ impl WorldMobs {
             return;
         };
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
@@ -345,7 +342,7 @@ impl WorldMobs {
             return;
         };
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
@@ -416,7 +413,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
         let mut ents = std::mem::take(&mut level.entities);
@@ -470,6 +467,7 @@ impl WorldMobs {
         global: &Global,
         dimension: &str,
         spawn_point: Option<BlockPos>,
+        tiles: Option<&vanillite_game::level::tiles::TileRun<'_>>,
     ) {
         let env = environment(
             global,
@@ -534,7 +532,12 @@ impl WorldMobs {
             },
             natural,
         };
-        spawn::tick(level, &table, &mut self.spawner, &input, persistent);
+        match tiles {
+            Some(run) => {
+                spawn::tick_tiled(level, &table, &mut self.spawner, &input, persistent, run);
+            }
+            None => spawn::tick(level, &table, &mut self.spawner, &input, persistent),
+        }
         if dimension == "minecraft:overworld" {
             self.custom_spawners(
                 level,
@@ -660,7 +663,7 @@ impl WorldMobs {
         survival: &mut WorldSurvival,
         global: &Global,
         dimension: &str,
-        items: ItemTick<'_>,
+        items: ItemTick,
     ) {
         self.ticks += 1;
         level.flush_poi_changes();
@@ -671,7 +674,7 @@ impl WorldMobs {
             }
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
         for pos in std::mem::take(&mut level.output().summon_checks) {
@@ -701,7 +704,6 @@ impl WorldMobs {
             spawn_monsters: rules.bool(Rule::SPAWN_MONSTERS),
         };
         let activation = f64::from(self.settings.activation_range);
-        minecart::players_push(&mut level.entities);
         let in_end = dimension == END_DIMENSION;
         let mut cursor = level.entities.store.tick_cursor();
         let mut tnt_left = self.settings.max_tnt_per_tick;
@@ -739,9 +741,8 @@ impl WorldMobs {
                     let raining = |pos| raining_at(chunks, climate.map(|c| &**c), weather, pos);
                     crate::blocks::tick_item(
                         &mut ents,
-                        chunks,
+                        level,
                         id,
-                        &mut || items.random.next_float(),
                         level.min_y(),
                         items.settings,
                         &mut self.item_scratch,
@@ -1110,7 +1111,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
         let falling = std::mem::take(&mut level.output().falling_hurts);
@@ -1222,7 +1223,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let hurts = std::mem::take(&mut level.output().magic_hurts);
         let no_blocks = NoBlocks;
@@ -1278,7 +1279,7 @@ impl WorldMobs {
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-                let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+                let hooks = crate::plugins::Hooks::of(global, dimension);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
@@ -1611,9 +1612,25 @@ pub fn player_entity_action(
                 p.survival.attack_ticker = 0;
             }
         }
-        EntityAction::UseItem(hand) => {
+        EntityAction::Punch => {
+            // `handlePunch`: `resetAttackStrengthTicker` (also for spectators).
+            if let Some(p) = ents.player_mut(player) {
+                p.survival.attack_ticker = 0;
+            }
+        }
+        EntityAction::UseItem {
+            hand,
+            known_movement,
+        } => {
             if usable {
+                // The item sees the known movement of its packet's time (thrown projectiles).
+                let known = ents.player_mut(player).map(|p| {
+                    std::mem::replace(&mut p.connection.movement.known_movement, known_movement)
+                });
                 item_use::use_item(level, ents, env, cx, network_ids, player, hand);
+                if let (Some(k), Some(p)) = (known, ents.player_mut(player)) {
+                    p.connection.movement.known_movement = k;
+                }
             }
         }
         EntityAction::UseItemOn {
