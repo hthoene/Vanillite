@@ -1,8 +1,9 @@
 //! `cargo xtask bench`: the benchmark suite. Every scenario runs against Vanillite and the
-//! reference servers (Paper, Vanilla, Pumpkin; Velocity for the proxy) on the test server with
+//! reference servers (Paper, Vanilla, Pumpkin; Velocity for the proxy) on the benchmark server
+//! vanillite-bench (#186; `VANILLITE_BENCH_HOST` overrides it) with
 //! the same settings (`vanillite-bench props`: seed, normal world, peaceful, view and
 //! simulation distance 10, offline mode) and a fresh world per scenario. The load bots
-//! (`tools/loadbot`) run here, as in `cargo xtask loadtest`.
+//! (`tools/loadbot`) run on the benchmark server too, as in `cargo xtask loadtest`.
 //!
 //! Results: `target/bench/<time>/results.json` (full), raw per-server files under
 //! /opt/vanillite/bench/suite/<time>/ on the test server, and with `--publish` the summaries in
@@ -24,7 +25,9 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use crate::Result;
-use crate::loadtest::{self, Options, Session, Target, bench_cmd, bench_json, round, show};
+use crate::loadtest::{
+    self, Options, Session, Target, bench_cmd, bench_json, install, round, show,
+};
 
 const RESULTS: &str = "benchmarks/results";
 const REMOTE_RESULTS: &str = "/opt/vanillite/bench/suite";
@@ -127,6 +130,57 @@ const SCENARIOS: &[Scenario] = &[
         headline: ("mean MSPT", "ms", Better::Lower),
         kind: Kind::Built {
             setup: mobs,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "farm",
+        title: "Animal farm: 4 000 animals in a pen",
+        what: "4 000 cows, sheep, pigs and chickens (1 000 each) 1.5 blocks apart in a walled \
+               96 × 96 grass pen under the observer (mob AI, collisions, breeding age, eggs, \
+               tracking for one player).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: farm,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "monsters",
+        title: "Monsters: 2 000 hostile mobs hunting villagers",
+        what: "Difficulty normal: about 2 000 persistent zombies, skeletons, creepers, spiders \
+               and slimes in a dark, closed 96 × 96 stone hall with 36 villagers in glass cells \
+               the zombies try to reach (targeting, path finding, collisions, despawn checks).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: monsters,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "villagers",
+        title: "Village: 400 villagers with beds and job sites",
+        what: "400 villagers on a walled 96 × 96 platform, each with a bed and a job site \
+               block next to it, and a bell in the middle (brains, sensors, points of \
+               interest, gossip, path finding).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: villagers,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "mobs-far",
+        title: "Mobs without players nearby: 4 000 animals in force-loaded chunks",
+        what: "The animal farm in force-loaded chunks, with the only player 2 000 blocks away \
+               (mob ticks nobody watches: despawn checks, AI, collisions, no tracking).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: mobs_far,
             cycle: None,
         },
     },
@@ -368,6 +422,18 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             }
             Ok(())
         }
+        ["commands", name] => {
+            let scenario = SCENARIOS.iter().find(|s| s.name == *name);
+            let Some(Kind::Built { setup, .. }) = scenario.map(|s| &s.kind) else {
+                return Err(format!("{name}: not a command-built scenario"));
+            };
+            let (x, y, z) = AREA;
+            println!("tp {OBSERVER} {} {} {}", x + 32, y + 40, z + 32);
+            for line in setup(x, y, z) {
+                println!("{line}");
+            }
+            Ok(())
+        }
         ["report"] => report(root),
         ["publish", source] => publish(root, source),
         ["nightly", rest @ ..] => nightly(root, rest),
@@ -438,7 +504,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
     }
     let stamp = loadtest::command_output(Command::new("date").args(["-u", "+%Y%m%dT%H%M%SZ"]))?;
     let mut ctx = Ctx {
-        host: std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into()),
+        host: loadtest::bench_host(),
         root,
         bin_dir: crate::target_dir(root).join("release-fast"),
         versions: BTreeMap::new(),
@@ -557,6 +623,7 @@ fn prepare(ctx: &Ctx, scenarios: &[&Scenario], deploy: bool) -> Result<()> {
         build.extend(["-p", "vanillite", "-p", "vanillite-proxy"]);
     }
     crate::devenv::run(Command::new(&cargo).current_dir(ctx.root).args(&build))?;
+    install(&ctx.host, "loadbot", &ctx.bin_dir.join("loadbot"))?;
     if deploy && scenarios.iter().any(|s| matches!(s.kind, Kind::Pregen)) {
         crate::devenv::run(Command::new(&cargo).current_dir(ctx.root).args([
             "build",
@@ -590,15 +657,6 @@ fn prepare(ctx: &Ctx, scenarios: &[&Scenario], deploy: bool) -> Result<()> {
             .stdin(Stdio::from(file)),
     )?;
     bench_cmd(&ctx.host, &["stop", "vanillite"]).map(drop)
-}
-
-fn install(host: &str, name: &str, file: &Path) -> Result<()> {
-    let f = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    crate::devenv::run(
-        Command::new("ssh")
-            .args([host, "vanillite-bench", "install", name])
-            .stdin(Stdio::from(f)),
-    )
 }
 
 fn run_one(ctx: &mut Ctx, scenario: &Scenario, server: &str) -> Result<Value> {
@@ -642,7 +700,7 @@ fn weak(
         let idle = bench_json(&ctx.host, &["idle", target.name(), "30"])?;
         let mut o = options(steps, settle, hold);
         o.join_rate = 1.0;
-        let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+        let mut session = Session::open(&ctx.host, target, &o, &[])?;
         let measured = loadtest::ramp(&o, &mut session);
         session.close();
         let measured = measured?;
@@ -778,7 +836,7 @@ fn players(
         )?;
     }
     let o = options(steps, settle, hold);
-    let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+    let mut session = Session::open(&ctx.host, target, &o, &[])?;
     let measured = loadtest::ramp(&o, &mut session);
     session.close();
     let measured = measured?;
@@ -858,13 +916,7 @@ fn built(
     let (x, y, z) = AREA;
     fresh_start(ctx, server, target, None)?;
     let o = options(&[(1, "still", None)], 0, 0);
-    let mut session = Session::open(
-        &ctx.host,
-        target,
-        &ctx.bin_dir,
-        &o,
-        &["--movement", "still"],
-    )?;
+    let mut session = Session::open(&ctx.host, target, &o, &["--movement", "still"])?;
     let result = (|| -> Result<Value> {
         session.bot("target 1")?;
         if !session.wait_online(1)? {
@@ -935,13 +987,7 @@ fn unsupported(reply: &Value) -> Value {
 fn save(ctx: &mut Ctx, server: &str, target: Target) -> Result<Value> {
     fresh_start(ctx, server, target, None)?;
     let o = options(&[(20, "straight:boat", None)], 0, 0);
-    let mut session = Session::open(
-        &ctx.host,
-        target,
-        &ctx.bin_dir,
-        &o,
-        &["--movement", "straight:boat"],
-    )?;
+    let mut session = Session::open(&ctx.host, target, &o, &["--movement", "straight:boat"])?;
     let flown = (|| -> Result<Value> {
         session.bot("target 20")?;
         session.wait_online(20)?;
@@ -1133,8 +1179,8 @@ fn environment(ctx: &Ctx) -> Value {
     let hw = &ctx.hardware;
     let host = if hw.is_object() {
         format!(
-            "test server: {} CPUs ({}) of an {}, {} GiB RAM, Linux {} ({}) on a host with {} CPUs \
-             and {} GiB; other test instances on it stay mostly idle during runs",
+            "benchmark server: {} CPUs ({}) of an {}, {} GiB RAM, Linux {} ({}) on a host with {} \
+             CPUs and {} GiB; nothing else runs on it during runs",
             hw["cpus"],
             hw["cpu_list"].as_str().unwrap_or("?"),
             hw["cpu_model"].as_str().unwrap_or("?"),
@@ -1154,11 +1200,19 @@ fn environment(ctx: &Ctx) -> Value {
         "limits": "every server (and the proxy's backend) runs in a cgroup pinned to the first 4 CPUs of the test server with a CPU quota of 400 % and 8 GiB memory, no swap (profile 4c8g; the weak scenario: 1 CPU, 1 GiB), so numbers stay comparable when the test server gets more cores or RAM",
         "load": "host load per CPU during each server's run (mean of the 1-minute load averages at its start and end and the 5-minute one at its end); above 1 the run is marked unreliable (⚠) and not used as the base of comparisons",
         "bots": format!(
-            "tools/loadbot on a separate machine in the same LAN (offline mode, no encryption){}",
-            hw["bots"]["cpus"]
-                .as_u64()
-                .map(|n| format!(", {n} CPUs ({} in the host's numbering)", hw["bots"]["cpu_list"].as_str().unwrap_or("?")))
-                .unwrap_or_default()
+            "tools/loadbot{} (offline mode, no encryption)",
+            if hw["bots"]["same_machine"] == true {
+                format!(
+                    " on the same machine over 127.0.0.1, on {} CPUs ({}) the server's profile leaves free",
+                    hw["bots"]["cpus"],
+                    hw["bots"]["cpu_list"].as_str().unwrap_or("?")
+                )
+            } else {
+                hw["bots"]["cpus"]
+                    .as_u64()
+                    .map(|n| format!(" on a separate machine in the same LAN, {n} CPUs ({} in the host's numbering)", hw["bots"]["cpu_list"].as_str().unwrap_or("?")))
+                    .unwrap_or_default()
+            }
         ),
         "settings": "seed -578941029922802438, normal world, peaceful, view distance 10, simulation distance 10, offline mode, pause-when-empty off, a new world per scenario",
         "servers": {
@@ -1288,6 +1342,149 @@ fn mobs(x: i32, y: i32, z: i32) -> Vec<String> {
     c
 }
 
+/// A walled 96 × 96 floor of `floor` blocks around the 64 × 64 build area (the observer hovers
+/// over its middle), with walls of `wall` blocks `height` high.
+fn hall(x: i32, y: i32, z: i32, floor: &str, wall: &str, height: i32) -> Vec<String> {
+    let (x0, z0, x1, z1) = (x - 16, z - 16, x + 79, z + 79);
+    let top = y + height - 1;
+    vec![
+        format!(
+            "fill {x0} {} {z0} {x1} {} {z1} minecraft:{floor}",
+            y - 1,
+            y - 1
+        ),
+        format!("fill {x0} {y} {z0} {x1} {top} {z0} minecraft:{wall}"),
+        format!("fill {x0} {y} {z1} {x1} {top} {z1} minecraft:{wall}"),
+        format!("fill {x0} {y} {z0} {x0} {top} {z1} minecraft:{wall}"),
+        format!("fill {x1} {y} {z0} {x1} {top} {z1} minecraft:{wall}"),
+    ]
+}
+
+fn farm(x: i32, y: i32, z: i32) -> Vec<String> {
+    const KINDS: [&str; 4] = ["cow", "sheep", "pig", "chicken"];
+    let mut c = hall(x, y, z, "grass_block", "glass", 2);
+    for i in 0..4000 {
+        let ax = f64::from(x) - 14.5 + f64::from(i % 64) * 1.45;
+        let az = f64::from(z) - 14.5 + f64::from(i / 64) * 1.45;
+        c.push(format!(
+            "summon minecraft:{} {ax:.2} {y} {az:.2}",
+            KINDS[(i % 4) as usize]
+        ));
+    }
+    c
+}
+
+fn monsters(x: i32, y: i32, z: i32) -> Vec<String> {
+    // Of every 20 mobs: 8 zombies, 4 skeletons, 3 creepers, 3 spiders, 2 slimes.
+    const KINDS: [&str; 20] = [
+        "zombie", "skeleton", "zombie", "creeper", "zombie", "spider", "zombie", "skeleton",
+        "slime", "zombie", "creeper", "zombie", "spider", "skeleton", "zombie", "creeper", "slime",
+        "zombie", "spider", "skeleton",
+    ];
+    let mut c = vec!["difficulty normal".to_owned()];
+    // A closed, dark hall: nothing burns in daylight and spiders stay inside.
+    c.extend(hall(x, y, z, "stone", "stone", 3));
+    c.push(format!(
+        "fill {} {} {} {} {} {} minecraft:stone",
+        x - 16,
+        y + 3,
+        z - 16,
+        x + 79,
+        y + 3,
+        z + 79
+    ));
+    // The bait: villagers in glass cells nothing can enter or see through.
+    let cell = |i: i32| (x - 16 + 12 + 14 * (i % 6), z - 16 + 12 + 14 * (i / 6));
+    for i in 0..36 {
+        let (cx, cz) = cell(i);
+        c.push(format!(
+            "fill {} {y} {} {} {} {} minecraft:glass",
+            cx - 1,
+            cz - 1,
+            cx + 1,
+            y + 2,
+            cz + 1
+        ));
+        c.push(format!(
+            "fill {cx} {y} {cz} {cx} {} {cz} minecraft:air",
+            y + 1
+        ));
+        c.push(format!("summon minecraft:villager {}.5 {y} {}.5", cx, cz));
+    }
+    let mut n = 0;
+    for i in 0..46 * 46 {
+        let (bx, bz) = (x - 16 + 2 + 2 * (i % 46), z - 16 + 2 + 2 * (i / 46));
+        let in_cell = (0..36).any(|j| {
+            let (cx, cz) = cell(j);
+            (bx - cx).abs() <= 1 && (bz - cz).abs() <= 1
+        });
+        if in_cell {
+            continue;
+        }
+        let kind = KINDS[n % KINDS.len()];
+        n += 1;
+        let nbt = if kind == "slime" {
+            "{PersistenceRequired:1b,Size:1}"
+        } else {
+            "{PersistenceRequired:1b}"
+        };
+        c.push(format!("summon minecraft:{kind} {bx}.5 {y} {bz}.5 {nbt}"));
+    }
+    c
+}
+
+fn villagers(x: i32, y: i32, z: i32) -> Vec<String> {
+    const JOBS: [&str; 10] = [
+        "composter",
+        "lectern",
+        "smoker",
+        "barrel",
+        "loom",
+        "cartography_table",
+        "brewing_stand",
+        "fletching_table",
+        "stonecutter",
+        "grindstone",
+    ];
+    let mut c = hall(x, y, z, "smooth_stone", "glass", 2);
+    c.push(format!("setblock {} {y} {} minecraft:bell", x + 32, z + 32));
+    for i in 0..400 {
+        // One plot of 4 × 4 blocks per villager: bed, job site and room to walk.
+        let (px, pz) = (x - 16 + 4 + 4 * (i % 20), z - 16 + 4 + 4 * (i / 20));
+        c.push(format!(
+            "setblock {px} {y} {pz} minecraft:white_bed[part=foot,facing=north] strict"
+        ));
+        c.push(format!(
+            "setblock {px} {y} {} minecraft:white_bed[part=head,facing=north] strict",
+            pz - 1
+        ));
+        c.push(format!(
+            "setblock {} {y} {pz} minecraft:{}",
+            px + 2,
+            JOBS[(i as usize) % JOBS.len()]
+        ));
+        c.push(format!(
+            "summon minecraft:villager {}.5 {y} {}.5",
+            px + 1,
+            pz + 1
+        ));
+    }
+    c
+}
+
+fn mobs_far(x: i32, y: i32, z: i32) -> Vec<String> {
+    let mut c = vec![format!(
+        "forceload add {} {} {} {}",
+        x - 32,
+        z - 32,
+        x + 95,
+        z + 95
+    )];
+    c.extend(farm(x, y, z));
+    c.push(format!("tp {OBSERVER} {} {} {}", x + 2032, y + 40, z + 32));
+    c
+}
+
 fn items(x: i32, y: i32, z: i32) -> Vec<String> {
     let mut c = vec![platform(x, y, z)];
     for i in 0..2000 {
@@ -1405,7 +1602,7 @@ fn publish(root: &Path, source: &str) -> Result<()> {
     let run = if local.is_file() {
         crate::read_json(local)?
     } else {
-        let host = std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into());
+        let host = loadtest::bench_host();
         let stamp = if source == "latest" {
             let out = loadtest::command_output(
                 Command::new("ssh").args([&host, &format!("ls -1 {REMOTE_RESULTS}")]),
@@ -1583,7 +1780,8 @@ fn metrics_of(name: &str) -> Vec<Metric> {
                 r["teleports"].clone()
             }),
         ],
-        "redstone" | "mobs" | "items" | "hoppers" | "tnt" | "fluids" | "light" => vec![
+        "redstone" | "mobs" | "farm" | "monsters" | "villagers" | "mobs-far" | "items"
+        | "hoppers" | "tnt" | "fluids" | "light" => vec![
             m("mspt_p95", "MSPT p95", "ms", Better::Lower, |r| {
                 r["mspt"]["p95"].clone()
             }),

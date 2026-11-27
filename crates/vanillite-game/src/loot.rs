@@ -818,8 +818,16 @@ impl LootTables {
                     .name
                     .split_once(':')
                     .unwrap_or(("minecraft", info.name));
+                // `Blocks.wallVariant`: wall torches, signs, heads, banners and coral fans
+                // use the table of their standing block (`overrideLootTable`).
                 by_name
                     .get(format!("{ns}:blocks/{path}").as_str())
+                    .or_else(|| {
+                        path.contains("wall_").then(|| {
+                            by_name
+                                .get(format!("{ns}:blocks/{}", path.replace("wall_", "")).as_str())
+                        })?
+                    })
                     .copied()
                     .unwrap_or(u32::MAX)
             })

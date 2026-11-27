@@ -1,7 +1,9 @@
 //! `cargo xtask loadtest`: scaling benchmark with `tools/loadbot`.
 //!
-//! The server under test runs alone on the test server (`vanillite@30901`, or the Paper
-//! reference `paper-loadtest` on 30900), only during the run. The bots run here. Per step of
+//! The server under test runs alone on the benchmark server vanillite-bench (#186;
+//! `vanillite@30901`, or the Paper reference `paper-loadtest` on 30900), only during the run.
+//! The bots run there too, on the CPUs the server's hardware profile leaves free
+//! (`vanillite-bench bots`), so the network between here and there plays no part. Per step of
 //! the player ramp the run records server MSPT, RSS, CPU and network throughput (from
 //! `vanillite-loadtest-monitor` on the test server) and the bots' join latency, round trip and
 //! traffic, and how fast chunks reach the bots and the disk is read. Every step can move the
@@ -24,7 +26,8 @@ use serde_json::{Value, json};
 
 use crate::Result;
 
-const HOST_IP: &str = "10.10.10.40";
+/// SSH host of the benchmark server; override with `VANILLITE_BENCH_HOST`.
+const BENCH_HOST: &str = "vanillite-bench";
 const RESULTS: &str = "/opt/vanillite/bench/results";
 /// Where `vanillite@30901` saves its players (`--fresh-players`).
 const PLAYERS: &str = "/opt/vanillite/30901/world/players";
@@ -39,6 +42,8 @@ const GATE_HISTORY: usize = 5;
 pub(crate) const LIMITS: &str = "4c8g";
 /// A run is unreliable when the host's load per CPU was above this during it.
 const OVERLOAD_PER_CPU: f64 = 1.0;
+/// A run is unreliable when the hypervisor gave more than this share of the CPU time away.
+const MAX_STEAL_PERCENT: f64 = 5.0;
 
 /// A server (or proxy) under test on the test server; the references take turns on 30900.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,7 +242,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         return report(files);
     }
     let o = parse(args)?;
-    let host = std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into());
+    let host = bench_host();
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let mut build = vec!["build", "--locked", "--profile", o.profile, "-p", "loadbot"];
     if o.deploy && o.binary.is_none() && o.targets.contains(&Target::Vanillite) {
@@ -271,6 +276,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
 
     let _lock = Lock::take(&host, &format!("xtask loadtest from {}", root.display()))?;
+    install(&host, "loadbot", &bin_dir.join("loadbot"))?;
     let hw = hardware(&host)?;
     println!(
         "   hardware: {}; limits {}",
@@ -281,7 +287,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     let mut failures = Vec::new();
     for &target in &o.targets {
         println!(
-            "== load test: {} on {HOST_IP}:{}",
+            "== load test: {} on {host}:{}",
             target.name(),
             target.port()
         );
@@ -309,7 +315,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
                 }
             })
             .and_then(|()| deploy_or_restart(target, &o, &host, &bin_dir))
-            .and_then(|()| Session::open(&host, target, &bin_dir, &o, &[]))
+            .and_then(|()| Session::open(&host, target, &o, &[]))
             .and_then(|mut session| {
                 let steps = ramp(&o, &mut session);
                 session.close();
@@ -640,7 +646,7 @@ fn deploy_or_restart(target: Target, o: &Options, host: &str, bin_dir: &Path) ->
         }
         _ => ssh(host, &format!("systemctl restart {}", target.unit()))?,
     }
-    wait_for_port(target.port(), Duration::from_secs(180))
+    wait_for_port(host, target.port(), Duration::from_secs(180))
 }
 
 /// The test server's benchmark lock: `xtask loadtest` and `xtask bench` restart the benchmark
@@ -695,15 +701,9 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// Starts the monitor of `target` on the test server and the load bot here (no bots
+    /// Starts the monitor of `target` and the load bot on the benchmark server (no bots
     /// online yet); `extra` are more loadbot arguments.
-    pub(crate) fn open(
-        host: &str,
-        target: Target,
-        bin_dir: &Path,
-        o: &Options,
-        extra: &[&str],
-    ) -> Result<Self> {
+    pub(crate) fn open(host: &str, target: Target, o: &Options, extra: &[&str]) -> Result<Self> {
         let start = Instant::now();
         let data = Arc::new(Mutex::new(Collected {
             clock_ticks: 100,
@@ -719,13 +719,11 @@ impl Session {
         let d = Arc::clone(&data);
         std::thread::spawn(move || read_monitor(monitor_out, start, &d));
 
-        // One socket per bot: lift the soft limit of open files to the hard limit first.
-        let mut bot = Command::new("sh")
-            .args(["-c", "ulimit -n \"$(ulimit -Hn)\" && exec \"$0\" \"$@\""])
-            .arg(bin_dir.join("loadbot"))
+        // `vanillite-bench bots` runs the installed loadbot against 127.0.0.1 on the CPUs the
+        // server does not use; stdin and stdout go through SSH.
+        let mut bot = Command::new("ssh")
+            .args([host, "vanillite-bench", "bots"])
             .args([
-                "--host",
-                HOST_IP,
                 "--port",
                 &target.port().to_string(),
                 "--join-rate",
@@ -1467,24 +1465,32 @@ fn trim(v: f64) -> String {
     }
 }
 
-fn wait_for_port(port: u16, timeout: Duration) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    let addr = std::net::SocketAddr::from((
-        HOST_IP
-            .parse::<std::net::Ipv4Addr>()
-            .map_err(|e| e.to_string())?,
-        port,
-    ));
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-    Err(format!(
-        "{addr} did not open within {} s",
-        timeout.as_secs()
-    ))
+/// Waits on the benchmark server until `port` accepts connections there.
+fn wait_for_port(host: &str, port: u16, timeout: Duration) -> Result<()> {
+    let secs = timeout.as_secs();
+    ssh(
+        host,
+        &format!(
+            "timeout {secs} bash -c 'until (exec 3<>/dev/tcp/127.0.0.1/{port}) 2> /dev/null; \
+             do sleep 2; done'"
+        ),
+    )
+    .map_err(|_| format!("{host}:{port} did not open within {secs} s"))
+}
+
+/// SSH host of the benchmark server: `VANILLITE_BENCH_HOST`, else vanillite-bench.
+pub(crate) fn bench_host() -> String {
+    std::env::var("VANILLITE_BENCH_HOST").unwrap_or_else(|_| BENCH_HOST.to_owned())
+}
+
+/// Installs a binary from here as /opt/vanillite/bench/bin/<name> on the benchmark server.
+pub(crate) fn install(host: &str, name: &str, file: &Path) -> Result<()> {
+    let f = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    crate::devenv::run(
+        Command::new("ssh")
+            .args([host, "vanillite-bench", "install", name])
+            .stdin(Stdio::from(f)),
+    )
 }
 
 fn finish(child: &mut Child, grace: Duration) {
@@ -1519,7 +1525,7 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// The test server's hardware (`vanillite-bench hw`), the machine the bots run on, and the
+/// The benchmark server's hardware (`vanillite-bench hw`), the CPUs the bots run on, and the
 /// `baseline`: what must stay the same for results to be compared.
 pub(crate) fn hardware(host: &str) -> Result<Value> {
     let mut hw = bench_json(host, &["hw"])?;
@@ -1532,16 +1538,12 @@ pub(crate) fn hardware(host: &str) -> Result<Value> {
         hw["host_cpus"],
         gib(&hw["host_mem_mib"]),
     ));
-    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let bot_cpus = hw["bot_cpu_list"].as_str().unwrap_or_default().to_owned();
     hw["bots"] = json!({
-        "cpu_model": cpuinfo
-            .lines()
-            .find_map(|l| l.strip_prefix("model name").and_then(|r| r.split_once(':')))
-            .map(|(_, m)| m.trim()),
-        "cpus": std::thread::available_parallelism().map(usize::from).ok(),
-        "cpu_list": std::fs::read_to_string("/sys/fs/cgroup/cpuset.cpus.effective")
-            .ok()
-            .map(|c| c.trim().to_owned()),
+        "cpu_model": hw["cpu_model"],
+        "cpus": bot_cpus.split(',').filter(|c| !c.is_empty()).count(),
+        "cpu_list": bot_cpus,
+        "same_machine": true,
     });
     Ok(hw)
 }
@@ -1553,7 +1555,8 @@ pub(crate) fn load_sample(host: &str) -> Value {
 
 /// The load between two samples: the host's load (mean of the 1-minute averages at both ends
 /// and the 5-minute one at the end), the share of time the test server's tasks waited for a
-/// CPU, and whether the host was overloaded (load per host CPU above 1).
+/// CPU, the share of CPU time the hypervisor gave to other machines (steal), and whether the
+/// host was overloaded (load per host CPU above 1, or more than 5 % steal).
 pub(crate) fn load_window(before: &Value, after: &Value, hw: &Value) -> Value {
     let (Some(t0), Some(t1)) = (before["t"].as_f64(), after["t"].as_f64()) else {
         return Value::Null;
@@ -1573,12 +1576,22 @@ pub(crate) fn load_window(before: &Value, after: &Value, hw: &Value) -> Value {
     let per_cpu = host_load
         .zip(hw["host_cpus"].as_f64().filter(|n| *n > 0.0))
         .map(|(l, n)| l / n);
+    let steal = match (
+        before["steal_s"].as_f64(),
+        after["steal_s"].as_f64(),
+        hw["cpus"].as_f64().filter(|n| *n > 0.0),
+    ) {
+        (Some(a), Some(b), Some(n)) if t1 > t0 => Some((b - a) / ((t1 - t0) * n) * 100.0),
+        _ => None,
+    };
     json!({
         "seconds": round(Some(t1 - t0)),
         "host_load": round(host_load),
         "host_load_per_cpu": round(per_cpu),
         "cpu_pressure_percent": round(pressure),
-        "unreliable": per_cpu.is_some_and(|l| l > OVERLOAD_PER_CPU),
+        "steal_percent": round(steal),
+        "unreliable": per_cpu.is_some_and(|l| l > OVERLOAD_PER_CPU)
+            || steal.is_some_and(|s| s > MAX_STEAL_PERCENT),
     })
 }
 

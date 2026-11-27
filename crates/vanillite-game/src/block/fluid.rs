@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::{BlockPos, Direction};
-use vanillite_data::block::{BLOCK_COUNT, BLOCKS, BlockId, BlockState, PROPERTIES, ids};
+use vanillite_data::block::{BLOCK_COUNT, BLOCKS, BlockId, BlockKind, BlockState, PROPERTIES, ids};
 use vanillite_data::fluid::{FLUID_STATES, FluidState};
 use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use vanillite_worldgen::behaviour::{is_full_block, merged_face_occludes};
@@ -601,7 +601,9 @@ fn spread_to(
     }
 }
 
-/// `SimpleWaterloggedBlock.placeLiquid`: a water source waterlogs the block.
+/// `SimpleWaterloggedBlock.placeLiquid`: a water source waterlogs the block. Double slabs take
+/// none (`SlabBlock`); a lit campfire is doused and a lit candle goes out
+/// (`CampfireBlock`/`CandleBlock.placeLiquid`).
 pub fn place_liquid(
     level: &mut Level,
     pos: BlockPos,
@@ -611,16 +613,47 @@ pub fn place_liquid(
     if container(state.block()) != Container::Waterlogged
         || waterlogged(state)
         || fluid.info().fluid != WATER
+        || is_double_slab(state)
     {
         return false;
     }
     let Some(waterlogged) = state.with("waterlogged", "true") else {
         return false;
     };
-    level.set_block_and_update(pos, waterlogged);
+    let kind = state.block().info().kind;
+    let lit = state.value("lit") == Some("true");
+    if kind == BlockKind::CampfireBlock {
+        let unlit = waterlogged.with("lit", "false").unwrap_or(waterlogged);
+        if lit {
+            level.play_block_sound(
+                None,
+                pos,
+                super::sound_id("block.fire.extinguish"),
+                crate::level::SOUND_BLOCKS,
+                1.0,
+                1.0,
+            );
+            // `douse`: the particles are client side.
+            level.game_event_at(None, crate::level::game_event::events().block_change, pos);
+        }
+        level.set_block_and_update(pos, unlit);
+    } else if kind == BlockKind::CandleBlock && lit {
+        super::cake::extinguish(level, None, waterlogged, pos);
+    } else {
+        level.set_block_and_update(pos, waterlogged);
+    }
     let delay = tick_delay(level, WATER);
     level.schedule_fluid_tick(pos, WATER, delay);
     true
+}
+
+/// A `SlabBlock` of `type=double` (`canPlaceLiquid`/`placeLiquid` refuse it).
+pub fn is_double_slab(state: BlockState) -> bool {
+    state.value("type") == Some("double")
+        && matches!(
+            state.block().info().kind,
+            BlockKind::SlabBlock | BlockKind::WeatheringCopperSlabBlock
+        )
 }
 
 /// `fluidState.is(FluidTags.WATER)`.
@@ -729,6 +762,31 @@ pub fn sponge_on_place(
     if !old.is(state.block()) {
         try_absorb_water(level, pos);
     }
+}
+
+/// `WetSpongeBlock.onPlace`: where water evaporates (the Nether) the sponge dries at once.
+pub fn wet_sponge_on_place(
+    level: &mut Level,
+    _state: BlockState,
+    pos: BlockPos,
+    _old: BlockState,
+    _moved: bool,
+) {
+    if !level.settings.water_evaporates {
+        return;
+    }
+    level.set_block_and_update(pos, ids::SPONGE.default_state());
+    level.level_event(None, 2009, pos, 0);
+    let pitch =
+        (1.0 + vanillite_base::random::RandomSource::next_float(level.random()) * 0.2) * 0.7;
+    level.play_block_sound(
+        None,
+        pos,
+        super::sound_id("block.wet_sponge.dries"),
+        crate::level::SOUND_BLOCKS,
+        1.0,
+        pitch,
+    );
 }
 
 /// `SpongeBlock.neighborChanged`.

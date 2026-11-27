@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use vanillite_base::{BlockPos, Vec3};
-use vanillite_config::GameMode;
+use vanillite_config::{GameMode, Profile};
 use vanillite_data::block::{BlockState, ids as blocks};
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::packets::play::serverbound::{DigAction, Hand, UseItemOn};
@@ -149,6 +149,13 @@ fn with_ctx(
 
 const FLOOR: BlockPos = BlockPos::new(1, -1, 0);
 
+/// `anticheat.digging.fast-break-check` of a profile.
+fn profile_rule(profile: Profile) -> bool {
+    <vanillite_config::WorldRules as vanillite_config::RuleSet>::for_profile(profile)
+        .digging
+        .fast_break_check
+}
+
 /// A survival player that stops digging stone by hand at once does not break it with the stop
 /// (less than 70 % done). The delayed destroy that follows counts like Vanilla's, with the tick
 /// the dig started at instead of the ticks spent (`incrementDestroyProgress(state, pos,
@@ -156,6 +163,7 @@ const FLOOR: BlockPos = BlockPos::new(1, -1, 0);
 /// breaks the block on the next tick (#180).
 #[test]
 fn stopped_dig_finishes_like_vanilla() {
+    assert!(!profile_rule(Profile::Vanilla) && !profile_rule(Profile::Technical));
     let mut level = TestLevel::default();
     let sink = Sink::default();
     let mut digging = Digging::new();
@@ -188,6 +196,59 @@ fn stopped_dig_finishes_like_vanilla() {
     assert!(
         level.block(FLOOR).is_air(),
         "delayed destroy did not finish"
+    );
+}
+
+/// `anticheat.digging.fast-break-check` (#180): a stop right after the start no longer breaks
+/// the block on the next tick; the client gets the block back once the latency allowance is
+/// over. A dig whose start reached the server late still finishes once the real progress is
+/// complete.
+#[test]
+fn fast_break_check_rejects_start_stop() {
+    let mut level = TestLevel::default();
+    let sink = Sink::default();
+    let mut digging = Digging::new();
+    digging.fast_break_check = profile_rule(Profile::Paper);
+    for profile in [Profile::Spigot, Profile::Performance] {
+        assert!(profile_rule(profile), "{profile}");
+    }
+    let tick = |level: &mut TestLevel, digging: &mut Digging, n: u32| {
+        for _ in 0..n {
+            with_ctx(level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
+                digging.tick(ctx, &sink);
+            });
+        }
+    };
+    tick(&mut level, &mut digging, 200);
+    with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
+        digging.handle_action(ctx, DigAction::StartDestroyBlock, FLOOR, 1, 1, &sink);
+        digging.handle_action(ctx, DigAction::StopDestroyBlock, FLOOR, 1, 2, &sink);
+    });
+    let sent = sink.0.lock().unwrap().len();
+    tick(&mut level, &mut digging, 30);
+    assert!(
+        level.block(FLOOR).is(blocks::STONE),
+        "start-stop broke the block"
+    );
+    assert!(sink.0.lock().unwrap().len() > sent, "block not sent again");
+    tick(&mut level, &mut digging, 200);
+    assert!(
+        level.block(FLOOR).is(blocks::STONE),
+        "rejected dig finished later"
+    );
+    // Stone by hand takes 150 ticks; the server saw 80 of them before the stop.
+    with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
+        digging.handle_action(ctx, DigAction::StartDestroyBlock, FLOOR, 1, 3, &sink);
+    });
+    tick(&mut level, &mut digging, 80);
+    with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
+        digging.handle_action(ctx, DigAction::StopDestroyBlock, FLOOR, 1, 4, &sink);
+    });
+    assert!(level.block(FLOOR).is(blocks::STONE), "not with the stop");
+    tick(&mut level, &mut digging, 70);
+    assert!(
+        level.block(FLOOR).is_air(),
+        "lagged legit dig did not finish"
     );
 }
 

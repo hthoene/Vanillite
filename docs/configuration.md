@@ -213,6 +213,8 @@ These apply to the whole server.
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
 | `test-bots` | setting | yes | `0` | `0` | `0` | `0` | `0` | In-process fake players (`TestBot`, `TestBot2`, ...) that join over virtual connections, walk in a circle around the spawn and sneak now and then, so a single tester sees other players. Virtual connections need no authentication, so keep this at 0 outside test servers. Integer from 0 to 16. Environment: `VANILLITE_DEBUG__TEST_BOTS`. |
+| `session-recording` | setting | yes | `false` | `false` | `false` | `false` | `false` | Records the players' sessions in the overworld for `cargo xtask parity replay`, which plays them again in Vanilla and Vanillite and compares both tick by tick. When the first player joins, the world is saved and the overworld's chunks are copied (the overworld tick waits for the copy); then every tick the players' serverbound play packets are written, until the last player has left. Chat, commands, signs, books and plugin messages are left out, and players get anonymous ids instead of their names, addresses and UUIDs. For test servers. Environment: `VANILLITE_DEBUG__SESSION_RECORDING`. |
+| `session-recording-dir` | setting | yes | `"recordings"` | `"recordings"` | `"recordings"` | `"recordings"` | `"recordings"` | Folder of the session recordings, relative to the server folder: one folder per session (`<start time>/` with `world/`, `meta.json`, `packets.jsonl`). Environment: `VANILLITE_DEBUG__SESSION_RECORDING_DIR`. |
 
 #### `[proxy]`
 
@@ -378,6 +380,12 @@ view-distance = 8
 |---|---|---|---|---|---|---|---|---|
 | `transfer-cooldown` | gameplay |  | `8` | `8` | `8` | `8` | `8` | Ticks a hopper waits after it moved an item (Vanilla 8). Higher values move items more slowly. Integer from 1 to 64. Environment: `VANILLITE_PERFORMANCE__HOPPERS__TRANSFER_COOLDOWN`. |
 | `check-cooldown` | performance |  | `1` | `1` | `1` | `1` | `4` | Ticks a hopper waits after it found nothing to move (Vanilla 1: it tries every tick). Saves the container and item lookups of idle hoppers. Deviation: a hopper notices new items up to this many ticks later; item sorters and clocks built on hopper timing run differently. Integer from 1 to 64. Environment: `VANILLITE_PERFORMANCE__HOPPERS__CHECK_COOLDOWN`. |
+
+#### `[anticheat.digging]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `fast-break-check` | fix |  | `false` | `false` | `true` | `true` | `true` | Validates "stop digging" against the server's own break progress: the time since the player started digging, the tool, Haste and Mining Fatigue, being in water and on the ground. Vanilla breaks a block whose progress falls short on the next tick once the player has been online for a while (it takes the start tick as the time spent), so a client that starts and at once stops digging breaks any block. On, a stop with too little progress waits for the progress to complete like a legit dig with latency and is rejected (the block is sent again, nothing drops) when it does not complete within the dig time seen so far plus one second. Instant mining, creative and normal digging with lag are not affected. Environment: `VANILLITE_ANTICHEAT__DIGGING__FAST_BREAK_CHECK`. |
 
 #### `[anticheat.anti-xray]`
 

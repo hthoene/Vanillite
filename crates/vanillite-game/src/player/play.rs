@@ -440,7 +440,12 @@ pub struct Digging {
     has_delayed_destroy: bool,
     delayed_destroy_pos: BlockPos,
     delayed_tick_start: i32,
+    /// Last game tick at which a delayed destroy may still complete (`fast_break_check`).
+    delayed_deadline: i32,
     last_sent_state: i32,
+    /// The world rule `anticheat.digging.fast-break-check`: stops are checked against the real
+    /// time spent digging instead of Vanilla's start tick, too-fast breaks are rejected.
+    pub fast_break_check: bool,
     /// Highest block change sequence to acknowledge this tick (`ackBlockChangesUpTo`).
     pub ack_up_to: i32,
     /// `dropSpamThrottler` for creative drops.
@@ -494,6 +499,10 @@ pub fn dig_effects(speed: f32, dig_speed: Option<i32>, fatigue: Option<i32>) -> 
     speed
 }
 
+/// Ticks beyond the dig time seen so far within which a delayed destroy must complete under
+/// the fast-break check (network jitter between the start and the stop packet).
+const FAST_BREAK_GRACE_TICKS: i32 = 20;
+
 /// `(int)(progress * 10.0F)`.
 fn crack_state(progress: f32) -> i32 {
     let v = progress * 10.0;
@@ -533,11 +542,25 @@ impl Digging {
                 self.has_delayed_destroy = false;
             } else {
                 // Vanilla passes `delayedTickStart` itself as the ticks spent: the block breaks
-                // on the first tick after the stop once the game mode is old enough.
-                let progress = self.increment_progress(ctx, state, pos, self.delayed_tick_start);
+                // on the first tick after the stop once the game mode is old enough. The
+                // fast-break check counts the ticks since the dig started instead.
+                let ticks = if self.fast_break_check {
+                    self.game_ticks.wrapping_sub(self.delayed_tick_start)
+                } else {
+                    self.delayed_tick_start
+                };
+                let progress = self.increment_progress(ctx, state, pos, ticks);
                 if progress >= 1.0 {
                     self.has_delayed_destroy = false;
                     self.destroy_block(ctx, pos, sink);
+                } else if self.fast_break_check
+                    && self.game_ticks.wrapping_sub(self.delayed_deadline) > 0
+                {
+                    // Too fast: the client took the block as broken, it gets it back.
+                    self.has_delayed_destroy = false;
+                    ctx.level.destroy_progress(ctx.actor.network_id, pos, -1);
+                    self.last_sent_state = -1;
+                    block_update(sink, ctx.level, pos);
                 }
             }
         } else if self.is_destroying
@@ -677,6 +700,11 @@ impl Digging {
             }
             DigAction::ChangeDestroyDirection => self.destroy_direction = direction % 6,
             DigAction::StopDestroyBlock => {
+                // Fast-break check: only a running dig can be finished.
+                if self.fast_break_check && !(self.is_destroying && Some(pos) == self.destroy_pos) {
+                    block_update(sink, ctx.level, pos);
+                    return;
+                }
                 if Some(pos) == self.destroy_pos {
                     let ticks = self.game_ticks.wrapping_sub(self.destroy_progress_start);
                     let state = ctx.level.block(pos);
@@ -696,6 +724,15 @@ impl Digging {
                             self.has_delayed_destroy = true;
                             self.delayed_destroy_pos = pos;
                             self.delayed_tick_start = self.destroy_progress_start;
+                            // Latency allowance: as long again as the dig took, plus a second.
+                            self.delayed_deadline = self
+                                .game_ticks
+                                .wrapping_add(ticks.max(0))
+                                .wrapping_add(FAST_BREAK_GRACE_TICKS);
+                        } else if self.fast_break_check {
+                            self.is_destroying = false;
+                            ctx.level.destroy_progress(ctx.actor.network_id, pos, -1);
+                            block_update(sink, ctx.level, pos);
                         }
                     }
                 }

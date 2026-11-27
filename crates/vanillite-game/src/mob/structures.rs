@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::{BlockPos, ChunkPos};
+use vanillite_chunk::ProtoChunk;
 use vanillite_nbt::{Compound, Tag};
 
 use crate::level::Level;
@@ -124,20 +125,33 @@ impl ChunkStructures {
     }
 }
 
-/// A per-world cache of parsed chunk structure data.
+/// A cache of parsed chunk structure data (per world, or per tile in tile region mode).
+///
+/// Entries are keyed by the chunk's stored data, so a reloaded chunk is parsed again. When the
+/// cache reaches its sweep size, entries of chunks that are no longer loaded (or were reloaded)
+/// are dropped and the next sweep waits until it has doubled again: it stays bounded by twice
+/// the loaded chunks it was asked about, at amortised constant cost, and never drops the
+/// chunks still in use.
 #[derive(Debug, Default)]
 pub struct StructureIndex {
     chunks: FxHashMap<ChunkPos, (usize, Arc<ChunkStructures>)>,
+    /// Size at which the next sweep runs (at least [`MIN_SWEEP`]).
+    sweep_at: usize,
 }
 
-/// The cache is cleared when it grows beyond this many chunks.
-const MAX_CACHED: usize = 16_384;
+/// The cache is not swept below this many chunks.
+const MIN_SWEEP: usize = 4_096;
+
+/// The cache key of a chunk's stored data.
+fn key_of(chunk: &ProtoChunk) -> usize {
+    chunk.extra.as_ref().map_or(0, |a| a.as_ptr() as usize)
+}
 
 impl StructureIndex {
     /// The structure data of a loaded chunk (`None` when it is not loaded).
     pub fn chunk(&mut self, level: &Level, pos: ChunkPos) -> Option<Arc<ChunkStructures>> {
         let chunk = level.chunks.chunk(pos)?;
-        let key = chunk.extra.as_ref().map_or(0, |a| a.as_ptr() as usize);
+        let key = key_of(chunk);
         if let Some((k, s)) = self.chunks.get(&pos)
             && *k == key
         {
@@ -162,8 +176,10 @@ impl StructureIndex {
                 _ => None,
             })
             .unwrap_or_default();
-        if self.chunks.len() >= MAX_CACHED {
-            self.chunks.clear();
+        if self.chunks.len() >= self.sweep_at.max(MIN_SWEEP) {
+            self.chunks
+                .retain(|&p, (k, _)| level.chunks.chunk(p).is_some_and(|c| key_of(c) == *k));
+            self.sweep_at = self.chunks.len() * 2;
         }
         let parsed = Arc::new(parsed);
         self.chunks.insert(pos, (key, Arc::clone(&parsed)));
