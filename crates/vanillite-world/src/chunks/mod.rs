@@ -1928,7 +1928,7 @@ impl Chunks {
                         self.generated_full.push(pos);
                     }
                     holder.touch(pos, &mut self.changed);
-                    if next == ChunkStatus::Spawn {
+                    if next == ChunkStatus::Spawn && self.slots.generator.spawns_original_mobs() {
                         self.generated.push(pos);
                     }
                 }

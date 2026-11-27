@@ -421,6 +421,13 @@ pub trait ChunkGenerator: Send + Sync {
     /// Frees what the generator can make again when it is needed (tables, caches). Called
     /// when the server has been empty for a while; what `generate` produces must not change.
     fn release_memory(&self) {}
+
+    /// Whether chunks get their first animals when they pass the spawn step
+    /// (`ChunkGenerator.spawnOriginalMobs`): Vanilla's noise generator does unless its settings
+    /// disable mob generation; flat and debug worlds do not.
+    fn spawns_original_mobs(&self) -> bool {
+        true
+    }
 }
 
 /// Creates the generator of each world.
@@ -478,6 +485,10 @@ impl ChunkGenerator for FlatGenerator {
     }
 
     fn generate(&self, _: ChunkStatus, _: &mut [ProtoChunk], _: &mut Neighbours<'_>) {}
+
+    fn spawns_original_mobs(&self) -> bool {
+        false
+    }
 }
 
 /// Provider of [`FlatGenerator`] with the classic layers.

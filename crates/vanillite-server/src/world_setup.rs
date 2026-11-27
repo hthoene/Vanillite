@@ -431,7 +431,7 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
             .and_then(|g| g.get("type"))
             .and_then(|t| t.as_str());
         match kind {
-            Some("minecraft:flat") => {
+            Some("minecraft:flat") if self.packs.is_none() => {
                 return Ok(Arc::new(flat_generator(
                     world,
                     generator.and_then(|g| g.get("settings")),
@@ -440,9 +440,21 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
             Some("minecraft:debug") => return Ok(Arc::new(DebugGenerator::new(world))),
             _ => {}
         }
-        let (Some(packs), Some(generator), Some("minecraft:noise")) =
-            (self.packs.as_ref(), generator, kind)
-        else {
+        // `FlatLevelSource`: layers, the flat biome's adjusted features and the structure
+        // overrides, through the same pipeline as the noise generator.
+        let flat = match kind {
+            Some("minecraft:flat") => Some(match generator.and_then(|g| g.get("settings")) {
+                Some(settings) => vanillite_worldgen::FlatSettings::from_json(settings)
+                    .map_err(|e| format!("{}: {e}", world.dimension))?,
+                None => vanillite_worldgen::FlatSettings::classic(),
+            }),
+            _ => None,
+        };
+        let (Some(packs), Some(generator), true) = (
+            self.packs.as_ref(),
+            generator,
+            flat.is_some() || kind == Some("minecraft:noise"),
+        ) else {
             if let Some(kind) = kind {
                 log::warn!(
                     "{}: generator {kind} is not supported, using flat",
@@ -451,12 +463,18 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
             }
             return Ok(Arc::new(FlatGenerator::classic(world)));
         };
-        let noise_settings = generator
-            .get("settings")
-            .and_then(|s| s.as_str())
-            .ok_or("inline noise settings are not supported")?
-            .to_owned();
-        let biome_source = generator.get("biome_source").ok_or("no biome source")?;
+        let (noise_settings, biome_source) = if flat.is_some() {
+            (String::new(), &serde_json::Value::Null)
+        } else {
+            (
+                generator
+                    .get("settings")
+                    .and_then(|s| s.as_str())
+                    .ok_or("inline noise settings are not supported")?
+                    .to_owned(),
+                generator.get("biome_source").ok_or("no biome source")?,
+            )
+        };
         let (min_y, has_sky_light) = (world.min_y, world.has_sky_light);
         let height = i32::try_from(world.height).map_err(|e| e.to_string())?;
         // Built now and again after an empty server released it (`performance.memory`).
@@ -473,8 +491,20 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
                     height,
                     has_sky_light,
                 };
-                let terrain =
-                    TerrainGenerator::with_templates(&packs, spec, seed, Arc::clone(&templates));
+                let terrain = match &flat {
+                    Some(flat) => TerrainGenerator::flat_with_templates(
+                        &packs,
+                        flat,
+                        min_y,
+                        height,
+                        has_sky_light,
+                        seed,
+                        Arc::clone(&templates),
+                    ),
+                    None => {
+                        TerrainGenerator::with_templates(&packs, spec, seed, Arc::clone(&templates))
+                    }
+                };
                 log::debug!(
                     "{dimension}: terrain generator built in {:.0?}",
                     started.elapsed()
@@ -500,9 +530,9 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
     }
 }
 
-/// `FlatLevelSource` of `settings` (`FlatLevelGeneratorSettings`): its layers from the bottom of
-/// the world up and its biome. Without settings, Vanilla's default layers. Lakes, features and
-/// structures of flat settings are not generated.
+/// `FlatLevelSource` of `settings` (`FlatLevelGeneratorSettings`) without data packs: its layers
+/// from the bottom of the world up and its biome. Without settings, Vanilla's default layers.
+/// Lakes, features and structures need the data packs (the terrain generator's flat mode).
 fn flat_generator(world: &WorldInfo, settings: Option<&serde_json::Value>) -> FlatGenerator {
     let Some(settings) = settings else {
         return FlatGenerator::classic(world);
@@ -604,6 +634,10 @@ impl ChunkGenerator for DebugGenerator {
         _: &mut [vanillite_chunk::ProtoChunk],
         _: &mut vanillite_chunk::slots::Neighbours<'_>,
     ) {
+    }
+
+    fn spawns_original_mobs(&self) -> bool {
+        false
     }
 }
 
