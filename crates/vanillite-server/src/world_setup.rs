@@ -60,7 +60,7 @@ pub(crate) fn parse_seed(text: &str) -> Option<i64> {
 }
 
 /// A seed for a new world without `level-seed` (`WorldOptions.randomSeed`).
-fn random_seed() -> i64 {
+pub(crate) fn random_seed() -> i64 {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -170,12 +170,14 @@ impl WorldGen {
     }
 
     /// The dimensions the server loads, in tick order.
-    pub(crate) fn dimensions(&self) -> crate::dimensions::Dimensions {
+    pub(crate) fn dimensions(&self, packs: Option<&LoadedPacks>) -> crate::dimensions::Dimensions {
         crate::dimensions::Dimensions::new(
             self.stems
                 .iter()
                 .map(|s| (s.id.clone(), s.kind.clone()))
                 .collect(),
+            packs,
+            self.seed,
         )
     }
 
@@ -224,6 +226,55 @@ impl WorldGen {
         Ok(Self::from_nbt(&data).bake(packs))
     }
 
+    /// The settings of an extra world: one dimension `id` of type `kind` with `generator`
+    /// (`None`: the classic flat layers), written to `level_dir` like Vanilla's
+    /// `world_gen_settings.dat`.
+    pub(crate) fn create_single(
+        level_dir: &Path,
+        (id, kind): (&str, &str),
+        generator: Option<serde_json::Value>,
+        seed: i64,
+        generate_structures: bool,
+    ) -> Result<Self, StartError> {
+        let mut stem = vanillite_nbt::Compound::new().with("type", kind);
+        if let Some(generator) = &generator
+            && let vanillite_nbt::Tag::Compound(generator) = json_to_nbt(generator)
+        {
+            stem.insert("generator", generator);
+        }
+        let data = vanillite_nbt::Compound::new()
+            .with("generate_structures", generate_structures)
+            .with("bonus_chest", false)
+            .with("seed", seed)
+            .with("dimensions", vanillite_nbt::Compound::new().with(id, stem));
+        vanillite_storage::write_saved_data(level_dir, WORLD_GEN_SETTINGS, data.clone())
+            .map_err(|e| StartError::io(level_dir, e))?;
+        Ok(Self::from_nbt(&data))
+    }
+
+    /// The dimension type of a saved dimension.
+    pub(crate) fn kind_of(&self, dimension: &str) -> Option<&str> {
+        self.stems
+            .iter()
+            .find(|s| s.id == dimension)
+            .map(|s| s.kind.as_str())
+    }
+
+    /// The saved dimension `from` under the key `to` (an extra world whose files another
+    /// server wrote under Vanilla's key).
+    pub(crate) fn renamed(mut self, from: &str, to: &str) -> Self {
+        self.stems.retain(|s| s.id == from);
+        for stem in &mut self.stems {
+            stem.id = to.to_owned();
+        }
+        self
+    }
+
+    /// The generator JSON of a dimension, if it has one.
+    pub(crate) fn generator_json(&self, dimension: &str) -> Option<serde_json::Value> {
+        self.generator(dimension).cloned()
+    }
+
     fn from_nbt(data: &vanillite_nbt::Compound) -> Self {
         let seed = data
             .get("seed")
@@ -262,7 +313,12 @@ impl WorldGen {
     /// The total height of the overworld's flat layers (`FlatLevelSource.getSpawnHeight` takes
     /// it); `None` for other generators.
     pub(crate) fn flat_spawn_height(&self) -> Option<i32> {
-        let generator = self.generator("minecraft:overworld")?;
+        self.flat_spawn_height_of("minecraft:overworld")
+    }
+
+    /// The total height of a dimension's flat layers; `None` for other generators.
+    pub(crate) fn flat_spawn_height_of(&self, dimension: &str) -> Option<i32> {
+        let generator = self.generator(dimension)?;
         if generator.get("type").and_then(|t| t.as_str()) != Some("minecraft:flat") {
             return None;
         }
@@ -278,7 +334,12 @@ impl WorldGen {
 
     /// Whether the overworld uses the flat generator (`is_flat` of the login packet).
     pub(crate) fn is_flat(&self) -> bool {
-        self.generator("minecraft:overworld")
+        self.is_flat_of("minecraft:overworld")
+    }
+
+    /// Whether a dimension uses no noise generator (`is_flat` of the login packet).
+    pub(crate) fn is_flat_of(&self, dimension: &str) -> bool {
+        self.generator(dimension)
             .is_none_or(|g| g.get("type").and_then(|t| t.as_str()) != Some("minecraft:noise"))
     }
 }
@@ -341,7 +402,13 @@ pub(crate) struct BuiltInGenerators {
     pub(crate) world_gen: WorldGen,
     /// The noise generators made, by dimension, for the levels (`/locate`).
     pub(crate) created: GeneratorsByDimension,
+    /// The settings of the extra worlds, by dimension key.
+    pub(crate) extra: ExtraWorldGens,
 }
+
+/// The generator settings of the extra worlds by dimension key, shared with the server.
+pub(crate) type ExtraWorldGens =
+    Arc<std::sync::Mutex<vanillite_base::hash::FxHashMap<String, WorldGen>>>;
 
 /// Terrain generators by dimension, shared with the levels.
 pub(crate) type GeneratorsByDimension = Arc<
@@ -350,7 +417,14 @@ pub(crate) type GeneratorsByDimension = Arc<
 
 impl ChunkGeneratorProvider for BuiltInGenerators {
     fn create(&self, world: &WorldInfo) -> Result<Arc<dyn ChunkGenerator>, String> {
-        let generator = self.world_gen.generator(&world.dimension);
+        let extra = self
+            .extra
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&world.dimension)
+            .cloned();
+        let world_gen = extra.as_ref().unwrap_or(&self.world_gen);
+        let generator = world_gen.generator(&world.dimension);
         let kind = generator
             .and_then(|g| g.get("type"))
             .and_then(|t| t.as_str());
@@ -387,9 +461,9 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
             has_sky_light: world.has_sky_light,
         };
         let terrain =
-            TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
+            TerrainGenerator::new(packs, spec, world_gen.seed).map_err(|e| e.to_string())?;
         let generator = VanillaChunkGenerator::new(terrain, world.clone())
-            .with_structures(self.world_gen.generate_structures);
+            .with_structures(world_gen.generate_structures);
         self.created
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

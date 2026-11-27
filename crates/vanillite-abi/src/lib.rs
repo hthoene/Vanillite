@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 6;
+pub const ABI_MINOR: u16 = 7;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -404,8 +404,9 @@ abi! {
             /// experience, changeable); cancellable. Since ABI 1.6.
             ENTITY_BREED = 49,
             /// An entity is about to travel through a portal ([`GameEvent`]: `entity`,
-            /// `cause` from [`portal_kind`], `from`, `to` the destination, changeable within
-            /// the destination world); cancellable. Players too. Since ABI 1.6.
+            /// `cause` from [`portal_kind`], `from`, `to` the destination, changeable; since
+            /// ABI 1.7 also its world, e.g. the nether of an extra world); cancellable.
+            /// Players too. Since ABI 1.6.
             ENTITY_PORTAL = 50,
             /// An entity is about to turn into another ([`GameEvent`]: `entity`,
             /// `entity_type`, `key` the new type, `other` the new entity, `cause` from
@@ -487,6 +488,14 @@ abi! {
             /// corner, `entity` the entity whose travel created it or [`Uuid::NIL`] when fire
             /// lit it); cancellable. Since ABI 1.6.
             PORTAL_CREATE = 79,
+            /// A world was loaded: an extra world of `vanillite.toml` or `world_create` /
+            /// `world_load` ([`GameEvent`]: `world`, `key` its dimension key, `text` its
+            /// folder). Since ABI 1.7.
+            WORLD_LOAD = 80,
+            /// An extra world is about to be unloaded ([`GameEvent`] as
+            /// [`event::WORLD_LOAD`], `flags` 1 when its chunks are saved); cancellable: it
+            /// stays loaded. Since ABI 1.7.
+            WORLD_UNLOAD = 81,
             /// A player's menu opens ([`GameEvent`]: `entity` the player, `key` the menu type,
             /// e.g. `minecraft:generic_9x3`, `value` the container id, `text` the title as JSON,
             /// `pos` the block when a block opened it, `flags` from [`menu_flag`]);
@@ -1039,6 +1048,32 @@ abi! {
             END = 1,
             /// An end gateway.
             END_GATEWAY = 2,
+        }
+        /// The environment of a world (Bukkit's `World.Environment`): its dimension type.
+        /// Since ABI 1.7.
+        pub mod environment: u32 {
+            /// `minecraft:overworld`.
+            NORMAL = 0,
+            /// `minecraft:the_nether`.
+            NETHER = 1,
+            /// `minecraft:the_end`.
+            THE_END = 2,
+            /// Another dimension type (a data pack's).
+            CUSTOM = 3,
+        }
+        /// Flags of [`WorldCreate`]. Since ABI 1.7.
+        pub mod world_create_flag: u32 {
+            /// `seed` is set; without it the seed is random.
+            SEED = 1,
+            /// No structures are generated.
+            NO_STRUCTURES = 2,
+        }
+        /// Flags of [`WorldDetails`]. Since ABI 1.7.
+        pub mod world_flag: u32 {
+            /// The world is loaded.
+            LOADED = 1,
+            /// An extra world (own folder); otherwise a dimension of the default world.
+            EXTRA = 2,
         }
         /// Why an entity turns into another ([`event::ENTITY_TRANSFORM`]). Since ABI 1.6.
         pub mod transform_reason: u32 {
@@ -1930,6 +1965,34 @@ abi! {
             /// Flags of the kind.
             pub flags: u32,
         }
+        /// A new extra world for `world_create` (Bukkit's `WorldCreator`). Since ABI 1.7.
+        pub struct WorldCreate {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// Its name and folder (letters, digits, `_`, `-`, `.`); the dimension key is
+            /// `minecraft:<name in lower case>`.
+            pub name: Str,
+            /// One of [`environment`] (not `CUSTOM`).
+            pub environment: u32,
+            /// `normal`, `flat`, `void`, `amplified`, `large_biomes` or the key of a
+            /// dimension whose generator it takes; empty for `normal`.
+            pub generator: Str,
+            /// The seed with [`world_create_flag::SEED`].
+            pub seed: i64,
+            /// Flags from [`world_create_flag`].
+            pub flags: u32,
+        }
+        /// What `world_info` tells about a world. Since ABI 1.7.
+        pub struct WorldDetails {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// One of [`environment`].
+            pub environment: u32,
+            /// Flags from [`world_flag`].
+            pub flags: u32,
+            /// Its seed.
+            pub seed: i64,
+        }
         /// A world border for `border_get` and `border_set`, as `/worldborder` shows it.
         /// Since ABI 1.6.
         pub struct BorderInfo {
@@ -2532,6 +2595,30 @@ abi! {
                 unsafe extern "C" fn(PluginId, Str, Str, *const ByteSink) -> Status,
             /// The persistent data keys of an item, one per line. Since ABI 1.6.
             pub item_data_keys: unsafe extern "C" fn(PluginId, Str, *const ByteSink) -> Status,
+            /// Creates an extra world, or loads it when its folder holds one (which keeps its
+            /// seed and generator), and writes its world index. It loads in the next global
+            /// phase ([`event::WORLD_LOAD`]); until then it is not usable. Since ABI 1.7.
+            pub world_create:
+                unsafe extern "C" fn(PluginId, *const WorldCreate, *mut u32) -> Status,
+            /// Loads the extra world of a folder (the name) and writes its world index;
+            /// [`status::NOT_FOUND`] when the folder holds none. Loads as `world_create` does.
+            /// Since ABI 1.7.
+            pub world_load: unsafe extern "C" fn(PluginId, Str, *mut u32) -> Status,
+            /// Unloads an extra world in the next global phase, its chunks saved when `save`
+            /// is non-zero. [`status::WRONG_OWNER`] for the default world's dimensions,
+            /// [`status::INVALID_ARGUMENT`] while players are in it. Since ABI 1.7.
+            pub world_unload: unsafe extern "C" fn(PluginId, u32, u32) -> Status,
+            /// The number of world indices (loaded or not); every world is below it. Since
+            /// ABI 1.7.
+            pub world_count: unsafe extern "C" fn(PluginId, *mut u32) -> Status,
+            /// What a world is and its folder (the default world's `level-name` for its
+            /// dimensions). Since ABI 1.7.
+            pub world_info:
+                unsafe extern "C" fn(PluginId, u32, *mut WorldDetails, *mut StrBuf) -> Status,
+            /// Moves an online player to a place in any loaded world, from any thread
+            /// (between the ticks of its world; to another world like `/tp`, with the
+            /// teleport event). Since ABI 1.7.
+            pub player_move: unsafe extern "C" fn(PluginId, Uuid, *const Location) -> Status,
         }
     }
 }

@@ -14,7 +14,9 @@ use vanillite_abi::{self as abi, Status, status};
 use vanillite_nbt::Tag;
 
 mod v16;
+mod v17;
 use v16::*;
+use v17::*;
 
 use crate::{
     AccessOp, BlockBox, BossBarOp, Inner, Location, Particles, Plugin, ScoreReply, ScoreboardOp,
@@ -170,6 +172,12 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     item_data_set,
     item_data_remove,
     item_data_keys,
+    world_create,
+    world_load,
+    world_unload,
+    world_count,
+    world_info,
+    player_move,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.

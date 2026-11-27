@@ -67,11 +67,6 @@ pub struct LevelState {
     difficulty: std::sync::atomic::AtomicI32,
     pub damage_types: DamageTypes,
     pub block_facts: BlockFacts,
-    /// The default clock of each world's dimension type (`DimensionType.defaultClock`), by
-    /// world index.
-    pub default_clocks: Vec<Option<usize>>,
-    /// What the server needs of each world's dimension type, by world index.
-    pub dimension_types: Vec<DimensionFacts>,
     /// `level.dat`.
     level_data: Mutex<LevelData>,
     /// The world-wide saved data (`<world>/data/`).
@@ -95,7 +90,6 @@ impl LevelState {
     pub(crate) fn load(
         level_dir: &Path,
         packs: Option<&LoadedPacks>,
-        dimensions: &crate::dimensions::Dimensions,
         difficulty: Difficulty,
         setup: &LevelSetup,
         writer: FileWriter,
@@ -159,37 +153,6 @@ impl LevelState {
             Some(data) => WeatherData::load(data),
             None => WeatherData::load(&legacy_weather(legacy)),
         };
-        let type_json = |world| -> Option<Value> {
-            let json = packs?
-                .registry("minecraft:dimension_type")?
-                .get(dimensions.kind(world)?)?
-                .json
-                .get();
-            serde_json::from_str(json).ok()
-        };
-        let default_clocks = dimensions
-            .worlds()
-            .map(|world| clocks.index(type_json(world)?.get("default_clock")?.as_str()?))
-            .collect();
-        let dimension_types = dimensions
-            .worlds()
-            .map(|world| {
-                let json = type_json(world);
-                let field = |key: &str| json.as_ref().and_then(|v| v.get(key));
-                let flag = |key: &str| field(key).and_then(Value::as_bool).unwrap_or(false);
-                DimensionFacts {
-                    coordinate_scale: field("coordinate_scale")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(1.0),
-                    logical_height: field("logical_height")
-                        .and_then(Value::as_i64)
-                        .and_then(|v| i32::try_from(v).ok())
-                        .unwrap_or(256),
-                    has_ceiling: flag("has_ceiling"),
-                    has_ender_dragon_fight: flag("has_ender_dragon_fight"),
-                }
-            })
-            .collect();
         let (damage_types, block_facts) = match packs {
             Some(packs) => (load_damage_types(packs), load_block_facts(packs)),
             None => (DamageTypes::built_in(), BlockFacts::without_tags()),
@@ -200,10 +163,8 @@ impl LevelState {
             rules: RwLock::new(rules),
             weather: Mutex::new(weather),
             difficulty: std::sync::atomic::AtomicI32::new(difficulty.id()),
-            dimension_types,
             damage_types,
             block_facts,
-            default_clocks,
             level_data: Mutex::new(level_data),
             maps: {
                 let dir = data.dir().to_owned();

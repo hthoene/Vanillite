@@ -897,12 +897,7 @@ impl ServerWorld {
                 rules.bool(Rule::ADVANCE_WEATHER),
             )
         };
-        let clock = global
-            .level
-            .default_clocks
-            .get(self.id.index())
-            .copied()
-            .flatten();
+        let clock = global.dimensions.default_clock(self.id);
         if advance_time && let Some(clock) = clock {
             let moved = if global.plugins.wants(vanillite_abi::event::TIME_SKIP) {
                 self.time_skip(global, clock)
@@ -1191,8 +1186,8 @@ pub struct TickContext<'a> {
 }
 
 struct OtherWorlds<'a> {
-    before: &'a mut [ServerWorld],
-    after: &'a mut [ServerWorld],
+    before: &'a mut [Option<ServerWorld>],
+    after: &'a mut [Option<ServerWorld>],
 }
 
 impl fmt::Debug for TickContext<'_> {
@@ -1228,11 +1223,11 @@ impl<'a> TickContext<'a> {
     }
 
     /// Gives the context direct access to the other worlds (sequential mode). `before` holds
-    /// the worlds with lower ids, `after` those with higher ids.
+    /// the worlds with lower ids, `after` those with higher ids (`None` where unloaded).
     pub(crate) fn with_others(
         mut self,
-        before: &'a mut [ServerWorld],
-        after: &'a mut [ServerWorld],
+        before: &'a mut [Option<ServerWorld>],
+        after: &'a mut [Option<ServerWorld>],
     ) -> Self {
         self.others = Some(OtherWorlds { before, after });
         self
@@ -1242,8 +1237,14 @@ impl<'a> TickContext<'a> {
     /// they are at hand (sequential mode); nothing otherwise.
     pub(crate) fn other_levels(&mut self) -> impl Iterator<Item = Option<&mut Level>> {
         self.others.iter_mut().flat_map(|others| {
-            let before = others.before.iter_mut().map(|w| Some(&mut w.level));
-            let after = others.after.iter_mut().map(|w| Some(&mut w.level));
+            let before = others
+                .before
+                .iter_mut()
+                .map(|w| w.as_mut().map(|w| &mut w.level));
+            let after = others
+                .after
+                .iter_mut()
+                .map(|w| w.as_mut().map(|w| &mut w.level));
             before.chain(std::iter::once(None)).chain(after)
         })
     }
@@ -1277,6 +1278,7 @@ impl<'a> TickContext<'a> {
                     .checked_sub(current + 1)
                     .and_then(|i| others.after.get_mut(i))
             }
+            .and_then(Option::as_mut)
         });
         match world {
             Some(world) => op(world),

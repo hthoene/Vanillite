@@ -687,7 +687,7 @@ pub(crate) fn plugin_world(global: &crate::global::Global, index: u32) -> Option
     u16::try_from(index)
         .ok()
         .map(WorldId)
-        .filter(|&w| global.dimensions.name(w).is_some())
+        .filter(|&w| global.dimensions.is_loaded(w))
 }
 
 /// `ComponentUtils.formatList` with `, ` in gray.

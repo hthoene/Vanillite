@@ -61,6 +61,54 @@ found in the other layout is moved into the configured one once at startup, so a
 between Vanillite and Paper or Spigot without manual moving (Anvil format, or after
 `vanillite export`).
 
+## Extra worlds
+
+Besides the default world (`level-name` with its Overworld, Nether and End) a server can run
+more independent worlds at once, like Multiverse on Paper. Each one is a single dimension with
+its own folder, as Bukkit keeps a world:
+
+| File | What |
+|---|---|
+| `<name>/level.dat` | Its name and spawn. |
+| `<name>/data/minecraft/world_gen_settings.dat` | Its seed and generator (Vanilla's file). |
+| `<name>/dimensions/minecraft/<name>/` | Its chunks, entities and POI, in the format it was found in (new worlds in `storage.world-format`). |
+| `<name>/session.lock` | Held while it is loaded. |
+
+Its dimension key is `minecraft:<name in lower case>` (for `/execute in`, `/tp` and data
+packs), and its rules come from `[worlds."minecraft:<name>"]` like those of any dimension.
+Time, weather, game rules, difficulty and the player data are the server's, as Vanilla shares
+them between its dimensions: one player data file per player, as Bukkit keeps it. Without
+extra worlds nothing changes.
+
+Extra worlds are declared in `vanillite.toml` and loaded at startup:
+
+```toml
+[extra-worlds.lobby]
+environment = "normal"     # normal, nether or the_end: its dimension type
+generator = "flat"         # normal, flat, void, amplified, large_biomes, or a dimension key
+seed = ""                  # empty: random; a number or a text like level-seed
+generate-structures = true
+```
+
+`generator`, `seed` and `generate-structures` only matter when the world is created; an
+existing world keeps what it was created with. A dimension key as generator (e.g.
+`minecraft:overworld` or a data pack's dimension) takes that dimension's generator.
+
+Plugins create, load and unload extra worlds while the server runs (`Server::create_world`,
+`load_world`, `unload_world`; events `on_world_load` and `on_world_unload`) and move players
+between worlds (`Server::move_player`). A world loads in the next global phase (the server
+thread waits for its spawn area, like Bukkit's `createWorld`); unloading saves it, releases its
+folder and frees its memory, and is refused while players are in it. Each world ticks on its
+own thread with `performance.tick.parallel-dimensions`, like every dimension.
+
+**Portals and respawns** work as on Spigot: a nether portal in an extra world leads to the
+default world's Nether (from a world of the `nether` environment to the Overworld), an end
+portal to the default world's End (from a `the_end` world to the world spawn). Plugins can
+point a portal elsewhere, also into another world (`on_entity_portal`, Multiverse-NetherPortals
+style). Beds and respawn anchors in an extra world make it the player's respawn world;
+without a respawn point players respawn at the default world's spawn, which is also where new
+players join.
+
 ## Saving
 
 - **Autosave** runs at Vanilla's interval (every 5 minutes of game time, or

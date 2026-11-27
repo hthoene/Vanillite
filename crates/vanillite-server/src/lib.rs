@@ -42,6 +42,7 @@ mod world;
 mod world_format;
 mod world_setup;
 mod world_updates;
+mod worlds;
 
 pub use blocks::{ItemScratch, ItemSettings, LevelEffects, WorldLevel, game_data, tick_item};
 pub use clock::Clock;

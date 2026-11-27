@@ -130,6 +130,19 @@ pub fn render() -> String {
          ```toml\n[worlds.\"minecraft:the_nether\".performance.distances]\nview-distance = 8\n```\n",
     );
     rules::<WorldRules>(&mut out);
+    out.push_str(
+        "\n### Extra worlds\n\n\
+         Worlds besides `level-name`, each with its own folder, `level.dat`, seed and generator \
+         (see [Worlds](worlds.md#extra-worlds)), are loaded at startup from one section each. \
+         Their rules come from `[worlds.\"minecraft:<name>\"]`.\n\n\
+         ```toml\n[extra-worlds.lobby]\nenvironment = \"normal\"\ngenerator = \"flat\"\n\
+         seed = \"\"\ngenerate-structures = true\n```\n\n\
+         | Key | Default | Values | Description |\n|---|---|---|---|\n\
+         | `environment` | `normal` | `normal`, `nether`, `the_end` | Its dimension type. |\n\
+         | `generator` | `normal` | `normal`, `flat`, `void`, `amplified`, `large_biomes`, a dimension key | The terrain of a new world; a dimension key takes that dimension's generator. |\n\
+         | `seed` | (empty) | text | The seed of a new world, like `level-seed`; empty for a random one. |\n\
+         | `generate-structures` | `true` | `true`, `false` | Whether a new world gets structures. |\n",
+    );
     out
 }
 
