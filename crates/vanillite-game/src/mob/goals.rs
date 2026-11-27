@@ -733,7 +733,8 @@ pub(super) fn distance_sqr(t: &Tick<'_, '_>, other: Vec3) -> f64 {
 
 /// `LivingEntity.canAttack(target)` and the combat part of `TargetingConditions.test`.
 pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
-    if target == t.id {
+    // `canBeSeenAsEnemy`: invulnerable entities are no targets.
+    if target == t.id || crate::mob::entity_nbt::is_invulnerable(t.ents, target) {
         return false;
     }
     let me = t.mob_ref();

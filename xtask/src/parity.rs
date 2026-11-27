@@ -40,7 +40,7 @@ pub fn replay(root: &Path, recording: &str, args: &[&str]) -> Result<()> {
     let session = dir.to_string_lossy().into_owned();
     let mut pass = vec!["--session", session.as_str()];
     pass.extend_from_slice(args);
-    driver(root, &pass)
+    driver(root, &pass, None)
 }
 
 /// Copies a recording of the test server instance on `port` into `target/recordings/`.
@@ -84,7 +84,7 @@ fn fetch_recording(root: &Path, port: &str, name: &str) -> Result<std::path::Pat
 }
 
 /// The compiled recorder: its classes with the class path, the agent jar and the work dir.
-fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
+pub(crate) fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
     let key = golden::Key::current(root)?;
     let (classes, cp, broken) = golden::harness(root, &key)?;
     let recorder_broken = broken.files.iter().any(|f| {
@@ -140,43 +140,58 @@ pub fn soak(root: &Path, args: &[&str]) -> Result<()> {
 
 pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
     let adopt = args.contains(&"--adopt");
-    let pass: Vec<&str> = args.iter().copied().filter(|a| *a != "--adopt").collect();
-    driver(root, &pass)?;
+    let mut pass: Vec<&str> = args
+        .iter()
+        .copied()
+        .filter(|a| *a != "--adopt" && *a != "--no-coverage")
+        .collect();
+    // The coverage of Vanilla's code by the scenarios (`parity coverage`, #257) steers the
+    // generated scenarios towards what is least exercised.
+    let coverage = crate::coverage::out_dir(root).join("coverage.json");
+    let coverage = coverage.to_string_lossy();
+    if !args.contains(&"--no-coverage") && Path::new(coverage.as_ref()).is_file() {
+        println!("fuzz: weighting the scenarios by {coverage}");
+        pass.extend(["--coverage", coverage.as_ref()]);
+    }
+    driver(root, &pass, None)?;
     if !adopt {
         return Ok(());
     }
     adopt_found(root)
 }
 
-/// Runs the `parity_fuzz` driver with the recorder's class path.
-fn driver(root: &Path, pass: &[&str]) -> Result<()> {
+/// Runs the `parity_fuzz` driver with the recorder's class path, with an extra environment
+/// variable (the coverage agent of `parity coverage`) if given.
+pub(crate) fn driver(root: &Path, pass: &[&str], env: Option<(&str, String)>) -> Result<()> {
     let (classpath, agent, work_dir) = recorder(root)?;
     let out = root.join("target/parity-fuzz");
     remove_dir(&out)?;
-    run(
-        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
-            .current_dir(root)
-            .args([
-                "run",
-                "-q",
-                "-p",
-                "vanillite-test",
-                "--bin",
-                "parity_fuzz",
-                "--",
-            ])
-            .arg("--java")
-            .arg(java_tool("java"))
-            .arg("--agent")
-            .arg(&agent)
-            .arg("--classpath")
-            .arg(classpath)
-            .arg("--work-dir")
-            .arg(&work_dir)
-            .arg("--out")
-            .arg(&out)
-            .args(pass),
-    )
+    let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()));
+    if let Some((k, v)) = env {
+        cmd.env(k, v);
+    }
+    run(cmd
+        .current_dir(root)
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "vanillite-test",
+            "--bin",
+            "parity_fuzz",
+            "--",
+        ])
+        .arg("--java")
+        .arg(java_tool("java"))
+        .arg("--agent")
+        .arg(&agent)
+        .arg("--classpath")
+        .arg(classpath)
+        .arg("--work-dir")
+        .arg(&work_dir)
+        .arg("--out")
+        .arg(&out)
+        .args(pass))
 }
 
 /// The found scenarios become fixed ones with their Vanilla goldens.

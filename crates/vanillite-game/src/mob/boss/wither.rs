@@ -447,7 +447,7 @@ fn invulnerable_ticks(t: &Tick<'_, '_>) -> i32 {
 
 /// `LivingEntity.canAttack(target)` (players: not in peaceful, not creative or spectator).
 fn can_attack(ents: &Entities, env: &Env<'_>, me: EntityId, target: EntityId) -> bool {
-    if target == me {
+    if target == me || crate::mob::entity_nbt::is_invulnerable(ents, target) {
         return false;
     }
     if let Some(p) = ents.player(target) {
