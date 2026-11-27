@@ -125,8 +125,8 @@ struct OldVersion {
 impl OldVersion {
     fn load(dir: &str, name: &'static str) -> Self {
         let dir = format!(
-            "{}/../../data/multiversion/{dir}/",
-            env!("CARGO_MANIFEST_DIR")
+            "{}/",
+            vanillite_multiversion::data_paths::file(&format!("data/multiversion/{dir}"))
         );
         let json = |f: &str| -> Value {
             serde_json::from_str(&std::fs::read_to_string(format!("{dir}{f}")).unwrap()).unwrap()

@@ -32,7 +32,7 @@ pub mod template;
 pub mod volume;
 
 pub use generator::{
-    DimensionSpec, NeighbourBiomes, Stage, TerrainGenerator, TerrainJob, TerrainStep,
+    DimensionSpec, FlatSettings, NeighbourBiomes, Stage, TerrainGenerator, TerrainJob, TerrainStep,
 };
 pub use proto::ProtoChunk;
 pub use random_state::RandomState;

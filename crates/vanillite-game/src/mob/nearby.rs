@@ -193,6 +193,20 @@ impl NearbyPlayers {
         self.chunks.keys().copied()
     }
 
+    /// The chunks of [`Self::chunks`] with a player close enough for spawning
+    /// ([`Self::any_close_for_spawning`]).
+    pub fn chunks_close_for_spawning(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+        self.chunks.iter().filter_map(|(&chunk, slots)| {
+            slots
+                .iter()
+                .any(|&s| {
+                    chunk_center_distance_sqr(chunk, self.players[s as usize].pos)
+                        < SPAWN_DISTANCE_SQR
+                })
+                .then_some(chunk)
+        })
+    }
+
     /// One more than the highest slot in use: the length of per-slot arrays.
     pub fn slot_count(&self) -> usize {
         self.players.len()

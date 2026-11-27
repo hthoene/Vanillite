@@ -456,7 +456,12 @@ impl ServerBuilder {
         let store_settings = StoreSettings {
             sync: config.properties.sync_chunk_writes,
             read_ahead: storage_rules.read_ahead,
-            read_cache: (storage_rules.read_cache as usize) << 20,
+            // Under a memory limit at most 1/32 of it per dimension (32 MiB at 1 GiB).
+            read_cache: budget.cache_bytes(
+                1.0 / 32.0,
+                0,
+                (storage_rules.read_cache as usize) << 20,
+            ),
             max_open_files: storage_rules.max_open_files as usize,
         };
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
@@ -548,7 +553,10 @@ impl ServerBuilder {
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
-        let mut commands = crate::commands::build_dispatcher(command_limits(&config));
+        let mut commands = crate::commands::build_dispatcher(
+            command_limits(&config),
+            config.server.commands.bukkit_commands,
+        );
         plugins.register_commands(&mut commands, vanillite_game::commands::CommandId::Plugin);
         let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
         vanillite_game::player::play::install_game_data(Arc::clone(&game));
@@ -602,6 +610,7 @@ impl ServerBuilder {
             broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
             broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
+            version: self.version.clone(),
             motd: std::sync::Mutex::new(None),
             this: this.clone(),
         });
@@ -691,6 +700,10 @@ impl ServerBuilder {
             self.network,
             global.chat.enforce_secure,
             Arc::clone(global.plugins.packet_tap()),
+            match config.server.threads.network {
+                0 => budget.limits().default_network_threads(),
+                n => usize::from(n),
+            },
         )?;
         if !config.properties.online_mode {
             log::warn!("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
@@ -1283,8 +1296,12 @@ impl Server {
         }
     }
 
-    /// Takes joined connections into the game, at most `security.max-joins-per-tick`.
+    /// Decides the waiting logins, then takes joined connections into the game, at most
+    /// `security.max-joins-per-tick`.
     fn accept_joins(&mut self) {
+        while let Some(check) = self.net.as_ref().and_then(NetState::next_login) {
+            self.verify_login(check);
+        }
         for (joined, since) in std::mem::take(&mut self.dupe_waiting) {
             self.accept_waiting(joined, since);
         }
@@ -1343,49 +1360,14 @@ impl Server {
         // `getDefaultGameType`: `level.dat`'s game type, which `/defaultgamemode` changes.
         let default_mode = crate::players::game_mode_by_id(self.global.level.default_game_type())
             .unwrap_or(properties.gamemode);
+        let overridden = joined.login_overridden;
         let (mut arrival, sink) =
             crate::net::arrival(joined, saved, default_mode, properties.force_gamemode);
-        let players = &self.global.players;
-        let access = &self.global.access;
-        // The server's own test bots come over virtual connections it opened itself.
-        let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
-        use vanillite_abi::login_reason;
-        use vanillite_protocol::text::Component;
-        let (reason, refuse) = if let Some(reason) = crate::commands::ban_reason(access, uuid, None)
+        // `handleConfigurationFinished` checks `canPlayerLogin` again (a ban or a full server
+        // since the login); a plugin's earlier override stands.
+        if !overridden
+            && let (_, Some(reason)) = self.can_player_login(uuid, &ip, arrival.memory_connection)
         {
-            (login_reason::BANNED, Some(reason))
-        } else if !test_bot && !access.is_whitelisted(uuid) {
-            (
-                login_reason::NOT_WHITELISTED,
-                Some(Component::translatable(
-                    "multiplayer.disconnect.not_whitelisted",
-                    vec![],
-                )),
-            )
-        } else if let Some(reason) = crate::commands::ban_reason(access, uuid, Some(&ip)) {
-            (login_reason::BANNED, Some(reason))
-        } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
-            (
-                login_reason::FULL,
-                Some(Component::translatable(
-                    "multiplayer.disconnect.server_full",
-                    vec![],
-                )),
-            )
-        } else {
-            (login_reason::ALLOWED, None)
-        };
-        let refuse = if self
-            .global
-            .plugins
-            .wants(vanillite_abi::event::PLAYER_LOGIN)
-        {
-            let name = arrival.profile.name.clone();
-            crate::plugins::login(&self.global, uuid, &name, &ip, reason, refuse)
-        } else {
-            refuse
-        };
-        if let Some(reason) = refuse {
             sink.kick(reason);
             return;
         }
@@ -1401,6 +1383,69 @@ impl Server {
         arrival.stats = json(JsonFile::Stats);
         arrival.advancements = json(JsonFile::Advancements);
         self.place_new_player(arrival, ip);
+    }
+
+    /// `ServerLoginPacketListenerImpl.verifyLoginAndFinishConnectionSetup`: refuses the login
+    /// (a login disconnect) or lets it finish; `PLAYER_LOGIN` plugins may change the result.
+    fn verify_login(&self, check: vanillite_net::LoginCheck) {
+        let uuid = check.profile.id.0;
+        let ip = check.address.ip().to_string();
+        let (reason, refusal) = self.can_player_login(uuid, &ip, check.memory);
+        let decided = if self
+            .global
+            .plugins
+            .wants(vanillite_abi::event::PLAYER_LOGIN)
+        {
+            let name = check.profile.name.clone();
+            crate::plugins::login(&self.global, uuid, &name, &ip, reason, refusal.clone())
+        } else {
+            refusal.clone()
+        };
+        match decided {
+            Some(reason) => check.refuse(reason),
+            None => check.admit(refusal.is_some()),
+        }
+    }
+
+    /// `PlayerList.canPlayerLogin`: why the player may not log in (a [`login_reason`] and the
+    /// message), checked in Vanilla's order.
+    ///
+    /// [`login_reason`]: vanillite_abi::login_reason
+    fn can_player_login(
+        &self,
+        uuid: u128,
+        ip: &str,
+        memory: bool,
+    ) -> (u32, Option<vanillite_protocol::text::Component>) {
+        use vanillite_abi::login_reason;
+        use vanillite_protocol::text::Component;
+        let players = &self.global.players;
+        let access = &self.global.access;
+        // The server's own test bots come over virtual connections it opened itself.
+        let test_bot = memory && self.test_bots.contains(&uuid);
+        if let Some(reason) = crate::commands::ban_reason(access, uuid, None) {
+            (login_reason::BANNED, Some(reason))
+        } else if !test_bot && !access.is_whitelisted(uuid) {
+            (
+                login_reason::NOT_WHITELISTED,
+                Some(Component::translatable(
+                    "multiplayer.disconnect.not_whitelisted",
+                    vec![],
+                )),
+            )
+        } else if let Some(reason) = crate::commands::ban_reason(access, uuid, Some(ip)) {
+            (login_reason::BANNED, Some(reason))
+        } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
+            (
+                login_reason::FULL,
+                Some(Component::translatable(
+                    "multiplayer.disconnect.server_full",
+                    vec![],
+                )),
+            )
+        } else {
+            (login_reason::ALLOWED, None)
+        }
     }
 
     /// The end of [`Server::accept`]: the player list entry, then the world part on the
@@ -1530,6 +1575,11 @@ impl Server {
                 }
                 if properties.enable_query {
                     net.query.set(players.into_iter().map(|p| p.name).collect());
+                    net.query
+                        .set_plugins(crate::commands::plugins_cmd::query_plugins(
+                            &self.global.version,
+                            &self.global.plugins.list(),
+                        ));
                 }
             }
         }

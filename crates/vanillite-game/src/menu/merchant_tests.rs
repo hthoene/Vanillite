@@ -135,7 +135,7 @@ fn a_trade_pays_uses_the_offer_and_gives_experience() {
         ),
     );
     let mut drops = Vec::new();
-    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
+    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
         view.merchant_select(0);
         assert_eq!(view.menu.local[0].count, 64);
         assert_eq!(view.menu.local[2].item, emerald);

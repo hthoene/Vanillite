@@ -553,7 +553,7 @@ pub fn tick_arrow(
                 break;
             }
             // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
-            super::missile::land_event(env.out, level, id, None, hit);
+            super::missile::land_event(env.out, level, id, a.owner, None, hit);
             // `onHitEntity`.
             let pow = velocity.length_sqr().sqrt();
             #[allow(clippy::cast_possible_truncation)]
@@ -746,7 +746,7 @@ pub fn tick_arrow(
                 pitch,
                 seed,
             );
-            super::missile::land_event(env.out, level, id, Some(hit_pos), at);
+            super::missile::land_event(env.out, level, id, a.owner, Some(hit_pos), at);
             a.in_ground = true;
             a.shake = 7;
             a.crit = false;

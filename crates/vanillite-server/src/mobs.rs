@@ -550,7 +550,8 @@ impl WorldMobs {
             .entities
             .players
             .iter()
-            .filter(|(_, p)| p.game_mode != GameMode::Spectator)
+            // A dead player is out of `level.players()` once `tickDeath` removed it.
+            .filter(|(_, p)| p.game_mode != GameMode::Spectator && !p.survival.removed)
             .filter_map(|(id, _)| level.entities.store.get(id).map(|e| (id, e.pos())))
             .collect();
         let input = SpawnInput {
@@ -786,7 +787,7 @@ impl WorldMobs {
             self.activation_players.extend(
                 ents.players
                     .iter()
-                    .filter(|(_, p)| p.game_mode != GameMode::Spectator)
+                    .filter(|(_, p)| p.game_mode != GameMode::Spectator && !p.survival.removed)
                     .filter_map(|(id, _)| ents.store.get(id).map(|e| (id, e.pos()))),
             );
         }

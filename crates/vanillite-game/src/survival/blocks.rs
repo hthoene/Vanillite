@@ -10,6 +10,17 @@ use vanillite_worldgen::behaviour::StateExt;
 pub trait BlockAccess {
     /// The block state at `pos`.
     fn block_state(&self, pos: BlockPos) -> Option<BlockState>;
+    /// [`BlockAccess::block_state`] of every position in the box from `min` to `max`
+    /// (inclusive) in X, then Z, then Y order (Y varies fastest).
+    fn block_states_in(&self, min: BlockPos, max: BlockPos, f: &mut dyn FnMut(Option<BlockState>)) {
+        for x in min.x..=max.x {
+            for z in min.z..=max.z {
+                for y in min.y..=max.y {
+                    f(self.block_state(BlockPos::new(x, y, z)));
+                }
+            }
+        }
+    }
 }
 
 /// Per-block facts from the data packs' block tags and special blocks.
@@ -120,6 +131,13 @@ impl BlockFacts {
             [fluid("minecraft:water"), fluid("minecraft:flowing_water")],
             [fluid("minecraft:lava"), fluid("minecraft:flowing_lava")],
         )
+    }
+
+    /// [`without_tags`](Self::without_tags), built once: enough for what only needs water and
+    /// lava (`EntityFluidInteraction` of entities outside the mob tick).
+    pub fn fluids_only() -> &'static BlockFacts {
+        static FACTS: std::sync::OnceLock<BlockFacts> = std::sync::OnceLock::new();
+        FACTS.get_or_init(BlockFacts::without_tags)
     }
 
     fn has(v: &[bool], block: BlockId) -> bool {
@@ -421,6 +439,8 @@ pub struct Inside {
     pub campfire: Option<f32>,
     /// `WitherRoseBlock.entityInside`.
     pub wither_rose: bool,
+    /// `EyeblossomBlock.entityInside`: an eyeblossom that attracts bees (`Bee.attractsBees`).
+    pub eyeblossom: bool,
     /// `PowderSnowBlock.entityInside`: the first powder snow block touched.
     pub powder_snow: Option<BlockPos>,
     /// `WebBlock.entityInside`.
@@ -524,6 +544,9 @@ pub fn inside_blocks(
                     out.campfire.get_or_insert(damage);
                 }
                 vanillite_data::block::BlockKind::WitherRoseBlock => out.wither_rose = true,
+                vanillite_data::block::BlockKind::EyeblossomBlock => {
+                    out.eyeblossom |= crate::mob::fam::wildlife::bee::attracts_bees(state);
+                }
                 vanillite_data::block::BlockKind::PowderSnowBlock => {
                     out.powder_snow.get_or_insert(pos);
                     step.melt_snow.get_or_insert(pos);

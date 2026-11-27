@@ -1,0 +1,255 @@
+{
+  "description": "Players' buckets (BucketItem.use, aimed by a ray): a water bucket waterlogs a fence, an empty bucket takes the water out of waterlogged stairs and picks up a water source before it spreads, but not flowing water; a water bucket into flowing water places a source that is picked up again; lava is picked up; a lava bucket on a slab places the lava above it; a water bucket aimed through lava places water beside it (obsidian). Flowing water and lava push the players.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "level_rng": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      20,
+      -59,
+      6
+    ]
+  ],
+  "ticks": 55,
+  "entities": [
+    {
+      "name": "p0",
+      "type": "minecraft:player",
+      "pos": [
+        1.5,
+        -60.0,
+        0.5
+      ],
+      "rot": [
+        0,
+        39
+      ],
+      "seed": 1
+    },
+    {
+      "name": "p1",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        0.5
+      ],
+      "rot": [
+        0,
+        39
+      ],
+      "seed": 2
+    },
+    {
+      "name": "p2",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        0.5
+      ],
+      "rot": [
+        0,
+        39
+      ],
+      "seed": 3
+    },
+    {
+      "name": "p3",
+      "type": "minecraft:player",
+      "pos": [
+        10.5,
+        -60.0,
+        0.5
+      ],
+      "rot": [
+        0,
+        39
+      ],
+      "seed": 4
+    },
+    {
+      "name": "p4",
+      "type": "minecraft:player",
+      "pos": [
+        13.5,
+        -60.0,
+        0.5
+      ],
+      "rot": [
+        0,
+        39
+      ],
+      "seed": 5
+    },
+    {
+      "name": "p5",
+      "type": "minecraft:player",
+      "pos": [
+        16.5,
+        -60.0,
+        0.5
+      ],
+      "rot": [
+        0,
+        39
+      ],
+      "seed": 6
+    },
+    {
+      "name": "p6",
+      "type": "minecraft:player",
+      "pos": [
+        19.5,
+        -60.0,
+        0.5
+      ],
+      "rot": [
+        0,
+        39
+      ],
+      "seed": 7
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:oak_fence[waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        1
+      ],
+      "block": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -60,
+        1
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "set",
+      "pos": [
+        16,
+        -60,
+        1
+      ],
+      "block": "minecraft:oak_slab[type=bottom,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        19,
+        -60,
+        1
+      ],
+      "block": "minecraft:lava"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "p0",
+      "item": "minecraft:water_bucket"
+    },
+    {
+      "tick": 3,
+      "op": "use_item",
+      "entity": "p1",
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "p2",
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 12,
+      "op": "use_item",
+      "entity": "p3",
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 4,
+      "op": "use_item",
+      "entity": "p4",
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 5,
+      "op": "use_item",
+      "entity": "p5",
+      "item": "minecraft:lava_bucket"
+    },
+    {
+      "tick": 6,
+      "op": "use_item",
+      "entity": "p6",
+      "item": "minecraft:water_bucket"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        1
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        10,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 14,
+      "op": "use_item",
+      "entity": "p3",
+      "item": "minecraft:water_bucket"
+    },
+    {
+      "tick": 30,
+      "op": "use_item",
+      "entity": "p3",
+      "item": "minecraft:bucket"
+    }
+  ]
+}

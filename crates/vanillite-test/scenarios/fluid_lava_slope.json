@@ -1,0 +1,155 @@
+{
+  "description": "Lava slope finding in the Overworld (slope distance 2, drop-off 2, tick delay 30, a rising level waits four times as long three times in four): a hole three away is found, four away is not, equally near holes both get lava.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      47,
+      -60,
+      15
+    ]
+  ],
+  "ticks": 300,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -61,
+        11
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -62,
+        11
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        27,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        27,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        39,
+        -61,
+        9
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        37,
+        -61,
+        7
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        39,
+        -62,
+        9
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        37,
+        -62,
+        7
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        7,
+        -60,
+        7
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        23,
+        -60,
+        7
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        39,
+        -60,
+        7
+      ],
+      "block": "minecraft:lava"
+    }
+  ]
+}

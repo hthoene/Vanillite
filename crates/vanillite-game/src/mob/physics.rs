@@ -18,6 +18,20 @@ const EPSILON: f64 = 1.0e-7;
 pub trait Blocks {
     /// `getBlockState(pos)`.
     fn state(&self, pos: BlockPos) -> BlockState;
+    /// [`Blocks::state`] of every position in the box from `min` to `max` (inclusive) into
+    /// `out`, which holds exactly that many, in X, then Z, then Y order (Y varies fastest).
+    fn states_in(&self, min: BlockPos, max: BlockPos, out: &mut [BlockState]) {
+        let mut slots = out.iter_mut();
+        for x in min.x..=max.x {
+            for z in min.z..=max.z {
+                for y in min.y..=max.y {
+                    if let Some(slot) = slots.next() {
+                        *slot = self.state(BlockPos::new(x, y, z));
+                    }
+                }
+            }
+        }
+    }
     /// `getWorldBorder`, which entities collide with; `None` without one (tests).
     fn border(&self) -> Option<&WorldBorder> {
         None
@@ -32,6 +46,21 @@ impl Blocks for Level {
     #[inline]
     fn state(&self, pos: BlockPos) -> BlockState {
         self.block(pos)
+    }
+
+    fn states_in(&self, min: BlockPos, max: BlockPos, out: &mut [BlockState]) {
+        let mut slots = out.iter_mut();
+        let mut y = min.y;
+        self.chunks.blocks_in(min, max, |state| {
+            if let Some(slot) = slots.next() {
+                *slot = match state {
+                    Some(state) => BlockState(state),
+                    None if self.in_height(y) => BlockState::AIR,
+                    None => crate::block::VOID_AIR,
+                };
+            }
+            y = if y == max.y { min.y } else { y + 1 };
+        });
     }
 
     #[inline]
@@ -113,6 +142,9 @@ const LAVA_STABLE_TOP: f64 = 0.5;
 /// [`block_boxes`] for an entity that stands on lava (`canStandOnFluid`) with its feet at
 /// `lava_bottom` (`EntityCollisionContext.entityBottom`): lava sources without lava above
 /// collide with their lower half when the feet are above it (`LiquidBlock.getCollisionShape`).
+/// Blocks of a collision box read into a buffer on the stack; larger boxes spill to the heap.
+const BOX_READ_INLINE: usize = 512;
+
 pub fn block_boxes_for(
     blocks: &dyn Blocks,
     area: &Aabb,
@@ -127,9 +159,31 @@ pub fn block_boxes_for(
     let max_y = floor(area.max_y + EPSILON) + 1;
     let min_z = floor(area.min_z - EPSILON) - 1;
     let max_z = floor(area.max_z + EPSILON) + 1;
+    // The box's states in one read, in the loops' order.
+    let volume = [max_x - min_x, max_y - min_y, max_z - min_z]
+        .iter()
+        .map(|&d| usize::try_from(d + 1).unwrap_or(0))
+        .product::<usize>();
+    let mut inline = [BlockState::AIR; BOX_READ_INLINE];
+    let mut spilled = Vec::new();
+    let states: &mut [BlockState] = if volume <= BOX_READ_INLINE {
+        &mut inline[..volume]
+    } else {
+        spilled.resize(volume, BlockState::AIR);
+        &mut spilled
+    };
+    blocks.states_in(
+        BlockPos::new(min_x, min_y, min_z),
+        BlockPos::new(max_x, max_y, max_z),
+        states,
+    );
+    let mut states = states.iter().copied();
     for x in min_x..=max_x {
         for z in min_z..=max_z {
             for y in min_y..=max_y {
+                let Some(state) = states.next() else {
+                    return;
+                };
                 let edges = i32::from(x == min_x || x == max_x)
                     + i32::from(y == min_y || y == max_y)
                     + i32::from(z == min_z || z == max_z);
@@ -137,7 +191,6 @@ pub fn block_boxes_for(
                     continue;
                 }
                 let pos = BlockPos::new(x, y, z);
-                let state = blocks.state(pos);
                 if state.is_air() {
                     continue;
                 }

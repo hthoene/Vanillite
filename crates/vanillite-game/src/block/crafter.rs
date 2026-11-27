@@ -28,6 +28,8 @@ pub struct Crafter {
     pub loot_table: Option<String>,
     /// `LootTableSeed`.
     pub loot_seed: i64,
+    /// `lock` (`LockCode`).
+    pub lock: Option<vanillite_nbt::Tag>,
 }
 
 impl Default for Crafter {
@@ -40,6 +42,7 @@ impl Default for Crafter {
             custom_name: None,
             loot_table: None,
             loot_seed: 0,
+            lock: None,
         }
     }
 }
@@ -47,6 +50,7 @@ impl Default for Crafter {
 impl Crafter {
     /// `loadAdditional`.
     pub fn load(&mut self, nbt: &Compound) {
+        self.lock = super::lock::load(nbt);
         self.custom_name = super::container::load_name(nbt);
         self.crafting_ticks = int(nbt, "crafting_ticks_remaining").unwrap_or(0);
         self.items.iter_mut().for_each(|s| *s = ItemStack::EMPTY);
@@ -72,6 +76,7 @@ impl Crafter {
 
     /// `saveAdditional`.
     pub fn save(&self, out: &mut Compound) {
+        super::lock::save(&self.lock, out);
         super::container::save_name(&self.custom_name, out);
         out.insert("crafting_ticks_remaining", Tag::Int(self.crafting_ticks));
         if let Some(table) = &self.loot_table {
@@ -80,7 +85,7 @@ impl Crafter {
                 out.insert("LootTableSeed", Tag::Long(self.loot_seed));
             }
         } else {
-            super::container::save_items(&self.items, out);
+            super::container::save_items_always(&self.items, out);
         }
         let disabled: Vec<i32> = (0..9)
             .filter(|&i| self.is_disabled(i))

@@ -6,7 +6,9 @@
 - `cargo install --locked cargo-nextest cargo-deny` (or the prebuilt binaries).
 - Optional: [sccache](https://github.com/mozilla/sccache) as `RUSTC_WRAPPER` shares compiled
   dependencies between checkouts.
-- A JDK 25 is needed only for `cargo xtask vanilla update` and golden regeneration.
+- The first build extracts the Vanilla data from Mojang's server jars (network and a JDK; see
+  [Vanilla data](#vanilla-data)): about two minutes, once per machine. A JDK 25 is otherwise
+  needed only for golden regeneration.
 - `cargo xtask setup` once per clone (`--global`: for every clone of this user): installs the
   merge driver for generated and collective files (see [Merging](#merging)).
 
@@ -24,7 +26,7 @@ conflicts:
   `mod.rs`, `main.rs` (the same for `mod`/`use` lines). Any other conflict stays a normal
   conflict. Run `cargo xtask setup` again after the driver changes.
 - **After a merge** run `cargo xtask regen`: it rewrites the generated files from their sources
-  (codegen and the egg; cargo updates `Cargo.lock` while building xtask). A conflict in a
+  (the egg and the configuration reference; cargo updates `Cargo.lock` while building xtask). A conflict in a
   generated file is resolved by taking either side and running it.
 - **One file per entry** where a list grows with every change: parity scenarios
   (`scenarios/*.json`) and their known divergences (`scenarios/divergences/<scenario>.toml`).
@@ -41,10 +43,46 @@ conflicts:
 | `cargo nextest run --run-ignored all` | Including the bulk tests that CI runs nightly. |
 | `cargo test --doc` | Doc tests (nextest does not run them). |
 | `cargo deny check` | Licences, advisories, duplicate and wildcard dependencies (`deny.toml`). |
-| `cargo xtask codegen --check` | Generated tables match `data/vanilla/`. |
+| `cargo xtask codegen [--check]` | Write the tables the build generates to `target/generated/` for reading (`--check`: only generate them). |
 | `cargo xtask egg --check` | The two Pterodactyl eggs and `docs/configuration.md` match the configuration schema (`cargo xtask egg` regenerates them). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
-| `cargo xtask regen` | After a merge: rewrite generated files (codegen, egg, configuration reference). |
+| `cargo xtask regen` | After a merge: rewrite generated files (egg, configuration reference). |
+
+## Vanilla data
+
+The data in Mojang's server jar (block states, registries, packets, items, entities, biome
+parameters, ...) belongs to Mojang and is not in the repository. The repository only pins the
+versions: `data/vanilla/version.toml` (the current version) and
+`data/multiversion/<id>/version.toml` (the older versions the multi-version layer translates),
+each with the jar's URL and SHA-1.
+
+The build scripts of `vanillite-data` and `vanillite-multiversion` (`crates/vanillite-datagen`)
+make the data on the first build: they download each pinned jar from Mojang, verify its SHA-1,
+run Mojang's data generator and `tools/extractor`, write the normalised data to the cache and
+generate the Rust tables into `OUT_DIR`. A cache entry is
+`<cache>/vanilla-data/<id>-<full|mv>-<key>/`, where the key hashes the jar's SHA-1, the extractor
+sources and the pipeline code, so it is made once per machine and pipeline version and every
+branch finds its own. Warm builds do not touch the network or Java; a build script reruns only
+when a pin, the extractor sources or the cache entry changes.
+
+| Variable | Effect |
+|---|---|
+| `VANILLITE_CACHE_DIR` | Cache root (default `$XDG_CACHE_HOME/vanillite`, `~/.cache/vanillite`, `%LOCALAPPDATA%\vanillite`). |
+| `VANILLITE_DATA_DIR` | Use this pre-extracted directory instead (`vanilla/`, `multiversion/<id>/`, made by `cargo xtask vanilla export <dir>`): offline machines or machines without Java. Its jar SHA-1s must match the pins. |
+| `VANILLITE_JAVA_HOME`, `JAVA_HOME` | The JDK for the extraction (also `JAVA_HOME_25_X64` of GitHub runners and `java` on `PATH`). Without a JDK of the version the jar needs, Eclipse Temurin 25 is downloaded from Adoptium (SHA-256 checked) into `<cache>/jdk/`. |
+
+The first build prints a warning with the extracted versions and the time (about 20 s for the
+current version, two minutes for the eleven older ones, in parallel with compiling). CI, the
+release and nightly workflows keep `vanilla-data/` in the GitHub cache; the Docker build keeps
+`~/.cache/vanillite` in a cache mount. Tests that read the data files use
+`vanillite_data::VANILLA_DATA_DIR` and `vanillite_multiversion::data_paths`; code that embeds a
+report uses `vanillite_data::raw`.
+
+| Command | What |
+|---|---|
+| `cargo xtask vanilla update [<id>] [--jar <server.jar>]` | Extract a version into the cache, pin it in `data/vanilla/version.toml` and print a change report. |
+| `cargo xtask multiversion add <id>...` | Extract older versions for the multi-version layer and pin them in `data/multiversion/<id>/version.toml`. |
+| `cargo xtask vanilla export <dir>` | Copy the data of all pinned versions to `<dir>` (for `VANILLITE_DATA_DIR`). |
 
 ## New Minecraft versions
 
@@ -55,8 +93,8 @@ version.
 | Command | What |
 |---|---|
 | `cargo xtask version check` | Fails if a newer release than the pinned one exists. |
-| `cargo xtask version update <id>` | Preview (any release, pre-release or snapshot): data, generated code, goldens and a test run in the worktree `target/version/<id>/tree/`, and the change report `target/version/<id>/change-report.md` (protocol, packet fields, registries, blocks, items, entities, data pack, goldens, failing tests, affected code areas). The pinned version stays. |
-| `cargo xtask version update <id> --final` | The switch itself (releases only): the same in this checkout; commit data, generated code and goldens. |
+| `cargo xtask version update <id>` | Preview (any release, pre-release or snapshot): data (into the cache), pins, goldens and a test run in the worktree `target/version/<id>/tree/`, and the change report `target/version/<id>/change-report.md` (protocol, packet fields, registries, blocks, items, entities, data pack, goldens, failing tests, affected code areas). The pinned version stays. |
+| `cargo xtask version update <id> --final` | The switch itself (releases only): the same in this checkout; commit the pins (`data/**/version.toml`) and goldens. |
 
 Golden harness sources that do not compile against the new jar are left out (with what needs
 them) and named in the report; porting them is part of the switch.
@@ -307,7 +345,7 @@ does.
 
 Vanillite has its own [SemVer](https://semver.org) version (`version` of `[workspace.package]`
 in `Cargo.toml`) with the Minecraft version it targets attached as build metadata; the Minecraft
-version is `VERSION_ID` of the generated `vanillite-data` (`cargo xtask vanilla update`), never
+version is the `id` pinned in `data/vanilla/version.toml` (`cargo xtask version update`), never
 written by hand. `vanillite --version` and the first log line show both and the commit, e.g.
 `Vanillite 0.1.0-beta.1 (Minecraft 26.3, 3bd22ae)`.
 

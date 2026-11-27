@@ -250,6 +250,8 @@ pub struct PlayContext<'a> {
     pub inventory: &'a mut PlayerInventory,
     /// The player's experience (`None` in tests).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's own random (`Entity.random`; `None` in tests: the level random).
+    pub random: Option<&'a mut vanillite_base::random::LegacyRandom>,
     /// The player's food (`None` in tests).
     pub food: Option<&'a mut crate::survival::food::FoodData>,
     /// The player's recipe book (`None` in tests).
@@ -887,6 +889,13 @@ impl Digging {
         {
             level.output().piglin_anger.push((player, false));
         }
+        // `DoublePlantBlock.playerWillDestroy`: the broken half drops while the other half is
+        // still there (the `location_check` of tall grass and large ferns); `playerDestroy`
+        // then drops nothing.
+        let double_plant = is_double_plant(state);
+        if double_plant && !ctx.actor.creative() {
+            drop_resources(ctx, state, pos, &tool, None);
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks. `BaseFireBlock` sends the extinguish sound to everyone instead.
         if crate::block::is_fire(state) {
@@ -984,7 +993,9 @@ impl Digging {
             {
                 food.add_exhaustion(0.005);
             }
-            drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            if !double_plant {
+                drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            }
             // `TurtleEggBlock.playerDestroy`: one egg less (`decreaseEggs`).
             if state.block() == vanillite_data::block::ids::TURTLE_EGG
                 && let Some(level) = ctx.level.level_mut()
@@ -1855,6 +1866,23 @@ impl Digging {
             if placed.block() == vanillite_data::block::ids::TRIPWIRE_HOOK {
                 crate::block::tripwire::hook_set_placed_by(level, target, placed);
             }
+            // `JukeboxBlock.setPlacedBy`: a record in the item's block entity data.
+            if placed.block() == vanillite_data::block::ids::JUKEBOX
+                && crate::level::block_entity::block_entity_data_contains(stack, "RecordItem")
+                && let Some(with) = placed.with("has_record", "true")
+            {
+                level.set_block(target, with, crate::level::update::CLIENTS);
+            }
+            // `DriedGhastBlock.setPlacedBy`: its own sound to everyone.
+            if placed.block() == vanillite_data::block::ids::DRIED_GHAST {
+                let sound = if placed.value("waterlogged") == Some("true") {
+                    "block.dried_ghast.place_in_water"
+                } else {
+                    "block.dried_ghast.place"
+                };
+                let sound = crate::block::sound_id(sound);
+                level.play_block_sound(None, target, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
+            }
             // `SignItem.updateCustomBlockEntityTag`: the editor of the front opens.
             if crate::block::sign::is_sign(placed.block())
                 && stack.component(ids::BLOCK_ENTITY_DATA).is_none()
@@ -2314,6 +2342,20 @@ pub(crate) fn apply_block_state_component(
     (out != state).then_some(out)
 }
 
+/// `DoublePlantBlock` and its subclasses (tall flowers, tall grass, large fern, tall seagrass,
+/// small dripleaf, pitcher crop).
+fn is_double_plant(state: BlockState) -> bool {
+    use vanillite_data::block::BlockKind;
+    matches!(
+        state.block().info().kind,
+        BlockKind::DoublePlantBlock
+            | BlockKind::TallFlowerBlock
+            | BlockKind::TallSeagrassBlock
+            | BlockKind::SmallDripleafBlock
+            | BlockKind::PitcherCropBlock
+    )
+}
+
 /// `Block.dropResources` + `popResource`: loot table drops as item entities.
 fn drop_resources(
     ctx: &mut PlayContext<'_>,
@@ -2339,21 +2381,29 @@ fn drop_resources(
             entity: None,
             block_entity: Some(&components),
         };
-        // `LootContext.Builder.create`: the table's random sequence, else the level random.
-        match (
-            data.loot.block_sequence(state),
-            ctx.level.random_sequences(),
-        ) {
-            (Some(key), Some(sequences)) => {
-                let mut sequences = sequences
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                data.loot
-                    .block_drops(&loot, sequences.get(key), &mut stacks);
-            }
-            _ => {
-                let mut rng = LevelRandom(&mut *ctx.level);
-                data.loot.block_drops(&loot, &mut rng, &mut stacks);
+        // `LootContext.Builder.create`: the table's random sequence, else the level random;
+        // with the level, `location_check` sees the blocks around.
+        if let Some(level) = ctx.level.level_mut() {
+            let mut random = level.lend_random();
+            data.loot
+                .roll_block(level, pos, &loot, &mut random, &mut stacks);
+            level.restore_random(random);
+        } else {
+            match (
+                data.loot.block_sequence(state),
+                ctx.level.random_sequences(),
+            ) {
+                (Some(key), Some(sequences)) => {
+                    let mut sequences = sequences
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    data.loot
+                        .block_drops(&loot, sequences.get(key), &mut stacks);
+                }
+                _ => {
+                    let mut rng = LevelRandom(&mut *ctx.level);
+                    data.loot.block_drops(&loot, &mut rng, &mut stacks);
+                }
             }
         }
     }
@@ -2430,12 +2480,32 @@ pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop, own_rand
     if drop.stack.is_empty() {
         return;
     }
-    let y = actor.pos.y + actor.eye_height - f64::from(0.3_f32);
+    let (from, velocity) = throw_motion(
+        actor.pos,
+        actor.eye_height,
+        actor.y_rot,
+        actor.x_rot,
+        own_random,
+    );
+    let thrower = drop.thrown.then_some(actor.uuid);
+    level.spawn_item(from, drop.stack, velocity, 40, thrower);
+}
+
+/// `createItemStackToDrop(stack, false, _)`'s start position and motion for a player at `pos`
+/// with eye height `eye_height` looking at `y_rot`/`x_rot`; draws from `own_random`.
+pub fn throw_motion(
+    pos: Vec3,
+    eye_height: f64,
+    y_rot: f32,
+    x_rot: f32,
+    own_random: &mut i64,
+) -> (Vec3, Vec3) {
+    let y = pos.y + eye_height - f64::from(0.3_f32);
     let deg = std::f64::consts::PI / 180.0;
-    let sin_x = sin(f64::from(actor.x_rot) * deg);
-    let cos_x = cos(f64::from(actor.x_rot) * deg);
-    let sin_y = sin(f64::from(actor.y_rot) * deg);
-    let cos_y = cos(f64::from(actor.y_rot) * deg);
+    let sin_x = sin(f64::from(x_rot) * deg);
+    let cos_x = cos(f64::from(x_rot) * deg);
+    let sin_y = sin(f64::from(y_rot) * deg);
+    let cos_y = cos(f64::from(y_rot) * deg);
     // The player's own random, not the level's.
     let mut r = vanillite_base::random::LegacyRandom::from_state(*own_random);
     let (dir, pow2, spread) = {
@@ -2451,14 +2521,7 @@ pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop, own_rand
         f64::from(-sin_x * 0.3 + 0.1 + spread * 0.1),
         f64::from(cos_y * cos_x * 0.3) + f64::from(dir).sin() * f64::from(pow2),
     );
-    let thrower = drop.thrown.then_some(actor.uuid);
-    level.spawn_item(
-        Vec3::new(actor.pos.x, y, actor.pos.z),
-        drop.stack,
-        velocity,
-        40,
-        thrower,
-    );
+    (Vec3::new(pos.x, y, pos.z), velocity)
 }
 
 /// `floor` of a position.

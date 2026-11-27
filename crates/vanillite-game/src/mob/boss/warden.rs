@@ -92,8 +92,14 @@ pub enum LevelAction {
         remove: Option<Listener>,
         add: Option<Listener>,
     },
-    /// A mob died next to a sculk catalyst: the catalyst takes its experience.
-    SculkDeath { pos: Vec3, experience: i32 },
+    /// A mob died next to a sculk catalyst: the catalyst takes its experience. `player`: the
+    /// player whose reward it is (an armor stand it broke), marked `skipDropExperience` when a
+    /// catalyst took it.
+    SculkDeath {
+        pos: Vec3,
+        experience: i32,
+        player: Option<EntityId>,
+    },
     /// A lightning bolt at `pos` (`summon_entity` of Channeling); `cause` is the player who
     /// owns the enchanted item (`setCause`).
     Lightning { pos: Vec3, cause: Option<EntityId> },
@@ -117,8 +123,16 @@ impl LevelAction {
                     listeners.register(l);
                 }
             }
-            LevelAction::SculkDeath { pos, experience } => {
-                crate::block::sculk_catalyst::on_mob_death(level, pos, experience);
+            LevelAction::SculkDeath {
+                pos,
+                experience,
+                player,
+            } => {
+                if crate::block::sculk_catalyst::on_mob_death(level, pos, experience)
+                    && let Some(p) = player.and_then(|p| level.entities.player_mut(p))
+                {
+                    p.survival.experience_consumed = true;
+                }
             }
             LevelAction::Lightning { pos, cause } => {
                 let bolt = crate::lightning::spawn(level, pos, false);
@@ -523,7 +537,7 @@ pub(crate) fn handle_game_event(
         return;
     }
     let time = level.game_time();
-    let projectile_owner = sculk_vibration::projectile_owner(level, context.source);
+    let projectile_owner = sculk_vibration::event_projectile_owner(level, context);
     let distance = source.distance_to_sqr(destination).sqrt() as f32;
     if let Some(s) = state_mut(&mut level.entities, id) {
         s.vibration.add_candidate(

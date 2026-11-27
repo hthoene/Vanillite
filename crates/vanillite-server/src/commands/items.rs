@@ -10,7 +10,7 @@ use vanillite_base::Vec3;
 use vanillite_base::random::RandomSource as _;
 use vanillite_command::error::CommandError;
 use vanillite_command::{
-    Arg as ErrArg, ArgValue, Args, GameValue, ItemArg, ItemPredicateArg, ResourceOrTag,
+    Arg as ErrArg, ArgValue, Args, GameValue, ItemArg, ItemPredicateArg, ItemTest, ResourceOrTag,
     SlotSourceArg,
 };
 use vanillite_data::entity::ids as entity_ids;
@@ -438,26 +438,329 @@ pub(crate) fn give(
 
 // --- clear --------------------------------------------------------------------------------------
 
-/// The items an item predicate accepts (`None`: all). Predicates with component tests are
-/// not supported.
-fn accepted_items(args: &Args, env: &Env<'_>) -> Result<Option<Vec<u16>>, CommandError> {
+/// An item predicate argument (`ItemPredicateArgument`): the items it accepts (`None`: all)
+/// and its component tests, every group needing one matching alternative.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ItemFilter {
+    items: Option<Vec<u16>>,
+    tests: Vec<Vec<ItemCheck>>,
+}
+
+/// One resolved component test.
+#[derive(Clone, Debug)]
+enum ItemCheck {
+    /// The `count` pseudo component and predicate.
+    Count(IntBounds),
+    /// `component`: the component is present.
+    Has(u16),
+    /// `component=value`: the component's wire value equals the value's.
+    Equals(u16, Box<[u8]>),
+    /// `damage~{durability, damage}`.
+    Damage(IntBounds, IntBounds),
+    /// `custom_data~{...}`: `compareNbt` against the stack's custom data.
+    CustomData(Compound),
+    /// `enchantments~[...]`: each entry finds an enchantment (ids, levels).
+    Enchantments(Vec<(Option<Vec<u32>>, IntBounds)>),
+    Not(Box<ItemCheck>),
+}
+
+/// `MinMaxBounds.Ints`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct IntBounds {
+    min: Option<i64>,
+    max: Option<i64>,
+}
+
+impl IntBounds {
+    fn any(self) -> bool {
+        self == IntBounds::default()
+    }
+
+    fn matches(self, v: i64) -> bool {
+        self.min.is_none_or(|m| v >= m) && self.max.is_none_or(|m| v <= m)
+    }
+}
+
+fn tag_int(tag: &Tag) -> Option<i64> {
+    Some(match tag {
+        Tag::Byte(v) => i64::from(*v),
+        Tag::Short(v) => i64::from(*v),
+        Tag::Int(v) => i64::from(*v),
+        Tag::Long(v) => *v,
+        _ => return None,
+    })
+}
+
+/// `MinMaxBounds.Ints.CODEC`: a number or `{min, max}`.
+fn int_bounds(tag: &Tag) -> Option<IntBounds> {
+    if let Some(v) = tag_int(tag) {
+        return Some(IntBounds {
+            min: Some(v),
+            max: Some(v),
+        });
+    }
+    let Tag::Compound(c) = tag else {
+        return None;
+    };
+    let field = |k: &str| c.get(k).map(|t| tag_int(t).ok_or(())).transpose();
+    Some(IntBounds {
+        min: field("min").ok()?,
+        max: field("max").ok()?,
+    })
+}
+
+fn qualified(name: &str) -> String {
+    if name.contains(':') {
+        name.to_owned()
+    } else {
+        format!("minecraft:{name}")
+    }
+}
+
+fn malformed(kind: &str, name: &str) -> CommandError {
+    error(
+        if kind == "component" {
+            "arguments.item.component.malformed"
+        } else {
+            "arguments.item.predicate.malformed"
+        },
+        vec![
+            ErrArg::Str(name.to_owned()),
+            ErrArg::Str("invalid value".to_owned()),
+        ],
+    )
+}
+
+/// A persistent component type by name.
+fn component_type(name: &str) -> Result<u16, CommandError> {
+    vanillite_protocol::components_nbt::type_by_name(name)
+        .filter(|&t| !vanillite_protocol::components_nbt::is_transient(t))
+        .ok_or_else(|| {
+            error(
+                "arguments.item.component.unknown",
+                vec![ErrArg::Str(name.to_owned())],
+            )
+        })
+}
+
+/// The enchantment ids of a holder set (an id, `#tag` or a list).
+fn enchantment_set(tag: &Tag, env: &Env<'_>) -> Option<Vec<u32>> {
+    let data = vanillite_game::player::play::game_data()?;
+    let id = |name: &str| data.enchantments.get(&qualified(name)).copied();
+    match tag {
+        Tag::String(s) => match s.strip_prefix('#') {
+            Some(t) => Some(
+                env.global
+                    .systems
+                    .tags()
+                    .get("minecraft:enchantment")
+                    .and_then(|tags| tags.get(&qualified(t)))
+                    .map(|members| members.iter().filter_map(|m| id(m)).collect())
+                    .unwrap_or_default(),
+            ),
+            None => Some(vec![id(s)?]),
+        },
+        Tag::List(l) => {
+            l.0.iter()
+                .map(|t| match t {
+                    Tag::String(s) => id(s),
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => None,
+    }
+}
+
+fn check(test: &ItemTest, env: &Env<'_>) -> Result<ItemCheck, CommandError> {
+    Ok(match test {
+        ItemTest::Not(t) => ItemCheck::Not(Box::new(check(t, env)?)),
+        ItemTest::Has(name) if qualified(name) == "minecraft:count" => {
+            ItemCheck::Count(IntBounds::default())
+        }
+        ItemTest::Has(name) => ItemCheck::Has(component_type(&qualified(name))?),
+        ItemTest::Equals(name, value) => {
+            let name = qualified(name);
+            if name == "minecraft:count" {
+                ItemCheck::Count(int_bounds(value).ok_or_else(|| malformed("component", &name))?)
+            } else {
+                let t = component_type(&name)?;
+                let wire = vanillite_game::item_nbt::component_from_nbt(t, value)
+                    .ok_or_else(|| malformed("component", &name))?;
+                ItemCheck::Equals(t, wire)
+            }
+        }
+        ItemTest::Matches(name, value) => {
+            let name = qualified(name);
+            let bad = || malformed("predicate", &name);
+            match name.as_str() {
+                "minecraft:count" => ItemCheck::Count(int_bounds(value).ok_or_else(bad)?),
+                "minecraft:damage" => {
+                    let Tag::Compound(c) = value else {
+                        return Err(bad());
+                    };
+                    let field = |k: &str| c.get(k).map_or(Some(IntBounds::default()), int_bounds);
+                    ItemCheck::Damage(
+                        field("durability").ok_or_else(bad)?,
+                        field("damage").ok_or_else(bad)?,
+                    )
+                }
+                "minecraft:custom_data" => ItemCheck::CustomData(match value {
+                    Tag::Compound(c) => c.clone(),
+                    Tag::String(s) => vanillite_nbt::snbt::parse_compound(s).map_err(|_| bad())?,
+                    _ => return Err(bad()),
+                }),
+                "minecraft:enchantments" => {
+                    let Tag::List(list) = value else {
+                        return Err(bad());
+                    };
+                    let mut entries = Vec::new();
+                    for e in &list.0 {
+                        let Tag::Compound(c) = e else {
+                            return Err(bad());
+                        };
+                        let set = match c.get("enchantments") {
+                            Some(t) => Some(enchantment_set(t, env).ok_or_else(bad)?),
+                            None => None,
+                        };
+                        let levels = c
+                            .get("levels")
+                            .map_or(Some(IntBounds::default()), int_bounds)
+                            .ok_or_else(bad)?;
+                        entries.push((set, levels));
+                    }
+                    ItemCheck::Enchantments(entries)
+                }
+                // The other predicate types are not supported yet.
+                "minecraft:stored_enchantments"
+                | "minecraft:potion_contents"
+                | "minecraft:container"
+                | "minecraft:bundle_contents"
+                | "minecraft:firework_explosion"
+                | "minecraft:fireworks"
+                | "minecraft:writable_book_content"
+                | "minecraft:written_book_content"
+                | "minecraft:attribute_modifiers"
+                | "minecraft:trim"
+                | "minecraft:jukebox_playable"
+                | "minecraft:villager/variant" => return Err(unsupported()),
+                // A component without a predicate type: its existence (`Unit`, `{}`).
+                _ => {
+                    let t = vanillite_protocol::components_nbt::type_by_name(&name).ok_or_else(
+                        || {
+                            error(
+                                "arguments.item.predicate.unknown",
+                                vec![ErrArg::Str(name.clone())],
+                            )
+                        },
+                    )?;
+                    if !matches!(value, Tag::Compound(c) if c.is_empty()) {
+                        return Err(bad());
+                    }
+                    ItemCheck::Has(t)
+                }
+            }
+        }
+    })
+}
+
+/// The effective wire value of a component: the patch, else the item's default.
+fn effective_component(stack: &ItemStack, type_id: u16) -> Option<Box<[u8]>> {
+    if let Some(p) = stack.patch() {
+        if let Some(v) = p.get(type_id) {
+            return Some(v.into());
+        }
+        if p.is_removed(type_id) {
+            return None;
+        }
+    }
+    crate::plugins::default_component(stack.item, type_id)
+}
+
+impl ItemCheck {
+    fn matches(&self, stack: &ItemStack) -> bool {
+        match self {
+            ItemCheck::Not(t) => !t.matches(stack),
+            ItemCheck::Count(b) => b.matches(i64::from(stack.count)),
+            ItemCheck::Has(t) => effective_component(stack, *t).is_some(),
+            ItemCheck::Equals(t, wire) => {
+                effective_component(stack, *t).is_some_and(|v| v == *wire)
+            }
+            ItemCheck::Damage(durability, damage) => {
+                let Some(d) = effective_component(stack, component_ids::DAMAGE)
+                    .and_then(|v| Reader::new(&v).varint().ok())
+                else {
+                    return false;
+                };
+                let max = item::max_damage(stack);
+                durability.matches(i64::from(max) - i64::from(d)) && damage.matches(i64::from(d))
+            }
+            ItemCheck::CustomData(expected) => {
+                let actual = DATA_COMPONENT_TYPE
+                    .id("minecraft:custom_data")
+                    .and_then(|t| Some((t, stack.component(t)?)))
+                    .and_then(|(t, v)| vanillite_game::item_nbt::component_to_nbt(t, v));
+                let empty = Compound::new();
+                let actual = match &actual {
+                    Some(Tag::Compound(c)) => c,
+                    _ => &empty,
+                };
+                super::nbt_ops::compound_matches(expected, actual)
+            }
+            ItemCheck::Enchantments(entries) => {
+                let present = item::enchantments(stack);
+                entries.iter().all(|(set, levels)| match set {
+                    // `EnchantmentPredicate.containedIn`.
+                    Some(ids) => ids.iter().any(|id| {
+                        present
+                            .iter()
+                            .find(|(e, _)| e == id)
+                            .is_some_and(|&(_, level)| {
+                                level != 0 && levels.matches(i64::from(level))
+                            })
+                    }),
+                    None if !levels.any() => present
+                        .iter()
+                        .any(|&(_, level)| levels.matches(i64::from(level))),
+                    None => !present.is_empty(),
+                })
+            }
+        }
+    }
+}
+
+impl ItemFilter {
+    /// Whether a non-empty stack matches.
+    pub(crate) fn matches(&self, stack: &ItemStack) -> bool {
+        !stack.is_empty()
+            && self.items.as_ref().is_none_or(|a| a.contains(&stack.item))
+            && self
+                .tests
+                .iter()
+                .all(|group| group.iter().any(|t| t.matches(stack)))
+    }
+}
+
+/// [`ItemFilter`] of the item predicate argument `item`.
+fn accepted_items(args: &Args, env: &Env<'_>) -> Result<ItemFilter, CommandError> {
     accepted_items_of(args, "item", env)
 }
 
-/// [`accepted_items`] of the item predicate argument `name`.
+/// [`ItemFilter`] of the item predicate argument `name` (all items without one).
 pub(crate) fn accepted_items_of(
     args: &Args,
     name: &str,
     env: &Env<'_>,
-) -> Result<Option<Vec<u16>>, CommandError> {
+) -> Result<ItemFilter, CommandError> {
     let Some(GameValue::ItemPredicate(predicate)) = args.game(name) else {
-        return Ok(None);
+        return Ok(ItemFilter::default());
     };
     let ItemPredicateArg { item, tests } = predicate.as_ref();
-    if !tests.is_empty() {
-        return Err(unsupported());
-    }
-    Ok(match item {
+    let tests = tests
+        .iter()
+        .map(|group| group.iter().map(|t| check(t, env)).collect())
+        .collect::<Result<_, _>>()?;
+    let items = match item {
         None => None,
         Some(ResourceOrTag::Resource(id)) => Some(ITEM.id(id).into_iter().collect()),
         Some(ResourceOrTag::Tag(tag)) => Some(
@@ -469,7 +772,8 @@ pub(crate) fn accepted_items_of(
                 .map(|entries| entries.iter().filter_map(|e| ITEM.id(e)).collect())
                 .unwrap_or_default(),
         ),
-    })
+    };
+    Ok(ItemFilter { items, tests })
 }
 
 /// `Inventory.clearOrCountMatchingItems`: the inventory, the crafting grid and the carried
@@ -477,7 +781,7 @@ pub(crate) fn accepted_items_of(
 fn clear_player(
     entities: &mut Entities,
     id: EntityId,
-    accepted: Option<&[u16]>,
+    accepted: &ItemFilter,
     counting: bool,
     max: i32,
 ) -> i32 {
@@ -486,7 +790,7 @@ fn clear_player(
     };
     let mut count = 0i32;
     let mut take = |stack: &mut ItemStack| {
-        if stack.is_empty() || accepted.is_some_and(|a| !a.contains(&stack.item)) {
+        if !accepted.matches(stack) {
             return;
         }
         if counting {
@@ -536,18 +840,12 @@ pub(crate) fn clear(
     let mut tracker = Tracker::<Component>::default();
     for player in &players {
         let count = match player.entity {
-            Some(id) => clear_player(
-                &mut env.level.entities,
-                id,
-                accepted.as_deref(),
-                counting,
-                max,
-            ),
+            Some(id) => clear_player(&mut env.level.entities, id, &accepted, counting, max),
             None => {
                 if !counting {
                     let accepted = accepted.clone();
                     on_player(env, player, move |level, id| {
-                        clear_player(&mut level.entities, id, accepted.as_deref(), false, max);
+                        clear_player(&mut level.entities, id, &accepted, false, max);
                     });
                 }
                 0

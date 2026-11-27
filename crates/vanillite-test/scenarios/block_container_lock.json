@@ -1,0 +1,28 @@
+{
+  "description": "Container locks (LockCode): a barrel locked to sticks does not open with an empty hand but opens with a stick; a double chest with only one locked half (custom_name Key) stays closed for an empty hand and opens for a stick named Key; a shulker box placed from an item with a lock component takes the lock (applyImplicitComponents) and opens only with a diamond. A sculk sensor shows every container open and close.",
+  "tier": "fast",
+  "player_state": true,
+  "level_rng": true,
+  "region": [[0, -61, 0], [15, -58, 15]],
+  "ticks": 210,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [5.5, -60.0, 5.5]}
+  ],
+  "setup": [
+    {"op": "set", "pos": [3, -60, 5], "block": "minecraft:barrel[facing=up,open=false]"},
+    {"op": "set", "pos": [5, -60, 8], "block": "minecraft:chest[facing=north,type=left,waterlogged=false]"},
+    {"op": "set", "pos": [6, -60, 8], "block": "minecraft:chest[facing=north,type=right,waterlogged=false]"},
+    {"op": "set", "pos": [11, -60, 8], "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "data merge block 3 -60 5 {lock:{items:\"minecraft:stick\"}}"},
+    {"tick": 1, "op": "command", "command": "data merge block 5 -60 8 {lock:{components:{\"minecraft:custom_name\":\"Key\"}}}"},
+    {"tick": 3, "op": "use", "entity": "steve", "pos": [3, -60, 5], "face": "up", "item": "minecraft:air"},
+    {"tick": 6, "op": "use", "entity": "steve", "pos": [3, -60, 5], "face": "up", "item": "minecraft:stick"},
+    {"tick": 55, "op": "use", "entity": "steve", "pos": [6, -60, 8], "face": "north", "item": "minecraft:air"},
+    {"tick": 60, "op": "use", "entity": "steve", "pos": [6, -60, 8], "face": "north", "item": "minecraft:stick", "components": "{\"minecraft:custom_name\":\"Key\"}"},
+    {"tick": 110, "op": "use", "entity": "steve", "pos": [4, -61, 10], "face": "up", "item": "minecraft:shulker_box", "components": "{\"minecraft:lock\":{items:\"minecraft:diamond\"}}"},
+    {"tick": 112, "op": "use", "entity": "steve", "pos": [4, -60, 10], "face": "up", "item": "minecraft:air"},
+    {"tick": 160, "op": "use", "entity": "steve", "pos": [4, -60, 10], "face": "up", "item": "minecraft:diamond"}
+  ]
+}

@@ -777,6 +777,7 @@ fn ram_tick(t: &mut Tick<'_, '_>, direction: Vec3) {
             f64::from(factor) * force,
             direction.x,
             direction.z,
+            None,
         );
         finish_ram(t);
         sound_at(t, impact, SoundSource::Neutral, 1.0, 1.0);

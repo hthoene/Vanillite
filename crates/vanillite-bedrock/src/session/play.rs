@@ -257,6 +257,19 @@ impl Session {
             let Some(w) = &self.world else {
                 return Ok(());
             };
+            // Riding a mount with an inventory: the Java client asks the server to open it.
+            let mount = w.vehicle.and_then(|v| w.entities.get(&v)).is_some_and(|e| {
+                super::container::has_inventory_screen(java_type_name(e.java_type))
+            });
+            if mount {
+                let entity_id = w.java_id;
+                self.java_send(&psb::PlayerCommand {
+                    entity_id,
+                    action: psb::PlayerAction::OpenInventory,
+                    data: 0,
+                });
+                return Ok(());
+            }
             let pos = [w.pos[0], w.pos[1], w.pos[2]].map(crate::num::floor_i32);
             let own = uid(w.entity_id);
             self.send(id::CONTAINER_OPEN, &bp::container_open(0, -1, pos, own));
@@ -425,6 +438,11 @@ impl Session {
         if kind == Some(vanillite_data::entity::ids::PLAYER) {
             let name = w.names.get(&e.uuid.0).cloned().unwrap_or_default();
             entity.kind = Kind::Player;
+            entity.uuid = e.uuid.0;
+            let name = self.team_name(&name).unwrap_or(name);
+            let Some(w) = &mut self.world else {
+                return;
+            };
             let mode = super::bedrock_game_mode(w.game_mode);
             w.entities.insert(e.entity_id, entity.clone());
             let eye = [pos[0], pos[1] + EYE, pos[2]];
@@ -650,7 +668,7 @@ impl Session {
             self.version
                 .palette
                 .items()
-                .write_instance(&mut stack, &item, 0);
+                .write_instance(&mut stack, &item, 0, &self.enchantments);
             let body = bp::add_item_actor(uid(d.entity_id), &stack, f3(e.pos), [0.0; 3]);
             self.send(id::ADD_ITEM_ACTOR, &body);
             return;
@@ -784,6 +802,57 @@ impl Session {
         self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
     }
 
+    /// The Bedrock flags of a known entity.
+    pub(super) fn actor_flags_of(&self, java: i32) -> Option<i64> {
+        let e = self.world.as_ref()?.entities.get(&java)?;
+        let tnt = java_type_name(e.java_type) == "minecraft:tnt";
+        Some(actor_flags(e, e.kind == Kind::Player, tnt))
+    }
+
+    /// `set_entity_link`: a lead between an entity and its holder (`0`: none).
+    pub(super) fn java_entity_link(&mut self, leashed: i32, holder: i32) {
+        let Some(e) = self
+            .world
+            .as_mut()
+            .and_then(|w| w.entities.get_mut(&leashed))
+        else {
+            return;
+        };
+        e.leashed = holder != 0;
+        let holder_runtime = if holder == 0 {
+            -1
+        } else {
+            i64::try_from(self.actor(holder)).unwrap_or(-1)
+        };
+        let Some(flags) = self.actor_flags_of(leashed) else {
+            return;
+        };
+        let m = bp::Metadata::default()
+            .long(meta::FLAGS, flags)
+            .long(meta::LEASH_HOLDER, holder_runtime);
+        let runtime = self.actor(leashed);
+        self.send(id::SET_ACTOR_DATA, &bp::set_actor_data(runtime, &m));
+    }
+
+    /// `player_rotation`: turns the own player (absolute or relative).
+    pub(super) fn java_player_rotation(&mut self, p: &pcb::PlayerRotation) {
+        let Some(w) = &mut self.world else {
+            return;
+        };
+        w.yaw = if p.relative_y {
+            w.yaw + p.y_rot
+        } else {
+            p.y_rot
+        };
+        w.pitch = if p.relative_x {
+            w.pitch + p.x_rot
+        } else {
+            p.x_rot
+        };
+        let pos = w.pos;
+        self.send_own_position(pos);
+    }
+
     /// Sends the flags of a known entity again (after a change outside its entity data).
     pub(super) fn send_actor_flags(&mut self, java: i32) {
         let Some(e) = self
@@ -838,9 +907,10 @@ impl Session {
             }
         }
         let eq = eq.clone();
+        let enchantments = self.enchantments.clone();
         let one = |s: &ItemStack| {
             let mut out = Vec::new();
-            items.write_instance(&mut out, s, 0);
+            items.write_instance(&mut out, s, 0, &enchantments);
             out
         };
         let empty = ItemStack::EMPTY;
@@ -1247,6 +1317,26 @@ impl Session {
             ids::EXPLODE => self.java_explode(&mut r),
             ids::SOUND_ENTITY => self.java_entity_sound(&mut r),
             ids::OPEN_SCREEN => self.java_open_screen(&mut r),
+            ids::MOUNT_SCREEN_OPEN => {
+                if let Ok(m) = pcb::MountScreenOpen::decode(&mut r) {
+                    self.java_mount_screen(m.container_id, m.inventory_columns, m.entity_id);
+                }
+            }
+            ids::SET_ENTITY_LINK => {
+                if let Ok(l) = pcb::SetEntityLink::decode(&mut r) {
+                    self.java_entity_link(l.source_id, l.dest_id);
+                }
+            }
+            ids::PLAYER_ROTATION => {
+                if let Ok(p) = pcb::PlayerRotation::decode(&mut r) {
+                    self.java_player_rotation(&p);
+                }
+            }
+            ids::SET_PLAYER_TEAM => {
+                if let Ok(t) = pcb::SetPlayerTeam::decode(&mut r) {
+                    self.java_team(t);
+                }
+            }
             ids::MERCHANT_OFFERS => self.java_merchant_offers(&mut r),
             ids::CONTAINER_CLOSE => {
                 if let Ok(container) = r.varint() {
@@ -1269,6 +1359,13 @@ impl Session {
             }
             ids::UPDATE_ATTRIBUTES => self.java_attributes(&mut r),
             ids::BLOCK_EVENT => self.java_block_event(&mut r),
+            ids::UPDATE_RECIPES => {
+                if let Some(list) = crate::recipes::read_stonecutter(&mut r) {
+                    let items = self.version.palette.items();
+                    let body = self.recipes.set_stonecutter(items, list);
+                    self.send(id::CRAFTING_DATA, &body);
+                }
+            }
             ids::RECIPE_BOOK_ADD => {
                 if let Ok(book) = pcb::RecipeBookAdd::decode(&mut r) {
                     let items = self.version.palette.items();
@@ -1634,6 +1731,9 @@ fn actor_flags(e: &Entity, player: bool, tnt: bool) -> i64 {
         (e.saddled, meta::FLAG_SADDLED),
         (e.wool & 0x10 != 0, meta::FLAG_SHEARED),
         (e.riding, meta::FLAG_RIDING),
+        (e.tamed, meta::FLAG_TAMED),
+        (e.chested, meta::FLAG_CHESTED),
+        (e.leashed, meta::FLAG_LEASHED),
     ] {
         if on {
             fl |= 1i64.wrapping_shl(flag);

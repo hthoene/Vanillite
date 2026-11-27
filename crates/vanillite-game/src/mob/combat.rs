@@ -342,6 +342,11 @@ fn hurt_mob_inner(
     if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
         return crate::decoration::stand::hurt(level, ents, env, cx, target, &source);
     }
+    if let Some(took) =
+        super::fam::undead::cubes::sulfur_hurt(level, ents, env, target, &source, amount)
+    {
+        return took;
+    }
     if invulnerable_to(ents, env, target, &source) || immune_to_damage(ents, env, target, &source) {
         return false;
     }
@@ -499,19 +504,9 @@ fn hurt_mob_inner(
             // Against the projectile's motion, else away from `getSourcePosition`: the explicit
             // position, else the direct entity's (a thrown potion pushes away from where it
             // splashed).
-            let (xd, zd) = match source.projectile_motion {
-                Some(m) => (-m.x, -m.z),
-                None => source
-                    .position
-                    .or_else(|| {
-                        source
-                            .direct
-                            .and_then(|d| ents.store.get(d))
-                            .map(|e| e.pos())
-                    })
-                    .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z)),
-            };
-            apply_knockback(ents, target, f64::from(0.4_f32), xd, zd);
+            let (xd, zd) = default_knockback_direction(ents, &source, pos);
+            let by = source.cause.map(|c| (c, damage, false));
+            knock_mob(ents, env, target, f64::from(0.4_f32), xd, zd, by);
         }
     }
     let dead = ents
@@ -587,6 +582,58 @@ fn hurt_mob_inner(
         });
     }
     true
+}
+
+/// The direction of `dealDefaultKnockback` for a mob at `pos`: against the projectile's
+/// motion, else away from `getSourcePosition` (the explicit position, else the direct
+/// entity's).
+pub fn default_knockback_direction(
+    ents: &Entities,
+    source: &DamageSource,
+    pos: Vec3,
+) -> (f64, f64) {
+    match source.projectile_motion {
+        Some(m) => (-m.x, -m.z),
+        None => source
+            .position
+            .or_else(|| {
+                source
+                    .direct
+                    .and_then(|d| ents.store.get(d))
+                    .map(|e| e.pos())
+            })
+            .map_or((0.0, 0.0), |p| (p.x - pos.x, p.z - pos.z)),
+    }
+}
+
+/// `knockback(power, xd, zd, source, damage, comesFromEffect)` of a mob; `by` is the
+/// source's causing entity, the damage and `comesFromEffect` (a sulfur cube holding a block
+/// takes its own knockback from an entity).
+pub fn knock_mob(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    power: f64,
+    xd: f64,
+    zd: f64,
+    by: Option<(EntityId, f32, bool)>,
+) {
+    if let Some((cause, damage, from_effect)) = by
+        && super::fam::undead::cubes::knockback(
+            ents,
+            env,
+            target,
+            power,
+            xd,
+            zd,
+            cause,
+            damage,
+            from_effect,
+        )
+    {
+        return;
+    }
+    apply_knockback(ents, target, power, xd, zd);
 }
 
 /// `knockback(power, xd, zd)` of a mob.
@@ -1031,6 +1078,7 @@ fn die(
             super::boss::warden::LevelAction::SculkDeath {
                 pos,
                 experience: reward,
+                player: None,
             },
         ));
     }
@@ -1347,7 +1395,8 @@ pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
                 f64::from(vanillite_base::math::sin(rad)),
                 f64::from(vanillite_base::math::cos(rad)),
             );
-            knock_living(t.ents, t.env, target, f64::from(kb), sin, -cos);
+            let by = Some((t.id, damage, true));
+            knock_living(t.ents, t.env, target, f64::from(kb), sin, -cos, by);
             let v = t.velocity();
             t.set_velocity(v.multiply(0.6, 1.0, 0.6));
         }
@@ -1397,9 +1446,10 @@ pub fn knock_living(
     power: f64,
     xd: f64,
     zd: f64,
+    by: Option<(EntityId, f32, bool)>,
 ) {
     if ents.mob(target).is_some() {
-        apply_knockback(ents, target, power, xd, zd);
+        knock_mob(ents, env, target, power, xd, zd, by);
         return;
     }
     // `KNOCKBACK_RESISTANCE` of the player's equipment (netherite armour).

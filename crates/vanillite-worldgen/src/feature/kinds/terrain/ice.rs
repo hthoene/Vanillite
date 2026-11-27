@@ -350,7 +350,9 @@ fn carve(
     let c = (radius - 3).min(3) + shape.ellipse_c / 2 - 1;
     for xo in -a..a {
         for zo in -a..a {
-            if signed_distance_ellipse(xo, zo, local_origin, a, c, angle) >= 0.0 {
+            // `signedDist < 0.0`: a NaN distance (`c` of 0 at the local origin) carves nothing.
+            let signed_dist = signed_distance_ellipse(xo, zo, local_origin, a, c, angle);
+            if signed_dist.is_nan() || signed_dist >= 0.0 {
                 continue;
             }
             let pos = origin.offset(xo, y_off, zo);

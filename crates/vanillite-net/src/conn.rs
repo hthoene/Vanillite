@@ -5,7 +5,7 @@ use crate::Shared;
 use crate::auth::{AuthResult, is_valid_player_name, server_hash};
 use crate::limits::{ConnectionGuard, RateLimiter};
 use crate::outbound::{Out, Outbound};
-use crate::player::{Injected, Joined, Latency};
+use crate::player::{Injected, Joined, Latency, LoginAnswer, LoginCheck};
 use crate::velocity;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -106,6 +106,9 @@ struct KeepAlive {
     next: Instant,
     pending: Option<(i64, Instant)>,
     latency: Latency,
+    /// In play until the game wrote its first packet: the `SentLog::written` count on
+    /// entering play.
+    login_mark: Option<usize>,
 }
 
 pub(crate) struct Conn {
@@ -226,6 +229,7 @@ impl Conn {
                 next: now,
                 pending: None,
                 latency: Latency::default(),
+                login_mark: None,
             },
             vouched,
             guard,
@@ -346,6 +350,11 @@ impl Conn {
         // outbound protocol, and the client then disconnects with "Pipeline has no outbound
         // protocol configured" (#135).
         self.keepalive.pending = None;
+        // Vanilla sends `login` right when the play listener is created; here the game sends
+        // it once it placed the player, which can take longer than an interval under load. A
+        // keepalive before `login` breaks the client, so the play keepalive starts after the
+        // game wrote its first packet.
+        self.keepalive.login_mark = (state == State::Play).then(|| self.out.sent_log().written());
         let now = Instant::now();
         self.keepalive.next = now
             .checked_add(self.shared.config.keepalive_interval)
@@ -489,6 +498,17 @@ impl Conn {
         if !self.keepalive.enabled {
             return Ok(());
         }
+        if let Some(mark) = self.keepalive.login_mark {
+            if self.out.sent_log().written() == mark {
+                if now >= self.keepalive.next {
+                    self.keepalive.next = now
+                        .checked_add(self.shared.config.keepalive_interval)
+                        .unwrap_or(now);
+                }
+                return Ok(());
+            }
+            self.keepalive.login_mark = None;
+        }
         match self.keepalive.pending {
             Some((_, sent))
                 if now.saturating_duration_since(sent) >= self.shared.config.keepalive_interval =>
@@ -586,11 +606,11 @@ impl Conn {
                         vec![],
                     )));
                 }
-                let profile = self.login().await?;
+                let (profile, overridden) = self.login().await?;
                 self.peer.player = profile.id.0;
                 self.out.control(Out::Player(profile.id.0));
                 let client_info = self.configure().await?;
-                self.play(profile, client_info).await
+                self.play(profile, client_info, overridden).await
             }
         }
     }
@@ -624,7 +644,8 @@ impl Conn {
         }
     }
 
-    async fn login(&mut self) -> Result<GameProfile> {
+    /// The login state; the profile and whether the server admitted it against its rules.
+    async fn login(&mut self) -> Result<(GameProfile, bool)> {
         let ServerboundLogin::Hello(hello) = self.recv(ServerboundLogin::decode).await? else {
             return Err(Error::Invalid("expected login hello").into());
         };
@@ -679,6 +700,7 @@ impl Conn {
             }
         };
 
+        let overridden = self.verify_login(&profile).await?;
         if threshold >= 0 && self.vouched.is_none() {
             self.out.send(&login::LoginCompression { threshold });
             self.out.control(Out::Compression(threshold));
@@ -709,7 +731,41 @@ impl Conn {
                 profile.id
             );
         }
-        Ok(profile)
+        Ok((profile, overridden))
+    }
+
+    /// `verifyLoginAndFinishConnectionSetup`: the server thread admits or refuses the player
+    /// (`canPlayerLogin`, plugins) before `LoginFinished`, so a refusal is a login disconnect.
+    async fn verify_login(&mut self, profile: &GameProfile) -> Result<bool> {
+        let (answer, verdict) = tokio::sync::oneshot::channel();
+        let check = LoginCheck {
+            profile: profile.clone(),
+            address: self.addr,
+            is_virtual: self.vouched.is_some(),
+            memory: self.memory,
+            answer,
+        };
+        if self.shared.logins.try_send(check).is_err() {
+            return Err(kick(Component::translatable(
+                "multiplayer.disconnect.server_full",
+                vec![],
+            )));
+        }
+        let verdict = match self.deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, verdict)
+                .await
+                .map_err(|_| End::Timeout)?,
+            None => verdict.await,
+        };
+        match verdict {
+            Ok(LoginAnswer::Admit { overridden }) => Ok(overridden),
+            Ok(LoginAnswer::Refuse(reason)) => Err(End::Kick(reason)),
+            // The server dropped the check (it is stopping).
+            Err(_) => Err(kick(Component::translatable(
+                "multiplayer.disconnect.generic",
+                vec![],
+            ))),
+        }
     }
 
     /// Velocity modern forwarding: asks the proxy for the player's identity, and offers the
@@ -923,7 +979,12 @@ impl Conn {
         Ok(())
     }
 
-    async fn play(&mut self, profile: GameProfile, client_info: ClientInfo) -> Result<()> {
+    async fn play(
+        &mut self,
+        profile: GameProfile,
+        client_info: ClientInfo,
+        login_overridden: bool,
+    ) -> Result<()> {
         self.enter(State::Play, None);
         self.joined = Some((Instant::now(), profile.name.clone()));
         let (tx, rx) = vanillite_protocol::inbound_queue(self.shared.config.max_inbound_packets);
@@ -938,6 +999,7 @@ impl Conn {
             outbound: self.out.clone(),
             latency: self.keepalive.latency.clone(),
             injector: injected.injector(),
+            login_overridden,
         };
         self.injected = Some(injected);
         if self.shared.joins.try_send(joined).is_err() {

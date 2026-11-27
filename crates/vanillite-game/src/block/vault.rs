@@ -145,9 +145,12 @@ impl Vault {
             }
             v.activation_range = double(config, "activation_range").unwrap_or(4.0);
             v.deactivation_range = double(config, "deactivation_range").unwrap_or(4.5);
-            if let Some(Tag::Compound(key)) = config.get("key_item") {
-                v.key_item = stack_from_nbt(key);
-            }
+            // `lenientOptionalFieldOf("key_item")`: no key in a given config is no key at all
+            // (the trial key is the default of a missing config only).
+            v.key_item = match config.get("key_item") {
+                Some(Tag::Compound(key)) => stack_from_nbt(key),
+                _ => ItemStack::EMPTY,
+            };
             v.override_loot_table_to_display = config
                 .get("override_loot_table_to_display")
                 .and_then(Tag::as_str)

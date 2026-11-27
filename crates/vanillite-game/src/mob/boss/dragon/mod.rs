@@ -263,7 +263,6 @@ fn move_free(t: &mut Tick<'_, '_>, delta: Vec3) {
 fn set_y_rot(t: &mut Tick<'_, '_>, y_rot: f32) {
     let mut rot = t.core().rot();
     rot.y_rot = y_rot;
-    rot.y_head_rot = y_rot;
     t.core_mut().set_rot(rot);
 }
 

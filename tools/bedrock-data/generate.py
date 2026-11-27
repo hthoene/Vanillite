@@ -22,7 +22,11 @@ data/<palette version>/:
   Java items without a Bedrock counterpart).
 - creative.bin: the body of `creative_content` (groups and items, Bedrock's creative order).
 - creative_java.bin: u32 count, then per creative item network id (1-based, in order): u16 Java
-  item id.
+  item id, u8 kind and u8 length of the Java component data of variants (potions, tipped arrows,
+  enchanted books, fireworks, goat horns, ominous bottles; see `creative_extra`), the data.
+- pots.bin: u32 count, then per potted plant: u16 Java block state id of the pot, u16 length and
+  the network NBT payload (a compound with name, states and version) of the plant's Bedrock block
+  state.
 - frames.bin: 24 u16 Bedrock runtime ids of `minecraft:frame` then `minecraft:glow_frame`, per
   `item_frame_map_bit` (0, 1) and `facing_direction` (0-5): Java item frames are blocks there.
 Shared by all releases, in data/:
@@ -285,7 +289,40 @@ def write_frames(out_dir, lookup):
         f.write(struct.pack('<24H', *ids))
 
 
-def write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet):
+def creative_extra(entry, damage, java_item):
+    """The Java item and the component data of a creative item whose Bedrock metadata or NBT
+    names a variant: (Java item id or None, (kind, data)). Kinds: 0 none; 1 potion (u8 Bedrock
+    potion id); 2 stored enchantments (u8 count, then u8 Bedrock enchantment id + u8 level each);
+    3 firework flight (u8); 4 instrument (u8 Bedrock goat horn metadata); 5 ominous bottle
+    amplifier (u8)."""
+    name = entry['id']
+    if name in ('minecraft:potion', 'minecraft:splash_potion', 'minecraft:lingering_potion'):
+        return java_item.get(name), (1, bytes([damage]))
+    if name == 'minecraft:arrow' and damage > 0:
+        return java_item.get('minecraft:tipped_arrow'), (1, bytes([damage - 1]))
+    if name == 'minecraft:goat_horn':
+        return java_item.get(name), (4, bytes([damage]))
+    if name == 'minecraft:ominous_bottle':
+        return java_item.get(name), (5, bytes([damage]))
+    if not entry.get('nbt_b64'):
+        return None, (0, b'')
+    tag = LeReader(base64.b64decode(entry['nbt_b64'])).root()
+    if name == 'minecraft:enchanted_book':
+        ench = compound_get(tag, 'ench', ('list', 10, []))[2]
+        data = bytes([len(ench)])
+        for e in ench:
+            data += bytes([compound_get(e, 'id')[1], compound_get(e, 'lvl')[1]])
+        return java_item.get(name), (2, data)
+    if name == 'minecraft:firework_rocket':
+        fireworks = compound_get(tag, 'Fireworks', ('c', []))
+        explosions = compound_get(fireworks, 'Explosions', ('list', 0, []))[2]
+        if explosions:
+            return None, (0, b'')
+        return java_item.get(name), (3, bytes([compound_get(fireworks, 'Flight', ('b', 1))[1]]))
+    return None, (0, b'')
+
+
+def write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet, pots):
     """The files of one Bedrock release (palette version) in data/<version>/."""
     out_dir = os.path.join(root, 'crates', 'vanillite-bedrock', 'data', version)
     os.makedirs(out_dir, exist_ok=True)
@@ -338,6 +375,14 @@ def write_release(root, mappings, resources, version, fallbacks, item_fallbacks,
             rid = air
         table.append(rid)
     assert max(table) < 1 << 15
+    # Potted plants: the Bedrock block state of the plant (the `PlantBlock` of a flower pot).
+    with open(os.path.join(out_dir, 'pots.bin'), 'wb') as f:
+        f.write(struct.pack('<I', len(pots)))
+        for pot, plant in pots:
+            entry = palette[2][table[plant]]
+            state = ('c', [(k, compound_get(entry, k)) for k in ('name', 'states', 'version')])
+            payload = net_payload(state)
+            f.write(struct.pack('<HH', pot, len(payload)) + payload)
     table = [rid | (0x8000 if w else 0) for rid, (_, w) in zip(table, wet)]
     with open(os.path.join(out_dir, 'blocks.bin'), 'wb') as f:
         f.write(struct.pack('<II', len(table), water))
@@ -413,7 +458,9 @@ def write_release(root, mappings, resources, version, fallbacks, item_fallbacks,
             return out + struct.pack('<H', 0) + varuint(0) + zigzag32(0) + varuint(0)
         out += struct.pack('<H', count) + varuint(entry.get('damage', 0))
         out += zigzag32(block_rid(entry))
-        user = struct.pack('<h', 0) + struct.pack('<I', 0) + struct.pack('<I', 0)
+        nbt = base64.b64decode(entry['nbt_b64']) if entry.get('nbt_b64') else b''
+        head = struct.pack('<hB', -1, 1) + nbt if nbt else struct.pack('<h', 0)
+        user = head + struct.pack('<I', 0) + struct.pack('<I', 0)
         if entry['id'] == 'minecraft:shield':
             # The shield's user data ends with its blocking tick.
             user += struct.pack('<q', 0)
@@ -424,23 +471,25 @@ def write_release(root, mappings, resources, version, fallbacks, item_fallbacks,
     out = bytearray(varuint(len(groups)))
     for g in groups:
         out += bytes([categories[g['category']]]) + net_string(g['name']) + item_bytes(g['icon'], 1)
+    java_item = {name: i for i, name in enumerate(java_items)}
     entries = []
     for entry in creative['items']:
-        if entry.get('nbt_b64'):
-            continue
         bid = bedrock_item_ids.get(entry['id'])
-        java_id = reverse.get((bid, entry.get('damage', 0)))
+        damage = entry.get('damage', 0)
+        java_id, extra = creative_extra(entry, damage, java_item)
+        if java_id is None and not entry.get('nbt_b64'):
+            java_id = reverse.get((bid, damage))
         if java_id is None:
             continue
-        entries.append((entry, java_id))
+        entries.append((entry, java_id, extra))
     out += varuint(len(entries))
-    for net_id, (entry, _) in enumerate(entries, 1):
+    for net_id, (entry, _, _) in enumerate(entries, 1):
         out += varuint(net_id) + item_bytes(entry, 1) + varuint(entry['groupId'])
     open(os.path.join(out_dir, 'creative.bin'), 'wb').write(out)
     with open(os.path.join(out_dir, 'creative_java.bin'), 'wb') as f:
         f.write(struct.pack('<I', len(entries)))
-        for _, java_id in entries:
-            f.write(struct.pack('<H', java_id))
+        for _, java_id, (kind, data) in entries:
+            f.write(struct.pack('<HBB', java_id, kind, len(data)) + data)
     print(f'{version} creative: {len(entries)} of {len(creative["items"])} items')
 
 
@@ -456,7 +505,14 @@ def main():
     always_wet = {'minecraft:kelp', 'minecraft:kelp_plant', 'minecraft:seagrass',
                   'minecraft:tall_seagrass', 'minecraft:bubble_column'}
     wet = []
-    for block in json.load(open(os.path.join(root, 'data', 'vanilla', 'blocks.json'))):
+    java_blocks = json.load(open(os.path.join(root, 'data', 'vanilla', 'blocks.json')))
+    default_state = {b['name']: b['default_state'] for b in java_blocks}
+    plants = {'minecraft:potted_azalea_bush': 'minecraft:azalea',
+              'minecraft:potted_flowering_azalea_bush': 'minecraft:flowering_azalea'}
+    pots = [(b['default_state'],
+             default_state[plants.get(b['name'], b['name'].replace('potted_', '', 1))])
+            for b in java_blocks if b['name'].startswith('minecraft:potted_')]
+    for block in java_blocks:
         assert block['first_state'] == len(wet), block['name']
         props = block['properties']
         for i in range(block['state_count']):
@@ -471,7 +527,7 @@ def main():
 
     fallbacks, item_fallbacks = conversion_tables(geyser)
     for version in versions:
-        write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet)
+        write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet, pots)
 
     # Biomes.
     biomes = json.load(open(os.path.join(mappings, 'biomes.json')))

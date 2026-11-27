@@ -25,7 +25,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The SDK of the server version you build for (a release tag, or a path to a checkout).
-vanillite-plugin = { git = "https://github.com/hthoene/vanillite", tag = "v0.1.0-beta.1+mc26.3" }
+vanillite-plugin = { git = "https://github.com/hthoene/vanillite", tag = "v0.1.0-beta.2+mc26.3" }
 ```
 
 `src/lib.rs`:
@@ -85,6 +85,7 @@ library in `native/<target-triple>/` (one per platform, e.g.
 | `threading` | no | `serialized` (default): never called on two threads at once. `concurrent`: the plugin is thread-safe and may be called from several world threads at once. |
 | `uses` | no | What the plugin uses (`files`, `network`, `admin`): shown to the admin, not enforced. |
 | `provides` | no | Slots the plugin may fill, e.g. `chunk-generator`. |
+| `description`, `authors`, `website` | no | Shown by `/version <plugin>` (`authors` is a list of names). |
 
 ## Lifecycle and threads
 

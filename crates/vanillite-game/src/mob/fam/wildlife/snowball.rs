@@ -268,7 +268,7 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
     if let Some(block) = block {
         crate::mob::missile::hit_block(t.level, t.cx, t.id, block, at);
     }
-    crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
+    crate::mob::missile::land_event(t.env.out, t.level, t.id, owner, block, at);
     break_event(t);
     if let Some(d) = t.data() {
         d.removed = true;
@@ -409,7 +409,7 @@ fn tick_egg_or_bottle(t: &mut MissileTick<'_, '_>) {
         if let Some(block) = block {
             crate::mob::missile::hit_block(t.level, t.cx, t.id, block, hit_at);
         }
-        crate::mob::missile::land_event(t.env.out, t.level, t.id, block, hit_at);
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, owner, block, hit_at);
         // `onHit`: one chick in 8, four in 256.
         if random.next_int_bounded(8) == 0 {
             let count = if random.next_int_bounded(32) == 0 {
@@ -430,7 +430,7 @@ fn tick_egg_or_bottle(t: &mut MissileTick<'_, '_>) {
         if let Some(block) = block {
             crate::mob::missile::hit_block(t.level, t.cx, t.id, block, hit_at);
         }
-        crate::mob::missile::land_event(t.env.out, t.level, t.id, block, hit_at);
+        crate::mob::missile::land_event(t.env.out, t.level, t.id, owner, block, hit_at);
         // `ThrownExperienceBottle.onHit`: the splash particles and sound, 3 to 11 experience.
         let block = vanillite_base::BlockPos::containing(at.x, at.y, at.z);
         t.cx.actions

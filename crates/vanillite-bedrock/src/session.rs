@@ -129,6 +129,13 @@ struct Entity {
     wool: u8,
     /// Rides another entity.
     riding: bool,
+    /// A tamed mount whose inventory was opened, and whether it carries a chest.
+    tamed: bool,
+    chested: bool,
+    /// Held by a lead.
+    leashed: bool,
+    /// The profile id of a player entity.
+    uuid: u128,
     /// Block position and Java 3D direction of hanging entities (paintings, item frames).
     block: [i32; 3],
     direction: u8,
@@ -275,7 +282,12 @@ pub(crate) struct Session {
     pub java_rx: Option<mpsc::Receiver<Vec<u8>>>,
     java: JavaState,
     biome_names: Vec<String>,
+    /// `minecraft:banner_pattern` entries and tags of the server (the loom's button order).
+    banner_patterns: Vec<String>,
+    banner_tags: FxHashMap<String, Vec<i32>>,
     dimension_types: Vec<String>,
+    /// Java enchantment ids -> Bedrock ids (`minecraft:enchantment` of the server).
+    enchantments: crate::items::Enchantments,
     world: Option<World>,
     chunk_radius: i32,
     scratch: Vec<Vec<u8>>,
@@ -287,6 +299,7 @@ pub(crate) struct Session {
     /// The Bedrock recipes of the Java recipe book.
     recipes: crate::recipes::Recipes,
     scoreboard: scoreboard::Scoreboard,
+    teams: scoreboard::Teams,
     /// Recent Java states of blocks whose block actor needs their block entity's NBT.
     recent_blocks: FxHashMap<[i32; 3], u32>,
     /// The sign side the server let the client edit.
@@ -347,7 +360,10 @@ impl Session {
             java_rx: None,
             java: JavaState::Login,
             biome_names: Vec::new(),
+            banner_patterns: Vec::new(),
+            banner_tags: FxHashMap::default(),
             dimension_types: Vec::new(),
+            enchantments: crate::items::Enchantments::default(),
             world: None,
             chunk_radius,
             scratch: Vec::new(),
@@ -356,6 +372,7 @@ impl Session {
             next_window: 0,
             recipes: crate::recipes::Recipes::default(),
             scoreboard: scoreboard::Scoreboard::default(),
+            teams: scoreboard::Teams::default(),
             recent_blocks: FxHashMap::default(),
             editing_sign: None,
             inventory_resync: false,
@@ -671,6 +688,10 @@ impl Session {
             (Phase::Playing, id::MAP_INFO_REQUEST) => self.map_info_request(body)?,
             (Phase::Playing, id::BOOK_EDIT) => self.book_edit(body, Instant::now())?,
             (Phase::Playing, id::BLOCK_ACTOR_DATA) => self.sign_edited(body)?,
+            (Phase::Playing, id::LECTERN_UPDATE) => self.lectern_update(body)?,
+            (Phase::Playing, id::PLAYER_TOGGLE_CRAFTER_SLOT_REQUEST) => {
+                self.toggle_crafter_slot(body)?;
+            }
             (Phase::Playing, id::MODAL_FORM_RESPONSE) => {
                 let (form, data) = bp::read_modal_form_response(body)?;
                 if form == trade::TRADE_FORM {
@@ -1023,8 +1044,27 @@ impl Session {
                 match r.registry.as_str() {
                     "minecraft:worldgen/biome" => self.biome_names = names,
                     "minecraft:dimension_type" => self.dimension_types = names,
+                    "minecraft:enchantment" => {
+                        self.enchantments = crate::items::Enchantments::from_names(&names);
+                    }
                     "minecraft:world_clock" => self.world_clocks = names,
+                    "minecraft:banner_pattern" => self.banner_patterns = names,
                     _ => {}
+                }
+            }
+            Ok(ClientboundConfiguration::UpdateTags(t)) => {
+                // The loom's pattern lists (`LoomMenu.getSelectablePatterns`).
+                if let Some(reg) = t
+                    .registries
+                    .iter()
+                    .find(|r| r.registry.as_str() == "minecraft:banner_pattern")
+                {
+                    self.banner_tags = reg
+                        .tags
+                        .iter()
+                        .take(256)
+                        .map(|tag| (tag.name.as_str().to_owned(), tag.entries.0.clone()))
+                        .collect();
                 }
             }
             Ok(ClientboundConfiguration::FinishConfiguration(_)) => {
@@ -1232,7 +1272,8 @@ impl Session {
             self.recent_blocks.insert(pos, java_state);
         }
         if crate::blockentity::from_state(java_state)
-            && let Some(nbt) = crate::blockentity::translate(pos, java_state, None)
+            && let Some(nbt) =
+                crate::blockentity::translate(pos, java_state, None, self.version.palette)
         {
             self.send(id::BLOCK_ACTOR_DATA, &bp::block_actor_data(pos, &nbt));
         }

@@ -48,6 +48,8 @@ block_tags!(
     dampens_vibrations,
     dragon_immune,
     dragon_transparent,
+    enchantment_power_provider,
+    enchantment_power_transmitter,
     enables_bubble_column_drag_down,
     enables_bubble_column_push_up,
     fences,

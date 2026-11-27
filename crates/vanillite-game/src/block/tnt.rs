@@ -60,7 +60,18 @@ fn use_item_on(
             )
         });
     if !level.settings.tnt_explodes {
-        // The "TNT explosions are disabled" overlay message is not sent.
+        // `sendOverlayMessage(block.minecraft.tnt.disabled)`.
+        if let Some(p) = level.entities.player(ctx.player) {
+            p.connection.sink.send(
+                &vanillite_protocol::packets::play::clientbound::SystemChat {
+                    content: vanillite_protocol::text::Component::translatable(
+                        "block.minecraft.tnt.disabled",
+                        Vec::new(),
+                    ),
+                    overlay: true,
+                },
+            );
+        }
         return ItemInteraction::Done(Interaction::Pass);
     }
     if allowed {
@@ -168,6 +179,7 @@ pub(crate) fn spawn_primed(
             state: ids::TNT.default_state(),
             owner,
             explosion_power: DEFAULT_POWER,
+            fall_distance: 0.0,
         },
     );
     let parent = owner
@@ -232,11 +244,41 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         GRAVITY
     };
     velocity.y -= gravity;
+    // `wasTouchingWater` of the last `updateFluidInteraction`, which resets the fall distance.
+    let in_water = crate::experience_orb::touching_water(level, &aabb);
     let moved = move_self(level, id, pos, aabb, velocity, gravity);
     let Some(entity) = level.entities.store.get(id) else {
         return;
     };
     let (new_pos, dims) = (entity.pos(), entity.dims());
+    let on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
+    // `checkFallDamage` in `move`.
+    let mut fall_distance = if in_water { 0.0 } else { data.fall_distance };
+    if !in_water && moved.movement_y < 0.0 {
+        #[allow(clippy::cast_possible_truncation)]
+        let ya = f64::from(moved.movement_y as f32);
+        fall_distance -= ya;
+    }
+    let landed = on_ground && fall_distance > 0.0;
+    if on_ground {
+        fall_distance = 0.0;
+    }
+    if let Some(d) = level.entities.primed_tnt_mut(id) {
+        d.fall_distance = fall_distance;
+    }
+    // `getOnPosLegacy()`.
+    let on = BlockPos::new(
+        floor(new_pos.x),
+        floor(new_pos.y - f64::from(0.2_f32)),
+        floor(new_pos.z),
+    );
+    if landed {
+        super::contact::non_living_land(level, id, new_pos, on);
+    }
+    // `applyEffectsFromBlocks`: `stepOn` of the block below, then the blocks on the way.
+    if on_ground && level.entities.store.contains(id) {
+        super::contact::non_living_step_on(level, on, id);
+    }
     // `applyEffectsFromBlocks`: the blocks on the way of the move react.
     let way = if new_pos == pos {
         crate::survival::inside::Movement::still(pos)
@@ -248,6 +290,19 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         }
     };
     super::plate::entity_inside_along(level, id, dims, &[way]);
+    // `BubbleColumnBlock.entityInside`.
+    let mut pushed = level.entities.store.get(id).map(|e| e.velocity());
+    if let Some(v) = pushed.as_mut()
+        && super::bubble::along(level, dims, &[way], v)
+        && let Some(d) = level.entities.primed_tnt_mut(id)
+    {
+        d.fall_distance = 0.0;
+    }
+    if let Some(v) = pushed
+        && let Some(mut e) = level.entities.store.get_mut(id)
+    {
+        e.set_velocity(v);
+    }
     let Some(entity) = level.entities.store.get(id) else {
         return;
     };
@@ -263,31 +318,8 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         d.fuse = fuse;
     }
     if fuse > 0 {
-        // `updateFluidInteraction`: flowing water and lava push primed TNT (`tick` never runs
-        // `baseTick`, so `firstTick` stays and it never splashes).
-        let aabb = level.entities.store.get(id).map_or(aabb, |e| e.aabb());
-        let eye = Vec3::new(new_pos.x, new_pos.y + 0.15, new_pos.z);
-        let (contact, currents) = crate::mob::living::fluid_currents(
-            level,
-            crate::survival::blocks::fluid_facts(),
-            aabb,
-            eye,
-        );
-        if contact.in_water()
-            && let Some(pushed) = currents.water.push(velocity, 0.014)
-        {
-            velocity = pushed;
-        }
-        if contact.in_lava() {
-            let scale = if level.settings.fast_lava {
-                0.007
-            } else {
-                0.002_333_333_333_333_333_5
-            };
-            if let Some(pushed) = currents.lava.push(velocity, scale) {
-                velocity = pushed;
-            }
-        }
+        // `updateFluidInteraction`: water resets the fall distance, flowing water and lava push.
+        velocity = push_by_fluids(level, id, velocity);
     }
     if let Some(mut entity) = level.entities.store.get_mut(id) {
         entity.set_velocity(velocity);
@@ -302,6 +334,38 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         level.entities.despawn(id);
         explode(level, id, new_pos, data);
     }
+}
+
+/// `Entity.updateFluidInteraction` of a primed TNT at its current place: in water its fall
+/// distance resets; the currents of water and lava push `velocity`.
+fn push_by_fluids(level: &mut Level, id: EntityId, mut velocity: Vec3) -> Vec3 {
+    let Some(entity) = level.entities.store.get(id) else {
+        return velocity;
+    };
+    let aabb = entity.aabb();
+    let eye = entity.pos() + Vec3::new(0.0, f64::from(0.15_f32), 0.0);
+    let (contact, currents) = crate::mob::living::fluid_currents(
+        level,
+        crate::survival::blocks::BlockFacts::fluids_only(),
+        aabb,
+        eye,
+    );
+    if contact.in_water() {
+        if let Some(d) = level.entities.primed_tnt_mut(id) {
+            d.fall_distance = 0.0;
+        }
+        if let Some(pushed) = currents.water.push(velocity, 0.014) {
+            velocity = pushed;
+        }
+    }
+    if contact.in_lava()
+        && let Some(pushed) = currents
+            .lava
+            .push(velocity, crate::experience_orb::lava_current_scale(level))
+    {
+        velocity = pushed;
+    }
+    velocity
 }
 
 /// `PrimedTnt.explode`: power 4 at a sixteenth of its height, breaking blocks like TNT
@@ -331,6 +395,8 @@ fn explode(level: &mut Level, id: EntityId, pos: Vec3, data: PrimedTntData) {
 struct Moved {
     horizontal: bool,
     vertical: bool,
+    /// The y of the collided movement.
+    movement_y: f64,
 }
 
 /// `Entity.move(MoverType.SELF, delta)` for an entity without step-up, movement emission or
@@ -426,6 +492,7 @@ fn move_self(
     Moved {
         horizontal,
         vertical,
+        movement_y: movement.y,
     }
 }
 

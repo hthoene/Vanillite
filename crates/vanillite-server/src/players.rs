@@ -396,6 +396,10 @@ impl PacketSink for NetSink {
         self.out.threshold()
     }
 
+    fn flush(&self) {
+        self.out.flush();
+    }
+
     fn close(&self) {
         self.out.close();
     }
@@ -832,6 +836,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    random: Some(&mut player.survival.random),
                     food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
@@ -1192,6 +1197,7 @@ impl WorldPlayers {
                     level: &mut level,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    random: Some(&mut player.survival.random),
                     food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
@@ -1328,6 +1334,7 @@ impl WorldPlayers {
                     level,
                     actor.pos,
                     Some(&mut player.survival.xp),
+                    Some(&mut player.survival.random),
                     |view| {
                         view.flush_result_updates(sink.as_ref());
                         vanillite_game::menu::broadcast_changes(view, sink.as_ref());
@@ -1790,6 +1797,12 @@ impl Abilities {
     }
 }
 
+/// The `abilities` compound of a player in `mode` (`Abilities.Packed`) with the default
+/// speeds.
+pub(crate) fn abilities_nbt(mode: GameMode, flying: bool) -> vanillite_nbt::Compound {
+    Abilities { mode, flying }.save(vanillite_nbt::Compound::new())
+}
+
 /// `Entity.load`'s `Tags`.
 fn load_tags(data: &vanillite_nbt::Compound) -> Vec<String> {
     match data.get("Tags") {
@@ -2009,9 +2022,15 @@ pub(crate) fn info_entry(arrival: &Arrival) -> InfoEntry {
     }
 }
 
-/// `Player.remove` for a player that leaves: open menus close, what they held drops.
-fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
-    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+/// `Player.remove` for a player that leaves or a dead player that respawns: open menus close,
+/// the carried stack and the crafting grid drop (`player.drop(stack, false)`).
+pub(crate) fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
+    let Some((pos, rot, height)) = level
+        .entities
+        .store
+        .get(id)
+        .map(|e| (e.pos(), e.rot(), e.dims().height))
+    else {
         return;
     };
     let Some(player) = level.entities.player_mut(id) else {
@@ -2021,19 +2040,25 @@ fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
     let mut inv = std::mem::take(&mut player.inventory);
     let mut drops = Vec::new();
     vanillite_game::menu::container::close_on_leave(&mut inv, level, spectator, &mut drops);
-    if let Some(player) = level.entities.player_mut(id) {
-        player.inventory = inv;
-    }
-    let eye = vanillite_base::Vec3::new(pos.x, pos.y + 1.62 - 0.3, pos.z);
-    for drop in drops {
-        vanillite_game::block::drops::spawn_item(
-            level,
-            eye,
-            drop.stack,
-            vanillite_base::Vec3::new(0.0, 0.1, 0.0),
-            40,
-            None,
-        );
+    let Some(player) = level.entities.player_mut(id) else {
+        return;
+    };
+    player.inventory = inv;
+    let eye = vanillite_game::survival::player::eye_height(height);
+    // The entity's random, which the death drops (`Inventory.dropAll`) drew from before.
+    let mut state = player.survival.random.state();
+    let throws: Vec<_> = drops
+        .into_iter()
+        .map(|drop| {
+            let (from, velocity) = vanillite_game::player::play::throw_motion(
+                pos, eye, rot.y_rot, rot.x_rot, &mut state,
+            );
+            (from, velocity, drop.stack)
+        })
+        .collect();
+    player.survival.random = vanillite_base::random::LegacyRandom::from_state(state);
+    for (from, velocity, stack) in throws {
+        vanillite_game::block::drops::spawn_item(level, from, stack, velocity, 40, None);
     }
 }
 

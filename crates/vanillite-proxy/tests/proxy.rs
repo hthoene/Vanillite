@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use vanillite_protocol::Packet;
-use vanillite_protocol::client::TestClient;
+use vanillite_protocol::client::{ClientError, TestClient};
 use vanillite_protocol::commands::NodeKind;
 use vanillite_protocol::packets::handshake::Intent;
 use vanillite_protocol::packets::play::clientbound::StartConfiguration;
@@ -230,31 +230,14 @@ fn refused_everywhere_ends_with_the_reason() {
         .handshake("localhost", proxy.local_addr().port(), Intent::Login)
         .unwrap();
     client.login("Mallory", None).unwrap();
-    client.configure().unwrap();
-    // Vanillite refuses after the configuration: the proxy falls back to the other server
-    // once, then gives up.
-    let mut fallbacks = 0;
-    let deadline = Instant::now() + TIMEOUT;
-    let reason = loop {
-        assert!(Instant::now() < deadline, "timed out waiting for the kick");
-        let raw = client
-            .recv_raw()
-            .expect("the proxy disconnects with a reason");
-        if raw.first() == Some(&u8::try_from(StartConfiguration::ID).unwrap()) && raw.len() == 1 {
-            fallbacks += 1;
-            assert_eq!(fallbacks, 1, "passed around between the servers");
-            client.send(&ConfigurationAcknowledged).unwrap();
-            client.configure().unwrap();
-            continue;
+    // Each Vanillite refuses in its login state: the proxy tries the other server once,
+    // then disconnects the client (in configuration) with the last server's reason.
+    match client.configure() {
+        Err(ClientError::Disconnected(reason)) => {
+            assert_eq!(reason, "multiplayer.disconnect.not_whitelisted");
         }
-        match ClientboundPlay::decode(&raw) {
-            Ok(ClientboundPlay::Disconnect(d)) => break d.reason,
-            Ok(ClientboundPlay::Login(_)) => panic!("a server admitted the player"),
-            _ => {}
-        }
-    };
-    assert_eq!(fallbacks, 1);
-    assert_eq!(reason.plain(), "multiplayer.disconnect.not_whitelisted");
+        other => panic!("expected the servers' refusal, got {other:?}"),
+    }
     // Nothing after the kick: the connection is closed.
     assert!(client.recv_raw().is_err());
 

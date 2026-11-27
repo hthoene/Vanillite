@@ -685,6 +685,48 @@ fn minecart_dismount(
     None
 }
 
+/// `instanceof Animal`: the entity types whose class extends `Animal` (not villagers, golems,
+/// fish, bats, allays or armor stands).
+fn is_animal(kind: vanillite_data::entity::EntityTypeId) -> bool {
+    matches!(
+        kind.name().strip_prefix("minecraft:").unwrap_or(""),
+        "armadillo"
+            | "axolotl"
+            | "bee"
+            | "camel"
+            | "camel_husk"
+            | "cat"
+            | "chicken"
+            | "cow"
+            | "donkey"
+            | "fox"
+            | "frog"
+            | "goat"
+            | "happy_ghast"
+            | "hoglin"
+            | "horse"
+            | "llama"
+            | "mooshroom"
+            | "mule"
+            | "nautilus"
+            | "ocelot"
+            | "panda"
+            | "parrot"
+            | "pig"
+            | "polar_bear"
+            | "rabbit"
+            | "sheep"
+            | "skeleton_horse"
+            | "sniffer"
+            | "strider"
+            | "trader_llama"
+            | "turtle"
+            | "wolf"
+            | "zombie_horse"
+            | "zombie_nautilus"
+    )
+}
+
 /// `positionRider` of every passenger of `vehicle`.
 pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
     let list: Vec<EntityId> = ents.riding.passengers_of(vehicle).to_vec();
@@ -697,7 +739,7 @@ pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
     let count = list.len();
     for (i, &p) in list.iter().enumerate() {
         let attach = if let Some(b) = ents.boat(vehicle) {
-            let animal = ents.mob(p).is_some_and(|m| !m.kind.is_monster());
+            let animal = ents.store.get(p).is_some_and(|e| is_animal(e.kind()));
             crate::vehicle::passenger_offset(b, y_rot, count, i, animal)
         } else if ents.minecart(vehicle).is_some() {
             Vec3::new(0.0, crate::minecart::passenger_height(ents, p), 0.0)
@@ -714,14 +756,23 @@ pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
     }
 }
 
-/// Places the passengers of every vehicle after the vehicles moved (`rideTick`).
+/// Places the passengers of every vehicle after the vehicles moved (`rideTick`): from the
+/// lowest vehicle up (`tickPassenger` places a passenger before its own passengers), so a
+/// stack of riders sits on where its vehicles are now.
 pub fn position_all_riders(ents: &mut Entities) {
     if ents.riding.is_empty() {
         return;
     }
     let vehicles = ents.riding.vehicles();
-    for v in vehicles {
+    let mut stack: Vec<EntityId> = vehicles
+        .iter()
+        .rev()
+        .copied()
+        .filter(|&v| ents.riding.vehicle_of(v).is_none())
+        .collect();
+    while let Some(v) = stack.pop() {
         position_riders_of(ents, v);
+        stack.extend(ents.riding.passengers_of(v).iter().rev().copied());
     }
 }
 

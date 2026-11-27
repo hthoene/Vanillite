@@ -447,6 +447,16 @@ impl GoalSelector {
     }
 }
 
+/// `GoalSelector.removeAllGoals(g -> true)`: stops the running goals and removes them all.
+pub fn remove_all_goals(t: &mut Tick<'_, '_>) {
+    for i in 0..t.mob_ref().goals.slots.len() {
+        stop_slot(t, Which::Goals, i);
+    }
+    let g = &mut t.mob().goals;
+    g.slots.clear();
+    g.locked = [NO_SLOT; 4];
+}
+
 /// Which selector of a mob.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Which {
@@ -1057,6 +1067,11 @@ pub(crate) fn assign_target(m: &mut super::MobData, target: Option<EntityId>) {
 }
 
 fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
+    if let Some(v) =
+        super::fam::undead::cubes::fluid_jump_threshold(t.mob_ref(), t.core().dims().height)
+    {
+        return v;
+    }
     if super::eye_height(t.mob_ref()) < 0.4 {
         0.0
     } else {

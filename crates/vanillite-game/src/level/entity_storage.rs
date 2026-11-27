@@ -370,6 +370,10 @@ impl Level {
             data.health = short("Health", 5);
             data.fire_ticks = i32::from(short("Fire", 0)).max(0);
             data.target = uuid_of(&nbt, "Owner");
+            data.fall_distance = match nbt.get("fall_distance") {
+                Some(Tag::Double(v)) => *v,
+                _ => 0.0,
+            };
             let items = &mut self.entities.items;
             self.entities.store.spawn(new, |id| items.push(id, data))
         } else if kind == ids::FALLING_BLOCK {
@@ -411,6 +415,10 @@ impl Level {
                 state,
                 owner: None,
                 explosion_power: power,
+                fall_distance: match nbt.get("fall_distance") {
+                    Some(Tag::Double(v)) => *v,
+                    _ => 0.0,
+                },
             };
             self.entities.spawn_primed_tnt(new, data)
         };
@@ -743,6 +751,7 @@ impl Level {
             nbt.insert("Fire", data.fire_ticks.clamp(0, 32767) as i16);
             nbt.insert("Age", data.age);
             nbt.insert("PickupDelay", data.pickup_delay);
+            nbt.insert("fall_distance", Tag::Double(data.fall_distance));
             match data.thrower {
                 Some(thrower) => nbt.insert("Thrower", uuid_tag(thrower)),
                 None => {
@@ -776,6 +785,7 @@ impl Level {
         } else {
             let data = self.entities.primed_tnt(id)?;
             nbt.insert("fuse", data.fuse as i16);
+            nbt.insert("fall_distance", Tag::Double(data.fall_distance));
             nbt.insert(
                 "block_state",
                 super::block_entity::write_state_codec(data.state),

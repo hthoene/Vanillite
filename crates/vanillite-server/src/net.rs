@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
 
 use vanillite_base::Vec3;
 use vanillite_config::Config;
@@ -306,7 +305,7 @@ fn load_language(root: &Path, pack: &VanillaPack) -> std::collections::HashMap<S
 /// The running network.
 pub(crate) struct NetState {
     pub(crate) network: Network,
-    joins: Receiver<Joined>,
+    arrivals: vanillite_net::Arrivals,
     status: StatusInfo,
     online: usize,
     /// Player names for Query.
@@ -327,6 +326,7 @@ impl NetState {
         listen: bool,
         enforces_secure_chat: bool,
         tap: Arc<vanillite_protocol::tap::PacketTap>,
+        io_threads: usize,
     ) -> Result<NetState, StartError> {
         let p = &config.properties;
         let ip: std::net::IpAddr = if p.server_ip.is_empty() {
@@ -343,6 +343,7 @@ impl NetState {
         };
         let net = NetConfig {
             bind,
+            io_threads,
             online_mode: p.online_mode,
             prevent_proxy_connections: p.prevent_proxy_connections,
             compression_threshold: p.network_compression_threshold,
@@ -380,7 +381,7 @@ impl NetState {
             enforces_secure_chat,
             ..StatusInfo::default()
         };
-        let (network, joins) = Network::start(net, status.clone(), configuration, None)
+        let (network, arrivals) = Network::start(net, status.clone(), configuration, None)
             .map_err(|e| StartError::Io(format!("cannot listen on {ip}:{}: {e}", p.server_port)))?;
         let bedrock = if config.server.bedrock.enabled {
             Some(start_bedrock(config, &network, ip, listen)?)
@@ -389,7 +390,7 @@ impl NetState {
         };
         Ok(NetState {
             network,
-            joins,
+            arrivals,
             status,
             online: 0,
             query: Arc::default(),
@@ -406,9 +407,14 @@ impl NetState {
         self.network.shutdown();
     }
 
+    /// The next login waiting for the server's decision.
+    pub(crate) fn next_login(&self) -> Option<vanillite_net::LoginCheck> {
+        self.arrivals.logins.try_recv().ok()
+    }
+
     /// The next joined connection.
     pub(crate) fn next_join(&self) -> Option<Joined> {
-        self.joins.try_recv().ok()
+        self.arrivals.joins.try_recv().ok()
     }
 
     /// Rebuilds the player sample of the server list (`buildPlayerStatus`; Vanilla does it

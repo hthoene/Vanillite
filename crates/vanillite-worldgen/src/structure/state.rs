@@ -88,7 +88,7 @@ impl<'g> StructureState<'g> {
         let mut spread = rings.spread;
         // `RandomSource.create()` then `setSeed(concentricRingsSeed)`.
         let mut random = LegacyRandom::new(0);
-        random.set_seed(self.level_seed());
+        random.set_seed(self.generator.concentric_rings_seed());
         let mut angle = random.next_double() * std::f64::consts::PI * 2.0;
         let mut position_in_circle = 0;
         let mut circle = 0;

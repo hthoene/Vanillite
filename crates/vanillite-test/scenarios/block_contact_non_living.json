@@ -1,0 +1,176 @@
+{
+  "description": "Block contact of non-living entities other than items: XP orbs, primed TNT, minecarts and boats fall onto farmland (FarmlandBlock.fallOn draws its chance for every entity; boats override checkFallDamage and draw nothing), rest on redstone ore (RedStoneOreBlock.stepOn lights it and draws the particle randoms; boats run applyEffectsFromBlocks twice a tick) and orbs and TNT slide over slime blocks (SlimeBlock.stepOn slows them). Primed TNT landing on a sculk sensor triggers it through stepOn, an XP orb landing next to one through HIT_GROUND.",
+  "tier": "fast",
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      35,
+      -55,
+      16
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:farmland[moisture=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:redstone_ore[lit=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        2
+      ],
+      "block": "minecraft:slime_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        6
+      ],
+      "block": "minecraft:farmland[moisture=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:redstone_ore[lit=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "block": "minecraft:slime_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        10
+      ],
+      "block": "minecraft:farmland[moisture=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        10
+      ],
+      "block": "minecraft:redstone_ore[lit=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        14
+      ],
+      "block": "minecraft:redstone_ore[lit=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        30,
+        -60,
+        2
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        30,
+        -60,
+        12
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 2.5 -56 2.5 {Value:3}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 6.5 -56 2.5 {Value:3}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 10.5 -56 2.5 {Value:3,Motion:[0.15,0.0,0.0]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:tnt 2.5 -56 6.5 {fuse:200}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:tnt 6.5 -56 6.5 {fuse:200}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:tnt 10.5 -56 6.5 {fuse:200,Motion:[0.1,0.0,0.0]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:minecart 2.5 -56 10.5"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:minecart 6.5 -56 10.5"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:oak_boat 6.5 -56 14.5"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:tnt 30.5 -56 2.5 {fuse:200}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 32.5 -56 12.5 {Value:3}"
+    }
+  ]
+}

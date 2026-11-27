@@ -78,6 +78,11 @@ impl Limits {
         }
     }
 
+    /// Network I/O threads for `performance.threads.network = 0`: 2, or 1 below two cores.
+    pub fn default_network_threads(&self) -> usize {
+        if self.cpu < SCARCE_CORES { 1 } else { 2 }
+    }
+
     /// Compute workers for `performance.threads.compute = 0`: the cores minus one for the
     /// tick threads, at least one.
     pub fn default_workers(&self) -> usize {

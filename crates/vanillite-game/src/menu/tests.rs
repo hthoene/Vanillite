@@ -491,11 +491,18 @@ fn random_chest_clicks_conserve_items() {
         let before = census(&inv, &chest(&level), &drops);
         for _ in 0..200 {
             let (slot, button, input) = random_click(&mut rng, 63);
-            super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
-                if super::is_valid_slot_index(view, slot) {
-                    super::click(view, slot, button, input, SURVIVAL, &mut drops);
-                }
-            });
+            super::container::with_view(
+                &mut inv,
+                &mut level,
+                Vec3::default(),
+                None,
+                None,
+                |view| {
+                    if super::is_valid_slot_index(view, slot) {
+                        super::click(view, slot, button, input, SURVIVAL, &mut drops);
+                    }
+                },
+            );
         }
         let carried = inv
             .container
@@ -526,7 +533,7 @@ fn result_and_shulker_slots_refuse_items() {
         ),
     );
     let mut drops = Vec::new();
-    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
+    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
         view.menu.state.carried = stack("diamond", 5);
         super::click(view, 2, 0, ContainerInput::Pickup, SURVIVAL, &mut drops);
         super::click(view, 1, 0, ContainerInput::Pickup, SURVIVAL, &mut drops);
@@ -548,7 +555,7 @@ fn result_and_shulker_slots_refuse_items() {
             blocks::SHULKER_BOX,
         ),
     );
-    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
+    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
         // Shift click from the hotbar (slot 27 + 27 = 54).
         super::click(view, 54, 0, ContainerInput::QuickMove, SURVIVAL, &mut drops);
         // Number key 1 onto container slot 0.
@@ -579,7 +586,7 @@ fn breaking_a_chest_drops_its_contents_and_closing_returns_the_carried_stack() {
     );
     assert!(matches!(level.block_entity(pos), Some(BlockEntity::Container(c)) if c.openers == 1));
     let mut drops = Vec::new();
-    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
+    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
         super::click(view, 3, 1, ContainerInput::Pickup, SURVIVAL, &mut drops);
     });
     level.set_block(pos, vanillite_data::block::BlockState::AIR, update::ALL);
@@ -605,6 +612,51 @@ fn breaking_a_chest_drops_its_contents_and_closing_returns_the_carried_stack() {
     super::container::close(&mut inv, &mut level, who, &mut drops, None);
     assert_eq!(inv.items[0].count, 20);
     assert!(drops.is_empty());
+}
+
+#[test]
+fn removing_a_dead_player_drops_carried_grid_and_open_menu_cursor() {
+    install_data();
+    let pos = BlockPos::new(0, 0, 0);
+    let mut level = level_with(pos, blocks::CHEST.default_state());
+    let mut inv = PlayerInventory::default();
+    inv.craft[0] = stack("oak_planks", 1);
+    inv.craft[3] = stack("stick", 2);
+    inv.menu.carried = stack("bread", 3);
+    open(
+        &mut inv,
+        &mut level,
+        request(
+            MenuKind::Generic { rows: 3 },
+            Storage::Block(pos),
+            pos,
+            blocks::CHEST,
+        ),
+    );
+    if let Some(menu) = inv.container.as_deref_mut() {
+        menu.state.carried = stack("diamond", 5);
+    }
+    let mut drops = Vec::new();
+    super::container::close_on_leave(&mut inv, &mut level, false, &mut drops);
+    // Nothing goes back into the (already emptied) inventory: everything drops.
+    assert!(inv.container.is_none());
+    assert!(inv.menu.carried.is_empty());
+    assert!(inv.craft.iter().all(ItemStack::is_empty));
+    assert!(inv.items.iter().all(ItemStack::is_empty));
+    let dropped: Vec<(u16, i32)> = drops
+        .iter()
+        .map(|d| (d.stack.item, d.stack.count))
+        .collect();
+    assert_eq!(
+        dropped,
+        vec![
+            (item("diamond"), 5),
+            (item("bread"), 3),
+            (item("oak_planks"), 1),
+            (item("stick"), 2),
+        ]
+    );
+    assert!(matches!(level.block_entity(pos), Some(BlockEntity::Container(c)) if c.openers == 0));
 }
 
 #[test]
@@ -665,7 +717,7 @@ fn with_enchantments(name: &str, list: &[(&str, i32)]) -> ItemStack {
 fn stonecutter_selects_and_cuts() {
     let (mut inv, mut level) = workstation(MenuKind::Stonecutter, blocks::STONECUTTER);
     let mut drops = Vec::new();
-    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
+    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
         view.menu.state.carried = stack("stone", 3);
         super::click(view, 0, 0, ContainerInput::Pickup, SURVIVAL, &mut drops);
         assert!(
@@ -708,6 +760,7 @@ fn anvil_repairs_renames_and_combines() {
         &mut level,
         Vec3::default(),
         Some(&mut xp),
+        None,
         |view| {
             // A damaged diamond sword and two diamonds: two repair steps of a quarter each.
             let mut sword = stack("diamond_sword", 1);
@@ -736,6 +789,7 @@ fn anvil_repairs_renames_and_combines() {
         &mut level,
         Vec3::default(),
         Some(&mut xp),
+        None,
         |view| {
             let book = with_enchantments("enchanted_book", &[("sharpness", 4)]);
             view.menu.state.carried = book.clone();
@@ -755,7 +809,7 @@ fn anvil_repairs_renames_and_combines() {
 fn grindstone_removes_enchantments_but_curses() {
     let (mut inv, mut level) = workstation(MenuKind::Grindstone, blocks::GRINDSTONE);
     let mut drops = Vec::new();
-    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
+    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
         let sword = with_enchantments("iron_sword", &[("sharpness", 2), ("vanishing_curse", 1)]);
         view.menu.state.carried = sword;
         super::click(view, 0, 0, ContainerInput::Pickup, SURVIVAL, &mut drops);
@@ -771,7 +825,7 @@ fn grindstone_removes_enchantments_but_curses() {
 fn smithing_upgrades_to_netherite() {
     let (mut inv, mut level) = workstation(MenuKind::Smithing, blocks::SMITHING_TABLE);
     let mut drops = Vec::new();
-    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, |view| {
+    super::container::with_view(&mut inv, &mut level, Vec3::default(), None, None, |view| {
         let sword = with_enchantments("diamond_sword", &[("sharpness", 3)]);
         for (slot, s) in [
             (0, stack("netherite_upgrade_smithing_template", 1)),
@@ -859,6 +913,7 @@ fn enchanting_table_enchants_with_lapis_and_levels() {
         &mut level,
         Vec3::default(),
         Some(&mut xp),
+        None,
         |view| {
             view.menu.state.carried = stack("diamond_sword", 1);
             super::click(view, 0, 0, ContainerInput::Pickup, SURVIVAL, &mut drops);

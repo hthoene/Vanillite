@@ -115,9 +115,8 @@ fn round_trip(names: &TestNames, type_name: &str, value: &Tag) -> std::result::R
 
 #[test]
 fn vanilla_default_components_round_trip() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/vanilla/items.json");
     let items: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).expect("items.json");
+        serde_json::from_str(vanillite_data::raw::ITEMS_JSON).expect("items.json");
     let names = TestNames::default();
     let mut seen = 0;
     let mut failures = Vec::new();
@@ -346,9 +345,7 @@ fn samples_round_trip_and_every_type_is_covered() {
         }
         covered.insert(format!("minecraft:{name}"));
     }
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/vanilla/items.json");
-    let items: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let items: serde_json::Value = serde_json::from_str(vanillite_data::raw::ITEMS_JSON).unwrap();
     for item in items.as_array().unwrap() {
         for name in item["components"].as_object().unwrap().keys() {
             covered.insert(name.clone());

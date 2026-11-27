@@ -481,6 +481,7 @@ impl GameWorld {
                 level: &mut world,
                 inventory: &mut player.inventory,
                 xp: Some(&mut player.survival.xp),
+                random: Some(&mut player.survival.random),
                 food: Some(&mut player.survival.food),
                 recipe_book: Some(&mut player.recipe_book),
                 actor,
@@ -1028,10 +1029,21 @@ impl GameWorld {
         }
     }
 
-    /// The item entities of the drops since the last call (`spawn_drops` of the server); the
-    /// other effects go to clients nobody has.
+    /// The item entities of the drops since the last call (`spawn_drops` of the server), then
+    /// the game events of the effects (as the server posts them after delivering); the other
+    /// effects go to clients nobody has.
     fn spawn_drops(&mut self) {
+        let mut events = Vec::new();
         for effect in std::mem::take(&mut self.effects) {
+            if let Effect::GameEvent {
+                event,
+                pos,
+                context,
+            } = effect
+            {
+                events.push((event, pos, context));
+                continue;
+            }
             // `ServerPlayer.die`: `tellNeutralMobsThatIDied` (as the server does on this effect).
             if let Effect::Died { victim, .. } = effect
                 && self.level.entities.player(victim).is_some()
@@ -1073,6 +1085,9 @@ impl GameWorld {
                     ItemData::new(stack, pickup_delay, None, item_random),
                 );
             }
+        }
+        for (event, pos, context) in events {
+            self.level.game_event(event, pos, context);
         }
     }
 
@@ -1171,7 +1186,12 @@ impl GameWorld {
             actions.append(&mut p.survival.world_actions);
         }
         for action in actions {
-            action.apply_to_level(&mut self.level);
+            match action {
+                vanillite_game::mob::WorldAction::Level(action) => action.apply(&mut self.level),
+                other => {
+                    other.apply_to_level(&mut self.level);
+                }
+            }
         }
         self.spawn_drops();
     }
@@ -2781,6 +2801,7 @@ impl GameWorld {
                     level: &mut world,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    random: Some(&mut player.survival.random),
                     food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,
@@ -2938,6 +2959,7 @@ impl GameWorld {
             let context = vanillite_game::level::game_event::GameEventContext {
                 source: Some(id),
                 affected,
+                owner: None,
             };
             self.level.game_event(event, pos, context);
         }
@@ -2991,6 +3013,7 @@ impl GameWorld {
                     level: &mut world,
                     inventory: &mut player.inventory,
                     xp: Some(&mut player.survival.xp),
+                    random: Some(&mut player.survival.random),
                     food: Some(&mut player.survival.food),
                     recipe_book: Some(&mut player.recipe_book),
                     actor,

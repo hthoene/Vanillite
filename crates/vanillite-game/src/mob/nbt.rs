@@ -540,7 +540,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
 pub fn save_orb(core: &EntityRef<'_>, o: &ExperienceOrbData) -> Compound {
     let mut out = Compound::new();
     save_entity(core, &mut out);
-    out.insert("fall_distance", 0.0_f64);
+    out.insert("fall_distance", o.fall_distance);
     out.insert("Fire", -1_i16);
     out.insert("Air", 300_i16);
     #[allow(clippy::cast_possible_truncation)]
@@ -576,6 +576,10 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)>
             // A summon replaces it with the seed its constructor took.
             random_state: vanillite_base::random::LegacyRandom::new(crate::mob::new_unique_seed())
                 .state(),
+            fall_distance: match tag.get("fall_distance") {
+                Some(Tag::Double(v)) => *v,
+                _ => 0.0,
+            },
         },
     ))
 }
@@ -851,7 +855,7 @@ fn save_chest_vehicle(
                 out.insert("LootTableSeed", *seed);
             }
         }
-        None => crate::block::container::save_items(items, out),
+        None => crate::block::container::save_items_always(items, out),
     }
 }
 
