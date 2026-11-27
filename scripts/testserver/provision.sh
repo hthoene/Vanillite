@@ -15,7 +15,9 @@
 # - Docker engine for `cargo xtask docker` (image builds over SSH).
 # - vanillite-proxy on 30010 (/opt/vanillite-proxy, vanillite-proxy.service, deployed with
 #   `ssh <host> vanillite-proxy-deploy < target/release-fast/vanillite-proxy`) in front of
-#   Vanillite 30001 and 30002 and a Paper with modern forwarding on 30011 (/opt/paper-proxy).
+#   Vanillite 30001, 30002 and 30040 (`/server plugins`) and a Paper with modern forwarding on
+#   30011 (/opt/paper-proxy). Console: `vanillite-console proxy <command>`; a changed proxy.toml
+#   is applied with `proxy reload`, never by a restart while players are online.
 # - Bedrock players on UDP 30019: the Bedrock frontend of Vanillite 30001 (`[bedrock]` set by the
 #   drop-in vanillite@30001.service.d/bedrock.conf), and on UDP 30020 the Bedrock frontend of
 #   the proxy (`[bedrock]` in /opt/vanillite-proxy/proxy.toml).
@@ -220,16 +222,19 @@ EOF
 write_if_changed /usr/local/bin/vanillite-console 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-console <port> <command...>
-# Runs a console command on a running Vanillite instance (e.g. `vanillite-console 30001 say hi`).
+# Runs a console command on a running Vanillite instance (e.g. `vanillite-console 30001 say hi`);
+# `proxy` as port: on vanillite-proxy (e.g. `vanillite-console proxy proxy reload`).
 # Installed by scripts/testserver/provision.sh.
 set -euo pipefail
 port=${1:?usage: vanillite-console <port> <command...>}
 shift
 fifo=/run/vanillite-console/$port
+unit=vanillite@$port
+[ "$port" = proxy ] && unit=vanillite-proxy
 # No FIFO: an instance started before it existed. Never create a plain file in its place: the
 # socket could then not start, nor the instance with it.
-if ! systemctl is-active --quiet "vanillite@$port" || [ ! -p "$fifo" ]; then
-    echo "vanillite@$port is not running with a console" >&2
+if ! systemctl is-active --quiet "$unit" || [ ! -p "$fifo" ]; then
+    echo "$unit is not running with a console" >&2
     exit 1
 fi
 printf '%s\n' "$*" > "$fifo"
@@ -1265,10 +1270,10 @@ if [ ! -s /etc/vanillite-test/forwarding.secret ]; then
     (umask 077 && head -c 24 /dev/urandom | base64 | tr -d '/+=' > /etc/vanillite-test/forwarding.secret)
 fi
 secret=$(cat /etc/vanillite-test/forwarding.secret)
-# Vanillite 30001 and 30002 accept the proxy's players and still direct connections.
+# Vanillite 30001, 30002 and 30040 accept the proxy's players and still direct connections.
 printf 'VANILLITE_PROXY__VELOCITY_SECRET=%s\nVANILLITE_PROXY__ALLOW_DIRECT_CONNECTIONS=true\n' \
     "$secret" | write_if_changed /etc/vanillite-test/proxy-backend.env 600
-for port in 30001 30002; do
+for port in 30001 30002 30040; do
     install -d "/etc/systemd/system/vanillite@$port.service.d"
     write_if_changed "/etc/systemd/system/vanillite@$port.service.d/proxy.conf" <<'EOF'
 [Service]
@@ -1327,7 +1332,7 @@ EOF
 install -d -o vanillite -g vanillite /opt/vanillite-proxy
 install -m 600 -o vanillite -g vanillite /etc/vanillite-test/forwarding.secret \
     /opt/vanillite-proxy/forwarding.secret
-write_if_changed /opt/vanillite-proxy/proxy.toml <<'EOF'
+proxy_config_changed=$(write_if_changed /opt/vanillite-proxy/proxy.toml <<'EOF'
 # vanillite-proxy on the test server. Installed by scripts/testserver/provision.sh.
 bind = "0.0.0.0:30010"
 online-mode = true
@@ -1340,6 +1345,8 @@ try = ["vanillite", "import", "paper"]
 vanillite = "127.0.0.1:30001"
 import = "127.0.0.1:30002"
 paper = "127.0.0.1:30011"
+# Plugin test server: not in `try`, players switch with /server plugins.
+plugins = "127.0.0.1:30040"
 
 [permissions]
 server = ["*"]
@@ -1350,15 +1357,34 @@ glist = ["*"]
 enabled = true
 bind = "0.0.0.0:30020"
 EOF
-write_if_changed /etc/systemd/system/vanillite-proxy.service <<'EOF'
+)
+[ -z "$proxy_config_changed" ] || echo "$proxy_config_changed"
+# The proxy's console (stdin) is a FIFO like the instances': `vanillite-console proxy <command>`.
+proxy_socket_changed=$(write_if_changed /etc/systemd/system/vanillite-proxy-console.socket <<'EOF'
+[Unit]
+Description=Console FIFO of vanillite-proxy
+[Socket]
+ListenFIFO=/run/vanillite-console/proxy
+SocketMode=0600
+RemoveOnStop=true
+Service=vanillite-proxy.service
+EOF
+)
+proxy_service_changed=$(write_if_changed /etc/systemd/system/vanillite-proxy.service <<'EOF'
 [Unit]
 Description=vanillite-proxy on port 30010
-After=network-online.target
+After=network-online.target vanillite-proxy-console.socket
+Wants=network-online.target
+Requires=vanillite-proxy-console.socket
 [Service]
 User=vanillite
 Group=vanillite
 WorkingDirectory=/opt/vanillite-proxy
 ExecStart=/opt/vanillite-proxy/vanillite-proxy
+Sockets=vanillite-proxy-console.socket
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
 Environment=RUST_BACKTRACE=1
 Restart=always
 RestartSec=5
@@ -1372,6 +1398,10 @@ ReadWritePaths=/opt/vanillite-proxy
 [Install]
 WantedBy=multi-user.target
 EOF
+)
+proxy_unit_changed=$proxy_socket_changed$proxy_service_changed
+[ -z "$proxy_socket_changed" ] || echo "$proxy_socket_changed"
+[ -z "$proxy_service_changed" ] || echo "$proxy_service_changed"
 write_if_changed /usr/local/bin/vanillite-proxy-deploy 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-proxy-deploy < vanillite-proxy-binary
@@ -1471,10 +1501,8 @@ EOF
 install -d -o vanillite -g vanillite /opt/vanillite/30040 /opt/vanillite/30040/plugins
 props30040=/opt/vanillite/30040/server.properties
 [ -f "$props30040" ] || install -o vanillite -g vanillite -m 644 /dev/null "$props30040"
-for kv in view-distance=8; do
-    grep -q "^${kv%%=*}=" "$props30040" && sed -i "s|^${kv%%=*}=.*|$kv|" "$props30040" \
-        || echo "$kv" >> "$props30040"
-done
+grep -q "^view-distance=" "$props30040" && sed -i "s|^view-distance=.*|view-distance=8|" "$props30040" \
+    || echo "view-distance=8" >> "$props30040"
 write_if_changed /usr/local/bin/vanillite-plugin 755 <<'EOF'
 #!/usr/bin/env bash
 # Usage: vanillite-plugin <port> list
@@ -2347,6 +2375,17 @@ for dir in /opt/vanillite/30[0-9][0-9][0-9]; do
     [ "$port" = 30901 ] || systemctl enable --quiet --now "vanillite-creative@$port.path"
 done
 systemctl enable --quiet --now vanillite-autodeploy.timer
+# A changed proxy unit needs a restart: only now when nobody is connected, otherwise at the next
+# proxy deploy. A changed proxy.toml is reloaded in place.
+if [ -n "$proxy_unit_changed" ] && systemctl is-active --quiet vanillite-proxy; then
+    if ss -Htn state established '( sport = :30010 )' | grep -q .; then
+        echo "vanillite-proxy unit changed: applies at the next proxy deploy (players online)"
+    else
+        systemctl restart vanillite-proxy
+    fi
+elif [ -n "$proxy_config_changed" ]; then
+    vanillite-console proxy proxy reload || echo "proxy.toml changed: applies at the next proxy deploy"
+fi
 # Resumes from its saved journal cursor: nothing between two provisions is lost.
 systemctl enable --quiet vanillite-incidents.service
 systemctl restart vanillite-incidents.service
