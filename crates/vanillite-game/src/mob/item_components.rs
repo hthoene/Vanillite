@@ -74,6 +74,7 @@ fn components(kind: Kind) -> &'static [&'static str] {
         Kind::Villager | Kind::ZombieVillager => &["minecraft:villager/variant"],
         Kind::Sheep => &["minecraft:sheep/color"],
         Kind::Shulker => &["minecraft:shulker/color"],
+        Kind::SulfurCube => &["minecraft:sulfur_cube_content"],
         _ => &[],
     }
 }
@@ -176,6 +177,15 @@ fn set(m: &mut MobData, name: &str, cid: u16, wire: &[u8]) {
         }
         "sheep/color" => classic::sheep_mut(m).color = colour,
         "shulker/color" => illager::st_mut(m).color = colour,
+        // `setItemSlotAndDropWhenKilled(BODY, content.create())`.
+        "sulfur_cube_content" => {
+            let mut r = vanillite_protocol::codec::Reader::new(wire);
+            if let Ok(block) = ItemStack::decode_template(&mut r) {
+                let body = crate::item::EquipmentSlot::Body;
+                m.equipment.set(body, block);
+                m.equipment.set_guaranteed_drop(body);
+            }
+        }
         // `setVillagerData(getVillagerData().withType(variant))`, `setVillagerDataFinalized`.
         "villager/variant" => {
             let Some(ty) = entry_name(cid, wire).and_then(|n| {

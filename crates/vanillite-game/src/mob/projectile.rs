@@ -327,6 +327,10 @@ pub fn tick_arrow(
     let Some(e) = ents.store.get(id) else {
         return;
     };
+    // The synched values (`ID_FLAGS`, `PIERCE_LEVEL`, `IN_GROUND`): only a change of one marks
+    // the data dirty. The client restarts its shake on every `IN_GROUND` it receives.
+    let synched = (a.crit, a.pierce_level, a.in_ground);
+    let mut color_changed = false;
     let mut pos = e.pos();
     let start = pos;
     let start_box = e.aabb();
@@ -681,6 +685,7 @@ pub fn tick_arrow(
                 .unwrap_or(0),
             1,
         );
+        color_changed = true;
     }
     if discard || !ents.store.contains(id) {
         cx.discarded.push(id);
@@ -690,7 +695,9 @@ pub fn tick_arrow(
         e.set_pos(pos);
         e.set_velocity(velocity);
         e.set_rot(rot);
-        e.mark_data_dirty();
+        if color_changed || synched != (a.crit, a.pierce_level, a.in_ground) {
+            e.mark_data_dirty();
+        }
     }
     if let Some(d) = ents.arrow_mut(id) {
         *d = a;

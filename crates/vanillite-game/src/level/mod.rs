@@ -60,6 +60,9 @@ pub use neighbors::NeighborUpdater;
 /// Vanilla's update depth of `setBlock` (`Block.UPDATE_LIMIT`).
 pub const UPDATE_LIMIT: i32 = 512;
 
+/// The state the level random holds while lent out ([`Level::lend_random`]).
+const LENT_RANDOM: i64 = 0x4C45_4E54;
+
 /// Vanilla mechanics that are commonly called exploits (decision D1): `true` keeps Vanilla's
 /// behaviour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -373,6 +376,9 @@ pub struct LevelOutput {
     /// Wither skeleton skulls players placed, for the wither's summon check
     /// (`WitherSkullBlock.setPlacedBy`).
     pub summon_checks: Vec<BlockPos>,
+    /// `PiglinAi.angerNearbyPiglins` calls of the players' block uses and breaks (player,
+    /// `onlyIfTheySeeThePlayer`), run before the entities tick.
+    pub piglin_anger: Vec<(vanillite_world::entity::EntityId, bool)>,
     /// An end crystal was placed: the End fight tries to respawn the dragon (`tryRespawn`).
     pub try_dragon_respawn: bool,
     /// Entity packets for the players near a position (position, range): equipment a
@@ -880,6 +886,24 @@ impl Level {
         &mut self.random
     }
 
+    /// Lends the level random out for an [`Env`](crate::survival::player::Env) while the level is
+    /// borrowed elsewhere (entity ticks take `&Level` and draw `level.getRandom()` through the
+    /// `Env`); [`Level::restore_random`] gives it back. Nothing may draw from the level's own
+    /// random in between: it holds a marker that `restore_random` checks.
+    pub fn lend_random(&mut self) -> LegacyRandom {
+        std::mem::replace(&mut self.random, LegacyRandom::from_state(LENT_RANDOM))
+    }
+
+    /// Gives back the random of [`Level::lend_random`].
+    pub fn restore_random(&mut self, random: LegacyRandom) {
+        debug_assert_eq!(
+            self.random.state(),
+            LENT_RANDOM,
+            "the level random was drawn from while lent out"
+        );
+        self.random = random;
+    }
+
     /// Shares the server's random sequences (every world of a server draws from the same).
     pub fn set_random_sequences(
         &mut self,
@@ -1052,6 +1076,7 @@ impl Level {
             let mut promoted = Vec::new();
             self.chunks.take_promoted(&mut promoted);
             for &chunk in &promoted {
+                self.take_generation_entities(chunk);
                 self.load_block_entities(chunk);
             }
             self.chunks_loaded_event(&promoted);

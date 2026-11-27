@@ -292,8 +292,9 @@ pub(crate) fn apply_entity_nbt(
         return Ok(());
     }
     // `readAdditionalSaveData` of mobs and minecarts.
+    let (game_time, day_time) = (entities.game_time, entities.day_time);
     if let Some(m) = entities.mob_mut(id) {
-        vanillite_game::mob::nbt::apply_mob(m, data);
+        vanillite_game::mob::nbt::apply_mob(m, data, game_time, day_time);
     } else if let Some(m) = entities.minecart_mut(id) {
         vanillite_game::mob::nbt::apply_minecart(m, data);
     }

@@ -1,0 +1,17 @@
+{"format":1,
+"region":[[0,-56,0],[0,-56,0]],
+"palette":[
+"minecraft:air",
+"minecraft:gold_block"],
+"frames":[
+{"tick":0,"blocks":[1,0],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":179417057233592},
+{"tick":1,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":179417057233592},
+{"tick":2,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":179417057233592},
+{"tick":3,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":179417057233592},
+{"tick":4,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":179417057233592},
+{"tick":5,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":93792642996822},
+{"tick":6,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":93792642996822},
+{"tick":7,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":93792642996822},
+{"tick":8,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":93792642996822},
+{"tick":9,"changes":[[0,-56,0,1]],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":93792642996822},
+{"tick":10,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":93792642996822}]}

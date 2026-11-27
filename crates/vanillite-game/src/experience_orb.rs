@@ -340,6 +340,47 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
             e.set_flags(EntityFlags::HAS_IMPULSE, true);
         }
     }
+    // `applyEffectsFromBlocks`: cacti hurt the orb, plates and tripwire react.
+    let dims = level.entities.store.get(id).map(|e| e.dims());
+    if let Some(dims) = dims {
+        let way = [crate::survival::inside::Movement::plain(pos, new_pos)];
+        let mut cacti = 0;
+        let mut reacting = Vec::new();
+        let view = level.view();
+        let walker = crate::survival::inside::Walker {
+            blocks: &view,
+            facts: None,
+            dims,
+            fast_fall: false,
+        };
+        walker.walk(&way, |cell| {
+            if cell.in_block {
+                if cell.state.block() == vanillite_data::block::ids::CACTUS {
+                    cacti += 1;
+                } else if level.has_entity_inside(cell.state) {
+                    reacting.push(cell.pos);
+                }
+            }
+            true
+        });
+        for block in reacting {
+            if !level.entities.store.contains(id) {
+                return;
+            }
+            level.entity_inside(block, id);
+        }
+        // `CactusBlock.entityInside` -> `ExperienceOrb.hurtServer`.
+        for _ in 0..cacti {
+            let Some(d) = level.entities.experience_orb_mut(id) else {
+                return;
+            };
+            d.health -= 1;
+            if d.health <= 0 {
+                level.entities.despawn(id);
+                return;
+            }
+        }
+    }
     if expired {
         level.entities.despawn(id);
     }

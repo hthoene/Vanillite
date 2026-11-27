@@ -408,6 +408,7 @@ impl GameWorld {
             )
         };
         let mut players = std::mem::take(&mut self.level.entities.players);
+        let mut bind_fence = None;
         let result = (|| {
             let player = players.get_mut(row).ok_or("no player data")?;
             if let Some(food) = click.food {
@@ -434,14 +435,22 @@ impl GameWorld {
                 game_mode: player.game_mode,
                 permission_level: 0,
                 eyes_in_water: false,
-                dig_speed: None,
-                mining_fatigue: None,
+                dig_speed: player
+                    .survival
+                    .effects
+                    .has_dig_speed()
+                    .then(|| player.survival.effects.dig_speed_amplification()),
+                mining_fatigue: player
+                    .survival
+                    .effects
+                    .amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
                 respawn_here: player
                     .survival
                     .respawn
                     .as_ref()
                     .filter(|r| r.dimension == "minecraft:overworld")
                     .map(|r| r.pos),
+                leads_mobs: self.level.entities.leashes.values().any(|&h| h == id),
             };
             let mut effects = vanillite_server::LevelEffects::default();
             let spectators = vanillite_base::hash::FxHashSet::default();
@@ -531,6 +540,7 @@ impl GameWorld {
                     .connection
                     .play
                     .use_item_on(&mut ctx, &packet, &NoSink);
+                bind_fence = player.connection.play.bind_fence.take();
             }
             Ok::<bool, String>(false)
         })();
@@ -541,6 +551,13 @@ impl GameWorld {
             &vanillite_game::hooks::NoHooks,
         );
         self.explosion_hurts();
+        // `EntityAction::BindToFence`: the fence ties the player's leashed mobs.
+        if let Some(fence) = bind_fence {
+            let network_ids = Arc::clone(&self.network_ids);
+            self.with_env(|_, ents, env, _| {
+                vanillite_game::mob::tame::bind_player_mobs(ents, env, &network_ids, id, fence);
+            });
+        }
         // The entity side of `useItemOn` (`EntityAction::UseItemOn`): spawn eggs, leads,
         // minecarts and rockets.
         let hand = if click.offhand {
@@ -556,6 +573,7 @@ impl GameWorld {
             }
         });
         if !click.attack
+            && !click.air
             && held.is_some_and(|s| vanillite_game::player::item_use::uses_entities_on_block(&s))
         {
             let [hx, hy, hz] = click.hit.unwrap_or(match face {
@@ -733,6 +751,22 @@ impl GameWorld {
         let has_players = !self.level.entities.players.is_empty();
         self.mobs
             .begin_tick(self.env, MobSettings::default(), has_players);
+        // `PiglinAi.angerNearbyPiglins` of the block uses and breaks before.
+        let anger = std::mem::take(&mut self.level.output().piglin_anger);
+        if !anger.is_empty() {
+            self.with_env(|level, ents, env, cx| {
+                for (player, only_if_seen) in anger {
+                    vanillite_game::mob::fam::brainy::piglin::anger_nearby_piglins(
+                        level,
+                        ents,
+                        env,
+                        cx,
+                        player,
+                        only_if_seen,
+                    );
+                }
+            });
+        }
         // What block entities (beehives) read of the world after the entities.
         self.level.spawner_env.env = self.env;
         self.level.entities.day_time = self.env.day_time;
@@ -806,6 +840,7 @@ impl GameWorld {
                             facts,
                             types,
                             raining_at: &raining,
+                            reacts: &|s| level.has_entity_inside(s),
                         },
                     )
                 };

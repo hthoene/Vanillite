@@ -2211,11 +2211,20 @@ fn honey_slide(
     };
     entity.set_velocity(velocity);
     crate::advancements::tracking::reset_fall_distance(player);
-    // `maybeDoSlideEffects` with the level random, once the world has the player's actions.
-    player
-        .survival
-        .world_actions
-        .push(crate::mob::WorldAction::HoneySlideEffects(id));
+    // `maybeDoSlideEffects` (the level random).
+    if env.random.next_int_bounded(5) == 0 {
+        player_sound(env, id, p, "minecraft:block.honey_block.slide");
+    }
+    if env.random.next_int_bounded(5) == 0 {
+        env.out.push(Effect::Tracking {
+            entity: id,
+            with_self: true,
+            packet: SharedPacket::of(&EntityEvent {
+                entity_id: entity.as_ref().network_id().0,
+                event: 53,
+            }),
+        });
+    }
 }
 
 /// `Entity.applyEffectsFromBlocks` at the player's position: the floor it stands on (magma),
@@ -2274,6 +2283,16 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     player.connection.movement.path = path;
     for (block, state) in honey {
         honey_slide(entity, player, env, block, state);
+    }
+    // `makeStuckInBlock` of cobwebs, sweet berry bushes and powder snow the feet are in:
+    // the fall so far does not count (`Player`: unless flying); the slowdown is the client's.
+    let feet_in_snow = inside.powder_snow.is_some()
+        && env
+            .blocks
+            .block_state(BlockPos::containing(pos.x, pos.y, pos.z))
+            .is_some_and(|s| s.block() == vanillite_data::block::ids::POWDER_SNOW);
+    if (inside.cobweb || inside.berry_bush.is_some() || feet_in_snow) && !player.survival.flying {
+        crate::advancements::tracking::reset_fall_distance(player);
     }
     // The `entityInside` effects that act at once.
     if inside.cactus {

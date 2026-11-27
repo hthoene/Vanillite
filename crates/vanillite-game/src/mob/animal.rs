@@ -1348,6 +1348,77 @@ pub fn use_spawn_egg_on(
     true
 }
 
+/// `EntityType.spawn(level, stack, null, pos, reason, tryMoveDown, movedUp)` of a mob made
+/// from an item without a block click (spawn eggs from dispensers and on liquids, mob
+/// buckets): the mob above the block's shape (with `try_move_down`), facing a random yaw,
+/// `finalizeSpawn`, the item's components and `entity_data`, for buckets
+/// `loadFromBucketTag` and `setFromBucket`; then `addFreshEntity` and its ambient sound.
+pub fn spawn_from_item(
+    level: &mut Level,
+    kind: Kind,
+    stack: &ItemStack,
+    pos: vanillite_base::BlockPos,
+    reason: super::fam::SpawnReason,
+    try_move_down: bool,
+    moved_up: bool,
+) -> Option<EntityId> {
+    let seed = crate::mob::new_entity_seed();
+    let mut m = MobData::new(kind, seed);
+    let y_off = if try_move_down {
+        spawn_y_offset(level, pos, moved_up, kind)
+    } else {
+        0.0
+    };
+    let p = Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y) + y_off,
+        f64::from(pos.z) + 0.5,
+    );
+    let yaw = vanillite_base::math::wrap_degrees_f(level.random().next_float() * 360.0);
+    let mut random = level.random().clone();
+    let mut ctx = super::fam::SpawnContext::at(level, pos, reason);
+    kinds::finalize_spawn(&mut m, &mut ctx, &mut random);
+    *level.random() = random;
+    // `createDefaultStackConfig`: the custom name (the other components after the spawn).
+    if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
+        m.custom_name = Some(name.into());
+        m.persistent = true;
+    }
+    if reason == super::fam::SpawnReason::Bucket {
+        super::fam::load_from_bucket(&mut m, stack);
+    }
+    m.y_body_rot = yaw;
+    let rot = Rotation {
+        y_rot: yaw,
+        x_rot: 0.0,
+        y_head_rot: yaw,
+    };
+    let uuid = crate::mob::new_uuid();
+    let (ents, network_ids, _) = level.entity_parts();
+    let id = super::spawn(ents, network_ids, uuid, p, rot, m);
+    super::item_components::apply_spawn_item(ents, id, stack);
+    if !ents.spawned(id, reason.abi(), 0) {
+        return None;
+    }
+    // `mob.playAmbientSound()`: `makeSound` draws the volume and pitch before `playSound`
+    // checks `isSilent`.
+    let m = ents.mob_mut(id)?;
+    let Some(sound) = kinds::ambient_sound(m) else {
+        return Some(id);
+    };
+    let volume = super::fam::mob_sound_volume(m);
+    let a = m.random.next_float();
+    let b = m.random.next_float();
+    let pitch = (a - b) * 0.2 + if m.baby { 1.5 } else { 1.0 };
+    if !m.silent {
+        #[allow(clippy::as_conversions)]
+        let source = m.kind.sound_source() as u8;
+        let sound = vanillite_data::registry::SOUND_EVENT.id(sound).unwrap_or(0);
+        level.play_sound(None, p.x, p.y, p.z, sound, source, volume, pitch);
+    }
+    Some(id)
+}
+
 /// `Mob.playAmbientSound` of a new mob (`EntityType.spawn`).
 fn play_ambient_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {

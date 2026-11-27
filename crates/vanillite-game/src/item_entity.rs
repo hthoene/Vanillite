@@ -114,6 +114,9 @@ pub struct FireWorld<'a> {
     pub types: &'a DamageTypes,
     /// `Level.isRainingAt`.
     pub raining_at: &'a dyn Fn(BlockPos) -> bool,
+    /// Whether a block has an `entityInside` behaviour of its own (pressure plates, tripwire,
+    /// big dripleaves, ...): [`burn_effects`] runs it.
+    pub reacts: &'a dyn Fn(BlockState) -> bool,
 }
 
 impl std::fmt::Debug for FireWorld<'_> {
@@ -147,12 +150,15 @@ pub struct Burn {
     pub splash_after: Option<Splash>,
     /// Its health ran out: `Item.onDestroyed` and `discard`.
     pub destroyed: bool,
+    /// The blocks with an `entityInside` of their own the item is in, in Vanilla's order.
+    pub inside: [Option<BlockPos>; 4],
 }
 
 impl Burn {
     /// Nothing happened (nearly every tick of nearly every item).
     pub fn is_none(&self) -> bool {
         self.hurts == 0
+            && self.inside[0].is_none()
             && self.splash_before.is_none()
             && self.splash_after.is_none()
             && self.extinguished.is_none()
@@ -253,14 +259,29 @@ fn inside_blocks_fire(
         width: 0.25,
         height: 0.25,
     };
+    let mut cacti = 0_u8;
+    let mut reacting = 0;
     let inside = crate::survival::blocks::inside_blocks(
         world.blocks,
         world.facts,
         dims,
         false,
         &[movement],
-        |_| {},
+        |cell| {
+            if cell.state.block() == vanillite_data::block::ids::CACTUS {
+                cacti = cacti.saturating_add(1);
+            } else if (world.reacts)(cell.state)
+                && let Some(slot) = burn.inside.get_mut(reacting)
+            {
+                *slot = Some(cell.pos);
+                reacting += 1;
+            }
+        },
     );
+    // `CactusBlock.entityInside`: one point of damage per cactus touched.
+    for _ in 0..cacti {
+        hurt(data, world.types, world.types.cactus, 1.0, burn);
+    }
     if inside.cobweb {
         // `WebBlock.entityInside`.
         data.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
@@ -348,6 +369,13 @@ pub fn burn_effects(level: &mut crate::level::Level, id: EntityId, burn: Burn) {
         return;
     };
     let pos = e.pos();
+    // `entityInside` of pressure plates, tripwire and kin, in the order the item met them.
+    for block in burn.inside.into_iter().flatten() {
+        if !level.entities.store.contains(id) {
+            return;
+        }
+        level.entity_inside(block, id);
+    }
     if let Some(splash) = burn.splash_before {
         splash_effects(level, id, splash);
     }

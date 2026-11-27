@@ -1,8 +1,20 @@
 // Copyright Hannes Thöne. Licensed under the Apache License, Version 2.0.
 package dev.vanillite.extractor.golden;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import net.minecraft.core.UUIDUtil;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntitySpawnRequest;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.storage.EntityStorage;
+import net.minecraft.world.level.storage.ValueInput;
 
 /**
  * The seeds {@link ParityAgent} puts into Vanilla.
@@ -15,6 +27,10 @@ import net.minecraft.world.entity.Entity;
  *   <li>every entity created while the scenario runs (arrows, items, experience orbs, babies,
  *       naturally spawned mobs) takes the next {@code nextLong()} of a legacy random seeded with
  *       the scenario's {@code entity_seed}, in creation order;
+ *   <li>an entity loaded from storage (a chunk's entities, with their passengers) takes the low
+ *       64 bits of its stored UUID xor the level's game time, and no seed of the stream: Vanilla
+ *       deserializes chunk entities in the order their IO completes, so a stream seed would
+ *       depend on timing;
  *   <li>the seed replaces the entity's random at the end of the {@code Entity} constructor.
  * </ul>
  */
@@ -26,6 +42,13 @@ public final class ParityHooks {
   private static boolean scenario;
   private static RandomSource stream;
   private static Long next;
+  private static final ThreadLocal<Long> LOAD_SEED = new ThreadLocal<>();
+  private static boolean deferLoads;
+  private static boolean flushing;
+  private static final List<DeferredLoad> deferred = new ArrayList<>();
+
+  private record DeferredLoad(
+      EntityStorage storage, ChunkPos pos, CompletableFuture<Object> future) {}
 
   private ParityHooks() {}
 
@@ -77,10 +100,95 @@ public final class ParityHooks {
     stream = RandomSource.create(seed);
   }
 
+  /**
+   * Called at the start of {@code EntityType.create(ValueInput, Level, EntitySpawnRequest)}: in a
+   * scenario, an entity loaded from storage is seeded from its UUID and the game time.
+   */
+  public static synchronized void loading(Object input, Object level, Object request) {
+    LOAD_SEED.remove();
+    if (stream == null || ((EntitySpawnRequest) request).reason() != EntitySpawnReason.LOAD) {
+      return;
+    }
+    long uuid =
+        ((ValueInput) input).read("UUID", UUIDUtil.CODEC).map(UUID::getLeastSignificantBits).orElse(0L);
+    LOAD_SEED.set(uuid ^ ((Level) level).getGameTime());
+  }
+
+  /** Called when {@code EntityType.create(ValueInput, Level, EntitySpawnRequest)} returns. */
+  public static void loaded() {
+    LOAD_SEED.remove();
+  }
+
+  /**
+   * Holds back every chunk entity load ({@code EntityStorage.loadEntities}) from now on until
+   * {@link #flushEntityLoads}, or lets them through again.
+   */
+  public static synchronized void deferEntityLoads(boolean defer) {
+    deferLoads = defer;
+  }
+
+  /** Whether entity loads wait for {@link #flushEntityLoads}. */
+  public static synchronized boolean hasDeferredEntityLoads() {
+    return !deferred.isEmpty();
+  }
+
+  /**
+   * Called at the start of {@code EntityStorage.loadEntities}: while loads are deferred, the
+   * load is held back and its future returned, otherwise {@code null} (the load runs).
+   */
+  public static synchronized CompletableFuture<Object> deferEntityLoad(Object storage, Object pos) {
+    if (!deferLoads || flushing) {
+      return null;
+    }
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    deferred.add(new DeferredLoad((EntityStorage) storage, (ChunkPos) pos, future));
+    return future;
+  }
+
+  /**
+   * Runs the held back entity loads one after the other, ordered by chunk position: each starts
+   * once the one before it has deserialized its entities, so the entities are created (and take
+   * their entity ids) in the same order on every run, whatever order the IO completes in.
+   */
+  public static synchronized void flushEntityLoads() {
+    List<DeferredLoad> loads = new ArrayList<>(deferred);
+    deferred.clear();
+    loads.sort(
+        Comparator.comparingInt((DeferredLoad l) -> l.pos().x()).thenComparingInt(l -> l.pos().z()));
+    CompletableFuture<?> chain = CompletableFuture.completedFuture(null);
+    for (DeferredLoad load : loads) {
+      chain =
+          chain.thenCompose(
+              v -> {
+                CompletableFuture<?> started;
+                synchronized (ParityHooks.class) {
+                  flushing = true;
+                  try {
+                    started = load.storage().loadEntities(load.pos());
+                  } finally {
+                    flushing = false;
+                  }
+                }
+                return started.whenComplete(
+                    (entities, error) -> {
+                      if (error != null) {
+                        load.future().completeExceptionally(error);
+                      } else {
+                        load.future().complete(entities);
+                      }
+                    });
+              });
+    }
+  }
+
   /** Called at the end of the {@code Entity} constructor. */
   public static synchronized void entityCreated(Object entity) {
     long seed;
-    if (next != null) {
+    Long load = LOAD_SEED.get();
+    if (load != null) {
+      LOAD_SEED.remove();
+      seed = load;
+    } else if (next != null) {
       seed = next;
       next = null;
     } else if (stream != null) {

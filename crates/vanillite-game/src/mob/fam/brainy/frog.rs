@@ -76,7 +76,7 @@ fn croak() -> Spec {
     fr(Behavior::Croak { counter: 0 })
 }
 
-fn frog_brain() -> BrainSpec {
+pub(super) fn frog_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -226,7 +226,7 @@ fn frog_brain() -> BrainSpec {
     }
 }
 
-fn tadpole_brain() -> BrainSpec {
+pub(super) fn tadpole_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
