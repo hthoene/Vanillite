@@ -42,7 +42,7 @@ conflicts:
 | `cargo test --doc` | Doc tests (nextest does not run them). |
 | `cargo deny check` | Licences, advisories, duplicate and wildcard dependencies (`deny.toml`). |
 | `cargo xtask codegen --check` | Generated tables match `data/vanilla/`. |
-| `cargo xtask egg --check` | The Pterodactyl egg and `docs/configuration.md` match the configuration schema (`cargo xtask egg` regenerates both). |
+| `cargo xtask egg --check` | The two Pterodactyl eggs and `docs/configuration.md` match the configuration schema (`cargo xtask egg` regenerates them). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
 | `cargo xtask regen` | After a merge: rewrite generated files (codegen, egg, configuration reference). |
 
@@ -174,9 +174,10 @@ mkdir -p ~/.local/zig && curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_
 scripts/docker/install-docker.sh --client   # Docker CLI and buildx
 ```
 
-### Pterodactyl egg
+### Pterodactyl eggs
 
-`deploy/pterodactyl/egg-vanillite.json` is generated from the typed schema in `vanillite-config`:
+`deploy/pterodactyl/egg-vanillite.json` (*Vanillite*, every setting) is generated from the typed
+schema in `vanillite-config`:
 every `server.properties` key (`ServerProperties::INFO`, except those declared `panel = false`)
 and every `vanillite.toml` rule (except the `debug` group) becomes a variable named like its
 `VANILLITE_<KEY>` override, with the documentation, default, range or allowed values. The
@@ -187,10 +188,14 @@ generator. Panels render `in:true,false` as a switch (Pterodactyl) and other `in
 dropdowns: booleans and enumerations (`ValueShape::choices`) of rules get a dropdown with
 `default`, which the server ignores like an empty value (`EnvOverrides`), so the profile decides.
 The image dropdown is derived from the workspace version and the Minecraft version (tags of
-`scripts/release/meta.sh`). After a change of the schema run `cargo xtask egg`; CI and the
-`egg` test of xtask fail while the committed egg is stale. `cargo xtask egg smoke [--image
+`scripts/release/meta.sh`). `deploy/pterodactyl/egg-vanillite-simple.json` (*Vanillite
+(Simple)*) holds only the curated `SIMPLE` settings with plain-language descriptions; everything
+else keeps the profile's value. Both eggs share images, startup, stop and variable names, so a
+server can switch between them; `egg --check` fails if a simple variable is missing in the full
+egg or its default is not valid there. After a change of the schema run `cargo xtask egg`; CI
+and the `egg` test of xtask fail while a committed egg is stale. `cargo xtask egg smoke [--image
 <ref>]` starts an image like Wings does (STARTUP, `/home/container`, UID 988, read-only root)
-and pings it. How to import and use the egg is in the README.
+and pings it. How to import and use the eggs is in the README.
 
 ### Configuration reference
 

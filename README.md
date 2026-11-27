@@ -126,23 +126,34 @@ writable by UID 10001. Console commands go through `docker attach` (start the co
 
 ### Pterodactyl and Pelican
 
-Import [`deploy/pterodactyl/egg-vanillite.json`](deploy/pterodactyl/egg-vanillite.json) in the
-admin panel (*Nests → Import Egg*, Pelican: *Eggs → Import*) and create a server with it; its
-primary allocation is the game port.
+There are two eggs; import one or both in the admin panel (*Nests → Import Egg*, Pelican:
+*Eggs → Import*) and create a server with it; its primary allocation is the game port.
+
+| Egg | File | For |
+|---|---|---|
+| *Vanillite (Simple)* | [`egg-vanillite-simple.json`](deploy/pterodactyl/egg-vanillite-simple.json) | Admins who want a server that just runs: only the basic settings, everything else uses the profile's defaults. |
+| *Vanillite* | [`egg-vanillite.json`](deploy/pterodactyl/egg-vanillite.json) | Every `server.properties` and `vanillite.toml` setting. |
+
+Both start the same image the same way and use the same variable names, so a server can be
+switched between them (admin panel: the server's *Startup* tab, *Egg*); check the *Startup* page
+of the server after a switch.
 
 - **Image:** *Beta - Minecraft 26.3* (`mc26.3-beta`, the default) stays on that Minecraft
   version; *Beta - newest Minecraft version* (`beta`) follows new versions. Switch it on the
   *Startup* page.
 - **EULA:** switch on *Accept the Minecraft EULA*, or accept the panel's EULA prompt on the
   first start.
-- **Settings:** the *Startup* page starts with the settings most servers change (profile, MOTD,
-  players, game mode, difficulty, whitelist, seed, distances, Bedrock players); every other
-  setting follows, grouped by area. Empty technical settings (or `default`) keep the profile's
-  value.
+- **Settings (simple egg):** server type (profile), name (MOTD), max players, game mode,
+  difficulty, hardcore, whitelist, online mode, seed, view distance, world format and Bedrock
+  players.
+- **Settings (full egg):** the *Startup* page starts with the settings most servers change
+  (profile, MOTD, players, game mode, difficulty, whitelist, seed, distances, Bedrock players);
+  every other setting follows, grouped by area. Empty technical settings (or `default`) keep the
+  profile's value.
 - **Bedrock** players join on the server's port (UDP) unless *Bedrock: Port* names another
   allocation.
 
-The egg is generated from the configuration schema, so re-import it after an update.
+The eggs are generated from the configuration schema, so re-import them after an update.
 
 ## Configuration
 
