@@ -6,6 +6,8 @@ depends neither on the server's compiler nor on its dependencies. The Rust SDK
 [`vanillite-plugin`](../crates/vanillite-plugin) is a safe API over that ABI; any language that
 can export a C function can implement the ABI directly.
 
+Paper and Spigot plugins run too: see [Paper and Spigot plugins](#paper-and-spigot-plugins).
+
 The complete example is [`examples/hello-plugin`](../examples/hello-plugin): a command with
 suggestions, a join message from its configuration, persistent player data, cancelled events,
 scheduled and background tasks, bulk block access and a chunk generator.
@@ -131,6 +133,35 @@ The API reference is the crate documentation: `cargo doc -p vanillite-plugin --o
   changes or that file is removed (`plugins.safe-mode-after-crash`).
 - **Pinning:** `plugins.pins = "id=sha256,..."` refuses libraries with another hash.
 - Plugins are trusted code with the server's rights; install only plugins you trust.
+
+## Paper and Spigot plugins
+
+Bukkit, Spigot and Paper plugins (`plugins/*.jar` with a `plugin.yml` or `paper-plugin.yml`) run
+on the Bukkit layer [vanillite-bukkit](https://github.com/hthoene/vanillite-bukkit): an ordinary
+native plugin (`plugins/bukkit/`) that hosts a Java virtual machine. Put the jars into
+`plugins/` and start the server:
+
+1. At startup the server finds the jars. If the layer is not installed it takes the layer
+   release pinned for this Vanillite version (`crates/vanillite-server/bukkit-layer.txt`):
+   `plugins/vanillite-bukkit-<version>-<target>.tar.gz` if it lies there, else a download from
+   the layer's GitHub releases into `plugins/.cache/`. The archive must match the pinned
+   SHA-256; it is unpacked into `plugins/bukkit/` (the layer's `config.toml` and downloaded
+   libraries stay).
+2. If the layer would find no Java 25 runtime (`jvm.java-home` in `plugins/bukkit/config.toml`,
+   `plugins/bukkit/runtime/`, `JAVA_HOME`, `java` on the `PATH`), Eclipse Temurin 25 (JRE) for
+   the machine is downloaded from Adoptium into `plugins/bukkit/runtime/`, checked against the
+   SHA-256 Adoptium publishes.
+3. The layer loads with the other plugins and loads the jars.
+
+`plugins.bukkit.auto-setup = false` turns the downloads off (offline or air-gapped servers): the
+log then names the archive with its SHA-256 and the folder for the runtime. Without Bukkit jars
+none of this runs.
+
+The static Linux builds (release archives, Docker image) cannot load libraries. They ship
+`vanillite-gnu`, the same commit linked against glibc 2.28, and start it in their place when
+`plugins/` holds packages or Bukkit jars (`plugins.runtime`: `auto`, `gnu` or `static`). Both
+must come from the same build (checked with `vanillite version`); if `vanillite-gnu` is missing
+or another build, the server starts without plugins and says why.
 
 ## ABI versioning
 

@@ -169,6 +169,11 @@ pub(crate) fn handle(
                 tag: Nbt(Some(Tag::Compound(nbt))),
             });
         }
+        AdminRequest::DebugSubscriptions(mask) => {
+            global
+                .players
+                .set_debug_subscriptions(crate::player_list::Uuid(uuid), mask);
+        }
         AdminRequest::PluginMessage { channel, data } => {
             global
                 .plugins

@@ -59,6 +59,13 @@ step golden-bulk 35 cargo xtask golden regen --bulk
 step worldgen-sweep 30 cargo xtask worldgen sweep --seed "$(($(date -u +%s) / 86400))" --seeds 4
 [ -f target/worldgen-sweep/summary.md ] && cp target/worldgen-sweep/summary.md "$out/worldgen-sweep.md"
 
+# Complex real-world worlds (#244): the corpus of crates/vanillite-test/parity-worlds.toml
+# (downloads and upgraded copies cached in ~/.cache/vanillite/parity-worlds/, Vanilla's runs in
+# the bulk store), every world tick by tick against Vanilla. Results next to the sweep's.
+step parity-worlds 40 cargo xtask parity worlds --jobs 3 --minutes 25
+[ -f target/parity-worlds/summary.md ] && cp target/parity-worlds/summary.md "$out/parity-worlds.md"
+[ -d target/parity-worlds ] && cp -r target/parity-worlds "$out/parity-worlds"
+
 # Light against Vanilla (#237): after generation and after scripted block changes, other new
 # world seeds every night, every dimension and world type.
 step light-sweep 20 cargo xtask light sweep --seed "$(($(date -u +%s) / 86400 + 500000))" --seeds 4
@@ -86,6 +93,9 @@ if [ -f "$out/worldgen-sweep.md" ]; then
 fi
 if [ -f "$out/light-sweep.md" ]; then
     { echo; echo "## light sweep"; sed '1d' "$out/light-sweep.md"; } >> "$out/summary.md"
+fi
+if [ -f "$out/parity-worlds.md" ]; then
+    { echo; echo "## parity worlds"; sed '1d' "$out/parity-worlds.md"; } >> "$out/summary.md"
 fi
 if [ -f "$out/parity-soak/summary.md" ]; then
     { echo; echo "## parity soak"; cat "$out/parity-soak/summary.md"; } >> "$out/summary.md"

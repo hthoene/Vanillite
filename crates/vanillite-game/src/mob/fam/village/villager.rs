@@ -1319,27 +1319,19 @@ impl FamilyHooks for Hooks {
     }
 
     fn load(m: &mut MobData, tag: &Compound) {
-        let int = |k: &str| match tag.get(k) {
-            Some(Tag::Int(v)) => Some(*v),
-            Some(Tag::Byte(v)) => Some(i32::from(*v)),
-            Some(Tag::Short(v)) => Some(i32::from(*v)),
-            _ => None,
-        };
-        let long = |k: &str| match tag.get(k) {
-            Some(Tag::Long(v)) => Some(*v),
-            Some(Tag::Int(v)) => Some(i64::from(*v)),
-            _ => None,
-        };
+        let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
+        let long = |k: &str| tag.get(k).and_then(crate::mob::entity_nbt::long_value);
         if let Some(age) = int("Age") {
             m.age = age;
             m.baby = age < 0;
         }
-        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+        m.age_locked = crate::mob::entity_nbt::get_bool(tag, "AgeLocked").unwrap_or(false);
         if let Some(f) = int("ForcedAge") {
             m.forced_age = f;
         }
         merchant::load(&mut state_mut(m).merchant, tag);
-        let finalized = matches!(tag.get("VillagerDataFinalized"), Some(Tag::Byte(b)) if *b != 0);
+        let finalized =
+            crate::mob::entity_nbt::get_bool(tag, "VillagerDataFinalized").unwrap_or(false);
         let data = tag.get("VillagerData").and_then(Tag::as_compound);
         if finalized || data.is_some() {
             let mut ty = plains();
@@ -1360,8 +1352,8 @@ impl FamilyHooks for Hooks {
                 {
                     prof = p;
                 }
-                if let Some(Tag::Int(l)) = d.get("level") {
-                    level = (*l).max(1);
+                if let Some(l) = crate::mob::entity_nbt::get_int(d, "level") {
+                    level = l.max(1);
                 }
             }
             let v = vs_mut(m);
@@ -1388,6 +1380,35 @@ impl FamilyHooks for Hooks {
             brain::load(b, tag);
         }
     }
+}
+
+/// `Villager.getBreedOffspring(level, this)` of a spawn egg used on `parent` at `pos`: the
+/// biome's type, else the parent's.
+pub fn egg_offspring(
+    level: &crate::level::Level,
+    parent: &mut MobData,
+    pos: BlockPos,
+    seed: i64,
+) -> MobData {
+    let roll = parent.random.next_double();
+    let ty = if roll < 0.5 {
+        type_id(crate::mob::fam::undead::zombies::villager_type_of_biome(
+            &biome_at(level, pos),
+        ))
+    } else {
+        vs(parent).villager_type
+    };
+    let mut child = MobData::new(Kind::Villager, seed);
+    {
+        let v = vs_mut(&mut child);
+        v.villager_type = ty;
+        v.profession = profession::NONE;
+        v.data_finalized = true;
+    }
+    child.age = -24000;
+    child.baby = true;
+    rebuild_brain(&mut child, None);
+    child
 }
 
 /// `getBreedOffspring` and `VillagerMakeLove.breed`: a baby villager of the biome's or a

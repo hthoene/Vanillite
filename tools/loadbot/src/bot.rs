@@ -69,6 +69,7 @@ pub async fn run(
     permit: OwnedSemaphorePermit,
 ) {
     let mut bot = Bot {
+        index,
         movement,
         name: format!("{}{index:05}", config.prefix),
         rng: Rng::new(config.seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
@@ -93,6 +94,7 @@ pub async fn run(
 }
 
 struct Bot {
+    index: u64,
     movement: watch::Receiver<Movement>,
     name: String,
     rng: Rng,
@@ -115,15 +117,35 @@ enum Action {
 }
 
 impl Bot {
+    /// Connects to the server. Against a loopback IPv4 host each bot uses one of
+    /// `source_ips` local addresses (`127.0.0.2` ...), as players come from many addresses:
+    /// the server's per-address limit of pending logins then does not cap the join rate.
+    async fn connect(&self) -> BotResult<TcpStream> {
+        let config = &self.config;
+        let host = config.host.parse::<std::net::Ipv4Addr>().ok();
+        let stream = match host.filter(|h| h.is_loopback() && config.source_ips > 0) {
+            Some(host) => {
+                let n = u64::from(config.source_ips);
+                let k = u32::try_from(self.index % n).unwrap_or(0) + 2;
+                let source = std::net::Ipv4Addr::from(0x7F00_0000 | k);
+                let socket = tokio::net::TcpSocket::new_v4().map_err(|e| format!("socket: {e}"))?;
+                socket
+                    .bind((source, 0).into())
+                    .map_err(|e| format!("bind {source}: {e}"))?;
+                socket.connect((host, config.port).into()).await
+            }
+            None => TcpStream::connect((config.host.as_str(), config.port)).await,
+        };
+        stream.map_err(|e| format!("connect: {e}"))
+    }
+
     async fn play(
         &mut self,
         joined: &mut bool,
         permit: &mut Option<OwnedSemaphorePermit>,
     ) -> BotResult<()> {
         let started = Instant::now();
-        let stream = TcpStream::connect((self.config.host.as_str(), self.config.port))
-            .await
-            .map_err(|e| format!("connect: {e}"))?;
+        let stream = self.connect().await?;
         stream
             .set_nodelay(true)
             .map_err(|e| format!("nodelay: {e}"))?;

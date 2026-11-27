@@ -108,6 +108,11 @@ impl LightNibbles {
 pub struct ChunkLight {
     sky: Box<[LightNibbles]>,
     block: Box<[LightNibbles]>,
+    /// Columns (bit `x + z * 16`) whose sky light sources were taken from the blocks when the
+    /// chunk was loaded and that had no block change since (`ChunkSkyLightSources.fillFrom`
+    /// tests no edge below the bottom block): a change there treats the column as open below
+    /// the world if it is open down to its bottom block, whatever the stored light says.
+    reset_sources: Option<Box<[u64; 4]>>,
 }
 
 impl ChunkLight {
@@ -133,7 +138,42 @@ impl ChunkLight {
         Self {
             sky: vec![LightNibbles::Absent; layers].into_boxed_slice(),
             block: vec![LightNibbles::Absent; layers].into_boxed_slice(),
+            reset_sources: None,
         }
+    }
+
+    /// Marks the sky light sources of every column as taken from the blocks (a chunk loaded
+    /// with its light, `ChunkSkyLightSources.fillFrom`).
+    pub fn reset_sky_sources(&mut self) {
+        self.reset_sources = Some(Box::new([u64::MAX; 4]));
+    }
+
+    /// Whether the sky light sources of column `x + z * 16` are still the ones taken from the
+    /// blocks at load ([`Self::reset_sky_sources`]).
+    #[inline]
+    pub fn sky_sources_reset(&self, column: usize) -> bool {
+        self.reset_sources.as_ref().is_some_and(|bits| {
+            bits.get(column >> 6)
+                .is_some_and(|word| word & (1 << (column & 63)) != 0)
+        })
+    }
+
+    /// Ends [`Self::sky_sources_reset`] for a column (a block of it changed). Returns whether
+    /// it was set.
+    pub fn clear_sky_sources_reset(&mut self, column: usize) -> bool {
+        let Some(bits) = self.reset_sources.as_mut() else {
+            return false;
+        };
+        let Some(word) = bits.get_mut(column >> 6) else {
+            return false;
+        };
+        let bit = 1 << (column & 63);
+        let was = *word & bit != 0;
+        *word &= !bit;
+        if bits.iter().all(|&word| word == 0) {
+            self.reset_sources = None;
+        }
+        was
     }
 
     /// Number of light sections (sections + 2); index 0 is the section below the chunk.
@@ -242,6 +282,66 @@ pub fn forget_unkept_light(
         }
     }
     changed
+}
+
+/// What a chunk's light gets back when a neighbour loads again, the reverse of
+/// [`forget_unkept_light`]: Vanilla creates the data layers of the sections it keeps again
+/// because of the neighbour (block light empty, sky light a copy of the bottom row of the data
+/// above, `SkyLightSectionStorage.createDataLayer`) and sends them to clients. Sky light layers
+/// above all data and the one above the world stay absent (full sky light either way).
+///
+/// `area` and `loaded` as in [`forget_unkept_light`]. Returns the layers created again.
+pub fn restore_kept_light(
+    light: &mut ChunkLight,
+    area: &[Option<&crate::Chunk>; 9],
+    loaded: usize,
+) -> crate::packet::SectionMask {
+    let filled = |index: usize, section: isize| {
+        usize::try_from(section).ok().is_some_and(|section| {
+            area[index].is_some_and(|chunk| {
+                chunk
+                    .sections()
+                    .get(section)
+                    .is_some_and(|s| !s.summary().is_empty())
+            })
+        })
+    };
+    let kept = |section: isize, with_loaded: bool| {
+        (0..9).any(|index| {
+            (with_loaded || index != loaded)
+                && (section - 1..=section + 1).any(|s| filled(index, s))
+        })
+    };
+    let top = light.len() - 1;
+    let mut restored = crate::packet::SectionMask::default();
+    for layer in 0..light.len() {
+        let section = layer as isize - 1;
+        if !kept(section, true) || kept(section, false) {
+            continue;
+        }
+        restored.set(layer);
+        if light.block[layer] == LightNibbles::Absent {
+            light.block[layer] = LightNibbles::Uniform(0);
+        }
+        if layer == top || light.sky[layer] != LightNibbles::Absent {
+            continue;
+        }
+        let above = light.sky[layer + 1..]
+            .iter()
+            .find(|above| **above != LightNibbles::Absent);
+        light.sky[layer] = match above {
+            None => continue,
+            Some(LightNibbles::Data(data)) => {
+                let mut bytes = [0; NIBBLE_BYTES];
+                for row in bytes.as_chunks_mut::<128>().0 {
+                    row.copy_from_slice(&data[..128]);
+                }
+                LightNibbles::Data(Arc::new(bytes))
+            }
+            Some(uniform) => uniform.clone(),
+        };
+    }
+    restored
 }
 
 #[cfg(test)]

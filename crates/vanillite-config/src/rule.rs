@@ -371,6 +371,40 @@ impl RuleValue for RedstoneImplementation {
     }
 }
 
+/// Which build loads the plugins (`plugins.runtime`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum PluginRuntime {
+    /// The static build starts `vanillite-gnu` in its place when there are plugins.
+    #[default]
+    Auto,
+    /// The static build always starts `vanillite-gnu`.
+    Gnu,
+    /// The static build never starts `vanillite-gnu`; plugins are not loaded.
+    Static,
+}
+
+impl RuleValue for PluginRuntime {
+    const SHAPE: ValueShape = ValueShape::one_of(&["auto", "gnu", "static"]);
+    fn from_toml(value: &toml::Value) -> Result<Self, String> {
+        match value.as_str().map(str::trim) {
+            Some(s) if s.eq_ignore_ascii_case("auto") => Ok(PluginRuntime::Auto),
+            Some(s) if s.eq_ignore_ascii_case("gnu") => Ok(PluginRuntime::Gnu),
+            Some(s) if s.eq_ignore_ascii_case("static") => Ok(PluginRuntime::Static),
+            _ => Err(format!(
+                "expected \"auto\", \"gnu\" or \"static\", found {value}"
+            )),
+        }
+    }
+    fn to_toml(&self) -> toml::Value {
+        let name = match self {
+            PluginRuntime::Auto => "auto",
+            PluginRuntime::Gnu => "gnu",
+            PluginRuntime::Static => "static",
+        };
+        toml::Value::String(name.to_owned())
+    }
+}
+
 /// The format of the chunk, entity and POI files of a world (`storage.world-format`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum WorldFormat {

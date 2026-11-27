@@ -504,11 +504,10 @@ impl FamilyHooks for Hooks {
     fn experience_reward(m: &mut MobData) -> i32 {
         use vanillite_base::random::RandomSource;
         match m.kind {
-            // `xpReward` with the equipment bonus of `Mob.getBaseExperienceReward`.
-            Kind::Piglin | Kind::PiglinBrute => {
-                let base = if m.kind == Kind::Piglin { 5 } else { 20 };
-                base + equipment_xp(m)
-            }
+            // `Piglin.getBaseExperienceReward`: only `xpReward`; the brute has the equipment bonus
+            // of `Mob.getBaseExperienceReward`.
+            Kind::Piglin => 5,
+            Kind::PiglinBrute => crate::mob::fam::undead::zombies::equipment_experience(m, 20),
             Kind::Hoglin => {
                 if m.baby {
                     3
@@ -945,18 +944,6 @@ fn animal_group_baby(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
     }
 }
 
-/// The experience bonus of the equipment (`Mob.getBaseExperienceReward`): 1–3 per item.
-fn equipment_xp(m: &mut MobData) -> i32 {
-    use vanillite_base::random::RandomSource;
-    let mut xp = 0;
-    for slot in crate::mob::equipment::SLOTS {
-        if !m.equipment.get(slot).is_empty() && m.equipment.drop_chance(slot) <= 1.0 {
-            xp += 1 + m.random.next_int_bounded(3);
-        }
-    }
-    xp
-}
-
 /// `AgeableMob`/`Animal` NBT: `Age`, `ForcedAge`, `InLove`, `LoveCause`.
 pub fn save_ageable(m: &MobData, out: &mut Compound) {
     out.insert("Age", m.age);
@@ -967,32 +954,22 @@ pub fn save_ageable(m: &MobData, out: &mut Compound) {
 
 /// Reads `Age`, `ForcedAge`, `InLove`.
 pub fn load_ageable(m: &mut MobData, tag: &Compound) {
-    use vanillite_nbt::Tag;
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => None,
-    };
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
     m.age = int("Age").unwrap_or(0);
     m.baby = m.age < 0;
     m.forced_age = int("ForcedAge").unwrap_or(0);
-    m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+    m.age_locked = crate::mob::entity_nbt::get_bool(tag, "AgeLocked").unwrap_or(false);
     m.in_love = int("InLove").unwrap_or(0);
 }
 
 /// A boolean NBT key.
 pub fn nbt_bool(tag: &Compound, key: &str, default: bool) -> bool {
-    match tag.get(key) {
-        Some(vanillite_nbt::Tag::Byte(b)) => *b != 0,
-        _ => default,
-    }
+    crate::mob::entity_nbt::get_bool(tag, key).unwrap_or(default)
 }
 
 /// An int NBT key.
 pub fn nbt_int(tag: &Compound, key: &str, default: i32) -> i32 {
-    match tag.get(key) {
-        Some(vanillite_nbt::Tag::Int(v)) => *v,
-        _ => default,
-    }
+    crate::mob::entity_nbt::get_int(tag, key).unwrap_or(default)
 }
 
 /// The bottom centre of a block.

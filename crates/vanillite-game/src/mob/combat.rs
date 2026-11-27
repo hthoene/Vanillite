@@ -314,7 +314,9 @@ fn invulnerable_to(
         .and_then(|c| ents.player(c))
         .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
     m.removed
-        || m.invulnerable && !types.is(kind, tag::BYPASSES_INVULNERABILITY) && !creative
+        || super::entity_nbt::is_invulnerable(ents, target)
+            && !types.is(kind, tag::BYPASSES_INVULNERABILITY)
+            && !creative
         || crate::enchant::location::frost_walker_immune(
             types,
             kind,
@@ -373,6 +375,9 @@ fn hurt_mob_inner(
     let types = env.types;
     if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
         return crate::decoration::stand::hurt(level, ents, env, cx, target, &source);
+    }
+    if super::entity_nbt::invulnerable_to(ents, types, target, &source) {
+        return false;
     }
     if let Some(took) =
         super::fam::undead::cubes::sulfur_hurt(level, ents, env, target, &source, amount)
@@ -1147,6 +1152,7 @@ fn die(
             target,
             &source,
             "minecraft:charged_creeper/root",
+            0,
         )
         .unwrap_or_default();
         for stack in heads.into_iter().filter(|s| !s.is_empty()) {
@@ -1370,7 +1376,7 @@ pub fn create_wither_rose(
 }
 
 /// `getDisplayName` of a mob without team: its custom name, else its type's name.
-fn mob_name(m: &super::MobData) -> Component {
+pub(crate) fn mob_name(m: &super::MobData) -> Component {
     if let Some(name) = m.custom_name.as_deref().and_then(nbt_name) {
         return name;
     }
@@ -1508,7 +1514,7 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     if m.silent {
         return;
     }
-    let source = m.kind.sound_source();
+    let source = m.sound_source();
     let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, volume, pitch, seed);
 }
@@ -1652,11 +1658,27 @@ fn table_loot(
 ) -> Option<Vec<crate::item::ItemStack>> {
     let name = ents.store.get(target)?.kind().info().name;
     let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
-    let table = format!("{ns}:entities/{path}");
-    named_table_loot(level, ents, env, target, source, &table)
+    // `Mob.getLootTable`: `DeathLootTable` replaces the type's table.
+    let (replaced, seed) = ents.extra(target).map_or((None, 0), |x| {
+        (x.death_loot_table.clone(), x.death_loot_seed)
+    });
+    let table = replaced
+        .clone()
+        .unwrap_or_else(|| format!("{ns}:entities/{path}"));
+    let drops = named_table_loot(level, ents, env, target, source, &table, seed);
+    if replaced.is_none() {
+        return drops;
+    }
+    // `Mob.dropFromLootTable` forgets its `DeathLootTable`.
+    if let Some(x) = ents.extra_mut(target) {
+        x.death_loot_table = None;
+    }
+    // An unknown table is the empty one: nothing drops.
+    Some(drops.unwrap_or_default())
 }
 
-/// `dropFromLootTable` of the loot table `table` for the dying `target`.
+/// `dropFromLootTable` of the loot table `table` for the dying `target`; a `seed` of 0 means
+/// none.
 fn named_table_loot(
     level: &Level,
     ents: &mut Entities,
@@ -1664,6 +1686,7 @@ fn named_table_loot(
     target: EntityId,
     source: &DamageSource,
     table: &str,
+    seed: i64,
 ) -> Option<Vec<crate::item::ItemStack>> {
     let data = crate::player::play::game_data()?;
     if !data.loot.contains(table) {
@@ -1712,10 +1735,15 @@ fn named_table_loot(
         block_entity: None,
     };
     let mut out = Vec::new();
-    // `dropFromLootTable` without a loot table seed: the table's random sequence, else the
-    // level random.
-    data.loot
-        .roll_table(level, table, &ctx, env.random, &mut out);
+    if seed == 0 {
+        // `dropFromLootTable` without a loot table seed: the table's random sequence, else
+        // the level random.
+        data.loot
+            .roll_table(level, table, &ctx, env.random, &mut out);
+    } else {
+        let mut random = vanillite_base::random::LegacyRandom::new(seed);
+        data.loot.table_drops(table, &ctx, &mut random, &mut out);
+    }
     Some(out)
 }
 

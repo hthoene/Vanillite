@@ -152,8 +152,11 @@ fn usable(chunk: &ProtoChunk) -> bool {
 }
 
 /// The light of the chunks whose light changes by the block changes at `changes`.
+/// `below_world_data`: the world holds light data below the world somewhere (Vanilla's
+/// `currentLowestY` is below the world), so sky light fills it from empty sections.
 pub(crate) fn update(
     has_sky: bool,
+    below_world_data: bool,
     changes: &[BlockPos],
     area: &Neighbours<'_>,
 ) -> Vec<(ChunkPos, ChunkLight)> {
@@ -165,6 +168,7 @@ pub(crate) fn update(
         facts: LightFacts::get(),
         min_y: any.chunk.min_y(),
         height: any.chunk.sections().len() as i32 * 16,
+        fill_below: has_sky && below_world_data,
         store: FxHashMap::default(),
         light: FxHashMap::default(),
         lowest: FxHashMap::default(),
@@ -247,6 +251,12 @@ pub(crate) fn update(
     for pos in around {
         update.fit_border_layers(pos, has_sky);
     }
+    // The changed columns' sky light sources follow their blocks again.
+    if has_sky {
+        for &pos in &changes {
+            update.end_sources_reset(pos);
+        }
+    }
     update.light.into_iter().collect()
 }
 
@@ -264,6 +274,10 @@ struct Update<'a> {
     min_y: i32,
     /// Cells of the world in y.
     height: i32,
+    /// Sky light that leaves the bottom row of the world into a chunk that keeps light below
+    /// the world, from one that keeps none, fills the column below the world there
+    /// (`SkyLightEngine.propagateFromEmptySections`).
+    fill_below: bool,
     /// Per chunk: whether it keeps light below and above the world (from the blocks after the
     /// changes; see `crate::border_storage`).
     store: FxHashMap<ChunkPos, [bool; 2]>,
@@ -373,6 +387,9 @@ impl<'a> Update<'a> {
     /// looked at it after a change: that also tests the edge between the bottom block and the
     /// air below the world, which a block with a full bottom face closes (a bottom slab, a snow
     /// layer). It does so when the column was not open before or a block at the bottom changed.
+    /// A changed column of a chunk loaded with its light was open before if it was open down to
+    /// its bottom block: loading takes the sources from the blocks (`ChunkSkyLightSources
+    /// .fillFrom`, no edge test below the bottom block), whatever the stored light says.
     fn sky_columns(&mut self, pos: ChunkPos, changes: &[BlockPos], regions: &mut Vec<Region>) {
         let Some(proto) = self.chunk(pos) else {
             return;
@@ -386,9 +403,12 @@ impl<'a> Update<'a> {
             .collect();
         let below = view(light, Kind::Sky, 0);
         let mut bottom_changed = [false; 256];
+        let mut column_changed = [false; 256];
         for change in changes {
-            if change.chunk() == pos && change.y == self.min_y {
-                bottom_changed[((change.z & 15) * 16 + (change.x & 15)) as usize] = true;
+            if change.chunk() == pos {
+                let column = ((change.z & 15) * 16 + (change.x & 15)) as usize;
+                column_changed[column] = true;
+                bottom_changed[column] |= change.y == self.min_y;
             }
         }
         let mut lowest = Box::new([0u16; 256]);
@@ -415,9 +435,14 @@ impl<'a> Update<'a> {
                     old = -16;
                 }
                 if new == 0 {
+                    let column = z * 16 + x;
+                    // Sources taken from the blocks at load are open below the world while
+                    // the column is open down to its bottom block.
+                    let open = old == -16
+                        || (old == 0 && column_changed[column] && light.sky_sources_reset(column));
                     let bottom = chunk.sections()[0].block(x as u32, 0, z as u32);
-                    let closed = self.facts.edge_occluded(bottom, 0)
-                        && (old != -16 || bottom_changed[z * 16 + x]);
+                    let closed =
+                        self.facts.edge_occluded(bottom, 0) && (!open || bottom_changed[column]);
                     if !closed {
                         new = -16;
                     }
@@ -443,6 +468,14 @@ impl<'a> Update<'a> {
     /// Resets the cells of a box and propagates their light again from the sources inside it
     /// and the stored levels around it.
     fn recompute(&mut self, kind: Kind, mut region: Region) {
+        // Light filled below the world goes with the bottom row it came from.
+        if kind == Kind::Sky
+            && self.fill_below
+            && (-15..=0).contains(&region.min[1])
+            && self.mixed_below(&region)
+        {
+            region.min[1] = -16;
+        }
         region.min[1] = region.min[1].max(-16);
         region.max[1] = region.max[1].min(self.height + 15);
         if region.min[1] > region.max[1] {
@@ -551,6 +584,29 @@ impl<'a> Update<'a> {
             }
         }
 
+        // Filling below the world: the buffer row of the bottom of the world and per chunk of
+        // the buffer whether it keeps light below the world (`None`: no chunk).
+        let plane = size[0] * size[2];
+        let (cx0, cz0) = (origin[0] >> 4, origin[2] >> 4);
+        let columns = ((end[0] >> 4) - cx0 + 1) as usize;
+        let fill = if kind == Kind::Sky && self.fill_below && origin[1] < 0 && end[1] >= 0 {
+            let mut keeps = Vec::new();
+            for cz in cz0..=end[2] >> 4 {
+                for cx in cx0..=end[0] >> 4 {
+                    let pos = ChunkPos::new(cx, cz);
+                    keeps.push(self.chunk(pos).is_some().then(|| self.store(pos)[0]));
+                }
+            }
+            Some(((-origin[1]) as usize, keeps))
+        } else {
+            None
+        };
+        let chunk_of = |cell: usize| {
+            let (x, z) = (cell % size[0], (cell / size[0]) % size[2]);
+            let (cx, cz) = ((origin[0] + x as i32) >> 4, (origin[2] + z as i32) >> 4);
+            ((cz - cz0) as usize * columns + (cx - cx0) as usize, x, z)
+        };
+
         // `propagateIncrease`, highest level first. Fixed cells are never raised: their marked
         // level is above every level, and only cells of the box are not fixed.
         let offsets = Direction::ALL.map(|dir| {
@@ -564,6 +620,7 @@ impl<'a> Update<'a> {
                 if own & !FIXED != level {
                     continue;
                 }
+                let bottom_row = fill.as_ref().is_some_and(|(row, _)| cell / plane == *row);
                 let from = state[cell];
                 for (dir, offset) in Direction::ALL.into_iter().zip(offsets) {
                     // A cell around the box has neighbours outside the buffer.
@@ -585,6 +642,30 @@ impl<'a> Update<'a> {
                     new[target] = reached;
                     if reached > 1 {
                         queue[usize::from(reached)].push(target as u32);
+                    }
+                    // `SkyLightEngine.propagateFromEmptySections`: from the bottom row of a
+                    // chunk that keeps no light below the world into one that does, the column
+                    // below the world takes the level as well (the client reads the missing
+                    // layer as the row above it).
+                    if let Some((row, keeps)) = fill.as_ref().filter(|_| bottom_row)
+                        && dir.normal()[1] == 0
+                    {
+                        let (from_chunk, _, _) = chunk_of(cell);
+                        let (to_chunk, tx, tz) = chunk_of(target);
+                        if from_chunk != to_chunk
+                            && keeps[from_chunk] == Some(false)
+                            && keeps[to_chunk] == Some(true)
+                        {
+                            for by in row.saturating_sub(16)..*row {
+                                let below = (by * size[2] + tz) * size[0] + tx;
+                                if new[below] < reached {
+                                    new[below] = reached;
+                                    if reached > 1 {
+                                        queue[usize::from(reached)].push(below as u32);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -638,6 +719,42 @@ impl<'a> Update<'a> {
             layers[layer_index] = layer_of(bytes);
         }
         self.scratch = scratch;
+    }
+
+    /// Whether the chunks a box reads (with the cells around it) differ in keeping light below
+    /// the world: only then can sky light be filled below the world.
+    fn mixed_below(&mut self, region: &Region) -> bool {
+        let (mut keeps, mut not) = (false, false);
+        for cz in (region.min[2] - 1) >> 4..=(region.max[2] + 1) >> 4 {
+            for cx in (region.min[0] - 1) >> 4..=(region.max[0] + 1) >> 4 {
+                let pos = ChunkPos::new(cx, cz);
+                if self.chunk(pos).is_some() {
+                    if self.store(pos)[0] {
+                        keeps = true;
+                    } else {
+                        not = true;
+                    }
+                }
+            }
+        }
+        keeps && not
+    }
+
+    /// The sky light sources of the changed column of a chunk loaded with its light follow
+    /// the blocks from now on (see `sky_columns`).
+    fn end_sources_reset(&mut self, change: BlockPos) {
+        let pos = change.chunk();
+        let Some(chunk) = self.chunk(pos) else {
+            return;
+        };
+        let column = ((change.z & 15) * 16 + (change.x & 15)) as usize;
+        if !self.light_of(chunk).sky_sources_reset(column) {
+            return;
+        }
+        self.light
+            .entry(pos)
+            .or_insert_with(|| chunk.chunk.light().clone())
+            .clear_sky_sources_reset(column);
     }
 
     /// The layers below and above the world of a chunk that keeps no light there any more are

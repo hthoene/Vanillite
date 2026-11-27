@@ -6,6 +6,7 @@ mod technical;
 mod world;
 
 pub mod serverbound {
+    pub use super::debug::DebugSubscriptionRequest;
     pub use super::progress::{SeenAdvancements, SeenAdvancementsAction, SeenAdvancementsPacket};
     pub use super::technical::serverbound::*;
     pub use super::world::serverbound::*;
@@ -550,6 +551,12 @@ pub mod clientbound {
 
     pub use super::admin::{GameRuleValues, TagQuery};
     pub use super::boss::*;
+    pub use super::debug::{
+        ChatCompletionsAction, CustomChatCompletions, DebugBlockValue, DebugChunkValue,
+        DebugEntityValue, DebugEvent, DebugSample, DebugSampleType, DeleteChat,
+        LowDiskSpaceWarning, MinecartStep, MoveMinecartAlongTrack, ProjectilePower,
+        subscription as debug_subscription,
+    };
     pub use super::entities::*;
     pub use super::hud::*;
     pub use super::level::*;
@@ -563,6 +570,7 @@ pub mod clientbound {
 
 mod admin;
 mod boss;
+mod debug;
 mod hud;
 mod level;
 mod mobs;

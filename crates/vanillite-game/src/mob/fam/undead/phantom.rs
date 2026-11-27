@@ -316,10 +316,7 @@ pub fn load(m: &mut MobData, tag: &Compound) {
         Some(Tag::IntArray(v)) if v.len() == 3 => Some(BlockPos::new(v[0], v[1], v[2])),
         _ => None,
     };
-    let size = match tag.get("size") {
-        Some(Tag::Int(v)) => *v,
-        _ => 0,
-    };
+    let size = crate::mob::entity_nbt::get_int(tag, "size").unwrap_or(0);
     set_size(m, size);
 }
 

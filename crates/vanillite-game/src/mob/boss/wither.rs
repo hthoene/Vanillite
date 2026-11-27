@@ -447,7 +447,7 @@ fn invulnerable_ticks(t: &Tick<'_, '_>) -> i32 {
 
 /// `LivingEntity.canAttack(target)` (players: not in peaceful, not creative or spectator).
 fn can_attack(ents: &Entities, env: &Env<'_>, me: EntityId, target: EntityId) -> bool {
-    if target == me {
+    if target == me || crate::mob::entity_nbt::is_invulnerable(ents, target) {
         return false;
     }
     if let Some(p) = ents.player(target) {
@@ -1359,13 +1359,17 @@ fn sync_bar(t: &mut Tick<'_, '_>) {
     }
     let bar_id = state(t.mob_ref()).map_or(0, |s| s.bar_id);
     let invul = invulnerable_ticks(t);
-    let bar = t.cx.boss_bars.entry(id).or_insert_with(|| {
+    t.cx.boss_bars.entry(id).or_insert_with(|| {
         let mut bar = new_bar(bar_id);
         if invul > 0 {
             bar.set_progress(0.0, &mut Vec::new());
         }
         bar
     });
+    // `setCustomName` / `readAdditionalSaveData`: the bar shows `getDisplayName`.
+    let name = crate::mob::combat::mob_name(t.mob_ref());
+    let bar = t.cx.boss_bars.get_mut(&id).expect("inserted above");
+    bar.set_name(name, t.env.out);
     bar.sync_players(&wanted, t.env.out);
 }
 

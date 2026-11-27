@@ -1,0 +1,103 @@
+{
+  "description": "Horses and trader llamas (#238 B-45, F-18): two tame horses in love breed a foal that is not Bred (Vanilla never sets the flag), so it does not walk to a mother; a trader llama spawn egg on a trader llama makes a persistent baby (TraderLlama.makeNewLlama) with the parent's offspring attributes. The player stands out of the look range of the babies.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        14.5,
+        -60.0,
+        14.5
+      ]
+    },
+    {
+      "name": "llama",
+      "type": "minecraft:trader_llama",
+      "pos": [
+        13.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 31,
+      "finalize": false
+    },
+    {
+      "name": "mare",
+      "type": "minecraft:horse",
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 33,
+      "finalize": false
+    },
+    {
+      "name": "stallion",
+      "type": "minecraft:horse",
+      "pos": [
+        3.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 34,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:trader_llama,limit=1] {Strength:3}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:horse,limit=1,x=2.5,y=-60,z=2.5,distance=..0.5] {Tame:1b,Owner:[I;1447120457,1,0,0]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:horse,limit=1,x=3.5,y=-60,z=3.5,distance=..0.5] {Tame:1b,Owner:[I;1447120457,1,0,0]}"
+    },
+    {
+      "tick": 3,
+      "op": "interact",
+      "entity": "steve",
+      "target": "llama",
+      "item": "minecraft:trader_llama_spawn_egg"
+    },
+    {
+      "tick": 6,
+      "op": "interact",
+      "entity": "steve",
+      "target": "mare",
+      "item": "minecraft:golden_carrot"
+    },
+    {
+      "tick": 6,
+      "op": "interact",
+      "entity": "steve",
+      "target": "stallion",
+      "item": "minecraft:golden_carrot"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

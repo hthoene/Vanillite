@@ -716,13 +716,13 @@ fn dispense_boat(level: &mut Level, source: Source, mut stack: ItemStack) -> Ite
     } else {
         0.0
     };
-    let mut data = crate::vehicle::BoatData::new(kind);
+    let mut data = crate::vehicle::BoatData::new(kind, crate::mob::new_entity_seed());
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
     #[allow(clippy::cast_precision_loss)]
     let yaw = ((crate::decoration::data_2d(source.facing) & 3) * 90) as f32;
-    let uuid = crate::mob::new_entity_uuid();
+    let uuid = crate::mob::new_uuid();
     let (ents, network_ids, _) = level.entity_parts();
     let id = crate::vehicle::spawn_boat(
         ents,
@@ -1327,7 +1327,14 @@ fn place_shulker_box(level: &mut Level, source: Source, stack: &mut ItemStack) -
 /// `Entity.blocksBuilding` of a live entity that is no spectator: living entities (not marker
 /// armor stands), minecarts, boats, end crystals, falling blocks and primed TNT.
 pub fn blocks_building(level: &Level, id: vanillite_world::entity::EntityId) -> bool {
-    let ents = &level.entities;
+    entity_blocks_building(&level.entities, id)
+}
+
+/// [`blocks_building`] on the entities themselves (while they are taken out of the level).
+pub fn entity_blocks_building(
+    ents: &crate::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+) -> bool {
     let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
         return false;
     };

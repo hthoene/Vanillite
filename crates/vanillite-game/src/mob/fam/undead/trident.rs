@@ -259,7 +259,8 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         // `applyInertia`: tridents keep their speed in water (0.99) like in the air.
         velocity = velocity * f64::from(0.99_f32);
         if !no_physics && !d.in_ground {
-            velocity.y -= 0.05;
+            // `applyGravity`: `movement.add(0, -gravity, 0)` (turns -0.0 into 0.0).
+            velocity = velocity + Vec3::new(0.0, -0.05, 0.0);
         }
     }
     // `applyEffectsFromBlocks` in flight, while returning and in the ground (buttons,
@@ -544,19 +545,14 @@ pub fn load(d: &mut MissileData, tag: &Compound) {
     if d.kind != MissileKind::Trident {
         return;
     }
-    let boolean = |k: &str| matches!(tag.get(k), Some(Tag::Byte(b)) if *b != 0);
+    let boolean = |k: &str| crate::mob::entity_nbt::get_bool(tag, k).unwrap_or(false);
     d.in_ground = boolean("inGround");
-    d.ints[0] = match tag.get("life") {
-        Some(Tag::Short(v)) => i32::from(*v),
-        _ => 0,
-    };
+    d.ints[0] = crate::mob::entity_nbt::get_int(tag, "life").unwrap_or(0);
     if boolean("DealtDamage") {
         d.ints[2] |= DEALT;
     }
-    d.pickup = match tag.get("pickup") {
-        Some(Tag::Byte(b)) => u8::try_from(*b).unwrap_or(0).min(2),
-        _ => 0,
-    };
+    d.pickup = crate::mob::entity_nbt::get_int(tag, "pickup")
+        .map_or(0, |v| u8::try_from(v).unwrap_or(0).min(2));
     if d.item.is_empty()
         && let Some(Tag::Compound(c)) = tag.get("item")
     {

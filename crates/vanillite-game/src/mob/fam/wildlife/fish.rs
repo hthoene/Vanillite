@@ -639,12 +639,20 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Pass;
     };
     let bucket = bucket_stack(m);
-    crate::mob::combat::mob_sound(
-        ix.ents,
-        ix.env,
-        ix.target,
-        "minecraft:item.bucket.fill_fish",
-    );
+    // `pickupEntity.playSound(getPickupSound(), 1.0F, 1.0F)`: no voice pitch, no draws.
+    let source = m.sound_source();
+    if let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) {
+        crate::survival::play_sound(
+            ix.env.out,
+            None,
+            pos,
+            "minecraft:item.bucket.fill_fish",
+            source,
+            1.0,
+            1.0,
+            crate::survival::sound_seed(),
+        );
+    }
     crate::mob::animal::filled_bucket(ix.ents, ix.player, &bucket);
     fill_held(ix.ents, ix.env, ix.player, ix.hand, bucket);
     crate::mob::tame::drop_leash(ix.ents, ix.env, ix.target, true);

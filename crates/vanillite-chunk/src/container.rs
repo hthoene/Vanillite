@@ -309,13 +309,15 @@ impl<S: Strategy> PalettedContainer<S> {
                 bits,
                 palette,
                 data,
-            } => bits::for_each(data, *bits, S::ENTRIES, |index, id| {
-                out[index] = palette[id as usize];
-            }),
+            } => {
+                // Paletted data has at most 8 bits and only indices into the palette (checked
+                // on decode, kept by every write).
+                let mut lookup = [0u16; 256];
+                lookup[..palette.len()].copy_from_slice(palette);
+                bits::unpack(data, *bits, out, |id| lookup[id as usize & 255]);
+            }
             ContainerData::Direct { bits, data } => {
-                bits::for_each(data, *bits, S::ENTRIES, |index, value| {
-                    out[index] = value as u16;
-                });
+                bits::unpack(data, *bits, out, |value| value as u16);
             }
         }
     }

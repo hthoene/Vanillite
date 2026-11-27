@@ -477,9 +477,9 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if baby && !m.age_locked {
         consume(ix);
         if let Some(m) = ix.ents.mob_mut(ix.target) {
-            #[allow(clippy::cast_possible_truncation)]
-            let seconds = ((-age / 20) as f32 * 0.1) as i32;
-            m.age = (m.age + seconds * 20).min(0);
+            // `ageUp((int)(-getAge() / 20 * 0.1F), true)`.
+            let seconds = crate::mob::animal::speed_up_seconds_when_feeding(-age);
+            crate::mob::animal::age_up(m, seconds, true);
         }
         return Interaction::Success;
     }
@@ -550,7 +550,6 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     let s = st_mut(m);
     s.main_gene = main;
     s.hidden_gene = hidden;
-    set_attributes(m);
 }
 
 /// `canPickUpAndEat`: food from the ground (`#panda_eats_from_ground`).
@@ -646,16 +645,9 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                 .mob_ref()
                 .last_damage_source(t.game_time())
                 .is_some_and(|k| {
-                    matches!(
-                        t.env.types.get(k).id.as_str(),
-                        "minecraft:cactus"
-                            | "minecraft:freeze"
-                            | "minecraft:hot_floor"
-                            | "minecraft:in_fire"
-                            | "minecraft:lava"
-                            | "minecraft:lightning_bolt"
-                            | "minecraft:on_fire"
-                    )
+                    t.env
+                        .types
+                        .is(k, crate::survival::damage::tag::PANIC_ENVIRONMENTAL_CAUSES)
                 });
             if !env {
                 return false;

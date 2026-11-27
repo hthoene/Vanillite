@@ -289,7 +289,7 @@ pub fn sound(ix: &mut Interact<'_, '_>, sound: &str, volume: f32, pitch: f32) {
     if m.silent {
         return;
     }
-    let source = m.kind.sound_source();
+    let source = m.sound_source();
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound(ix.env.out, None, pos, sound, source, volume, pitch, seed);
 }
@@ -393,7 +393,7 @@ pub fn load_ageable(m: &mut MobData, tag: &Compound) {
     m.age = int(tag, "Age").unwrap_or(0);
     m.baby = m.age < 0;
     m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
-    m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+    m.age_locked = crate::mob::entity_nbt::get_bool(tag, "AgeLocked").unwrap_or(false);
     m.in_love = int(tag, "InLove").unwrap_or(0);
     m.love_cause = crate::mob::nbt::uuid_key_of(tag, "LoveCause");
 }
@@ -407,34 +407,11 @@ pub fn save_attributes(m: &MobData, out: &mut Compound) {
         c.insert("base", base);
         list.push(Tag::Compound(c));
     };
-    push("minecraft:max_health", m.attrs.max_health);
-    push("minecraft:movement_speed", m.attrs.movement_speed);
-    push("minecraft:jump_strength", m.attrs.jump_strength);
+    let base = m.base_attrs.as_deref().unwrap_or(&m.attrs);
+    push("minecraft:max_health", base.max_health);
+    push("minecraft:movement_speed", base.movement_speed);
+    push("minecraft:jump_strength", base.jump_strength);
     out.insert("attributes", vanillite_nbt::List(list));
-}
-
-/// Reads the base values of `attributes` and the health again (the generic loader clamps
-/// it to the default maximum).
-pub fn load_attributes(m: &mut MobData, tag: &Compound) {
-    if let Some(Tag::List(l)) = tag.get("attributes") {
-        for t in &l.0 {
-            let Tag::Compound(c) = t else {
-                continue;
-            };
-            let Some(Tag::Double(base)) = c.get("base") else {
-                continue;
-            };
-            match string(c, "id") {
-                Some("minecraft:max_health") => m.attrs.max_health = *base,
-                Some("minecraft:movement_speed") => m.attrs.movement_speed = *base,
-                Some("minecraft:jump_strength") => m.attrs.jump_strength = *base,
-                _ => {}
-            }
-        }
-    }
-    if let Some(Tag::Float(h)) = tag.get("Health") {
-        m.health = h.clamp(0.0, m.max_health());
-    }
 }
 
 /// A UUID as an int array.
@@ -451,18 +428,12 @@ pub fn uuid_ints(u: u128) -> Vec<i32> {
 
 /// An int (or byte/short) value of a compound.
 pub fn int(tag: &Compound, key: &str) -> Option<i32> {
-    match tag.get(key)? {
-        Tag::Int(v) => Some(*v),
-        Tag::Byte(v) => Some(i32::from(*v)),
-        Tag::Short(v) => Some(i32::from(*v)),
-        Tag::Long(v) => i32::try_from(*v).ok(),
-        _ => None,
-    }
+    crate::mob::entity_nbt::get_int(tag, key)
 }
 
 /// A boolean (byte) value of a compound.
 pub fn boolean(tag: &Compound, key: &str) -> bool {
-    matches!(tag.get(key), Some(Tag::Byte(b)) if *b != 0)
+    crate::mob::entity_nbt::get_bool(tag, key).unwrap_or(false)
 }
 
 /// A string value of a compound.
@@ -907,8 +878,8 @@ impl FamilyHooks for Hooks {
         let kind = h.ents.mob(h.target).map(|m| m.kind)?;
         match kind {
             Kind::Wolf => wolf::hurt_filter(h, amount),
-            Kind::Cat | Kind::Parrot => {
-                // `TamableAnimal` pets stand up when hurt (`Cat`/`Parrot.hurtServer`).
+            Kind::Parrot => {
+                // `Parrot.hurtServer` stands up (a hurt cat keeps sitting).
                 if let Some(m) = h.ents.mob_mut(h.target) {
                     m.order_to_sit = false;
                 }
@@ -1102,9 +1073,6 @@ impl FamilyHooks for Hooks {
                 }
             }
             _ => {}
-        }
-        if is_horse(m.kind) || m.kind == Kind::Wolf || m.kind == Kind::Panda {
-            load_attributes(m, tag);
         }
     }
 

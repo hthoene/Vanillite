@@ -592,7 +592,9 @@ pub fn player_equipment_update(
 /// data, so the data is marked dirty.
 fn update_flags(entity: &mut EntityMut<'_>, fx: &ActiveEffects) {
     entity.set_flags(EntityFlags::INVISIBLE, fx.has(MobEffect::INVISIBILITY));
-    entity.set_flags(EntityFlags::GLOWING, fx.has(MobEffect::GLOWING));
+    // `isCurrentlyGlowing`: the effect or the `Glowing` tag.
+    let tagged = entity.as_ref().flags().contains(EntityFlags::GLOWING_TAG);
+    entity.set_flags(EntityFlags::GLOWING, tagged || fx.has(MobEffect::GLOWING));
     entity.mark_data_dirty();
 }
 
@@ -614,6 +616,15 @@ pub fn update_packet(network_id: i32, e: &EffectInstance, blend: bool) -> Update
 /// The `Attrs` field of an attribute effects modify.
 fn attr_field(attrs: &mut Attrs, a: Attribute) -> Option<&mut f64> {
     Some(match a {
+        Attribute::AIR_DRAG_MODIFIER => &mut attrs.air_drag_modifier,
+        Attribute::ARMOR_TOUGHNESS => &mut attrs.armor_toughness,
+        Attribute::ATTACK_KNOCKBACK => &mut attrs.attack_knockback,
+        Attribute::EXPLOSION_KNOCKBACK_RESISTANCE => &mut attrs.explosion_knockback_resistance,
+        Attribute::FLYING_SPEED => &mut attrs.flying_speed,
+        Attribute::FRICTION_MODIFIER => &mut attrs.friction_modifier,
+        Attribute::MOVEMENT_EFFICIENCY => &mut attrs.movement_efficiency,
+        Attribute::STEP_HEIGHT => &mut attrs.step_height,
+        Attribute::WATER_MOVEMENT_EFFICIENCY => &mut attrs.water_movement_efficiency,
         Attribute::MOVEMENT_SPEED => &mut attrs.movement_speed,
         Attribute::ATTACK_DAMAGE => &mut attrs.attack_damage,
         Attribute::MAX_HEALTH => &mut attrs.max_health,
@@ -704,6 +715,24 @@ pub fn apply_mob_modifiers(m: &mut crate::mob::MobData, dirty: &[Attribute]) -> 
 /// others: their base is the type's default).
 pub fn mob_attribute_base(m: &crate::mob::MobData, a: Attribute) -> Option<f64> {
     attr_field_ref(m.base_attrs.as_deref().unwrap_or(&m.attrs), a)
+}
+
+/// The `update_attributes` of the attributes a mob was given (`ServerEntity.sendPairingData`);
+/// `None` without any the client knows and the game keeps a value of.
+pub fn mob_pairing_attributes(
+    network_id: i32,
+    m: &crate::mob::MobData,
+    given: &crate::mob::entity_nbt::NbtAttributes,
+) -> Option<UpdateAttributes> {
+    let synced: Vec<(Attribute, f64)> = given
+        .0
+        .iter()
+        .filter(|a| a.attribute.syncable())
+        .filter_map(|a| Some((a.attribute, mob_attribute_base(m, a.attribute)?)))
+        .collect();
+    (!synced.is_empty()).then(|| UpdateAttributes {
+        body: attribute::encode_update(network_id, &synced, &m.effects.modifiers),
+    })
 }
 
 /// `AttributeInstance.setBaseValue` of an attribute a mob keeps a value of; the value with

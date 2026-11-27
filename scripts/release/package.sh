@@ -5,7 +5,8 @@
 #   scripts/release/package.sh <binary> <os> <arch> <out dir> [<extra binary>...]
 #
 # Extra binaries keep their file names (Linux x86_64: vanillite-x86-64-v3, which the server
-# starts in its place on CPUs with AVX2).
+# starts in its place on CPUs with AVX2; Linux: vanillite-gnu, which it starts when plugins/
+# holds plugins).
 # The archive is <out dir>/vanillite-<version>-mc<minecraft>-<os>-<arch>.<zip|tar.gz>.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"

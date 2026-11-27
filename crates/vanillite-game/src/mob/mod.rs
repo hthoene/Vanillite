@@ -14,6 +14,7 @@ pub mod boss;
 pub mod brain;
 pub mod combat;
 pub mod common;
+pub mod entity_nbt;
 pub mod equipment;
 pub mod fam;
 pub mod goals;
@@ -170,8 +171,6 @@ pub struct MobData {
     pub persistent: bool,
     pub no_ai: bool,
     pub silent: bool,
-    /// `Entity.invulnerable` (`Invulnerable`).
-    pub invulnerable: bool,
     pub ambient_sound_time: i32,
     pub target: Option<EntityId>,
     pub aggressive: bool,
@@ -312,7 +311,7 @@ impl MobData {
             removed: false,
             no_action_time: 0,
             fall_distance: 0.0,
-            fire_ticks: -1,
+            fire_ticks: 0,
             air: 300,
             ticks_frozen: 0,
             in_powder_snow: false,
@@ -338,7 +337,6 @@ impl MobData {
             persistent: false,
             no_ai: false,
             silent: false,
-            invulnerable: false,
             ambient_sound_time: 0,
             target: None,
             aggressive: false,
@@ -453,6 +451,14 @@ impl MobData {
         }
         let r = f64::from(self.restrict_radius);
         self.restrict_center.dist_sqr(pos) < r * r
+    }
+
+    /// `getSoundSource`: the kind's, but `HOSTILE` for the killer bunny (`Rabbit`).
+    pub fn sound_source(&self) -> vanillite_protocol::packets::play::clientbound::SoundSource {
+        if self.kind == Kind::Rabbit && self.variant == fam::companion::rabbit::EVIL {
+            return vanillite_protocol::packets::play::clientbound::SoundSource::Hostile;
+        }
+        self.kind.sound_source()
     }
 
     /// `isAlive`.
@@ -596,6 +602,11 @@ impl Environment {
     /// `Level.isBrightOutside`.
     pub fn is_bright_outside(&self) -> bool {
         self.has_sky_light && self.sky_darken < 4
+    }
+
+    /// `Level.isDarkOutside`: false without a sky like `isBrightOutside`.
+    pub fn is_dark_outside(&self) -> bool {
+        self.has_sky_light && self.sky_darken >= 4
     }
 }
 
