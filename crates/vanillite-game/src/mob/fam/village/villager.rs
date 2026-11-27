@@ -1390,6 +1390,35 @@ impl FamilyHooks for Hooks {
     }
 }
 
+/// `Villager.getBreedOffspring(level, this)` of a spawn egg used on `parent` at `pos`: the
+/// biome's type, else the parent's.
+pub fn egg_offspring(
+    level: &crate::level::Level,
+    parent: &mut MobData,
+    pos: BlockPos,
+    seed: i64,
+) -> MobData {
+    let roll = parent.random.next_double();
+    let ty = if roll < 0.5 {
+        type_id(crate::mob::fam::undead::zombies::villager_type_of_biome(
+            &biome_at(level, pos),
+        ))
+    } else {
+        vs(parent).villager_type
+    };
+    let mut child = MobData::new(Kind::Villager, seed);
+    {
+        let v = vs_mut(&mut child);
+        v.villager_type = ty;
+        v.profession = profession::NONE;
+        v.data_finalized = true;
+    }
+    child.age = -24000;
+    child.baby = true;
+    rebuild_brain(&mut child, None);
+    child
+}
+
 /// `getBreedOffspring` and `VillagerMakeLove.breed`: a baby villager of the biome's or a
 /// parent's type next to `source`; returns it.
 pub fn breed(t: &mut Tick<'_, '_>, partner: EntityId) -> Option<EntityId> {

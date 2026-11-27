@@ -447,7 +447,7 @@ pub fn shear_off_all_leash_connections(
     super::animal::entity_game_event(ents, env, id, event, None);
     let source = ents
         .mob(id)
-        .map_or(SoundSource::Neutral, |m| m.kind.sound_source());
+        .map_or(SoundSource::Neutral, |m| m.sound_source());
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let at = Vec3::new(
         f64::from(block.x) + 0.5,
@@ -613,16 +613,7 @@ fn shear_equipment(
         && let Some(pos) = ents.store.get(target).map(|e| e.pos())
     {
         let seed = crate::survival::sound_seed();
-        play_sound(
-            env.out,
-            None,
-            pos,
-            sound,
-            m.kind.sound_source(),
-            1.0,
-            1.0,
-            seed,
-        );
+        play_sound(env.out, None, pos, sound, m.sound_source(), 1.0, 1.0, seed);
     }
     true
 }

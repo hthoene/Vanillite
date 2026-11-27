@@ -251,7 +251,7 @@ fn play_sound(
         return;
     }
     let seed = crate::survival::sound_seed();
-    let source = m.kind.sound_source();
+    let source = m.sound_source();
     crate::survival::play_sound(env.out, None, pos, sound, source, volume, pitch, seed);
 }
 

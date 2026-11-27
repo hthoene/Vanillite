@@ -3,8 +3,8 @@
 //! babies growing up, shearing, milking, saddles and riding pigs, spawn eggs, name tags and
 //! leads.
 
-use vanillite_base::Vec3;
 use vanillite_base::random::RandomSource;
+use vanillite_base::{BlockPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::packets::play::clientbound::{EntityEvent, SoundSource};
@@ -116,6 +116,16 @@ pub fn free_partner(t: &mut super::Tick<'_, '_>) -> Option<EntityId> {
         } else if !super::fam::can_mate(t.mob_ref(), m) {
             continue;
         }
+        // `AbstractHorse.canParent`: neither parent carries a rider or rides.
+        if super::fam::companion::is_horse(kind) {
+            let riding = &t.ents.riding;
+            if [t.id, id]
+                .iter()
+                .any(|&a| !riding.passengers_of(a).is_empty() || riding.vehicle_of(a).is_some())
+            {
+                continue;
+            }
+        }
         let Some(e) = t.ents.store.get(id) else {
             continue;
         };
@@ -187,10 +197,17 @@ pub fn breed(
         _ => kind,
     };
     let mut child = MobData::new(child_kind, seed);
-    let pick = ents
-        .mob_mut(parent)
-        .map(|m| m.random.next_boolean())
-        .unwrap_or(true);
+    // The horses' and llamas' `getBreedOffspring` draw only from the parent's own random, in
+    // their `breed_offspring`.
+    let horse_like =
+        super::fam::companion::is_horse(kind) || matches!(kind, Kind::Llama | Kind::TraderLlama);
+    let pick = if horse_like {
+        true
+    } else {
+        ents.mob_mut(parent)
+            .map(|m| m.random.next_boolean())
+            .unwrap_or(true)
+    };
     child.variant = if pick { va } else { vb };
     if kind == Kind::Sheep {
         classic::sheep_mut(&mut child).color = offspring_color(ca, cb, pick);
@@ -198,8 +215,16 @@ pub fn breed(
     if kind.family() != super::Family::Classic
         && let (Some(a), Some(b)) = (ents.mob(parent), ents.mob(partner))
     {
-        let mut random = vanillite_base::random::LegacyRandom::new(env.random.next_long());
-        super::fam::breed_offspring(a, b, &mut child, &mut random);
+        if horse_like {
+            let mut random = a.random.clone();
+            super::fam::breed_offspring(a, b, &mut child, &mut random);
+            if let Some(m) = ents.mob_mut(parent) {
+                m.random = random;
+            }
+        } else {
+            let mut random = vanillite_base::random::LegacyRandom::new(env.random.next_long());
+            super::fam::breed_offspring(a, b, &mut child, &mut random);
+        }
     }
     child.age = -24000;
     child.baby = true;
@@ -234,14 +259,12 @@ pub fn breed(
         };
         experience = Some(xp);
     }
-    let child = super::spawn(
-        ents,
-        level.network_ids(),
-        uuid,
-        pos,
-        Rotation::default(),
-        child,
-    );
+    // `snapTo(pos, 0, 0)` keeps the constructor's head yaw.
+    let rot = Rotation {
+        y_head_rot: super::constructor_y_rot(seed),
+        ..Rotation::default()
+    };
+    let child = super::spawn(ents, level.network_ids(), uuid, pos, rot, child);
     let parent_uuid = ents.store.get(parent).map_or(0, |e| e.uuid());
     ents.spawned(child, vanillite_abi::spawn_reason::BREEDING, parent_uuid);
     award_breeding(ents, parent, partner, Some(child));
@@ -253,15 +276,17 @@ pub fn breed(
         }
     }
     entity_event(ents, env, parent, 18);
-    if let Some(xp) = experience {
-        if xp > 0 {
-            env.out.push(Effect::Experience { pos, amount: xp });
-        }
-    } else if env.rules.bool(Rule::MOB_DROPS) {
-        let xp = ents
+    // `finalizeSpawnChildFromBreeding`: `addFreshEntity(new ExperienceOrb(...))`, one orb of
+    // the whole value without `award`'s merge roll.
+    let xp = match experience {
+        Some(xp) => xp,
+        None if env.rules.bool(Rule::MOB_DROPS) => ents
             .mob_mut(parent)
-            .map_or(1, |m| m.random.next_int_bounded(7) + 1);
-        env.out.push(Effect::Experience { pos, amount: xp });
+            .map_or(1, |m| m.random.next_int_bounded(7) + 1),
+        None => 0,
+    };
+    if xp > 0 {
+        crate::experience_orb::spawn(ents, level.network_ids(), pos, Vec3::ZERO, xp);
     }
 }
 
@@ -695,13 +720,13 @@ fn mob_interact(
         }
     }
     if let Some(egg_kind) = spawn_egg_kind(stack) {
+        // `SpawnEggItem.spawnOffspringFromSpawnEgg`; without an offspring the interaction
+        // goes on to the leads and `mobInteract`.
         let own = ents.mob(target).map(|m| m.kind);
-        if own == Some(egg_kind) && ents.mob(target).is_some_and(|m| m.kind.ageable()) {
-            spawn_offspring(level, ents, player, target, hand, egg_kind);
+        if own == Some(egg_kind) && spawn_offspring(level, ents, player, target, hand) {
             interacted(ents, env);
             return Interaction::Success;
         }
-        return Interaction::Pass;
     }
     // `Entity.interact`: leads (with their own game events).
     let r = super::tame::leash_interact(ents, env, player, target, hand, sneaking);
@@ -920,8 +945,12 @@ pub fn animal_interact(
     }
     let age = m.age;
     let uuid = ents.store.get(player).map(|e| e.uuid());
-    // `canFallInLove`: the happy ghast never falls in love from food.
-    if age == 0 && m.in_love <= 0 && m.kind != Kind::HappyGhast {
+    // `canFallInLove`: the happy ghast never falls in love from food, a `Turtle` not while
+    // it carries an egg.
+    let can_fall_in_love = m.in_love <= 0
+        && m.kind != Kind::HappyGhast
+        && !(m.kind == Kind::Turtle && super::fam::wildlife::st(m).has_egg);
+    if age == 0 && can_fall_in_love {
         use_player_item(ents, env, player, target, hand, stack);
         if let Some(m) = ents.mob_mut(target) {
             m.in_love = 600;
@@ -934,23 +963,38 @@ pub fn animal_interact(
     // `canAgeUp`: a locked baby passes on to the golden dandelion (not food).
     if m.baby && !m.age_locked {
         use_player_item(ents, env, player, target, hand, stack);
-        // `ageUp(getSpeedUpSecondsWhenFeeding(-age), true)`.
-        #[allow(clippy::cast_possible_truncation)]
-        let seconds = ((-age / 20) as f32 * 0.1) as i32;
         if let Some(m) = ents.mob_mut(target) {
-            let new_age = (m.age + seconds * 20).min(0);
-            let delta = new_age - m.age;
-            m.age = new_age;
-            m.forced_age += delta;
-            if m.forced_age_timer == 0 {
-                m.forced_age_timer = 40;
-            }
+            age_up(m, speed_up_seconds_when_feeding(-age), true);
         }
         eating_sound(ents, env, target);
         return Interaction::Success;
     }
     // `super.mobInteract`: nothing else uses the food on the server.
     Interaction::Pass
+}
+
+/// `AgeableMob.getSpeedUpSecondsWhenFeeding`.
+pub fn speed_up_seconds_when_feeding(ticks_until_adult: i32) -> i32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let seconds = ((ticks_until_adult / 20) as f32 * 0.1) as i32;
+    seconds
+}
+
+/// `AgeableMob.ageUp(seconds, forced)`: a forced age up adds to `forcedAge` (and starts the
+/// particle timer); reaching age 0 sets the age to `forcedAge`, the breeding cooldown.
+pub fn age_up(m: &mut MobData, seconds: i32, forced: bool) {
+    let new_age = (m.age + seconds * 20).min(0);
+    let delta = new_age - m.age;
+    m.age = new_age;
+    if forced {
+        m.forced_age += delta;
+        if m.forced_age_timer == 0 {
+            m.forced_age_timer = 40;
+        }
+    }
+    if m.age == 0 {
+        m.age = m.forced_age;
+    }
 }
 
 /// `playEatingSound`: sheep, pigs and frogs have one.
@@ -1066,7 +1110,7 @@ fn equip_saddle(
             && let Some(pos) = pos
         {
             let seed = m.random.next_long();
-            let source = m.kind.sound_source();
+            let source = m.sound_source();
             play_sound(
                 env.out,
                 None,
@@ -1173,26 +1217,82 @@ pub fn spawn_egg_kind(stack: &ItemStack) -> Option<Kind> {
     Kind::of(ty)
 }
 
-/// `SpawnEggItem.spawnOffspringFromSpawnEgg`: a baby of the same kind.
+/// `SpawnEggItem.spawnOffspringFromSpawnEgg` on a mob of the egg's type: an `AgeableMob`'s
+/// `getBreedOffspring` with itself as partner (none for the wandering trader), else a new
+/// mob made a baby (only the zombies, piglins and zoglins can be one), then
+/// `onOffspringSpawnedFromEgg`. Whether a baby came.
 fn spawn_offspring(
     level: &Level,
     ents: &mut Entities,
     player: EntityId,
     target: EntityId,
     hand: Hand,
-    kind: Kind,
-) {
+) -> bool {
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
-        return;
+        return false;
     };
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    let kind = m.kind;
     let seed = crate::mob::new_entity_seed();
-    let mut child = MobData::new(kind, seed);
-    child.age = -24000;
-    child.baby = true;
-    if let Some(m) = ents.mob(target) {
-        child.variant = m.variant;
-        if let Some(c) = classic::try_sheep_mut(&mut child) {
-            c.color = classic::sheep(m).color;
+    let mut child;
+    if kind.ageable() {
+        if kind == Kind::WanderingTrader {
+            return false;
+        }
+        if kind == Kind::Villager {
+            child = super::fam::village::villager::egg_offspring(
+                level,
+                ents.mob_mut(target).expect("checked above"),
+                BlockPos::containing(pos.x, pos.y, pos.z),
+                seed,
+            );
+        } else {
+            let child_kind = if kind.family() == super::Family::Classic {
+                kind
+            } else {
+                super::fam::offspring_kind(m, m)
+            };
+            child = MobData::new(child_kind, seed);
+            child.variant = m.variant;
+            if let Some(c) = classic::try_sheep_mut(&mut child) {
+                c.color = classic::sheep(m).color;
+            }
+            // `getBreedOffspring(level, this)` draws from the parent's own random.
+            let parent = m.clone();
+            let mut random = parent.random.clone();
+            if kind.family() == super::Family::Classic {
+                random.next_boolean();
+            } else {
+                super::fam::breed_offspring(&parent, &parent, &mut child, &mut random);
+            }
+            if let Some(m) = ents.mob_mut(target) {
+                m.random = random;
+            }
+        }
+        child.age = -24000;
+    } else if super::fam::undead::zombies::is_zombie(kind)
+        || matches!(kind, Kind::Piglin | Kind::Zoglin)
+    {
+        child = MobData::new(kind, seed);
+    } else {
+        return false;
+    }
+    // `setBaby(true)` with the zombies' and piglins' baby speed.
+    if child.kind == Kind::Piglin {
+        child.baby = true;
+        super::fam::brainy::piglin::apply_baby_speed(&mut child);
+    } else {
+        super::fam::undead::set_baby(&mut child, true);
+    }
+    if super::fam::undead::zombies::is_zombie(kind) {
+        // `Zombie.onOffspringSpawnedFromEgg`: loot pickup from the parent's random.
+        let special =
+            crate::level::difficulty::at(level, BlockPos::containing(pos.x, pos.y, pos.z))
+                .special_multiplier();
+        if let Some(m) = ents.mob_mut(target) {
+            child.can_pick_up_loot = m.random.next_float() < 0.55 * special;
         }
     }
     let stack = held(ents, player, hand);
@@ -1200,21 +1300,20 @@ fn spawn_offspring(
         child.custom_name = Some(name.into());
     }
     let uuid = crate::mob::new_uuid();
-    let id = super::spawn(
-        ents,
-        level.network_ids(),
-        uuid,
-        pos,
-        Rotation::default(),
-        child,
-    );
+    // `snapTo(pos, 0, 0)` keeps the constructor's head yaw.
+    let rot = Rotation {
+        y_head_rot: super::constructor_y_rot(seed),
+        ..Rotation::default()
+    };
+    let id = super::spawn(ents, level.network_ids(), uuid, pos, rot, child);
     // `offspring.applyComponentsFromItemStack(spawnEggStack)`.
     super::item_components::apply_components(ents, id, &stack);
     let parent = ents.store.get(target).map_or(0, |e| e.uuid());
     if !ents.spawned(id, vanillite_abi::spawn_reason::SPAWN_ITEM_USE, parent) {
-        return;
+        return true;
     }
     use_item(ents, player, hand);
+    true
 }
 
 /// `ItemStack.interactLivingEntity` after the mob passed: the stack's `equippable` component
@@ -1513,7 +1612,7 @@ pub fn spawn_from_item(
     let pitch = (a - b) * 0.2 + if m.baby { 1.5 } else { 1.0 };
     if !m.silent {
         #[allow(clippy::as_conversions)]
-        let source = m.kind.sound_source() as u8;
+        let source = m.sound_source() as u8;
         let sound = vanillite_data::registry::SOUND_EVENT.id(sound).unwrap_or(0);
         level.play_sound(None, p.x, p.y, p.z, sound, source, volume, pitch);
     }
@@ -1539,7 +1638,7 @@ fn play_ambient_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
     if m.silent {
         return;
     }
-    let source = m.kind.sound_source();
+    let source = m.sound_source();
     crate::survival::play_sound(
         env.out,
         None,

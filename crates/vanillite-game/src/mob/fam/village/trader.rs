@@ -429,7 +429,7 @@ impl FamilyHooks for Hooks {
             Goal::UseItem(drink) => {
                 let m = t.mob_ref();
                 match drink {
-                    Drink::Invisibility => !t.cx.env.is_bright_outside() && !invisible(m),
+                    Drink::Invisibility => t.cx.env.is_dark_outside() && !invisible(m),
                     Drink::Milk => t.cx.env.is_bright_outside() && invisible(m),
                 }
             }
