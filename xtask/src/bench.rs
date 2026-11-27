@@ -258,19 +258,20 @@ const SCENARIOS: &[Scenario] = &[
                1 and 2 threads), median of 3 runs. \
                Vanillite: the chunk pipeline benchmark (`chunk_bench`: generation, light, \
                storage, then loading the same chunks from disk). Paper: the Chunky plugin \
-               (radius 800, square) in the running server.",
-        servers: &["vanillite", "paper"],
+               (radius 800, square) in the running server. Pumpkin has no pre-generation \
+               command (its chunk generation under load: Flying players).",
+        servers: &["vanillite", "paper", "pumpkin"],
         headline: ("chunks generated per second", "chunks/s", Better::Higher),
         kind: Kind::Pregen,
     },
     Scenario {
         name: "weak",
         title: "Weak hardware: 1 core, 1 GiB",
-        what: "Vanillite in a cgroup with a CPU quota of one core and a memory limit of \
+        what: "The server in a cgroup with a CPU quota of one core and a memory limit of \
                1 GiB, like a small Pterodactyl server: idle RSS, then one player walks \
                (sprint speed) and flies (10 blocks/s) straight through new terrain with the \
                movement checks on. Rubber-banding: server teleports of the bot.",
-        servers: &["vanillite"],
+        servers: &["vanillite", "pumpkin"],
         headline: ("MSPT max with one moving player", "ms", Better::Lower),
         kind: Kind::Weak {
             limits: "1c1g",
@@ -1128,6 +1129,7 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
                 "cpu_ms_per_chunk": round(median(cpu)),
             }))
         }
+        Target::Pumpkin => Err("unsupported: no pre-generation command".to_owned()),
         _ => Ok(json!({
             "status": "unsupported",
             "note": "no pre-generation tool",
@@ -1219,13 +1221,33 @@ fn environment(ctx: &Ctx) -> Value {
             "vanillite": format!("Vanillite dev {}, release-fast build, rule profile vanilla (paper profile as extra rows)", ctx.versions.get("vanillite").map_or("", String::as_str)),
             "paper": format!("{} build 262, default configuration (Paper's own optimisations on), Java 25, -Xms1G -Xmx6G", ctx.versions.get("paper").map_or("Paper 26.3", String::as_str)),
             "vanilla": "Mojang's server.jar 26.3, Java 25, -Xms1G -Xmx6G",
-            "pumpkin": "Pumpkin 0.2.2+26.3-26.60 release binary, defaults (no tick time report, so no MSPT)",
+            "pumpkin": pumpkin_version(ctx.root),
             "velocity": "Velocity 4.3.1 build 45, Java 25, -Xms512M -Xmx2G, modern forwarding",
             "vanillite-proxy": "vanillite-proxy from the same commit, modern forwarding",
         },
-        "mspt": "Vanillite: every tick (tick log). Paper and Vanilla: `/tick query` every 5 s (P50/P95/P99/mean of the last 100 ticks), averaged over the window; max is the highest P99 window.",
+        "mspt": "Vanillite: every tick (tick log). Paper, Vanilla and Pumpkin: `/tick query` every 5 s (P50/P95/P99/mean of the last 100 ticks), averaged over the window; max is the highest P99 window.",
         "noise": NOISE,
     })
+}
+
+/// The Pumpkin release the benchmark server runs (`PUMPKIN_TAG` and `PUMPKIN_COMMIT` of the
+/// provisioning script) and why its numbers are not like-for-like.
+fn pumpkin_version(root: &Path) -> String {
+    let script =
+        std::fs::read_to_string(root.join("scripts/testserver/provision.sh")).unwrap_or_default();
+    let var = |name: &str| {
+        script
+            .lines()
+            .find_map(|l| l.strip_prefix(name)?.strip_prefix('='))
+            .map_or("?", |v| v.trim_matches('"'))
+            .to_owned()
+    };
+    format!(
+        "Pumpkin {} release binary (commit {}), defaults; not like-for-like: its world \
+         generation, mob AI and game mechanics are not Vanilla's, and commands it lacks are n/a",
+        var("PUMPKIN_TAG"),
+        var("PUMPKIN_COMMIT"),
+    )
 }
 
 /// Sends console commands; returns `{sent, failed, errors}`.
