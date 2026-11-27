@@ -32,10 +32,12 @@ mod dripleaf;
 mod dripstone;
 pub mod drops;
 pub mod eggs;
+mod eyeblossom;
 pub mod falling;
 pub mod fire;
 pub mod fluid;
 pub mod furnace;
+pub mod geyser;
 mod growth;
 pub mod hopper;
 pub mod interact;
@@ -378,6 +380,8 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     creaking_heart::fill(block, &mut b);
     portal::fill(block, &mut b);
     eggs::fill(block, &mut b);
+    eyeblossom::fill(block, &mut b);
+    geyser::fill(block, &mut b);
     dripleaf::fill(block, &mut b);
     b
 }
@@ -471,4 +475,49 @@ pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: 
     } else {
         item::set_damage(stack, damage);
     }
+}
+
+/// `level.findBlocksIn(from, to).filterState(predicate).forEach`: the matching positions in
+/// `BlockScanUtils` order (sections by x, z, y; inside a section by y, z, x). Positions in
+/// unloaded chunks and outside the build height are skipped.
+pub fn find_blocks_in(
+    level: &Level,
+    from: BlockPos,
+    to: BlockPos,
+    mut predicate: impl FnMut(BlockState) -> bool,
+) -> Vec<BlockPos> {
+    let (min_x, max_x) = (from.x.min(to.x), from.x.max(to.x));
+    let (min_y, max_y) = (
+        from.y.min(to.y).max(level.min_y()),
+        from.y.max(to.y).min(level.max_y()),
+    );
+    let (min_z, max_z) = (from.z.min(to.z), from.z.max(to.z));
+    let mut out = Vec::new();
+    if min_y > max_y {
+        return out;
+    }
+    for sx in (min_x >> 4)..=(max_x >> 4) {
+        for sz in (min_z >> 4)..=(max_z >> 4) {
+            if level
+                .chunks
+                .chunk(vanillite_base::ChunkPos::new(sx, sz))
+                .is_none()
+            {
+                continue;
+            }
+            for sy in (min_y >> 4)..=(max_y >> 4) {
+                for y in (sy * 16).max(min_y)..=(sy * 16 + 15).min(max_y) {
+                    for z in (sz * 16).max(min_z)..=(sz * 16 + 15).min(max_z) {
+                        for x in (sx * 16).max(min_x)..=(sx * 16 + 15).min(max_x) {
+                            let pos = BlockPos::new(x, y, z);
+                            if predicate(level.block(pos)) {
+                                out.push(pos);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }

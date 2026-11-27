@@ -54,6 +54,20 @@ pub fn spell(name: &str, color: i32, power: f32) -> Particle {
     }
 }
 
+/// `TrailParticleOption(target, color, duration)`.
+pub fn trail(target: Vec3, color: i32, duration: i32) -> Particle {
+    let mut options = Vec::with_capacity(32);
+    options.extend_from_slice(&target.x.to_be_bytes());
+    options.extend_from_slice(&target.y.to_be_bytes());
+    options.extend_from_slice(&target.z.to_be_bytes());
+    options.extend_from_slice(&color.to_be_bytes());
+    write_varint(&mut options, duration);
+    Particle {
+        kind: kind("minecraft:trail"),
+        options,
+    }
+}
+
 /// The packet of `sendParticles(particle, false, false, x, y, z, count, xDist, yDist, zDist,
 /// speed)`.
 #[allow(clippy::cast_possible_truncation)]

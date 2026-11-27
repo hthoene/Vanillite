@@ -151,21 +151,20 @@ fn target_on_place(
 
 // --- DaylightDetectorBlock ---------------------------------------------------------------
 
-/// `level.getSkyDarken()`: 0 until the level has a time of day.
-pub fn sky_darken(_level: &Level) -> i32 {
-    0
+/// `level.getSkyDarken()` of this tick.
+pub fn sky_darken(level: &Level) -> i32 {
+    level.spawner_env.env.sky_darken
 }
 
-/// The `SUN_ANGLE` environment attribute at `pos` in degrees: 0 (noon) until the level has a
-/// time of day.
-pub fn sun_angle(_level: &Level, _pos: BlockPos) -> f32 {
-    0.0
+/// The `SUN_ANGLE` environment attribute at `pos` in degrees (no biome sets it).
+pub fn sun_angle(level: &Level, _pos: BlockPos) -> f32 {
+    level.spawner_env.env.sun_angle
 }
 
 /// `updateSignalStrength(state, level, pos)`.
 fn update_signal_strength(level: &mut Level, state: BlockState, pos: BlockPos) {
     // `getEffectiveSkyBrightness`.
-    let mut target = level.light(pos).0 - sky_darken(level);
+    let mut target = (level.light(pos).0 - sky_darken(level)).max(0);
     let mut angle = sun_angle(level, pos) * (std::f32::consts::PI / 180.0);
     if state.flag("inverted") {
         target = 15 - target;

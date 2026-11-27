@@ -1513,6 +1513,9 @@ fn environment(
             bees_stay_in_hive: false,
             creaking_active: false,
             turtle_egg_hatch_chance: 0.002,
+            sun_angle: 0.0,
+            eyeblossom_open: None,
+            nether_portal_spawns_piglins: false,
         };
     }
     let w = survival.weather;

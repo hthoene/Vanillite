@@ -320,8 +320,8 @@ fn ticker_of(entity: &BlockEntity) -> Option<TickerFn> {
         | BlockEntity::TestInstance(_)
         | BlockEntity::EnchantingTable(_)
         | BlockEntity::Shelf(_)
-        | BlockEntity::CopperGolemStatue(_)
-        | BlockEntity::PotentSulfur { .. } => None,
+        | BlockEntity::CopperGolemStatue(_) => None,
+        BlockEntity::PotentSulfur { .. } => Some(crate::block::geyser::tick),
         BlockEntity::Campfire(_) => Some(crate::block::campfire::tick),
         BlockEntity::Beehive(_) => Some(crate::block::beehive::tick),
         BlockEntity::Crafter(_) => Some(crate::block::crafter::server_tick),
