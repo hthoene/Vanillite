@@ -411,7 +411,7 @@ fn package_name(dir: &Path) -> Result<Option<String>> {
     }
     let text =
         std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
-    let value: toml::Value = text
+    let value: toml::Table = text
         .parse()
         .map_err(|e| format!("{}: {e}", manifest.display()))?;
     value
@@ -424,7 +424,7 @@ fn package_name(dir: &Path) -> Result<Option<String>> {
 
 /// Copies a plugin's files into `<out>/<folder name>`: `plugin.toml`, the library it names
 /// (from the folder, else from `bin_dir` where cargo built it) and `config.toml` (if any)
-/// with the `--plugin-set` lines appended.
+/// with the `--plugin-set` lines set.
 fn stage_plugin(spec: &PluginSpec, bin_dir: &Path, out: &Path) -> Result<StagedPlugin> {
     let dir = &spec.dir;
     let name = dir
@@ -437,7 +437,7 @@ fn stage_plugin(spec: &PluginSpec, bin_dir: &Path, out: &Path) -> Result<StagedP
     let manifest = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
     let library = manifest
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .map_err(|e| format!("{}: {e}", manifest_path.display()))?
         .get("library")
         .and_then(toml::Value::as_str)
