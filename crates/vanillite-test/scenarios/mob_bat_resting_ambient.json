@@ -1,0 +1,66 @@
+{
+  "description": "A resting bat (#238 C-17): Bat.getAmbientSound draws nextInt(4) from the bat's random while it hangs and squeaks only one time in four, so every ambient roll of a resting bat moves its random.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 300,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -57,
+        0
+      ],
+      "to": [
+        15,
+        -57,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        1.5,
+        -60.0,
+        1.5
+      ]
+    },
+    {
+      "name": "bat",
+      "type": "minecraft:bat",
+      "pos": [
+        8.5,
+        -58.9,
+        8.5
+      ],
+      "seed": 61,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:bat,limit=1] {BatFlags:1b}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

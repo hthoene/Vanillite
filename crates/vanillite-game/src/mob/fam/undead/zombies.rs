@@ -156,13 +156,13 @@ pub fn experience_reward(m: &mut MobData) -> i32 {
 }
 
 /// `Mob.getBaseExperienceReward`'s equipment bonus: 1–3 per worn item that is not a
-/// guaranteed drop.
+/// guaranteed drop (every slot but the saddle, `canIncreaseExperience`).
 pub fn equipment_experience(m: &mut MobData, xp: i32) -> i32 {
     if xp <= 0 {
         return xp;
     }
     let mut result = xp;
-    for slot in &equipment::SLOTS[..6] {
+    for slot in &equipment::SLOTS[..7] {
         let i = usize::from(slot.ordinal());
         if !m.equipment.items[i].is_empty() && m.equipment.drop_chances[i] <= 1.0 {
             result += 1 + m.random.next_int_bounded(3);
@@ -1480,7 +1480,8 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
     let Some(m) = h.ents.mob(h.target) else {
         return;
     };
-    if !m.is_alive() || !is_zombie(m.kind) {
+    // Also on the killing blow: `super.hurtServer` returned true.
+    if !is_zombie(m.kind) {
         return;
     }
     let kind = m.kind;
@@ -1519,7 +1520,7 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
         if !placement_ok(h.level, kind, spawn) {
             continue;
         }
-        let mut random = LegacyRandom::new(h.env.random.next_long());
+        // `checkSpawnRules(..., level.getRandom())`.
         // The real level: at night the open surface is dark enough.
         let level_env = h.level.spawner_env.env;
         if !crate::mob::fam::check_spawn_rules(
@@ -1527,7 +1528,7 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
             h.level,
             &level_env,
             spawn,
-            &mut random,
+            h.env.random,
             SpawnReason::Reinforcement,
         ) {
             continue;

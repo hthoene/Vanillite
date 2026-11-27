@@ -29,6 +29,7 @@ mod facts;
 mod update;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use vanillite_base::{BlockPos, ChunkPos, Direction};
 use vanillite_chunk::light::{ChunkLight, LightNibbles, NIBBLE_BYTES};
@@ -41,6 +42,10 @@ use crate::facts::LightFacts;
 #[derive(Debug)]
 pub struct BfsLightEngine {
     has_sky: bool,
+    /// The lowest section (from the bottom of the world, -1 below it) the world has held light
+    /// data for since it started (`SkyLightSectionStorage.currentLowestY`, per world): sky
+    /// light fills empty sections only down to it.
+    lowest_section: AtomicI32,
 }
 
 impl BfsLightEngine {
@@ -48,7 +53,29 @@ impl BfsLightEngine {
     pub fn new(world: &WorldInfo) -> Self {
         BfsLightEngine {
             has_sky: world.has_sky_light,
+            lowest_section: AtomicI32::new(i32::MAX),
         }
+    }
+
+    /// Lowers [`Self::lowest_section`] to the light data the chunks keep: a section with
+    /// blocks keeps light in the section below it; with `lit`, light kept below the world
+    /// counts as well. Returns the new value.
+    fn note_lowest<'c>(&self, chunks: impl Iterator<Item = &'c Chunk>, lit: bool) -> i32 {
+        let lowest = chunks
+            .filter_map(|chunk| {
+                if lit && chunk.light().block().first() != Some(&LightNibbles::Absent) {
+                    return Some(-1);
+                }
+                let filled = chunk
+                    .sections()
+                    .iter()
+                    .position(|section| !section.summary().is_empty())?;
+                Some(filled as i32 - 1)
+            })
+            .min()
+            .unwrap_or(i32::MAX);
+        let before = self.lowest_section.fetch_min(lowest, Ordering::Relaxed);
+        before.min(lowest)
     }
 }
 
@@ -100,6 +127,7 @@ impl LightEngine for BfsLightEngine {
                         neighbours.get(pos).map(|c| &c.chunk)
                     };
                 }
+                self.note_lowest(chunks.iter().flatten().copied(), false);
                 let mut grid = Grid::new(origin, 3, &chunks);
                 grid.fill_sky_sources(self.has_sky, |i| i == 4);
                 grid.seed_block_sources(|i| i == 4);
@@ -144,7 +172,15 @@ impl LightEngine for BfsLightEngine {
     }
 
     fn relight(&self, changes: &[BlockPos], area: &Neighbours<'_>) -> Vec<(ChunkPos, ChunkLight)> {
-        update::update(self.has_sky, changes, area)
+        let lowest = if self.has_sky {
+            let lit = area
+                .iter()
+                .filter(|chunk| chunk.status >= vanillite_chunk::ChunkStatus::InitializeLight);
+            self.note_lowest(lit.map(|chunk| &chunk.chunk), true)
+        } else {
+            i32::MAX
+        };
+        update::update(self.has_sky, lowest <= -1, changes, area)
     }
 }
 

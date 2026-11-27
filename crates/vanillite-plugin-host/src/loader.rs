@@ -165,15 +165,10 @@ pub fn discover(dir: &Path) -> Vec<Package> {
     paths.sort();
     let mut packages = Vec::new();
     for path in paths {
-        let hidden = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| n.starts_with('.'));
-        let is_vlp = path.extension().is_some_and(|e| e == "vlp");
-        if hidden || !(is_vlp || path.join("plugin.toml").is_file()) {
+        if !is_package(&path) {
             continue;
         }
-        let result = if is_vlp {
+        let result = if is_vlp(&path) {
             open_vlp(dir, &path)
         } else {
             open_dir(&path)
@@ -184,6 +179,50 @@ pub fn discover(dir: &Path) -> Vec<Package> {
         }
     }
     packages
+}
+
+fn is_vlp(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "vlp")
+}
+
+/// Whether [`discover`] tries to load `path`: a `.vlp` file or a directory with a
+/// `plugin.toml`, not hidden.
+fn is_package(path: &Path) -> bool {
+    let hidden = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_none_or(|n| n.starts_with('.'));
+    !hidden && (is_vlp(path) || path.join("plugin.toml").is_file())
+}
+
+/// Whether `dir` holds a package [`discover`] would try to load (without opening it).
+pub fn has_packages(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|entries| entries.flatten().any(|e| is_package(&e.path())))
+}
+
+/// The Paper and Spigot plugins in `dir`: `*.jar` files with a `plugin.yml` or
+/// `paper-plugin.yml`, sorted. The Bukkit layer (a package) loads them.
+pub fn bukkit_jars(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut jars: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("jar"))
+                && fs::File::open(path)
+                    .ok()
+                    .and_then(|file| zip::ZipArchive::new(file).ok())
+                    .is_some_and(|zip| {
+                        zip.index_for_name("plugin.yml").is_some()
+                            || zip.index_for_name("paper-plugin.yml").is_some()
+                    })
+        })
+        .collect();
+    jars.sort();
+    jars
 }
 
 fn read_limited(path: &Path, max: u64) -> Result<Vec<u8>, String> {

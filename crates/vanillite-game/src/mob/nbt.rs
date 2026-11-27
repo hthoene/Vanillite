@@ -447,7 +447,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     if let Some(h) = float(tag, "Health") {
         m.health = h.clamp(0.0, m.max_health());
     }
-    m.fire_ticks = int(tag, "Fire").unwrap_or(-1);
+    m.fire_ticks = int(tag, "Fire").unwrap_or(0);
     m.air = int(tag, "Air").unwrap_or(300);
     m.ticks_frozen = int(tag, "TicksFrozen").unwrap_or(0);
     m.fall_distance = match tag.get("fall_distance") {
@@ -744,8 +744,12 @@ fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
     }
 }
 
-/// An arrow from entity NBT (its owner is not resolved).
-pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
+/// An arrow from entity NBT (its owner is not resolved). Its own random starts from `seed`,
+/// the seed its constructor already took, or else from the next entity seed.
+pub fn load_arrow(
+    tag: &Compound,
+    seed: Option<i64>,
+) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
     let kind = type_of(tag)?;
     if !super::projectile::is_arrow_kind(kind) {
         return None;
@@ -783,7 +787,8 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             last_state: None,
             tick_count: 0,
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
-            random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
+            random_state: LegacyRandom::new(seed.unwrap_or_else(crate::mob::new_entity_seed))
+                .state(),
             knockback: 0.0,
             fire: int(tag, "Fire").unwrap_or(0).max(0),
             touching_water: false,
@@ -851,10 +856,10 @@ fn leash_ref(tag: &Compound) -> Option<super::LeashRef> {
 }
 
 /// A boat from entity NBT.
-pub fn load_boat(tag: &Compound) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
+pub fn load_boat(tag: &Compound, seed: i64) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
     let kind = crate::vehicle::BoatKind::of(type_of(tag)?)?;
     let e = load_entity(tag)?;
-    let mut b = crate::vehicle::BoatData::new(kind);
+    let mut b = crate::vehicle::BoatData::new(kind, seed);
     b.custom_name = tag.get("CustomName").and_then(tag_component);
     b.pending_leash = leash_ref(tag);
     if kind.chest {

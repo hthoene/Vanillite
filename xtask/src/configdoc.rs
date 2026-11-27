@@ -58,7 +58,11 @@ pub fn render() -> String {
          becomes `_` and `.` becomes `__`, e.g. `VANILLITE_MAX_PLAYERS=50` or \
          `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`. Empty variables are \
          ignored. `VANILLITE_EULA=true` accepts the \
-         [Minecraft EULA](https://aka.ms/MinecraftEULA).\n\n\
+         [Minecraft EULA](https://aka.ms/MinecraftEULA). `VANILLITE_LOG` sets the log level \
+         (`error` to `trace`, default `info`). The console shows colours (WARN yellow, ERROR \
+         red, `§` colour codes of chat, plugin messages and command output) on a terminal and \
+         in Pterodactyl's console, otherwise plain text; `VANILLITE_COLOR=always` or `never` \
+         overrides that, and `NO_COLOR` turns colours off.\n\n\
          ## Profiles\n\n\
          `profile` in `vanillite.toml` presets every rule; single keys override it.\n\n\
          | Profile | What |\n|---|---|\n",

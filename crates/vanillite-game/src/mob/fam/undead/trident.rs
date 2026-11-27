@@ -259,7 +259,8 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         // `applyInertia`: tridents keep their speed in water (0.99) like in the air.
         velocity = velocity * f64::from(0.99_f32);
         if !no_physics && !d.in_ground {
-            velocity.y -= 0.05;
+            // `applyGravity`: `movement.add(0, -gravity, 0)` (turns -0.0 into 0.0).
+            velocity = velocity + Vec3::new(0.0, -0.05, 0.0);
         }
     }
     // `applyEffectsFromBlocks` in flight, while returning and in the ground (buttons,

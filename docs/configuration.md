@@ -7,7 +7,7 @@ Vanillite reads two files from the server directory, both created with every key
 - [`server.properties`](#serverproperties): Vanilla's keys with Vanilla's meaning and defaults. Unknown keys are kept.
 - [`vanillite.toml`](#vanillitetoml): everything Vanillite-specific: the `profile` and the rules below. Every rule is written commented out with its documentation; uncomment a key to override the profile.
 
-Every key of both files can also be set with an environment variable for one run (it is not written to the files): `VANILLITE_` plus the key in upper case, `-` becomes `_` and `.` becomes `__`, e.g. `VANILLITE_MAX_PLAYERS=50` or `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`. Empty variables are ignored. `VANILLITE_EULA=true` accepts the [Minecraft EULA](https://aka.ms/MinecraftEULA).
+Every key of both files can also be set with an environment variable for one run (it is not written to the files): `VANILLITE_` plus the key in upper case, `-` becomes `_` and `.` becomes `__`, e.g. `VANILLITE_MAX_PLAYERS=50` or `VANILLITE_PERFORMANCE__TICK__PARALLEL_DIMENSIONS=false`. Empty variables are ignored. `VANILLITE_EULA=true` accepts the [Minecraft EULA](https://aka.ms/MinecraftEULA). `VANILLITE_LOG` sets the log level (`error` to `trace`, default `info`). The console shows colours (WARN yellow, ERROR red, `§` colour codes of chat, plugin messages and command output) on a terminal and in Pterodactyl's console, otherwise plain text; `VANILLITE_COLOR=always` or `never` overrides that, and `NO_COLOR` turns colours off.
 
 ## Profiles
 
@@ -241,6 +241,13 @@ These apply to the whole server.
 | `safe-mode-after-crash` | setting | yes | `true` | `true` | `true` | `true` | `true` | After a crash inside a plugin's code (a fatal signal or a watchdog kill), skip that plugin at the next starts until its library changes or `plugins/.crashed` is removed, so a supervisor (Docker, systemd) brings the server back. Environment: `VANILLITE_PLUGINS__SAFE_MODE_AFTER_CRASH`. |
 | `development` | setting | yes | `false` | `false` | `false` | `false` | `false` | Development: the console command `vanillite plugin reload <id>` loads a new build of a plugin at runtime and moves its state. Old builds stay in memory. Not for production servers. Environment: `VANILLITE_PLUGINS__DEVELOPMENT`. |
 | `pins` | security | yes | `""` | `""` | `""` | `""` | `""` | Pinned SHA-256 hashes of plugin libraries, `id=hex,id=hex`. A plugin whose library has another hash is refused. Environment: `VANILLITE_PLUGINS__PINS`. |
+| `runtime` | setting | yes | `"auto"` | `"auto"` | `"auto"` | `"auto"` | `"auto"` | Which build loads the plugins. The Linux release archives and the Docker image run a static build, which cannot load libraries, and ship `vanillite-gnu` (built from the same commit against glibc) next to it: `"auto"` starts `vanillite-gnu` in its place when `plugins/` holds plugins (packages or Paper/Spigot jars), `"gnu"` always, `"static"` never (plugins are then not loaded). Other builds load plugins themselves and ignore this. Values: `"auto"`, `"gnu"`, `"static"`. Environment: `VANILLITE_PLUGINS__RUNTIME`. |
+
+#### `[plugins.bukkit]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `auto-setup` | setting | yes | `true` | `true` | `true` | `true` | `true` | When `plugins/` holds Paper or Spigot plugins and the layer is not installed, download the layer release made for this Vanillite version into `plugins/bukkit/` and, without a Java 25 runtime, Eclipse Temurin into `plugins/bukkit/runtime/` (both checked by SHA-256). Off (offline servers): the log says what to download and where to put it. Environment: `VANILLITE_PLUGINS__BUKKIT__AUTO_SETUP`. |
 
 #### `[bedrock]`
 

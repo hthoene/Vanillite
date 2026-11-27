@@ -585,7 +585,7 @@ pub fn mob_use_tick(t: &mut crate::mob::Tick<'_, '_>, flags: &mut UseFlags, used
             / (vanillite_base::random::RandomSource::next_float(&mut *t.env.random) * 0.5 + 1.0)
             + 0.2;
         let seed = crate::survival::sound_seed();
-        let source = t.mob_ref().kind.sound_source();
+        let source = t.mob_ref().sound_source();
         crate::survival::play_sound(t.env.out, None, pos, sound, source, 1.0, pitch, seed);
     }
 }
@@ -648,7 +648,7 @@ pub fn mob_shoot(t: &mut crate::mob::Tick<'_, '_>, target: Option<EntityId>, pow
         x_rot: rot.x_rot,
         y_rot: rot.y_rot,
         player: false,
-        source: t.mob_ref().kind.sound_source(),
+        source: t.mob_ref().sound_source(),
     };
     #[allow(clippy::cast_precision_loss)]
     let uncertainty = (14 - t.env.difficulty as i32 * 4) as f32;

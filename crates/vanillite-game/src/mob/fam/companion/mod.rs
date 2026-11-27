@@ -289,7 +289,7 @@ pub fn sound(ix: &mut Interact<'_, '_>, sound: &str, volume: f32, pitch: f32) {
     if m.silent {
         return;
     }
-    let source = m.kind.sound_source();
+    let source = m.sound_source();
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound(ix.env.out, None, pos, sound, source, volume, pitch, seed);
 }
@@ -907,8 +907,8 @@ impl FamilyHooks for Hooks {
         let kind = h.ents.mob(h.target).map(|m| m.kind)?;
         match kind {
             Kind::Wolf => wolf::hurt_filter(h, amount),
-            Kind::Cat | Kind::Parrot => {
-                // `TamableAnimal` pets stand up when hurt (`Cat`/`Parrot.hurtServer`).
+            Kind::Parrot => {
+                // `Parrot.hurtServer` stands up (a hurt cat keeps sitting).
                 if let Some(m) = h.ents.mob_mut(h.target) {
                     m.order_to_sit = false;
                 }

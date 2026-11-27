@@ -189,6 +189,16 @@ impl Level {
         ok
     }
 
+    /// [`Self::load_entity`] of an entity whose constructor already took `seed` from the
+    /// entity seed stream (`/summon`): an arrow's own random starts from it instead of taking
+    /// another seed.
+    pub fn load_entity_seeded(&mut self, nbt: Compound, seed: Option<i64>) -> bool {
+        self.next_entity_seed = seed;
+        let loaded = self.load_entity(nbt);
+        self.next_entity_seed = None;
+        loaded
+    }
+
     /// `teleportCrossDimension` into this level of an entity saved in another one, without its
     /// passengers: `EntityType.create` (a new entity: its random takes the next entity seed)
     /// and `restoreFrom` the stored data. Returns the new entity.
@@ -208,7 +218,8 @@ impl Level {
     /// `EntityType.create` of a stored entity: `None` for kinds the game does not model,
     /// `Some(None)` for data that makes no entity (leash knots, empty items).
     fn create_entity(&mut self, nbt: Compound) -> Option<Option<EntityId>> {
-        let seed = self.next_entity_seed.take().unwrap_or_else(|| {
+        let next = self.next_entity_seed.take();
+        let seed = next.unwrap_or_else(|| {
             uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time()
         });
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
@@ -278,7 +289,7 @@ impl Level {
             new.velocity = velocity;
             return Some(Some(self.entities.spawn_experience_orb(new, orb)));
         }
-        if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt) {
+        if let Some((e, data)) = crate::mob::nbt::load_arrow(&nbt, next) {
             let kind = crate::mob::projectile::arrow_of(&data.item).0;
             let mut new = NewEntity::new(kind, self.network_ids().next(), e.uuid, e.pos);
             new.velocity = e.velocity;
@@ -296,7 +307,7 @@ impl Level {
             new.rot = e.rot;
             return Some(Some(self.entities.spawn_missile(new, data)));
         }
-        if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt) {
+        if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
             let id = crate::vehicle::spawn_boat(
                 &mut self.entities,

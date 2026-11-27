@@ -601,7 +601,7 @@ impl FamilyHooks for Hooks {
                 .then_some("minecraft:entity.turtle.ambient_land"),
             Kind::Strider => (!crate::mob::animal::is_panicking(m) && !strider::is_tempted(m))
                 .then_some("minecraft:entity.strider.ambient"),
-            // `Bat.getAmbientSound`: a resting bat is heard one time in four.
+            // `Bat.getAmbientSound`: a resting bat squeaks one time in four.
             Kind::Bat => {
                 let resting = s.resting;
                 (!resting || m.random.next_int_bounded(4) == 0)

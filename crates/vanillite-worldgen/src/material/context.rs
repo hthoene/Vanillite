@@ -382,6 +382,43 @@ impl<'a> MaterialRuleContext<'a> {
         false
     }
 
+    /// Whether `y` is a row of the expected volume (where [`Self::ore_may_place`] reads the
+    /// prefilled densities).
+    pub(super) fn in_expected_rows(&self, y: i32) -> bool {
+        (0..self.expected_volume.size_y).contains(&y.wrapping_sub(self.expected_volume.min_y))
+    }
+
+    /// Whether no ore vein may place a block in the expected rows of the current column:
+    /// [`Self::ore_may_place`] is false there for every vein.
+    pub(super) fn column_ore_free(&self) -> bool {
+        let Some(column) = self.column else {
+            return false;
+        };
+        let mut veins = self.ore_present;
+        while veins != 0 {
+            let vein = veins.trailing_zeros() as usize;
+            veins &= veins - 1;
+            let buffers = &self.ore_densities[vein];
+            if buffers.absent {
+                continue;
+            }
+            let outside = self.system.ore_vein_fns[vein].y_range.map_or(0.0, |r| r.2);
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
+            let may_place = |density: f32| !(density <= 0.0);
+            if may_place(outside) {
+                return false;
+            }
+            if let (Some(volume), Some(values)) = (&buffers.volume, &buffers.values) {
+                let start = (column * volume.size_y) as usize;
+                let densities = &values[0][start..start + volume.size_y as usize];
+                if densities.iter().fold(false, |any, &d| any | may_place(d)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// `resolveAnchorY(anchor)`.
     pub(super) fn resolve_anchor_y(&self, anchor: VerticalAnchor) -> i32 {
         anchor.resolve_y(&self.generation)

@@ -447,11 +447,9 @@ impl Kind {
         }
     }
 
-    /// `getBaseExperienceReward`: 5 for monsters (skeletons with their bow 1–3 more), 1–3 for
-    /// animals.
+    /// `getBaseExperienceReward` without equipment: 5 for monsters, 1–3 for animals.
     pub fn base_experience_reward(self, random: &mut LegacyRandom) -> i32 {
         match self {
-            Kind::Skeleton => 5 + 1 + random.next_int_bounded(3),
             _ if self.is_monster() => 5,
             _ => 1 + random.next_int_bounded(3),
         }
@@ -618,6 +616,14 @@ pub fn experience_reward(m: &mut MobData) -> i32 {
         return fam::undead::zombies::experience_reward(m);
     }
     if m.kind.classic() {
+        if m.kind.is_monster() {
+            // `Monster.xpReward` 5 with `Mob.getBaseExperienceReward`'s equipment bonus.
+            return fam::undead::zombies::equipment_experience(m, 5);
+        }
+        // `Chicken.getBaseExperienceReward`: 10 for a chicken jockey.
+        if m.kind == Kind::Chicken && fam::classic::chicken(m).jockey {
+            return 10;
+        }
         let kind = m.kind;
         kind.base_experience_reward(&mut m.random)
     } else {
@@ -1136,7 +1142,7 @@ pub fn play_sound(t: &mut Tick<'_, '_>, sound: &str, volume: f32, pitch: f32) {
         return;
     }
     let pos = t.pos();
-    let source = t.mob_ref().kind.sound_source();
+    let source = t.mob_ref().sound_source();
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
@@ -1175,6 +1181,9 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
             let (dir, swell) = (c.swell_dir, c.swell);
             if dir > 0 && swell == 0 {
                 play_sound(t, "minecraft:entity.creeper.primed", 1.0, 0.5);
+                // `gameEvent(GameEvent.PRIME_FUSE)`.
+                let (event, pos) = (crate::level::game_event::events().prime_fuse, t.pos());
+                super::living::post_game_event(t, event, pos, None);
             }
             let c = classic::creeper_mut(t.mob());
             c.swell = (c.swell + dir).max(0);
