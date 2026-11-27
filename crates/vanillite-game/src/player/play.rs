@@ -856,14 +856,18 @@ impl Digging {
             pos,
             i32::from(state.0),
         );
-        let mut extra = Vec::new();
-        place::destroy_extra(
-            state,
-            pos,
-            &LevelReader(&*ctx.level),
-            ctx.actor.creative(),
-            &mut extra,
+        // `DoorBlock.playerWillDestroy`: also without the correct tool for drops the lower
+        // half goes without dropping (`preventDropFromBottomPart`).
+        let door = matches!(
+            state.block().info().kind,
+            BlockKind::DoorBlock | BlockKind::WeatheringCopperDoorBlock
         );
+        let prevents = ctx.actor.creative()
+            || door
+                && state.has(block_flags::REQUIRES_CORRECT_TOOL)
+                && !ctx.data.tools.is_correct_for_drops(&tool, state);
+        let mut extra = Vec::new();
+        place::destroy_extra(state, pos, &LevelReader(&*ctx.level), prevents, &mut extra);
         for (p, s) in extra {
             let old = ctx.level.block(p);
             if ctx

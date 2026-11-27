@@ -2028,7 +2028,6 @@ fn free_position(level: &vanillite_game::level::Level, pos: Vec3, width: f32, he
         return pos;
     }
     let (half, height) = (f64::from(width) / 2.0, f64::from(height));
-    let block = |p: BlockPos| level.block(p);
     let mut scratch = Vec::new();
     let free = |y: f64, scratch: &mut Vec<Aabb>| {
         let b = Aabb::new(
@@ -2039,7 +2038,7 @@ fn free_position(level: &vanillite_game::level::Level, pos: Vec3, width: f32, he
             y + height,
             pos.z + half,
         );
-        !vanillite_game::item_entity::collides(&b, &block, scratch)
+        !vanillite_game::item_entity::collides(&b, level, scratch)
     };
     if free(pos.y, &mut scratch) {
         return pos;

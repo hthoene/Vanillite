@@ -1,0 +1,89 @@
+{
+  "description": "A dispenser completes a wither (WitherSkullBlock.canSpawnMob, checkSpawn) (#214, G-07): the skull goes on the soul sand T, the wither spawns invulnerable and charges up (body turns, particles from its random) for its first ticks.",
+  "tier": "fast",
+  "level_rng": true,
+  "difficulty": "normal",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      10,
+      -53,
+      8
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        4
+      ],
+      "to": [
+        5,
+        -59,
+        4
+      ],
+      "block": "minecraft:soul_sand"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -59,
+        4
+      ],
+      "to": [
+        6,
+        -59,
+        4
+      ],
+      "block": "minecraft:soul_sand"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -58,
+        4
+      ],
+      "block": "minecraft:wither_skeleton_skull[powered=false,rotation=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -58,
+        4
+      ],
+      "block": "minecraft:wither_skeleton_skull[powered=false,rotation=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -57,
+        4
+      ],
+      "block": "minecraft:dispenser[facing=down,triggered=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 5 -57 4 {Items:[{Slot:0b,id:\"minecraft:wither_skeleton_skull\",count:1}]}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 5 -56 4 minecraft:redstone_block"
+    }
+  ]
+}

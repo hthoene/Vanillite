@@ -204,6 +204,30 @@ pub fn lights_portal(level: &Level, pos: BlockPos, forward: Direction) -> bool {
     PortalShape::find_empty(level, pos, preferred).is_some()
 }
 
+/// `BaseFireBlock.isPortal` for any direction (a dispenser's flint and steel): a vertical
+/// direction takes a random horizontal axis (`Plane.HORIZONTAL.getRandomAxis`, one level
+/// random draw) once a frame block is next to `pos`.
+pub fn lights_portal_any(level: &mut Level, pos: BlockPos, forward: Direction) -> bool {
+    if HorizontalAxis::of_direction(forward).is_some() {
+        return lights_portal(level, pos, forward);
+    }
+    if !level.settings.portal_dimension {
+        return false;
+    }
+    let next_to_frame = Direction::ALL
+        .iter()
+        .any(|&face| vanillite_worldgen::behaviour::is_frame(level.block(pos.relative(face))));
+    if !next_to_frame {
+        return false;
+    }
+    let preferred = if level.random().next_int_bounded(2) == 0 {
+        HorizontalAxis::X
+    } else {
+        HorizontalAxis::Z
+    };
+    PortalShape::find_empty(&*level, pos, preferred).is_some()
+}
+
 // --- End portal frames -------------------------------------------------------------------
 
 /// `EndPortalFrameBlock.getOrCreatePortalShape().find(level, pos)`: the 3 × 3 inside of a

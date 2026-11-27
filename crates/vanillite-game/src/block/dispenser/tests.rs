@@ -68,7 +68,7 @@ fn registry_matches_bootstrap() {
         behaviour_of(&stack(items::FIRE_CHARGE, 1)),
         Behaviour::Projectile
     );
-    assert_eq!(behaviour_of(&stack(items::OAK_BOAT, 1)), Behaviour::Entity);
+    assert_eq!(behaviour_of(&stack(items::OAK_BOAT, 1)), Behaviour::Boat);
     assert_eq!(
         behaviour_of(&stack(items::HOPPER_MINECART, 1)),
         Behaviour::Minecart
@@ -103,7 +103,9 @@ fn fallback_items_drop() {
     fire(&mut level);
     assert_eq!(contents(&level), vec![stack(items::OAK_BOAT, 1)]);
     assert_eq!(items_on_ground(&level), 1);
-    assert_eq!(events(&mut level), vec![1000, 2000]);
+    // `BoatDispenseItemBehavior` without water: the nested default dispense plays its sound
+    // and smoke, then the boat behaviour its own.
+    assert_eq!(events(&mut level), vec![1000, 2000, 1000, 2000]);
 }
 
 #[test]

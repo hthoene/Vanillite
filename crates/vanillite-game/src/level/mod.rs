@@ -19,6 +19,7 @@ pub mod explosion;
 pub mod forced;
 pub mod game_event;
 pub mod locate;
+pub mod mob_env;
 mod neighbors;
 pub mod particles;
 pub mod place;
@@ -1057,7 +1058,13 @@ impl Level {
     /// and code on other threads.
     #[inline]
     pub fn view(&self) -> view::LevelView<'_> {
-        view::LevelView::new(self.chunks.view(), &self.border, self.min_y, self.max_y)
+        view::LevelView::new(
+            self.chunks.view(),
+            &self.border,
+            &self.block_entities,
+            self.min_y,
+            self.max_y,
+        )
     }
 
     /// `getBlockState(pos)` with the chunk loaded first like Vanilla: a chunk that is not
@@ -1314,6 +1321,9 @@ impl Level {
         if self.block(pos) == state {
             if flags & update::CLIENTS != 0 {
                 self.send_block_updated(pos);
+                if old.collision_shape() != state.collision_shape() {
+                    crate::mob::nav::block_shape_changed(self, pos);
+                }
             }
             if flags & update::NEIGHBORS != 0 {
                 self.update_neighbors_at(pos, old.block());

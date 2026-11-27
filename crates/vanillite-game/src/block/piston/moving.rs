@@ -92,6 +92,60 @@ impl MovingPiston {
     }
 }
 
+thread_local! {
+    /// `PistonMovingBlockEntity.NOCLIP`: while a piston moves an entity, moving blocks of that
+    /// direction do not collide with it.
+    static NOCLIP: std::cell::Cell<Option<Direction>> = const { std::cell::Cell::new(None) };
+}
+
+/// `PistonMovingBlockEntity.getCollisionShape(level, pos)`: the boxes of the moving block
+/// relative to its position (the head of a moving source piston, else the moved block, at its
+/// progress; a retracting source piston also its extended base).
+pub fn collision_boxes(m: &MovingPiston, out: &mut Vec<[f64; 6]>) {
+    if !m.extending && m.source && is_piston_base(m.moved_state) {
+        out.extend_from_slice(m.moved_state.set_flag("extended", true).collision_shape());
+    }
+    if m.progress < 1.0 && NOCLIP.get() == Some(m.movement_direction()) {
+        return;
+    }
+    let state = if m.source {
+        ids::PISTON_HEAD
+            .default_state()
+            .set_direction("facing", m.direction)
+            .set_flag("short", m.extending != (1.0 - m.progress < 0.25))
+    } else {
+        m.moved_state
+    };
+    let progress = f64::from(m.extended_progress(m.progress));
+    let [sx, sy, sz] = m.direction.normal();
+    let (xo, yo, zo) = (
+        f64::from(sx) * progress,
+        f64::from(sy) * progress,
+        f64::from(sz) * progress,
+    );
+    for b in state.collision_shape() {
+        out.push([
+            b[0] + xo,
+            b[1] + yo,
+            b[2] + zo,
+            b[3] + xo,
+            b[4] + yo,
+            b[5] + zo,
+        ]);
+    }
+}
+
+/// The collision boxes of the moving block at `pos`, if the block entity is there.
+pub fn collision_boxes_at(
+    block_entities: &crate::level::block_entity::BlockEntities,
+    pos: BlockPos,
+    out: &mut Vec<[f64; 6]>,
+) {
+    if let Some(BlockEntity::MovingPiston(m)) = block_entities.get(pos) {
+        collision_boxes(m, out);
+    }
+}
+
 fn moving_mut(level: &mut Level, pos: BlockPos) -> Option<&mut MovingPiston> {
     match level.block_entity_mut(pos) {
         Some(BlockEntity::MovingPiston(m)) => Some(m),
@@ -292,8 +346,9 @@ fn pushed_by_server(level: &Level, id: EntityId) -> bool {
         && kind != entity_ids::LEASH_KNOT
 }
 
-/// `moveEntityByPiston`: entities move without block collision until entity physics exist
-/// (#30); `entity.move(MoverType.PISTON, ...)` then clips the movement against blocks.
+/// `moveEntityByPiston`: `entity.move(MoverType.PISTON, delta)` (at most 0.51 per axis and
+/// game tick over all moving blocks, then the block collisions; on the ground only after
+/// a collision below), then `applyEffectsFromBlocks` along the way.
 fn move_entity(level: &mut Level, id: EntityId, delta: f64, direction: Direction) {
     // `BlockAttachedEntity.move`: item frames, paintings and cushions break.
     if crate::decoration::ticks(
@@ -309,14 +364,141 @@ fn move_entity(level: &mut Level, id: EntityId, delta: f64, direction: Direction
         return;
     }
     let [sx, sy, sz] = direction.normal();
-    if let Some(mut entity) = level.entities.store.get_mut(id) {
-        let p = entity.as_ref().pos();
-        entity.set_pos(Vec3 {
-            x: p.x + delta * f64::from(sx),
-            y: p.y + delta * f64::from(sy),
-            z: p.z + delta * f64::from(sz),
+    let wanted = Vec3::new(
+        delta * f64::from(sx),
+        delta * f64::from(sy),
+        delta * f64::from(sz),
+    );
+    let Some(wanted) = limit_piston_movement(level, id, wanted) else {
+        return;
+    };
+    if level.entities.mob(id).is_some() {
+        // A mob moves like in its own tick (`LivingEntity` collision, steps, restitution).
+        crate::level::mob_env::with_mob_env(level, |level, ents, env, cx| {
+            let mut t = crate::mob::Tick {
+                level,
+                ents,
+                env,
+                cx,
+                id,
+            };
+            NOCLIP.set(Some(direction));
+            crate::mob::living::move_by_piston(&mut t, wanted);
+            NOCLIP.set(None);
         });
+        return;
     }
+    let Some((pos, aabb, dims, on_ground)) = level.entities.store.get(id).map(|e| {
+        (
+            e.pos(),
+            e.aabb(),
+            e.dims(),
+            e.flags().contains(EntityFlags::ON_GROUND),
+        )
+    }) else {
+        return;
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let step = level
+        .entities
+        .mob(id)
+        .map_or(0.0, |m| m.attrs.step_height as f32);
+    let mut boxes = std::mem::take(&mut level.pistons.boxes);
+    NOCLIP.set(Some(direction));
+    let moved = crate::mob::physics::collide_in_context(
+        &level.view(),
+        aabb,
+        wanted,
+        step,
+        on_ground,
+        &mut boxes,
+        false,
+        crate::mob::physics::SnowCollision::None,
+        true,
+    );
+    NOCLIP.set(None);
+    level.pistons.boxes = boxes;
+    let length = moved.length_sqr();
+    let to = pos + moved;
+    if (length > 1.0e-7 || wanted.length_sqr() - length < 1.0e-7)
+        && let Some(mut entity) = level.entities.store.get_mut(id)
+    {
+        entity.set_pos(to);
+    }
+    // `setOnGroundWithMovement(verticalCollision && delta.y < 0.0, ...)`, then
+    // `restituteMovementAfterCollisions` without bounciness (`-v * 0.0` keeps Java's signed
+    // zeros).
+    let vertical = wanted.y != moved.y;
+    let below = vertical && wanted.y < 0.0;
+    let x_collision = !java_equal(wanted.x, moved.x);
+    let z_collision = !java_equal(wanted.z, moved.z);
+    if let Some(mut entity) = level.entities.store.get_mut(id) {
+        entity.set_flags(EntityFlags::ON_GROUND, below);
+        if vertical && wanted.y != 0.0 || x_collision || z_collision {
+            let mut v = entity.as_ref().velocity();
+            if x_collision {
+                v.x = -v.x * 0.0;
+            }
+            if z_collision {
+                v.z = -v.z * 0.0;
+            }
+            if vertical {
+                v.y = -v.y * 0.0;
+            }
+            entity.set_velocity(v);
+        }
+    }
+    // `applyEffectsFromBlocks(previousPos, position())`.
+    let way = [crate::survival::inside::Movement::plain(pos, to)];
+    let mut cells = Vec::new();
+    crate::block::plate::for_each_inside(level, dims, &way, |p| cells.push(p));
+    for p in cells {
+        if level.entities.store.contains(id) {
+            level.entity_inside(p, id);
+        }
+    }
+}
+
+/// `Mth.equal`: within `1.0E-5F`.
+fn java_equal(a: f64, b: f64) -> bool {
+    (b - a).abs() < f64::from(1.0e-5_f32)
+}
+
+/// `Entity.limitPistonMovement`: the movement of one axis, capped so the entity moves at most
+/// 0.51 along each axis per game tick; `None` when nothing is left.
+fn limit_piston_movement(level: &mut Level, id: EntityId, v: Vec3) -> Option<Vec3> {
+    if v.length_sqr() <= 1.0e-7 {
+        return Some(v);
+    }
+    let now = level.game_time();
+    let scratch = &mut level.pistons;
+    if scratch.deltas_time != now {
+        scratch.deltas.clear();
+        scratch.deltas_time = now;
+    }
+    let deltas = scratch.deltas.entry(id).or_insert([0.0; 3]);
+    let (axis, amount) = if v.x != 0.0 {
+        (0, v.x)
+    } else if v.y != 0.0 {
+        (1, v.y)
+    } else if v.z != 0.0 {
+        (2, v.z)
+    } else {
+        return None;
+    };
+    let min = (amount + deltas[axis]).clamp(-0.51, 0.51);
+    let amount = min - deltas[axis];
+    deltas[axis] = min;
+    if amount.abs() <= f64::from(1.0e-5_f32) {
+        return None;
+    }
+    let mut out = Vec3::ZERO;
+    match axis {
+        0 => out.x = amount,
+        1 => out.y = amount,
+        _ => out.z = amount,
+    }
+    Some(out)
 }
 
 /// `moveCollidedEntities(level, pos, newProgress, self)`.

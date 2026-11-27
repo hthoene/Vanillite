@@ -530,7 +530,9 @@ fn move_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entity
         v.y = 0.0;
     }
     if let Some(mut e) = ents.store.get_mut(id) {
-        if movement.length_sqr() > 1.0e-7 {
+        // A tiny move that nothing clipped still happens.
+        let length = movement.length_sqr();
+        if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
             e.set_pos(pos + movement);
         }
         e.set_flags(EntityFlags::ON_GROUND, landed);

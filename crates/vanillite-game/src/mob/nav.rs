@@ -599,6 +599,88 @@ fn recompute_path(t: &mut Tick<'_, '_>) {
     nav.has_delayed_recomputation = false;
 }
 
+/// `ServerLevel.sendBlockUpdated` for the navigating mobs after the collision shape at `pos`
+/// changed: every mob whose remaining path passes near it (`shouldRecomputePath`) recomputes
+/// its path (`recomputePath`): at once if its last computation is more than 20 ticks ago,
+/// else on its next navigation tick.
+pub fn block_shape_changed(level: &mut crate::level::Level, pos: BlockPos) {
+    let mut due: Vec<vanillite_world::entity::EntityId> = Vec::new();
+    {
+        let ents = &level.entities;
+        for (id, m) in ents.mobs.iter() {
+            let nav = &m.nav;
+            if nav.has_delayed_recomputation {
+                continue;
+            }
+            let Some(path) = &nav.path else {
+                continue;
+            };
+            let Some(end) = path.nodes.last() else {
+                continue;
+            };
+            if path.is_done() {
+                continue;
+            }
+            let Some(p) = ents.store.get(id).map(|e| e.pos()) else {
+                continue;
+            };
+            let middle = Vec3::new(
+                (f64::from(end.x) + p.x) / 2.0,
+                (f64::from(end.y) + p.y) / 2.0,
+                (f64::from(end.z) + p.z) / 2.0,
+            );
+            #[allow(clippy::cast_precision_loss)]
+            let distance = (path.nodes.len() - path.next) as f64;
+            let dx = f64::from(pos.x) + 0.5 - middle.x;
+            let dy = f64::from(pos.y) + 0.5 - middle.y;
+            let dz = f64::from(pos.z) + 0.5 - middle.z;
+            if dx * dx + dy * dy + dz * dz < distance * distance {
+                due.push(id);
+            }
+        }
+    }
+    if due.is_empty() {
+        return;
+    }
+    let time = level.game_time();
+    // `recomputePath` within 20 ticks of the last one only marks it delayed.
+    due.retain(|&id| {
+        let Some(m) = level.entities.mob_mut(id) else {
+            return false;
+        };
+        if time - m.nav.time_last_recompute > 20 {
+            return m.nav.target_pos.is_some();
+        }
+        m.nav.has_delayed_recomputation = true;
+        false
+    });
+    if due.is_empty() {
+        return;
+    }
+    crate::level::mob_env::with_mob_env(level, |level, ents, env, cx| {
+        cx.path_budget = u64::MAX;
+        for id in due {
+            let mut t = Tick {
+                level,
+                ents: &mut *ents,
+                env: &mut *env,
+                cx: &mut *cx,
+                id,
+            };
+            let Some(target) = t.mob_ref().nav.target_pos else {
+                continue;
+            };
+            let reach = t.mob_ref().nav.reach_range;
+            t.mob().nav.path = None;
+            let path = create_path_to(&mut t, target, reach);
+            let nav = &mut t.mob().nav;
+            nav.path = path;
+            nav.time_last_recompute = time;
+            nav.has_delayed_recomputation = false;
+        }
+    });
+}
+
 /// `PathNavigation.tick` of the mob's navigation kind.
 pub fn tick(t: &mut Tick<'_, '_>) {
     let kind = t.mob_ref().nav.kind;

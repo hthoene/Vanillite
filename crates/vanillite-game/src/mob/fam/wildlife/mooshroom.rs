@@ -102,7 +102,14 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Success;
     }
     if name == "minecraft:shears" && !baby {
-        shear(ix);
+        shear(
+            ix.level,
+            ix.ents,
+            ix.env,
+            ix.cx,
+            ix.target,
+            SoundSource::Players,
+        );
         crate::mob::animal::entity_game_event(
             ix.ents,
             ix.env,
@@ -189,16 +196,23 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
 }
 
 /// `MushroomCow.shear`: the mooshroom turns into a cow and drops five mushrooms.
-fn shear(ix: &mut Interact<'_, '_>) {
+pub(crate) fn shear(
+    level: &crate::level::Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut crate::mob::MobContext,
+    target: vanillite_world::entity::EntityId,
+    source: SoundSource,
+) {
     sound_at(
-        ix.ents,
-        ix.env,
-        ix.target,
+        ents,
+        env,
+        target,
         "minecraft:entity.mooshroom.shear",
-        SoundSource::Players,
+        source,
         1.0,
     );
-    let (Some(m), Some(e)) = (ix.ents.mob(ix.target), ix.ents.store.get(ix.target)) else {
+    let (Some(m), Some(e)) = (ents.mob(target), ents.store.get(target)) else {
         return;
     };
     let (pos, rot, height) = (e.pos(), e.rot(), f64::from(e.dims().height));
@@ -220,8 +234,8 @@ fn shear(ix: &mut Interact<'_, '_>) {
         "minecraft:red_mushroom"
     };
     let uuid = crate::mob::new_uuid();
-    if !ix.ents.transforming(
-        ix.target,
+    if !ents.transforming(
+        target,
         Kind::Cow.type_id(),
         uuid,
         vanillite_abi::transform_reason::SHEARED,
@@ -229,13 +243,13 @@ fn shear(ix: &mut Interact<'_, '_>) {
         return;
     }
     let parent = e.uuid();
-    if let Some(m) = ix.ents.mob_mut(ix.target) {
+    if let Some(m) = ents.mob_mut(target) {
         m.removed = true;
     }
-    ix.cx.discarded.push(ix.target);
+    cx.discarded.push(target);
     let id = crate::mob::spawn(
-        ix.ents,
-        ix.level.network_ids(),
+        ents,
+        level.network_ids(),
         uuid,
         pos,
         Rotation {
@@ -244,9 +258,8 @@ fn shear(ix: &mut Interact<'_, '_>) {
         },
         cow,
     );
-    ix.ents
-        .spawned(id, vanillite_abi::spawn_reason::CONVERSION, parent);
-    ix.cx.send_particles(
+    ents.spawned(id, vanillite_abi::spawn_reason::CONVERSION, parent);
+    cx.send_particles(
         crate::level::particles::simple("minecraft:explosion"),
         pos + Vec3::new(0.0, height * 0.5, 0.0),
         1,
@@ -257,7 +270,7 @@ fn shear(ix: &mut Interact<'_, '_>) {
     for _ in 0..5 {
         let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         let stack: ItemStack = crate::mob::equipment::stack(mushroom);
-        ix.env.out.push(Effect::DropItem {
+        env.out.push(Effect::DropItem {
             random: item_random,
             uuid,
             pos: pos + Vec3::new(0.0, height, 0.0),

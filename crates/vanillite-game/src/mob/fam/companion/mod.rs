@@ -49,6 +49,8 @@ pub struct State {
     pub mouth_counter: i32,
     pub stand_counter: i32,
     pub sprint_counter: i32,
+    /// `AbstractHorse.gallopSoundCounter`.
+    pub gallop_counter: i32,
     /// `allowStandSliding`.
     pub stand_sliding: bool,
     /// `AbstractChestedHorse.hasChest`.

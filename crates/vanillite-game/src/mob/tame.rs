@@ -354,6 +354,59 @@ pub fn drop_leashes_of(ents: &mut Entities, env: &mut Env<'_>, holder: EntityId)
     !mine.is_empty()
 }
 
+/// `Entity.shearOffAllLeashConnections(null)` (a dispenser's shears): the entity's own lead
+/// and the leads tied to it drop, `SHEAR` at the entity, the snip sound at its block in its
+/// sound source; `true` when there was a lead.
+pub fn shear_off_all_leash_connections(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    id: EntityId,
+) -> bool {
+    let mut tied: Vec<EntityId> = ents
+        .leashes
+        .iter()
+        .filter(|(_, h)| **h == id)
+        .map(|(m, _)| *m)
+        .collect();
+    tied.sort_unstable();
+    let own = leash_holder(ents, id).is_some();
+    if !own && tied.is_empty() {
+        return false;
+    }
+    if own {
+        drop_leash(ents, env, id, true);
+    }
+    for m in tied {
+        drop_leash(ents, env, m, true);
+    }
+    let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
+        return true;
+    };
+    let event = crate::level::game_event::events().shear;
+    super::animal::entity_game_event(ents, env, id, event, None);
+    let source = ents
+        .mob(id)
+        .map_or(SoundSource::Neutral, |m| m.kind.sound_source());
+    let block = BlockPos::containing(pos.x, pos.y, pos.z);
+    let at = Vec3::new(
+        f64::from(block.x) + 0.5,
+        f64::from(block.y) + 0.5,
+        f64::from(block.z) + 0.5,
+    );
+    let seed = crate::survival::sound_seed();
+    play_sound(
+        env.out,
+        None,
+        at,
+        "minecraft:item.shears.snip",
+        source,
+        1.0,
+        1.0,
+        seed,
+    );
+    true
+}
+
 /// `dropLeash` (`drop_item`) or `removeLeash`.
 pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_item: bool) {
     if ents.leashes.remove(&mob).is_none() {

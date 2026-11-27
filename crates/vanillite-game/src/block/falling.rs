@@ -589,8 +589,9 @@ pub(crate) fn collide(level: &LevelView<'_>, aabb: Aabb, movement: Vec3) -> Vec3
         let area = aabb.expand_towards(movement.x, movement.y, movement.z);
         crate::mob::physics::border_boxes(level.border(), &aabb, &area, &mut border);
     }
+    let bottom = aabb.min_y;
     let collide_axis = |aabb: &Aabb, axis: usize, delta: f64| {
-        let delta = collide_axis(level, aabb, axis, delta);
+        let delta = collide_axis(level, aabb, axis, delta, bottom);
         crate::mob::physics::collide_axis(&border, aabb, axis, delta)
     };
     let mut aabb = aabb;
@@ -615,7 +616,7 @@ pub(crate) fn collide(level: &LevelView<'_>, aabb: Aabb, movement: Vec3) -> Vec3
 
 /// The movement along one axis (0 = X, 1 = Y, 2 = Z) until `aabb` touches a collision box
 /// (`Shapes.collide` with its 1.0E-7 tolerance).
-fn collide_axis(level: &LevelView<'_>, aabb: &Aabb, axis: usize, delta: f64) -> f64 {
+fn collide_axis(level: &LevelView<'_>, aabb: &Aabb, axis: usize, delta: f64, bottom: f64) -> f64 {
     const EPSILON: f64 = 1.0e-7;
     if delta.abs() < EPSILON {
         return 0.0;
@@ -639,7 +640,7 @@ fn collide_axis(level: &LevelView<'_>, aabb: &Aabb, axis: usize, delta: f64) -> 
                 let pos = BlockPos::new(x, y, z);
                 let state = level.block(pos);
                 let origin = [f64::from(x), f64::from(y), f64::from(z)];
-                for b in state.collision_shape() {
+                for b in crate::mob::physics::context_shape(state, origin[1], Some(bottom)) {
                     let box_min = [b[0] + origin[0], b[1] + origin[1], b[2] + origin[2]];
                     let box_max = [b[3] + origin[0], b[4] + origin[1], b[5] + origin[2]];
                     let overlaps = (0..3)

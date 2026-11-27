@@ -19,7 +19,6 @@ use vanillite_game::player::world::{PlayLevel, SoundSource};
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::packets::play::clientbound::{BlockDestruction, Sound, SoundEvent};
 use vanillite_protocol::types::BlockPos as WirePos;
-use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityFlags, EntityId, EntityStore};
 
 /// Builds the gameplay data from the loaded data packs and installs the registry sizes and
@@ -462,6 +461,10 @@ impl PlayLevel for WorldLevel<'_> {
     }
 
     fn is_unobstructed(&self, state: BlockState, pos: BlockPos) -> bool {
+        // `ScaffoldingBlock.getCollisionShape` of a placement context is empty.
+        if state.block() == vanillite_data::block::ids::SCAFFOLDING {
+            return true;
+        }
         let (dx, dy, dz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
         let store = &self.level.entities.store;
         for b in state.collision_shape() {
@@ -647,8 +650,7 @@ pub fn tick_item(
 ) -> item_entity::Burn {
     let mut burn = item_entity::Burn::default();
     let lifetime = settings.lifetime;
-    let chunks: &Chunks = &level.chunks;
-    let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
+    let view = level.view();
     let fluids = |aabb: Aabb| {
         let eye = Vec3::new(
             (aabb.min_x + aabb.max_x) / 2.0,
@@ -681,7 +683,7 @@ pub fn tick_item(
     let ticked = item_entity::tick(
         data,
         input,
-        &block,
+        &view,
         &fluids,
         fire,
         &mut scratch.boxes,

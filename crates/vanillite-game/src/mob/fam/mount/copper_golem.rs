@@ -5,6 +5,8 @@
 use vanillite_base::BlockPos;
 use vanillite_base::random::RandomSource;
 use vanillite_nbt::{Compound, Tag};
+use vanillite_protocol::packets::play::clientbound::SoundSource;
+use vanillite_world::entity::EntityId;
 
 use super::State;
 use crate::item::{EquipmentSlot, ItemStack};
@@ -320,20 +322,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     };
     let block = vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z);
     if name == "minecraft:shears" && ready_for_shearing(m) {
-        let antenna = ix
-            .ents
-            .mob_mut(ix.target)
-            .map(|m| {
-                std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Saddle.ordinal())])
-            })
-            .unwrap_or_default();
-        crate::mob::combat::mob_sound(
-            ix.ents,
-            ix.env,
-            ix.target,
-            "minecraft:entity.copper_golem.shear",
-        );
-        drop_above(ix, pos, antenna);
+        shear(ix.ents, ix.env, ix.target, SoundSource::Players);
         crate::mob::animal::entity_game_event(
             ix.ents,
             ix.env,
@@ -379,20 +368,50 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     Interaction::Pass
 }
 
+/// `CopperGolem.shear`: the sound, then the antenna item drops 1.5 blocks up.
+pub(crate) fn shear(
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    target: EntityId,
+    source: SoundSource,
+) {
+    crate::mob::animal::sound_at(
+        ents,
+        env,
+        target,
+        "minecraft:entity.copper_golem.shear",
+        source,
+        1.0,
+    );
+    let antenna = ents
+        .mob_mut(target)
+        .map(|m| {
+            std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Saddle.ordinal())])
+        })
+        .unwrap_or_default();
+    if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+        drop_above(env, pos, antenna);
+    }
+}
+
 /// `readyForShearing`: the antenna slot holds `#shearable_from_copper_golem`.
-fn ready_for_shearing(m: &MobData) -> bool {
+pub(crate) fn ready_for_shearing(m: &MobData) -> bool {
     let s = m.equipment.get(EquipmentSlot::Saddle);
     !s.is_empty()
         && crate::player::play::game_data()
             .is_some_and(|d| d.item_in_tag(s.item, "minecraft:shearable_from_copper_golem"))
 }
 
-fn drop_above(ix: &mut Interact<'_, '_>, pos: vanillite_base::Vec3, stack: ItemStack) {
+fn drop_above(
+    env: &mut crate::survival::player::Env<'_>,
+    pos: vanillite_base::Vec3,
+    stack: ItemStack,
+) {
     if stack.is_empty() {
         return;
     }
     let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
-    ix.env.out.push(crate::survival::Effect::DropItem {
+    env.out.push(crate::survival::Effect::DropItem {
         random: item_random,
         uuid,
         pos: vanillite_base::Vec3::new(pos.x, pos.y + 1.5, pos.z),

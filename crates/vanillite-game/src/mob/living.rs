@@ -1228,6 +1228,35 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
         m.stuck_speed = Vec3::ZERO;
         t.set_velocity(Vec3::ZERO);
     }
+    move_and_collide(t, delta);
+}
+
+/// `PistonMovingBlockEntity.moveEntityByPiston` of a mob: `move(MoverType.PISTON, delta)` (the
+/// stuck speed is dropped, not applied), then `applyEffectsFromBlocks(previousPos, position)`
+/// without keeping the move for the mob's own tick (`removeLatestMovementRecording`).
+pub fn move_by_piston(t: &mut Tick<'_, '_>, delta: Vec3) {
+    if t.mob_ref().stuck_speed.length_sqr() > 1.0e-7 {
+        t.mob().stuck_speed = Vec3::ZERO;
+        t.set_velocity(Vec3::ZERO);
+    }
+    let from = t.pos();
+    let kept = std::mem::take(&mut t.cx.movements);
+    move_and_collide(t, delta);
+    if !t.exists() || t.mob_ref().removed {
+        t.cx.movements = kept;
+        return;
+    }
+    let to = t.pos();
+    t.cx.movements.clear();
+    t.cx.movements
+        .push(crate::survival::inside::Movement::plain(from, to));
+    apply_effects_from_blocks(t);
+    t.cx.movements = kept;
+}
+
+/// The part of `Entity.move` after the mover's own adjustments: collide, move, the collision
+/// flags, fall damage, restitution, step effects and the block speed factor.
+fn move_and_collide(t: &mut Tick<'_, '_>, delta: Vec3) {
     #[allow(clippy::cast_possible_truncation)]
     let step = t.mob_ref().attrs.step_height as f32;
     let on_ground = t.on_ground();
@@ -1243,6 +1272,7 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
         &mut t.cx.boxes,
         on_lava,
         snow,
+        true,
     );
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
@@ -1651,9 +1681,9 @@ fn horse_step_sound(t: &mut Tick<'_, '_>, pos: BlockPos, state: BlockState) {
     .iter()
     .any(|n| crate::survival::sound_event(n).0 == i32::from(st.step_sound));
     if gallops && !t.ents.riding.passengers_of(t.id).is_empty() {
-        let m = t.mob();
-        m.gallop_counter += 1;
-        let counter = m.gallop_counter;
+        let h = crate::mob::fam::companion::st_mut(t.mob());
+        h.gallop_counter += 1;
+        let counter = h.gallop_counter;
         if counter > 5 && counter % 3 == 0 {
             play_sound_event(
                 t,
