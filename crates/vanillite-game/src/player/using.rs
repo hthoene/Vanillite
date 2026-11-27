@@ -690,8 +690,14 @@ fn consume(
     });
     for effect in &c.effects {
         match effect {
-            ConsumeEffect::Teleport(diameter) => {
-                super::chorus::teleport_randomly(ents, env, player, f64::from(*diameter));
+            ConsumeEffect::Teleport(diameter, particles) => {
+                super::chorus::teleport_randomly(
+                    ents,
+                    env,
+                    player,
+                    f64::from(*diameter),
+                    *particles,
+                );
             }
             ConsumeEffect::PlaySound(sound) => {
                 // At the centre of the player's block (`playSound(null, blockPosition(), ..)`).

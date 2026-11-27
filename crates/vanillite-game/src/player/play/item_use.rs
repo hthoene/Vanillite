@@ -454,11 +454,14 @@ fn bone_meal(ctx: &mut PlayContext<'_>, click: Click) -> Used {
     let Some(at_pos) = grown else {
         return Used::Pass;
     };
-    level.game_event(
-        events().item_interact_finish,
-        at,
-        GameEventContext::of(player),
-    );
+    // `causeUseVibration`: the stack's `use_effects` (an emptied stack has none).
+    if !stack.is_empty() && crate::consumable::use_vibrations(&stack) {
+        level.game_event(
+            events().item_interact_finish,
+            at,
+            GameEventContext::of(player),
+        );
+    }
     level.level_event(None, 1505, at_pos, 15);
     set_held(ctx, click.hand, stack);
     Used::Success
@@ -738,36 +741,40 @@ pub(super) fn debug_stick(
     Used::Success
 }
 
-/// The `minecraft:debug_stick_state` component: block name to selected property name.
+/// The `minecraft:debug_stick_state` component: block name to selected property name. It has
+/// only a persistent codec, so the wire carries it as one NBT compound
+/// (`{"minecraft:<block>": "<property>"}`).
 fn debug_stick_state(stack: &ItemStack) -> Option<Vec<(String, String)>> {
     let Some(data) = stack.component(ids::DEBUG_STICK_STATE) else {
         // The debug stick's default component is an empty map.
         return (item::item_id(stack) == items::DEBUG_STICK).then(Vec::new);
     };
-    let mut r = Reader::new(data);
-    let n = r.varint().ok()?;
-    let mut out = Vec::new();
-    for _ in 0..n.clamp(0, 4096) {
-        let block = r.varint().ok()?;
-        let property = r.string(32767).ok()?;
-        let name = u16::try_from(block).ok().map(|b| BlockId(b).name())?;
-        out.push((name.to_owned(), property.to_owned()));
-    }
-    Some(out)
+    let mut input = data;
+    let mut budget = vanillite_nbt::Budget::file();
+    let Ok(Some(vanillite_nbt::Tag::Compound(c))) =
+        vanillite_nbt::read::read_network(&mut input, &mut budget)
+    else {
+        return None;
+    };
+    Some(
+        c.iter()
+            .filter_map(|(block, property)| match property {
+                vanillite_nbt::Tag::String(p) => Some((block.to_owned(), p.clone())),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 fn encode_debug_stick_state(selected: &[(String, String)]) -> Box<[u8]> {
-    use vanillite_protocol::codec::{write_str, write_varint};
-    let mut out = Vec::new();
-    let entries: Vec<(u16, &str)> = selected
-        .iter()
-        .filter_map(|(b, p)| BlockId::by_name(b).map(|id| (id.0, p.as_str())))
-        .collect();
-    write_varint(&mut out, i32::try_from(entries.len()).unwrap_or(0));
-    for (block, property) in entries {
-        write_varint(&mut out, i32::from(block));
-        write_str(&mut out, property);
+    let mut c = vanillite_nbt::Compound::new();
+    for (block, property) in selected {
+        if BlockId::by_name(block).is_some() {
+            c.insert(block.clone(), vanillite_nbt::Tag::String(property.clone()));
+        }
     }
+    let mut out = Vec::new();
+    let _ = vanillite_nbt::write::write_network_compound(&c, &mut out);
     out.into()
 }
 
@@ -1411,9 +1418,10 @@ fn bucket(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32, content
     let player = ctx.actor.entity;
     let stack = held(ctx, hand);
     let relative = pos.relative(face);
-    // `level.mayInteract` (spawn protection, world border) and `player.mayUseItemAt`.
+    // `level.mayInteract` (spawn protection, world border) and `player.mayUseItemAt`, which
+    // tests `can_place_on` against the clicked block.
     let may_build = ctx.actor.game_mode != vanillite_config::GameMode::Adventure
-        || can_place_on(ctx, &stack, relative);
+        || can_place_on(ctx, &stack, pos);
     if (ctx.spawn_protected)(pos) || !may_build || !ctx.level.is_loaded(pos) {
         return Used::Fail;
     }

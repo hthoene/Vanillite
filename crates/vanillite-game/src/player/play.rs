@@ -1715,6 +1715,13 @@ impl Digging {
         };
         ctx.level
             .set_block(target, new_state, update::ALL_IMMEDIATE);
+        // `BLOCK_PLACE` at the clicked block for fire, `BLOCK_CHANGE` for a lit block.
+        let event = if lightable {
+            events_ids().block_change
+        } else {
+            events_ids().block_place
+        };
+        ctx.level.game_event(event, pos, ctx.actor.entity, None);
         if !lightable {
             // `PLACED_BLOCK` of the placed fire, before the damage.
             let stack = match hand {
@@ -1979,9 +1986,12 @@ impl Digging {
         }
         let player = ctx.actor.entity;
         let level = ctx.level.level_mut()?;
+        // `instanceof Spawner`: mob spawners and trial spawners.
         if !matches!(
             level.block_entity(pos),
-            Some(crate::level::BlockEntity::Spawner(_))
+            Some(
+                crate::level::BlockEntity::Spawner(_) | crate::level::BlockEntity::TrialSpawner(_)
+            )
         ) {
             return None;
         }
@@ -2008,6 +2018,12 @@ impl Digging {
             spawner.set_entity_id(entity, &mut random);
         }
         *level.random() = random;
+        if matches!(
+            level.block_entity(pos),
+            Some(crate::level::BlockEntity::TrialSpawner(_))
+        ) {
+            crate::block::trial_spawner::set_entity_id(level, pos, entity);
+        }
         level.block_entity_changed(pos);
         level.game_event_at(player, crate::level::game_event::events().block_change, pos);
         if !ctx.actor.creative() {

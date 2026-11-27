@@ -228,6 +228,21 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             m.damage_cooldown -= 1;
         }
     }
+    // `LivingEntity.tick`: stuck arrows fall out one by one.
+    if !t.ents.stuck_arrows.is_empty() {
+        let id = t.id;
+        let changed = t
+            .ents
+            .stuck_arrows
+            .get_mut(&id)
+            .is_some_and(super::projectile::StuckArrows::tick);
+        if t.ents.stuck_arrows.get(&id).is_some_and(|a| a.count == 0) {
+            t.ents.stuck_arrows.remove(&id);
+        }
+        if changed {
+            t.core_mut().mark_data_dirty();
+        }
+    }
     if t.mob_ref().is_dead_or_dying() {
         tick_death(t);
         if t.mob_ref().removed {
@@ -867,8 +882,9 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         };
         let helmet = t.mob_ref().equipment.get(head).clone();
         if helmet.is_empty() {
-            let m = t.mob();
-            m.fire_ticks = m.fire_ticks.max(160);
+            if super::attack::ignite_mob(t.mob(), 160) {
+                t.core_mut().mark_data_dirty();
+            }
         } else if crate::item::is_damageable(&helmet) {
             let amount = t.mob().random.next_int_bounded(2);
             hurt_equipment(t, head, amount);
@@ -2394,8 +2410,8 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             if m.fire_ticks < 0 {
                 m.fire_ticks += 1;
             }
-            if m.fire_ticks >= 0 {
-                m.fire_ticks = m.fire_ticks.max(160);
+            if m.fire_ticks >= 0 && super::attack::ignite_mob(m, 160) {
+                t.core_mut().mark_data_dirty();
             }
             let source = DamageSource::of(t.env.types.in_fire);
             hurt_self(t, source, damage);
@@ -2405,8 +2421,9 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         }
         if step.lava_blocks > 0 && !fire_immune {
             // `lavaIgnite` and `lavaHurt`.
-            let m = t.mob();
-            m.fire_ticks = m.fire_ticks.max(300);
+            if super::attack::ignite_mob(t.mob(), 300) {
+                t.core_mut().mark_data_dirty();
+            }
             let source = DamageSource::of(t.env.types.lava);
             if hurt_self(t, source, 4.0) {
                 kinds::play_sound(t, "minecraft:entity.generic.burn", 0.4, 2.0);

@@ -812,12 +812,13 @@ fn own_interact(
             return Interaction::Success;
         }
         Kind::Cow if name == "minecraft:bucket" && !ents.mob(target).is_some_and(|m| m.baby) => {
-            // `AbstractCow.mobInteract`: the milk sound is the player's own.
+            // `AbstractCow.mobInteract`: the milk sound is the player's own (`player.playSound`:
+            // its client plays it, the others hear it).
             if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
                 let seed = crate::survival::sound_seed();
                 play_sound(
                     env.out,
-                    None,
+                    Some(player),
                     pos,
                     "minecraft:entity.cow.milk",
                     SoundSource::Players,
@@ -1213,6 +1214,24 @@ fn name_tag(
 pub fn spawn_egg_kind(stack: &ItemStack) -> Option<Kind> {
     let name = item::item_id(stack).name();
     let base = name.strip_suffix("_spawn_egg")?;
+    // `SpawnEggItem.getType`: the type of the stack's `entity_data` (a patched one may name
+    // another mob), else the egg's own.
+    use vanillite_protocol::components::ids;
+    if let Some(wire) = stack.component(ids::ENTITY_DATA)
+        && let Ok(vanillite_nbt::Tag::Compound(data)) = vanillite_protocol::components_nbt::to_nbt(
+            ids::ENTITY_DATA,
+            wire,
+            &vanillite_protocol::item::InstalledRegistries,
+        )
+        && let Some(id) = data.get("id").and_then(vanillite_nbt::Tag::as_str)
+    {
+        let qualified = if id.contains(':') {
+            id.to_owned()
+        } else {
+            format!("minecraft:{id}")
+        };
+        return vanillite_data::entity::EntityTypeId::by_name(&qualified).and_then(Kind::of);
+    }
     let ty = vanillite_data::entity::EntityTypeId::by_name(base)?;
     Kind::of(ty)
 }
@@ -1400,7 +1419,13 @@ fn equip_on_target(
         return Interaction::Pass;
     }
     let one = stack.with_count(1);
-    use_item(ents, player, hand);
+    // `itemStack.split(1)`: taken from the hand in creative too.
+    let i = hand_index(ents, player, hand);
+    if let Some(p) = ents.player_mut(player)
+        && let Some(s) = p.inventory.get_mut(i)
+    {
+        s.shrink(1);
+    }
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
         return Interaction::Pass;
     };
@@ -1526,8 +1551,8 @@ pub fn use_spawn_egg_on(
         super::fam::SpawnContext::at(level, spawn_pos, super::fam::SpawnReason::SpawnItemUse);
     kinds::finalize_spawn(&mut m, &mut ctx, env.random);
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
+        // `applyImplicitComponent(CUSTOM_NAME)` only names it (no `setPersistenceRequired`).
         m.custom_name = Some(name.into());
-        m.persistent = true;
     }
     let rot = Rotation {
         y_rot: yaw,
@@ -1581,8 +1606,8 @@ pub fn spawn_from_item(
     *level.random() = random;
     // `createDefaultStackConfig`: the custom name (the other components after the spawn).
     if let Some(name) = stack.component(vanillite_protocol::components::ids::CUSTOM_NAME) {
+        // `applyImplicitComponent(CUSTOM_NAME)` only names it (no `setPersistenceRequired`).
         m.custom_name = Some(name.into());
-        m.persistent = true;
     }
     if reason == super::fam::SpawnReason::Bucket {
         super::fam::load_from_bucket(&mut m, stack);

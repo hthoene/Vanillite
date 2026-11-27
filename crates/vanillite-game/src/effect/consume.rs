@@ -98,7 +98,7 @@ pub fn apply_status(
         ConsumeEffect::ClearAll => {
             host.effects().clear();
         }
-        ConsumeEffect::Teleport(_) | ConsumeEffect::PlaySound(_) => {}
+        ConsumeEffect::Teleport(..) | ConsumeEffect::PlaySound(_) => {}
     }
 }
 

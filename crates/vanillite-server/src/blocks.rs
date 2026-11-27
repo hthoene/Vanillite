@@ -687,6 +687,7 @@ pub fn tick_item(
         min_y,
         lifetime,
         fast_lava: level.settings.fast_lava,
+        no_gravity: entity.flags().contains(EntityFlags::NO_GRAVITY),
     };
     let Some(data) = items.get_mut(row) else {
         return burn;

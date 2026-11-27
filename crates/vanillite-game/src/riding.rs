@@ -220,6 +220,7 @@ pub fn start_riding(
     if let Some(p) = ents.player_mut(passenger) {
         p.connection.movement.passenger = true;
     }
+    crate::effect::living::send_vehicle_effects(ents, passenger, vehicle, true);
     if let Some(m) = ents.mob_mut(passenger) {
         m.nav.stop();
     }
@@ -229,6 +230,10 @@ pub fn start_riding(
     }
     position_riders_of(ents, vehicle);
     send_passengers(ents, env, vehicle);
+    // `Mob.startRiding`: a leashed mob drops its lead.
+    if ents.mob(passenger).is_some() && ents.leashes.contains_key(&passenger) {
+        crate::mob::tame::drop_leash(ents, env, passenger, true);
+    }
     true
 }
 
@@ -273,6 +278,7 @@ pub fn stop_riding_in_level(level: &mut crate::level::Level, passenger: EntityId
     if let Some(p) = level.entities.player_mut(passenger) {
         p.connection.movement.passenger = false;
     }
+    crate::effect::living::send_vehicle_effects(&mut level.entities, passenger, vehicle, false);
     let Some(v) = level.entities.store.get(vehicle) else {
         return;
     };
@@ -349,6 +355,7 @@ fn dismount(ents: &mut Entities, env: &mut Env<'_>, passenger: EntityId) -> Opti
     if let Some(p) = ents.player_mut(passenger) {
         p.connection.movement.passenger = false;
     }
+    crate::effect::living::send_vehicle_effects(ents, passenger, vehicle, false);
     send_passengers(ents, env, vehicle);
     crate::decoration::cushion::passenger_left(ents, env, vehicle);
     let alive = ents.store.contains(passenger);

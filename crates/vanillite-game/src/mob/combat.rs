@@ -459,6 +459,12 @@ fn hurt_mob_inner(
     };
     m.no_action_time = 0;
     let mut damage = amount.max(0.0);
+    // `#damages_helmet` with a helmet on: three quarters (`hurtHelmet` wears only players').
+    if types.is(kind, tag::DAMAGES_HELMET)
+        && !m.equipment.get(crate::item::EquipmentSlot::Head).is_empty()
+    {
+        damage *= 0.75;
+    }
     if !damage.is_finite() {
         damage = f32::MAX;
     }
@@ -1591,34 +1597,7 @@ pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
             let v = t.velocity();
             t.set_velocity(v.multiply(0.6, 1.0, 0.6));
         }
-        // `weaponItem.hurtEnemy`: the weapon loses its `item_damage_per_attack`.
-        if let Some(per_attack) = crate::item::item_id(&weapon)
-            .info()
-            .weapon
-            .map(|w| w.item_damage_per_attack)
-            && per_attack > 0
-            && crate::item::is_damageable(&weapon)
-        {
-            let unbreaking = combat.enchantment_level(&weapon, "minecraft:unbreaking");
-            let mut amount = i32::try_from(per_attack).unwrap_or(i32::MAX);
-            if unbreaking > 0 {
-                #[allow(clippy::cast_precision_loss)]
-                let chance = unbreaking as f32 / (unbreaking as f32 + 1.0);
-                let removed = (0..amount)
-                    .filter(|_| t.env.random.next_float() < chance)
-                    .count();
-                amount -= i32::try_from(removed).unwrap_or(0);
-            }
-            if amount > 0 {
-                let m = t.mob();
-                let stack = &mut m.equipment.items[0];
-                let damage = crate::item::damage(stack) + amount;
-                crate::item::set_damage(stack, damage);
-                if damage >= crate::item::max_damage(stack) {
-                    stack.shrink(1);
-                }
-            }
-        }
+        // `weaponItem.hurtEnemy` wears nothing: only `Player.attack` runs `postHurtEnemy`.
         // `EnchantmentHelper.doPostAttackEffects`: the target's equipment (Thorns), then the
         // weapon (Fire Aspect).
         let weapon = (!weapon.is_empty()).then_some(&weapon);
