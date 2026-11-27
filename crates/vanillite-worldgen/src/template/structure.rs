@@ -331,16 +331,29 @@ impl StructureTemplate {
     /// `load(blockLookup, tag)`: a template from its (data fixed) NBT. Vanilla upgrades older
     /// data versions with DataFixerUpper first; the Vanilla pack ships current versions only.
     pub fn load(tag: &Compound) -> Self {
+        Self::load_filtered(tag, false)
+    }
+
+    /// [`Self::load`]; `outline` keeps only the size and the jigsaw blocks of each palette (in
+    /// the same order as the full template, so [`Palette::jigsaws`] is the same), no entities.
+    fn load_filtered(tag: &Compound, outline: bool) -> Self {
         let [sx, sy, sz] = int_list(tag, "size");
         let blocks: Vec<&Compound> = compounds(tag.get("blocks")).collect();
         let mut palettes = Vec::new();
         match tag.get("palettes") {
             Some(Tag::List(lists)) => {
                 for palette in &lists.0 {
-                    palettes.push(Self::load_palette(Some(palette), &blocks));
+                    palettes.push(Self::load_palette(Some(palette), &blocks, outline));
                 }
             }
-            _ => palettes.push(Self::load_palette(tag.get("palette"), &blocks)),
+            _ => palettes.push(Self::load_palette(tag.get("palette"), &blocks, outline)),
+        }
+        if outline {
+            return Self {
+                palettes,
+                size: BlockPos::new(sx, sy, sz),
+                ..Self::default()
+            };
         }
         let entities = compounds(tag.get("entities"))
             .filter_map(|entity| {
@@ -493,28 +506,33 @@ impl StructureTemplate {
         Ok(out)
     }
 
-    fn load_palette(palette: Option<&Tag>, blocks: &[&Compound]) -> Palette {
+    fn load_palette(palette: Option<&Tag>, blocks: &[&Compound], outline: bool) -> Palette {
         let states: Vec<BlockState> = compounds(palette).map(read_block_state).collect();
         let infos = blocks
             .iter()
-            .map(|block| {
+            .filter_map(|block| {
                 let [x, y, z] = int_list(block, "pos");
                 let index = match block.get("state") {
                     Some(Tag::Int(i)) => *i,
                     _ => 0,
                 };
-                StructureBlockInfo {
+                // `SimplePalette.stateFor`: unknown ids are air.
+                let state = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| states.get(i).copied())
+                    .unwrap_or(BlockState::AIR);
+                // Filtering before the sort keeps the order of the kept blocks.
+                if outline && state.block() != ids::JIGSAW {
+                    return None;
+                }
+                Some(StructureBlockInfo {
                     pos: BlockPos::new(x, y, z),
-                    // `SimplePalette.stateFor`: unknown ids are air.
-                    state: usize::try_from(index)
-                        .ok()
-                        .and_then(|i| states.get(i).copied())
-                        .unwrap_or(BlockState::AIR),
+                    state,
                     nbt: match block.get("nbt") {
                         Some(Tag::Compound(nbt)) => Some(nbt.clone()),
                         _ => None,
                     },
-                }
+                })
             })
             .collect();
         Palette {
@@ -525,11 +543,35 @@ impl StructureTemplate {
 
     /// Reads a gzip compressed template file (`NbtIo.readCompressed` + [`Self::load`]).
     pub fn from_gzip(bytes: &[u8]) -> Result<Self, Error> {
+        Self::from_gzip_filtered(bytes, false)
+    }
+
+    /// [`Self::from_gzip`] with only the size and the jigsaw blocks (see
+    /// [`StructureTemplateManager::outline`](super::StructureTemplateManager::outline)).
+    pub fn outline_from_gzip(bytes: &[u8]) -> Result<Self, Error> {
+        Self::from_gzip_filtered(bytes, true)
+    }
+
+    fn from_gzip_filtered(bytes: &[u8], outline: bool) -> Result<Self, Error> {
         let data = gunzip(bytes)?;
         let mut budget = vanillite_nbt::Budget::file();
         let tag = vanillite_nbt::read::read_named(&mut data.as_slice(), &mut budget)
             .map_err(|e| Error::new(format!("invalid structure NBT: {e}")))?;
-        Ok(Self::load(&tag))
+        Ok(Self::load_filtered(&tag, outline))
+    }
+
+    /// Estimated heap bytes of the template (for the template cache's limit).
+    pub fn heap_size(&self) -> usize {
+        const NBT: usize = 256;
+        let blocks: usize = self
+            .palettes
+            .iter()
+            .map(|p| {
+                p.blocks.len() * std::mem::size_of::<StructureBlockInfo>()
+                    + p.blocks.iter().filter(|b| b.nbt.is_some()).count() * NBT
+            })
+            .sum();
+        blocks + self.entities.len() * (std::mem::size_of::<StructureEntityInfo>() + NBT)
     }
 
     /// `getSize()`.
@@ -614,7 +656,18 @@ impl StructureTemplate {
         pivot: BlockPos,
         mirror: Mirror,
     ) -> BoundingBox {
-        let delta = self.size.offset(-1, -1, -1);
+        Self::bounding_box_of(self.size, position, rotation, pivot, mirror)
+    }
+
+    /// [`Self::bounding_box_with`] of a template of `size`.
+    pub fn bounding_box_of(
+        size: BlockPos,
+        position: BlockPos,
+        rotation: Rotation,
+        pivot: BlockPos,
+        mirror: Mirror,
+    ) -> BoundingBox {
+        let delta = size.offset(-1, -1, -1);
         let a = transform(BlockPos::ZERO, mirror, rotation, pivot);
         let b = transform(delta, mirror, rotation, pivot);
         BoundingBox::from_corners(a, b).moved(position.x, position.y, position.z)

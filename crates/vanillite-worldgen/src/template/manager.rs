@@ -1,6 +1,10 @@
-//! `StructureTemplateManager`: loads each template of the data packs once and shares it.
+//! `StructureTemplateManager`: loads templates of the data packs on first use and shares them.
+//! Templates read from files stay in a cache bounded by [`StructureTemplateManager::set_cache_limit`]
+//! (least recently used ones go first and are read again when needed); templates put in by
+//! structure blocks or created for missing ids stay until removed.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use rustc_hash::FxHashMap;
@@ -20,7 +24,35 @@ pub struct StructureTemplateManager {
     /// The world's `generated` directory: read first, structure blocks save there.
     generated: Option<PathBuf>,
     /// Loaded templates; `None` for ids without a file.
-    cache: RwLock<FxHashMap<String, Option<Arc<StructureTemplate>>>>,
+    cache: RwLock<FxHashMap<String, Entry>>,
+    /// Bytes the file-loaded templates of the cache may take.
+    cache_limit: AtomicUsize,
+    /// Use counter for the least recently used order.
+    clock: AtomicU64,
+}
+
+/// Default of [`StructureTemplateManager::set_cache_limit`].
+pub const DEFAULT_CACHE_LIMIT: usize = 32 << 20;
+
+#[derive(Debug)]
+struct Entry {
+    template: Option<Arc<StructureTemplate>>,
+    /// Estimated heap size; 0 for entries that cannot be read again from a file.
+    bytes: usize,
+    /// Whether the entry came from a file and may be evicted.
+    reloadable: bool,
+    used: AtomicU64,
+}
+
+impl Entry {
+    fn fixed(template: Option<Arc<StructureTemplate>>) -> Self {
+        Self {
+            template,
+            bytes: 0,
+            reloadable: false,
+            used: AtomicU64::new(0),
+        }
+    }
 }
 
 impl StructureTemplateManager {
@@ -35,6 +67,61 @@ impl StructureTemplateManager {
             roots: RwLock::new(roots),
             generated: None,
             cache: RwLock::new(FxHashMap::default()),
+            cache_limit: AtomicUsize::new(DEFAULT_CACHE_LIMIT),
+            clock: AtomicU64::new(0),
+        }
+    }
+
+    /// Bytes the templates read from files may take in the cache; beyond it the least recently
+    /// used ones are dropped (and read again when needed).
+    pub fn set_cache_limit(&self, bytes: usize) {
+        self.cache_limit.store(bytes, Ordering::Relaxed);
+        let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
+        Self::evict(&mut cache, bytes);
+    }
+
+    /// Drops least recently used file-loaded templates until they take at most `limit` bytes.
+    fn evict(cache: &mut FxHashMap<String, Entry>, limit: usize) {
+        let mut total: usize = cache.values().map(|e| e.bytes).sum();
+        if total <= limit {
+            return;
+        }
+        let mut order: Vec<(u64, &String)> = cache
+            .iter()
+            .filter(|(_, e)| e.reloadable && e.bytes > 0)
+            .map(|(id, e)| (e.used.load(Ordering::Relaxed), id))
+            .collect();
+        order.sort_unstable();
+        let mut gone = Vec::new();
+        for (_, id) in order {
+            if total <= limit {
+                break;
+            }
+            total -= cache[id].bytes;
+            gone.push(id.clone());
+        }
+        for id in gone {
+            cache.remove(&id);
+        }
+    }
+
+    /// The template of `id` for reading its outline (size and jigsaw blocks): the cached one,
+    /// or one read from the files with only its jigsaw blocks, which is not cached. Missing
+    /// ids behave as in [`Self::get_or_create`].
+    pub fn outline(&self, id: &str) -> Result<Arc<StructureTemplate>, Error> {
+        let id = qualify(id);
+        if let Some(entry) = self
+            .cache
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            && let Some(template) = &entry.template
+        {
+            return Ok(Arc::clone(template));
+        }
+        match self.load(&id, true)? {
+            Some(template) => Ok(template),
+            None => self.get_or_create(&id),
         }
     }
 
@@ -73,7 +160,7 @@ impl StructureTemplateManager {
         self.cache
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(qualify(id), Some(Arc::new(template)));
+            .insert(qualify(id), Entry::fixed(Some(Arc::new(template))));
     }
 
     /// `remove(id)`: drops the cached template, the next `get` reads the files again.
@@ -89,12 +176,12 @@ impl StructureTemplateManager {
     /// error when writing fails.
     pub fn save(&self, id: &str) -> Result<bool, Error> {
         let id = qualify(id);
-        let Some(Some(template)) = self
+        let Some(template) = self
             .cache
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&id)
-            .cloned()
+            .and_then(|e| e.template.clone())
         else {
             return Ok(false);
         };
@@ -132,7 +219,15 @@ impl StructureTemplateManager {
         )
     }
 
-    fn load(&self, id: &str) -> Result<Option<Arc<StructureTemplate>>, Error> {
+    /// Reads `id` from the files; `outline` keeps only the jigsaw blocks of its palettes.
+    fn load(&self, id: &str, outline: bool) -> Result<Option<Arc<StructureTemplate>>, Error> {
+        let parse = |bytes: &[u8]| {
+            if outline {
+                StructureTemplate::outline_from_gzip(bytes)
+            } else {
+                StructureTemplate::from_gzip(bytes)
+            }
+        };
         if let Some(file) = self
             .generated
             .as_deref()
@@ -141,7 +236,7 @@ impl StructureTemplateManager {
             match std::fs::read(&file) {
                 Ok(bytes) => {
                     // `tryLoad`: a source that fails counts as not having the template.
-                    if let Ok(template) = StructureTemplate::from_gzip(&bytes) {
+                    if let Ok(template) = parse(&bytes) {
                         return Ok(Some(Arc::new(template)));
                     }
                 }
@@ -160,8 +255,8 @@ impl StructureTemplateManager {
             };
             match std::fs::read(&file) {
                 Ok(bytes) => {
-                    let template = StructureTemplate::from_gzip(&bytes)
-                        .map_err(|e| Error::new(format!("structure {id}: {e}")))?;
+                    let template =
+                        parse(&bytes).map_err(|e| Error::new(format!("structure {id}: {e}")))?;
                     return Ok(Some(Arc::new(template)));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -175,17 +270,31 @@ impl StructureTemplateManager {
     /// cannot be read is an error (Vanilla logs it and treats the template as missing).
     pub fn get(&self, id: &str) -> Result<Option<Arc<StructureTemplate>>, Error> {
         let id = qualify(id);
-        if let Some(cached) = self
+        let now = self.clock.fetch_add(1, Ordering::Relaxed);
+        if let Some(entry) = self
             .cache
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&id)
         {
-            return Ok(cached.clone());
+            entry.used.store(now, Ordering::Relaxed);
+            return Ok(entry.template.clone());
         }
-        let loaded = self.load(&id)?;
+        let loaded = self.load(&id, false)?;
+        let bytes = loaded.as_ref().map_or(0, |t| t.heap_size());
         let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
-        Ok(cache.entry(id).or_insert(loaded).clone())
+        let template = cache
+            .entry(id)
+            .or_insert(Entry {
+                template: loaded,
+                bytes,
+                reloadable: true,
+                used: AtomicU64::new(now),
+            })
+            .template
+            .clone();
+        Self::evict(&mut cache, self.cache_limit.load(Ordering::Relaxed));
+        Ok(template)
     }
 
     /// `getOrCreate(id)`: like [`Self::get`], with an empty template for missing ids (placing it
@@ -196,10 +305,12 @@ impl StructureTemplateManager {
             return Ok(template);
         }
         let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
-        let entry = cache.entry(id).or_insert(None);
-        Ok(Arc::clone(entry.get_or_insert_with(|| {
-            Arc::new(StructureTemplate::default())
-        })))
+        let entry = cache.entry(id).or_insert_with(|| Entry::fixed(None));
+        if entry.template.is_none() {
+            // An empty template that is not backed by a file must stay.
+            *entry = Entry::fixed(Some(Arc::new(StructureTemplate::default())));
+        }
+        Ok(entry.template.clone().unwrap_or_default())
     }
 
     /// `listTemplates()`: the ids of every template file of the packs, sorted.
