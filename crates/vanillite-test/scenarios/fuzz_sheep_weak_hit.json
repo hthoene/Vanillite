@@ -1,0 +1,86 @@
+{
+  "actions": [
+    {
+      "data": "",
+      "entity": "p",
+      "op": "packet",
+      "packet": "punch",
+      "tick": 15,
+      "what": "Punch"
+    },
+    {
+      "data": "00",
+      "entity": "p",
+      "op": "packet",
+      "packet": "attack",
+      "target": "m1",
+      "tick": 18,
+      "what": "Attack { entity_id: 0 }"
+    }
+  ],
+  "description": "A client player swings (punch) at tick 15 and attacks a sheep at tick 18. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "normal",
+  "entities": [
+    {
+      "client": true,
+      "inventory": [
+        [
+          0,
+          "minecraft:leather_boots",
+          1
+        ],
+        [
+          1,
+          "minecraft:leather_boots",
+          1
+        ],
+        [
+          16,
+          "minecraft:bucket",
+          1
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        4.5,
+        -60.0,
+        7.5
+      ],
+      "rot": [
+        45.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    },
+    {
+      "name": "m1",
+      "pos": [
+        3.5,
+        -60,
+        9.5
+      ],
+      "rot": [
+        90.0,
+        0.0
+      ],
+      "seed": 179068,
+      "type": "minecraft:sheep"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 18,
+  "tier": "fast",
+  "time": 1000
+}

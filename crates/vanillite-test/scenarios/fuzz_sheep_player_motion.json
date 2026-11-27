@@ -1,0 +1,98 @@
+{
+  "actions": [
+    {
+      "data": "402f333333333333c04d95dd3281a4b44016167fc946b9dd02",
+      "entity": "p",
+      "op": "packet",
+      "packet": "move_player_pos",
+      "tick": 22,
+      "what": "MovePlayerPos { x: 15.6, y: -59.1708129056, z: 5.521971840802931, flags: MoveFlags { on_ground: false, horizontal_collision: true } }"
+    }
+  ],
+  "description": "A sheep near a client player that moves at tick 22. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "normal",
+  "entities": [
+    {
+      "client": true,
+      "food": 16,
+      "inventory": [
+        [
+          0,
+          "minecraft:water_bucket",
+          1
+        ],
+        [
+          1,
+          "minecraft:dirt",
+          32
+        ],
+        [
+          2,
+          "minecraft:cobblestone",
+          32
+        ],
+        [
+          3,
+          "minecraft:bread",
+          8
+        ],
+        [
+          11,
+          "minecraft:shield",
+          1
+        ],
+        [
+          9,
+          "minecraft:leather_boots",
+          1
+        ],
+        [
+          23,
+          "minecraft:cooked_beef",
+          4
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        12.5,
+        -60.0,
+        3.5
+      ],
+      "rot": [
+        315.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    },
+    {
+      "name": "m0",
+      "pos": [
+        15.5,
+        -60,
+        4.5
+      ],
+      "rot": [
+        0.0,
+        0.0
+      ],
+      "seed": 204275,
+      "type": "minecraft:sheep"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 22,
+  "tier": "fast",
+  "time": 6000
+}

@@ -9,12 +9,14 @@
 //! - [`game_world`]: the scenario world on the real simulation (a headless game level).
 //! - [`runner`]: runs a scenario serially and in parallel (verify mode) and compares the trace
 //!   with its golden.
+//! - [`fuzz`]: random scenarios with a packet-level player, and their shrinking (#132).
 //! - [`golden`]: golden storage keyed by (Minecraft version, jar SHA-1, harness version,
 //!   scenario hash): small goldens in `goldens/`, bulk goldens in a cache directory.
 //!
 //! Goldens are recorded on the pinned Vanilla jar by `cargo xtask golden regen`; intended
 //! differences are accepted with `cargo xtask golden bless <scenario>`.
 
+pub mod fuzz;
 pub mod game_world;
 pub mod golden;
 pub mod runner;

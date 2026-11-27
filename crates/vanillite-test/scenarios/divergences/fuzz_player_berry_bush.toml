@@ -1,0 +1,3 @@
+tick = 48
+cause = "the player takes no damage from the berry bush; Vanilla hurts it by 1 when the move puts it inside the bush (entityInside during handleMovePlayer)"
+owner = "gameplay-developer #132"

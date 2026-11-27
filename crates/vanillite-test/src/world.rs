@@ -111,6 +111,23 @@ pub trait ScenarioWorld {
         Err("this world has no players".to_owned())
     }
 
+    /// Sends a serverbound play packet of a client player (handled before the next tick).
+    fn packet(&mut self, op: &crate::scenario::PacketOp) -> Result<(), String> {
+        Err(format!(
+            "this world has no client players (`{}`)",
+            op.entity
+        ))
+    }
+    /// The start of a client tick of every client player: accepts pending server teleports.
+    fn client_begin(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    /// The end of a client tick of every client player (`client_tick_end`); the packets of
+    /// the tick are handled.
+    fn client_end(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn throw_potion(&mut self, potion: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
         Err(format!("this world cannot throw `{}`", potion.potion))
     }
