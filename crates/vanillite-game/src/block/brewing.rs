@@ -38,6 +38,8 @@ pub struct BrewingStand {
     pub last_bottles: [bool; 3],
     /// `CustomName`.
     pub custom_name: Option<Component>,
+    /// `lock` (`LockCode`).
+    pub lock: Option<vanillite_nbt::Tag>,
 }
 
 impl Default for BrewingStand {
@@ -52,6 +54,7 @@ impl Default for BrewingStand {
             ingredient: 0,
             last_bottles: [false; 3],
             custom_name: None,
+            lock: None,
         }
     }
 }
@@ -102,6 +105,7 @@ impl BrewingStand {
                 .and_then(Tag::as_i64)
                 .and_then(|v| i32::try_from(v).ok())
         };
+        self.lock = super::lock::load(nbt);
         self.custom_name = super::container::load_name(nbt);
         super::container::load_items(nbt, &mut self.items);
         self.brew_time = int("BrewTime").unwrap_or(0);
@@ -119,6 +123,7 @@ impl BrewingStand {
 
     /// Saves the stored fields.
     pub fn save(&self, out: &mut Compound) {
+        super::lock::save(&self.lock, out);
         super::container::save_name(&self.custom_name, out);
         out.insert(
             "BrewTime",

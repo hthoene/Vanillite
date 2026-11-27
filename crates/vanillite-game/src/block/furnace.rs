@@ -38,6 +38,8 @@ pub struct Furnace {
     pub recipes_used: Vec<(String, i32)>,
     /// `CustomName`.
     pub custom_name: Option<Component>,
+    /// `lock` (`LockCode`).
+    pub lock: Option<vanillite_nbt::Tag>,
 }
 
 impl Furnace {
@@ -53,6 +55,7 @@ impl Furnace {
             speed: 1.0,
             recipes_used: Vec::new(),
             custom_name: None,
+            lock: None,
         }
     }
 
@@ -157,6 +160,7 @@ impl Furnace {
                 .and_then(Tag::as_i64)
                 .and_then(|v| i32::try_from(v).ok())
         };
+        self.lock = super::lock::load(nbt);
         self.custom_name = super::container::load_name(nbt);
         super::container::load_items(nbt, &mut self.items);
         self.cooking_timer = int("cooking_time_spent").unwrap_or(0);
@@ -179,6 +183,7 @@ impl Furnace {
 
     /// Saves the stored fields.
     pub fn save(&self, out: &mut Compound) {
+        super::lock::save(&self.lock, out);
         super::container::save_name(&self.custom_name, out);
         out.insert("cooking_time_spent", Tag::Int(self.cooking_timer));
         out.insert("cooking_total_time", Tag::Int(self.cooking_total_time));

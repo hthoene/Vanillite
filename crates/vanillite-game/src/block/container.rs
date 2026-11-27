@@ -39,6 +39,8 @@ pub struct Container {
     pub loot_seed: i64,
     /// Players that have it open (`ContainerOpenersCounter.openCount`).
     pub openers: i32,
+    /// `lock` (`LockCode`).
+    pub lock: Option<vanillite_nbt::Tag>,
 }
 
 impl Container {
@@ -50,6 +52,7 @@ impl Container {
             loot_table: None,
             loot_seed: 0,
             openers: 0,
+            lock: None,
         }
     }
 }
@@ -1392,8 +1395,8 @@ pub fn creative_shulker_drop(
         return;
     }
     let mut stack = ItemStack::new(item, 1);
-    for id in [ids::CUSTOM_NAME, ids::CONTAINER] {
-        if let Some(value) = component(entity, id) {
+    for id in [ids::CUSTOM_NAME, ids::LOCK, ids::CONTAINER] {
+        if let Some(value) = crate::level::block_entity::collect_component(entity, id) {
             stack.patch_mut().set(id, value);
         }
     }
@@ -1461,6 +1464,7 @@ impl Container {
     /// stacks (`tryLoadLootTable`, else `loadAllItems`).
     pub fn load(&mut self, nbt: &Compound) {
         self.custom_name = load_name(nbt);
+        self.lock = super::lock::load(nbt);
         (self.loot_table, self.loot_seed) = super::chest_loot::load(nbt);
         if self.loot_table.is_none() {
             load_items(nbt, &mut self.items);
@@ -1469,6 +1473,7 @@ impl Container {
 
     /// Saves the stored fields (`trySaveLootTable`, else `saveAllItems`).
     pub fn save(&self, out: &mut Compound) {
+        super::lock::save(&self.lock, out);
         save_name(&self.custom_name, out);
         if !super::chest_loot::save(self.loot_table.as_deref(), self.loot_seed, out) {
             save_items(&self.items, out);

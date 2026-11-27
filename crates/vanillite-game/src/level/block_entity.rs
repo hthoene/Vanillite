@@ -743,6 +743,7 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         BlockEntity::Lectern(lectern) => lectern.load(nbt),
         BlockEntity::Jukebox(j) => j.load(nbt),
         BlockEntity::Hopper(h) => {
+            h.lock = crate::block::lock::load(nbt);
             h.custom_name = crate::block::container::load_name(nbt);
             (h.loot_table, h.loot_seed) = crate::block::chest_loot::load(nbt);
             if h.loot_table.is_none() {
@@ -832,6 +833,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::Lectern(lectern) => lectern.save(&mut nbt),
         BlockEntity::Jukebox(j) => j.save(&mut nbt),
         BlockEntity::Hopper(h) => {
+            crate::block::lock::save(&h.lock, &mut nbt);
             crate::block::container::save_name(&h.custom_name, &mut nbt);
             if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {
                 crate::block::container::save_items(&h.items, &mut nbt);
@@ -1222,6 +1224,10 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
 /// `BlockEntity.collectComponents`: the value of component `id` the block entity puts on the
 /// item it drops (loot `copy_components`), as a wire value.
 pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
+    if id == components::LOCK {
+        let lock = crate::block::lock::slot(entity)?.as_ref()?;
+        return crate::block::lock::component(lock);
+    }
     match entity {
         BlockEntity::Skull(skull) => skull.component(id),
         BlockEntity::Banner(banner) => banner.component(id),
@@ -1332,6 +1338,12 @@ pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
             .component(components::CONTAINER)
             .and_then(|v| vanillite_protocol::item::decode_container_contents(v).ok())
     };
+    if let Some(lock) = level
+        .block_entity_mut(pos)
+        .and_then(crate::block::lock::slot_mut)
+    {
+        *lock = crate::block::lock::from_stack(stack);
+    }
     match level.block_entity_mut(pos) {
         Some(BlockEntity::Skull(skull)) => skull.apply(stack),
         Some(BlockEntity::Banner(banner)) => banner.apply(stack),
