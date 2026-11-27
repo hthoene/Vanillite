@@ -465,9 +465,9 @@ rules! {
             /// players are spread out; no gain for a crowd in one place. Deviation: these
             /// phases draw their random numbers per tile, so a seeded world differs from
             /// Vanilla (same rates), and a player's mob cap can be exceeded by one tick's
-            /// spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial
-            /// order at no cost.
-            enabled: bool = "enabled", Performance, vanilla = false;
+            /// spawns at a tile border. On in the performance profile; `false` keeps Vanilla's
+            /// exact serial order at no cost.
+            enabled: bool = "enabled", Performance, vanilla = false, performance = true;
             /// Edge of a tile in chunks. Smaller tiles balance better over the cores, larger
             /// ones cost less bookkeeping.
             tile_size: u8 = "tile-size", Performance, range = [8, 32], vanilla = 16;
