@@ -11,8 +11,8 @@ use super::BlockLevel;
 use super::class::{Class, class_of};
 use super::geometry::{Rect, face_covers};
 use super::props::{
-    Axis, HORIZONTAL, PosExt, StateExt, axis, clockwise, counter_clockwise, cycle, direction_name,
-    is_horizontal, wire_properties, with_properties_of,
+    Axis, HORIZONTAL, IntProperty, PosExt, StateExt, axis, clockwise, counter_clockwise, cycle,
+    direction_name, is_horizontal, wire_properties, with_properties_of,
 };
 use super::survive::{
     bell_connected_direction, can_survive, chest_connected_direction, diode_can_survive_on,
@@ -503,7 +503,7 @@ pub(crate) fn update_shape(
         Class::Leaves => {
             water_tick_if_waterlogged(level, state, pos);
             let distance = leaves_distance_at(neighbour) + 1;
-            if distance != 1 || state.int("distance") != Some(distance) {
+            if distance != 1 || IntProperty::distance().get(state) != Some(distance) {
                 level.schedule_block_tick(pos, state.block(), 1);
             }
             state
@@ -1112,7 +1112,7 @@ fn leaves_distance_at(state: BlockState) -> i32 {
     if tags().blocks.prevents_nearby_leaf_decay.contains(state) {
         0
     } else if class_of(state) == Class::Leaves {
-        state.int("distance").unwrap_or(7)
+        IntProperty::distance().get(state).unwrap_or(7)
     } else {
         7
     }
