@@ -9,6 +9,7 @@
 //! cargo xtask golden check
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
 //! cargo xtask golden bless <scenario>...
+//! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
@@ -33,6 +34,7 @@ mod loadtest;
 mod merge;
 mod multiversion;
 mod normalize;
+mod parity;
 mod vanilla;
 mod version;
 
@@ -79,6 +81,13 @@ pub const USAGE: &str = "usage:
       and unpacked if needed; needs a JDK 25). --all records every repository golden, --bulk
       also the bulk scenario goldens into $VANILLITE_GOLDENS (default target/goldens); names
       (part like ChunkGoldens or chunk, or scenario) record just those.
+  cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--jobs N] [--adopt]
+      Random parity scenarios (#132): generate scenarios with a packet-level player from
+      consecutive seeds (default: 20 from seed 1), record them in Vanilla and run them in
+      Vanillite, shrink every divergence to a small scenario. Writes target/parity-fuzz/found/
+      and summary.md. --adopt copies the found scenarios into crates/vanillite-test/scenarios/
+      and records their goldens (then add scenarios/divergences/<name>.toml with the cause).
+      Also: --replay <scenario.json> runs given scenarios without generating.
   cargo xtask golden bless <scenario>...|all
       Run the scenarios in Vanillite and store their traces as the expected goldens in
       crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
@@ -105,10 +114,11 @@ pub const USAGE: &str = "usage:
       over SSH. --push logs in as $VANILLITE_REGISTRY_USER (default deploy) with the password
       from $PRIVATE_DOCKER_REPO_KEY and pushes; without it the image is loaded into the engine.
   cargo xtask egg [--check]
-      Generate the Pterodactyl egg deploy/pterodactyl/egg-vanillite.json from the configuration
-      schema (server.properties keys and vanillite.toml rules) and check it against the egg
-      format, and the configuration reference (config-docs). --check fails if either committed
-      file is not current.
+      Generate the Pterodactyl eggs deploy/pterodactyl/egg-vanillite.json (every setting) and
+      egg-vanillite-simple.json (basic settings only) from the configuration schema
+      (server.properties keys and vanillite.toml rules) and check them against the egg format,
+      and the configuration reference (config-docs). --check fails if a committed file is not
+      current or the eggs differ in what they share.
   cargo xtask config-docs [--check]
       Generate the configuration reference docs/configuration.md from the configuration schema
       (server.properties keys and vanillite.toml rules with their value in every profile).
@@ -118,12 +128,15 @@ pub const USAGE: &str = "usage:
       with the egg's startup command and default variables (EULA accepted), on the Docker host
       of `docker`, and check that the server starts and answers a status ping on port 30950.
   cargo xtask loadtest [--server vanillite|paper|both] [--steps 50,100@<movement>,...]
-                       [--movement <movement>] [--hold <s>] [--join-rate <per s>] [--chat <s>]
+                       [--movement <movement>] [--hold <s>] [--settle <s>]
+                       [--join-rate <per s>] [--chat <s>]
                        [--view-distance <n>] [--release] [--no-deploy] [--no-gate]
+                       [--rule <key>=<value>]...
       Scaling benchmark: tools/loadbot bots (here) against vanillite@30901 (deployed from this
       checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the test
       server and only running during the run. Steps default to 50,100,250,500,1000,2000,5000,
-      each held 60 s; chat is off by default (--chat sets seconds between messages per bot).
+      each held 60 s after --settle seconds (default 0); chat is off by default (--chat sets
+      seconds between messages per bot).
       Movement (default for all steps: --movement, per step: <players>@<movement>; counts
       must not decrease): random (walk around the spawn) or straight:<speed>[:<turn s>],
       straight flight at y 300 in a random direction per bot at <speed> blocks/s or a preset
@@ -135,7 +148,9 @@ pub const USAGE: &str = "usage:
       Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
       results of clean checkouts under /opt/vanillite/bench/results on the test server and
       fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of
-      the last 5 runs (--no-gate skips the check).
+      the last 5 runs (--no-gate skips the check). --rule sets a rule of vanillite.toml for
+      the Vanillite instance of this run (e.g. performance.region-threading.enabled=true);
+      such runs are experiments: no regression check, not kept as a baseline.
   cargo xtask loadtest report <run.json>...
       Writes report.md and chart.svg for earlier runs next to the first file.
   cargo xtask bench all|<scenario>... [--servers <server,...>] [--publish] [--no-deploy]
@@ -180,6 +195,7 @@ fn main() -> ExitCode {
         ["golden", "check"] => golden::check(&repo_root()),
         ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
         ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
+        ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),

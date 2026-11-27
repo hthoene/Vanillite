@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hthoene/Vanillite/actions/workflows/ci.yml"><img src="https://github.com/hthoene/Vanillite/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
-  <a href="https://github.com/hthoene/Vanillite/releases"><img src="https://img.shields.io/github/v/release/hthoene/Vanillite?include_prereleases&label=release" alt="Release"></a>
+  <a href="https://github.com/hthoene/vanillite/actions/workflows/ci.yml"><img src="https://github.com/hthoene/vanillite/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
+  <a href="https://github.com/hthoene/vanillite/releases"><img src="https://img.shields.io/github/v/release/hthoene/vanillite?include_prereleases&label=release" alt="Release"></a>
   <a href="https://hub.docker.com/r/thoenehannes/vanillite"><img src="https://img.shields.io/docker/v/thoenehannes/vanillite/beta?label=docker" alt="Docker"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/Minecraft-26.3-62b47a" alt="Minecraft 26.3">
@@ -25,7 +25,7 @@ plugins over a stable C ABI. Vanillite always targets the newest Minecraft relea
 through the built-in Bedrock frontend.
 
 > **Beta.** Vanillite `0.1.0-beta.1` is the first public release. Back up your worlds and
-> report problems in the [issues](https://github.com/hthoene/Vanillite/issues).
+> report problems in the [issues](https://github.com/hthoene/vanillite/issues).
 
 ## Highlights
 
@@ -75,7 +75,7 @@ Vanilla data) into `cache/` and creates `eula.txt`: accept the
 ### Release archive
 
 Download the archive for your system from the
-[releases](https://github.com/hthoene/Vanillite/releases) (Linux x86_64 and aarch64, Windows
+[releases](https://github.com/hthoene/vanillite/releases) (Linux x86_64 and aarch64, Windows
 x86_64, macOS aarch64 and x86_64), unpack it into its own folder and start it there:
 
 ```sh
@@ -126,23 +126,34 @@ writable by UID 10001. Console commands go through `docker attach` (start the co
 
 ### Pterodactyl and Pelican
 
-Import [`deploy/pterodactyl/egg-vanillite.json`](deploy/pterodactyl/egg-vanillite.json) in the
-admin panel (*Nests → Import Egg*, Pelican: *Eggs → Import*) and create a server with it; its
-primary allocation is the game port.
+There are two eggs; import one or both in the admin panel (*Nests → Import Egg*, Pelican:
+*Eggs → Import*) and create a server with it; its primary allocation is the game port.
+
+| Egg | File | For |
+|---|---|---|
+| *Vanillite (Simple)* | [`egg-vanillite-simple.json`](deploy/pterodactyl/egg-vanillite-simple.json) | Admins who want a server that just runs: only the basic settings, everything else uses the profile's defaults. |
+| *Vanillite* | [`egg-vanillite.json`](deploy/pterodactyl/egg-vanillite.json) | Every `server.properties` and `vanillite.toml` setting. |
+
+Both start the same image the same way and use the same variable names, so a server can be
+switched between them (admin panel: the server's *Startup* tab, *Egg*); check the *Startup* page
+of the server after a switch.
 
 - **Image:** *Beta - Minecraft 26.3* (`mc26.3-beta`, the default) stays on that Minecraft
   version; *Beta - newest Minecraft version* (`beta`) follows new versions. Switch it on the
   *Startup* page.
 - **EULA:** switch on *Accept the Minecraft EULA*, or accept the panel's EULA prompt on the
   first start.
-- **Settings:** the *Startup* page starts with the settings most servers change (profile, MOTD,
-  players, game mode, difficulty, whitelist, seed, distances, Bedrock players); every other
-  setting follows, grouped by area. Empty technical settings (or `default`) keep the profile's
-  value.
+- **Settings (simple egg):** server type (profile), name (MOTD), max players, game mode,
+  difficulty, hardcore, whitelist, online mode, seed, view distance, world format and Bedrock
+  players.
+- **Settings (full egg):** the *Startup* page starts with the settings most servers change
+  (profile, MOTD, players, game mode, difficulty, whitelist, seed, distances, Bedrock players);
+  every other setting follows, grouped by area. Empty technical settings (or `default`) keep the
+  profile's value.
 - **Bedrock** players join on the server's port (UDP) unless *Bedrock: Port* names another
   allocation.
 
-The egg is generated from the configuration schema, so re-import it after an update.
+The eggs are generated from the configuration schema, so re-import them after an update.
 
 ## Configuration
 
@@ -219,10 +230,12 @@ Vanillite.
   XUID.
 - **Older Java clients** (`multiversion.versions`): 1.20.5 to 26.2 by default, translated to
   26.3 and back; clients of the server's own version pay nothing.
-- **vanillite-proxy**: a Velocity-compatible proxy (modern forwarding, server switches without
-  reconnect, fallback when a server goes down) in front of Vanillite and Paper servers, with
-  the Bedrock frontend built in. Build it with `cargo build --release -p vanillite-proxy`; it
-  reads `proxy.toml` from its folder. On the server, set `proxy.velocity-secret`.
+- **vanillite-proxy**: a Velocity-compatible proxy (modern, BungeeCord or no forwarding, server
+  switches without reconnect, fallback when a server goes down, the BungeeCord plugin channel,
+  `/server`, `/glist`, `/send`, `/alert`, `/proxy reload`, a console) in front of Vanillite,
+  Paper and Spigot servers, with the Bedrock frontend built in. Build it with
+  `cargo build --release -p vanillite-proxy`; it reads `proxy.toml` from its folder. On the
+  server, set `proxy.velocity-secret`. It has no plugin API yet.
 
 ## Status and known limitations
 
@@ -241,7 +254,7 @@ The Rust toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml); ru
 it on the first build.
 
 ```sh
-git clone https://github.com/hthoene/Vanillite.git && cd Vanillite
+git clone https://github.com/hthoene/vanillite.git && cd Vanillite
 cargo build --release -p vanillite          # target/release/vanillite
 cargo xtask dev                              # build and run a dev server in ./run
 ```

@@ -180,6 +180,9 @@ impl Default for Sent {
 /// The survival state of a player.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Survival {
+    /// The player's own random (`Entity.random`) as the state of its legacy LCG
+    /// (`LegacyRandom::from_state`); thrown items draw from it.
+    pub own_random: i64,
     /// `DATA_HEALTH_ID`.
     pub health: f32,
     /// `DATA_PLAYER_ABSORPTION_ID`.
@@ -196,6 +199,8 @@ pub struct Survival {
     /// `lastHurt`.
     pub last_hurt: f32,
     pub death_time: i32,
+    /// `isRemoved()`: `tickDeath` removed the dead player (once, until it respawns).
+    pub removed: bool,
     pub xp: Experience,
     /// `DATA_SCORE_ID`.
     pub score: i32,
@@ -321,6 +326,7 @@ impl Default for Recorded {
 impl Default for Survival {
     fn default() -> Self {
         Survival {
+            own_random: LegacyRandom::new(crate::mob::new_unique_seed()).state(),
             health: MAX_HEALTH,
             absorption: 0.0,
             food: FoodData::default(),
@@ -331,6 +337,7 @@ impl Default for Survival {
             damage_cooldown: 0,
             last_hurt: 0.0,
             death_time: 0,
+            removed: false,
             xp: Experience::default(),
             score: 0,
             last_death: None,
@@ -491,6 +498,9 @@ pub struct MoveRecord {
     pub on_ground: bool,
     /// The target is above the last good position.
     pub moved_upwards: bool,
+    /// The move passed the collision checks; a rejected move ("moved wrongly", into a block)
+    /// sent the player back to `from` (`to == from`).
+    pub accepted: bool,
 }
 
 fn block_pos(v: Vec3) -> BlockPos {
@@ -909,11 +919,32 @@ pub fn hurt(
     source: DamageSource,
     amount: f32,
 ) -> bool {
-    hurt_with(entity, player, env, source, amount, None)
+    hurt_with(entity, player, env, source, amount, None, (None, None))
+}
+
+/// [`hurt`] with the UUIDs of the source's causing and direct entities for the plugins'
+/// damage and death events (resolved by callers that have the entities, only when a plugin
+/// listens: [`wants_attackers`]).
+pub fn hurt_by(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    source: DamageSource,
+    amount: f32,
+    attackers: (Option<u128>, Option<u128>),
+) -> bool {
+    hurt_with(entity, player, env, source, amount, None, attackers)
+}
+
+/// Whether the plugins' damage or death events need the UUIDs of a player's attackers.
+pub fn wants_attackers(hooks: &dyn crate::hooks::GameHooks) -> bool {
+    hooks.wants(vanillite_abi::event::ENTITY_DAMAGE)
+        || hooks.wants(vanillite_abi::event::PLAYER_DEATH)
 }
 
 /// [`hurt`] with the armour effectiveness of the source's weapon (Breach, see
-/// [`crate::mob::attack::armor_effectiveness`]).
+/// [`crate::mob::attack::armor_effectiveness`]) and the UUIDs of the causing and direct
+/// entities (see [`hurt_by`]).
 pub fn hurt_with(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
@@ -921,6 +952,7 @@ pub fn hurt_with(
     source: DamageSource,
     amount: f32,
     armor_effectiveness: Option<&dyn Fn(f32) -> f32>,
+    attackers: (Option<u128>, Option<u128>),
 ) -> bool {
     let types = env.types;
     let kind = source.kind;
@@ -954,10 +986,15 @@ pub fn hurt_with(
         }
     }
     let uuid = entity.as_ref().uuid();
-    match env
-        .hooks
-        .entity_damage(uuid, "minecraft:player", &types.get(kind).id, damage)
-    {
+    let (attacker, direct) = attackers;
+    match env.hooks.entity_damage(
+        uuid,
+        "minecraft:player",
+        &types.get(kind).id,
+        damage,
+        attacker,
+        direct,
+    ) {
         Some(changed) => damage = changed,
         None => return false,
     }
@@ -1060,7 +1097,7 @@ pub fn hurt_with(
             if took_full {
                 player_sound(env, id, pos, "minecraft:entity.player.death");
             }
-            die(entity, player, env, source);
+            die(entity, player, env, source, attackers.0);
         }
     } else if took_full {
         player_sound(env, id, pos, types.get(kind).effects.sound());
@@ -1435,12 +1472,14 @@ fn fall_location(s: &Survival) -> Option<FallLocation> {
     }
 }
 
-/// `ServerPlayer.die`.
+/// `ServerPlayer.die`; `killer` is the UUID of the source's causing entity (the kill credit)
+/// for the plugins' death event, when the caller resolved it.
 pub fn die(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,
     source: DamageSource,
+    killer: Option<u128>,
 ) {
     let network_id = entity.as_ref().network_id().0;
     let uuid = entity.as_ref().uuid();
@@ -1461,7 +1500,7 @@ pub fn die(
         keep_inventory: env.rules.bool(Rule::KEEP_INVENTORY),
     };
     env.hooks
-        .player_death(uuid, &env.types.get(source.kind).id, None, &mut death);
+        .player_death(uuid, &env.types.get(source.kind).id, killer, &mut death);
     sink.send(&PlayerCombatKill {
         player_id: network_id,
         message: death.message.clone().unwrap_or_else(Component::empty),
@@ -1482,13 +1521,26 @@ pub fn die(
             _ => 1.62,
         };
         let eye_y = pos.y + f64::from(eye);
-        drop_all(
-            &mut player.inventory,
-            Vec3::new(pos.x, eye_y - 0.3, pos.z),
-            env,
-        );
+        let mut drops = take_drops(&mut player.inventory);
         // `getBaseExperienceReward`.
-        let amount = player.survival.xp.level.saturating_mul(7).min(100);
+        let mut amount = player.survival.xp.level.saturating_mul(7).min(100);
+        if env.hooks.wants(vanillite_abi::event::ENTITY_DROPS) {
+            let mut ev = crate::hooks::Event {
+                entity: uuid,
+                entity_type: vanillite_data::entity::ids::PLAYER.name().to_owned(),
+                key: env.types.get(source.kind).id.clone(),
+                item: crate::hooks::items_snbt(&drops),
+                value: i64::from(amount),
+                to: crate::hooks::Place::at(pos),
+                ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
+            };
+            env.hooks.event(&mut ev);
+            if let Some(new) = crate::hooks::drops_out(&ev) {
+                drops = new;
+            }
+            amount = crate::hooks::experience_value(ev.value);
+        }
+        throw_drops(drops, Vec3::new(pos.x, eye_y - 0.3, pos.z), env);
         if amount > 0 {
             env.out.push(Effect::Experience { pos, amount });
         }
@@ -1530,9 +1582,9 @@ pub fn die(
     player.connection.movement.mark_client_unloaded();
 }
 
-/// `destroyVanishingCursedItems` + `Inventory.dropAll`: every stack is thrown in a random
-/// direction from `from` (`createItemStackToDrop(stack, true, false)`).
-fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: &mut Env<'_>) {
+/// `destroyVanishingCursedItems` + `Inventory.dropAll`: the stacks that drop, taken out of the
+/// inventory, in drop order.
+fn take_drops(inventory: &mut crate::inventory::PlayerInventory) -> Vec<crate::item::ItemStack> {
     let vanishing = |stack: &crate::item::ItemStack| {
         crate::player::play::game_data()
             .is_some_and(|d| d.enchantment_level(stack, "minecraft:vanishing_curse") > 0)
@@ -1544,14 +1596,19 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
         .iter_mut()
         .chain(std::iter::once(&mut inv.offhand))
         .chain(inv.armor.iter_mut());
-    for slot in slots {
-        let stack = std::mem::replace(slot, crate::item::ItemStack::EMPTY);
-        if stack.is_empty() || vanishing(&stack) {
-            continue;
-        }
+    slots
+        .map(|slot| std::mem::replace(slot, crate::item::ItemStack::EMPTY))
+        .filter(|stack| !stack.is_empty() && !vanishing(stack))
+        .collect()
+}
+
+/// `Inventory.dropAll`'s throws: every stack in a random direction from `from`
+/// (`createItemStackToDrop(stack, true, false)`).
+fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>) {
+    for stack in drops {
         // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
         // draws from the player's own random in Vanilla, here from the level random.
-        let (uuid, y_rot, _) = crate::mob::new_item_entity();
+        let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
         let pow = env.random.next_float() * 0.5;
         let dir = env.random.next_float() * std::f32::consts::TAU;
         let velocity = Vec3::new(
@@ -1560,6 +1617,7 @@ fn drop_all(inventory: &mut crate::inventory::PlayerInventory, from: Vec3, env: 
             f64::from(vanillite_base::math::cos(f64::from(dir)) * pow),
         );
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: from,
             velocity,
@@ -1770,7 +1828,8 @@ fn tick_after_portal(
         // `tickDeath`.
         let s = &mut player.survival;
         s.death_time += 1;
-        if s.death_time >= 20 {
+        if s.death_time >= 20 && !s.removed {
+            s.removed = true;
             env.out.push(Effect::Tracking {
                 entity: id,
                 with_self: true,
@@ -2074,8 +2133,9 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         hurt(entity, player, env, source, 1.0);
     }
     if inside.berry_bush == Some(true) {
-        // `SweetBerryBushBlock.entityInside`: the client reports the player's movement.
-        let moved = entity.as_ref().velocity();
+        // `SweetBerryBushBlock.entityInside`: the client reports the player's movement
+        // (`getKnownMovement`).
+        let moved = player.connection.movement.known_movement;
         if moved.x * moved.x + moved.z * moved.z > 0.0
             && (moved.x.abs() >= f64::from(0.003_f32) || moved.z.abs() >= f64::from(0.003_f32))
         {
@@ -2277,6 +2337,10 @@ pub fn on_move(
     }
     let dy = mv.to.y - mv.from.y;
     check_fall_damage(entity, player, env, dy, mv.on_ground, crouching);
+    if !mv.accepted {
+        // The rejected move only checks the fall damage before the player goes back.
+        return;
+    }
     if mv.moved_upwards {
         reset_fall_distance(player);
     }
@@ -3005,6 +3069,7 @@ fn simulate_move(
             was_on_ground,
             on_ground,
             moved_upwards: false,
+            accepted: true,
         };
         movement_emission(entity, player, env, mv, crouching);
     }

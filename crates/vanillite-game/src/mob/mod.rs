@@ -1176,17 +1176,28 @@ pub fn new_uuid() -> u128 {
     crate::block::tnt::insecure_uuid()
 }
 
-/// The UUID, yaw and motion of a new item entity (`new ItemEntity(level, x, y, z, stack)`):
-/// the constructor draws `bobOffs`, the yaw and the motion from the item's own random, which takes its
-/// seed from the entity seed stream. Throws replace the motion afterwards.
-pub fn new_item_entity() -> (u128, f32, Vec3) {
+/// The UUID, yaw, motion and random state ([`crate::item_entity::ItemData::random`]) of a new
+/// item entity (`new ItemEntity(level, x, y, z, stack)`): the constructor draws `bobOffs`, the
+/// yaw and the motion from the item's own random, which takes its seed from the entity seed
+/// stream. Throws replace the motion afterwards.
+pub fn new_item_entity() -> (u128, f32, Vec3, i64) {
     let mut own = LegacyRandom::new(new_entity_seed());
     // `bobOffs`, then the yaw.
     let _bob = own.next_float();
     let y_rot = own.next_float() * 360.0;
     let x = own.next_double() * 0.2 - 0.1;
     let z = own.next_double() * 0.2 - 0.1;
-    (new_uuid(), y_rot, Vec3::new(x, 0.2, z))
+    (new_uuid(), y_rot, Vec3::new(x, 0.2, z), own.state())
+}
+
+/// The UUID, yaw and random state of a new item entity made with its motion
+/// (`new ItemEntity(level, x, y, z, stack, dx, dy, dz)`): the constructor draws only `bobOffs`
+/// and the yaw from the item's own random.
+pub fn new_item_entity_with_motion() -> (u128, f32, i64) {
+    let mut own = LegacyRandom::new(new_entity_seed());
+    let _bob = own.next_float();
+    let y_rot = own.next_float() * 360.0;
+    (new_uuid(), y_rot, own.state())
 }
 
 /// The UUID of a new entity that keeps no random of its own here (items): it still takes its

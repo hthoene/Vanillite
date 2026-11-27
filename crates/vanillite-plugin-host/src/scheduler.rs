@@ -22,6 +22,8 @@ struct Task {
     /// Runs on a background thread (waits on the global queue while delayed).
     background: bool,
     run: abi::TaskFn,
+    /// Runs instead of `run` when the entity of an entity task is gone.
+    retired: Option<abi::TaskFn>,
     drop: Option<abi::DropFn>,
     user: SendPtr,
 }
@@ -75,6 +77,9 @@ impl Tasks {
             entity: (spec.owner.kind == abi::owner::ENTITY).then(|| spec.owner.entity.to_u128()),
             background,
             run: spec.run,
+            retired: spec
+                .retired
+                .filter(|_| spec.owner.kind == abi::owner::ENTITY),
             drop: spec.drop,
             user: SendPtr(spec.user),
         };
@@ -223,7 +228,12 @@ impl Tasks {
                             .or_default()
                             .push(task);
                     }
-                    _ => drop_task(inner, &task),
+                    _ => {
+                        if let Some(retired) = task.retired {
+                            run_with(inner, &task, retired, Some(&mut *world));
+                        }
+                        drop_task(inner, &task);
+                    }
                 }
                 continue;
             }
@@ -272,13 +282,23 @@ impl Tasks {
 }
 
 fn run(inner: &Inner, task: &Task, world: Option<&mut dyn WorldAccess>) -> Status {
+    run_with(inner, task, task.run, world)
+}
+
+/// Runs one of a task's functions (`run` or `retired`).
+fn run_with(
+    inner: &Inner,
+    task: &Task,
+    f: abi::TaskFn,
+    world: Option<&mut dyn WorldAccess>,
+) -> Status {
     let Some(plugin) = inner.plugin(task.plugin) else {
         return status::NOT_FOUND;
     };
     let mut ctx = CallCtx::new(world, &plugin);
     plugin.call("a scheduled task", || {
         // SAFETY: the plugin's task and user data live until its drop function runs.
-        unsafe { (task.run)(task.user.0, ctx.as_raw()) }
+        unsafe { f(task.user.0, ctx.as_raw()) }
     })
 }
 

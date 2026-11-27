@@ -236,10 +236,24 @@ pub struct GameWorld {
     clock_time: i64,
     /// The entities the ticking lightning bolt strikes.
     bolt_hits: Vec<EntityId>,
-    /// The own random of item entities (not seeded per entity yet).
-    item_random: LegacyRandom,
     item_scratch: vanillite_server::ItemScratch,
+    /// The packet-level players, in join order.
+    clients: Vec<Client>,
+    /// Network ids of the scenario entities (they stay valid after an entity is gone).
+    network_names: Vec<(String, i32)>,
 }
+
+/// A packet-level scenario player: its packets go into its connection's queue.
+struct Client {
+    id: EntityId,
+    tx: vanillite_protocol::InboundSender,
+    seq: u64,
+    /// The client finished its join (accepted the first teleport, sent `player_loaded`).
+    joined: bool,
+}
+
+/// Packets a client player may queue in one tick.
+const CLIENT_QUEUE: usize = 4096;
 
 /// Ticks until an item entity despawns (`ItemEntity.LIFETIME`).
 const ITEM_LIFETIME: i16 = 6000;
@@ -541,8 +555,9 @@ impl GameWorld {
             level_rng: spec.level_rng,
             clock_time: spec.time.unwrap_or(0),
             bolt_hits: Vec::new(),
-            item_random: LegacyRandom::new(spec.seed),
             item_scratch: vanillite_server::ItemScratch::default(),
+            clients: Vec::new(),
+            network_names: Vec::new(),
         };
         world
             .set_forced(&spec.forced, true)
@@ -624,7 +639,6 @@ impl GameWorld {
         // What block entities (beehives) read of the world after the entities.
         self.level.spawner_env.env = self.env;
         self.level.entities.day_time = self.env.day_time;
-        minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
             if !vanillite_game::entities::in_ticking_range(&self.level, id) {
@@ -676,16 +690,14 @@ impl GameWorld {
             }
             if kind == ids::ITEM {
                 let level = &mut self.level;
-                let random = &mut self.item_random;
                 let (types, facts) = PACK.get().expect("installed");
                 let mut ents = std::mem::take(&mut level.entities);
                 let burn = {
                     let raining = |pos| level.is_raining_at(pos);
                     vanillite_server::tick_item(
                         &mut ents,
-                        &level.chunks,
+                        level,
                         id,
-                        &mut || random.next_float(),
                         MIN_Y,
                         vanillite_server::ItemSettings {
                             lifetime: ITEM_LIFETIME,
@@ -877,6 +889,7 @@ impl GameWorld {
             }
             if let Effect::DropItem {
                 uuid,
+                random: item_random,
                 pos,
                 velocity,
                 y_rot,
@@ -890,7 +903,7 @@ impl GameWorld {
                     pos,
                     velocity,
                     y_rot,
-                    ItemData::new(stack, pickup_delay, None),
+                    ItemData::new(stack, pickup_delay, None, item_random),
                 );
             }
         }
@@ -990,9 +1003,9 @@ impl GameWorld {
             .map(|(_, n)| n.as_str())
     }
 
-    fn add_player(&mut self, spec: &EntitySpec, index: usize) {
+    fn add_player(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
         let pos = Vec3::new(spec.pos[0], spec.pos[1], spec.pos[2]);
-        let (_tx, inbound) = vanillite_protocol::inbound_queue(64);
+        let (tx, inbound) = vanillite_protocol::inbound_queue(CLIENT_QUEUE);
         let chat = ChatSettings::default();
         let mut data = PlayerData {
             profile: GameProfile {
@@ -1031,14 +1044,40 @@ impl GameWorld {
             x_rot: spec.rot[1],
             y_head_rot: spec.rot[0],
         };
-        // Nobody moves the mock player: the server does, like Vanilla's.
-        data.survival.simulate_movement = true;
+        for (slot, item, count) in &spec.inventory {
+            let item = vanillite_data::item::ItemId::by_name(item)
+                .ok_or_else(|| format!("unknown item {item}"))?;
+            if let Some(s) = data.inventory.get_mut(*slot) {
+                *s = vanillite_game::item::ItemStack::new(item.0, *count);
+            }
+        }
+        if let Some(food) = spec.food {
+            data.survival.food.food_level = food;
+        }
+        // Nobody moves the mock player: the server does, like Vanilla's. A client player
+        // moves by its packets.
+        data.survival.simulate_movement = !spec.client;
+        // The recorder seeds the player's own random with the spec's seed
+        // (`ParityHooks.seedNext`), then the `LivingEntity` constructor draws the yaw from it.
+        let mut own = LegacyRandom::new(spec.seed);
+        let _ = own.next_float();
+        data.survival.own_random = own.state();
         data.survival.y_body_rot = spec.rot[0];
         let id =
             self.level
                 .entities
                 .spawn_player(&self.network_ids, spec.uuid(index), pos, rot, data);
         self.names.push((id, spec.name.clone()));
+        if spec.client {
+            self.clients.push(Client {
+                id,
+                tx,
+                seq: 0,
+                joined: false,
+            });
+            self.join_client(id)?;
+        }
+        Ok(())
     }
 
     fn add_mob(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
@@ -1061,6 +1100,7 @@ impl GameWorld {
             &self.level.entities,
             row,
             &name_of,
+            &|id| self.clients.iter().any(|c| c.id == id),
             self.spec.player_state,
             self.spec.sleep_state,
         )
@@ -1141,11 +1181,12 @@ pub(crate) fn spawn_mob(
 }
 
 /// The trace detail of the entity in row `row` (see [`crate::trace`]); `name_of` gives the
-/// scenario names.
+/// scenario names, `is_client` tells the packet-level players.
 pub(crate) fn entity_detail(
     ents: &Entities,
     row: usize,
     name_of: &dyn Fn(EntityId) -> Option<String>,
+    is_client: &dyn Fn(EntityId) -> bool,
     player_state: bool,
     sleep_state: bool,
 ) -> Option<Map<String, Value>> {
@@ -1164,16 +1205,20 @@ pub(crate) fn entity_detail(
     }
     let bits = |f: f32| json!(f.to_bits() as i32);
     let rot = core.rot[row];
+    let client = is_client(id);
     let living = |d: &mut Map<String, Value>, body: f32, hp: f32, death: i32| {
-        d.insert(
-            "rot".into(),
+        // The body rotation of a client's player is the client's own look.
+        let rot = if client {
+            json!([bits(rot.y_rot), bits(rot.x_rot), bits(rot.y_head_rot)])
+        } else {
             json!([
                 bits(rot.y_rot),
                 bits(rot.x_rot),
                 bits(rot.y_head_rot),
                 bits(body)
-            ]),
-        );
+            ])
+        };
+        d.insert("rot".into(), rot);
         d.insert("hp".into(), bits(hp));
         if death > 0 {
             d.insert("death".into(), json!(death));
@@ -1186,6 +1231,20 @@ pub(crate) fn entity_detail(
             p.survival.health,
             p.survival.death_time,
         );
+        if client {
+            let inv: Vec<Value> = (0..=vanillite_game::inventory::OFFHAND)
+                .filter_map(|slot| {
+                    let s = p.inventory.get(slot);
+                    (!s.is_empty())
+                        .then(|| json!([slot, vanillite_game::item::item_id(s).name(), s.count]))
+                })
+                .collect();
+            d.insert("inv".into(), Value::Array(inv));
+            d.insert(
+                "food".into(),
+                json!([p.survival.food.food_level, bits(p.survival.food.saturation)]),
+            );
+        }
         if player_state {
             let hand = |s: &vanillite_game::item::ItemStack| {
                 json!([vanillite_game::item::item_id(s).name(), s.count])
@@ -1773,6 +1832,7 @@ impl ScenarioWorld for GameWorld {
         let mut light = Vec::new();
         level.chunks.take_light_changes(&mut light);
         self.tick_players();
+        self.tick_client_connections();
     }
 
     fn settle_light(&mut self) {
@@ -1858,7 +1918,7 @@ impl ScenarioWorld for GameWorld {
     fn add_entities(&mut self, entities: &[EntitySpec], entity_seed: i64) -> Result<(), String> {
         for (i, spec) in entities.iter().enumerate() {
             if spec.is_player() {
-                self.add_player(spec, i);
+                self.add_player(spec, i)?;
             }
         }
         *self.level.random() = LegacyRandom::new(self.seed);
@@ -1869,6 +1929,11 @@ impl ScenarioWorld for GameWorld {
             }
         }
         self.level.set_entity_seed(entity_seed);
+        for (id, name) in &self.names {
+            if let Some(e) = self.level.entities.store.get(*id) {
+                self.network_names.push((name.clone(), e.network_id().0));
+            }
+        }
         vanillite_game::experience_orb::seed_entity_random(entity_seed);
         Ok(())
     }
@@ -2025,6 +2090,84 @@ impl ScenarioWorld for GameWorld {
         self.click(click).map(drop)
     }
 
+    fn packet(&mut self, op: &crate::scenario::PacketOp) -> Result<(), String> {
+        let id = self.named(&op.entity)?;
+        let target = match &op.target {
+            Some(t) => Some(
+                self.network_names
+                    .iter()
+                    .find(|(n, _)| n == t)
+                    .map(|(_, id)| *id)
+                    .ok_or_else(|| format!("no scenario entity `{t}`"))?,
+            ),
+            None => None,
+        };
+        let packet_id = vanillite_protocol::ids::play::serverbound::NAMES
+            .iter()
+            .position(|n| n.strip_prefix("minecraft:").unwrap_or(n) == op.packet)
+            .ok_or_else(|| format!("unknown serverbound play packet `{}`", op.packet))?;
+        let mut bytes = Vec::new();
+        vanillite_protocol::codec::write_varint(
+            &mut bytes,
+            i32::try_from(packet_id).map_err(|e| e.to_string())?,
+        );
+        bytes.extend(op.body(target)?);
+        let packet = vanillite_protocol::sets::ServerboundPlay::decode(&bytes)
+            .map_err(|e| format!("`{}` does not decode: {e}", op.packet))?;
+        self.send(id, packet)
+    }
+
+    fn client_begin(&mut self) -> Result<(), String> {
+        use vanillite_protocol::packets::play::serverbound::{AcceptTeleportation, PlayerLoaded};
+        use vanillite_protocol::sets::ServerboundPlay;
+        let ids: Vec<EntityId> = self.clients.iter().map(|c| c.id).collect();
+        let joining: Vec<EntityId> = self
+            .clients
+            .iter_mut()
+            .filter_map(|c| (!std::mem::replace(&mut c.joined, true)).then_some(c.id))
+            .collect();
+        for id in ids {
+            let Some(p) = self.level.entities.player(id) else {
+                continue;
+            };
+            let Some((teleport, to)) = p.connection.movement.pending_teleport() else {
+                continue;
+            };
+            let rot = self
+                .level
+                .entities
+                .store
+                .get(id)
+                .map(|e| e.rot())
+                .ok_or("the player is gone")?;
+            self.send(
+                id,
+                ServerboundPlay::AcceptTeleportation(AcceptTeleportation {
+                    id: teleport,
+                    x: to.x,
+                    y: to.y,
+                    z: to.z,
+                    y_rot: rot.y_rot,
+                    x_rot: rot.x_rot,
+                }),
+            )?;
+        }
+        for id in joining {
+            self.send(id, ServerboundPlay::PlayerLoaded(PlayerLoaded))?;
+        }
+        Ok(())
+    }
+
+    fn client_end(&mut self) -> Result<(), String> {
+        use vanillite_protocol::packets::play::serverbound::ClientTickEnd;
+        use vanillite_protocol::sets::ServerboundPlay;
+        let ids: Vec<EntityId> = self.clients.iter().map(|c| c.id).collect();
+        for id in ids {
+            self.send(id, ServerboundPlay::ClientTickEnd(ClientTickEnd))?;
+        }
+        self.handle_clients()
+    }
+
     fn throw_potion(&mut self, op: &crate::scenario::ThrowPotionOp) -> Result<(), String> {
         use vanillite_game::effect::potion::PotionContents;
         use vanillite_game::effect::thrown::{self, ThrownPotion};
@@ -2162,6 +2305,439 @@ pub(crate) fn observe_ticks(
         delay: t.trigger - now,
         priority: i32::from(t.priority.0),
     }));
+}
+
+/// The packet-level players: their packets go through the real handlers
+/// (`Connection::handle_packets`), then the moves and entity actions run like in the server
+/// world's tick (`WorldPlayers::handle_packets`, `WorldSurvival::moves`,
+/// `WorldMobs::player_actions`); keep them in step.
+impl GameWorld {
+    /// Queues a packet of the client player `id`.
+    fn send(
+        &mut self,
+        id: EntityId,
+        packet: vanillite_protocol::sets::ServerboundPlay,
+    ) -> Result<(), String> {
+        let client = self
+            .clients
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or("packets need a client player (`\"client\": true`)")?;
+        client.seq += 1;
+        let inbound = vanillite_protocol::Inbound {
+            seq: client.seq,
+            packet,
+        };
+        if client.tx.try_send(inbound) {
+            Ok(())
+        } else {
+            Err("the client's packet queue is full".to_owned())
+        }
+    }
+
+    /// The join of a client player: the server teleports it to where it stands
+    /// (`placeNewPlayer`); the client accepts and reports the world loaded at the start of its
+    /// first tick ([`ScenarioWorld::client_begin`]).
+    fn join_client(&mut self, id: EntityId) -> Result<(), String> {
+        let Entities { store, players, .. } = &mut self.level.entities;
+        let entity = store.get(id).ok_or("the player is gone")?;
+        let player = players.get_mut(entity.kind_row()).ok_or("no player data")?;
+        let rot = entity.rot();
+        let mut body = vanillite_game::player::movement::Body {
+            pos: entity.pos(),
+            velocity: entity.velocity(),
+            y_rot: rot.y_rot,
+            x_rot: rot.x_rot,
+            on_ground: false,
+            horizontal_collision: false,
+            fall_flying: false,
+        };
+        let pos = body.pos;
+        player
+            .connection
+            .movement
+            .teleport(&mut body, pos, rot.y_rot, rot.x_rot, &NoSink);
+        Ok(())
+    }
+
+    /// Handles the queued packets of the client players, then their moves and entity actions.
+    fn handle_clients(&mut self) -> Result<(), String> {
+        use vanillite_config::GameMode;
+        use vanillite_game::player::connection::{ChatContext, Handled, PlayerState};
+        use vanillite_game::player::movement::{Body, MoveContext};
+        use vanillite_game::player::play::PlayContext;
+        use vanillite_game::survival::rules::Rule;
+        use vanillite_world::entity::{EntityFlags, Pose};
+        if self.clients.is_empty() {
+            return Ok(());
+        }
+        let data = vanillite_game::player::play::game_data().ok_or("no game data")?;
+        let chat = ChatSettings::default();
+        // The scenario world runs the `vanilla` profile.
+        let movement_rules =
+            <vanillite_config::WorldRules as vanillite_config::RuleSet>::for_profile(
+                vanillite_config::Profile::Vanilla,
+            )
+            .movement;
+        let ctx = MoveContext {
+            runs_normally: true,
+            rules: &movement_rules,
+            no_wrong_move_check: false,
+            no_physics: false,
+            dims: vanillite_world::entity::Dimensions {
+                width: 0.6,
+                height: 1.8,
+            },
+            blocks: None,
+            movement_check: self.rules.bool(Rule::PLAYER_MOVEMENT_CHECK),
+            elytra_movement_check: self.rules.bool(Rule::ELYTRA_MOVEMENT_CHECK),
+        };
+        let ids: Vec<EntityId> = self.clients.iter().map(|c| c.id).collect();
+        let mut players = std::mem::take(&mut self.level.entities.players);
+        let spectators = vanillite_base::hash::FxHashSet::default();
+        let mut kicked = None;
+        for &id in &ids {
+            let Some(entity) = self.level.entities.store.get(id) else {
+                continue;
+            };
+            let Some(player) = players.get_mut(entity.kind_row()) else {
+                continue;
+            };
+            let flags = entity.flags();
+            let rot = entity.rot();
+            let before = PlayerState {
+                body: Body {
+                    pos: entity.pos(),
+                    velocity: entity.velocity(),
+                    y_rot: rot.y_rot,
+                    x_rot: rot.x_rot,
+                    on_ground: flags.contains(EntityFlags::ON_GROUND),
+                    horizontal_collision: false,
+                    fall_flying: flags.contains(EntityFlags::FALL_FLYING),
+                },
+                shift_key_down: flags.contains(EntityFlags::CROUCHING),
+                sprinting: flags.contains(EntityFlags::SPRINTING),
+                client: None,
+                respawn: false,
+                flying: player.survival.flying,
+            };
+            let mut state = before.clone();
+            let actor = vanillite_server::player_actor(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                0,
+                &self.level.chunks,
+            );
+            let (aabb, uuid, dims) = (entity.aabb(), entity.uuid(), entity.dims());
+            let mut effects = vanillite_server::LevelEffects::default();
+            let mut drops = Vec::new();
+            let mut swings = Vec::new();
+            let protected = |_: BlockPos| false;
+            let hooks = vanillite_game::hooks::NoHooks;
+            let handled = {
+                let mut world = vanillite_server::WorldLevel {
+                    level: &mut self.level,
+                    effects: &mut effects,
+                    spectators: &spectators,
+                    actor: Some((id, aabb)),
+                    dimension: "minecraft:overworld",
+                };
+                let mut play = PlayContext {
+                    level: &mut world,
+                    inventory: &mut player.inventory,
+                    xp: Some(&mut player.survival.xp),
+                    food: Some(&mut player.survival.food),
+                    recipe_book: Some(&mut player.recipe_book),
+                    actor,
+                    data: &data,
+                    spawn_protected: &protected,
+                    drops: &mut drops,
+                    swings: &mut swings,
+                    hooks: &hooks,
+                    stats: Some(&mut player.stats),
+                    advancements: Some(&mut player.advancements),
+                };
+                let handled = player.connection.handle_packets(
+                    &mut state,
+                    MoveContext {
+                        no_wrong_move_check: matches!(
+                            player.game_mode,
+                            GameMode::Spectator | GameMode::Creative
+                        ),
+                        no_physics: player.game_mode == GameMode::Spectator,
+                        dims,
+                        ..ctx
+                    },
+                    ChatContext {
+                        uuid,
+                        name: &player.profile.name,
+                        settings: &chat,
+                    },
+                    &mut play,
+                    usize::MAX,
+                );
+                let actor = play.actor;
+                for drop in drops {
+                    vanillite_game::player::play::throw_item(
+                        &mut world,
+                        &actor,
+                        drop,
+                        &mut player.survival.own_random,
+                    );
+                }
+                handled
+            };
+            match handled {
+                Handled::Ok => {}
+                Handled::Disconnected => kicked = Some(format!("{id:?} disconnected")),
+                Handled::Kick(reason) => kicked = Some(format!("{id:?} kicked: {reason:?}")),
+            }
+            let Some(mut entity) = self.level.entities.store.get_mut(id) else {
+                continue;
+            };
+            // `WorldPlayers::handle_packets`: the state the packets changed.
+            let body = state.body;
+            if body.pos != before.body.pos {
+                entity.set_pos(body.pos);
+            }
+            if body.velocity != before.body.velocity {
+                entity.set_velocity(body.velocity);
+            }
+            if body.y_rot != before.body.y_rot || body.x_rot != before.body.x_rot {
+                entity.set_rot(Rotation {
+                    y_rot: body.y_rot,
+                    x_rot: body.x_rot,
+                    y_head_rot: body.y_rot,
+                });
+            }
+            entity.set_flags(EntityFlags::ON_GROUND, body.on_ground);
+            entity.set_flags(EntityFlags::SPRINTING, state.sprinting);
+            player.survival.flying = state.flying;
+            if state.shift_key_down != before.shift_key_down || state.flying != before.flying {
+                entity.set_flags(EntityFlags::CROUCHING, state.shift_key_down);
+                let pose = if state.shift_key_down && !state.flying {
+                    Pose::Crouching
+                } else {
+                    Pose::Standing
+                };
+                entity.set_pose(pose);
+                entity.set_dims(vanillite_game::player::dimensions(pose));
+            }
+        }
+        self.level.entities.players = players;
+        if let Some(reason) = kicked {
+            return Err(format!("a client player left: {reason}"));
+        }
+        // `WorldSurvival::moves`: fall damage and exhaustion of the accepted moves.
+        self.with_env(|_, ents, env, _| {
+            let Entities { store, players, .. } = ents;
+            for &id in &ids {
+                let Some(mut entity) = store.get_mut(id) else {
+                    continue;
+                };
+                let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                    continue;
+                };
+                let moves = std::mem::take(&mut data.connection.movement.moves);
+                for mv in &moves {
+                    survival_player::on_move(&mut entity, data, env, *mv);
+                }
+            }
+        });
+        self.post_player_game_events();
+        // `WorldMobs::player_actions`.
+        let mut pending = Vec::new();
+        let mut inputs = Vec::new();
+        let riding = !self.level.entities.riding.is_empty();
+        for &id in &ids {
+            let Some(p) = self.level.entities.player_mut(id) else {
+                continue;
+            };
+            pending.extend(p.connection.entity_actions.drain(..).map(|a| (id, a)));
+            let v = &mut p.connection.vehicle;
+            if riding || v.moved.is_some() {
+                inputs.push((id, *v));
+                v.moved = None;
+                v.jump = None;
+            }
+        }
+        let network_ids = Arc::clone(&self.network_ids);
+        self.with_env(|level, ents, env, cx| {
+            for (player, action) in pending {
+                vanillite_server::player_entity_action(
+                    level,
+                    ents,
+                    env,
+                    cx,
+                    &network_ids,
+                    player,
+                    action,
+                );
+            }
+            for (player, input) in inputs {
+                vanillite_server::player_vehicle_input(level, ents, env, cx, player, input);
+            }
+        });
+        self.apply_actions();
+        vanillite_game::menu::container::open_requests(
+            &mut self.level,
+            std::mem::take(&mut self.mobs.menus),
+        );
+        self.finish_removals();
+        self.spawn_drops();
+        Ok(())
+    }
+
+    /// The game events of the players (steps, item use) at the level.
+    fn post_player_game_events(&mut self) {
+        let mut pending = Vec::new();
+        for (id, p) in self.level.entities.players.iter_mut() {
+            pending.extend(
+                p.survival
+                    .game_events
+                    .drain(..)
+                    .map(|(event, pos, affected)| (id, event, pos, affected)),
+            );
+        }
+        for (id, event, pos, affected) in pending {
+            let context = vanillite_game::level::game_event::GameEventContext {
+                source: Some(id),
+                affected,
+            };
+            self.level.game_event(event, pos, context);
+        }
+    }
+
+    /// The connection tick of the client players (`WorldPlayers::tick_connections`): the
+    /// digging progress, item pickup, then the movement checks start from where the player is.
+    fn tick_client_connections(&mut self) {
+        if self.clients.is_empty() {
+            return;
+        }
+        let Some(data) = vanillite_game::player::play::game_data() else {
+            return;
+        };
+        let ids: Vec<EntityId> = self.clients.iter().map(|c| c.id).collect();
+        let mut players = std::mem::take(&mut self.level.entities.players);
+        let spectators = vanillite_base::hash::FxHashSet::default();
+        let mut taken = Vec::new();
+        let mut thrown = Vec::new();
+        for &id in &ids {
+            let Some(entity) = self.level.entities.store.get(id) else {
+                continue;
+            };
+            let Some(player) = players.get_mut(entity.kind_row()) else {
+                continue;
+            };
+            player.connection.movement.tick_client_load_timeout();
+            let actor = vanillite_server::player_actor(
+                &entity,
+                player.game_mode,
+                &player.survival.effects,
+                0,
+                &self.level.chunks,
+            );
+            let (aabb, uuid) = (entity.aabb(), entity.uuid());
+            {
+                let mut effects = vanillite_server::LevelEffects::default();
+                let mut world = vanillite_server::WorldLevel {
+                    level: &mut self.level,
+                    effects: &mut effects,
+                    spectators: &spectators,
+                    actor: Some((id, aabb)),
+                    dimension: "minecraft:overworld",
+                };
+                let mut drops = Vec::new();
+                let mut swings = Vec::new();
+                let protected = |_: BlockPos| false;
+                let hooks = vanillite_game::hooks::NoHooks;
+                let mut play = vanillite_game::player::play::PlayContext {
+                    level: &mut world,
+                    inventory: &mut player.inventory,
+                    xp: Some(&mut player.survival.xp),
+                    food: Some(&mut player.survival.food),
+                    recipe_book: Some(&mut player.recipe_book),
+                    actor,
+                    data: &data,
+                    spawn_protected: &protected,
+                    drops: &mut drops,
+                    swings: &mut swings,
+                    hooks: &hooks,
+                    stats: Some(&mut player.stats),
+                    advancements: Some(&mut player.advancements),
+                };
+                player.connection.play.tick(&mut play, &NoSink);
+            }
+            // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1).
+            if player.game_mode != vanillite_config::GameMode::Spectator {
+                let Entities { store, items, .. } = &mut self.level.entities;
+                let reach = aabb.inflate(1.0, 0.5, 1.0);
+                let mut near = Vec::new();
+                store.for_each_non_player_in(&reach, |e| near.push(e));
+                let infinite = player.game_mode == vanillite_config::GameMode::Creative;
+                for item_id in near {
+                    let Some(row) = store
+                        .get(item_id)
+                        .filter(|e| e.kind() == ids::ITEM)
+                        .map(|e| e.kind_row())
+                    else {
+                        continue;
+                    };
+                    let Some(item) = items.get_mut(row) else {
+                        continue;
+                    };
+                    let target_ok = item.target.is_none_or(|t| t == uuid);
+                    if item.pickup_delay != 0 || !target_ok || item.stack.is_empty() {
+                        continue;
+                    }
+                    let before = item.thrower.map(|t| (t, item.stack.clone()));
+                    if player.inventory.add(None, &mut item.stack, infinite) {
+                        taken.push(item_id);
+                        if let Some((thrower, mut stack)) = before {
+                            if !item.stack.is_empty() {
+                                stack = item.stack.clone();
+                            }
+                            thrown.push((id, thrower, stack));
+                        }
+                    }
+                }
+            }
+        }
+        self.level.entities.players = players;
+        let entities = &mut self.level.entities;
+        for (picker, thrower, stack) in thrown {
+            mob::animal::item_picked_up(entities, picker, thrower, &stack);
+        }
+        for item_id in taken {
+            if entities.item(item_id).is_none_or(|i| i.stack.is_empty()) {
+                entities.despawn(item_id);
+            }
+        }
+        // `resetPosition` for the moves of the next tick.
+        let Entities { store, players, .. } = &mut self.level.entities;
+        for &id in &ids {
+            let Some(entity) = store.get(id) else {
+                continue;
+            };
+            let Some(player) = players.get_mut(entity.kind_row()) else {
+                continue;
+            };
+            let rot = entity.rot();
+            let body = vanillite_game::player::movement::Body {
+                pos: entity.pos(),
+                velocity: entity.velocity(),
+                y_rot: rot.y_rot,
+                x_rot: rot.x_rot,
+                on_ground: entity
+                    .flags()
+                    .contains(vanillite_world::entity::EntityFlags::ON_GROUND),
+                horizontal_collision: false,
+                fall_flying: false,
+            };
+            player.connection.movement.tick(&body);
+        }
+    }
 }
 
 /// `ExperienceOrb.playerTouch` of the orb `Util.getRandom` picks among those `reach` touches

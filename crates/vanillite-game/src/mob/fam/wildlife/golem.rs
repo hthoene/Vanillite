@@ -220,8 +220,9 @@ pub(super) fn drop_at(ix: &mut Interact<'_, '_>, pos: Vec3, item: &str, count: i
     if stack.is_empty() {
         return;
     }
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     ix.env.out.push(crate::survival::Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,
@@ -417,7 +418,11 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             offer_flower(t, true);
         }
         Goal::DefendVillage { state, candidate } => {
-            crate::mob::goals::set_target(t, *candidate);
+            crate::mob::goals::set_target_why(
+                t,
+                *candidate,
+                vanillite_abi::target_reason::DEFEND_VILLAGE,
+            );
             state.target_mob = *candidate;
             state.unseen_ticks = 0;
         }

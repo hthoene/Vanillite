@@ -353,8 +353,9 @@ fn drop_at(env: &mut Env<'_>, pos: Vec3, stack: ItemStack) {
     if stack.is_empty() {
         return;
     }
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,
@@ -386,8 +387,9 @@ pub fn throw_item(
     // `new ItemEntity(...)`: its random motion is replaced by the throw.
     let dir = (target - pos).normalize();
     let v = Vec3::new(dir.x * velocity.x, dir.y * velocity.y, dir.z * velocity.z);
-    let (uuid, y_rot, _) = crate::mob::new_item_entity();
+    let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos: from,
         velocity: v,
@@ -583,7 +585,7 @@ fn duplicate(ix: &mut Interact<'_, '_>) {
         e.mark_data_dirty();
     }
     let uuid = crate::mob::new_uuid();
-    crate::mob::spawn(
+    let id = crate::mob::spawn(
         ix.ents,
         ix.level.network_ids(),
         uuid,
@@ -591,6 +593,9 @@ fn duplicate(ix: &mut Interact<'_, '_>) {
         vanillite_world::entity::Rotation::default(),
         child,
     );
+    let parent = ix.ents.store.get(ix.target).map_or(0, |e| e.uuid());
+    ix.ents
+        .spawned(id, vanillite_abi::spawn_reason::BREEDING, parent);
 }
 
 /// The synched data: dancing 16, can duplicate 17.

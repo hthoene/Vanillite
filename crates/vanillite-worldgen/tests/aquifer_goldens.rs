@@ -74,6 +74,7 @@ fn aquifer_matches_vanilla() {
             picker,
             program,
             &mut ctx,
+            None,
         );
         let mut density = vec![0.0_f32; volume.len()];
         program.sample_volume(&mut ctx, final_density, &mut density, &volume);

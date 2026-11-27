@@ -836,7 +836,14 @@ fn spawn_mob(level: &mut Level, pos: BlockPos) -> Option<(u128, EntityId)> {
         Vec::new()
     };
     mob.persistent = true;
-    let id = spawn::add_mob_with(level, mob, at, y_rot, extra);
+    let id = spawn::add_mob_with(
+        level,
+        mob,
+        at,
+        y_rot,
+        extra,
+        crate::mob::fam::SpawnReason::TrialSpawner,
+    );
     let uuid = level.entities.store.get(id)?.uuid();
     let flame = i32::from(ominous);
     level.level_event(None, 3011, pos, flame);

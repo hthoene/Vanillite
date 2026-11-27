@@ -1,0 +1,3 @@
+tick = 1
+cause = "the z motion of the slime's first jump differs in the last bit (rounding of the jump direction)"
+owner = "gameplay-developer #132"

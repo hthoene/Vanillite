@@ -219,7 +219,13 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         if let Some(packet) = player.advancements.flush(true) {
             player.connection.sink.send(&packet);
         }
-        let changes = player.stats.take_score_changes();
+        let mut changes = player.stats.take_score_changes();
+        if !changes.is_empty() && global.plugins.wants(vanillite_abi::event::PLAYER_STATISTIC) {
+            let hooks = crate::plugins::Hooks::of(global, dimension);
+            player
+                .stats
+                .fire_increases(&mut changes, &hooks, entity.uuid());
+        }
         if !changes.is_empty() {
             scores.push((player.profile.name.clone(), entity.uuid(), changes));
         }

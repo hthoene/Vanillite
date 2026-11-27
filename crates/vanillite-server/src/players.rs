@@ -29,14 +29,15 @@ use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_nbt::{List, Tag};
 use vanillite_net::{Latency, Outbound};
-use vanillite_protocol::SharedPacket;
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
 };
 use vanillite_protocol::packets::play::serverbound::Hand;
+use vanillite_protocol::tap::{PacketTap, Verdict};
 use vanillite_protocol::text::Component;
+use vanillite_protocol::{Direction, SharedPacket, State};
 use vanillite_storage::player_data::{self, JsonFile, PlayerDataStore};
 use vanillite_world::chunks::Chunks;
 use vanillite_world::entity::{EntityFlags, EntityId, EntityRef, Pose, Rotation};
@@ -87,7 +88,13 @@ pub(crate) struct FanOut {
 }
 
 impl FanOut {
-    fn run(&mut self, entities: &Entities, updates: &TrackerOutput, compute: &Compute) {
+    fn run(
+        &mut self,
+        entities: &Entities,
+        updates: &TrackerOutput,
+        compute: &Compute,
+        tap: &PacketTap,
+    ) {
         let messages = updates.messages();
         if messages.is_empty() {
             return;
@@ -124,6 +131,10 @@ impl FanOut {
             }
         };
 
+        // Packet listeners: the broadcast stage runs here, once per encoded packet; the
+        // viewers' writers run the stage per receiver on their batches.
+        let tapped = tap.active(Direction::Clientbound);
+
         // Encode once into runs.
         self.arena.clear();
         self.runs.clear();
@@ -135,6 +146,19 @@ impl FanOut {
             };
             let start = self.arena.len();
             for packet in &packets {
+                let replaced;
+                let packet = if tapped {
+                    match tap.shared(State::Play, packet) {
+                        Verdict::Pass => packet,
+                        Verdict::Drop => continue,
+                        Verdict::Replace(other) => {
+                            replaced = other;
+                            &replaced
+                        }
+                    }
+                } else {
+                    packet
+                };
                 let before = self.arena.len();
                 if encode_frame(packet.body(), threshold, &mut self.codec, &mut self.arena).is_err()
                 {
@@ -305,6 +329,10 @@ impl PacketSink for NetSink {
 
     fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
         self.out.send_batch(frames, threshold)
+    }
+
+    fn send_untapped(&self, body: Vec<u8>) -> bool {
+        self.out.send_untapped(body)
     }
 
     fn frame_threshold(&self) -> Option<usize> {
@@ -645,7 +673,6 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
-        let border = level.border.clone();
         let (movement_check, elytra_movement_check) = {
             use vanillite_game::survival::rules::Rule;
             let game_rules = global.level.rules();
@@ -657,8 +684,13 @@ impl WorldPlayers {
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
-            border: Some(&border),
             no_wrong_move_check: false,
+            no_physics: false,
+            dims: vanillite_world::entity::Dimensions {
+                width: 0.6,
+                height: 1.8,
+            },
+            blocks: None,
             movement_check,
             elytra_movement_check,
         };
@@ -718,7 +750,7 @@ impl WorldPlayers {
                 .map(|r| r.pos);
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
-            let aabb = entity.aabb();
+            let (aabb, dims) = (entity.aabb(), entity.dims());
             let mut drops: Vec<Drop> = Vec::new();
             let mut hands: Vec<Hand> = Vec::new();
             let handled = {
@@ -752,6 +784,8 @@ impl WorldPlayers {
                             player.game_mode,
                             GameMode::Spectator | GameMode::Creative
                         ),
+                        no_physics: player.game_mode == GameMode::Spectator,
+                        dims,
                         ..ctx
                     },
                     chat,
@@ -759,7 +793,26 @@ impl WorldPlayers {
                     PACKETS_PER_TICK,
                 );
                 actor = play.actor;
-                for drop in drops {
+                for mut drop in drops {
+                    // Bukkit's `PlayerDropItemEvent`: cancelled, the stack goes back into the
+                    // inventory (what no longer fits still falls).
+                    if drop.thrown
+                        && !drop.stack.is_empty()
+                        && vanillite_game::player::player_event(
+                            &hooks,
+                            vanillite_abi::event::PLAYER_DROP_ITEM,
+                            actor.uuid,
+                            |e| e.item = vanillite_game::hooks::item_snbt(&drop.stack),
+                        )
+                        .is_some_and(|e| e.cancelled)
+                    {
+                        let selected = player.inventory.selected;
+                        player.inventory.add(Some(selected), &mut drop.stack, false);
+                        player.inventory.add(None, &mut drop.stack, false);
+                        if drop.stack.is_empty() {
+                            continue;
+                        }
+                    }
                     // `ServerPlayer.drop` of a stack thrown from the hand.
                     if drop.thrown && !drop.stack.is_empty() {
                         let item = drop.stack.item;
@@ -768,7 +821,7 @@ impl WorldPlayers {
                             .award(Stat::of(StatType::Dropped, item), drop.stack.count);
                         player.stats.award(custom::DROP, 1);
                     }
-                    throw_item(&mut level, &actor, drop);
+                    throw_item(&mut level, &actor, drop, &mut player.survival.own_random);
                 }
                 handled
             };
@@ -783,10 +836,19 @@ impl WorldPlayers {
                         && player.connection.last_action.elapsed()
                             > std::time::Duration::from_secs(idle_minutes.saturating_mul(60)) =>
                 {
-                    Handled::Kick(Box::new(vanillite_protocol::text::Component::translatable(
+                    let reason = vanillite_protocol::text::Component::translatable(
                         "multiplayer.disconnect.idling",
                         vec![],
-                    )))
+                    );
+                    match crate::plugins::player_kick(
+                        &global.plugins,
+                        u32::from(world.0),
+                        actor.uuid,
+                        reason,
+                    ) {
+                        Some(reason) => Handled::Kick(Box::new(reason)),
+                        None => Handled::Ok,
+                    }
                 }
                 other => other,
             };
@@ -801,6 +863,9 @@ impl WorldPlayers {
             let body = state.body;
             if body.pos != before.body.pos {
                 entity.set_pos(body.pos);
+            }
+            if body.velocity != before.body.velocity {
+                entity.set_velocity(body.velocity);
             }
             if body.y_rot != before.body.y_rot || body.x_rot != before.body.x_rot {
                 entity.set_rot(Rotation {
@@ -943,8 +1008,9 @@ impl WorldPlayers {
         updates: &TrackerOutput,
         compute: &Compute,
         fan_out: &mut FanOut,
+        tap: &PacketTap,
     ) {
-        fan_out.run(entities, updates, compute);
+        fan_out.run(entities, updates, compute, tap);
     }
 
     /// The connection tick (`ServerGamePacketListenerImpl.tick`) after the world tick.
@@ -1106,6 +1172,36 @@ impl WorldPlayers {
                     if item.pickup_delay != 0 || !target_ok || item.stack.is_empty() {
                         continue;
                     }
+                    // Bukkit's `EntityPickupItemEvent` with what fits: cancelled, the item
+                    // stays.
+                    if global
+                        .plugins
+                        .wants(vanillite_abi::event::ENTITY_PICKUP_ITEM)
+                    {
+                        let hooks = crate::plugins::Hooks::of(global, dimension_name);
+                        let room = if infinite {
+                            item.stack.count
+                        } else {
+                            player.inventory.room_for(&item.stack)
+                        };
+                        if room > 0
+                            && let Some(item_uuid) = store.get(item_id).map(|e| e.uuid())
+                            && vanillite_game::player::player_event(
+                                &hooks,
+                                vanillite_abi::event::ENTITY_PICKUP_ITEM,
+                                uuid,
+                                |e| {
+                                    e.other = item_uuid;
+                                    e.other_type = "minecraft:item".to_owned();
+                                    e.item = vanillite_game::hooks::item_snbt(&item.stack);
+                                    e.value = i64::from(room);
+                                },
+                            )
+                            .is_some_and(|e| e.cancelled)
+                        {
+                            continue;
+                        }
+                    }
                     let count = item.stack.count;
                     let kind = item.stack.item;
                     let before = item.thrower.map(|t| (t, item.stack.clone()));
@@ -1189,7 +1285,7 @@ impl WorldPlayers {
                         dimension: dimension_name,
                     };
                     for drop in drops {
-                        throw_item(&mut world, &actor, drop);
+                        throw_item(&mut world, &actor, drop, &mut player.survival.own_random);
                     }
                 }
             } else {
@@ -1316,7 +1412,8 @@ impl WorldPlayers {
         };
         player.stats.award(custom::LEAVE_GAME, 1);
         let name = player.profile.name.clone();
-        let changes = player.stats.take_score_changes();
+        let mut changes = player.stats.take_score_changes();
+        player.stats.fire_increases(&mut changes, &hooks, uuid);
         crate::progress::apply_scores(global, vec![(name.clone(), uuid, changes)]);
         match reason {
             Some(reason) => {
@@ -1702,6 +1799,19 @@ fn actor_of(
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
+    let permission_level = crate::commands::permission_level(global, entity.uuid());
+    player_actor(entity, game_mode, effects, permission_level, chunks)
+}
+
+/// The player as the packet handlers see it: eye height of its pose, eyes in water, mining
+/// speed effects. The scenario harness builds its packet-level players' actor with it too.
+pub fn player_actor(
+    entity: &EntityRef<'_>,
+    game_mode: GameMode,
+    effects: &vanillite_game::effect::ActiveEffects,
+    permission_level: u8,
+    chunks: &Chunks,
+) -> Actor {
     let pose = entity.pose();
     // `Player.getDefaultDimensions(pose).eyeHeight()`.
     // Eye heights are floats in Vanilla (`EntityDimensions.eyeHeight`).
@@ -1735,7 +1845,7 @@ fn actor_of(
         on_ground: flags.contains(EntityFlags::ON_GROUND),
         sneaking: flags.contains(EntityFlags::CROUCHING),
         game_mode,
-        permission_level: crate::commands::permission_level(global, entity.uuid()),
+        permission_level,
         eyes_in_water,
         dig_speed: effects
             .has_dig_speed()
@@ -1871,6 +1981,26 @@ fn touch_orb(
     };
     taken.push((orb, id));
     if points > 0 {
+        // Bukkit's `PlayerExpChangeEvent`: handlers may change the points.
+        let mut points = points;
+        if let Some(hooks) = level.hooks_for(vanillite_abi::event::PLAYER_EXP_CHANGE)
+            && let (Some(player), Some(orb)) =
+                (level.entities.store.get(id), level.entities.store.get(orb))
+        {
+            let mut ev = vanillite_game::hooks::Event {
+                entity: player.uuid(),
+                entity_type: "minecraft:player".to_owned(),
+                other: orb.uuid(),
+                other_type: "minecraft:experience_orb".to_owned(),
+                value: i64::from(points),
+                ..vanillite_game::hooks::Event::new(vanillite_abi::event::PLAYER_EXP_CHANGE)
+            };
+            hooks.event(&mut ev);
+            points = i32::try_from(ev.value.clamp(0, i64::from(i32::MAX))).unwrap_or(0);
+        }
+        if points <= 0 {
+            return;
+        }
         let volume = survival.give_experience_points(points);
         let Some(mut entity) = level.entities.store.get_mut(id) else {
             return;

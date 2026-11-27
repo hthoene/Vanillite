@@ -232,7 +232,9 @@ pub fn shoot_arrow(
     if data.fire {
         new.flags.set(EntityFlags::ON_FIRE, true);
     }
-    ents.spawn_arrow(new, data)
+    let id = ents.spawn_arrow(new, data);
+    ents.launched(id, owner);
+    id
 }
 
 /// `AbstractSkeleton.performRangedAttack`.
@@ -280,7 +282,8 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
     let mut data = ArrowData::shot(Some(id), base_damage, 0, own.state(), mob_arrow(effect));
     data.crit = crit;
     data.fire = fire;
-    t.ents.spawn_arrow(new, data);
+    let arrow = t.ents.spawn_arrow(new, data);
+    t.ents.launched(arrow, Some(id));
     let m = t.mob();
     let pitch = 1.0 / (m.random.next_float() * 0.4 + 0.8);
     super::kinds::play_sound(t, "minecraft:entity.skeleton.shoot", 1.0, pitch);
@@ -464,7 +467,20 @@ pub fn tick_arrow(
         if let Some(&(_, _, first)) = hits.first() {
             pos = first;
         }
+        // Whether an entity was hit: Bukkit's `ProjectileHitEvent` may make the arrow ignore
+        // every one on its way.
+        let mut hit_any = false;
         for &(target, _, hit) in &hits {
+            if !super::missile::hit_event(
+                level,
+                ents,
+                id,
+                a.owner,
+                super::missile::HitWhat::Entity(target),
+            ) {
+                continue;
+            }
+            hit_any = true;
             // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
             super::missile::land_event(env.out, level, id, None, hit);
             // `onHitEntity`.
@@ -583,7 +599,17 @@ pub fn tick_arrow(
         }
         // A piercing arrow that went through everything on its way: no entity it has not
         // pierced is left, so it goes on to the block or the end of its step.
-        let flies_on = hits.is_empty() || (!discard && !deflected && a.pierce_level > 0);
+        let flies_on = !hit_any || (!discard && !deflected && a.pierce_level > 0);
+        let block_hit = block_hit.filter(|&(hit_pos, at)| {
+            !flies_on
+                || super::missile::hit_event(
+                    level,
+                    ents,
+                    id,
+                    a.owner,
+                    super::missile::HitWhat::Block(hit_pos, at),
+                )
+        });
         if flies_on && let Some((hit_pos, at)) = block_hit {
             // `onHitBlock`.
             let sign = |v: f64| {

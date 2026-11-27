@@ -1084,6 +1084,15 @@ impl Level {
         let mut chunks = std::mem::take(&mut self.chunk_scratch);
         chunks.clear();
         self.chunks.unloading_next_tick(&mut chunks);
+        if let Some(hooks) = self.hooks_for(vanillite_abi::event::CHUNK_UNLOAD) {
+            for &chunk in &chunks {
+                let mut ev = crate::hooks::Event {
+                    pos: BlockPos::new(chunk.x, 0, chunk.z),
+                    ..crate::hooks::Event::new(vanillite_abi::event::CHUNK_UNLOAD)
+                };
+                hooks.event(&mut ev);
+            }
+        }
         for &chunk in &chunks {
             self.write_block_entities(chunk);
         }
@@ -1098,8 +1107,24 @@ impl Level {
         for &chunk in &chunks {
             self.load_block_entities(chunk);
         }
+        self.chunks_loaded_event(&chunks);
         self.apply_visibility();
         self.chunk_scratch = chunks;
+    }
+
+    /// Fires `CHUNK_LOAD` for chunks that became live (`flags` 1: generated now).
+    pub(super) fn chunks_loaded_event(&self, chunks: &[ChunkPos]) {
+        let Some(hooks) = self.hooks_for(vanillite_abi::event::CHUNK_LOAD) else {
+            return;
+        };
+        for &chunk in chunks {
+            let mut ev = crate::hooks::Event {
+                pos: BlockPos::new(chunk.x, 0, chunk.z),
+                flags: u32::from(self.chunks.generated_now(chunk)),
+                ..crate::hooks::Event::new(vanillite_abi::event::CHUNK_LOAD)
+            };
+            hooks.event(&mut ev);
+        }
     }
 
     /// The chunks that became live in the last [`Level::tick_chunk_runtime`].

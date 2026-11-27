@@ -617,8 +617,9 @@ pub fn hurt_boat(
                 .patch_mut()
                 .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
         }
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos,
             velocity,
@@ -730,7 +731,10 @@ pub fn use_boat_item(
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
     let uuid = crate::mob::new_entity_uuid();
-    spawn_boat(ents, network_ids, uuid, hit, rot.y_rot, data);
+    let id = spawn_boat(ents, network_ids, uuid, hit, rot.y_rot, data);
+    if !ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0) {
+        return false;
+    }
     if !infinite {
         stack.shrink(1);
     }

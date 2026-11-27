@@ -121,6 +121,26 @@ impl Level {
         self.load_with_passengers(nbt, &mut loaded, false).is_some()
     }
 
+    /// [`Self::load_entity`] of an entity new to the world (placed with a structure): the
+    /// plugins' spawn event fires for it and its passengers with `reason`
+    /// (`vanillite_abi::spawn_reason`); the ones a plugin cancels are not added.
+    pub fn load_new_entity(&mut self, nbt: Compound, reason: u32) -> bool {
+        let mut loaded = Vec::new();
+        let ok = self.load_with_passengers(nbt, &mut loaded, false).is_some();
+        if self
+            .entities
+            .hooks_for(vanillite_abi::event::ENTITY_SPAWN)
+            .is_some()
+        {
+            for id in loaded {
+                if !self.entities.spawned(id, reason, 0) {
+                    self.entity_nbt.remove(&id);
+                }
+            }
+        }
+        ok
+    }
+
     /// `teleportCrossDimension` into this level of an entity saved in another one, without its
     /// passengers: `EntityType.create` (a new entity: its random takes the next entity seed)
     /// and `restoreFrom` the stored data. Returns the new entity.
@@ -292,8 +312,15 @@ impl Level {
             if stack.is_empty() {
                 return Some(None);
             }
-            let mut data = ItemData::new(stack, short("PickupDelay", 0), uuid_of(&nbt, "Thrower"));
+            let mut data = ItemData::new(
+                stack,
+                short("PickupDelay", 0),
+                uuid_of(&nbt, "Thrower"),
+                crate::item_entity::loaded_random(seed),
+            );
             data.age = short("Age", 0);
+            data.health = short("Health", 5);
+            data.fire_ticks = i32::from(short("Fire", 0)).max(0);
             data.target = uuid_of(&nbt, "Owner");
             let items = &mut self.entities.items;
             self.entities.store.spawn(new, |id| items.push(id, data))
@@ -662,7 +689,9 @@ impl Level {
         or_default(&mut nbt, "PortalCooldown", Tag::Int(0));
         if kind == ids::ITEM {
             let data = self.entities.item(id)?;
-            or_default(&mut nbt, "Health", Tag::Short(5));
+            nbt.insert("Health", data.health);
+            #[allow(clippy::cast_possible_truncation)]
+            nbt.insert("Fire", data.fire_ticks.clamp(0, 32767) as i16);
             nbt.insert("Age", data.age);
             nbt.insert("PickupDelay", data.pickup_delay);
             match data.thrower {

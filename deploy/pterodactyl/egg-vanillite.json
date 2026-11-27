@@ -7,7 +7,7 @@
   "exported_at": "2026-11-24T00:00:00+00:00",
   "name": "Vanillite",
   "author": "hthoene@users.noreply.github.com",
-  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. https://github.com/hthoene/Vanillite",
+  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". https://github.com/hthoene/vanillite",
   "features": [
     "eula"
   ],
@@ -792,6 +792,26 @@
       "field_type": "text"
     },
     {
+      "name": "Performance: Region Threading › Enabled",
+      "description": "Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial order at no cost. Applies to every world. default: the profile's value (vanilla profile: false). vanillite.toml: performance.region-threading.enabled.",
+      "env_variable": "VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED",
+      "default_value": "default",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:default,true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Region Threading › Tile Size",
+      "description": "Edge of a tile in chunks. Smaller tiles balance better over the cores, larger ones cost less bookkeeping. Applies to every world. Range: 8 to 32. Empty: the profile's value (vanilla profile: 16). vanillite.toml: performance.region-threading.tile-size.",
+      "env_variable": "VANILLITE_PERFORMANCE__REGION_THREADING__TILE_SIZE",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:8,32",
+      "field_type": "text"
+    },
+    {
       "name": "Performance: Simulation › Max Block Ticks",
       "description": "Scheduled block ticks run per tick. Applies to every world. Range: 1 to 1000000. Empty: the profile's value (vanilla profile: 65536). vanillite.toml: performance.simulation.max-block-ticks.",
       "env_variable": "VANILLITE_PERFORMANCE__SIMULATION__MAX_BLOCK_TICKS",
@@ -1413,7 +1433,7 @@
     },
     {
       "name": "Movement: Wrong Movement Check",
-      "description": "Players whose movement does not match the server's collision result are teleported back (\"moved wrongly\"). Not enforced yet: it needs block collision (milestone 3). Applies to every world. default: the profile's value (vanilla profile: true). vanillite.toml: movement.wrong-movement-check.",
+      "description": "Players whose movement does not match the server's collision result (\"moved wrongly\") or that move into a block are teleported back, like Vanilla's `handleMovePlayer`. Off accepts every move that passes the other checks. Applies to every world. default: the profile's value (vanilla profile: true). vanillite.toml: movement.wrong-movement-check.",
       "env_variable": "VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK",
       "default_value": "default",
       "user_viewable": true,

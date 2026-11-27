@@ -1,0 +1,74 @@
+{
+  "actions": [],
+  "description": "A slime at night next to a client player: its first jump. Random parity scenario (#132), shrunk by `cargo xtask parity fuzz`.",
+  "difficulty": "normal",
+  "entities": [
+    {
+      "client": true,
+      "food": 19,
+      "inventory": [
+        [
+          0,
+          "minecraft:cobblestone",
+          32
+        ],
+        [
+          1,
+          "minecraft:shears",
+          1
+        ],
+        [
+          2,
+          "minecraft:iron_sword",
+          1
+        ],
+        [
+          3,
+          "minecraft:ender_pearl",
+          4
+        ]
+      ],
+      "name": "p",
+      "pos": [
+        13.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        90.0,
+        0.0
+      ],
+      "type": "minecraft:player"
+    },
+    {
+      "name": "m0",
+      "pos": [
+        14.5,
+        -60,
+        9.5
+      ],
+      "rot": [
+        180.0,
+        0.0
+      ],
+      "seed": 154231,
+      "type": "minecraft:slime"
+    }
+  ],
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -36,
+      15
+    ]
+  ],
+  "setup": [],
+  "ticks": 1,
+  "tier": "fast",
+  "time": 18000
+}

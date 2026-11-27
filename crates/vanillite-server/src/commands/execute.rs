@@ -564,6 +564,26 @@ pub(crate) fn summon(
     pos: Vec3,
     nbt: &vanillite_nbt::Compound,
 ) -> Result<Target, CommandError> {
+    summon_for(
+        env,
+        source,
+        id,
+        pos,
+        nbt,
+        vanillite_abi::spawn_reason::COMMAND,
+    )
+}
+
+/// [`summon`] for a plugin's spawn reason (`vanillite_abi::spawn_reason`: `COMMAND`, or
+/// `PLUGIN` for `entity_spawn`); a plugin that cancels the spawn makes it fail.
+pub(crate) fn summon_for(
+    env: &mut Env<'_>,
+    source: &CommandSource,
+    id: &str,
+    pos: Vec3,
+    nbt: &vanillite_nbt::Compound,
+    reason: u32,
+) -> Result<Target, CommandError> {
     use vanillite_game::entities::{FallingBlockData, PrimedTntData};
     let failed = || CommandError::new("commands.summon.failed", vec![]);
     let duplicate = || CommandError::new("commands.summon.failed.uuid", vec![]);
@@ -591,11 +611,15 @@ pub(crate) fn summon(
     let decor = vanillite_game::decoration::is_decor_kind(kind)
         || vanillite_game::mob::kinds::Kind::by_name(id)
             .is_some_and(|k| k.family() == vanillite_game::mob::Family::Decor);
+    // The seed a fresh UUID's new entity took (its own random).
+    let mut fresh_seed = None;
     let mut fresh_uuid = || {
         if decor {
             vanillite_game::mob::new_uuid()
         } else {
-            env.level.new_uuid()
+            let (uuid, seed) = env.level.new_uuid_and_seed();
+            fresh_seed = Some(seed);
+            uuid
         }
     };
     let uuid = match nbt.get("UUID") {
@@ -629,7 +653,11 @@ pub(crate) fn summon(
         // Mobs with behaviour: `finalizeSpawn` with the command reason.
         let table = env.global.systems.mob_spawns.get().map(Arc::as_ref);
         let difficulty = env.global.level.difficulty();
-        let id = vanillite_game::mob::spawn::summon(env.level, table, mob, pos, difficulty);
+        let id = vanillite_game::mob::spawn::summon(env.level, table, mob, pos, difficulty, reason);
+        if !env.level.entities.store.contains(id) {
+            // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
+            return Err(failed());
+        }
         // The given tags on top of what the mob has (like `data merge`).
         let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
         super::data_cmd::merge_compound(&mut loaded, nbt);
@@ -676,10 +704,16 @@ pub(crate) fn summon(
             e.set_velocity(loaded.velocity);
         }
         env.level.entities.set_tags(id, tags);
+        if !env.level.entities.spawned(id, reason, 0) {
+            return Err(failed());
+        }
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
     }
     if kind == ids::LIGHTNING_BOLT {
         let id = vanillite_game::lightning::spawn(env.level, pos, false);
+        if !env.level.entities.spawned(id, reason, 0) {
+            return Err(failed());
+        }
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
     }
     if kind != ids::ITEM
@@ -703,9 +737,12 @@ pub(crate) fn summon(
         if !env.level.load_entity(full) {
             return Err(failed());
         }
-        let entities = &env.level.entities;
+        let entities = &mut env.level.entities;
         let id = *entities.store.columns().id.last().ok_or_else(failed)?;
         if entities.store.get(id).is_none_or(|e| e.uuid() != uuid) {
+            return Err(failed());
+        }
+        if !entities.spawned(id, reason, 0) {
             return Err(failed());
         }
         return select::local(entities, env.world, id).ok_or_else(failed);
@@ -721,7 +758,23 @@ pub(crate) fn summon(
         if stack.is_empty() {
             return Err(duplicate());
         }
-        let data = vanillite_game::item_entity::ItemData::new(stack, 0, None);
+        #[allow(clippy::cast_possible_truncation)]
+        let short = |name: &str, default: i16| {
+            nbt.get(name)
+                .and_then(Tag::as_i64)
+                .map_or(default, |v| v as i16)
+        };
+        let mut data = vanillite_game::item_entity::ItemData::new(
+            stack,
+            short("PickupDelay", 0),
+            None,
+            vanillite_game::item_entity::loaded_random(
+                fresh_seed.unwrap_or_else(vanillite_game::mob::new_entity_seed),
+            ),
+        );
+        data.age = short("Age", 0);
+        data.health = short("Health", 5);
+        data.fire_ticks = i32::from(short("Fire", 0)).max(0);
         entities.spawn_item(network_id, uuid, pos, Vec3::new(0.0, 0.0, 0.0), 0.0, data)
     } else if kind == ids::FALLING_BLOCK {
         let mut data = FallingBlockData::new(
@@ -777,6 +830,9 @@ pub(crate) fn summon(
     let mut loaded = nbt.clone();
     loaded.remove("Pos");
     data::apply_entity_nbt(entities, id, &loaded)?;
+    if !entities.spawned(id, reason, 0) {
+        return Err(failed());
+    }
     select::local(entities, env.world, id).ok_or_else(failed)
 }
 

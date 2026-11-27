@@ -316,8 +316,13 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
         s.time_in_overworld += 1;
         if s.time_in_overworld > 300 {
             make_sound(t, "minecraft:entity.hoglin.converted_to_zombified");
-            if let Some(z) = convert_to(t, Kind::Zoglin, true, false)
-                && let Some(m) = t.ents.mob_mut(z)
+            if let Some(z) = convert_to(
+                t,
+                Kind::Zoglin,
+                true,
+                false,
+                vanillite_abi::transform_reason::PIGLIN_ZOMBIFIED,
+            ) && let Some(m) = t.ents.mob_mut(z)
             {
                 crate::effect::living::add_to_mob(
                     m,

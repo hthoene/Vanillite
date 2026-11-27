@@ -79,6 +79,34 @@ impl Compute {
         self.scheduler.spawn_background(priority, Box::new(job));
     }
 
+    /// Runs `job(0)`, …, `job(n - 1)` on the workers and the calling thread and returns when
+    /// all are done. The indices are handed out one by one, so uneven jobs balance out.
+    pub fn for_each(&self, n: usize, job: &(dyn Fn(usize) + Sync)) {
+        let workers = self.scheduler.workers();
+        if n <= 1 || workers == 0 {
+            for i in 0..n {
+                job(i);
+            }
+            return;
+        }
+        let next = AtomicUsize::new(0);
+        let run = || {
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= n {
+                    break;
+                }
+                job(i);
+            }
+        };
+        self.scope(|scope| {
+            for _ in 0..workers.min(n - 1) {
+                scope.spawn(run);
+            }
+            run();
+        });
+    }
+
     /// Fork-join: jobs spawned on the scope may borrow from the caller and all of them have
     /// finished when `scope` returns. The calling thread helps with urgent jobs while it waits,
     /// so a scope never deadlocks, even with one worker. A panic in a job is re-raised here.

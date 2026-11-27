@@ -369,8 +369,12 @@ fn try_to_tame(ix: &mut Interact<'_, '_>) {
     let Some(m) = ix.ents.mob_mut(ix.target) else {
         return;
     };
-    let tamed = m.random.next_int_bounded(3) == 0;
-    if tamed && let Some(uuid) = uuid {
+    let tamed = m.random.next_int_bounded(3) == 0
+        && uuid.is_none_or(|u| crate::mob::tame::tame_event(ix.ents, ix.target, u));
+    if tamed
+        && let Some(uuid) = uuid
+        && let Some(m) = ix.ents.mob_mut(ix.target)
+    {
         crate::mob::tame::tame(m, uuid);
         m.nav.stop();
         crate::mob::tame::award_tame(ix.ents, ix.target, ix.player);

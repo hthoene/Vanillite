@@ -217,7 +217,9 @@ pub(crate) fn spawn(
         x_rot: 0.0,
         y_head_rot: y_rot,
     };
-    entities.spawn_experience_orb(new, ExperienceOrbData::new(value))
+    let id = entities.spawn_experience_orb(new, ExperienceOrbData::new(value));
+    entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
+    id
 }
 
 thread_local! {

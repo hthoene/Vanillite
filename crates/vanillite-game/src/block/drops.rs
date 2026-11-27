@@ -54,10 +54,61 @@ pub fn drop_resources(
         }
         None => data.loot.block_drops(&loot, level.random(), &mut stacks),
     }
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::BLOCK_DROP) {
+        let player = breaker
+            .filter(|&b| level.entities.player(b).is_some())
+            .and_then(|b| level.entities.store.get(b).map(|e| e.uuid()))
+            .unwrap_or(0);
+        let xp = super::break_hooks::break_experience(level, state, &tool);
+        let Some(xp) = block_drop_event(&*hooks, player, pos, state, &mut stacks, xp) else {
+            return;
+        };
+        for stack in stacks {
+            pop_resource(level, pos, stack);
+        }
+        super::break_hooks::spawn_after_break_with(level, state, pos, &tool, xp);
+        return;
+    }
     for stack in stacks {
         pop_resource(level, pos, stack);
     }
     super::break_hooks::spawn_after_break(level, state, pos, &tool, true);
+}
+
+/// The most stacks a plugin may make a broken block drop.
+const MAX_PLUGIN_DROPS: usize = 64;
+
+/// The most experience a plugin may make a broken block drop.
+const MAX_PLUGIN_EXPERIENCE: i64 = 100_000;
+
+/// Fires `BLOCK_DROP` for the block `state` at `pos` that `player` (0 for none) broke:
+/// handlers may replace `stacks` and change the `experience`. `None` when cancelled (nothing
+/// drops).
+pub fn block_drop_event(
+    hooks: &dyn crate::hooks::GameHooks,
+    player: u128,
+    pos: BlockPos,
+    state: BlockState,
+    stacks: &mut Vec<ItemStack>,
+    experience: i32,
+) -> Option<i32> {
+    let mut ev = crate::hooks::Event {
+        player,
+        pos,
+        state: Some(state),
+        item: crate::hooks::items_snbt(stacks.iter()),
+        value: i64::from(experience),
+        ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_DROP)
+    };
+    hooks.event(&mut ev);
+    if ev.cancelled {
+        return None;
+    }
+    if let Some(mut items) = ev.item_out.as_deref().and_then(crate::hooks::parse_items) {
+        items.truncate(MAX_PLUGIN_DROPS);
+        *stacks = items;
+    }
+    Some(i32::try_from(ev.value.clamp(0, MAX_PLUGIN_EXPERIENCE)).unwrap_or(0))
 }
 
 /// `BlockState.getDrops` of a block an explosion destroys (`onExplosionHit`): its loot without
@@ -149,15 +200,56 @@ pub fn spawn_item_moving(
     }
     // The `ItemEntity` constructor draws `bobOffs`, the yaw and the motion from the item's own
     // random (seeded from the entity seed stream).
-    let (uuid, y_rot, motion) = crate::mob::new_item_entity();
+    let (uuid, y_rot, motion, item_random) = crate::mob::new_item_entity();
     let velocity = velocity.unwrap_or(motion);
+    add_item(
+        level,
+        (uuid, y_rot, item_random),
+        pos,
+        stack,
+        velocity,
+        pickup_delay,
+        thrower,
+    )
+}
+
+/// [`spawn_item`] with `new ItemEntity(level, x, y, z, stack, dx, dy, dz)`, which draws no
+/// motion from the item's own random (`Block.popResourceFromFace`, a goat's horn).
+pub fn spawn_item_with_motion(
+    level: &mut Level,
+    pos: Vec3,
+    stack: ItemStack,
+    velocity: Vec3,
+    pickup_delay: i16,
+) -> Option<EntityId> {
+    if stack.is_empty() {
+        return None;
+    }
+    let new = crate::mob::new_item_entity_with_motion();
+    add_item(level, new, pos, stack, velocity, pickup_delay, None)
+}
+
+/// Adds the item entity `(uuid, y_rot, random state)`.
+fn add_item(
+    level: &mut Level,
+    (uuid, y_rot, item_random): (u128, f32, i64),
+    pos: Vec3,
+    stack: ItemStack,
+    velocity: Vec3,
+    pickup_delay: i16,
+    thrower: Option<u128>,
+) -> Option<EntityId> {
     let network_id = level.network_ids().next();
-    Some(level.entities.spawn_item(
+    let id = level.entities.spawn_item(
         network_id,
         uuid,
         pos,
         velocity,
         y_rot,
-        ItemData::new(stack, pickup_delay, thrower),
-    ))
+        ItemData::new(stack, pickup_delay, thrower, item_random),
+    );
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+        .then_some(id)
 }

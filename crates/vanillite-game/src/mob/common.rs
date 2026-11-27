@@ -558,7 +558,8 @@ pub fn start(t: &mut Tick<'_, '_>, g: &mut CommonGoal) {
     match g {
         CommonGoal::Move(m) => super::movement::start(t, m),
         CommonGoal::NearestAttackable { state, found, .. } => {
-            set_target(t, *found);
+            let reason = super::goals::closest_reason(t, *found);
+            super::goals::set_target_why(t, *found, reason);
             state.unseen_ticks = 0;
         }
         CommonGoal::Avoid { walk, .. } => {

@@ -27,6 +27,27 @@ pub fn tame(m: &mut MobData, owner: u128) {
     m.persistent = true;
 }
 
+/// The plugins' tame event (`vanillite_abi::event::ENTITY_TAME`) of `animal` by the player
+/// `owner` (its UUID): whether it may (`false`: the attempt fails). Without listeners one
+/// branch.
+pub fn tame_event(ents: &Entities, animal: EntityId, owner: u128) -> bool {
+    let Some(hooks) = ents.hooks_for(vanillite_abi::event::ENTITY_TAME) else {
+        return true;
+    };
+    let Some(e) = ents.store.get(animal) else {
+        return true;
+    };
+    let mut ev = crate::hooks::Event {
+        entity: e.uuid(),
+        entity_type: e.kind().name().to_owned(),
+        other: owner,
+        player: owner,
+        ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TAME)
+    };
+    hooks.event(&mut ev);
+    !ev.cancelled
+}
+
 /// The `tame_animal` trigger of `TamableAnimal.tame(player)` and
 /// `AbstractHorse.tameWithName(player)`.
 pub fn award_tame(ents: &mut Entities, animal: EntityId, player: EntityId) {
@@ -343,8 +364,9 @@ pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_it
         && let Some(pos) = ents.store.get(mob).map(|e| e.pos())
         && let Some(lead) = vanillite_data::registry::ITEM.id("minecraft:lead")
     {
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos,
             velocity,
@@ -578,7 +600,11 @@ pub fn use_lead_on_fence(
         return false;
     }
     let uuid = crate::mob::new_entity_uuid();
+    let knots = ents.knots.len();
     let knot = knot_at(ents, level.network_ids(), pos, uuid);
+    if ents.knots.len() > knots && !ents.spawned(knot, vanillite_abi::spawn_reason::DEFAULT, 0) {
+        return false;
+    }
     for m in mine {
         set_leashed_to(ents, env, m, knot);
     }

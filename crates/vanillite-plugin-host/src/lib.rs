@@ -22,7 +22,9 @@ mod commands;
 pub mod crash;
 mod events;
 mod generator;
+mod goals;
 pub mod loader;
+mod packets;
 mod scheduler;
 
 use std::collections::HashMap;
@@ -33,8 +35,10 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use vanillite_abi::{self as abi, Status, status};
 
 pub use commands::{Arg, ArgValue, SUGGEST_PREFIX, Sender};
-pub use events::{InteractTarget, LoginOutcome, NewText, PlayerDeath};
+pub use events::{GameEvent, InteractTarget, LoginOutcome, NewText, PlayerDeath, TextDecision};
 pub use generator::PluginGeneratorProvider;
+pub use generator::PluginPopulator;
+pub use goals::PluginGoal;
 pub use loader::{Manifest, Threading};
 
 /// A message for players.
@@ -44,6 +48,15 @@ pub enum Text<'a> {
     Plain(&'a str),
     /// A JSON text component.
     Json(&'a str),
+}
+
+impl<'a> Text<'a> {
+    /// The text as given (plain or JSON).
+    pub fn as_str(&self) -> &'a str {
+        match *self {
+            Text::Plain(s) | Text::Json(s) => s,
+        }
+    }
 }
 
 /// A title for a player.
@@ -351,6 +364,11 @@ pub trait ServerAccess: Send + Sync {
     fn send_plugin_message(&self, _player: u128, _channel: &str, _data: &[u8]) -> bool {
         false
     }
+    /// Queues a play packet body (`id` + fields) for a player, past the packet listeners with
+    /// `skip_listeners`; `false` when offline.
+    fn send_packet(&self, _player: u128, _body: Vec<u8>, _skip_listeners: bool) -> bool {
+        false
+    }
     /// What the server knows about an online player.
     fn player_info(&self, _player: u128) -> Option<PlayerInfo> {
         None
@@ -396,6 +414,39 @@ pub trait ServerAccess: Send + Sync {
     fn set_game_rule(&self, _name: &str, _value: &str) -> Result<(), Status> {
         Err(vanillite_abi::status::UNSUPPORTED)
     }
+    /// A component of an item (`{id,count,components}`), defaults of its type included;
+    /// `None` when it has none. [`vanillite_abi::status::INVALID_ARGUMENT`] for an unknown
+    /// item or component.
+    fn item_component(
+        &self,
+        _item: &vanillite_nbt::Compound,
+        _component: &str,
+    ) -> Result<Option<vanillite_nbt::Tag>, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// The item with a component set (`None`: removed), the value checked as Vanilla's codec
+    /// reads it.
+    fn item_set_component(
+        &self,
+        _item: &vanillite_nbt::Compound,
+        _component: &str,
+        _value: Option<&vanillite_nbt::Tag>,
+    ) -> Result<vanillite_nbt::Compound, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+    /// A plugin was disabled: the server drops what it holds for it (chunk tickets).
+    fn plugin_disabled(&self, _plugin: &str) {}
+}
+
+/// A plugin menu to open (`menu_open`).
+#[derive(Clone, Copy, Debug)]
+pub struct Menu<'a> {
+    /// The menu type, e.g. `minecraft:generic_9x3`.
+    pub menu_type: &'a str,
+    /// The title.
+    pub title: Text<'a>,
+    /// The items as an SNBT list of stacks with `Slot`; empty for none.
+    pub items: &'a str,
 }
 
 /// One world, borrowed by its owner for the duration of a plugin call.
@@ -581,6 +632,191 @@ pub trait WorldAccess {
     fn advancement_done(&self, _player: u128, _advancement: &str) -> Result<bool, Status> {
         Err(vanillite_abi::status::UNSUPPORTED)
     }
+
+    /// A property ([`vanillite_abi::entity_prop`]) of an entity of this world (players too).
+    fn entity_get(&self, _entity: u128, _prop: u32) -> Result<f64, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Changes a property of an entity of this world.
+    fn entity_set(&mut self, _entity: u128, _prop: u32, _value: f64) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// An entity's custom name as JSON; `None` without one.
+    fn entity_name(&self, _entity: u128) -> Result<Option<String>, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Sets (`None`: removes) an entity's custom name.
+    fn set_entity_name(&mut self, _entity: u128, _name: Option<Text<'_>>) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The passengers of an entity, the controlling one first.
+    fn passengers(&self, _entity: u128) -> Result<Vec<u128>, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The vehicle of an entity; `None` when it rides nothing.
+    fn vehicle(&self, _entity: u128) -> Result<Option<u128>, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Mounts `passenger` on `vehicle` as `/ride mount`.
+    fn mount(&mut self, _passenger: u128, _vehicle: u128) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Dismounts an entity as `/ride dismount`.
+    fn dismount(&mut self, _passenger: u128) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// An attribute of a living entity: its base and its value.
+    fn attribute(&self, _entity: u128, _attribute: &str) -> Result<(f64, f64), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Sets an attribute's base value.
+    fn set_attribute_base(
+        &mut self,
+        _entity: u128,
+        _attribute: &str,
+        _value: f64,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Adds (`Some((amount, operation))`, operation from [`vanillite_abi::attribute_op`]) or
+    /// removes (`None`) the attribute modifier `id` (a full resource location).
+    fn attribute_modifier(
+        &mut self,
+        _entity: u128,
+        _attribute: &str,
+        _id: &str,
+        _change: Option<(f64, u32)>,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The target of a mob; `None` for none.
+    fn mob_target(&self, _mob: u128) -> Result<Option<u128>, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Sets (`None`: forgets) the target of a mob, with the target event.
+    fn set_mob_target(&mut self, _mob: u128, _target: Option<u128>) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Lets a mob walk to a position (speed modifier; 0 or less stops it).
+    /// [`vanillite_abi::status::NOT_FOUND`] when no path is found.
+    fn navigate(&mut self, _mob: u128, _to: [f64; 3], _speed: f64) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Adds a plugin goal to a mob; returns its id.
+    fn add_goal(&mut self, _mob: u128, _goal: PluginGoal) -> Result<u64, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Removes a plugin goal of a mob.
+    fn remove_goal(&mut self, _mob: u128, _goal: u64) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Removes a mob's Vanilla goals ([`vanillite_abi::goal_clear`] bits).
+    fn clear_goals(&mut self, _mob: u128, _which: u32) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The biome at a position, e.g. `minecraft:plains`.
+    fn biome(&self, _pos: [i32; 3]) -> Result<String, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Sets the biome of a box as `/fillbiome`.
+    fn set_biome(&mut self, _area: BlockBox, _biome: &str) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The sky and block light at a position.
+    fn light(&self, _pos: [i32; 3]) -> Result<(u32, u32), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// How far a chunk is loaded ([`vanillite_abi::chunk_state`]).
+    fn chunk_state(&self, _x: i32, _z: i32) -> Result<u32, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Force-loads a chunk (`true`) or ends it, as `/forceload`.
+    fn force_load(&mut self, _x: i32, _z: i32, _on: bool) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Adds (`true`) or removes a plugin's ticket on a chunk.
+    fn chunk_ticket(&mut self, _plugin: &str, _x: i32, _z: i32, _add: bool) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The world border.
+    fn border(&self) -> Result<vanillite_abi::BorderInfo, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Changes the world border as `/worldborder`.
+    fn set_border(&mut self, _border: &vanillite_abi::BorderInfo) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// An explosion as TNT makes it ([`vanillite_abi::explode_flag`] bits).
+    fn explode(
+        &mut self,
+        _center: [f64; 3],
+        _power: f32,
+        _flags: u32,
+        _source: Option<u128>,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The nearest hit of a ray ([`vanillite_abi::raytrace_flag`] bits).
+    fn raytrace(
+        &self,
+        _from: [f64; 3],
+        _to: [f64; 3],
+        _flags: u32,
+        _ignore: Option<u128>,
+    ) -> Result<vanillite_abi::RayHit, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Opens a plugin menu for a player; returns the container id.
+    fn open_menu(&mut self, _player: u128, _menu: &Menu<'_>) -> Result<u32, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// The item in a slot of a player's open menu (`{}` for none).
+    fn menu_item(&self, _player: u128, _slot: u32) -> Result<vanillite_nbt::Compound, Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Puts an item (empty compound: none) into a slot of a player's open menu.
+    fn set_menu_item(
+        &mut self,
+        _player: u128,
+        _slot: u32,
+        _item: &vanillite_nbt::Compound,
+    ) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
+
+    /// Closes a player's open menu.
+    fn close_menu(&mut self, _player: u128) -> Result<(), Status> {
+        Err(vanillite_abi::status::UNSUPPORTED)
+    }
 }
 
 /// How plugin block changes update the world ([`vanillite_abi::set_mode`]).
@@ -762,6 +998,7 @@ pub(crate) struct Inner {
     /// Local index + 1 of the plugin being reloaded (its registrations replace the old ones).
     reloading: AtomicU32,
     pub(crate) events: events::Events,
+    pub(crate) packets: packets::Packets,
     pub(crate) commands: commands::Commands,
     pub(crate) permission: RwLock<Option<PermissionProvider>>,
     /// Registered permission nodes with their [`abi::permission_default`].
@@ -771,6 +1008,8 @@ pub(crate) struct Inner {
     /// Plugin message channels: (plugin, channel).
     pub(crate) channels: RwLock<Vec<(u32, String)>>,
     pub(crate) generator: Mutex<Option<(u32, abi::ChunkGeneratorProvider)>>,
+    /// Chunk populators in registration order.
+    pub(crate) populators: Mutex<Vec<(u32, abi::ChunkPopulatorProvider)>>,
     pub(crate) tasks: scheduler::Tasks,
     pub(crate) server: OnceLock<Arc<dyn ServerAccess>>,
     pub(crate) tick: AtomicU64,
@@ -863,17 +1102,23 @@ impl PluginHost {
             phase: AtomicU8::new(LOADING),
             reloading: AtomicU32::new(0),
             events: events::Events::default(),
+            packets: packets::Packets::default(),
             commands: commands::Commands::default(),
             permission: RwLock::new(None),
             permission_defaults: RwLock::new(HashMap::new()),
             services: RwLock::new(Vec::new()),
             channels: RwLock::new(Vec::new()),
             generator: Mutex::new(None),
+            populators: Mutex::new(Vec::new()),
             tasks: scheduler::Tasks::default(),
             server: OnceLock::new(),
             tick: AtomicU64::new(0),
             dev_copies: AtomicU32::new(0),
         });
+        inner
+            .packets
+            .tap
+            .install(Arc::new(packets::Bridge(Arc::downgrade(&inner))));
         if index == hosts.len() {
             hosts.push(Arc::downgrade(&inner));
         } else if let Some(slot) = hosts.get_mut(index) {
@@ -1162,6 +1407,7 @@ impl PluginHost {
             *slot = Arc::clone(&new);
         }
         self.inner.events.remove_plugin(&self.inner, old.local);
+        self.inner.packets.remove(old.local, None);
         self.inner
             .services
             .write()
@@ -1238,7 +1484,15 @@ impl PluginHost {
 impl Inner {
     /// Removes everything a plugin registered (after a failed load or enable).
     pub(crate) fn forget(&self, local: u32) {
+        if let (Some(server), Some(plugin)) = (self.server(), self.plugin(local)) {
+            server.plugin_disabled(plugin.id());
+        }
+        self.populators
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(p, _)| *p != local);
         self.events.remove_plugin(self, local);
+        self.packets.remove(local, None);
         self.tasks.drop_plugin(self, local);
         self.services
             .write()

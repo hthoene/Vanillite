@@ -48,11 +48,15 @@
 //!   blocks by their state text (`minecraft:oak_log[axis=y]`), never by numeric protocol ids,
 //!   so plugins keep working across Minecraft updates. Providers are the exception: they work
 //!   with numeric block state ids resolved through [`Server::block_state_id`].
+//! - **Packets**: [`packet`] lets a plugin observe, cancel, rewrite and send packets, as raw
+//!   bodies or, with the feature `packets`, as the typed packets of `vanillite-protocol`.
 
 mod command;
 mod events;
 mod ffi;
+mod game;
 mod generator;
+pub mod packet;
 mod registrar;
 mod server;
 mod types;
@@ -63,15 +67,20 @@ pub use events::{
     Login, LoginReason, PlayerDeath, PlayerJoin, PlayerLeave, PlayerText, PlayerWorld,
     PlayersMoved, PluginMessage,
 };
+pub use game::{ChunkPopulator, GameEvent, Goal, GoalAction, GoalMob};
 pub use generator::{ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, WorldInfo};
 pub use registrar::{Permission, PermissionDefault, Registrar};
-pub use server::{BossBar, Ctx, Owner, Server, TaskId};
+pub use server::{BossBar, Ctx, Owner, RayHit, Server, TaskId, WorldBorder};
 pub use types::{
     AccessList, BlockBox, BlockPos, DataValue, Effect, Error, GameMode, Hand, Location, NO_BLOCK,
     Particle, PlayerInfo, ServerStats, SetMode, Sound, Text, Uuid, Vec3, Weather, World,
 };
 pub use vanillite_abi as abi;
 pub use vanillite_abi::priority;
+/// The protocol library behind typed packets (feature `packets`): packet types, codecs and
+/// text components of the Minecraft version this plugin is built for.
+#[cfg(feature = "packets")]
+pub use vanillite_protocol as protocol;
 
 /// The usual imports of a plugin.
 pub mod prelude {

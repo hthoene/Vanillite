@@ -534,11 +534,21 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
         if id == t.id {
             continue;
         }
-        if let Some(m) = t.ents.mob_mut(id)
-            && m.kind == kind
-            && m.target.is_none()
-            && m.is_alive()
-            && !(is_illager(kind) && by_illager)
+        let alerted = t.ents.mob(id).is_some_and(|m| {
+            m.kind == kind
+                && m.target.is_none()
+                && m.is_alive()
+                && !(is_illager(kind) && by_illager)
+        });
+        if alerted
+            && crate::mob::goals::target_event(
+                t.ents,
+                id,
+                None,
+                Some(by),
+                vanillite_abi::target_reason::RETALIATE,
+            )
+            && let Some(m) = t.ents.mob_mut(id)
         {
             m.target = Some(by);
         }
@@ -728,8 +738,9 @@ pub fn pick_up_item(t: &mut Tick<'_, '_>, item: EntityId) -> bool {
         let chance = t.mob_ref().equipment.drop_chance(EquipmentSlot::Head);
         if !current.is_empty() && (t.mob().random.next_float() - 0.1).max(0.0) < chance {
             let pos = t.pos();
-            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+            let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
             t.env.out.push(crate::survival::Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos,
                 velocity,
