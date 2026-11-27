@@ -676,25 +676,7 @@ pub fn bind_player_mobs(
         f64::from(pos.y) + 0.625,
         f64::from(pos.z) + 0.5,
     );
-    mine.retain(|&m| {
-        let Some(e) = ents.store.get(m) else {
-            return false;
-        };
-        let snap = if e.kind() == vanillite_data::entity::ids::GHAST
-            || e.kind() == vanillite_data::entity::ids::HAPPY_GHAST
-        {
-            16.0
-        } else {
-            12.0
-        };
-        let b = e.aabb();
-        let c = Vec3::new(
-            (b.min_x + b.max_x) / 2.0,
-            (b.min_y + b.max_y) / 2.0,
-            (b.min_z + b.max_z) / 2.0,
-        );
-        c.distance_to_sqr(knot_center).sqrt() <= snap && ents.mob(m).is_none_or(can_be_leashed)
-    });
+    mine.retain(|&m| can_attach_to(ents, m, knot_center));
     // Without a mob to tie, Vanilla discards the knot it just created.
     if mine.is_empty() {
         return false;
@@ -715,6 +697,93 @@ pub fn bind_player_mobs(
         center,
         Some(player),
     );
+    true
+}
+
+/// `canHaveALeashAttachedTo(target)`: the mob's box centre within its `leashSnapDistance`
+/// of the target's box centre `to`.
+fn can_attach_to(ents: &Entities, mob: EntityId, to: Vec3) -> bool {
+    let Some(e) = ents.store.get(mob) else {
+        return false;
+    };
+    let snap = if e.kind() == vanillite_data::entity::ids::GHAST
+        || e.kind() == vanillite_data::entity::ids::HAPPY_GHAST
+    {
+        16.0
+    } else {
+        12.0
+    };
+    e.aabb().center().distance_to_sqr(to).sqrt() <= snap && ents.mob(mob).is_none_or(can_be_leashed)
+}
+
+/// The mobs led by `holder` in `Leashable.leashableInArea` (a 32 block cube around `pos`).
+fn leashed_to_in_area(ents: &Entities, holder: EntityId, pos: Vec3) -> Vec<EntityId> {
+    let area = Aabb::new(
+        pos.x - 16.0,
+        pos.y - 16.0,
+        pos.z - 16.0,
+        pos.x + 16.0,
+        pos.y + 16.0,
+        pos.z + 16.0,
+    );
+    let mut out = Vec::new();
+    ents.store.for_each_in(&area, false, |id| {
+        if ents.leashes.get(&id) == Some(&holder) {
+            out.push(id);
+        }
+    });
+    out
+}
+
+/// `LeashFenceKnotEntity.interact`: shears cut the knot's leads; the player's led mobs are
+/// tied to the knot, else (not sneaking) the knot's mobs move to the player's lead. Returns
+/// whether anything happened (`SUCCESS`, else `PASS`).
+pub fn knot_interact(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    knot: EntityId,
+    shears: bool,
+    sneaking: bool,
+) -> bool {
+    if shears && shear_off_all_leash_connections(ents, env, knot) {
+        return true;
+    }
+    let (Some(player_pos), Some(knot_box)) = (
+        ents.store.get(player).map(|e| e.pos()),
+        ents.store.get(knot).map(|e| e.aabb()),
+    ) else {
+        return false;
+    };
+    let mut attached = false;
+    for m in leashed_to_in_area(ents, player, player_pos) {
+        if can_attach_to(ents, m, knot_box.center()) {
+            set_leashed_to(ents, env, m, knot);
+            attached = true;
+        }
+    }
+    let mut moved = false;
+    if !attached && !sneaking {
+        let player_center = ents.store.get(player).map(|e| e.aabb().center());
+        let knot_pos = ents.store.get(knot).map_or(player_pos, |e| e.pos());
+        for m in leashed_to_in_area(ents, knot, knot_pos) {
+            if player_center.is_some_and(|c| can_attach_to(ents, m, c)) {
+                set_leashed_to(ents, env, m, player);
+                moved = true;
+            }
+        }
+    }
+    if !attached && !moved {
+        return false;
+    }
+    let at = ents.store.get(knot).map_or(player_pos, |e| e.pos());
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().block_attach,
+        at,
+        Some(player),
+    );
+    entity_sound(ents, env, knot, "minecraft:item.lead.tied");
     true
 }
 

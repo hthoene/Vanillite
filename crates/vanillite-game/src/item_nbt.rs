@@ -24,6 +24,11 @@ pub fn component_to_nbt(type_id: u16, wire: &[u8]) -> Option<Tag> {
     conv::to_nbt(type_id, wire, &InstalledRegistries).ok()
 }
 
+/// The registry name of a component type (`minecraft:item_name`).
+pub fn component_type_name(type_id: u16) -> Option<&'static str> {
+    conv::type_name(type_id)
+}
+
 /// The wire form of one component value from its persistent NBT form; `None` if the tag does
 /// not fit the component's codec.
 pub fn component_from_nbt(type_id: u16, tag: &Tag) -> Option<Box<[u8]>> {

@@ -183,8 +183,12 @@ pub fn use_item(
     {
         crate::elytra::swap_with_equipment(ents, env, player, &mut stack, slot)
     } else {
+        // A brush only starts from `useOn` (`BrushItem` keeps `Item.use`: `PASS`).
+        let brush = item::item_id(&stack) == vanillite_data::item::ids::BRUSH;
         put_back(ents, player, hand, stack);
-        crate::player::using::start(ents, env, network_ids, player, hand);
+        if !brush {
+            crate::player::using::start(ents, env, network_ids, player, hand);
+        }
         return;
     };
     put_back(ents, player, hand, stack);

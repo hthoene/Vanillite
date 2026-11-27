@@ -183,9 +183,26 @@ fn add_offers_from_set(
     };
     let in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let holder_set = |registry: &str, entry: &str| data.holder_set(registry, entry);
+    // `exploration_map` of the cartographer's map trades, from the merchant's position.
+    let generation = level.generation.clone();
+    let maps = level.maps_shared();
+    let (min_y, height) = (level.min_y(), level.max_y() - level.min_y() + 1);
+    let sea_level = generation.as_ref().map_or(63, |g| g.terrain().sea_level());
+    let explore = |request: &crate::loot::ExplorationMap, origin: Vec3| {
+        crate::map::exploration_map(
+            generation.as_ref()?,
+            maps.as_deref()?,
+            min_y,
+            height,
+            sea_level,
+            request,
+            origin,
+        )
+    };
     let ctx = crate::loot::LootContext {
         origin: Some(pos),
         this_entity: Some(id),
+        exploration_map: Some(&explore),
         item_in_tag: &in_tag,
         enchanting: Some(&data.enchanting),
         holder_set: &holder_set,

@@ -166,7 +166,9 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                 || (t.mob_ref().kind == super::Kind::SulfurCube
                     && super::fam::undead::cubes::has_body_item(t.mob_ref()));
             if !breathes && !t.mob_ref().effects.has_water_breathing() {
-                t.mob().air -= 1;
+                let bonus = oxygen_bonus(t.mob_ref());
+                let m = t.mob();
+                m.air = crate::survival::player::decrease_air_supply(m.air, bonus, &mut m.random);
                 if t.mob_ref().air <= -20 {
                     t.mob().air = 0;
                     let id = t.id;
@@ -817,6 +819,23 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         return;
     }
     kinds::ai_step(t);
+}
+
+/// The `oxygen_bonus` attribute of a mob from its equipment (Respiration).
+fn oxygen_bonus(m: &super::MobData) -> f64 {
+    let mut mods = Vec::new();
+    for slot in (0..8).filter_map(crate::item::EquipmentSlot::from_ordinal) {
+        crate::item::attribute_modifiers(
+            m.equipment.get(slot),
+            slot,
+            "minecraft:oxygen_bonus",
+            &mut mods,
+        );
+    }
+    if mods.is_empty() {
+        return 0.0;
+    }
+    crate::item::attribute_value(0.0, &mods, 0.0, 1024.0)
 }
 
 /// `hurtAndBreak(amount, mob, slot)` of a mob's equipment (without Unbreaking).

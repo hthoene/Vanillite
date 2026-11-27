@@ -367,7 +367,16 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
             }
         }
     }
-    push_attributes(entity, &dirty, &s.effects, ids::PLAYER, None, env.out);
+    // The equipment's modifiers go along: the client replaces an attribute's modifiers.
+    if s.equipment_modifiers.is_empty() {
+        push_attributes(entity, &dirty, &s.effects, ids::PLAYER, None, env.out);
+    } else {
+        let mut fx = s.effects.clone();
+        for m in s.equipment_modifiers.iter() {
+            fx.modifiers.set(m.attribute, &m.id, m.amount, m.operation);
+        }
+        push_attributes(entity, &dirty, &fx, ids::PLAYER, None, env.out);
+    }
 }
 
 /// `update_attributes` of the syncable attributes in `dirty` to everyone tracking the entity
@@ -401,6 +410,79 @@ fn push_attributes(
             body: attribute::encode_update(e.network_id().0, &synced, &fx.modifiers),
         }),
     });
+}
+
+/// `collectEquipmentChanges` → `ItemStack.forEachModifier`: the attribute modifiers of a
+/// player's equipment (item and enchantment modifiers per slot) with those of the active
+/// location-based enchantments (Soul Speed).
+pub fn player_equipment_modifiers(player: &PlayerData) -> attribute::Modifiers {
+    let mut out = attribute::Modifiers::default();
+    let mut list = Vec::new();
+    for slot in crate::player::encode::EQUIPMENT_SLOTS {
+        let stack = player.inventory.equipment(slot);
+        if stack.is_empty() {
+            continue;
+        }
+        for (i, a) in vanillite_data::entity::ATTRIBUTES.iter().enumerate() {
+            let Ok(id) = u8::try_from(i) else {
+                break;
+            };
+            list.clear();
+            crate::item::attribute_modifiers(stack, slot, a.name, &mut list);
+            for (n, &(op, amount)) in list.iter().enumerate() {
+                let operation = match op {
+                    0 => super::Operation::AddValue,
+                    1 => super::Operation::AddMultipliedBase,
+                    _ => super::Operation::AddMultipliedTotal,
+                };
+                let key = format!("vanillite:equipment/{}/{n}", slot.ordinal());
+                out.set(Attribute(id), &key, amount, operation);
+            }
+        }
+    }
+    crate::enchant::location::location_modifiers(player, &mut out);
+    out.take_dirty();
+    out
+}
+
+/// The `update_attributes` of a player's attributes whose equipment modifiers changed (all
+/// of them when `full`, after a join or respawn), with the effect modifiers; `None` when
+/// nothing changed.
+pub fn player_equipment_update(
+    network_id: i32,
+    player: &mut PlayerData,
+    full: bool,
+) -> Option<UpdateAttributes> {
+    let new = player_equipment_modifiers(player);
+    let old = &player.survival.equipment_modifiers;
+    let mut changed: Vec<Attribute> = Vec::new();
+    for m in old.iter().chain(new.iter()) {
+        if changed.contains(&m.attribute) {
+            continue;
+        }
+        let a: Vec<_> = old.of(m.attribute).collect();
+        let b: Vec<_> = new.of(m.attribute).collect();
+        if full || a != b {
+            changed.push(m.attribute);
+        }
+    }
+    player.survival.equipment_modifiers = new;
+    player.survival.equipment_dirty = false;
+    let synced: Vec<(Attribute, f64)> = changed
+        .iter()
+        .filter(|a| a.syncable())
+        .map(|&a| (a, a.base_of(ids::PLAYER)))
+        .collect();
+    if synced.is_empty() {
+        return None;
+    }
+    let mut all = player.survival.effects.modifiers.clone();
+    for m in player.survival.equipment_modifiers.iter() {
+        all.set(m.attribute, &m.id, m.amount, m.operation);
+    }
+    Some(UpdateAttributes {
+        body: attribute::encode_update(network_id, &synced, &all),
+    })
 }
 
 /// `updateInvisibilityStatus` + `updateGlowingStatus`; the particles are part of the entity
@@ -467,6 +549,14 @@ pub fn sync_mob(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) {
     }
     if m.effects.take_dirty() {
         update_flags(&mut entity, &m.effects);
+        // `ArmorStand.updateInvisibilityStatus` keeps its own `Invisible`; the `Glowing` tag
+        // stays (`isCurrentlyGlowing`: the effect or the tag).
+        if let Some(s) = crate::decoration::stand::state(m) {
+            entity.set_flags(EntityFlags::INVISIBLE, s.invisible);
+            if s.glowing {
+                entity.set_flags(EntityFlags::GLOWING, true);
+            }
+        }
     }
     if !m.effects.modifiers.is_dirty() {
         return;

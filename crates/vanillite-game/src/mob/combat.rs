@@ -255,6 +255,11 @@ fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: Damag
         return true;
     };
     m.removed
+        || crate::enchant::location::frost_walker_immune(
+            types,
+            kind,
+            m.equipment.get(crate::item::EquipmentSlot::Feet),
+        )
         || types.is(kind, tag::IS_FIRE)
             && (e.kind().info().fire_immune
                 || m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE))

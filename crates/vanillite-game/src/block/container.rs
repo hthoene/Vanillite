@@ -1400,6 +1400,13 @@ pub fn creative_shulker_drop(
         return;
     }
     let mut stack = ItemStack::new(item, 1);
+    // `collectComponents`: the kept components, then the implicit ones.
+    if let Some(kept) = level.block_entities.kept_components(pos) {
+        let patch = crate::item_nbt::patch_from_nbt(kept);
+        for (id, value) in patch.added {
+            stack.patch_mut().set(id, value);
+        }
+    }
     for id in [ids::CUSTOM_NAME, ids::LOCK, ids::CONTAINER] {
         if let Some(value) = crate::level::block_entity::collect_component(entity, id) {
             stack.patch_mut().set(id, value);

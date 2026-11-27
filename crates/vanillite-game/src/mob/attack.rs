@@ -137,7 +137,8 @@ pub fn damage_context<'a>(
     }
 }
 
-/// A player's attribute value from the base and the modifiers of its equipment.
+/// A player's attribute value from the base, the modifiers of its equipment and those of
+/// its status effects (Strength, Weakness, Haste, Mining Fatigue, Luck, ...).
 pub fn player_attribute(
     ents: &Entities,
     player: EntityId,
@@ -152,6 +153,16 @@ pub fn player_attribute(
     let mut mods = Vec::new();
     for slot in crate::player::encode::EQUIPMENT_SLOTS {
         item::attribute_modifiers(p.inventory.equipment(slot), slot, name, &mut mods);
+    }
+    let effects = &p.survival.effects.modifiers;
+    if !effects.is_empty()
+        && let Some(id) = item::attribute_id(name)
+        && let Ok(id) = u8::try_from(id)
+    {
+        for m in effects.of(crate::effect::attribute::Attribute(id)) {
+            #[allow(clippy::as_conversions)]
+            mods.push((m.operation as u8, m.amount));
+        }
     }
     item::attribute_value(base, &mods, min, max)
 }

@@ -256,6 +256,13 @@ pub struct Survival {
     /// World changes of the player's contact with blocks (trampled farmland, redstone ore
     /// stepped on) for the world to apply.
     pub world_actions: Vec<crate::mob::WorldAction>,
+    /// Frost Walker and Soul Speed (`lastPos`, active location-based effects).
+    pub location: crate::enchant::location::LocationState,
+    /// The equipment's and the location-based enchantments' attribute modifiers as last sent
+    /// to the client (`collectEquipmentChanges`).
+    pub equipment_modifiers: crate::effect::attribute::Modifiers,
+    /// The location-based modifiers changed: the attributes are synced again.
+    pub equipment_dirty: bool,
     /// `getTicksFrozen` and `isInPowderSnow`.
     pub ticks_frozen: i32,
     pub in_powder_snow: bool,
@@ -378,6 +385,9 @@ impl Default for Survival {
             last_crystal_tick: 0,
             game_events: Vec::new(),
             world_actions: Vec::new(),
+            location: crate::enchant::location::LocationState::default(),
+            equipment_modifiers: crate::effect::attribute::Modifiers::default(),
+            equipment_dirty: false,
             ticks_frozen: 0,
             in_powder_snow: false,
             last_hurt_mob: None,
@@ -922,6 +932,13 @@ fn is_invulnerable_to(player: &PlayerData, env: &Env<'_>, kind: DamageKind) -> b
     }
     let t = env.types;
     let rules = env.rules;
+    if crate::enchant::location::frost_walker_immune(
+        t,
+        kind,
+        player.inventory.equipment(crate::item::EquipmentSlot::Feet),
+    ) {
+        return true;
+    }
     if t.is(kind, tag::IS_DROWNING) {
         !rules.bool(Rule::DROWNING_DAMAGE)
     } else if t.is(kind, tag::IS_FALL) {
@@ -1278,6 +1295,29 @@ fn actually_hurt(
     }
 }
 
+/// The `oxygen_bonus` attribute of a player (Respiration on the equipment).
+fn oxygen_bonus(player: &PlayerData) -> f64 {
+    let mut mods = Vec::new();
+    for slot in crate::player::encode::EQUIPMENT_SLOTS {
+        let stack = player.inventory.equipment(slot);
+        crate::item::attribute_modifiers(stack, slot, "minecraft:oxygen_bonus", &mut mods);
+    }
+    if mods.is_empty() {
+        return 0.0;
+    }
+    crate::item::attribute_value(0.0, &mods, 0.0, 1024.0)
+}
+
+/// `LivingEntity.decreaseAirSupply`: with an `oxygen_bonus` the air is kept when the
+/// entity's random draws `nextDouble() >= 1 / (bonus + 1)`.
+pub fn decrease_air_supply(air: i32, oxygen_bonus: f64, random: &mut LegacyRandom) -> i32 {
+    if oxygen_bonus > 0.0 && random.next_double() >= 1.0 / (oxygen_bonus + 1.0) {
+        air
+    } else {
+        air - 1
+    }
+}
+
 /// The armour and armour toughness of a player's equipment (`getArmorValue`,
 /// `ARMOR_TOUGHNESS`).
 pub fn armor_values(player: &PlayerData) -> (f32, f32) {
@@ -1302,7 +1342,6 @@ fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource,
     }
     #[allow(clippy::cast_possible_truncation)]
     let amount = (damage / 4.0).max(1.0) as i32;
-    let fire = env.types.is(source.kind, tag::IS_FIRE);
     for index in 36..40 {
         let unbreaking = crate::player::play::game_data().map_or(0, |d| {
             d.enchantment_level(player.inventory.get(index), "minecraft:unbreaking")
@@ -1310,14 +1349,12 @@ fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource,
         let Some(stack) = player.inventory.get_mut(index) else {
             continue;
         };
-        if stack.is_empty() || !crate::item::is_damageable(stack) {
-            continue;
-        }
-        // Netherite (`damage_resistant` against fire) is not hurt by fire.
-        if fire
-            && crate::item::item_id(stack)
-                .name()
-                .starts_with("minecraft:netherite_")
+        // `doHurtEquipment`: only `equippable` items with `damage_on_hurt` (not elytra) that
+        // `canBeHurtBy` the source (`damage_resistant`, e.g. netherite against fire).
+        if stack.is_empty()
+            || !crate::item::is_damageable(stack)
+            || !crate::item::item_id(stack).info().equip_damage_on_hurt
+            || !crate::item::can_be_hurt_by(stack, env.types, source.kind)
         {
             continue;
         }
@@ -1914,7 +1951,11 @@ pub fn base_tick_after_portal(
                 .is_some_and(|s| env.facts.is_bubble_column(s));
         if eye_in_water {
             if !abilities.invulnerable && !player.survival.effects.has_water_breathing() {
-                let air = player.survival.air - 1;
+                let air = decrease_air_supply(
+                    player.survival.air,
+                    oxygen_bonus(player),
+                    &mut player.survival.random,
+                );
                 set_air(entity, &mut player.survival, air);
                 if player.survival.air <= -20 {
                     set_air(entity, &mut player.survival, 0);
@@ -1936,6 +1977,10 @@ pub fn base_tick_after_portal(
         } else if player.survival.air < MAX_AIR {
             let air = (player.survival.air + 4).min(MAX_AIR);
             set_air(entity, &mut player.survival, air);
+        }
+        // `EnchantmentHelper.tickEffects` and `onChangedBlock` (Frost Walker, Soul Speed).
+        if crate::enchant::location::base_tick(entity, player, env) {
+            player.survival.equipment_dirty = true;
         }
     }
     {
@@ -2906,6 +2951,10 @@ fn check_fall_damage(
     if on_ground {
         let fall = player.survival.fall_distance;
         if fall > 0.0 {
+            // `onChangedBlock` of a landing.
+            if crate::enchant::location::on_changed_block(entity, player, env) {
+                player.survival.equipment_dirty = true;
+            }
             player.survival.game_events.push((
                 crate::level::game_event::events().hit_ground,
                 pos,

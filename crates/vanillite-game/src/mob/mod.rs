@@ -853,6 +853,12 @@ pub enum WorldAction {
     TrampleFarmland(BlockPos, EntityId),
     /// `destroyBlock(pos, drop, breaker)` (ravagers in crops).
     DestroyBlockBy(BlockPos, bool, EntityId),
+    /// Frost Walker's `replace_disk` around a player's position.
+    FrostWalker {
+        pos: Vec3,
+        radius: i32,
+        source: EntityId,
+    },
 }
 
 impl WorldAction {
@@ -886,6 +892,13 @@ impl WorldAction {
             }
             WorldAction::DestroyBlockBy(pos, drop, id) => {
                 level.destroy_block(pos, drop, Some(id));
+            }
+            WorldAction::FrostWalker {
+                pos,
+                radius,
+                source,
+            } => {
+                crate::enchant::location::frost_walker(level, pos, radius, source);
             }
             WorldAction::ProjectileHitBlock(pos, at, id, speed) => {
                 crate::block::projectile_hit::projectile_hit_block(level, pos, at, id, speed);
