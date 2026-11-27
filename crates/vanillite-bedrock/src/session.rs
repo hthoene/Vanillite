@@ -1187,9 +1187,11 @@ impl Session {
             ClientboundPlay::Disconnect(d) => self.kick(&reason_text(&d.reason)),
             ClientboundPlay::SystemChat(c) => {
                 let text = c.content.plain();
-                if c.overlay {
+                if text.is_empty() {
+                    // Bedrock rejects an empty text; Java clears the action bar this way.
+                } else if c.overlay {
                     self.send(id::TEXT, &bp::text_tip(&text));
-                } else if !text.is_empty() {
+                } else {
                     self.send(id::TEXT, &bp::text_raw(&text));
                 }
             }

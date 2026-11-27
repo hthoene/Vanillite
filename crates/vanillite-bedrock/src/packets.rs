@@ -92,7 +92,7 @@ pub mod id {
     pub const REMOVE_OBJECTIVE: u32 = 106;
     pub const SET_DISPLAY_OBJECTIVE: u32 = 107;
     pub const SET_SCORE: u32 = 108;
-    pub const OPEN_SIGN: u32 = 202;
+    pub const OPEN_SIGN: u32 = 303;
     pub const PLAYER_ENCHANT_OPTIONS: u32 = 146;
     pub const LECTERN_UPDATE: u32 = 125;
     pub const PLAYER_TOGGLE_CRAFTER_SLOT_REQUEST: u32 = 306;
@@ -281,16 +281,17 @@ pub mod meta {
     pub const FLAG_CHESTED: u32 = 36;
 }
 
-/// Entity metadata, written in key order.
+/// Entity metadata, written in key order (some client features need sorted keys).
 #[derive(Debug, Default)]
 pub struct Metadata {
-    count: u32,
+    /// Key and start in `data` of each entry, in call order.
+    entries: Vec<(u32, usize)>,
     data: Vec<u8>,
 }
 
 impl Metadata {
     fn entry(&mut self, key: u32, kind: u8) {
-        self.count = self.count.saturating_add(1);
+        self.entries.push((key, self.data.len()));
         io::write_varu32(&mut self.data, key);
         io::write_varu32(&mut self.data, u32::from(kind));
         self.data.push(kind);
@@ -333,8 +334,23 @@ impl Metadata {
 
     /// Writes the entries.
     pub fn write(&self, out: &mut Vec<u8>) {
-        io::write_varu32(out, self.count);
-        out.extend_from_slice(&self.data);
+        io::write_len(out, self.entries.len());
+        let mut order: Vec<(u32, usize, usize)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, &(key, start))| {
+                let end = self
+                    .entries
+                    .get(i.saturating_add(1))
+                    .map_or(self.data.len(), |e| e.1);
+                (key, start, end)
+            })
+            .collect();
+        order.sort_by_key(|e| e.0);
+        for (_, start, end) in order {
+            out.extend_from_slice(self.data.get(start..end).unwrap_or_default());
+        }
     }
 }
 
@@ -658,11 +674,23 @@ pub fn add_player(p: &AddPlayer<'_>, v: &Version) -> Vec<u8> {
         .byte(meta::ALWAYS_SHOW_NAME, 1)
         .write(&mut out);
     out.extend_from_slice(&[0, 0]); // no entity properties
-    // Ability data: unique id, permissions, no layers.
+    // Ability data: unique id, permissions and the base layer the client expects.
     out.extend_from_slice(&p.entity_id.to_le_bytes());
     out.push(1);
     out.push(0);
-    io::write_varu32(&mut out, 0);
+    io::write_varu32(&mut out, 1);
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&ability::ALL.to_le_bytes());
+    let values = ability::BUILD
+        | ability::MINE
+        | ability::DOORS
+        | ability::CONTAINERS
+        | ability::ATTACK_PLAYERS
+        | ability::ATTACK_MOBS;
+    out.extend_from_slice(&values.to_le_bytes());
+    for speed in [0.05f32, 1.0, 0.1] {
+        out.extend_from_slice(&speed.to_le_bytes());
+    }
     io::write_varu32(&mut out, 0); // entity links
     if !v.before_26_60() {
         out.push(0); // not a passenger of a block
@@ -2080,7 +2108,7 @@ pub struct MapUpdate<'a> {
     pub locked: bool,
     pub scale: u8,
     pub decorations: Option<&'a [MapDecoration]>,
-    /// Start x, start y, width, height and the ABGR pixels of the rectangle (row by row).
+    /// Start x, start y, width, height and the ARGB pixels of the rectangle (row by row).
     pub texture: Option<(u8, u8, u8, u8, &'a [u32])>,
 }
 
