@@ -381,6 +381,37 @@ To release: set the workspace version (and the `version` of every internal crate
 The binaries hold everything but Mojang's data: the first start downloads the pinned server jar
 into `cache/` (internet access needed once, no Java).
 
+### Signing the Windows build
+
+The release workflow publishes `vanillite.exe` unsigned. The signing certificate (Certum, cloud
+certificate in SimplySign) never leaves the owner's account, so the owner signs each release on
+their Windows PC after the workflow has published it, with `scripts/release/sign-windows.ps1`.
+For the tag it downloads the Windows zip archives and SHA256SUMS (and checks them), signs
+`vanillite.exe` with signtool (SHA-256 file digest, RFC 3161 timestamp from
+`http://time.certum.pl`), verifies it with `signtool verify /pa`, packs the archive again with
+the same layout, updates SHA256SUMS and replaces both on the release (`gh release upload
+--clobber`). Archives already signed are skipped, so it can run again; `-DryRun` does everything
+but the upload. Linux and macOS archives and the Docker images are not touched.
+
+Once per PC: install SimplySign Desktop, the GitHub CLI (`winget install GitHub.cli`, then `gh
+auth login`) and the Windows SDK signing tools (`winget install Microsoft.WindowsSDK.10.0.26100`,
+or "Windows SDK Signing Tools for Desktop Apps" in the Visual Studio Installer). Per release:
+
+1. Wait until the release workflow of the tag has finished.
+2. Start SimplySign Desktop and log in (token code from the SimplySign mobile app).
+3. In PowerShell in a checkout of the repository (current `main`):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\release\sign-windows.ps1 -Tag 'v0.1.0-beta.1+mc26.3' -CertificateSubject '<name in the certificate>' -DryRun
+   powershell -ExecutionPolicy Bypass -File scripts\release\sign-windows.ps1 -Tag 'v0.1.0-beta.1+mc26.3' -CertificateSubject '<name in the certificate>'
+   ```
+
+   `-Thumbprint <sha1>` selects the certificate instead of `-CertificateSubject` when several
+   match. Every failed prerequisite (gh missing or logged out, signtool not found, SimplySign
+   Desktop not running, certificate not in the store) stops the script with the fix.
+4. Check the release: the Windows zip and SHA256SUMS are new, and `vanillite.exe` shows a valid
+   signature under Properties > Digital Signatures.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push and pull request: format, clippy, cargo-deny, the
