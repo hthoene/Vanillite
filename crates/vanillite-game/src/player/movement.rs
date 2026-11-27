@@ -127,7 +127,14 @@ pub struct Movement {
     /// `movementThisTick`: the moves `Entity.move` made since the player's last tick, for
     /// the blocks on their way (`applyEffectsFromBlocks`).
     pub path: Vec<crate::survival::inside::Movement>,
+    /// The tick of the last "moved wrongly" warning and the warnings held back since: the
+    /// log shows one per second and player, with a count of the rest.
+    wrongly_logged: Option<i32>,
+    wrongly_held: u32,
 }
+
+/// Ticks between two "moved wrongly" warnings of one player.
+const WRONGLY_LOG_INTERVAL: i32 = 20;
 
 /// `Mth.wrapDegrees`.
 pub fn wrap_degrees(angle: f32) -> f32 {
@@ -183,7 +190,25 @@ impl Movement {
             known_movement: Vec3::ZERO,
             received_movement_this_tick: false,
             path: Vec::new(),
+            wrongly_logged: None,
+            wrongly_held: 0,
         }
+    }
+
+    /// Logs "moved wrongly" (Vanilla logs every one): at most once per second and player,
+    /// the rest as a count, so one client cannot flood the log.
+    fn warn_moved_wrongly(&mut self) {
+        if self.wrongly_log_due() {
+            log::warn!("Player moved wrongly!");
+            self.wrongly_logged = Some(self.tick_count);
+        } else {
+            self.wrongly_held = self.wrongly_held.saturating_add(1);
+        }
+    }
+
+    fn wrongly_log_due(&self) -> bool {
+        self.wrongly_logged
+            .is_none_or(|at| self.tick_count.wrapping_sub(at) >= WRONGLY_LOG_INTERVAL)
     }
 
     /// A teleport waits for the client's confirmation (moves are ignored meanwhile).
@@ -239,6 +264,11 @@ impl Movement {
         self.path.clear();
         self.tick_count = self.tick_count.wrapping_add(1);
         self.known_move_packets = self.received_move_packets;
+        if self.wrongly_held > 0 && self.wrongly_log_due() {
+            let held = std::mem::take(&mut self.wrongly_held);
+            log::warn!("Player moved wrongly {held} more times in the last second");
+            self.wrongly_logged = Some(self.tick_count);
+        }
         // TODO(milestone 3): the "floating too long" kick (`movement.flying-kick`) needs
         // `noBlocksAround`, i.e. block collision.
     }
@@ -515,7 +545,7 @@ impl Movement {
             );
         }
         if !allowed {
-            log::warn!("Player moved wrongly!");
+            self.warn_moved_wrongly();
             let (y, x) = (y_rot, x_rot);
             self.teleport(body, from, y, x, sink);
             self.moves.push(crate::survival::player::MoveRecord {
