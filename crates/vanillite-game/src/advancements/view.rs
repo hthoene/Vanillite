@@ -162,6 +162,10 @@ fn base(ents: &Entities, id: EntityId) -> Option<EntityView<'static>> {
             game_mode: p.game_mode,
             level: p.survival.xp.level,
             stats: None,
+            food: (p.survival.food.food_level, p.survival.food.saturation),
+            recipes: None,
+            input: p.connection.vehicle.input,
+            own: false,
         });
         v.effects = effects_of(ents, id);
     }
@@ -198,8 +202,9 @@ pub fn damage_event(
     })
 }
 
-/// Damage or the death of a player, kept until the world's entities are at hand
-/// (`LivingEntity.hurtServer`'s triggers and `awardKillScore`).
+/// Damage or the death of a player or an effect applied by another entity, kept until the
+/// world's entities are at hand (`LivingEntity.hurtServer`'s triggers, `awardKillScore`,
+/// `EFFECTS_CHANGED`).
 #[derive(Clone, Copy, Debug)]
 pub enum PendingCombat {
     /// `ENTITY_HURT_PLAYER` and the causing player's `PLAYER_HURT_ENTITY`.
@@ -213,6 +218,9 @@ pub enum PendingCombat {
         source: DamageSource,
         killer: EntityId,
     },
+    /// `EFFECTS_CHANGED` of an effect another entity applied (`onEffectAdded`,
+    /// `onEffectUpdated` with a source).
+    EffectsChanged { source: EntityId },
 }
 
 /// Fires the triggers of a player's [`PendingCombat`] with the entities as they are now.
@@ -224,6 +232,11 @@ pub fn resolve_combat(ents: &mut Entities, types: &DamageTypes, player: EntityId
     let is_player = |ents: &Entities, id: EntityId| ents.player(id).is_some();
     for p in pending {
         match p {
+            PendingCombat::EffectsChanged { source } => {
+                fire(ents, player, TriggerKind::EFFECTS_CHANGED, |ents| {
+                    Event::EffectsChanged(snapshot(ents, source))
+                });
+            }
             PendingCombat::Hurt {
                 source,
                 damage,
@@ -310,4 +323,61 @@ pub fn apply_damage(
         crate::item::set_damage(stack, new_damage);
         false
     }
+}
+
+/// The height of an entity's eyes above its feet (`getEyeHeight`) in its current pose.
+fn eye_height(e: &vanillite_world::entity::EntityRef<'_>) -> f64 {
+    let dims = e.dims();
+    if e.kind() == vanillite_data::entity::ids::PLAYER {
+        return crate::survival::player::eye_height(dims.height);
+    }
+    let info = e.kind().info();
+    f64::from(info.eye_height) * f64::from(dims.height / info.height.max(0.01))
+}
+
+/// The entity of `PlayerPredicate.lookingAt`: the nearest entity whose box the player's view
+/// enters within 100 blocks (`ProjectileUtil.getEntityHitResult` from its eyes without a
+/// margin, spectators left out), if the player has a line of sight to it
+/// (`LivingEntity.hasLineOfSight`: no block collision between the eyes within 128 blocks).
+pub fn looked_at(
+    level: &crate::level::Level,
+    player: EntityId,
+    spectator: &dyn Fn(EntityId) -> bool,
+) -> Option<EntityId> {
+    use vanillite_base::Vec3;
+    let store = &level.entities.store;
+    let e = store.get(player)?;
+    let p = e.pos();
+    let eye = Vec3::new(p.x, p.y + eye_height(&e), p.z);
+    let rot = e.rot();
+    let view = crate::mob::view_vector(rot.x_rot, rot.y_rot);
+    let to = Vec3::new(
+        eye.x + view.x * 100.0,
+        eye.y + view.y * 100.0,
+        eye.z + view.z * 100.0,
+    );
+    let area =
+        vanillite_base::Aabb::new(eye.x, eye.y, eye.z, to.x, to.y, to.z).inflate(1.0, 1.0, 1.0);
+    let mut nearest: Option<(EntityId, f64)> = None;
+    store.for_each_in(&area, false, |other| {
+        if other == player || spectator(other) {
+            return;
+        }
+        let Some(o) = store.get(other) else {
+            return;
+        };
+        if let Some(hit) = crate::mob::projectile::aabb_clip(&o.aabb(), eye, to) {
+            let d = eye.distance_to_sqr(hit);
+            if nearest.is_none_or(|(_, n)| d < n) {
+                nearest = Some((other, d));
+            }
+        }
+    });
+    let (target, _) = nearest?;
+    let t = store.get(target)?;
+    let tp = t.pos();
+    let target_eye = Vec3::new(tp.x, tp.y + eye_height(&t), tp.z);
+    let sees = target_eye.distance_to_sqr(eye).sqrt() <= 128.0
+        && crate::mob::physics::clip(level, eye, target_eye).is_none();
+    sees.then_some(target)
 }

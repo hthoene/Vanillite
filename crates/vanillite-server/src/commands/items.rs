@@ -666,15 +666,7 @@ fn check(test: &ItemTest, env: &Env<'_>) -> Result<ItemCheck, CommandError> {
 
 /// The effective wire value of a component: the patch, else the item's default.
 fn effective_component(stack: &ItemStack, type_id: u16) -> Option<Box<[u8]>> {
-    if let Some(p) = stack.patch() {
-        if let Some(v) = p.get(type_id) {
-            return Some(v.into());
-        }
-        if p.is_removed(type_id) {
-            return None;
-        }
-    }
-    crate::plugins::default_component(stack.item, type_id)
+    vanillite_game::item_nbt::effective_component(stack, type_id).map(|v| v.into_owned().into())
 }
 
 impl ItemCheck {

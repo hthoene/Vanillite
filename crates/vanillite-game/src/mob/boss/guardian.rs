@@ -692,7 +692,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
             param: if silent { 0.0 } else { 1.0 },
         });
         for player in cursed {
-            t.ents.add_effect(player, curse_effect(), true);
+            crate::effect::living::add_detached_from(t.ents, player, curse_effect(), Some(t.id));
             t.env.out.push(Effect::To {
                 player,
                 packet: std::sync::Arc::clone(&packet),

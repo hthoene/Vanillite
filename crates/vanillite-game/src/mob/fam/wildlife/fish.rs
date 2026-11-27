@@ -564,7 +564,8 @@ pub(super) fn puffer_ai_step(t: &mut Tick<'_, '_>) {
         }
         let source = combat::entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
         if combat::hurt(t.level, t.ents, t.env, t.cx, id, source, damage) {
-            add_effect(t.ents, id, MobEffect::POISON, 60 * puff, 0);
+            let me = t.id;
+            add_effect(t.ents, id, MobEffect::POISON, 60 * puff, 0, Some(me));
             if !is_player {
                 crate::mob::kinds::play_sound(t, "minecraft:entity.puffer_fish.sting", 1.0, 1.0);
             }

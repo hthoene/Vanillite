@@ -563,8 +563,12 @@ impl Level {
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
             // `onExplosionHit`: where the explosion hit the player and what caused it.
-            if let Some(p) = self.entities.player_mut(id) {
-                crate::advancements::tracking::explosion_hit(p, pos, source);
+            if self.entities.player(id).is_some() {
+                let cause =
+                    source.and_then(|s| crate::advancements::view::snapshot(&self.entities, s));
+                if let Some(p) = self.entities.player_mut(id) {
+                    crate::advancements::tracking::explosion_hit(p, pos, cause);
+                }
             }
             let player = self.entities.player(id);
             if let Some(p) = player {

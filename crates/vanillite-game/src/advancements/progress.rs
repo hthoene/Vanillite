@@ -69,6 +69,9 @@ pub struct PlayerAdvancements {
     /// Damage and deaths of the player whose triggers need the world's entities
     /// ([`super::view::resolve_combat`]).
     pub combat: Vec<super::view::PendingCombat>,
+    /// `currentExplosionCause`: the view of what caused the last explosion that hit the
+    /// player, kept until the player starts to fall.
+    pub explosion_cause: Option<super::trigger::Snapshot>,
 }
 
 impl PlayerAdvancements {
@@ -87,6 +90,7 @@ impl PlayerAdvancements {
             completed: Vec::new(),
             seen_inventory: Vec::new(),
             combat: Vec::new(),
+            explosion_cause: None,
         };
         if let Some(json) = json {
             me.apply_json(json);
@@ -430,13 +434,19 @@ impl PlayerAdvancements {
             return;
         }
         let set = Arc::clone(&self.set);
+        // The player predicates read this progress as it is before the awards.
+        let world = super::trigger::WithProgress {
+            world: ctx.world,
+            progress: self,
+        };
+        let ctx = ctx.with_world(&world);
         let matched: Vec<(u32, u16)> = listeners
             .iter()
             .copied()
             .filter(|&(a, c)| {
                 set.get(a)
                     .and_then(|a| a.criteria.get(usize::from(c)))
-                    .is_some_and(|c| c.conditions.matches(event, ctx))
+                    .is_some_and(|c| c.conditions.matches(event, &ctx))
             })
             .collect();
         for (a, c) in matched {

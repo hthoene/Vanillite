@@ -550,13 +550,16 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
         Hit::Entity(target, _) => {
             let src = source(t.ents, t.env.types.mob_projectile, me, d);
             if combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 4.0) {
-                effects::living::add_to_entity(
+                // `firstNonNull(owner, this)`.
+                let by = owner(t.ents, d).or(Some(me));
+                effects::living::add_to_entity_from(
                     t.level,
                     t.ents,
                     t.env,
                     t.cx,
                     target,
                     EffectInstance::new(MobEffect::LEVITATION, 200, 0),
+                    by,
                 );
             }
         }
@@ -796,13 +799,16 @@ fn splash(t: &mut MissileTick<'_, '_>, d: &MissileData, p: Potion, at: Vec3) {
                 #[allow(clippy::cast_possible_truncation)]
                 let duration = (scale * f64::from(effect.duration) + 0.5) as i32;
                 if duration > 20 {
-                    effects::living::add_to_entity(
+                    // `getEffectSource()`: the owner, else the potion.
+                    let by = owner_id.or(Some(t.id));
+                    effects::living::add_to_entity_from(
                         t.level,
                         t.ents,
                         t.env,
                         t.cx,
                         target,
                         EffectInstance { duration, ..effect },
+                        by,
                     );
                 }
             }

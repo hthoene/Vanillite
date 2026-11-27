@@ -1375,10 +1375,12 @@ pub fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {
     if kind == Kind::Husk && empty {
         #[allow(clippy::cast_possible_truncation)]
         let ticks = 140 * diff as i32;
+        let me = t.id;
         super::add_effect(
             t.ents,
             target,
             effects::EffectInstance::new(effects::MobEffect::HUNGER, ticks, 0),
+            Some(me),
         );
     }
     Some(true)
