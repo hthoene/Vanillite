@@ -1495,7 +1495,7 @@ fn can_still_use(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
                 .and_then(|w| w.target.entity_id())
                 .and_then(|id| t.ents.player(id))
                 .is_some_and(|p| p.game_mode == GameMode::Spectator);
-            !t.mob_ref().nav.is_done() && walk.is_some_and(|w| !reached_target(t, &w)) && !spectator
+            !t.nav_ref().is_done() && walk.is_some_and(|w| !reached_target(t, &w)) && !spectator
         }
         Behavior::CountDownCooldown(m) => brain_ref(t).int(*m).is_some_and(|v| v > 0),
         Behavior::AnimalPanic { .. } => true,
@@ -1554,7 +1554,7 @@ fn start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             let b = brain(t);
             b.set(M::IsPanicking, MemValue::Bool(true));
             b.erase(M::WalkTarget);
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Behavior::AnimalMakeLove {
             partner,
@@ -1655,7 +1655,7 @@ fn tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             speed,
             ..
         } => {
-            let nav_has = t.mob_ref().nav.path.is_some();
+            let nav_has = t.nav_ref().path.is_some();
             if nav_has != *has_path {
                 *has_path = nav_has;
                 if nav_has {
@@ -1685,7 +1685,7 @@ fn tick(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             }
         }
         Behavior::AnimalPanic { speed, mode, .. } => {
-            if t.mob_ref().nav.is_done()
+            if t.nav_ref().is_done()
                 && let Some(p) = panic_pos(t, *mode)
             {
                 brain(t).set(M::WalkTarget, MemValue::Walk(WalkTarget::at(p, *speed, 0)));
@@ -1762,11 +1762,11 @@ fn stop(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
             let walk = brain_ref(t).walk_target();
             if let Some(w) = walk
                 && !reached_target(t, &w)
-                && t.mob_ref().nav.is_stuck
+                && t.nav_ref().is_stuck
             {
                 *cooldown = t.env.random.next_int_bounded(40);
             }
-            t.mob().nav.stop();
+            t.nav().stop();
             let b = brain(t);
             b.erase(M::WalkTarget);
             b.erase(M::Path);
@@ -2508,7 +2508,7 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
                 return false;
             }
             brain(t).set(M::LookTarget, MemValue::Look(Tracker::entity(target, true)));
-            t.mob().move_ctl.strafe(-*speed, 0.0);
+            t.move_ctl().strafe(-*speed, 0.0);
             let rot = t.core().rot();
             let mut r = rot;
             r.y_rot = nav::rotate_if_necessary(rot.y_rot, rot.y_head_rot, 0.0);

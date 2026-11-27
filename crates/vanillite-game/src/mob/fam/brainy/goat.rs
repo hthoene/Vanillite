@@ -701,7 +701,7 @@ fn prepare_ram_tick(
         .map(|p| BlockPos::containing(p.x, p.y, p.z));
     if now_target != Some(target_pos) {
         entity_event(t, 59);
-        t.mob().nav.stop();
+        t.nav().stop();
         choose_ram_position(t, target, candidate, reached_at);
     } else if t.block_pos() == start {
         entity_event(t, 58);

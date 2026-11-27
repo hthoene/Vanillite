@@ -886,13 +886,29 @@ pub(crate) enum EntitySlot {
     Cursor,
     Craft(usize),
     ItemEntity,
+    /// An equipment slot of a mob (`LivingEntity.getSlot`).
+    Equipment(EquipmentSlot),
 }
 
-/// The slot `index` of an entity, if it has it. Mobs keep no equipment yet.
+/// The slot `index` of an entity, if it has it.
 pub(crate) fn entity_slot(entities: &Entities, id: EntityId, index: i32) -> Option<EntitySlot> {
     let kind = entities.store.get(id)?.kind();
     if kind == entity_ids::ITEM {
         return (index == 0).then_some(EntitySlot::ItemEntity);
+    }
+    if entities.mob(id).is_some() {
+        // `LivingEntity.getEquipmentSlot(slot)`.
+        return Some(EntitySlot::Equipment(match index {
+            98 => EquipmentSlot::MainHand,
+            99 => EquipmentSlot::OffHand,
+            100 => EquipmentSlot::Feet,
+            101 => EquipmentSlot::Legs,
+            102 => EquipmentSlot::Chest,
+            103 => EquipmentSlot::Head,
+            105 => EquipmentSlot::Body,
+            106 => EquipmentSlot::Saddle,
+            _ => return None,
+        }));
     }
     let player = entities.player(id)?;
     let at = |base: i32| usize::try_from(index.saturating_sub(base)).ok();
@@ -918,6 +934,7 @@ pub(crate) fn slot_get(entities: &Entities, id: EntityId, slot: EntitySlot) -> I
             .and_then(|p| p.inventory.ender_chest.get(i)),
         EntitySlot::Cursor => entities.player(id).map(|p| &p.inventory.menu.carried),
         EntitySlot::Craft(i) => entities.player(id).and_then(|p| p.inventory.craft.get(i)),
+        EntitySlot::Equipment(e) => entities.mob(id).map(|m| m.equipment.get(e)),
     };
     stack.cloned().unwrap_or_default()
 }
@@ -932,6 +949,22 @@ pub(crate) fn slot_set(
     if let EntitySlot::ItemEntity = slot {
         return entities.item_mut(id).is_some_and(|i| {
             i.stack = stack;
+            true
+        });
+    }
+    if let EntitySlot::Equipment(e) = slot {
+        // `createEquipmentSlotAccess`: below the head only items for that slot.
+        let any = matches!(
+            e,
+            EquipmentSlot::Head | EquipmentSlot::MainHand | EquipmentSlot::OffHand
+        );
+        let fits =
+            || EquipmentSlot::from_ordinal(item::item_id(&stack).info().equip_slot) == Some(e);
+        if !any && !stack.is_empty() && !fits() {
+            return false;
+        }
+        return entities.mob_mut(id).is_some_and(|m| {
+            m.equipment.set(e, stack);
             true
         });
     }
@@ -955,7 +988,7 @@ pub(crate) fn slot_set(
         EntitySlot::EnderChest(i) => inventory.ender_chest.get_mut(i),
         EntitySlot::Cursor => Some(&mut inventory.menu.carried),
         EntitySlot::Craft(i) => inventory.craft.get_mut(i),
-        EntitySlot::ItemEntity => None,
+        EntitySlot::ItemEntity | EntitySlot::Equipment(_) => None,
     };
     target.is_some_and(|t| {
         *t = stack;

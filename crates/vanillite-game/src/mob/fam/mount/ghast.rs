@@ -350,7 +350,7 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
     if on_still_timeout(t.mob_ref()) {
         t.mob().move_ctl.operation = Operation::Wait;
         // `stopInPlace`.
-        t.mob().nav.stop();
+        t.nav().stop();
         t.set_velocity(Vec3::ZERO);
     }
     if t.mob_ref().move_ctl.operation != Operation::MoveTo {
@@ -665,7 +665,7 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut GhastGoal) -> bool {
 pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut GhastGoal) {
     if let GhastGoal::RandomFloat = g {
         let target = suitable_fly_to_position(t, 16);
-        t.mob().move_ctl.set_wanted_position(target, 1.0);
+        t.move_ctl().set_wanted_position(target, 1.0);
     }
 }
 
@@ -697,7 +697,7 @@ pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut GhastGoal) {
                 let p = t.pos();
                 let f = t.mob().random.next_double();
                 let target = p + (eye - p) * f;
-                t.mob().move_ctl.set_wanted_position(target, 1.0);
+                t.move_ctl().set_wanted_position(target, 1.0);
             }
         }
         GhastGoal::RandomFloat => {}
