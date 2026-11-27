@@ -11,6 +11,8 @@
 //! whether a value comes from a cache or is computed anew, the calls here happen in exactly
 //! Vanilla's order with the context of the chunk.
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use rustc_hash::FxHashMap;
 use vanillite_base::math::{clamp, clamped_map, floor, map};
 use vanillite_base::random::{PositionalRandomFactory, RandomSource};
@@ -102,6 +104,9 @@ pub struct AquiferFunctions {
     /// Whether the functions that decide a cell's fluid give the same values whenever they are
     /// sampled ([`Program::is_point_exact`]), so cells may be resolved ahead of their first use.
     pub cells_point_exact: bool,
+    /// Whether the surface level at a position depends on the position alone
+    /// ([`Program::is_position_only`]), so aquifers may share the levels they sampled.
+    pub surface_level_position_only: bool,
 }
 
 impl AquiferFunctions {
@@ -115,6 +120,7 @@ impl AquiferFunctions {
             exclusion: compiler.compile(&config.exclusion),
             surface_level: compiler.compile(&config.surface_level),
             cells_point_exact: false,
+            surface_level_position_only: false,
         };
         let program = compiler.program();
         functions.cells_point_exact = [
@@ -126,6 +132,7 @@ impl AquiferFunctions {
         ]
         .into_iter()
         .all(|function| program.is_point_exact(function));
+        functions.surface_level_position_only = program.is_position_only(functions.surface_level);
         functions
     }
 }
@@ -142,7 +149,8 @@ pub enum Aquifer {
 impl Aquifer {
     /// The aquifer of a `NoiseChunk` over `volume`: noise based if the settings configure
     /// aquifers (`functions` is `Some`), disabled otherwise. The positional random is
-    /// `random_state.random_factory("minecraft:aquifer")`.
+    /// `random_state.random_factory("minecraft:aquifer")`. `shared_levels` are the surface
+    /// levels the aquifers of this `program` share, if any.
     pub fn for_chunk(
         functions: Option<&AquiferFunctions>,
         random_state: &RandomState,
@@ -150,6 +158,7 @@ impl Aquifer {
         fluid_picker: GlobalFluidPicker,
         program: &Program,
         ctx: &mut SamplerContext,
+        shared_levels: Option<&Arc<SurfaceLevelCache>>,
     ) -> Self {
         match functions {
             Some(functions) => Self::new(
@@ -159,6 +168,7 @@ impl Aquifer {
                 fluid_picker,
                 program,
                 ctx,
+                shared_levels,
             ),
             None => Self::disabled(fluid_picker),
         }
@@ -175,6 +185,7 @@ impl Aquifer {
         fluid_picker: GlobalFluidPicker,
         program: &Program,
         ctx: &mut SamplerContext,
+        shared_levels: Option<&Arc<SurfaceLevelCache>>,
     ) -> Self {
         Self::NoiseBased(Box::new(NoiseBasedAquifer::new(
             *functions,
@@ -183,6 +194,7 @@ impl Aquifer {
             fluid_picker,
             program,
             ctx,
+            shared_levels,
         )))
     }
 
@@ -333,49 +345,42 @@ fn adjust_surface_level(level: i32) -> i32 {
     level + 8
 }
 
-/// Surface levels by quart position (`ChunkPos.pack`) that the aquifers of one thread have
-/// sampled for one program: a level is a function of the position alone when the function is
-/// point exact, and the aquifer cells of neighbouring chunks sample the same positions.
-#[derive(Default)]
-struct SurfaceLevels {
-    /// [`Program::id`] and the surface level function the levels belong to.
-    source: (u64, u32),
-    levels: FxHashMap<i64, i32>,
+/// Surface levels by quart position (`ChunkPos.pack`) that the aquifers of one generator have
+/// sampled, where a level depends on the position alone
+/// ([`AquiferFunctions::surface_level_position_only`]): the aquifers of neighbouring chunks
+/// sample the same positions (each chunk needs the levels of 11 × 11 quart columns around it,
+/// of which 4 × 4 are its own).
+#[derive(Debug, Default)]
+pub struct SurfaceLevelCache {
+    levels: Mutex<FxHashMap<i64, i32>>,
 }
 
-impl SurfaceLevels {
-    /// Most levels kept per thread (about half a megabyte); a full cache starts over.
-    const MAX: usize = 1 << 15;
+impl SurfaceLevelCache {
+    /// Most levels kept (about a megabyte); a full cache starts over.
+    const MAX: usize = 1 << 16;
 
-    /// The level at `key`, from `sample` if this thread has not sampled it yet.
-    fn get_or_insert(
-        program: &Program,
-        function: FnId,
-        key: i64,
-        sample: impl FnOnce() -> i32,
-    ) -> i32 {
-        thread_local! {
-            static LEVELS: std::cell::RefCell<SurfaceLevels> = std::cell::RefCell::default();
+    fn lock(&self) -> std::sync::MutexGuard<'_, FxHashMap<i64, i32>> {
+        self.levels.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The level at `key`, if an aquifer has sampled it.
+    fn get(&self, key: i64) -> Option<i32> {
+        self.lock().get(&key).copied()
+    }
+
+    /// The known levels at `keys`, in their order.
+    fn get_all(&self, keys: &[i64], out: &mut Vec<Option<i32>>) {
+        let levels = self.lock();
+        out.extend(keys.iter().map(|key| levels.get(key).copied()));
+    }
+
+    /// Adds sampled levels.
+    fn insert_all(&self, entries: &[(i64, i32)]) {
+        let mut levels = self.lock();
+        if levels.len() + entries.len() > Self::MAX {
+            levels.clear();
         }
-        let source = (program.id(), function.0);
-        let known = LEVELS.with_borrow_mut(|cache| {
-            if cache.source != source {
-                cache.source = source;
-                cache.levels.clear();
-            }
-            cache.levels.get(&key).copied()
-        });
-        // (Sampled outside the borrow: sampling does not come back here.)
-        known.unwrap_or_else(|| {
-            let level = sample();
-            LEVELS.with_borrow_mut(|cache| {
-                if cache.levels.len() >= Self::MAX {
-                    cache.levels.clear();
-                }
-                cache.levels.insert(key, level);
-            });
-            level
-        })
+        levels.extend(entries.iter().copied());
     }
 }
 
@@ -419,6 +424,8 @@ pub struct NoiseBasedAquifer {
     grid_size_z: i32,
     /// `surfaceLevelCache`, keyed by `ChunkPos.pack(quantizedX, quantizedZ)`.
     surface_level_cache: FxHashMap<i64, i32>,
+    /// The levels the generator's aquifers share, when levels depend on the position alone.
+    shared_levels: Option<Arc<SurfaceLevelCache>>,
     lava: BlockState,
     /// The grid anchor of the last fluid block and its 12 cells in search order: their centres
     /// and indices.
@@ -440,6 +447,7 @@ impl NoiseBasedAquifer {
         fluid_picker: GlobalFluidPicker,
         program: &Program,
         ctx: &mut SamplerContext,
+        shared_levels: Option<&Arc<SurfaceLevelCache>>,
     ) -> Self {
         let min_grid_x = grid_x(volume.min_x + -5);
         let max_grid_x = grid_x(volume.max_x() + -5) + 1;
@@ -465,6 +473,9 @@ impl NoiseBasedAquifer {
             grid_size_x,
             grid_size_z,
             surface_level_cache: FxHashMap::default(),
+            shared_levels: shared_levels
+                .filter(|_| functions.surface_level_position_only)
+                .cloned(),
             lava: ids::LAVA.default_state(),
             anchor: None,
             anchor_cells: [(0, 0, 0, 0); 12],
@@ -497,17 +508,17 @@ impl NoiseBasedAquifer {
         let quantized_z = (block_z >> 2) << 2;
         let key = ChunkPos::new(quantized_x, quantized_z).as_long();
         let surface = self.functions.surface_level;
-        // (An unfinished program has no number of its own to keep its levels apart.)
-        let shared = self.functions.cells_point_exact && program.id() != 0;
+        let shared = &self.shared_levels;
         *self.surface_level_cache.entry(key).or_insert_with(|| {
-            let mut sample =
-                || floor_f(program.sample_value(ctx, surface, quantized_x, 0, quantized_z));
-            if shared {
-                // The cells of neighbouring chunks ask for the same positions.
-                SurfaceLevels::get_or_insert(program, surface, key, sample)
-            } else {
-                sample()
+            // The cells of neighbouring chunks ask for the same positions.
+            if let Some(level) = shared.as_ref().and_then(|shared| shared.get(key)) {
+                return level;
             }
+            let level = floor_f(program.sample_value(ctx, surface, quantized_x, 0, quantized_z));
+            if let Some(shared) = shared {
+                shared.insert_all(&[(key, level)]);
+            }
+            level
         })
     }
 
@@ -537,18 +548,58 @@ impl NoiseBasedAquifer {
             1,
             4,
         );
-        let mut buffer = vec![0.0_f32; volume.len()];
-        program.sample_volume(ctx, self.functions.surface_level, &mut buffer, &volume);
+        let surface = self.functions.surface_level;
+        let key_of = |x: i32, z: i32| ChunkPos::new(volume.block_x(x), volume.block_z(z)).as_long();
+        // Most of these columns were sampled for neighbouring chunks before: only the others
+        // are sampled, one by one (a point exact function has the same values either way).
+        let mut known = Vec::new();
+        if let Some(shared) = &self.shared_levels {
+            let keys: Vec<i64> = (0..volume.size_z)
+                .flat_map(|z| (0..volume.size_x).map(move |x| key_of(x, z)))
+                .collect();
+            shared.get_all(&keys, &mut known);
+        }
         let mut max_y = i32::MIN;
+        if known.iter().any(Option::is_some) {
+            let mut sampled = Vec::new();
+            let mut known = known.into_iter();
+            for z in 0..volume.size_z {
+                for x in 0..volume.size_x {
+                    let key = key_of(x, z);
+                    let surface_level = known.next().flatten().unwrap_or_else(|| {
+                        let level = floor_f(program.sample_value(
+                            ctx,
+                            surface,
+                            volume.block_x(x),
+                            0,
+                            volume.block_z(z),
+                        ));
+                        sampled.push((key, level));
+                        level
+                    });
+                    self.surface_level_cache.insert(key, surface_level);
+                    max_y = max_y.max(surface_level);
+                }
+            }
+            if let Some(shared) = &self.shared_levels {
+                shared.insert_all(&sampled);
+            }
+            return max_y;
+        }
+        let mut buffer = vec![0.0_f32; volume.len()];
+        program.sample_volume(ctx, surface, &mut buffer, &volume);
+        let mut sampled = Vec::with_capacity(volume.len());
         for z in 0..volume.size_z {
             for x in 0..volume.size_x {
                 let surface_level = floor_f(buffer[volume.index(x, 0, z)]);
-                let key = ChunkPos::new(volume.block_x(x), volume.block_z(z)).as_long();
+                let key = key_of(x, z);
                 self.surface_level_cache.insert(key, surface_level);
-                if surface_level > max_y {
-                    max_y = surface_level;
-                }
+                sampled.push((key, surface_level));
+                max_y = max_y.max(surface_level);
             }
+        }
+        if let Some(shared) = &self.shared_levels {
+            shared.insert_all(&sampled);
         }
         max_y
     }

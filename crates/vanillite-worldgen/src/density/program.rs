@@ -585,6 +585,33 @@ impl Program {
         true
     }
 
+    /// Whether the value of `f` at a block depends on the block alone: it is point exact
+    /// ([`Self::is_point_exact`]) and reads nothing a context binds per chunk (the
+    /// `beardifier`; the blend fields are never bound). Such values may be kept across chunks.
+    pub fn is_position_only(&self, f: super::FnId) -> bool {
+        let mut seen = vec![false; self.ops.len()];
+        let mut stack = vec![f.0];
+        let mut inputs = Vec::new();
+        while let Some(op) = stack.pop() {
+            if std::mem::replace(&mut seen[op as usize], true) {
+                continue;
+            }
+            if matches!(
+                self.ops[op as usize],
+                Op::Interpolated { .. }
+                    | Op::ContextBound {
+                        field: ContextField::Beardifier,
+                        ..
+                    }
+            ) {
+                return false;
+            }
+            self.inputs(op, &mut inputs);
+            stack.append(&mut inputs);
+        }
+        true
+    }
+
     /// The instructions `op` reads.
     fn inputs(&self, op: OpIndex, out: &mut Vec<OpIndex>) {
         self.inputs_of(&self.ops[op as usize], out);
