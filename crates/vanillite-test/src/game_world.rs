@@ -615,7 +615,8 @@ impl GameWorld {
             d => return Err(format!("unknown difficulty `{d}`")),
         };
         level.settings.difficulty = difficulty;
-        // The world starts at day time 0 unless the scenario sets one; time does not advance.
+        // The world starts at day time 0 unless the scenario sets one; time advances only with
+        // `advance_time` (see `step`).
         let env = Environment {
             sea_level: sea_level(spec),
             day_time: spec.time.unwrap_or(0),
@@ -1963,7 +1964,20 @@ impl ScenarioWorld for GameWorld {
     /// ticks, the chunk source (post-processing, random ticks), block events, entities, block
     /// entities, entity management (pending entity loads).
     fn step(&mut self) {
-        // `ServerLevel.tick`: the night skip (time and weather stand still in scenarios).
+        // `ServerClockManager.tick` before the levels tick: with `advance_time` the day clock
+        // moves on, and the environment the level reads follows it.
+        if self.rules.bool(Rule::ADVANCE_TIME) {
+            let day = self.env.day_time + 1;
+            let weather = self.level.weather();
+            self.env = Environment {
+                sea_level: sea_level(&self.spec),
+                day_time: day,
+                ..Environment::overworld(day, weather.rain(), weather.thunder())
+            };
+            self.level.spawner_env.env = self.env;
+            self.level.entities.day_time = day;
+        }
+        // `ServerLevel.tick`: the night skip (weather stands still in scenarios).
         vanillite_game::survival::sleep::skip_night(
             &mut self.level,
             &vanillite_game::hooks::NoHooks,
