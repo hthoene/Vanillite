@@ -64,6 +64,14 @@ jobs:
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml), then the target for it.
       - run: rustup toolchain install --profile minimal && rustup target add ${{ matrix.target }}
+      # The Vanilla data the build extracts from Mojang's server jars (#213), one entry per
+      # pinned version and pipeline: restored instead of extracted again; a missing entry is
+      # extracted by the build and saved with the new key.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vanillite-cache/vanilla-data
+          key: vanilla-data-${{ hashFiles('data/**/version.toml', 'tools/extractor/src/**/*.java', 'crates/vanillite-datagen/src/**') }}
+          restore-keys: vanilla-data-
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
@@ -76,6 +84,8 @@ jobs:
         with:
           tool: cargo-zigbuild
       - name: Build
+        env:
+          VANILLITE_CACHE_DIR: ${{ runner.temp }}/vanillite-cache
         run: |
           build=build
           [[ "${{ matrix.zig }}" == true ]] && build=zigbuild

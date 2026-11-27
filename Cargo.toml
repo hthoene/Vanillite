@@ -20,6 +20,7 @@ vanillite-chunk = { path = "crates/vanillite-chunk", version = "0.1.0-beta.1" }
 vanillite-command = { path = "crates/vanillite-command", version = "0.1.0-beta.1" }
 vanillite-config = { path = "crates/vanillite-config", version = "0.1.0-beta.1" }
 vanillite-data = { path = "crates/vanillite-data", version = "0.1.0-beta.1" }
+vanillite-datagen = { path = "crates/vanillite-datagen" }
 vanillite-datapack = { path = "crates/vanillite-datapack", version = "0.1.0-beta.1" }
 vanillite-game = { path = "crates/vanillite-game", version = "0.1.0-beta.1" }
 vanillite-light = { path = "crates/vanillite-light", version = "0.1.0-beta.1" }

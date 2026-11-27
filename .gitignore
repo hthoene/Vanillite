@@ -1,3 +1,10 @@
 /target
 **/*.rs.bk
 /run
+# Vanilla data extracted from Mojang's server jars is never committed (#213): only the pins.
+/data/vanilla/*
+!/data/vanilla/version.toml
+/data/multiversion/*/*
+!/data/multiversion/*/version.toml
+/crates/vanillite-data/src/generated/
+/crates/vanillite-multiversion/src/generated/

@@ -8,6 +8,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[build-dependencies]
+vanillite-datagen.workspace = true
+
 [dependencies]
 vanillite-data.workspace = true
 vanillite-nbt.workspace = true

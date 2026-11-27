@@ -133,10 +133,9 @@ fn through_the_proxy(data: &str, release: &str, protocol: i32) {
     let proxy = Proxy::start(config).unwrap();
     let port = proxy.local_addr().port();
     let packets: Value = serde_json::from_str(
-        &std::fs::read_to_string(format!(
-            "{}/../../data/multiversion/{data}/packets.json",
-            env!("CARGO_MANIFEST_DIR")
-        ))
+        &std::fs::read_to_string(vanillite_multiversion::data_paths::file(&format!(
+            "data/multiversion/{data}/packets.json"
+        )))
         .unwrap(),
     )
     .unwrap();

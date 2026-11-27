@@ -2229,6 +2229,19 @@ name = "vanillite-data"
 version = "0.1.0-beta.1"
 dependencies = [
  "vanillite-base",
+ "vanillite-datagen",
+]
+
+[[package]]
+name = "vanillite-datagen"
+version = "0.1.0-beta.1"
+dependencies = [
+ "serde_json",
+ "sha1",
+ "sha2",
+ "toml",
+ "ureq",
+ "zip",
 ]
 
 [[package]]
@@ -2311,6 +2324,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "vanillite-data",
+ "vanillite-datagen",
  "vanillite-nbt",
  "vanillite-protocol",
  "vanillite-server",
@@ -2782,6 +2796,7 @@ dependencies = [
  "toml",
  "ureq",
  "vanillite-config",
+ "vanillite-datagen",
  "zip",
 ]
 

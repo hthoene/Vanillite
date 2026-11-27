@@ -111,15 +111,24 @@ pub fn update(root: &Path, args: &[&str]) -> Result<()> {
 
     // Both versions through the same (current) extractor, so their raw outputs compare.
     println!("version: extracting the pinned {pinned}");
+    let work_root = root.join("target/vanilla");
     let old = vanilla::extract(
         root,
+        &work_root,
         &manifest,
         Some(&pinned),
         None,
         vanilla::Extractor::Full,
     )?;
     println!("version: extracting {id}");
-    let new = vanilla::extract(root, &manifest, Some(&id), None, vanilla::Extractor::Full)?;
+    let new = vanilla::extract(
+        root,
+        &work_root,
+        &manifest,
+        Some(&id),
+        None,
+        vanilla::Extractor::Full,
+    )?;
     if finalise && new.kind != "release" {
         return Err(format!(
             "{id} is a {}; only a release can become the pinned version",
@@ -132,26 +141,29 @@ pub fn update(root: &Path, args: &[&str]) -> Result<()> {
     } else {
         worktree(root, &out_dir.join("tree"))?
     };
-    // Clients of the outgoing version keep joining through the multi-version layer: its data
-    // is kept for the adapter step to the new version.
-    crate::multiversion::keep(&tree, &old)?;
+    // Clients of the outgoing version keep joining through the multi-version layer: it is
+    // pinned as a kept version (the build extracts its data for the adapter step).
+    write(
+        &tree
+            .join("data/multiversion")
+            .join(&old.info.id)
+            .join("version.toml"),
+        &old.info.to_toml(),
+    )?;
     let mut steps = Steps::default();
 
-    // Data and generated code.
-    let data = tree.join("data/vanilla");
-    let before = Snapshot::load(&root.join("data/vanilla"));
-    let data_ok = steps.run("normalise data/vanilla", || {
-        normalize::run(
-            &new.generated.join("reports"),
-            &new.extracted,
-            &new.info,
-            &data,
-        )
-    }) && steps.run("codegen", || crate::codegen::run(&tree, false))
-        && steps.run("eggs and Minecraft versions", || {
-            crate::egg::run(&tree, &[])
-        });
-    let after = Snapshot::load(&data);
+    // Data (into the cache, pinned in the tree) and generated code.
+    let before = Snapshot::load(&crate::cache::current(root)?);
+    let mut data = None;
+    let data_ok = steps.run("normalise the data", || {
+        data = Some(crate::data::store_full(root, &new)?);
+        write(&tree.join("data/vanilla/version.toml"), &new.info.to_toml())
+    }) && steps.run("codegen", || {
+        crate::codegen::generate(data.as_deref().ok_or("no data")?).map(|_| ())
+    }) && steps.run("eggs and Minecraft versions", || {
+        crate::egg::run(&tree, &[])
+    });
+    let after = data.as_deref().map(Snapshot::load).unwrap_or_default();
 
     // Goldens recorded with the new version, then the test suite against them.
     let goldens_ok = data_ok

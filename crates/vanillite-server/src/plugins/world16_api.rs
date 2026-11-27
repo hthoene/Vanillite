@@ -797,10 +797,7 @@ pub(super) fn close_menu(w: &mut PluginWorld<'_>, player: u128) -> Result<()> {
 
 /// The default components of every item as Vanilla's data generator writes them
 /// (`items.json`, one item per line), read on first use.
-const ITEMS_JSON: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../data/vanilla/items.json"
-));
+const ITEMS_JSON: &str = vanillite_data::raw::ITEMS_JSON;
 
 /// The `items.json` line of each item by name.
 fn item_lines() -> &'static HashMap<&'static str, &'static str> {
