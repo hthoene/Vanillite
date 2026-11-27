@@ -326,6 +326,7 @@ impl NetState {
         listen: bool,
         enforces_secure_chat: bool,
         tap: Arc<vanillite_protocol::tap::PacketTap>,
+        io_threads: usize,
     ) -> Result<NetState, StartError> {
         let p = &config.properties;
         let ip: std::net::IpAddr = if p.server_ip.is_empty() {
@@ -342,6 +343,7 @@ impl NetState {
         };
         let net = NetConfig {
             bind,
+            io_threads,
             online_mode: p.online_mode,
             prevent_proxy_connections: p.prevent_proxy_connections,
             compression_threshold: p.network_compression_threshold,
