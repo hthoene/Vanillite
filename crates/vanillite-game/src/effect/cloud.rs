@@ -11,7 +11,7 @@ use vanillite_data::entity::ids;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{Dimensions, EntityId, NetworkIds, NewEntity};
 
-use super::living::{add_to_entity_from, with_host};
+use super::living::{add_to_entity_from, with_host_from};
 use super::potion::{self, PotionContents};
 use super::{EffectInstance, HurtKind, active};
 use crate::entities::Entities;
@@ -294,7 +294,7 @@ fn splash(
                     direct: projectile,
                     owner,
                 };
-                with_host(level, ents, env, cx, id, |host| {
+                with_host_from(level, ents, env, cx, id, source, |host| {
                     active::apply_instantaneous(
                         effect.effect,
                         host,
@@ -473,7 +473,7 @@ pub fn tick(
                     direct: Some(id),
                     owner,
                 };
-                with_host(level, ents, env, cx, target, |host| {
+                with_host_from(level, ents, env, cx, target, source, |host| {
                     active::apply_instantaneous(e.effect, host, e.amplifier(), 0.5, source);
                 });
             } else {

@@ -576,6 +576,7 @@ fn with_host(
             player: data,
             env: &mut *env,
             players: None,
+            names: &[],
         };
         f(&mut host);
     }

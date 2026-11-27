@@ -13,7 +13,7 @@ use vanillite_protocol::text::Component;
 use vanillite_world::entity::{EntityFlags, EntityId, EntityMut, Pose};
 
 use super::blocks::{self, BlockAccess, BlockFacts, FluidContact, Landing};
-use super::combat::{self, CombatEntry, CombatTracker, FallLocation};
+use super::combat::{self, CombatEntry, CombatTracker, FallLocation, SourceNames};
 use super::damage::{DamageKind, DamageSource, DamageTypes, tag};
 use super::food::{FoodAction, FoodData, exhaustion};
 use super::rules::{Difficulty, GameRules, Rule};
@@ -272,6 +272,9 @@ pub struct Survival {
     pub last_hurt_by_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// `lastHurtByPlayer` with the ticks it is still remembered (`lastHurtByPlayerMemoryTime`).
     pub last_hurt_by_player: Option<(vanillite_world::entity::EntityId, i32)>,
+    /// The display names of `lastHurtByMob` and `lastHurtByPlayer` (`getKillCredit` of the
+    /// death message).
+    pub last_hurt_by_names: (Option<Component>, Option<Component>),
     /// The item in use (`useItem`): its hand and the ticks it has been used.
     pub using_item: Option<crate::player::using::UsingItem>,
     /// `recentKineticEnemies`: the entities the spear in use hit, with the game time.
@@ -393,6 +396,7 @@ impl Default for Survival {
             last_hurt_mob: None,
             last_hurt_by_mob: None,
             last_hurt_by_player: None,
+            last_hurt_by_names: (None, None),
             using_item: None,
             stabbed: Vec::new(),
             random: LegacyRandom::new(crate::mob::new_unique_seed()),
@@ -877,6 +881,7 @@ fn check_totem(
             player: &mut *player,
             env: &mut *env,
             players: None,
+            names: &[],
         };
         let mut rolls = rolls.into_iter();
         let mut roll = || rolls.next().unwrap_or(0.0);
@@ -961,7 +966,16 @@ pub fn hurt(
     source: DamageSource,
     amount: f32,
 ) -> bool {
-    hurt_with(entity, player, env, source, amount, None, (None, None))
+    hurt_with(
+        entity,
+        player,
+        env,
+        source,
+        amount,
+        None,
+        (None, None),
+        SourceNames::default(),
+    )
 }
 
 /// [`hurt`] with the UUIDs of the source's causing and direct entities for the plugins'
@@ -975,7 +989,16 @@ pub fn hurt_by(
     amount: f32,
     attackers: (Option<u128>, Option<u128>),
 ) -> bool {
-    hurt_with(entity, player, env, source, amount, None, attackers)
+    hurt_with(
+        entity,
+        player,
+        env,
+        source,
+        amount,
+        None,
+        attackers,
+        SourceNames::default(),
+    )
 }
 
 /// Whether the plugins' damage or death events need the UUIDs of a player's attackers.
@@ -987,6 +1010,7 @@ pub fn wants_attackers(hooks: &dyn crate::hooks::GameHooks) -> bool {
 /// [`hurt`] with the armour effectiveness of the source's weapon (Breach, see
 /// [`crate::mob::attack::armor_effectiveness`]) and the UUIDs of the causing and direct
 /// entities (see [`hurt_by`]).
+#[allow(clippy::too_many_arguments)]
 pub fn hurt_with(
     entity: &mut EntityMut<'_>,
     player: &mut PlayerData,
@@ -995,6 +1019,7 @@ pub fn hurt_with(
     amount: f32,
     armor_effectiveness: Option<&dyn Fn(f32) -> f32>,
     attackers: (Option<u128>, Option<u128>),
+    names: SourceNames,
 ) -> bool {
     let types = env.types;
     let kind = source.kind;
@@ -1056,19 +1081,37 @@ pub fn hurt_with(
     if !damage.is_finite() {
         damage = f32::MAX;
     }
+    let cause_name = names.cause.as_ref().map(|a| a.name.clone());
+    let responsible_name = names.responsible.clone();
     let s = &mut player.survival;
     let took_full = if s.damage_cooldown > 10 && !types.is(kind, tag::BYPASSES_COOLDOWN) {
         if damage <= s.last_hurt {
             return false;
         }
         let delta = damage - s.last_hurt;
-        actually_hurt(entity, player, env, source, delta, armor_effectiveness);
+        actually_hurt(
+            entity,
+            player,
+            env,
+            source,
+            delta,
+            armor_effectiveness,
+            names,
+        );
         player.survival.last_hurt = damage;
         false
     } else {
         s.last_hurt = damage;
         s.damage_cooldown = 20;
-        actually_hurt(entity, player, env, source, damage, armor_effectiveness);
+        actually_hurt(
+            entity,
+            player,
+            env,
+            source,
+            damage,
+            armor_effectiveness,
+            names,
+        );
         player.survival.hurt_time = 10;
         true
     };
@@ -1079,12 +1122,14 @@ pub fn hurt_with(
         && cause != id
     {
         player.survival.last_hurt_by_mob = Some((cause, player.survival.tick_count));
+        player.survival.last_hurt_by_names.0 = cause_name;
     }
     // `resolvePlayerResponsibleForDamage`: remembered for 100 ticks.
     if let Some(by) = source.responsible_player
         && by != id
     {
         player.survival.last_hurt_by_player = Some((by, LAST_HURT_BY_PLAYER_MEMORY));
+        player.survival.last_hurt_by_names.1 = responsible_name;
     }
     if took_full
         && blocked
@@ -1240,6 +1285,7 @@ fn actually_hurt(
     source: DamageSource,
     damage: f32,
     armor_effectiveness: Option<&dyn Fn(f32) -> f32>,
+    names: SourceNames,
 ) {
     let types = env.types;
     let kind = source.kind;
@@ -1293,6 +1339,7 @@ fn actually_hurt(
             // `(float)this.mob.fallDistance`.
             #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
             fall_distance: s.fall_distance as f32,
+            names,
         };
         let alive = s.health > 0.0;
         s.combat
@@ -1674,7 +1721,14 @@ pub fn die(
     let mut death = crate::hooks::Death {
         message: env.rules.bool(Rule::SHOW_DEATH_MESSAGES).then(|| {
             let name = (env.display_name)(&player.profile.name, uuid);
-            player.survival.combat.death_message(env.types, name)
+            // `getKillCredit`: the player that hurt it last, else the last attacker.
+            let s = &player.survival;
+            let credit = match (s.last_hurt_by_player, s.last_hurt_by_mob) {
+                (Some(_), _) => s.last_hurt_by_names.1.clone(),
+                (None, Some(_)) => s.last_hurt_by_names.0.clone(),
+                (None, None) => None,
+            };
+            s.combat.death_message(env.types, name, credit)
         }),
         keep_inventory: env.rules.bool(Rule::KEEP_INVENTORY),
     };
@@ -2181,6 +2235,7 @@ pub fn do_tick_end(
                 player,
                 env,
                 players: None,
+                names: &[],
             };
             crate::effect::active::add(
                 &mut host,
@@ -2569,6 +2624,7 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
             player,
             env,
             players: None,
+            names: &[],
         };
         crate::effect::active::add(
             &mut host,
