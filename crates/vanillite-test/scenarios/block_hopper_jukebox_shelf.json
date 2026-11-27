@@ -1,0 +1,22 @@
+{
+  "description": "Jukeboxes and shelves are containers for hoppers and droppers (HopperBlockEntity.getContainerAt): a hopper puts a disc into a jukebox (it plays, has_record), a hopper below another jukebox takes its disc out (the song stops), a dropper fills a shelf and the hopper below it empties it again (block_activate on every change), and a dropper pushes into a chest minecart in front of it (container entity at the block centre, level random pick).",
+  "tier": "fast",
+  "level_rng": true,
+  "region": [[0, -61, 0], [15, -56, 10]],
+  "ticks": 60,
+  "actions": [
+    {"tick": 1, "op": "command", "command": "setblock 3 -60 3 minecraft:jukebox"},
+    {"tick": 1, "op": "command", "command": "setblock 3 -59 3 minecraft:hopper[facing=down]{Items:[{Slot:0b,id:\"minecraft:music_disc_cat\",count:1}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 6 -59 3 minecraft:jukebox[has_record=true]{RecordItem:{id:\"minecraft:music_disc_13\",count:1}}"},
+    {"tick": 1, "op": "command", "command": "setblock 6 -60 3 minecraft:hopper[facing=down]"},
+    {"tick": 1, "op": "command", "command": "setblock 9 -59 3 minecraft:oak_shelf[facing=south]"},
+    {"tick": 1, "op": "command", "command": "setblock 9 -59 2 minecraft:dropper[facing=south]{Items:[{Slot:0b,id:\"minecraft:apple\",count:3}]}"},
+    {"tick": 1, "op": "command", "command": "setblock 9 -60 3 minecraft:hopper[facing=down]"},
+    {"tick": 1, "op": "command", "command": "setblock 12 -60 3 minecraft:dropper[facing=south]{Items:[{Slot:0b,id:\"minecraft:bread\",count:2}]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:chest_minecart 12.5 -60.0 4.5"},
+    {"tick": 5, "op": "command", "command": "setblock 9 -58 2 minecraft:redstone_block"},
+    {"tick": 5, "op": "command", "command": "setblock 12 -59 3 minecraft:redstone_block"},
+    {"tick": 15, "op": "command", "command": "setblock 9 -58 2 minecraft:air"},
+    {"tick": 20, "op": "command", "command": "setblock 9 -58 2 minecraft:redstone_block"}
+  ]
+}

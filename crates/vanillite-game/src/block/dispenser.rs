@@ -122,7 +122,15 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let facing = state.direction("facing").unwrap_or(Direction::North);
     let source = Source { pos, facing, slot };
     let remaining = if dropper {
-        match ContainerRef::at_block(level, pos.relative(facing)) {
+        // `HopperBlockEntity.getContainerAt`: the block container in front, else a random
+        // container entity (chest or hopper minecart, chest boat) at its centre.
+        let front = pos.relative(facing);
+        let centre = Vec3::new(
+            f64::from(front.x) + 0.5,
+            f64::from(front.y) + 0.5,
+            f64::from(front.z) + 0.5,
+        );
+        match ContainerRef::at_point(level, centre) {
             // `DropperBlock.dispenseFrom`: one item into the container in front.
             Some(into) => {
                 let rest = super::hopper::add_item(
