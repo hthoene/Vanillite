@@ -19,13 +19,32 @@ enum Cell {
     Body,
     /// `~`: air.
     Air,
+    /// ` `: any block.
+    Any,
 }
 
-use Cell::{Air, Body, Pumpkin};
+use Cell::{Air, Any, Body, Pumpkin};
 
 const SNOW: [&[Cell]; 3] = [&[Pumpkin], &[Body], &[Body]];
 const IRON: [&[Cell]; 3] = [&[Air, Pumpkin, Air], &[Body, Body, Body], &[Air, Body, Air]];
 const COPPER: [&[Cell]; 2] = [&[Pumpkin], &[Body]];
+const SNOW_BASE: [&[Cell]; 3] = [&[Any], &[Body], &[Body]];
+const IRON_BASE: [&[Cell]; 3] = [&[Air, Any, Air], &[Body, Body, Body], &[Air, Body, Air]];
+const COPPER_BASE: [&[Cell]; 2] = [&[Any], &[Body]];
+
+/// `CarvedPumpkinBlock.canSpawnGolem`: a snow, iron or copper golem body waits for its head at
+/// `top`.
+pub fn can_spawn_golem(level: &Level, top: BlockPos) -> bool {
+    find(level, top, &SNOW_BASE, &|s: BlockState| {
+        s.is(block_ids::SNOW_BLOCK)
+    })
+    .is_some()
+        || find(level, top, &IRON_BASE, &|s: BlockState| {
+            s.is(block_ids::IRON_BLOCK)
+        })
+        .is_some()
+        || find(level, top, &COPPER_BASE, &is_copper).is_some()
+}
 
 /// A found pattern (`BlockPattern.BlockPatternMatch`).
 #[derive(Clone, Copy, Debug)]
@@ -85,6 +104,7 @@ fn find(
             Pumpkin => is_pumpkin(state),
             Body => body(state),
             Air => state.is_air(),
+            Any => true,
         }
     };
     for dz in 0..size {

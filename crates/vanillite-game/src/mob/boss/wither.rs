@@ -165,6 +165,8 @@ enum Cell {
     Skull,
     Base,
     Air,
+    /// ` `: any block.
+    Any,
 }
 
 const PATTERN: [[Cell; 3]; 3] = [
@@ -227,11 +229,31 @@ fn cell_matches(level: &Level, cell: Cell, pos: BlockPos) -> bool {
             .wither_summon_base_blocks
             .contains(state),
         Cell::Air => state.is_air(),
+        Cell::Any => true,
     }
+}
+
+/// `getOrCreateWitherBase`: the pattern without its skulls.
+const BASE_PATTERN: [[Cell; 3]; 3] = [
+    [Cell::Any, Cell::Any, Cell::Any],
+    [Cell::Base, Cell::Base, Cell::Base],
+    [Cell::Air, Cell::Base, Cell::Air],
+];
+
+/// `WitherSkullBlock.canSpawnMob` of a dispensed wither skeleton skull: high enough, not
+/// Peaceful, and the base pattern around `pos`.
+pub fn can_spawn_mob(level: &Level, pos: BlockPos, difficulty: Difficulty) -> bool {
+    pos.y >= level.min_y() + 2
+        && difficulty != Difficulty::Peaceful
+        && find_with(level, pos, &BASE_PATTERN).is_some()
 }
 
 /// `BlockPattern.find(level, origin)` of the full wither pattern.
 pub fn find_pattern(level: &Level, origin: BlockPos) -> Option<PatternMatch> {
+    find_with(level, origin, &PATTERN)
+}
+
+fn find_with(level: &Level, origin: BlockPos, pattern: &[[Cell; 3]; 3]) -> Option<PatternMatch> {
     // `BlockPos.betweenClosed(origin, origin + 2)`: x fastest, then y, then z.
     for dz in 0..3 {
         for dy in 0..3 {
@@ -246,7 +268,7 @@ pub fn find_pattern(level: &Level, origin: BlockPos) -> Option<PatternMatch> {
                             (0..3).all(|y| {
                                 cell_matches(
                                     level,
-                                    PATTERN[y as usize][x as usize],
+                                    pattern[y as usize][x as usize],
                                     translate(test, forwards, up, x, y),
                                 )
                             })

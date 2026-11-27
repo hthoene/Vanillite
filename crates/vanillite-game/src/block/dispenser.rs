@@ -513,10 +513,50 @@ fn execute(
             stack.shrink(1);
             stack
         }
-        // `WitherSkullBlock.canSpawnMob` / `CarvedPumpkinBlock.canSpawnGolem`: no golem or
-        // wither can be spawned, so the block is never placed.
-        B::WitherSkull | B::CarvedPumpkin => {
-            *success = dispense_equipment(level, source, &mut stack);
+        // `WitherSkullBlock.canSpawnMob`: the skull goes on a finished wither base, turned like
+        // the dispenser, and the wither spawns (`checkSpawn`); else it is equipped.
+        B::WitherSkull => {
+            let difficulty = level.spawner_env.difficulty;
+            if level.block(target).is_air()
+                && crate::mob::boss::wither::can_spawn_mob(level, target, difficulty)
+            {
+                // `RotationSegment.convertToSegment(direction)` of `Direction.toYRot`.
+                let y_rot = match source.facing {
+                    Direction::South => 0.0_f32,
+                    Direction::West => 90.0,
+                    Direction::North => 180.0,
+                    _ => 270.0,
+                };
+                #[allow(clippy::cast_possible_truncation)]
+                let segment = ((y_rot / 22.5 + 0.5).floor() as i32) & 15;
+                let skull = vanillite_data::block::ids::WITHER_SKELETON_SKULL
+                    .default_state()
+                    .set_int("rotation", segment);
+                level.set_block_and_update(target, skull);
+                level.game_event_at(None, events().block_place, target);
+                let seed = crate::mob::new_entity_seed();
+                crate::mob::boss::wither::check_spawn(level, target, difficulty, seed);
+                stack.shrink(1);
+                *success = true;
+            } else {
+                *success = dispense_equipment(level, source, &mut stack);
+            }
+            stack
+        }
+        // `CarvedPumpkinBlock.canSpawnGolem`: the pumpkin goes on a finished golem body (its
+        // `onPlace` builds the golem); else it is equipped.
+        B::CarvedPumpkin => {
+            if level.block(target).is_air()
+                && crate::mob::golem_build::can_spawn_golem(level, target)
+            {
+                let pumpkin = vanillite_data::block::ids::CARVED_PUMPKIN.default_state();
+                level.set_block_and_update(target, pumpkin);
+                level.game_event_at(None, events().block_place, target);
+                stack.shrink(1);
+                *success = true;
+            } else {
+                *success = dispense_equipment(level, source, &mut stack);
+            }
             stack
         }
         B::Equipment => {
