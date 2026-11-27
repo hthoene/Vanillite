@@ -154,7 +154,7 @@ fn pop_experience(level: &mut Level, pos: BlockPos, amount: i32) {
 }
 
 /// `EnchantmentHelper.hasTag(stack, tag)`.
-fn has_enchantment_tag(stack: &ItemStack, tag: &str) -> bool {
+pub fn has_enchantment_tag(stack: &ItemStack, tag: &str) -> bool {
     let Some(data) = crate::player::play::game_data() else {
         return false;
     };

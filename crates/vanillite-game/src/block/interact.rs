@@ -47,6 +47,52 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     }
 }
 
+/// `CopperGolemStatueBlockEntity.removeStatue`: a copper golem stands where the statue was,
+/// facing its way (`playSpawnSound`).
+fn revive_statue(level: &mut Level, state: BlockState, pos: BlockPos) {
+    use crate::mob::{Kind, MobData};
+    let y_rot = match state.direction("facing").unwrap_or(Direction::South) {
+        Direction::West => 90.0,
+        Direction::North => 180.0,
+        Direction::East => 270.0,
+        _ => 0.0,
+    };
+    let mut golem = MobData::new(Kind::CopperGolem, crate::mob::new_entity_seed());
+    golem.y_body_rot = y_rot;
+    let at = Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y),
+        f64::from(pos.z) + 0.5,
+    );
+    level.play_sound(
+        None,
+        at.x,
+        at.y,
+        at.z,
+        sound_id("entity.copper_golem.spawn"),
+        crate::level::SOUND_NEUTRAL,
+        1.0,
+        1.0,
+    );
+    let network_ids = std::sync::Arc::clone(level.network_ids_arc());
+    let rot = vanillite_world::entity::Rotation {
+        y_rot,
+        x_rot: 0.0,
+        y_head_rot: y_rot,
+    };
+    let id = crate::mob::spawn(
+        &mut level.entities,
+        &network_ids,
+        crate::mob::new_uuid(),
+        at,
+        rot,
+        golem,
+    );
+    level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
+}
+
 /// The plant of a flower pot (`FlowerPotBlock.potted`), `None` for the empty pot.
 fn potted_content(pot: BlockId) -> Option<BlockId> {
     let name = pot.name().strip_prefix("minecraft:potted_")?;
@@ -331,7 +377,9 @@ fn light_use_without_item(
     Interaction::Success
 }
 
-/// `CopperGolemStatueBlock.useItemOn`: anything but an axe turns the statue's pose.
+/// `CopperGolemStatueBlock.useItemOn`: anything but an axe turns the statue's pose. On an
+/// unwaxed statue (`WeatheringCopperGolemStatueBlock`) honeycomb waxes it instead and an axe
+/// brings an unaffected statue back to life.
 fn statue_use_item_on(
     level: &mut Level,
     state: BlockState,
@@ -341,7 +389,17 @@ fn statue_use_item_on(
 ) -> ItemInteraction {
     let is_axe = crate::player::play::game_data()
         .is_some_and(|d| d.item_in_tag(stack.item, "minecraft:axes"));
+    let weathering = state.block().info().kind == BlockKind::WeatheringCopperGolemStatueBlock;
+    if weathering && !is_axe && item::item_id(stack) == items::HONEYCOMB {
+        return ItemInteraction::Pass;
+    }
     if is_axe {
+        if weathering && state.is(ids::COPPER_GOLEM_STATUE) {
+            revive_statue(level, state, pos);
+            super::hurt_item(level, stack, 1, ctx.player);
+            level.remove_block(pos, false);
+            return ItemInteraction::Done(Interaction::Success);
+        }
         return ItemInteraction::Pass;
     }
     level.play_block_sound(
