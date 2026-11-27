@@ -518,6 +518,19 @@ pub fn load(m: &mut MobData, tag: &Compound) {
         u8::try_from(super::int(tag, "CollarColor").unwrap_or(14).clamp(0, 15)).unwrap_or(14);
     crate::mob::common::load_anger(m, tag, 0);
     m.target = None;
+    // `TamableAnimal.readAdditionalSaveData`: a wolf without an owner gets
+    // `setTame(false, true)`, whose side effect sets the wild maximum health (after the
+    // attributes and the health were read); a tamed one keeps its saved value.
+    if !m.tame {
+        use crate::effect::attribute::Attribute;
+        crate::effect::living::set_mob_attribute_base(m, Attribute::MAX_HEALTH, 8.0);
+        let dirty = m.effects.modifiers.take_dirty();
+        crate::effect::living::apply_mob_modifiers(m, &dirty);
+        for a in dirty {
+            m.effects.modifiers.touch(a);
+        }
+        m.health = m.health.min(m.max_health());
+    }
     if let Some(v) = super::string(tag, "sound_variant") {
         let v = v.strip_prefix("minecraft:").unwrap_or(v);
         if let Some(i) = SOUND_NAMES.iter().position(|n| *n == v) {

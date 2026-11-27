@@ -378,11 +378,15 @@ pub(crate) fn apply_entity_nbt(
     if e_kind_is_item(entities, id)
         && let Some(item) = entities.item_mut(id)
     {
-        if let Some(age) = data.get("Age").and_then(Tag::as_i64) {
-            item.age = i16::try_from(age).unwrap_or(item.age);
+        // `getShortOr`: `NumericTag.shortValue()`, the low 16 bits.
+        #[allow(clippy::cast_possible_truncation)]
+        let short =
+            |key: &str| vanillite_game::mob::entity_nbt::get_int(data, key).map(|v| v as i16);
+        if let Some(age) = short("Age") {
+            item.age = age;
         }
-        if let Some(delay) = data.get("PickupDelay").and_then(Tag::as_i64) {
-            item.pickup_delay = i16::try_from(delay).unwrap_or(item.pickup_delay);
+        if let Some(delay) = short("PickupDelay") {
+            item.pickup_delay = delay;
         }
         if let Some(Tag::Compound(c)) = data.get("Item") {
             item.stack = vanillite_game::inventory::stack_from_nbt(c);

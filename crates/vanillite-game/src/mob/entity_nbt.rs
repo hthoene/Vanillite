@@ -127,6 +127,25 @@ pub fn save_flags(flags: EntityFlags, out: &mut Compound) {
     }
 }
 
+/// The keys [`load_base`] reads, copied out of an entity compound (loading consumes the
+/// compound before the common keys are applied; the rest is not cloned).
+pub fn base_keys(tag: &Compound) -> Compound {
+    let mut out = Compound::new();
+    let keys = FLAG_KEYS.iter().map(|(k, _)| *k).chain([
+        "PortalCooldown",
+        "data",
+        "attributes",
+        "DeathLootTable",
+        "DeathLootTableSeed",
+    ]);
+    for key in keys {
+        if let Some(v) = tag.get(key) {
+            out.insert(key, v.clone());
+        }
+    }
+    out
+}
+
 /// Whether the entity keeps its `Entity` state somewhere else: players (in their data) and
 /// decorations (in their [`crate::decoration::Decor`]).
 fn keeps_own_base(ents: &Entities, id: EntityId) -> bool {
