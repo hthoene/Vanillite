@@ -6,6 +6,7 @@
 //! `vanillite-plugin:<tree>:<provider>`. A development reload keeps the trees and replaces the
 //! callbacks.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use vanillite_abi::{self as abi, Status, status};
@@ -97,6 +98,11 @@ struct Tree {
 #[derive(Debug, Default)]
 pub(crate) struct Commands {
     trees: RwLock<Vec<Tree>>,
+    /// How many trees the server's dispatcher has; trees after it were added after the start
+    /// (ABI 1.12) and wait for [`PluginHost::add_late_commands`].
+    applied: AtomicUsize,
+    /// Set by a registration after the start; one atomic load per tick otherwise.
+    late: AtomicBool,
     /// During a development reload: the plugin and how many of its trees were registered again.
     reload: Mutex<Option<(u32, usize)>>,
 }
@@ -212,6 +218,9 @@ impl Commands {
             suggest: spec.suggest,
             user: SendPtr(spec.user),
         });
+        if !inner.may_register(plugin) {
+            self.late.store(true, Ordering::Release);
+        }
         status::OK
     }
 
@@ -287,13 +296,49 @@ impl PluginHost {
         dispatcher: &mut Dispatcher<C>,
         key: impl Fn(u32) -> C,
     ) {
-        let trees = self
-            .inner
-            .commands
+        let commands = &self.inner.commands;
+        let trees = commands
             .trees
             .read()
             .unwrap_or_else(PoisonError::into_inner);
-        for (index, tree) in trees.iter().enumerate() {
+        self.add_trees(dispatcher, &trees, 0, &key);
+        commands.applied.store(trees.len(), Ordering::Release);
+    }
+
+    /// The commands plugins registered after the start (ABI 1.12), collected since the last
+    /// call: a copy of `dispatcher` with their trees appended (existing nodes keep their ids),
+    /// or `None` when there are none. Call once per tick from the global phase.
+    pub fn add_late_commands<C: Copy>(
+        &self,
+        dispatcher: &Dispatcher<C>,
+        key: impl Fn(u32) -> C,
+    ) -> Option<Dispatcher<C>> {
+        let commands = &self.inner.commands;
+        if !commands.late.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        let trees = commands
+            .trees
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let from = commands.applied.load(Ordering::Acquire);
+        if from >= trees.len() {
+            return None;
+        }
+        let mut copy = dispatcher.clone();
+        self.add_trees(&mut copy, &trees, from, &key);
+        commands.applied.store(trees.len(), Ordering::Release);
+        Some(copy)
+    }
+
+    fn add_trees<C: Copy>(
+        &self,
+        dispatcher: &mut Dispatcher<C>,
+        trees: &[Tree],
+        from: usize,
+        key: &impl Fn(u32) -> C,
+    ) {
+        for (index, tree) in trees.iter().enumerate().skip(from) {
             let Some(root) = tree.nodes.first() else {
                 continue;
             };
@@ -320,7 +365,7 @@ impl PluginHost {
                 continue;
             }
             let tree_index = u32::try_from(index).unwrap_or(0);
-            dispatcher.register(build(tree, 0, tree_index, &key));
+            dispatcher.register(build(tree, 0, tree_index, key));
         }
     }
 
@@ -568,4 +613,78 @@ fn encode_args(args: &[Arg]) -> (Vec<abi::CommandArg>, Vec<Vec<abi::Uuid>>) {
         })
         .collect();
     (records, players)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" fn execute(
+        _: *mut std::ffi::c_void,
+        _: *mut abi::Context,
+        _: *const abi::CommandInvocation,
+        _: *mut i32,
+    ) -> Status {
+        status::OK
+    }
+
+    fn push(host: &PluginHost, name: &str, late: bool) {
+        let commands = &host.inner.commands;
+        commands
+            .trees
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Tree {
+                plugin: 0,
+                nodes: vec![Node {
+                    parent: None,
+                    literal: true,
+                    name: name.into(),
+                    arg_type: 0,
+                    min: None,
+                    max: None,
+                    level: 0,
+                    permission: None,
+                    executes: 1,
+                    suggests: 0,
+                }],
+                execute,
+                suggest: None,
+                user: SendPtr(std::ptr::null_mut()),
+            });
+        if late {
+            commands.late.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn late_commands_are_appended_once_per_call() {
+        let host = PluginHost::empty();
+        push(&host, "early", false);
+        let mut dispatcher = Dispatcher::<u32>::new();
+        host.register_commands(&mut dispatcher, |n| n);
+        let early = dispatcher.find(&["early"]);
+        assert!(early.is_some());
+        assert!(host.add_late_commands(&dispatcher, |n| n).is_none());
+
+        push(&host, "/set", true);
+        push(&host, "worldedit:/set", true);
+        push(&host, "early", true);
+        let next = host
+            .add_late_commands(&dispatcher, |n| n)
+            .expect("late trees are added");
+        assert_eq!(
+            next.find(&["early"]),
+            early,
+            "existing nodes keep their ids"
+        );
+        let set = next.find(&["/set"]).expect("/set is added");
+        assert_eq!(next.node(set).and_then(|n| n.command), Some(1 << 16 | 1));
+        assert!(next.find(&["worldedit:/set"]).is_some());
+        assert!(
+            dispatcher.find(&["/set"]).is_none(),
+            "the old tree is unchanged"
+        );
+        assert!(host.add_late_commands(&next, |n| n).is_none());
+    }
 }

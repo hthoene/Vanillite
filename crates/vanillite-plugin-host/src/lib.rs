@@ -1193,6 +1193,11 @@ impl Inner {
             || self.reloading.load(Ordering::Acquire) == plugin.local + 1
     }
 
+    /// Whether the plugins are enabled (after `load`).
+    pub(crate) fn is_running(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == RUNNING
+    }
+
     /// Whether `plugin` is being reloaded right now.
     pub(crate) fn is_reloading(&self, plugin: &Plugin) -> bool {
         self.reloading.load(Ordering::Acquire) == plugin.local + 1

@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 11;
+pub const ABI_MINOR: u16 = 12;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -844,6 +844,9 @@ abi! {
             AIR = 15,
             /// Ticks it still burns.
             FIRE_TICKS = 16,
+            /// Ignored by the night skip: counts as sleeping while another player sleeps
+            /// (Bukkit's `setSleepingIgnored`; not saved). Since ABI 1.12.
+            SLEEPING_IGNORED = 17,
         }
         /// Flags of `entity_effect_add`. Since ABI 1.5.
         pub mod effect_flag: u32 {
@@ -2418,7 +2421,11 @@ abi! {
             pub cancel_task: unsafe extern "C" fn(PluginId, u64) -> Status,
             /// Subscribes to an event kind with a priority (`load` only).
             pub subscribe: unsafe extern "C" fn(PluginId, u32, i32, EventFn, *mut c_void) -> Status,
-            /// Adds a command tree (`load` only).
+            /// Adds a command tree. Since ABI 1.12 also after `load` (Bukkit plugins register
+            /// commands when they are enabled): the server adds the trees registered during a
+            /// tick at its next tick and sends every player its command tree again. A top-level
+            /// name that already exists is skipped; trees cannot be removed (hide them with a
+            /// node permission the plugin's permission provider denies).
             pub register_command: unsafe extern "C" fn(PluginId, *const CommandSpec) -> Status,
             /// Becomes the permission provider (`load` only; one per server).
             pub set_permission_provider: unsafe extern "C" fn(PluginId, PermissionFn, *mut c_void) -> Status,

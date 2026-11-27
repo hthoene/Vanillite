@@ -28,8 +28,8 @@ pub struct Global {
     pub access: Access,
     /// A handle to the server for work on other worlds and `/stop`; set once the server runs.
     pub handle: OnceLock<ServerHandle>,
-    /// The command tree.
-    pub(crate) commands: crate::commands::CommandDispatcher,
+    /// The command tree; replaced (append-only) when plugins add commands after the start.
+    pub(crate) commands: std::sync::RwLock<Arc<crate::commands::CommandDispatcher>>,
     /// `online-mode`.
     pub(crate) online_mode: bool,
     /// The dimensions; a world's index here is its [`WorldId`].
@@ -77,6 +77,16 @@ pub struct Global {
 }
 
 impl Global {
+    /// The current command tree.
+    pub(crate) fn commands(&self) -> Arc<crate::commands::CommandDispatcher> {
+        Arc::clone(
+            &self
+                .commands
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// The current game data (loot tables, recipes, tags), replaced by `/reload`.
     pub(crate) fn game(&self) -> Arc<vanillite_game::player::play::GameData> {
         vanillite_game::player::play::game_data().unwrap_or_else(|| Arc::clone(&self.game_at_start))

@@ -138,6 +138,7 @@ pub(super) fn player_get(w: &impl ReadWorld, player: u128, prop: u32) -> Result<
         player_prop::SELECTED_SLOT => f64::from(u32::try_from(p.inventory.selected).unwrap_or(0)),
         player_prop::AIR => f64::from(s.air),
         player_prop::FIRE_TICKS => f64::from(s.fire_ticks),
+        player_prop::SLEEPING_IGNORED => flag(s.sleeping_ignored),
         _ => return Err(status::INVALID_ARGUMENT),
     })
 }
@@ -218,6 +219,7 @@ pub(super) fn player_set(
             data_changed = true;
         }
         player_prop::FIRE_TICKS => s.fire_ticks = whole(value, i32::MIN..=i32::MAX)?,
+        player_prop::SLEEPING_IGNORED => s.sleeping_ignored = whole(value, 0..=1)? == 1,
         _ => return Err(status::INVALID_ARGUMENT),
     }
     if data_changed && let Some(mut entity) = entities.store.get_mut(id) {

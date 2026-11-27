@@ -216,6 +216,9 @@ pub struct Survival {
     pub sleeping_pos: Option<BlockPos>,
     /// `sleepCounter` (`SleepTimer`): ticks asleep up to 100, then 100..110 after waking.
     pub sleep_timer: i32,
+    /// A plugin's `Player.setSleepingIgnored` (Bukkit's `fauxSleeping`): counts as sleeping
+    /// for the night skip while someone really sleeps. Not saved.
+    pub sleeping_ignored: bool,
     /// Something woke the player (`stopSleeping` from damage or death); the sleep pass of the
     /// world tick gets it out of bed.
     pub wake: bool,
@@ -358,6 +361,7 @@ impl Default for Survival {
             respawn: None,
             sleeping_pos: None,
             sleep_timer: 0,
+            sleeping_ignored: false,
             wake: false,
             combat: CombatTracker::default(),
             tick_count: 0,

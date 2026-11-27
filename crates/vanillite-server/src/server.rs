@@ -587,7 +587,7 @@ impl ServerBuilder {
                 config.properties.enforce_whitelist,
             ),
             handle: std::sync::OnceLock::new(),
-            commands,
+            commands: std::sync::RwLock::new(Arc::new(commands)),
             online_mode: config.properties.online_mode,
             dimensions: dimensions.clone(),
             level,
@@ -1279,6 +1279,28 @@ impl Server {
             }
         }
         self.global.plugins.run_global_tasks(self.tick_count);
+        self.add_late_plugin_commands();
+    }
+
+    /// Commands plugins registered after the start (Bukkit plugins in `onEnable`), collected
+    /// over the tick: a new tree with them appended, sent to every player again.
+    fn add_late_plugin_commands(&self) {
+        let current = self.global.commands();
+        let Some(next) = self
+            .global
+            .plugins
+            .add_late_commands(&current, vanillite_game::commands::CommandId::Plugin)
+        else {
+            return;
+        };
+        *self
+            .global
+            .commands
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
+        for player in self.global.players.snapshot() {
+            crate::commands::permissions_changed(&self.global, player.uuid.0);
+        }
     }
 
     /// `tickChildren`'s clocks and the game time sync every second (by default).
