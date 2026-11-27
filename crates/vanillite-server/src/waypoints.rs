@@ -323,6 +323,36 @@ fn transmit_range(player: &vanillite_game::player::PlayerData, crouching: bool) 
     player.survival.effects.attribute(attribute, value)
 }
 
+/// What the skip check of a pair reads of its source, by slot.
+#[derive(Clone, Copy)]
+struct Source {
+    id: EntityId,
+    pos: Vec3,
+    transmit_range: f64,
+    spectator: bool,
+}
+
+impl Source {
+    /// [`ignores`] (with `isTransmittingWaypoint`) on the columns: the same comparisons.
+    fn ignores(&self, receiver: &Snapshot) -> bool {
+        if self.transmit_range <= 0.0 {
+            return true;
+        }
+        if receiver.spectator {
+            return false;
+        }
+        if self.spectator || receiver.vehicles.contains(&self.id) {
+            return true;
+        }
+        let (dx, dy, dz) = (
+            self.pos.x - receiver.pos.x,
+            self.pos.y - receiver.pos.y,
+            self.pos.z - receiver.pos.z,
+        );
+        (dx * dx + dy * dy + dz * dz).sqrt() >= self.transmit_range.min(receiver.receive_range)
+    }
+}
+
 /// Receivers per part of the parallel pair updates.
 const RECEIVERS_PER_PART: usize = 64;
 
@@ -335,6 +365,7 @@ struct PairCtx<'a> {
     changed: &'a [bool],
     /// The slots of the players that changed, ascending.
     changed_slots: &'a [u32],
+    sources: &'a [Option<Source>],
     frames: &'a [SourceFrames],
     framing: Framing<'a>,
 }
@@ -448,11 +479,23 @@ impl Waypoints {
         }
         let mut frames = Vec::new();
         frames.resize_with(now.len(), SourceFrames::default);
+        let sources: Vec<Option<Source>> = now
+            .iter()
+            .map(|entry| {
+                entry.as_ref().map(|(id, s)| Source {
+                    id: *id,
+                    pos: s.pos,
+                    transmit_range: s.transmit_range,
+                    spectator: s.spectator,
+                })
+            })
+            .collect();
         let ctx = PairCtx {
             now: &now,
             before: &self.players,
             changed: &changed,
             changed_slots: &changed_slots,
+            sources: &sources,
             frames: &frames,
             framing: Framing {
                 threshold,
@@ -524,19 +567,40 @@ impl PairCtx<'_> {
         let Some((_, receiver)) = &self.now[r as usize] else {
             return;
         };
-        let mut pair = |s: u32| {
-            if s != r {
-                self.pair(receiver, s, kinds, angles, codec, batch);
-            }
-        };
-        if self.changed[r as usize] {
+        let Some((_, before)) = self.before.get(r as usize).and_then(Option::as_ref) else {
             for s in 0..u32::try_from(self.now.len()).unwrap_or(u32::MAX) {
-                pair(s);
+                if s != r {
+                    self.pair(receiver, s, kinds, angles, codec, batch);
+                }
             }
-        } else {
+            return;
+        };
+        if !self.changed[r as usize] {
             for &s in self.changed_slots {
-                pair(s);
+                if s != r {
+                    self.pair(receiver, s, kinds, angles, codec, batch);
+                }
             }
+            return;
+        }
+        // A receiver that only moved changes its pairs with unchanged sources only where the
+        // source starts or stops being ignored (a distance threshold) and in azimuths: the
+        // other pairs are skipped after a check on the compact source columns.
+        let moved_only = before.view == receiver.view
+            && before.spectator == receiver.spectator
+            && before.vehicles == receiver.vehicles
+            && before.receive_range.to_bits() == receiver.receive_range.to_bits();
+        for (s, source) in (0u32..).zip(self.sources) {
+            let Some(source) = source.filter(|_| s != r) else {
+                continue;
+            };
+            if moved_only && !self.changed[s as usize] {
+                let kind = kind_at(kinds, s);
+                if kind != Kind::Azimuth && (kind == Kind::None) == source.ignores(receiver) {
+                    continue;
+                }
+            }
+            self.pair(receiver, s, kinds, angles, codec, batch);
         }
     }
 
