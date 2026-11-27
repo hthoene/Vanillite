@@ -781,6 +781,14 @@ impl Chunks {
         id
     }
 
+    /// [`Chunks::add_ticket`] that never waits for its chunks, also with
+    /// [`ChunkSettings::blocking_tickets`]: a ticket Vanilla adds without a synchronous
+    /// `getChunk` (the dragon fight's), whose chunks load with the next run of the chunk
+    /// system.
+    pub fn add_ticket_deferred(&mut self, pos: ChunkPos, level: u8) -> TicketId {
+        self.insert_ticket(pos, level)
+    }
+
     fn insert_ticket(&mut self, pos: ChunkPos, level: u8) -> TicketId {
         let id = TicketId(self.next_ticket);
         self.next_ticket += 1;
@@ -870,6 +878,12 @@ impl Chunks {
     /// Whether scheduled ticks run in a chunk (`isPositionTickingWithEntitiesLoaded`).
     pub fn is_block_ticking(&self, pos: ChunkPos) -> bool {
         tick_check(&self.holders, &self.simulation, pos)
+    }
+
+    /// The ticket level of a chunk's holder (`ChunkHolder.getTicketLevel`), `None` without a
+    /// holder. `LevelChunk.getFullStatus` follows it.
+    pub fn holder_level(&self, pos: ChunkPos) -> Option<u8> {
+        self.holders.get(&pos).map(|h| h.level)
     }
 
     /// Whether the stored entities of a chunk are live (`areEntitiesLoaded`).

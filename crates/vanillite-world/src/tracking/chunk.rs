@@ -52,12 +52,15 @@ struct SyncState {
 }
 
 impl SyncState {
+    /// The state of an entity the tracker sees for the first time. Vanilla's `ServerEntity`
+    /// starts from the position the entity was added at (`addEntity`): one added before its
+    /// first tick this tick (the dragon of a fight) is still at its tick's start position.
     fn new(core: &CoreColumns, row: usize) -> SyncState {
         let rot = core.rot[row];
         SyncState {
             tick_count: 0,
             teleport_delay: 0,
-            base: core.pos[row],
+            base: core.old_pos[row],
             y_rot: pack_degrees(rot.y_rot),
             x_rot: pack_degrees(rot.x_rot),
             y_head_rot: pack_degrees(rot.y_head_rot),
