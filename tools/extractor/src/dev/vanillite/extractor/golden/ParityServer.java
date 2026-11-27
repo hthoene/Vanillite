@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import net.minecraft.SystemReport;
 import net.minecraft.commands.Commands;
@@ -26,6 +27,7 @@ import net.minecraft.server.TickTask;
 import net.minecraft.server.WorldLoader;
 import net.minecraft.server.WorldStem;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.server.level.progress.LoggingLevelLoadListener;
 import net.minecraft.server.notifications.EmptyNotificationService;
 import net.minecraft.server.notifications.NotificationManager;
@@ -68,6 +70,9 @@ import net.minecraft.world.level.storage.PrimaryLevelData;
 public final class ParityServer extends MinecraftServer {
   /** A flat layer: block id and thickness. */
   public record Layer(String block, int height) {}
+
+  /** A chunk coordinate far outside every scenario. */
+  private static final int UNLOADED_CHUNK = 1_000_000;
 
   private final LocalSampleLogger sampleLogger = new LocalSampleLogger(1);
 
@@ -122,12 +127,21 @@ public final class ParityServer extends MinecraftServer {
    */
   public static ParityServer start(Path dir, long seed, List<Layer> layers, String biome)
       throws Exception {
+    return start(dir, seed, layers, biome, false);
+  }
+
+  /**
+   * Like {@link #start(Path, long, List, String)}; with {@code flatOthers} the Nether and the End
+   * are flat too ({@link #NETHER_LAYERS}, {@link #END_LAYERS}), for scenarios across dimensions.
+   */
+  public static ParityServer start(
+      Path dir, long seed, List<Layer> layers, String biome, boolean flatOthers) throws Exception {
     Files.createDirectories(dir);
     LevelStorageSource.LevelStorageAccess access =
         LevelStorageSource.createDefault(dir).validateAndCreateAccess("world");
     PackRepository packs = ServerPacksSource.createPackRepository(access);
     packs.reload();
-    WorldStem stem = loadStem(packs, seed, layers, biome);
+    WorldStem stem = loadStem(packs, seed, layers, biome, flatOthers);
     ParityServer server = new ParityServer(Thread.currentThread(), access, packs, stem);
     if (!server.initServer()) {
       throw new IllegalStateException("parity server failed to start");
@@ -138,6 +152,20 @@ public final class ParityServer extends MinecraftServer {
   /** The Vanilla data pack and world settings, loaded like {@code WorldLoader} does at start. */
   public static WorldStem loadStem(
       PackRepository packs, long seed, List<Layer> layers, String biome) throws Exception {
+    return loadStem(packs, seed, layers, biome, false);
+  }
+
+  /** The Nether of scenarios across dimensions: bedrock and netherrack up to y 3. */
+  public static final List<Layer> NETHER_LAYERS =
+      List.of(new Layer("minecraft:bedrock", 1), new Layer("minecraft:netherrack", 3));
+
+  /** The End of scenarios across dimensions: bedrock and end stone up to y 3. */
+  public static final List<Layer> END_LAYERS =
+      List.of(new Layer("minecraft:bedrock", 1), new Layer("minecraft:end_stone", 3));
+
+  private static WorldStem loadStem(
+      PackRepository packs, long seed, List<Layer> layers, String biome, boolean flatOthers)
+      throws Exception {
     WorldDataConfiguration config = WorldDataConfiguration.DEFAULT;
     LevelSettings settings =
         new LevelSettings(
@@ -160,6 +188,22 @@ public final class ParityServer extends MinecraftServer {
                               ? normal
                               : normal.replaceOverworldGenerator(
                                   lookup, new FlatLevelSource(flat(lookup, layers, biome)));
+                      if (flatOthers) {
+                        java.util.Map<ResourceKey<LevelStem>, LevelStem> stems =
+                            new java.util.LinkedHashMap<>(dimensions.dimensions());
+                        stems.put(
+                            LevelStem.NETHER,
+                            new LevelStem(
+                                stems.get(LevelStem.NETHER).type(),
+                                new FlatLevelSource(
+                                    flat(lookup, NETHER_LAYERS, "minecraft:nether_wastes"))));
+                        stems.put(
+                            LevelStem.END,
+                            new LevelStem(
+                                stems.get(LevelStem.END).type(),
+                                new FlatLevelSource(flat(lookup, END_LAYERS, "minecraft:the_end"))));
+                        dimensions = new WorldDimensions(stems);
+                      }
                       WorldDimensions.Complete complete =
                           dimensions.bake(
                               new MappedRegistry<LevelStem>(
@@ -207,6 +251,28 @@ public final class ParityServer extends MinecraftServer {
     drainTasks();
   }
 
+  /**
+   * Runs the light engines until nothing is left to do.
+   *
+   * <p>Vanilla updates light on another thread, which the tick loop starts while it waits for the
+   * next tick ({@code ServerChunkCache.pollTask}): on a server with time left the light is
+   * settled when a tick starts. A recording does not wait between ticks, so it waits for that
+   * thread here instead of racing it.
+   */
+  public void settleLight() {
+    for (ServerLevel level : getAllLevels()) {
+      ThreadedLevelLightEngine engine = level.getChunkSource().getLightEngine();
+      do {
+        // A task of a chunk that is not loaded has the last priority: it runs after all others.
+        CompletableFuture<?> idle = engine.waitForPendingTasks(UNLOADED_CHUNK, UNLOADED_CHUNK);
+        while (!idle.isDone()) {
+          engine.tryScheduleUpdate();
+          Thread.onSpinWait();
+        }
+      } while (engine.hasLightWork());
+    }
+  }
+
   /** Runs pending server and chunk tasks until none is left. */
   public void drainTasks() {
     boolean ran = true;
@@ -252,6 +318,16 @@ public final class ParityServer extends MinecraftServer {
 
   public ServerLevel level() {
     return overworld();
+  }
+
+  /** The level of a dimension id, e.g. {@code minecraft:the_nether}. */
+  public ServerLevel level(String dimension) {
+    ServerLevel level =
+        getLevel(ResourceKey.create(Registries.DIMENSION, Identifier.parse(dimension)));
+    if (level == null) {
+      throw new IllegalArgumentException("unknown dimension " + dimension);
+    }
+    return level;
   }
 
   @Override

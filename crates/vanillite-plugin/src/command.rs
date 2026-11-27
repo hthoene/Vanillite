@@ -8,7 +8,7 @@ use vanillite_abi::{self as abi, Status, status};
 use crate::Plugin;
 use crate::ffi::{guard, str, with_plugin};
 use crate::server::Ctx;
-use crate::types::{BlockPos, Text, Uuid, Vec3, World};
+use crate::types::{BlockPos, GameMode, Text, Uuid, Vec3, World};
 
 /// The type of a command argument.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +55,30 @@ pub enum ArgType {
     Players,
     /// A block position; relative coordinates (`~ ~1 ~`) are resolved.
     BlockPos,
+    /// One entity: a selector like `@e[type=cow,limit=1]` or a UUID. Since ABI 1.5.
+    Entity,
+    /// Entities: a selector like `@e` or a UUID. Since ABI 1.5.
+    Entities,
+    /// A position; relative (`~`) and local (`^`) coordinates are resolved. Since ABI 1.5.
+    Vec3,
+    /// A rotation (yaw and pitch), relative values resolved. Since ABI 1.5.
+    Rotation,
+    /// A resource location like `minecraft:stone`. Since ABI 1.5.
+    Identifier,
+    /// A block state with optional NBT, e.g. `oak_log[axis=x]`. Since ABI 1.5.
+    BlockState,
+    /// An item with optional components, e.g. `diamond_sword[damage=5]`. Since ABI 1.5.
+    ItemStack,
+    /// A text component. Since ABI 1.5.
+    Component,
+    /// An SNBT compound. Since ABI 1.5.
+    NbtCompound,
+    /// A game mode. Since ABI 1.5.
+    GameMode,
+    /// A duration like `5s` or `2d`, in ticks. Since ABI 1.5.
+    Time,
+    /// A UUID. Since ABI 1.5.
+    Uuid,
 }
 
 impl ArgType {
@@ -73,6 +97,18 @@ impl ArgType {
             ArgType::Player => (arg::PLAYER, None, None),
             ArgType::Players => (arg::PLAYERS, None, None),
             ArgType::BlockPos => (arg::BLOCK_POS, None, None),
+            ArgType::Entity => (arg::ENTITY, None, None),
+            ArgType::Entities => (arg::ENTITIES, None, None),
+            ArgType::Vec3 => (arg::VEC3, None, None),
+            ArgType::Rotation => (arg::ROTATION, None, None),
+            ArgType::Identifier => (arg::IDENTIFIER, None, None),
+            ArgType::BlockState => (arg::BLOCK_STATE, None, None),
+            ArgType::ItemStack => (arg::ITEM_STACK, None, None),
+            ArgType::Component => (arg::COMPONENT, None, None),
+            ArgType::NbtCompound => (arg::NBT_COMPOUND, None, None),
+            ArgType::GameMode => (arg::GAME_MODE, None, None),
+            ArgType::Time => (arg::TIME, None, None),
+            ArgType::Uuid => (arg::UUID, None, None),
         }
     }
 }
@@ -306,13 +342,18 @@ pub enum Sender {
     Console,
     /// A player.
     Player(Uuid),
+    /// A command block or command block minecart. Since ABI 1.5.
+    CommandBlock,
+    /// An entity that is no player, e.g. through `execute as`. Since ABI 1.5.
+    Entity(Uuid),
 }
 
 fn sender(raw: &abi::Sender) -> Sender {
-    if raw.kind == abi::sender::PLAYER {
-        Sender::Player(Uuid::from_abi(raw.player))
-    } else {
-        Sender::Console
+    match raw.kind {
+        abi::sender::PLAYER => Sender::Player(Uuid::from_abi(raw.player)),
+        abi::sender::COMMAND_BLOCK => Sender::CommandBlock,
+        abi::sender::ENTITY => Sender::Entity(Uuid::from_abi(raw.player)),
+        _ => Sender::Console,
     }
 }
 
@@ -367,10 +408,24 @@ macro_rules! arg_accessors {
                 .map(|a| unsafe { str(a.text) })
         }
 
-        /// The players of a `Player` or `Players` argument.
+        /// The players of a `Player` or `Players` argument, or the entities of an `Entity`
+        /// or `Entities` argument.
         pub fn players(&self, name: &str) -> Vec<Uuid> {
+            self.entities(name)
+        }
+
+        /// The entities of an `Entity`, `Entities`, `Player` or `Players` argument.
+        pub fn entities(&self, name: &str) -> Vec<Uuid> {
             self.arg(name)
-                .filter(|a| a.kind == abi::arg::PLAYER || a.kind == abi::arg::PLAYERS)
+                .filter(|a| {
+                    matches!(
+                        a.kind,
+                        abi::arg::PLAYER
+                            | abi::arg::PLAYERS
+                            | abi::arg::ENTITY
+                            | abi::arg::ENTITIES
+                    )
+                })
                 .filter(|a| !a.players.is_null())
                 .map(|a| {
                     // SAFETY: the host passes `player_count` UUIDs valid for the call.
@@ -387,6 +442,56 @@ macro_rules! arg_accessors {
             self.arg(name)
                 .filter(|a| a.kind == abi::arg::BLOCK_POS)
                 .map(|a| BlockPos::from_abi(a.pos))
+        }
+
+        /// A `Vec3` argument.
+        pub fn vec3(&self, name: &str) -> Option<Vec3> {
+            self.arg(name)
+                .filter(|a| a.kind == abi::arg::VEC3)
+                .map(|a| Vec3::from_abi(a.vec))
+        }
+
+        /// A `Rotation` argument: yaw and pitch in degrees.
+        pub fn rotation(&self, name: &str) -> Option<(f32, f32)> {
+            #[allow(clippy::cast_possible_truncation)]
+            self.arg(name)
+                .filter(|a| a.kind == abi::arg::ROTATION)
+                .map(|a| (a.vec.x as f32, a.vec.y as f32))
+        }
+
+        /// The text of an `Identifier`, `BlockState`, `ItemStack`, `Component`,
+        /// `NbtCompound` or `Uuid` argument (identifiers with their namespace, the others as
+        /// typed).
+        pub fn text(&self, name: &str) -> Option<&str> {
+            self.arg(name)
+                .filter(|a| {
+                    matches!(
+                        a.kind,
+                        abi::arg::IDENTIFIER
+                            | abi::arg::BLOCK_STATE
+                            | abi::arg::ITEM_STACK
+                            | abi::arg::COMPONENT
+                            | abi::arg::NBT_COMPOUND
+                            | abi::arg::UUID
+                    )
+                })
+                // SAFETY: the host's strings are valid for the call.
+                .map(|a| unsafe { str(a.text) })
+        }
+
+        /// A `GameMode` argument.
+        pub fn game_mode(&self, name: &str) -> Option<GameMode> {
+            self.arg(name)
+                .filter(|a| a.kind == abi::arg::GAME_MODE)
+                .and_then(|a| u32::try_from(a.int).ok())
+                .map(GameMode::from_abi)
+        }
+
+        /// A `Time` argument in ticks.
+        pub fn time(&self, name: &str) -> Option<i64> {
+            self.arg(name)
+                .filter(|a| a.kind == abi::arg::TIME)
+                .map(|a| a.int)
         }
 
         /// Who runs the command.
@@ -435,7 +540,7 @@ impl Invocation<'_> {
             Sender::Player(player) => {
                 let _ = ctx.server().send_message(player, text);
             }
-            Sender::Console => match text {
+            Sender::Console | Sender::CommandBlock | Sender::Entity(_) => match text {
                 Text::Plain(s) | Text::Json(s) => crate::log(abi::log_level::INFO, &s),
             },
         }

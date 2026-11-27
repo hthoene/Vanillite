@@ -71,6 +71,8 @@ pub enum EntityAction {
         hand: Hand,
         pos: vanillite_base::BlockPos,
         face: vanillite_base::Direction,
+        /// The clicked point (`BlockHitResult.getLocation`).
+        location: Vec3,
     },
     /// `player_action` `RELEASE_USE_ITEM`.
     ReleaseUseItem,
@@ -83,6 +85,8 @@ pub enum EntityAction {
     PickItem { entity: i32, include_data: bool },
     /// `player_action` `STAB`: a jab with the piercing weapon in the main hand.
     Stab,
+    /// `player_command` `START_FALL_FLYING`.
+    StartFallFlying,
 }
 
 /// What a player sends to steer its vehicle.
@@ -179,6 +183,13 @@ pub enum AdminRequest {
     EntityTagQuery { transaction_id: i32, entity_id: i32 },
     /// `teleport_to_entity`: the spectator menu teleport to the entity with this UUID.
     TeleportToEntity(u128),
+    /// `custom_payload` on a channel outside the `minecraft` namespace, for plugins.
+    PluginMessage {
+        /// The channel.
+        channel: String,
+        /// The payload.
+        data: Vec<u8>,
+    },
 }
 
 /// A player's chat state.
@@ -242,6 +253,8 @@ pub struct Connection {
     /// Attacks and interactions with entities since the last tick (`attack`, `interact`), in
     /// packet order; the world resolves them with the entities.
     pub entity_actions: Vec<EntityAction>,
+    /// `STOP_SLEEPING` (leave bed) arrived; the world wakes the player after its packets.
+    pub leave_bed: bool,
     /// `ServerPlayer.camera`: the entity a spectator watches through (`None`: itself).
     pub camera: Option<vanillite_world::entity::EntityId>,
     /// Vehicle input: the last `player_input`, `paddle_boat` and `move_vehicle`.
@@ -308,6 +321,7 @@ impl Connection {
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
             entity_actions: Vec::new(),
+            leave_bed: false,
             camera: None,
             vehicle: VehicleInput::default(),
             play: Digging::new(),
@@ -573,7 +587,7 @@ impl Connection {
                     match p.action {
                         PlayerAction::StartSprinting => state.sprinting = true,
                         PlayerAction::StopSprinting => state.sprinting = false,
-                        // Sleeping, vehicles, inventories and elytra come later.
+                        // Riding jumps' end comes later.
                         PlayerAction::StartRidingJump => {
                             self.vehicle.jump = Some(p.data);
                         }
@@ -582,9 +596,14 @@ impl Connection {
                                 self.entity_actions.push(EntityAction::OpenVehicleInventory);
                             }
                         }
-                        PlayerAction::StopSleeping
-                        | PlayerAction::StopRidingJump
-                        | PlayerAction::StartFallFlying => {}
+                        PlayerAction::StartFallFlying => {
+                            if self.entity_actions.len() < 16 {
+                                self.entity_actions.push(EntityAction::StartFallFlying);
+                            }
+                        }
+                        // `if (player.isSleeping()) player.stopSleepInBed(false, true)`.
+                        PlayerAction::StopSleeping => self.leave_bed = true,
+                        PlayerAction::StopRidingJump => {}
                     }
                 }
             }
@@ -602,9 +621,7 @@ impl Connection {
                             .equipment(crate::item::EquipmentSlot::OffHand),
                     };
                     let name = crate::item::item_id(stack).name();
-                    let entity_item = name.ends_with("_spawn_egg")
-                        || name == "minecraft:lead"
-                        || name.ends_with("minecart");
+                    let entity_item = crate::player::item_use::uses_entities_on_block(stack);
                     self.play.use_item_on(play, &p, self.sink.as_ref());
                     // `LecternBlockEntity.setBook` resolves a written book for the player.
                     let at = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
@@ -615,19 +632,27 @@ impl Connection {
                     {
                         self.chat.requests.push(ChatRequest::ResolveLecternBook(at));
                     }
-                    if entity_item && self.entity_actions.len() < 16 {
+                    if entity_item && self.play.entity_item_use && self.entity_actions.len() < 16 {
+                        let pos = vanillite_base::BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
                         self.entity_actions.push(EntityAction::UseItemOn {
                             hand: p.hand,
-                            pos: vanillite_base::BlockPos::new(p.pos.x, p.pos.y, p.pos.z),
+                            pos,
                             face: crate::player::play::direction_wrapped(p.face),
+                            location: Vec3::new(
+                                f64::from(pos.x) + f64::from(p.cursor_x),
+                                f64::from(pos.y) + f64::from(p.cursor_y),
+                                f64::from(pos.z) + f64::from(p.cursor_z),
+                            ),
                         });
                     }
                 }
             }
             ServerboundPlay::UseItem(p) => {
                 if self.movement.has_client_loaded() {
-                    self.play.use_item(p.sequence);
-                    if self.entity_actions.len() < 16 {
+                    let handled = self
+                        .play
+                        .use_item(play, p.hand, p.sequence, p.y_rot, p.x_rot);
+                    if !handled && self.entity_actions.len() < 16 {
                         self.entity_actions.push(EntityAction::UseItem(p.hand));
                     }
                 }
@@ -781,6 +806,13 @@ impl Connection {
                     "multiplayer.disconnect.invalid_packet",
                     vec![],
                 ))));
+            }
+            // Payloads of other namespaces may be plugin messages; Vanilla ignores them.
+            ServerboundPlay::CustomPayload(p) if p.channel.namespace() != "minecraft" => {
+                self.admin(AdminRequest::PluginMessage {
+                    channel: p.channel.as_str().to_owned(),
+                    data: p.data.0,
+                });
             }
             // Keep-alives and ping requests are answered by the network task; cookies, custom
             // payloads, pongs and resource packs come later.
@@ -1280,6 +1312,7 @@ impl Connection {
         play.inventory.menu.suppress_remote = true;
         play.inventory
             .click(p.slot, p.button, p.input, ctx, play.drops);
+        super::play::flush_equips(play);
         let sounds = std::mem::take(&mut play.inventory.menu.sounds);
         play_bundle_sounds(play, sounds);
         play.inventory.flush_result_updates(sink);

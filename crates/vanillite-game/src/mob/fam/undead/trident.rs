@@ -29,13 +29,15 @@ pub fn throw(t: &mut Tick<'_, '_>, start: Vec3, dir: Vec3, item: ItemStack, unce
     let mut d = MissileData::new(MissileKind::Trident);
     d.ints[3] = loyalty(&item);
     d.item = item;
+    d.random_state = own.state();
     crate::mob::missile::spawn_shot(t, start, velocity, rot, d);
 }
 
-/// The Loyalty level of a trident (`getTridentReturnToOwnerAcceleration`).
-fn loyalty(item: &ItemStack) -> i32 {
-    crate::player::play::game_data()
-        .map_or(0, |d| d.enchantment_level(item, "minecraft:loyalty"))
+/// The return acceleration of a trident (`getTridentReturnToOwnerAcceleration`: Loyalty).
+pub fn loyalty(item: &ItemStack) -> i32 {
+    let combat = crate::mob::attack::combat_data();
+    let enchants = &combat.enchants;
+    crate::experience_orb::with_entity_random(|r| enchants.trident_return_acceleration(item, r))
         .clamp(0, 127)
 }
 
@@ -61,8 +63,28 @@ fn sound(t: &mut MissileTick<'_, '_>, pos: Vec3, s: &str, volume: f32, pitch: f3
     );
 }
 
-/// `ThrownTrident.tick` with `AbstractArrow.tick`.
+/// `ThrownTrident.tick` with `AbstractArrow.tick`: the trident draws from its own random.
 pub fn tick(t: &mut MissileTick<'_, '_>) {
+    let Some(state) = t
+        .ents
+        .missile(t.id)
+        .filter(|d| d.kind == MissileKind::Trident)
+        .map(|d| d.random_state)
+    else {
+        return;
+    };
+    let level = std::mem::replace(
+        &mut *t.env.random,
+        vanillite_base::random::LegacyRandom::from_state(state),
+    );
+    tick_trident(t);
+    let own = std::mem::replace(&mut *t.env.random, level);
+    if let Some(d) = t.ents.missile_mut(t.id) {
+        d.random_state = own.state();
+    }
+}
+
+fn tick_trident(t: &mut MissileTick<'_, '_>) {
     let id = t.id;
     let Some(mut d) = t.ents.missile(id).cloned() else {
         return;
@@ -87,18 +109,29 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         && d.ints[2] & (DEALT | RETURNING) != 0
         && let Some(o) = owner
     {
+        // `isAcceptibleReturnOwner`: alive, and no spectator.
         let alive = t.ents.mob(o).is_some_and(crate::mob::MobData::is_alive)
-            || t.ents
-                .player(o)
-                .is_some_and(|p| !p.survival.is_dead_or_dying());
+            || t.ents.player(o).is_some_and(|p| {
+                !p.survival.is_dead_or_dying()
+                    && p.game_mode != vanillite_config::GameMode::Spectator
+            });
         if !alive {
+            if d.pickup == 1 {
+                // `spawnAtLocation(getPickupItem(), 0.1)`.
+                let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+                t.env.out.push(crate::survival::Effect::DropItem {
+                    uuid,
+                    pos: Vec3::new(pos.x, pos.y + 0.1, pos.z),
+                    velocity,
+                    y_rot,
+                    pickup_delay: 10,
+                    stack: d.item.clone(),
+                });
+            }
             d.removed = true;
         } else if let Some(oe) = t.ents.store.get(o) {
-            let eye = Vec3::new(
-                oe.pos().x,
-                oe.pos().y + f64::from(oe.kind().info().eye_height),
-                oe.pos().z,
-            );
+            let eye_height = crate::mob::missile::eye_height(t.ents, o);
+            let eye = Vec3::new(oe.pos().x, oe.pos().y + eye_height, oe.pos().z);
             let width = f64::from(oe.dims().width);
             if t.ents.player(o).is_none() && pos.distance_to_sqr(eye).sqrt() < width + 1.0 {
                 d.removed = true;
@@ -141,9 +174,12 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         } else {
             let ticks = in_ground_time(&d) + 1;
             set_in_ground_time(&mut d, ticks);
-            d.ints[0] += 1;
-            if d.ints[0] >= 1200 {
-                d.removed = true;
+            // `tickDespawn`: tridents that return to their owner stay.
+            if d.pickup != 1 || loyalty <= 0 {
+                d.ints[0] += 1;
+                if d.ints[0] >= 1200 {
+                    d.removed = true;
+                }
             }
         }
     } else {
@@ -198,12 +234,14 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
                 let offset = Vec3::new(sign(velocity.x), sign(velocity.y), sign(velocity.z))
                     * f64::from(0.05_f32);
                 pos = at - offset;
+                let speed = velocity.length();
                 velocity = Vec3::ZERO;
                 d.ints[1] = i32::from(t.level.block(hit_pos).0) + 1;
-                crate::mob::missile::hit_block(t.level, t.cx, id, hit_pos, at);
+                crate::mob::missile::hit_block_at_speed(t.level, t.cx, id, hit_pos, at, speed);
                 d.in_ground = true;
                 let pitch = 1.2 / (t.env.random.next_float() * 0.2 + 0.9);
                 sound(t, pos, "minecraft:item.trident.hit_ground", 1.0, pitch);
+                hit_block_effects(t, &d, hit_pos, at);
                 crate::mob::missile::land_event(t.env.out, t.level, id, Some(hit_pos), at);
             } else {
                 pos = to;
@@ -306,12 +344,134 @@ fn hit_entity(t: &mut MissileTick<'_, '_>, d: &mut MissileData, target: EntityId
             direct_attacker: None,
             attacking_player: None,
             source: None,
+            raining: false,
+            thundering: false,
+            location: None,
         };
         damage = enchants.modify_damage(&d.item, &cx, t.env.random, damage);
     }
     d.ints[2] |= DEALT;
-    combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
+    let hurt = combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
+    if hurt && !d.item.is_empty() {
+        // `doPostAttackEffectsWithItemSource` with the trident (Channeling).
+        crate::mob::attack::post_attack(
+            t.level,
+            t.ents,
+            t.env,
+            t.cx,
+            target,
+            &source,
+            Some(&d.item),
+        );
+    }
     sound(t, pos, "minecraft:item.trident.hit", 1.0, 1.0);
+}
+
+/// `hitBlockEnchantmentEffects`: the `hit_block` effects of the trident (Channeling on a
+/// lightning rod in a thunderstorm).
+fn hit_block_effects(t: &mut MissileTick<'_, '_>, d: &MissileData, block: BlockPos, at: Vec3) {
+    if d.item.is_empty() {
+        return;
+    }
+    let combat = crate::mob::attack::combat_data();
+    let (enchants, tags): (
+        &crate::enchant::Enchantments,
+        &dyn crate::predicate::EntityTags,
+    ) = (&combat.enchants, &*combat);
+    let state = t.level.block(block);
+    let sees_sky = crate::mob::can_see_sky(t.level, block);
+    let effects = {
+        let cx = crate::enchant::EnchantContext {
+            types: t.env.types,
+            tags,
+            this: crate::mob::attack::facts(t.ents, t.id),
+            attacker: d.owner.and_then(|o| crate::mob::attack::facts(t.ents, o)),
+            direct_attacker: None,
+            attacking_player: None,
+            source: None,
+            raining: t.level.is_raining(),
+            thundering: t.level.is_thundering(),
+            location: Some((state, sees_sky)),
+        };
+        enchants.hit_block_effects(&d.item, &cx, t.env.random)
+    };
+    // The position clamped into the block.
+    let clamp = |v: f64, b: i32| v.clamp(f64::from(b), f64::from(b) + 1.0);
+    let pos = Vec3::new(
+        clamp(at.x, block.x),
+        clamp(at.y, block.y),
+        clamp(at.z, block.z),
+    );
+    for (effect, _) in effects {
+        run_block_effect(t, &effect, pos);
+    }
+}
+
+fn run_block_effect(t: &mut MissileTick<'_, '_>, effect: &crate::enchant::EntityEffect, pos: Vec3) {
+    use crate::enchant::EntityEffect;
+    match effect {
+        EntityEffect::SummonLightning => t.cx.actions.push(crate::mob::WorldAction::Level(
+            crate::mob::boss::warden::LevelAction::Lightning { pos },
+        )),
+        EntityEffect::PlaySound {
+            sound: s,
+            volume,
+            pitch,
+        } => {
+            play_sound(
+                t.env.out,
+                None,
+                pos,
+                s,
+                SoundSource::Neutral,
+                *volume,
+                *pitch,
+                crate::survival::sound_seed(),
+            );
+        }
+        EntityEffect::AllOf(list) => {
+            for e in list {
+                run_block_effect(t, e, pos);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `AbstractArrow.playerTouch` of a trident (`ThrownTrident.playerTouch` and `tryPickup`):
+/// its owner (or anybody, for one without owner) takes it once it is in the ground or
+/// returning. Returns whether it was taken.
+pub fn try_pickup(
+    ents: &mut crate::entities::Entities,
+    trident: EntityId,
+    player: &mut crate::player::PlayerData,
+    player_id: EntityId,
+) -> bool {
+    let Some(d) = ents.missile(trident) else {
+        return false;
+    };
+    if d.kind != MissileKind::Trident || d.removed {
+        return false;
+    }
+    let owned = d.owner == Some(player_id);
+    if !(owned || d.owner.is_none()) {
+        return false;
+    }
+    let returning = d.ints[2] & RETURNING != 0;
+    if !(d.in_ground || returning) {
+        return false;
+    }
+    let infinite = player.game_mode == vanillite_config::GameMode::Creative;
+    let mut item = d.item.clone();
+    let taken = match d.pickup {
+        1 => player.inventory.add(None, &mut item, infinite),
+        2 => infinite,
+        _ => false,
+    } || (returning && owned && player.inventory.add(None, &mut item, infinite));
+    if taken && let Some(m) = ents.missile_mut(trident) {
+        m.removed = true;
+    }
+    taken
 }
 
 /// `AbstractArrow` and `ThrownTrident` NBT.
@@ -324,7 +484,7 @@ pub fn save(d: &MissileData, out: &mut Compound) {
         i16::try_from(d.ints[0].clamp(0, 32767)).unwrap_or(0),
     );
     out.insert("inGround", d.in_ground);
-    out.insert("pickup", 0_i8);
+    out.insert("pickup", i8::try_from(d.pickup).unwrap_or(0));
     out.insert("damage", 8.0_f64);
     out.insert("crit", false);
     out.insert("DealtDamage", d.ints[2] & DEALT != 0);
@@ -347,6 +507,10 @@ pub fn load(d: &mut MissileData, tag: &Compound) {
     if boolean("DealtDamage") {
         d.ints[2] |= DEALT;
     }
+    d.pickup = match tag.get("pickup") {
+        Some(Tag::Byte(b)) => u8::try_from(*b).unwrap_or(0).min(2),
+        _ => 0,
+    };
     if d.item.is_empty()
         && let Some(Tag::Compound(c)) = tag.get("item")
     {

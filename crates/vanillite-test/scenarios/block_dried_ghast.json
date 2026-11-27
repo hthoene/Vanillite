@@ -1,0 +1,72 @@
+{
+  "description": "Dried ghasts: a random tick schedules the hydration tick 5000 ticks ahead for a waterlogged or still hydrated block; in water a fully hydrated block becomes a ghastling facing like the block (the constructor's brain, baby setup), dry ones lose a hydration level; a dry block without hydration never ticks.",
+  "tier": "fast",
+  "world": {
+    "seed": 3300,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "2048"
+  },
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -59,
+      7
+    ]
+  ],
+  "ticks": 5012,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:dried_ghast[facing=east,hydration=3,waterlogged=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -61,
+        2
+      ],
+      "block": "minecraft:dried_ghast[facing=north,hydration=2,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        5
+      ],
+      "block": "minecraft:dried_ghast[facing=south,hydration=0,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -61,
+        5
+      ],
+      "block": "minecraft:dried_ghast[facing=west,hydration=1,waterlogged=true]"
+    }
+  ]
+}

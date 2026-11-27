@@ -359,12 +359,15 @@ pub(super) fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
         level.destroy_block(pos, true, None);
         return;
     }
-    // `spawnFallingStalactite`; the falling tip hurting entities is not simulated.
+    // `spawnFallingStalactite`: the tip hurts what it lands on, more the longer it was.
     let mut p = pos;
     let mut s = state;
     while is_stalactite(s) {
-        falling::fall(level, p, s, true);
+        let id = falling::fall(level, p, s, true);
         if is_tip(s, true) {
+            let size = (1 + pos.y - p.y).max(6);
+            #[allow(clippy::cast_precision_loss)]
+            falling::set_hurts_entities(level, id, size as f32, 40);
             break;
         }
         p = p.below();

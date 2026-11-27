@@ -1,0 +1,38 @@
+{
+  "description": "A chicken lays an egg when its egg timer runs out (Chicken.aiStep): the egg of the gift loot table gameplay/chicken_lay drops at the chicken, the timer starts again with the chicken's random.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "entities": [
+    {
+      "name": "chicken",
+      "type": "minecraft:chicken",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 5,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:chicken,limit=1] {EggLayTime:10}"
+    }
+  ]
+}

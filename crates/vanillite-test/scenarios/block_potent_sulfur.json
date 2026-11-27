@@ -1,0 +1,111 @@
+{
+  "description": "Potent sulfur geysers: a dormant geyser on magma under a water source counts down in seconds from its positional random (seed ^ GEYSER_SALT) and erupts, then rests again; a continuous geyser on lava pushes the armor stand in its water column up by 0.2 while it rises slower than 0.3 + 0.1 per water block; the dry block does nothing.",
+  "tier": "fast",
+  "world": {
+    "seed": 1907,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      7,
+      -58,
+      7
+    ]
+  ],
+  "ticks": 700,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -62,
+        2
+      ],
+      "block": "minecraft:magma_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:potent_sulfur[potent_sulfur_state=dormant]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -62,
+        2
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -61,
+        2
+      ],
+      "block": "minecraft:potent_sulfur[potent_sulfur_state=continuous]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -59,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        6
+      ],
+      "block": "minecraft:potent_sulfur[potent_sulfur_state=dry]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon armor_stand 6.5 -60 2.5 {NoGravity:0b}"
+    }
+  ]
+}

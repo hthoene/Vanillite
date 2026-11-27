@@ -207,8 +207,7 @@ fn roll_up(t: &mut Tick<'_, '_>) {
     m.zza = 0.0;
     m.speed = 0.0;
     m.in_love = 0;
-    let v = t.velocity();
-    t.set_velocity(vanillite_base::Vec3::new(0.0, v.y, 0.0));
+    t.set_velocity(vanillite_base::Vec3::new(0.0, 0.0, 0.0));
     make_sound(t, "minecraft:entity.armadillo.roll");
     switch_to(t, ROLLING);
 }
@@ -257,6 +256,13 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
     state_mut(t.mob()).in_state_ticks += 1;
 }
 
+/// `tick` after `super.tick`: a scared armadillo keeps its head with its body.
+pub fn after_tick(t: &mut Tick<'_, '_>) {
+    if is_scared(t.mob_ref()) {
+        crate::mob::kinds::clamp_head_rotation_to_body(t);
+    }
+}
+
 pub fn ai_step(_t: &mut Tick<'_, '_>) {}
 
 /// `Animal.getWalkTargetValue`.
@@ -271,24 +277,20 @@ pub fn hurt_filter(h: &mut crate::mob::fam::Hurt<'_, '_>, amount: f32) -> Option
 }
 
 /// `actuallyHurt`: living attackers make it roll up, environmental damage unrolls it.
-pub fn after_hurt(t: &mut Tick<'_, '_>) {
+pub fn actually_hurt(
+    t: &mut Tick<'_, '_>,
+    living: bool,
+    kind: crate::survival::damage::DamageKind,
+) {
     if t.mob_ref().no_ai || t.mob_ref().is_dead_or_dying() {
         return;
     }
-    let living = t
-        .mob_ref()
-        .last_hurt_by_mob
-        .is_some_and(|_| t.mob_ref().last_hurt_by_mob_time == t.mob_ref().tick_count);
     if living {
         brain::brain(t).set_with_expiry(M::DangerDetectedRecently, MemValue::Bool(true), 80);
         if can_stay_rolled_up(t) {
             roll_up(t);
         }
-    } else if t
-        .mob_ref()
-        .last_damage
-        .is_some_and(|(k, _)| t.env.types.is(k, tag::PANIC_ENVIRONMENTAL_CAUSES))
-    {
+    } else if t.env.types.is(kind, tag::PANIC_ENVIRONMENTAL_CAUSES) {
         roll_out(t);
     }
 }

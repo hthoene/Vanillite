@@ -306,23 +306,12 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
         }
     }
     if refuse_to_move(t.mob_ref(), t.game_time()) {
-        clamp_head_rotation_to_body(t);
+        crate::mob::kinds::clamp_head_rotation_to_body(t);
     }
     if is_sitting(t.mob_ref()) && t.mob_ref().fluids.in_water() {
         let id = t.id;
         stand_up_instantly(t.ents, t.env, id);
     }
-}
-
-/// `clampHeadRotationToBody`.
-fn clamp_head_rotation_to_body(t: &mut Tick<'_, '_>) {
-    let limit = crate::mob::kinds::max_head_y_rot(t.mob_ref());
-    let body = t.mob_ref().y_body_rot;
-    let mut rot = t.core().rot();
-    let delta = vanillite_base::math::wrap_degrees_f(body - rot.y_head_rot);
-    let target = delta.clamp(-limit, limit);
-    rot.y_head_rot = rot.y_head_rot + delta - target;
-    t.core_mut().set_rot(rot);
 }
 
 /// `BodyRotationControl` of a camel: none while it refuses to move.

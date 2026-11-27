@@ -695,11 +695,11 @@ fn move_entity(env: &mut Env<'_>, target: &Target, pos: Vec3) -> Result<(), Comm
     let Some(id) = target.entity else {
         return Ok(());
     };
-    let entities = &mut env.level.entities;
-    if entities.player(id).is_some() {
+    if env.level.entities.player(id).is_some() {
         let (y_rot, x_rot) = target.place.map_or((0.0, 0.0), |(_, y, x)| (y, x));
-        return exec::teleport_local(entities, target, pos, 0, y_rot, x_rot);
+        return exec::teleport_local(env.level, target, pos, 0, y_rot, x_rot);
     }
+    let entities = &mut env.level.entities;
     if let Some(mut entity) = entities.store.get_mut(id) {
         entity.set_pos(pos);
     }

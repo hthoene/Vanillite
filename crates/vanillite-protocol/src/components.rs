@@ -98,10 +98,14 @@ pub mod ids {
     pub const MAX_DAMAGE: u16 = find("minecraft:max_damage");
     pub const DAMAGE: u16 = find("minecraft:damage");
     pub const UNBREAKABLE: u16 = find("minecraft:unbreakable");
+    pub const DAMAGE_RESISTANT: u16 = find("minecraft:damage_resistant");
     pub const ENCHANTMENTS: u16 = find("minecraft:enchantments");
     pub const TOOL: u16 = find("minecraft:tool");
     pub const CAN_BREAK: u16 = find("minecraft:can_break");
     pub const CAN_PLACE_ON: u16 = find("minecraft:can_place_on");
+    pub const BLOCKS_ATTACKS: u16 = find("minecraft:blocks_attacks");
+    pub const CONSUMABLE: u16 = find("minecraft:consumable");
+    pub const DEBUG_STICK_STATE: u16 = find("minecraft:debug_stick_state");
     pub const BLOCK_STATE: u16 = find("minecraft:block_state");
     pub const BLOCK_ENTITY_DATA: u16 = find("minecraft:block_entity_data");
     pub const CUSTOM_NAME: u16 = find("minecraft:custom_name");

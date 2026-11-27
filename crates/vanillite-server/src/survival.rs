@@ -259,6 +259,7 @@ impl WorldSurvival {
         enter_gateway: &'a mut dyn FnMut(BlockPos) -> bool,
         hooks: &'a dyn vanillite_game::hooks::GameHooks,
         display_name: &'a dyn Fn(&str, u128) -> Component,
+        entity_team: &'a dyn Fn(u128) -> Option<Box<str>>,
     ) -> Env<'a> {
         Env {
             types: &level.damage_types,
@@ -276,6 +277,7 @@ impl WorldSurvival {
             out: &mut self.effects,
             hooks,
             display_name,
+            entity_team,
         }
     }
 
@@ -296,6 +298,7 @@ impl WorldSurvival {
         let mut no_gateway = |_| false;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = self.env(
             level,
             &rules,
@@ -305,6 +308,7 @@ impl WorldSurvival {
             &mut no_gateway,
             &hooks,
             &names,
+            &teams,
         );
         let Entities { store, players, .. } = entities;
         for (id, data) in players.iter_mut() {
@@ -347,6 +351,56 @@ impl WorldSurvival {
         dimension: &str,
         portals: &mut PortalRequests,
     ) {
+        self.tick_players(
+            entities,
+            chunks,
+            border,
+            block_entities,
+            global,
+            dimension,
+            portals,
+            None,
+        );
+    }
+
+    /// The rest of the tick of the player `id`, which a portal just brought to this world
+    /// (`player::finish_tick_after_portal`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finish_portal_tick(
+        &mut self,
+        entities: &mut Entities,
+        chunks: &Chunks,
+        border: &vanillite_game::level::border::WorldBorder,
+        block_entities: &BlockEntities,
+        global: &Global,
+        dimension: &str,
+        id: EntityId,
+    ) {
+        self.tick_players(
+            entities,
+            chunks,
+            border,
+            block_entities,
+            global,
+            dimension,
+            &mut PortalRequests::default(),
+            Some(id),
+        );
+    }
+
+    /// [`Self::do_tick`], or with `arrived` only the rest of that player's tick.
+    #[allow(clippy::too_many_arguments)]
+    fn tick_players(
+        &mut self,
+        entities: &mut Entities,
+        chunks: &Chunks,
+        border: &vanillite_game::level::border::WorldBorder,
+        block_entities: &BlockEntities,
+        global: &Global,
+        dimension: &str,
+        portals: &mut PortalRequests,
+        arrived: Option<EntityId>,
+    ) {
         let level = &global.level;
         let rules = level.rules().clone();
         let blocks = WorldBlocks(chunks);
@@ -356,6 +410,7 @@ impl WorldSurvival {
         {
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             // `EndGatewayBlock.entityInside`: a gateway takes a player unless it cools down,
             // then starts its cooldown (applied after the tick, seen at once by the others).
             let gateways = &mut portals.gateways;
@@ -378,14 +433,23 @@ impl WorldSurvival {
                 &mut enter_gateway,
                 &hooks,
                 &names,
+                &teams,
             );
             env.border = Some(border);
             let Entities { store, players, .. } = entities;
             for (id, data) in players.iter_mut() {
+                if arrived.is_some_and(|a| a != id) {
+                    continue;
+                }
                 let Some(mut entity) = store.get_mut(id) else {
                     continue;
                 };
-                match player::do_tick(&mut entity, data, &mut env) {
+                let result = if arrived.is_some() {
+                    player::finish_tick_after_portal(&mut entity, data, &mut env)
+                } else {
+                    player::do_tick(&mut entity, data, &mut env)
+                };
+                match result {
                     TickResult::Remove | TickResult::Credits => removed.push(id),
                     TickResult::Portal(kind, entry) => portals.travels.push((id, kind, entry)),
                     TickResult::Alive => {}
@@ -479,9 +543,11 @@ impl WorldSurvival {
             let mut no_gateway = |_| false;
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = Env {
                 hooks: &hooks,
                 display_name: &names,
+                entity_team: &teams,
                 types: &state.damage_types,
                 facts: &state.block_facts,
                 blocks: &blocks,
@@ -554,9 +620,11 @@ impl WorldSurvival {
         let mut no_gateway = |_| false;
         let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = Env {
             hooks: &hooks,
             display_name: &names,
+            entity_team: &teams,
             types: &level.damage_types,
             facts: &level.block_facts,
             blocks,
@@ -724,30 +792,6 @@ impl WorldSurvival {
             }
         }
     }
-}
-
-/// `ServerPlayer.findRespawnAndUseSpawnBlock` for a respawn position without a bed or anchor:
-/// a forced one where the block and the one above are free (`isPossibleToRespawnInThis`).
-pub(crate) fn forced_respawn(
-    chunks: &Chunks,
-    respawn: &player::RespawnConfig,
-) -> Option<(Vec3, f32, f32)> {
-    let free = |pos: BlockPos| {
-        let state = chunks.block(pos).map_or(BlockState::AIR, BlockState);
-        !vanillite_game::block::is_solid(state) && !vanillite_game::block::is_liquid(state)
-    };
-    let pos = respawn.pos;
-    (respawn.forced && free(pos) && free(pos.offset(0, 1, 0))).then(|| {
-        (
-            Vec3::new(
-                f64::from(pos.x) + 0.5,
-                f64::from(pos.y) + 0.1,
-                f64::from(pos.z) + 0.5,
-            ),
-            respawn.yaw,
-            respawn.pitch,
-        )
-    })
 }
 
 /// Effects of a command, delivered by looking at all players of the world.

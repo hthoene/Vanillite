@@ -79,6 +79,18 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
 
 /// `SelectableSlotContainer.getHitSlot` with 2 rows of 3 columns.
 pub fn hit_slot(face: Direction, facing: Direction, pos: BlockPos, hit: Vec3) -> Option<usize> {
+    selectable_hit_slot(face, facing, pos, hit, 2, 3)
+}
+
+/// `SelectableSlotContainer.getHitSlot` with `rows` rows of `columns` columns.
+pub fn selectable_hit_slot(
+    face: Direction,
+    facing: Direction,
+    pos: BlockPos,
+    hit: Vec3,
+    rows: i32,
+    columns: i32,
+) -> Option<usize> {
     if face != facing {
         return None;
     }
@@ -99,9 +111,9 @@ pub fn hit_slot(face: Direction, facing: Direction, pos: BlockPos, hit: Vec3) ->
         let size = 16.0 / n as f32;
         ((c * 16.0 / size).floor() as i32).clamp(0, n - 1)
     };
-    let row = section(1.0 - y, 2);
-    let column = section(x, 3);
-    usize::try_from(column + row * 3).ok()
+    let row = section(1.0 - y, rows);
+    let column = section(x, columns);
+    usize::try_from(column + row * columns).ok()
 }
 
 fn facing(state: BlockState) -> Direction {

@@ -39,6 +39,17 @@
 //! Random ticks: the level random is reseeded with the world seed after the setup, and the LCG
 //! of random tick positions (`Level.randValue`) starts at the seed's low 32 bits.
 //! - `setup`: applied without updates before frame 0 (`set`, `fill`; `place` with updates).
+//! - `dimensions`: `true` runs the scenario with all three dimensions on the server, ticked
+//!   one after another in Vanilla's order (`performance.tick.parallel-dimensions = false`): the
+//!   Nether and the End are flat too (bedrock, then netherrack or end stone up to y 3), players
+//!   load chunks like on a normal server (view and simulation distance 2), and every chunk
+//!   ticket loads its chunks at once, like Vanilla's synchronous loads of a teleport. Then
+//!   `dimension` is the dimension of the region (default the overworld), `views` are more
+//!   regions whose entities the frames hold (`[{"dimension": ..., "region": [min, max]}]`,
+//!   their chunks forced like the region's), entities outside the overworld have their
+//!   `dim` in their detail, and a block op works in its `dimension` (default the overworld).
+//!   Scenario entities start in the overworld; the level random of every dimension starts
+//!   from the world seed.
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
 //!   `unforce` (`"chunks": [[x, z], ...]`: adds or removes forced tickets like `/forceload`,
@@ -110,11 +121,18 @@
 //!   face's centre), sneaking if `sneak`, with its food level set to `food` first
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
-//!   the players' food and hands to the frames.
+//!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
-//! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
-//!   main hand and uses it (`ServerPlayerGameMode.useItem`, as a `use_item` packet would).
+//! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` (SNBT
+//!   `components`; without `item` the hand stays as it is) in its main hand and uses it
+//!   (`ServerPlayerGameMode.useItem`, as a `use_item` packet would). `release_item`: the
+//!   player stops using its item (`releaseUsingItem`, the `RELEASE_USE_ITEM` action).
+//!   `attack_entity`: the player, with the same optional stack, attacks the entity `target`
+//!   (`Player.attack`), with its `fall_distance` set first if given (as its client's moves
+//!   would; the server does not add up a player's fall itself).
+//!   `interact`: like `use_item`, but on the entity `target` (`Player.interactOn`).
 //!
 //! Packet-level players (`"client": true` on a player entity) are driven by the serverbound
 //! play packets a real client sends, handled by the real packet handlers on both sides
@@ -190,6 +208,27 @@ pub struct WorldSpec {
     pub level_rng: bool,
     /// Whether frames hold the players' food and hands.
     pub player_state: bool,
+    /// Runs with all three dimensions in Vanilla's order (`"dimensions": true`).
+    pub dimensions: bool,
+    /// The dimension of the region.
+    pub dimension: String,
+    /// More regions whose entities the frames hold (with `dimensions`).
+    pub views: Vec<View>,
+    /// Whether frames hold the players' sleep state, pose and respawn point.
+    pub sleep_state: bool,
+}
+
+/// The overworld's dimension id.
+pub const OVERWORLD: &str = "minecraft:overworld";
+
+/// A region of another dimension whose entities the frames hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct View {
+    pub dimension: String,
+    pub min: BlockPos,
+    pub max: BlockPos,
+    /// Chunks forced before the setup: the view's chunks and one chunk around them.
+    pub forced: Vec<ChunkPos>,
 }
 
 /// What an operation does.
@@ -216,6 +255,8 @@ pub enum OpKind {
     Effect,
     /// A player uses an item ([`Op::use_item`]).
     UseItem,
+    /// A player uses an item on an entity ([`Op::use_item`] with a `target`).
+    Interact,
     /// Bone meal used on the block at `pos` (an action).
     Bonemeal,
     /// A command run as the server at the origin ([`Op::command`]).
@@ -280,14 +321,32 @@ fn from_hex(text: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// The item use of a `use_item` action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The item use of a `use_item`, `release_item` or `attack_entity` action.
+#[derive(Clone, Debug, PartialEq)]
 pub struct UseItemOp {
     /// Name of the player.
     pub entity: String,
-    /// Item id, e.g. `minecraft:ender_pearl`.
-    pub item: String,
+    /// Item id, e.g. `minecraft:ender_pearl`; `None` keeps the held stack.
+    pub item: Option<String>,
     pub count: i32,
+    /// SNBT components of the stack.
+    pub components: Option<String>,
+    pub mode: UseMode,
+    /// The player's `fallDistance` before the action.
+    pub fall_distance: Option<f64>,
+    /// The entity an `interact` action clicks (`Player.interactOn`).
+    pub target: Option<String>,
+}
+
+/// What a [`UseItemOp`] does with the held stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UseMode {
+    /// `useItem`.
+    Use,
+    /// `releaseUsingItem`.
+    Release,
+    /// `Player.attack` of the named entity.
+    Attack(String),
 }
 
 /// The potion of a `throw_potion` action.
@@ -402,6 +461,8 @@ pub struct Op {
     pub command: Option<String>,
     /// The player's click of a `use` or `attack` action.
     pub player_use: Option<PlayerUse>,
+    /// The dimension of a block op (`None`: the overworld).
+    pub dimension: Option<String>,
     /// The packet of a `packet` action.
     pub packet: Option<PacketOp>,
 }
@@ -414,6 +475,8 @@ pub struct PlayerUse {
     pub entity: String,
     /// `attack` instead of `use`.
     pub attack: bool,
+    /// The item's use in the air (`use_item` actions; `pos` and `face` are unused).
+    pub air: bool,
     pub pos: BlockPos,
     /// The clicked face: `down`, `up`, `north`, `south`, `west` or `east`.
     pub face: String,
@@ -524,11 +587,42 @@ impl Scenario {
             .unwrap_or_default();
         let region = v.get("region").ok_or("region is missing")?;
         let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
-        let mut forced = Vec::new();
-        for x in (min.x >> 4) - 1..=(max.x >> 4) + 1 {
-            for z in (min.z >> 4) - 1..=(max.z >> 4) + 1 {
-                forced.push(ChunkPos::new(x, z));
-            }
+        let forced = forced_around(min, max);
+        let dimensions = v
+            .get("dimensions")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let dimension = v
+            .get("dimension")
+            .and_then(Value::as_str)
+            .unwrap_or(OVERWORLD)
+            .to_owned();
+        let views = v
+            .get("views")
+            .and_then(Value::as_array)
+            .map(|views| {
+                views
+                    .iter()
+                    .map(|view| {
+                        let region = view.get("region").ok_or("a view needs a region")?;
+                        let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
+                        Ok(View {
+                            dimension: view
+                                .get("dimension")
+                                .and_then(Value::as_str)
+                                .ok_or("a view needs a dimension")?
+                                .to_owned(),
+                            min,
+                            max,
+                            forced: forced_around(min, max),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if !dimensions && (dimension != OVERWORLD || !views.is_empty()) {
+            return Err("a region in another dimension and views need \"dimensions\"".to_owned());
         }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
@@ -583,6 +677,13 @@ impl Scenario {
                     .get("player_state")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                dimensions,
+                dimension,
+                views,
+                sleep_state: v
+                    .get("sleep_state")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             min,
             max,
@@ -606,6 +707,17 @@ impl Scenario {
                 .unwrap_or(0),
         })
     }
+}
+
+/// The chunks of a region and one chunk around them.
+fn forced_around(min: BlockPos, max: BlockPos) -> Vec<ChunkPos> {
+    let mut forced = Vec::new();
+    for x in (min.x >> 4) - 1..=(max.x >> 4) + 1 {
+        for z in (min.z >> 4) - 1..=(max.z >> 4) + 1 {
+            forced.push(ChunkPos::new(x, z));
+        }
+    }
+    forced
 }
 
 fn pos(v: Option<&Value>) -> Result<BlockPos, String> {
@@ -715,7 +827,8 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("hurt") if action => OpKind::Hurt,
         Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
-        Some("use_item") if action => OpKind::UseItem,
+        Some("use_item" | "release_item" | "attack_entity") if action => OpKind::UseItem,
+        Some("interact") if action => OpKind::Interact,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
@@ -773,6 +886,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             player_use: Some(PlayerUse {
                 entity: s("entity").ok_or("use needs an entity")?,
                 attack: kind == OpKind::Attack,
+                air: false,
                 pos: p,
                 face: s("face").unwrap_or_else(|| "up".to_owned()),
                 hit,
@@ -886,19 +1000,33 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             ..Op::default()
         });
     }
-    if kind == OpKind::UseItem {
+    if matches!(kind, OpKind::UseItem | OpKind::Interact) {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         return Ok(Op {
             tick,
             kind,
             use_item: Some(UseItemOp {
                 entity: s("entity").ok_or("use_item needs an entity")?,
-                item: s("item").ok_or("use_item needs an item")?,
+                item: s("item"),
                 count: v
                     .get("count")
                     .and_then(Value::as_i64)
                     .and_then(|n| i32::try_from(n).ok())
                     .unwrap_or(1),
+                components: s("components"),
+                mode: match v.get("op").and_then(Value::as_str) {
+                    Some("release_item") => UseMode::Release,
+                    Some("attack_entity") => {
+                        UseMode::Attack(s("target").ok_or("attack_entity needs a target")?)
+                    }
+                    _ => UseMode::Use,
+                },
+                fall_distance: v.get("fall_distance").and_then(Value::as_f64),
+                target: if kind == OpKind::Interact {
+                    Some(s("target").ok_or("interact needs a target")?)
+                } else {
+                    None
+                },
             }),
             ..Op::default()
         });
@@ -945,6 +1073,10 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             .and_then(Value::as_str)
             .ok_or("an op needs a block")?
             .to_owned(),
+        dimension: v
+            .get("dimension")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         ..Op::default()
     })
 }

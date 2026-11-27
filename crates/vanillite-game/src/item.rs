@@ -106,6 +106,38 @@ pub fn is_damageable(stack: &ItemStack) -> bool {
     max_damage(stack) > 0 && stack.component(ids::UNBREAKABLE).is_none()
 }
 
+/// The damage type tag of the stack's `damage_resistant` component (`DamageResistant.types`,
+/// e.g. `minecraft:is_fire`): the patched one, else the item's default.
+pub fn damage_resistant(stack: &ItemStack) -> Option<&str> {
+    if let Some(data) = stack.component(ids::DAMAGE_RESISTANT) {
+        return Reader::new(data).string(32767).ok();
+    }
+    if stack
+        .patch()
+        .is_some_and(|p| p.is_removed(ids::DAMAGE_RESISTANT))
+    {
+        return None;
+    }
+    let tag = item_id(stack).info().damage_resistant;
+    (!tag.is_empty()).then_some(tag)
+}
+
+/// `ItemStack.canBeHurtBy(source)`: its `damage_resistant` component does not cover the
+/// damage type `kind`.
+pub fn can_be_hurt_by(
+    stack: &ItemStack,
+    types: &crate::survival::damage::DamageTypes,
+    kind: crate::survival::damage::DamageKind,
+) -> bool {
+    let Some(resists) = damage_resistant(stack) else {
+        return true;
+    };
+    crate::survival::damage::tag::NAMES
+        .iter()
+        .find(|(name, _)| *name == resists)
+        .is_none_or(|&(_, bit)| !types.is(kind, bit))
+}
+
 /// `isStackable`.
 pub fn is_stackable(stack: &ItemStack) -> bool {
     max_stack_size(stack) > 1 && (!is_damageable(stack) || damage(stack) == 0)

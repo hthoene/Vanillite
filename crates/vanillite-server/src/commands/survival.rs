@@ -78,7 +78,7 @@ pub(crate) fn clock(
 }
 
 /// Sends the changed clock to all players (`modifyClock`).
-fn clock_changed(global: &Global, clock: usize) {
+pub(crate) fn clock_changed(global: &Global, clock: usize) {
     broadcast_all(global, &clock_update(&global.level, clock));
 }
 
@@ -336,28 +336,27 @@ pub(crate) fn weather(
     kind: Weather,
     duration: Option<i32>,
 ) -> i32 {
+    let key = match kind {
+        Weather::Clear => "commands.weather.set.clear",
+        Weather::Rain => "commands.weather.set.rain",
+        Weather::Thunder => "commands.weather.set.thunder",
+    };
+    set_weather(global, kind, duration);
+    source.send_success(global, Component::translatable(key, vec![]), true);
+    duration.unwrap_or(-1)
+}
+
+/// `setWeatherParameters` as `/weather` sets them: `None` samples Vanilla's duration.
+pub(crate) fn set_weather(global: &Global, kind: Weather, duration: Option<i32>) {
     let mut random =
         vanillite_base::random::LegacyRandom::new(global.level.game_time() ^ 0x5DEE_CE66);
     let mut sampled = |range| duration.unwrap_or_else(|| sample(range, &mut random));
-    let key = {
-        let mut data = global.level.weather();
-        match kind {
-            Weather::Clear => {
-                data.set(sampled(RAIN_DELAY), 0, false, false);
-                "commands.weather.set.clear"
-            }
-            Weather::Rain => {
-                data.set(0, sampled(RAIN_DURATION), true, false);
-                "commands.weather.set.rain"
-            }
-            Weather::Thunder => {
-                data.set(0, sampled(THUNDER_DURATION), true, true);
-                "commands.weather.set.thunder"
-            }
-        }
-    };
-    source.send_success(global, Component::translatable(key, vec![]), true);
-    duration.unwrap_or(-1)
+    let mut data = global.level.weather();
+    match kind {
+        Weather::Clear => data.set(sampled(RAIN_DELAY), 0, false, false),
+        Weather::Rain => data.set(0, sampled(RAIN_DURATION), true, false),
+        Weather::Thunder => data.set(0, sampled(THUNDER_DURATION), true, true),
+    }
 }
 
 /// `gamerule <rule>`.

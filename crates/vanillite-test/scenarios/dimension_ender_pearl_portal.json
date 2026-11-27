@@ -1,0 +1,19 @@
+{
+  "description": "Across dimensions in Vanilla's order: a player throws an ender pearl into an overworld nether portal; the pearl flies on in the Nether out of the exit portal it creates, lands, and brings its owner over to the Nether.",
+  "dimensions": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-6, 0, -6], [6, 10, 14]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[0, -61, 2], [3, -55, 10]]}],
+  "ticks": 75,
+  "setup": [
+    {"op": "fill", "from": [0, -60, 8], "to": [3, -56, 8], "block": "minecraft:obsidian"},
+    {"op": "fill", "from": [1, -59, 8], "to": [2, -57, 8], "block": "minecraft:nether_portal[axis=x]"}
+  ],
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [1.5, -60.0, 3.5], "rot": [0, 0]}
+  ],
+  "actions": [
+    {"tick": 65, "op": "use_item", "entity": "steve", "item": "minecraft:ender_pearl", "count": 1}
+  ]
+}

@@ -7,7 +7,7 @@
   "exported_at": "2026-11-24T00:00:00+00:00",
   "name": "Vanillite",
   "author": "hthoene@users.noreply.github.com",
-  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. https://github.com/hthoene/Vanillite",
+  "description": "Vanillite: a Minecraft Java Edition server written in Rust that behaves like Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the essential settings first, then every server.properties and vanillite.toml setting, grouped by area. For only the basic settings use the egg \"Vanillite (Simple)\". https://github.com/hthoene/Vanillite",
   "features": [
     "eula"
   ],
@@ -639,6 +639,26 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|integer|between:0,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Budget › Cpu",
+      "description": "CPU cores the server may use. 0 = detect: the cgroup CPU quota (`cpu.max`, Docker `--cpus`, Pterodactyl's CPU limit) and the CPU affinity. Range: 0 to 1024. Empty: the profile's value (vanilla profile: 0.0). vanillite.toml: performance.budget.cpu.",
+      "env_variable": "VANILLITE_PERFORMANCE__BUDGET__CPU",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|numeric|between:0,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Performance: Budget › Memory",
+      "description": "Memory in MiB the server should stay far below; caches are sized from it. 0 = detect: the cgroup memory limit (`memory.max`), none without a container. Range: 0 to 16777216. Empty: the profile's value (vanilla profile: 0). vanillite.toml: performance.budget.memory.",
+      "env_variable": "VANILLITE_PERFORMANCE__BUDGET__MEMORY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|integer|between:0,16777216",
       "field_type": "text"
     },
     {

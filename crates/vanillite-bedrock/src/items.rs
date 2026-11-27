@@ -53,6 +53,27 @@ impl Nbt {
         nbt_str(&mut self.0, v);
     }
 
+    /// `display`: the shown name and lore lines.
+    fn display(&mut self, name: Option<&str>, lore: &[String]) {
+        self.head(10, "display");
+        let mut inner = Nbt::default();
+        if let Some(name) = name {
+            inner.string("Name", name);
+        }
+        if !lore.is_empty() {
+            inner.head(9, "Lore");
+            inner.0.push(8);
+            inner
+                .0
+                .extend_from_slice(&i32::try_from(lore.len()).unwrap_or(0).to_le_bytes());
+            for line in lore {
+                nbt_str(&mut inner.0, line);
+            }
+        }
+        self.0.extend_from_slice(&inner.0);
+        self.0.push(0);
+    }
+
     /// `pages`: a list of `{photoname: "", text}` compounds.
     fn pages<'a>(&mut self, pages: impl ExactSizeIterator<Item = String> + 'a) {
         self.head(9, "pages");
@@ -91,6 +112,36 @@ pub fn writable_pages(stack: &ItemStack) -> Vec<String> {
         return Vec::new();
     };
     (0..n).map_while(|_| filterable_string(&mut r)).collect()
+}
+
+/// Most lore lines shown (Java allows 256).
+const MAX_LORE: usize = 64;
+
+/// The custom name and lore of a stack as Bedrock `display` tags.
+fn display_tags(nbt: &mut Nbt, stack: &ItemStack, lore_component: Option<u16>) {
+    use vanillite_protocol::codec::DecodeLimited;
+    use vanillite_protocol::text::Component;
+    let name = stack
+        .component(ids::CUSTOM_NAME)
+        .and_then(|v| {
+            Component::decode_limited(&mut vanillite_protocol::codec::Reader::new(v), 1 << 18).ok()
+        })
+        .map(|c| c.plain());
+    let mut lore = Vec::new();
+    if let Some(v) = lore_component.and_then(|c| stack.component(c)) {
+        let mut r = vanillite_protocol::codec::Reader::new(v);
+        if let Ok(n) = r.len_prefix("lore", 256, 1) {
+            for _ in 0..n.min(MAX_LORE) {
+                match Component::decode_limited(&mut r, 1 << 18) {
+                    Ok(line) => lore.push(line.plain()),
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    if name.is_some() || !lore.is_empty() {
+        nbt.display(name.as_deref(), &lore);
+    }
 }
 
 /// The Bedrock book tags of a writable or written book.
@@ -146,6 +197,38 @@ pub struct Items {
     block: Vec<u32>,
     /// `minecraft:damage` component type id.
     damage_component: Option<u16>,
+    /// `minecraft:lore` component type id.
+    lore_component: Option<u16>,
+    /// Bedrock item names by Bedrock item id (`item_registry`).
+    names: rustc_hash::FxHashMap<i16, Box<str>>,
+    /// Bedrock id of the shield (its user data carries the blocking tick).
+    shield: i16,
+}
+
+/// The Bedrock item names of an `item_registry` body.
+fn registry_names(body: &[u8]) -> rustc_hash::FxHashMap<i16, Box<str>> {
+    let mut r = Reader::new(body);
+    let mut names = rustc_hash::FxHashMap::default();
+    let Ok(n) = r.len("items", 1 << 16) else {
+        return names;
+    };
+    for _ in 0..n {
+        let entry = (|| -> Result<(Box<str>, i16)> {
+            let name = Box::from(r.string("item name", 256)?);
+            let id = i16::from_le_bytes(r.array::<2>()?);
+            r.bool()?;
+            r.vari32()?;
+            crate::nbt::skip_root(&mut r)?;
+            Ok((name, id))
+        })();
+        match entry {
+            Ok((name, id)) => {
+                names.insert(id, name);
+            }
+            Err(_) => break,
+        }
+    }
+    names
 }
 
 fn u32_at(b: &[u8], i: usize) -> u32 {
@@ -156,7 +239,12 @@ fn u32_at(b: &[u8], i: usize) -> u32 {
 
 impl Items {
     /// Parses `items.bin` and `creative_java.bin` of a palette.
-    pub(crate) fn parse(items: &[u8], creative_java: &[u8], blocks: &crate::data::Blocks) -> Items {
+    pub(crate) fn parse(
+        items: &[u8],
+        creative_java: &[u8],
+        registry: &[u8],
+        blocks: &crate::data::Blocks,
+    ) -> Items {
         let count = usize::try_from(u32_at(items, 0)).unwrap_or(0);
         let to_bedrock: Vec<(i16, u16)> = items
             .get(4..)
@@ -194,14 +282,22 @@ impl Items {
                     })
             })
             .collect();
-        let damage_component =
-            vanillite_data::registry::Registry::by_name("minecraft:data_component_type")
-                .and_then(|r| r.id("minecraft:damage"));
+        let components =
+            vanillite_data::registry::Registry::by_name("minecraft:data_component_type");
+        let damage_component = components.and_then(|r| r.id("minecraft:damage"));
+        let lore_component = components.and_then(|r| r.id("minecraft:lore"));
+        let shield = vanillite_data::registry::ITEM
+            .id("minecraft:shield")
+            .and_then(|j| to_bedrock.get(usize::from(j)))
+            .map_or(0, |b| b.0);
         Items {
             to_bedrock,
             creative,
             block,
             damage_component,
+            lore_component,
+            names: registry_names(registry),
+            shield,
         }
     }
 
@@ -212,6 +308,13 @@ impl Items {
             .get(usize::from(java))
             .copied()
             .unwrap_or((0, 0))
+    }
+
+    /// The Bedrock name and metadata of a Java item.
+    pub fn name(&self, java: u16) -> Option<(&str, u16)> {
+        let (id, meta) = self.bedrock(java);
+        (id != 0).then_some(())?;
+        Some((self.names.get(&id)?, meta))
     }
 
     /// The Java item of a creative item network id.
@@ -234,12 +337,13 @@ impl Items {
 
     /// The user data of a stack: NBT with the damage of tools, the `map_uuid` of filled maps
     /// and the pages, title and author of books.
-    fn write_user_data(&self, out: &mut Vec<u8>, stack: &ItemStack) {
+    fn write_user_data(&self, out: &mut Vec<u8>, stack: &ItemStack, shield: bool) {
         let mut nbt = Nbt::default();
         if let Some(d) = self.damage(stack).filter(|&d| d > 0) {
             nbt.int("Damage", d);
         }
         book_tags(&mut nbt, stack);
+        display_tags(&mut nbt, stack, self.lore_component);
         if let Some(id) = stack
             .component(ids::MAP_ID)
             .and_then(|v| vanillite_protocol::codec::Reader::new(v).varint().ok())
@@ -249,7 +353,8 @@ impl Items {
             nbt.byte("map_display_players", 1);
         }
         if nbt.is_empty() {
-            io::write_bytes(out, &[0; 10]);
+            // No NBT, no can-place-on and can-break lists, and the shield's blocking tick.
+            io::write_bytes(out, if shield { &[0; 18] } else { &[0; 10] });
             return;
         }
         let mut user = Vec::with_capacity(nbt.0.len().saturating_add(16));
@@ -259,6 +364,9 @@ impl Items {
         user.extend_from_slice(&nbt.0);
         user.push(0);
         user.extend_from_slice(&[0; 8]);
+        if shield {
+            user.extend_from_slice(&[0; 8]);
+        }
         io::write_bytes(out, &user);
     }
 
@@ -296,7 +404,21 @@ impl Items {
             out.push(0);
         }
         io::write_varu32(out, block);
-        self.write_user_data(out, stack);
+        self.write_user_data(out, stack, id == self.shield);
+    }
+
+    /// Writes a stack as `ItemStack` (recipe outputs: no stack network id).
+    pub fn write_stack(&self, out: &mut Vec<u8>, stack: &ItemStack) {
+        let Some((id, meta, block, count)) = self.parts(stack) else {
+            // Id, count, metadata, block runtime id and user data, all zero.
+            out.extend_from_slice(&[0; 6]);
+            return;
+        };
+        io::write_vari32(out, i32::from(id));
+        out.extend_from_slice(&count.to_le_bytes());
+        io::write_varu32(out, u32::from(meta));
+        io::write_vari32(out, i32::try_from(block).unwrap_or(0));
+        self.write_user_data(out, stack, id == self.shield);
     }
 }
 

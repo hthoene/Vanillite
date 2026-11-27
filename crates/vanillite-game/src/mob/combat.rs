@@ -118,8 +118,15 @@ pub fn hurt(
     let Some(data) = players.get_mut(row) else {
         return false;
     };
+    let was_alive = !data.survival.is_dead_or_dying();
     let hurt = player::hurt_with(&mut entity, data, env, source, amount, armor.as_deref());
+    let died = was_alive && data.survival.is_dead_or_dying();
     view::resolve_combat(ents, env.types, target);
+    // `ServerPlayer.die` → `tellNeutralMobsThatIDied`: at once, so an attacker calms down
+    // within its own tick.
+    if died && env.rules.bool(Rule::FORGIVE_DEAD_PLAYERS) {
+        super::common::tell_neutral_mobs_player_died(ents, target);
+    }
     hurt
 }
 
@@ -228,6 +235,16 @@ pub fn hurt_mob(
             None => return false,
         }
     }
+    // Plugins see the damage after the kind's own filters.
+    if let Some(e) = ents.store.get(target) {
+        match env
+            .hooks
+            .entity_damage(e.uuid(), e.kind().name(), &types.get(kind).id, amount)
+        {
+            Some(changed) => amount = changed,
+            None => return false,
+        }
+    }
     let Some(m) = ents.mob_mut(target) else {
         return false;
     };
@@ -256,6 +273,18 @@ pub fn hurt_mob(
         }
         true
     };
+    // What the kinds' `actuallyHurt` overrides do after `super.actuallyHurt`.
+    if mob_kind.family() != super::Family::Classic {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        super::fam::actually_hurt(&mut h, mob_kind);
+    }
     // `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage`.
     if let Some(cause) = source.cause {
         let is_player = ents.player(cause).is_some();
@@ -322,7 +351,8 @@ pub fn hurt_mob(
     }
     let dead = ents
         .mob(target)
-        .is_some_and(super::MobData::is_dead_or_dying);
+        .is_some_and(super::MobData::is_dead_or_dying)
+        && !mob_totem(level, ents, env, cx, target, source.kind);
     if dead {
         if took_full {
             let sound = ents.mob(target).map(kinds::death_sound);
@@ -508,6 +538,66 @@ pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Op
     is_player.then_some(cause)
 }
 
+/// `checkTotemDeathProtection` of a dying mob: a death protection item in a hand is used up
+/// and the mob lives on with one health point.
+fn mob_totem(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    kind: crate::survival::damage::DamageKind,
+) -> bool {
+    use crate::item::EquipmentSlot;
+    if !crate::totem::can_protect(env.types, kind) {
+        return false;
+    }
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    let Some((slot, effects)) = crate::totem::protecting_hand(
+        m.equipment.get(EquipmentSlot::MainHand),
+        m.equipment.get(EquipmentSlot::OffHand),
+    ) else {
+        return false;
+    };
+    let kind_name = m.kind.type_id().name();
+    if let Some(uuid) = ents.store.get(target).map(|e| e.uuid())
+        && !env.hooks.entity_resurrect(uuid, kind_name)
+    {
+        return false;
+    }
+    let mut rolls = Vec::new();
+    if let Some(m) = ents.mob_mut(target) {
+        let mut stack = m.equipment.get(slot).clone();
+        stack.shrink(1);
+        m.equipment.set(slot, stack);
+        m.health = 1.0;
+        // `ApplyStatusEffectsConsumeEffect`: one roll of the mob's random per entry.
+        for e in &effects {
+            if matches!(e, crate::effect::consume::ConsumeEffect::Apply(..)) {
+                rolls.push(m.random.next_float());
+            }
+        }
+    }
+    let mob_kind = ents.mob(target).map(|m| m.kind.type_id());
+    if let Some(mob_kind) = mob_kind {
+        crate::effect::living::with_host(level, ents, env, cx, target, |host| {
+            let mut rolls = rolls.into_iter();
+            let mut roll = || rolls.next().unwrap_or(0.0);
+            crate::totem::apply_effects(&effects, mob_kind, host, &mut roll);
+        });
+    }
+    if let Some(mut e) = ents.store.get_mut(target) {
+        e.mark_data_dirty();
+    }
+    if let Some(network_id) = ents.store.get(target).map(|e| e.network_id().0) {
+        crate::totem::animation(env.out, target, network_id);
+    }
+    ents.equipment_updates.push(target);
+    true
+}
+
 /// `blameSourceForDamage(source)` and `die(source)` of a mob killed without damage (a
 /// creaking whose heart was broken).
 pub fn blame_and_die(
@@ -576,6 +666,18 @@ fn die(
     };
     m.dead = true;
     let mob_kind = m.kind;
+    if let Some(e) = ents.store.get(target) {
+        let killer = source
+            .cause
+            .and_then(|c| ents.store.get(c))
+            .map(|c| c.uuid());
+        env.hooks.entity_death(
+            e.uuid(),
+            e.kind().name(),
+            &env.types.get(source.kind).id,
+            killer,
+        );
+    }
     if mob_kind.family() != super::Family::Classic {
         let mut h = super::fam::Hurt {
             level,
@@ -592,10 +694,12 @@ fn die(
     };
     let killed_by_player = m.last_hurt_by_player_time > 0;
     let baby = m.baby;
-    let mut reward = kinds::experience_reward(m);
-    if baby {
-        reward = 0;
-    }
+    // `getExperienceReward` (it draws from the mob's random) only where Vanilla asks for it:
+    // a sculk catalyst at the death, else `dropExperience` after the loot.
+    let reward_of = |ents: &mut Entities| {
+        let reward = ents.mob_mut(target).map_or(0, kinds::experience_reward);
+        if baby { 0 } else { reward }
+    };
     if let Some(cause) = source.cause
         && let Some(p) = ents.player_mut(cause)
     {
@@ -610,6 +714,7 @@ fn die(
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
+    let mut reward = if consumed { reward_of(ents) } else { 0 };
     if consumed && reward > 0 {
         // `CatalystListener.tryAwardItSpreadsAdvancement`: the player that hurt it last, with
         // the damage source before the killing blow (else a player attack).
@@ -693,8 +798,11 @@ fn die(
             });
         }
     }
-    if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
-        award_experience(env, pos, reward);
+    if !consumed && killed_by_player && !baby && env.rules.bool(Rule::MOB_DROPS) {
+        reward = reward_of(ents);
+        if reward > 0 {
+            award_experience(env, pos, reward);
+        }
     }
     // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
     // last attacking mob.
@@ -809,12 +917,22 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
         return;
     };
     let volume = super::fam::mob_sound_volume(m);
-    let a = m.random.next_float();
-    let b = m.random.next_float();
-    let pitch = if m.baby {
-        (a - b) * 0.2 + 1.5
+    // `getVoicePitch`: the happy ghast's is constant (no draws), the bat's a little lower.
+    let pitch = if m.kind == Kind::HappyGhast {
+        1.0
     } else {
-        (a - b) * 0.2 + 1.0
+        let a = m.random.next_float();
+        let b = m.random.next_float();
+        let pitch = if m.baby {
+            (a - b) * 0.2 + 1.5
+        } else {
+            (a - b) * 0.2 + 1.0
+        };
+        if m.kind == Kind::Bat {
+            pitch * 0.95
+        } else {
+            pitch
+        }
     };
     // `playSound` checks `isSilent` after the pitch is drawn.
     if m.silent {
@@ -836,9 +954,30 @@ pub fn mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
 }
 
 /// `Mob.doHurtTarget` itself (families call it from their override).
-pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
+/// `getAttributeValue(ATTACK_DAMAGE)`: the mob's attack damage with the attribute modifiers of
+/// its equipment (a vex's iron sword, a vindicator's axe).
+pub fn attack_damage(m: &super::MobData) -> f32 {
+    let mut mods = Vec::new();
+    for slot in (0..8).filter_map(crate::item::EquipmentSlot::from_ordinal) {
+        crate::item::attribute_modifiers(
+            m.equipment.get(slot),
+            slot,
+            "minecraft:attack_damage",
+            &mut mods,
+        );
+    }
+    let value = if mods.is_empty() {
+        m.attrs.attack_damage
+    } else {
+        crate::item::attribute_value(m.attrs.attack_damage, &mods, 0.0, 2048.0)
+    };
     #[allow(clippy::cast_possible_truncation)]
-    let damage = t.mob_ref().attrs.attack_damage as f32;
+    let value = value as f32;
+    value
+}
+
+pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
+    let damage = attack_damage(t.mob_ref());
     let source = entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
     let hurt_ok = hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
     if hurt_ok {

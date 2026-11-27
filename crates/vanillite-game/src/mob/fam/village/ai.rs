@@ -2459,8 +2459,9 @@ pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> boo
                     }
                 }
             }
-            // `Collections.shuffle(list)` (its own random).
-            crate::poi::shuffle(&mut list, &mut t.mob().random);
+            // `Collections.shuffle(list)`: a random of its own, not the mob's.
+            let mut own = vanillite_base::random::LegacyRandom::new(crate::mob::new_shuffle_seed());
+            crate::poi::shuffle(&mut list, &mut own);
             let dims = t.core().dims();
             let mut scratch = Vec::new();
             let found = list.into_iter().find(|&p| {

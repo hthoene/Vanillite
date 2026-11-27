@@ -1,0 +1,17 @@
+{
+  "description": "Teleports and commands across dimensions in Vanilla's order: /tp moves a player from the overworld to the Nether and back, and execute in sets sand in the Nether that falls there.",
+  "dimensions": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-2, 0, -2], [5, 10, 5]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[2, -61, 2], [10, -57, 10]]}],
+  "ticks": 25,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [8.5, -60.0, 8.5], "rot": [0, 0]}
+  ],
+  "actions": [
+    {"tick": 5, "op": "command", "command": "execute in minecraft:the_nether run tp steve 1.5 4.0 1.5"},
+    {"tick": 8, "op": "command", "command": "execute in minecraft:the_nether run setblock 3 7 3 minecraft:sand"},
+    {"tick": 20, "op": "command", "command": "execute in minecraft:overworld run tp steve 8.5 -60.0 8.5"}
+  ]
+}

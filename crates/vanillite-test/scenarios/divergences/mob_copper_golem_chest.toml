@@ -1,3 +1,0 @@
-tick = 35
-cause = "the golem and the level random differ from tick 35 on and it finds no path on tick 36 (since the shuffled gates of #60 draw from their own random tick 1 matches; not analysed yet)"
-owner = "gameplay-developer #81"

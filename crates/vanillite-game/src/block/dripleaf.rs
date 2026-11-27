@@ -83,6 +83,22 @@ fn set_tilt_and_schedule(
     }
 }
 
+/// `BigDripleafBlock.onProjectileHit`: the leaf tips over at once.
+pub(super) fn projectile_hit(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _: &super::projectile_hit::ProjectileHit,
+) {
+    set_tilt_and_schedule(
+        level,
+        state,
+        pos,
+        "full",
+        Some(sound_id("block.big_dripleaf.tilt_down")),
+    );
+}
+
 /// `resetTilt`.
 fn reset_tilt(level: &mut Level, state: BlockState, pos: BlockPos) {
     set_tilt(level, state, pos, "none");

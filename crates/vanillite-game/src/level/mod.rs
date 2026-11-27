@@ -18,6 +18,7 @@ mod entity_storage;
 pub mod explosion;
 pub mod forced;
 pub mod game_event;
+pub mod locate;
 mod neighbors;
 pub mod particles;
 pub mod place;
@@ -136,6 +137,8 @@ pub struct LevelSettings {
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
     pub water_evaporates: bool,
+    /// The dimension's `snow_golem_melts` attribute (the Nether); biomes override it.
+    pub snow_golem_melts: bool,
     /// Fire lights nether portals here (`BaseFireBlock.inPortalDimension`: the Overworld and
     /// the Nether).
     pub portal_dimension: bool,
@@ -159,6 +162,20 @@ pub struct LevelSettings {
     pub send_command_feedback: bool,
     /// `mobGriefing` game rule (`MOB_GRIEFING`).
     pub mob_griefing: bool,
+    /// `projectiles_can_break_blocks` game rule.
+    pub projectiles_can_break_blocks: bool,
+    /// `block_explosion_drop_decay` game rule.
+    pub block_explosion_drop_decay: bool,
+    /// `players_sleeping_percentage` game rule.
+    pub players_sleeping_percentage: i32,
+    /// The dimension's `gameplay/bed_rule` attribute.
+    pub bed_rule: crate::block::bed::BedRule,
+    /// The dimension's `gameplay/straw_bed_rule` attribute.
+    pub straw_bed_rule: crate::block::bed::BedRule,
+    /// The dimension's `gameplay/respawn_anchor_works` attribute (the Nether).
+    pub respawn_anchor_works: bool,
+    /// The dimension, e.g. `minecraft:overworld`.
+    pub dimension: String,
 }
 
 impl Default for LevelSettings {
@@ -185,6 +202,7 @@ impl Default for LevelSettings {
             spawning_monsters: true,
             has_sky_light: true,
             water_evaporates: false,
+            snow_golem_melts: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
             hopper_transfer_cooldown: 8,
@@ -196,6 +214,13 @@ impl Default for LevelSettings {
             max_command_sequence_length: 65536,
             send_command_feedback: true,
             mob_griefing: true,
+            projectiles_can_break_blocks: true,
+            block_explosion_drop_decay: true,
+            players_sleeping_percentage: 100,
+            bed_rule: crate::block::bed::BedRule::can_sleep_when_dark(),
+            straw_bed_rule: crate::block::bed::BedRule::destroy_on_leave(),
+            respawn_anchor_works: false,
+            dimension: "minecraft:overworld".to_owned(),
         }
     }
 }
@@ -241,6 +266,13 @@ impl LevelSettings {
         self.send_command_feedback = rules.bool(Rule::SEND_COMMAND_FEEDBACK);
         if let Some(v) = get("mob_griefing") {
             self.mob_griefing = v != 0;
+        }
+        if let Some(v) = get("projectiles_can_break_blocks") {
+            self.projectiles_can_break_blocks = v != 0;
+        }
+        self.block_explosion_drop_decay = rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY);
+        if let Some(v) = get("players_sleeping_percentage") {
+            self.players_sleeping_percentage = v;
         }
     }
 }
@@ -326,6 +358,8 @@ pub struct LevelOutput {
     pub explosions: Vec<explosion::ExplosionEvent>,
     /// The damage of the living entities explosions hit, for the mob system.
     pub explosion_hurts: Vec<explosion::ExplosionHurt>,
+    /// The damage of the living entities falling blocks land on, for the mob system.
+    pub falling_hurts: Vec<crate::block::falling::FallingHurt>,
     /// Magic damage block entities deal (conduits): target and amount.
     pub magic_hurts: Vec<(vanillite_world::entity::EntityId, f32)>,
     /// Experience to award at a position (`ExperienceOrb.award`; orbs are not simulated yet).
@@ -422,6 +456,9 @@ pub struct Level {
     /// `soundSeedGenerator`: the seeds of sounds without an explicit seed; separate from the
     /// level random so sounds do not shift the simulation's random sequence.
     sound_seeds: LegacyRandom,
+    /// The seed of the next entity [`Level::load_entity`] creates instead of one from its UUID
+    /// (an entity arriving from another world, [`Level::load_travelled_entity`]).
+    next_entity_seed: Option<i64>,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
     /// The server's named random sequences (loot tables).
@@ -435,6 +472,9 @@ pub struct Level {
     menu_requests: Vec<crate::menu::container::MenuRequest>,
     /// Sign editors blocks asked to open: player, position, front side.
     sign_editors: Vec<(EntityId, BlockPos, bool)>,
+    player_block_uses: Vec<(EntityId, BlockPos, crate::block::bed::PlayerBlockUse)>,
+    /// `ServerLevel.sleepStatus`.
+    pub sleep_status: crate::survival::sleep::SleepStatus,
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
@@ -518,6 +558,7 @@ impl Level {
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
             sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
+            next_entity_seed: None,
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             random_sequences: Arc::new(std::sync::Mutex::new(
                 crate::random_sequences::RandomSequences::new(seed),
@@ -527,6 +568,8 @@ impl Level {
             output: LevelOutput::default(),
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
+            player_block_uses: Vec::new(),
+            sleep_status: crate::survival::sleep::SleepStatus::default(),
             player_gives: Vec::new(),
             player_effects: Vec::new(),
             player_awards: Vec::new(),
@@ -669,6 +712,24 @@ impl Level {
     /// Takes the sign editors blocks asked to open.
     pub fn take_sign_editors(&mut self) -> Vec<(EntityId, BlockPos, bool)> {
         std::mem::take(&mut self.sign_editors)
+    }
+
+    /// A bed or respawn anchor a player used: the player's side runs after its packets
+    /// ([`crate::survival::sleep::run_block_uses`]).
+    pub fn player_block_use(
+        &mut self,
+        player: EntityId,
+        pos: BlockPos,
+        kind: crate::block::bed::PlayerBlockUse,
+    ) {
+        self.player_block_uses.push((player, pos, kind));
+    }
+
+    /// Takes the bed and anchor uses since the last call.
+    pub fn take_player_block_uses(
+        &mut self,
+    ) -> Vec<(EntityId, BlockPos, crate::block::bed::PlayerBlockUse)> {
+        std::mem::take(&mut self.player_block_uses)
     }
 
     /// `setChanged` + `sendBlockUpdated` of a block entity whose client data changed: the
@@ -1387,7 +1448,20 @@ impl Level {
         if block::beehive::is_beehive(state.block()) {
             block::beehive::neighbour_changed_shape(self, pos, state, neighbour_pos);
         }
-        shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state)
+        let new = shared::update_shape(self, state, pos, direction, neighbour_pos, neighbour_state);
+        // `PotentSulfurBlock.validBlockState`: a block that becomes a periodic geyser starts a
+        // new countdown.
+        if state.block() == vanillite_data::block::ids::POTENT_SULFUR
+            && !matches!(
+                state.value("potent_sulfur_state"),
+                Some("erupting" | "dormant")
+            )
+            && new.value("potent_sulfur_state") == Some("dormant")
+            && let Some(BlockEntity::PotentSulfur { countdown }) = self.block_entity_mut(pos)
+        {
+            *countdown = -1;
+        }
+        new
     }
 
     /// `state.canSurvive(level, pos)`.
@@ -1488,14 +1562,19 @@ impl Level {
     /// random of its own, as Vanilla's entities draw it from theirs, so spawning entities does
     /// not shift the level random.
     pub fn new_uuid(&mut self) -> u128 {
+        self.new_uuid_and_seed().0
+    }
+
+    /// [`Self::new_uuid`] with the seed of the new entity's own random.
+    pub fn new_uuid_and_seed(&mut self) -> (u128, i64) {
         // A new entity: it takes its seed like Vanilla's constructor.
-        crate::mob::new_entity_seed();
+        let seed = crate::mob::new_entity_seed();
         let most = self.sound_seeds.next_long() as u64;
         let least = self.sound_seeds.next_long() as u64;
         // Version 4, IETF variant.
         let most = (most & !0xF000) | 0x4000;
         let least = (least & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;
-        (u128::from(most) << 64) | u128::from(least)
+        ((u128::from(most) << 64) | u128::from(least), seed)
     }
 
     /// Whether `pos` lies in a chunk where blocks tick.

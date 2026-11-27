@@ -1391,6 +1391,7 @@ name = "vanillite"
 version = "0.1.0-beta.1"
 dependencies = [
  "ctrlc",
+ "libc",
  "log",
  "mimalloc",
  "vanillite-config",
@@ -1430,6 +1431,7 @@ dependencies = [
  "tokio",
  "ureq",
  "vanillite-data",
+ "vanillite-nbt",
  "vanillite-net",
  "vanillite-protocol",
  "vanillite-server",
@@ -1593,6 +1595,7 @@ dependencies = [
  "vanillite-chunk",
  "vanillite-command",
  "vanillite-data",
+ "vanillite-nbt",
  "zip",
 ]
 
@@ -1630,6 +1633,7 @@ dependencies = [
 name = "vanillite-server"
 version = "0.1.0-beta.1"
 dependencies = [
+ "libc",
  "log",
  "serde_json",
  "tokio",

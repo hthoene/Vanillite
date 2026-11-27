@@ -512,7 +512,10 @@ impl Engine {
                 self.cost();
                 let mut next = Vec::new();
                 for source in &sources {
-                    match execute::modify(modifier, &st.args, source, env) {
+                    let modified = env.at(source.world, |env| {
+                        execute::modify(modifier, &st.args, source, env)
+                    });
+                    match modified {
                         Ok(new) => {
                             if next.len().saturating_add(new.len()) >= self.fork_limit {
                                 let limit = i32::try_from(self.fork_limit).unwrap_or(i32::MAX);
@@ -953,7 +956,8 @@ impl Engine {
 }
 
 /// Sources in another world than the execution's (after `execute in`, or a player that moved)
-/// continue there: the rest of the line from `stage` runs on that world's thread in an
+/// stay in this execution when that world is at hand ([`Env::at`], Vanilla's order). The
+/// others continue there: the rest of the line from `stage` runs on that world's thread in an
 /// execution of its own, without waiting, as cross-world work does. Their results still reach
 /// `execute store` through their callbacks; a `return` there ends only that execution.
 fn forward_remote(
@@ -963,10 +967,10 @@ fn forward_remote(
     mods: Mods,
     env: &Env<'_>,
 ) -> Vec<CommandSource> {
-    if sources.iter().all(|s| s.world == env.world) {
+    if sources.iter().all(|s| env.has(s.world)) {
         return sources;
     }
-    let (local, remote): (Vec<_>, Vec<_>) = sources.into_iter().partition(|s| s.world == env.world);
+    let (local, remote): (Vec<_>, Vec<_>) = sources.into_iter().partition(|s| env.has(s.world));
     for source in remote {
         let line = line.clone();
         let world = source.world;
@@ -989,6 +993,7 @@ fn forward_remote(
                 level: w.level_mut(),
                 global: &global,
                 world,
+                others: Vec::new(),
             };
             engine.run(&mut env);
         });
@@ -1022,7 +1027,10 @@ fn is_custom_modifier(modifier: CommandId) -> bool {
 fn run_command(line: &Line, source: &CommandSource, mods: Mods, env: &mut Env<'_>) {
     let empty = SignedArguments::new();
     let signed = line.signed.as_deref().unwrap_or(&empty);
-    match dispatch::execute(source, env, &line.parsed, signed) {
+    let result = env.at(source.world, |env| {
+        dispatch::execute(source, env, &line.parsed, signed)
+    });
+    match result {
         Ok(result) => source.callback.fire(env, true, result),
         Err(e) => {
             source.callback.fire(env, false, 0);

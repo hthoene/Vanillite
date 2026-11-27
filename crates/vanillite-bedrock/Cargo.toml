@@ -12,6 +12,7 @@ repository.workspace = true
 vanillite-protocol.workspace = true
 vanillite-net.workspace = true
 vanillite-data.workspace = true
+vanillite-nbt.workspace = true
 aes.workspace = true
 base64 = "0.22"
 ctr = "0.9"

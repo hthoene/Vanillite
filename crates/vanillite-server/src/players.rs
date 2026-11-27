@@ -3,6 +3,7 @@
 //! `vanillite_game::player`.
 
 use std::sync::{Arc, Mutex};
+use vanillite_game::entities::PERSISTENT_DATA;
 
 use vanillite_base::BlockPos;
 use vanillite_base::hash::FxHashSet;
@@ -388,13 +389,15 @@ impl WorldPlayers {
     }
 
     /// `placeNewPlayer`: spawns the player and sends the join sequence. The player is already
-    /// in the global player list.
+    /// in the global player list. `fresh_spawn` is where a new player lands.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn join(
         &mut self,
         entities: &mut Entities,
         global: &Global,
         world: crate::world::WorldId,
         arrival: Arrival,
+        fresh_spawn: Option<Vec3>,
         weather: &[vanillite_protocol::packets::play::clientbound::GameEvent],
         state: &join::LevelPackets,
     ) {
@@ -415,7 +418,11 @@ impl WorldPlayers {
                 (saved.rotation[0], saved.rotation[1]),
                 saved.on_ground,
             ),
-            None => (self.level.spawn.0, (self.level.spawn.1, 0.0), true),
+            None => (
+                fresh_spawn.unwrap_or(self.level.spawn.0),
+                (self.level.spawn.1, 0.0),
+                true,
+            ),
         };
         let center = chunk_of(pos);
         let view_distance = effective_view_distance(&arrival.client, self.view_distance);
@@ -464,6 +471,10 @@ impl WorldPlayers {
             .and_then(|v| i32::try_from(v).ok())
             .and_then(game_mode_by_id);
         let tags = saved.map(load_tags).unwrap_or_default();
+        let persistent = saved.and_then(|d| match d.get(PERSISTENT_DATA) {
+            Some(Tag::Compound(c)) => Some(c.clone()),
+            _ => None,
+        });
         let motion = saved.map_or(Vec3::ZERO, load_motion);
         let icon = saved
             .and_then(|d| d.get("locator_bar_icon"))
@@ -510,6 +521,7 @@ impl WorldPlayers {
             data,
         );
         entities.set_tags(id, tags);
+        entities.set_persistent_data(id, persistent);
         let Some(mut entity) = entities.store.get_mut(id) else {
             return;
         };
@@ -565,11 +577,14 @@ impl WorldPlayers {
         for (_, packet) in bars {
             sink.send_shared(&packet);
         }
-        global.players.broadcast_system(
-            join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
-            false,
-            None,
-        );
+        // With join listeners the message goes out after them (they may change it).
+        if !global.plugins.wants(vanillite_abi::event::PLAYER_JOIN) {
+            global.players.broadcast_system(
+                join::joined_message(crate::scoreboard::display_name(global, &name, arrival.uuid)),
+                false,
+                None,
+            );
+        }
         let connection = &mut player.connection;
         connection
             .movement
@@ -695,6 +710,12 @@ impl WorldPlayers {
                 global,
                 &level.chunks,
             );
+            actor.respawn_here = player
+                .survival
+                .respawn
+                .as_ref()
+                .filter(|r| r.dimension == dimension_name)
+                .map(|r| r.pos);
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let aabb = entity.aabb();
@@ -838,6 +859,20 @@ impl WorldPlayers {
             }
         }
         level.entities.players = players;
+        // The bed and anchor clicks, then `STOP_SLEEPING`.
+        {
+            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension_name);
+            vanillite_game::survival::sleep::run_block_uses(level, &hooks);
+            let leaving: Vec<EntityId> = level
+                .entities
+                .players
+                .iter_mut()
+                .filter_map(|(id, p)| std::mem::take(&mut p.connection.leave_bed).then_some(id))
+                .collect();
+            for id in leaving {
+                vanillite_game::survival::sleep::stop_sleep_in_bed(level, id, false, true, &hooks);
+            }
+        }
         let entities = &mut level.entities;
         // Hand swings go to the players that see the swinging one (`sendToTrackingPlayers`).
         for (id, hand) in swings {
@@ -987,6 +1022,7 @@ impl WorldPlayers {
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
+        let mut taken_projectiles: Vec<(EntityId, EntityId)> = Vec::new();
         for (id, player) in players.iter_mut() {
             let sink = &player.connection.sink;
             if let Some(sequence) = player.connection.play.take_ack() {
@@ -1038,7 +1074,7 @@ impl WorldPlayers {
             }
             // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1).
             if player.game_mode != GameMode::Spectator {
-                let Entities { store, items, .. } = &mut level.entities;
+                let store = &level.entities.store;
                 let reach = aabb.inflate(1.0, 0.5, 1.0);
                 let mut near = Vec::new();
                 store.for_each_non_player_in(&reach, |e| {
@@ -1047,6 +1083,20 @@ impl WorldPlayers {
                     }
                 });
                 let infinite = player.game_mode == GameMode::Creative;
+                // `AbstractArrow.playerTouch`: arrows and tridents in the ground.
+                let mut projectiles = Vec::new();
+                store.for_each_non_player_in(&reach, |e| projectiles.push(e));
+                for p in projectiles {
+                    if vanillite_game::mob::projectile::try_pickup(
+                        &mut level.entities,
+                        p,
+                        player,
+                        id,
+                    ) {
+                        taken_projectiles.push((p, id));
+                    }
+                }
+                let Entities { store, items, .. } = &mut level.entities;
                 for item_id in near {
                     let Some(row) = store.get(item_id).map(|e| e.kind_row()) else {
                         continue;
@@ -1197,6 +1247,26 @@ impl WorldPlayers {
                 entities.despawn(orb);
             }
         }
+        for (projectile, taker) in taken_projectiles {
+            // `Player.take(arrow, 1)`, then the arrow is gone.
+            let (Some(net), Some(player_net)) = (
+                entities.store.get(projectile).map(|e| e.network_id().0),
+                entities.store.get(taker).map(|e| e.network_id().0),
+            ) else {
+                continue;
+            };
+            let packet = SharedPacket::of(&TakeItemEntity {
+                item_id: net,
+                player_id: player_net,
+                amount: 1,
+            });
+            for viewer in blocks.tracker.seen_by(projectile) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
+            entities.despawn(projectile);
+        }
         for (item_id, player_id, count) in taken {
             let (Some(item_net), Some(player_net)) = (
                 entities.store.get(item_id).map(|e| e.network_id().0),
@@ -1231,6 +1301,9 @@ impl WorldPlayers {
         id: EntityId,
         reason: Option<Box<Component>>,
     ) {
+        // `ServerPlayer.disconnect`: out of bed before the player is saved.
+        let hooks = crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+        vanillite_game::survival::sleep::stop_sleep_in_bed(level, id, true, false, &hooks);
         let entities = &mut level.entities;
         let Some(entity) = entities.store.get(id) else {
             return;
@@ -1266,18 +1339,21 @@ impl WorldPlayers {
         entities.despawn(id);
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
-        global.players.broadcast_system(
-            join::left_message(crate::scoreboard::display_name(global, &name, uuid)),
-            false,
-            Some(Uuid(uuid)),
-        );
-        self.left.push(uuid);
+        let message = join::left_message(crate::scoreboard::display_name(global, &name, uuid));
         let world = crate::server::DIMENSIONS
             .iter()
             .position(|d| *d == self.level.dimension.as_str())
             .and_then(|i| u32::try_from(i).ok())
             .unwrap_or(0);
-        global.plugins.player_leave(world, uuid, &name);
+        let message = crate::plugins::player_message(global, message, |json| {
+            global.plugins.player_leave(world, uuid, &name, json)
+        });
+        if let Some(message) = message {
+            global
+                .players
+                .broadcast_system(message, false, Some(Uuid(uuid)));
+        }
+        self.left.push(uuid);
     }
 
     /// `saveEnderPearls` and the removal of a leaving player's ender pearls: those of this
@@ -1389,6 +1465,9 @@ impl WorldPlayers {
                 Tag::List(List(tags.iter().map(|t| Tag::String(t.clone())).collect())),
             );
         }
+        if let Some(data) = entities.persistent_data(id) {
+            live.insert(PERSISTENT_DATA, data.clone());
+        }
         player.inventory.save(&mut live);
         player.survival.save(&mut live);
         live.insert(
@@ -1405,9 +1484,8 @@ impl WorldPlayers {
         if let Some(previous) = player.previous_game_mode {
             live.insert("previousPlayerGameType", Tag::Int(game_mode_id(previous)));
         }
-        // Players do not sleep, glide, freeze or keep explosion impulses here yet: those
-        // keys carry the state of a player that does none of it.
-        live.insert("SleepTimer", Tag::Short(0));
+        // Players do not glide, freeze or keep explosion impulses here yet: those keys carry
+        // the state of a player that does none of it.
         live.insert(
             "FallFlying",
             Tag::Byte(i8::from(flags.contains(EntityFlags::FALL_FLYING))),
@@ -1485,8 +1563,9 @@ impl WorldPlayers {
 
 /// The keys of a player data file that only exist for some live states: dropped before the
 /// live state is written, so a stale value never stays.
-const LIVE_KEYS: [&str; 15] = [
+const LIVE_KEYS: [&str; 16] = [
     "Tags",
+    PERSISTENT_DATA,
     "previousPlayerGameType",
     "LastDeathLocation",
     "active_effects",
@@ -1677,6 +1756,7 @@ pub fn player_actor(
             .has_dig_speed()
             .then(|| effects.dig_speed_amplification()),
         mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
+        respawn_here: None,
     }
 }
 

@@ -112,6 +112,7 @@ fn actor(game_mode: GameMode) -> Actor {
         eyes_in_water: false,
         dig_speed: None,
         mining_fatigue: None,
+        respawn_here: None,
     }
 }
 

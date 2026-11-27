@@ -269,6 +269,18 @@ impl CustomBossEvent {
         !remove.is_empty() || !add.is_empty()
     }
 
+    /// Shows the bar to an online player or hides it from a player (`addPlayer`,
+    /// `removePlayer`); whether that changed anything.
+    pub(crate) fn set_player(&mut self, player: u128, show: bool, out: &mut Outbox) -> bool {
+        let mut targets = self.saved.clone();
+        if show && !targets.contains(&player) {
+            targets.push(player);
+        } else if !show {
+            targets.retain(|u| *u != player);
+        }
+        self.set_players(&targets, out)
+    }
+
     /// `removeAllPlayers`.
     fn remove_all(&mut self, out: &mut Outbox) {
         for p in std::mem::take(&mut self.shown) {

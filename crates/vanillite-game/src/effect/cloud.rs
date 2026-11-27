@@ -508,7 +508,7 @@ fn mark_dirty(ents: &mut Entities, id: EntityId) {
 }
 
 /// `setRadius`: the synched radius and the box (`refreshDimensions`).
-fn set_radius(ents: &mut Entities, id: EntityId, radius: f32) {
+pub(crate) fn set_radius(ents: &mut Entities, id: EntityId, radius: f32) {
     if let Some(c) = ents.cloud_mut(id) {
         c.radius = radius;
     }

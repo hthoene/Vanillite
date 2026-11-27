@@ -77,6 +77,16 @@ pub struct EntityFacts {
     pub sheared: bool,
     /// A villager's or zombie villager's type (`minecraft:villager_type` id).
     pub villager_variant: Option<u16>,
+    /// The climate variant of a chicken, cow or pig: 0 cold, 1 temperate, 2 warm.
+    pub farm_variant: Option<u8>,
+    /// `is_flying`: gliding or flying with the creative abilities.
+    pub flying: bool,
+    /// `movement.fall_distance`.
+    pub fall_distance: f64,
+    /// `location.can_see_sky` at the entity's position (known where the level is).
+    pub can_see_sky: bool,
+    /// A fishing hook and whether it fishes in open water.
+    pub fishing_hook: Option<bool>,
 }
 
 /// `EntityPredicate`: the parts the game evaluates (`type`, `flags`); other parts are
@@ -98,8 +108,19 @@ pub struct EntityPredicate {
     pub sheep_color: Option<u8>,
     /// `type_specific/sheep` `sheared`.
     pub sheared: Option<bool>,
+    /// `components` `minecraft:chicken/variant`, `minecraft:cow/variant` or
+    /// `minecraft:pig/variant`: 0 cold, 1 temperate, 2 warm.
+    pub farm_variant: Option<u8>,
     /// `predicates` `minecraft:villager/variant`: the villager types (`villager_type` ids).
     pub villager_variants: Option<Vec<u16>>,
+    /// `flags.is_flying`.
+    pub flying: Option<bool>,
+    /// `movement.fall_distance.min`.
+    pub min_fall_distance: Option<f64>,
+    /// `location.can_see_sky`.
+    pub can_see_sky: Option<bool>,
+    /// `type_specific/fishing_hook`: a hook, with `in_open_water` if given.
+    pub fishing_hook: Option<Option<bool>>,
     /// Has parts that are not evaluated.
     pub unsupported: bool,
 }
@@ -127,6 +148,7 @@ impl EntityPredicate {
                     p.sprinting = flag("is_sprinting");
                     p.swimming = flag("is_swimming");
                     p.on_ground = flag("is_on_ground");
+                    p.flying = flag("is_flying");
                     let known = [
                         "is_on_fire",
                         "is_baby",
@@ -134,21 +156,59 @@ impl EntityPredicate {
                         "is_sprinting",
                         "is_swimming",
                         "is_on_ground",
+                        "is_flying",
                     ];
                     p.unsupported |= v
                         .as_object()
                         .is_some_and(|f| f.keys().any(|k| !known.contains(&k.as_str())));
                 }
                 "components" => {
-                    let known = v
-                        .as_object()
-                        .is_some_and(|c| c.keys().all(|k| k == "minecraft:sheep/color"));
+                    const FARM: [&str; 3] = [
+                        "minecraft:chicken/variant",
+                        "minecraft:cow/variant",
+                        "minecraft:pig/variant",
+                    ];
+                    let known = v.as_object().is_some_and(|c| {
+                        c.keys()
+                            .all(|k| k == "minecraft:sheep/color" || FARM.contains(&k.as_str()))
+                    });
                     p.sheep_color = v
                         .get("minecraft:sheep/color")
                         .and_then(Value::as_str)
                         .and_then(dye_id);
+                    let farm = FARM.iter().find_map(|k| v.get(*k));
+                    p.farm_variant = farm.and_then(Value::as_str).and_then(|name| {
+                        match name.strip_prefix("minecraft:").unwrap_or(name) {
+                            "cold" => Some(0),
+                            "temperate" => Some(1),
+                            "warm" => Some(2),
+                            _ => None,
+                        }
+                    });
                     p.unsupported |= !known
-                        || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none());
+                        || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none())
+                        || (farm.is_some() && p.farm_variant.is_none());
+                }
+                "movement" => {
+                    // Only a lower bound of `fall_distance` (Wind Burst).
+                    let fall = v.get("fall_distance");
+                    let only = v.as_object().is_some_and(|m| m.len() == 1)
+                        && fall.is_some_and(|f| {
+                            f.as_object().is_some_and(|f| f.keys().all(|k| k == "min"))
+                        });
+                    p.min_fall_distance = fall.and_then(|f| f.get("min")).and_then(Value::as_f64);
+                    p.unsupported |= !only || p.min_fall_distance.is_none();
+                }
+                "location" => {
+                    // Only `can_see_sky` (Channeling).
+                    let only = v
+                        .as_object()
+                        .is_some_and(|l| l.keys().all(|k| k == "can_see_sky"));
+                    p.can_see_sky = v.get("can_see_sky").and_then(Value::as_bool);
+                    p.unsupported |= !only || p.can_see_sky.is_none();
+                }
+                "type_specific/fishing_hook" => {
+                    p.fishing_hook = Some(v.get("in_open_water").and_then(Value::as_bool));
                 }
                 "type_specific/sheep" => {
                     p.sheared = v.get("sheared").and_then(Value::as_bool);
@@ -199,6 +259,9 @@ impl EntityPredicate {
         if self.sheep_color.is_some() && self.sheep_color != e.sheep_color {
             return false;
         }
+        if self.farm_variant.is_some() && self.farm_variant != e.farm_variant {
+            return false;
+        }
         if let Some(types) = &self.villager_variants
             && !e.villager_variant.is_some_and(|v| types.contains(&v))
         {
@@ -217,6 +280,13 @@ impl EntityPredicate {
             && flag(self.sprinting, e.sprinting)
             && flag(self.swimming, e.swimming)
             && flag(self.on_ground, e.on_ground)
+            && flag(self.flying, e.flying)
+            && flag(self.can_see_sky, e.can_see_sky)
+            && self.min_fall_distance.is_none_or(|m| e.fall_distance >= m)
+            && self.fishing_hook.is_none_or(|want| {
+                e.fishing_hook
+                    .is_some_and(|open| want.is_none_or(|w| w == open))
+            })
     }
 }
 

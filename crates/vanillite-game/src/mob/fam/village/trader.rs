@@ -331,6 +331,10 @@ impl FamilyHooks for Hooks {
     fn sound_source(_kind: Kind) -> SoundSource {
         SoundSource::Neutral
     }
+    fn ambient_sound_interval(_kind: Kind) -> i32 {
+        // `Mob`'s: an `AgeableMob`, no `Animal`.
+        80
+    }
     fn ambient_sound(m: &mut MobData) -> Option<&'static str> {
         Some(merchant::ambient_sound(m))
     }

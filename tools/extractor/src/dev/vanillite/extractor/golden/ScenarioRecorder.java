@@ -76,6 +76,11 @@ import net.minecraft.world.ticks.ScheduledTick;
  * the seed. The action {@code bonemeal} uses bone meal on a block ({@code
  * BoneMealItem.growCrop}).
  *
+ * <p>Scenarios with {@code "dimensions": true} run with all three dimensions (the Nether and the
+ * End flat too) and players that load chunks; their region lies in {@code dimension}, the
+ * entities of their {@code views} (regions of other dimensions) join the frames with their
+ * {@code dim}, and block operations work in their {@code dimension}.
+ *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
  */
@@ -97,7 +102,37 @@ public final class ScenarioRecorder {
     {"advance_weather", "false"},
   };
 
+  /** View and simulation distance of scenarios across dimensions. */
+  private static final int VIEW_DISTANCE = 2;
+
+  private static final String OVERWORLD = "minecraft:overworld";
+
   private ScenarioRecorder() {}
+
+  /** An extra region of a scenario across dimensions whose entities the trace holds. */
+  private record View(String dimension, BlockPos min, BlockPos max) {}
+
+  /** The level a block operation works in: its {@code dimension}, default the overworld. */
+  private static ServerLevel levelOf(ParityServer server, JsonObject op) {
+    return server.level(op.has("dimension") ? op.get("dimension").getAsString() : OVERWORLD);
+  }
+
+  /**
+   * The level random (and with {@code randValue} the LCG of random tick positions) of the
+   * region's level, or of every level across dimensions, starts from the world seed.
+   */
+  private static void seedLevels(
+      ParityServer server, ServerLevel level, long seed, boolean dimensions, boolean randValue)
+      throws Exception {
+    Field field = net.minecraft.world.level.Level.class.getDeclaredField("randValue");
+    field.setAccessible(true);
+    for (ServerLevel l : dimensions ? server.getAllLevels() : List.of(level)) {
+      l.getRandom().setSeed(seed);
+      if (randValue) {
+        field.setInt(l, (int) seed);
+      }
+    }
+  }
 
   public static void main(String[] args) throws Exception {
     if (args.length == 1 && args[0].equals("--serve")) {
@@ -174,16 +209,40 @@ public final class ScenarioRecorder {
 
     ParityHooks.reset();
     Path dir = Files.createTempDirectory("vanillite-parity");
-    ParityServer server = ParityServer.start(dir, seed, layers, biome);
+    // Across dimensions: the Nether and the End are flat too, and players load chunks.
+    boolean dimensions = scenario.has("dimensions") && scenario.get("dimensions").getAsBoolean();
+    ParityServer server = ParityServer.start(dir, seed, layers, biome, dimensions);
     ScenarioEntities entities = null;
     try {
       rules(server, scenario);
+      if (dimensions) {
+        server.getPlayerList().setViewDistance(VIEW_DISTANCE);
+        server.getPlayerList().setSimulationDistance(VIEW_DISTANCE);
+      }
 
-      ServerLevel level = server.level();
+      String dimension =
+          scenario.has("dimension") ? scenario.get("dimension").getAsString() : OVERWORLD;
+      if (!dimensions && !dimension.equals(OVERWORLD)) {
+        throw new IllegalArgumentException("a region in another dimension needs \"dimensions\"");
+      }
+      ServerLevel level = server.level(dimension);
       JsonArray region = scenario.getAsJsonArray("region");
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
       loadRegion(server, level, min, max);
+      List<View> views = new ArrayList<>();
+      if (scenario.has("views")) {
+        if (!dimensions) {
+          throw new IllegalArgumentException("views need \"dimensions\"");
+        }
+        for (JsonElement v : scenario.getAsJsonArray("views")) {
+          JsonObject view = v.getAsJsonObject();
+          JsonArray r = view.getAsJsonArray("region");
+          View w = new View(view.get("dimension").getAsString(), pos(r.get(0)), pos(r.get(1)));
+          loadRegion(server, server.level(w.dimension), w.min, w.max);
+          views.add(w);
+        }
+      }
       // The warm-up takes as many ticks as the chunks need to load: the scenario starts at game
       // time 0 instead, like Vanillite's new level (camels count their pose time from it).
       server.getWorldData().overworldData().setGameTime(0);
@@ -191,17 +250,27 @@ public final class ScenarioRecorder {
 
       // The setup may draw from the level random (blocks that schedule a random delay when
       // placed): it starts from the world seed, like Vanillite's new level.
-      level.getRandom().setSeed(seed);
+      seedLevels(server, level, seed, dimensions, false);
       if (scenario.has("setup")) {
         for (JsonElement op : scenario.getAsJsonArray("setup")) {
-          apply(level, op.getAsJsonObject(), false);
+          apply(levelOf(server, op.getAsJsonObject()), op.getAsJsonObject(), false);
         }
+      }
+      // Light is settled whenever a tick starts (see `ParityServer.settleLight`): after the
+      // setup, the entities, the actions of a tick and the tick. Not across dimensions: chunks
+      // generate there meanwhile, and waiting for their light would let more of them load.
+      boolean settleLight = !dimensions;
+      if (settleLight) {
+        server.settleLight();
       }
 
       timeAndDifficulty(server, level, scenario);
-      entities = new ScenarioEntities(server, level);
+      entities = new ScenarioEntities(server, server.overworld());
+      entities.loadingPlayers = dimensions;
       entities.playerState =
           scenario.has("player_state") && scenario.get("player_state").getAsBoolean();
+      entities.sleepState =
+          scenario.has("sleep_state") && scenario.get("sleep_state").getAsBoolean();
       JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
       // Players join first; then the level random starts from the world seed and the mobs come.
       for (int i = 0; i < specs.size(); i++) {
@@ -210,32 +279,34 @@ public final class ScenarioRecorder {
           entities.player(spec, i);
         }
       }
-      level.getRandom().setSeed(seed);
       // The LCG of random tick positions starts from the seed too (Vanilla seeds it from a
       // thread-local random).
-      Field randValue = net.minecraft.world.level.Level.class.getDeclaredField("randValue");
-      randValue.setAccessible(true);
-      randValue.setInt(level, (int) seed);
+      seedLevels(server, level, seed, dimensions, true);
       for (int i = 0; i < specs.size(); i++) {
         JsonObject spec = specs.get(i).getAsJsonObject();
         if (!spec.get("type").getAsString().equals("minecraft:player")) {
           entities.mob(spec, i);
         }
       }
+      if (settleLight) {
+        server.settleLight();
+      }
       ParityHooks.startStream(scenario.has("entity_seed") ? scenario.get("entity_seed").getAsLong() : seed);
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
       boolean levelRng = scenario.has("level_rng") && scenario.get("level_rng").getAsBoolean();
-      Trace trace = new Trace(min, max, entities, light, levelRng);
+      Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views);
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
       for (int tick = 1; tick <= ticks; tick++) {
         entities.clientBegin();
         if (actions != null) {
+          boolean acted = false;
           for (JsonElement a : actions) {
             JsonObject action = a.getAsJsonObject();
             if (action.get("tick").getAsInt() == tick) {
+              acted = true;
               String op = action.get("op").getAsString();
               if (op.equals("force") || op.equals("unforce")) {
                 for (JsonElement c : action.getAsJsonArray("chunks")) {
@@ -245,6 +316,9 @@ public final class ScenarioRecorder {
                 }
                 settle(server, level, area);
               } else if (op.equals("restart")) {
+                if (dimensions) {
+                  throw new IllegalStateException("scenarios across dimensions cannot restart");
+                }
                 if (!specs.isEmpty()) {
                   throw new IllegalStateException("scenarios with entities cannot restart");
                 }
@@ -261,8 +335,11 @@ public final class ScenarioRecorder {
                 BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
-              } else if (op.equals("use_item")) {
-                entities.useItem(action);
+              } else if (op.equals("use_item")
+                  || op.equals("interact")
+                  || op.equals("release_item")
+                  || op.equals("attack_entity")) {
+                entities.useItem(action, op);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));
               } else if (op.equals("effect")) {
@@ -281,13 +358,19 @@ public final class ScenarioRecorder {
               } else if (op.equals("packet")) {
                 entities.packet(action);
               } else {
-                apply(level, action, true);
+                apply(levelOf(server, action), action, true);
               }
             }
+          }
+          if (acted && settleLight) {
+            server.settleLight();
           }
         }
         entities.clientEnd();
         server.step();
+        if (settleLight) {
+          server.settleLight();
+        }
         // The connection tick of the players (`ServerGamePacketListenerImpl.tick`), which the
         // server runs after the levels.
         entities.tickPlayers();
@@ -547,13 +630,25 @@ public final class ScenarioRecorder {
     private final boolean levelRng;
     private int[] last;
     private final ScenarioEntities names;
+    /** The dimension of the region. */
+    private final String dimension;
+    private final List<View> views;
 
-    Trace(BlockPos min, BlockPos max, ScenarioEntities names, boolean light, boolean levelRng) {
+    Trace(
+        BlockPos min,
+        BlockPos max,
+        ScenarioEntities names,
+        boolean light,
+        boolean levelRng,
+        String dimension,
+        List<View> views) {
       this.min = min;
       this.max = max;
       this.names = names;
       this.light = light;
       this.levelRng = levelRng;
+      this.dimension = dimension;
+      this.views = views;
     }
 
     private int index(String state) {
@@ -686,6 +781,10 @@ public final class ScenarioRecorder {
     }
 
     private boolean inside(BlockPos p) {
+      return inside(p, min, max);
+    }
+
+    private static boolean inside(BlockPos p, BlockPos min, BlockPos max) {
       return p.getX() >= min.getX()
           && p.getY() >= min.getY()
           && p.getZ() >= min.getZ()
@@ -737,12 +836,29 @@ public final class ScenarioRecorder {
       sb.append(']');
     }
 
-    /** Entities in the region: [type, x, y, z, dx, dy, dz] (doubles as bit patterns). */
+    /**
+     * Entities in the region and the views: [type, x, y, z, dx, dy, dz] (doubles as bit
+     * patterns); those outside the overworld with their {@code dim}.
+     */
     private void entities(StringBuilder sb, ServerLevel level) {
+      List<String> rows = new ArrayList<>();
+      entities(rows, level, dimension, min, max);
+      for (View view : views) {
+        entities(rows, level.getServer().getLevel(
+            net.minecraft.resources.ResourceKey.create(
+                net.minecraft.core.registries.Registries.DIMENSION,
+                net.minecraft.resources.Identifier.parse(view.dimension))),
+            view.dimension, view.min, view.max);
+      }
+      rows.sort(Comparator.naturalOrder());
+      sb.append('[').append(String.join(",", rows)).append(']');
+    }
+
+    private void entities(
+        List<String> rows, ServerLevel level, String dim, BlockPos min, BlockPos max) {
       List<Entity> list = new ArrayList<>();
       level.getEntities(
-          EntityTypeTest.forClass(Entity.class), e -> inside(e.blockPosition()), list);
-      List<String> rows = new ArrayList<>();
+          EntityTypeTest.forClass(Entity.class), e -> inside(e.blockPosition(), min, max), list);
       for (Entity e : list) {
         // A player moves by its client: its server-side motion is not part of the trace.
         Vec3 v = e instanceof Player ? Vec3.ZERO : e.getDeltaMovement();
@@ -761,11 +877,18 @@ public final class ScenarioRecorder {
                 + Double.doubleToRawLongBits(v.y)
                 + ','
                 + Double.doubleToRawLongBits(v.z)
-                + names.detail(e)
+                + withDimension(names.detail(e), dim)
                 + ']');
       }
-      rows.sort(Comparator.naturalOrder());
-      sb.append('[').append(String.join(",", rows)).append(']');
+    }
+
+    /** The detail {@code ,{...}} with {@code "dim"} outside the overworld. */
+    private static String withDimension(String detail, String dim) {
+      if (dim.equals(OVERWORLD)) {
+        return detail;
+      }
+      String d = "\"dim\":\"" + dim + '"';
+      return detail.isEmpty() ? ",{" + d + "}" : ",{" + d + ',' + detail.substring(2);
     }
 
     String finish() {

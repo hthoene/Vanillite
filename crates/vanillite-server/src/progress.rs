@@ -230,6 +230,7 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         level,
         global,
         world,
+        others: Vec::new(),
     };
     for id in rewards {
         grant_rewards(&mut env, id);
@@ -358,6 +359,9 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
         let Some(a) = set.get(index) else {
             continue;
         };
+        global
+            .plugins
+            .advancement_done(u32::from(env.world.0), uuid, &a.id);
         let rewards = &a.rewards;
         crate::commands::add_experience(env.level, id, rewards.experience, false);
         give_loot(env, id, &rewards.loot);

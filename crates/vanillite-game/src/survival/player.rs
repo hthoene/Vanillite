@@ -10,7 +10,7 @@ use vanillite_protocol::packets::play::clientbound::{
     DamageEvent, EntityEvent, PlayerCombatKill, SetExperience, SetHealth, SoundSource,
 };
 use vanillite_protocol::text::Component;
-use vanillite_world::entity::{EntityFlags, EntityMut, Pose};
+use vanillite_world::entity::{EntityFlags, EntityId, EntityMut, Pose};
 
 use super::blocks::{self, BlockAccess, BlockFacts, FluidContact, Landing};
 use super::combat::{self, CombatEntry, CombatTracker, FallLocation};
@@ -203,6 +203,13 @@ pub struct Survival {
     pub last_death: Option<(String, BlockPos)>,
     /// `respawn` (`ServerPlayer.RespawnConfig`): where the player respawns.
     pub respawn: Option<RespawnConfig>,
+    /// `SLEEPING_POS_ID`: the bed the player sleeps in.
+    pub sleeping_pos: Option<BlockPos>,
+    /// `sleepCounter` (`SleepTimer`): ticks asleep up to 100, then 100..110 after waking.
+    pub sleep_timer: i32,
+    /// Something woke the player (`stopSleeping` from damage or death); the sleep pass of the
+    /// world tick gets it out of bed.
+    pub wake: bool,
     pub combat: CombatTracker,
     /// `tickCount`.
     pub tick_count: i32,
@@ -234,6 +241,12 @@ pub struct Survival {
     /// Game events of the player's moves (`STEP`, `SWIM`, `HIT_GROUND`) for the world to
     /// post: event, position and the affected block.
     pub game_events: Vec<(u16, Vec3, Option<vanillite_data::block::BlockState>)>,
+    /// World changes of the player's contact with blocks (trampled farmland, redstone ore
+    /// stepped on) for the world to apply.
+    pub world_actions: Vec<crate::mob::WorldAction>,
+    /// `getTicksFrozen` and `isInPowderSnow`.
+    pub ticks_frozen: i32,
+    pub in_powder_snow: bool,
     /// `lastHurtMob` with the tick it was hit (`lastHurtMobTimestamp`).
     pub last_hurt_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// `lastHurtByMob` with the tick it hit (`lastHurtByMobTimestamp`).
@@ -260,7 +273,21 @@ pub struct Survival {
     /// `yBodyRot`, only kept while the server moves the player.
     pub y_body_rot: f32,
     /// `horizontalCollision` of the last server-side move.
-    horizontal_collision: bool,
+    pub(crate) horizontal_collision: bool,
+    /// `fallFlyTicks`: ticks gliding.
+    pub fall_fly_ticks: i32,
+    /// `Player.fishing`: the player's bobber.
+    pub fishing: Option<EntityId>,
+    /// `currentImpulseImpactPos`: the fall damage of the current impulse (a mace smash)
+    /// counts from here.
+    pub impulse_impact: Option<Vec3>,
+    /// `currentImpulseContextResetGraceTime`.
+    pub impulse_grace: i32,
+    /// `autoSpinAttackTicks`, `autoSpinAttackDmg` and `autoSpinAttackItemStack` of a riptide.
+    pub spin_attack: Option<crate::trident::SpinAttack>,
+    /// A plugin decided at the last death whether the inventory stays (else the game rule at
+    /// the respawn decides, as in Vanilla).
+    pub keep_inventory_override: Option<bool>,
     first_tick: bool,
     sent: Sent,
     recorded: Recorded,
@@ -308,6 +335,9 @@ impl Default for Survival {
             score: 0,
             last_death: None,
             respawn: None,
+            sleeping_pos: None,
+            sleep_timer: 0,
+            wake: false,
             combat: CombatTracker::default(),
             tick_count: 0,
             shoulders: super::shoulder::Shoulders::default(),
@@ -324,6 +354,9 @@ impl Default for Survival {
             move_dist: 0.0,
             next_step: 1.0,
             game_events: Vec::new(),
+            world_actions: Vec::new(),
+            ticks_frozen: 0,
+            in_powder_snow: false,
             last_hurt_mob: None,
             last_hurt_by_mob: None,
             using_item: None,
@@ -337,6 +370,12 @@ impl Default for Survival {
             simulate_movement: false,
             y_body_rot: 0.0,
             horizontal_collision: false,
+            fall_fly_ticks: 0,
+            fishing: None,
+            impulse_impact: None,
+            impulse_grace: 0,
+            spin_attack: None,
+            keep_inventory_override: None,
             first_tick: true,
             sent: Sent::default(),
             recorded: Recorded::default(),
@@ -424,6 +463,9 @@ pub struct Env<'a> {
     pub hooks: &'a dyn crate::hooks::GameHooks,
     /// `Player.getDisplayName` by name and UUID: the name in its team's format.
     pub display_name: &'a dyn Fn(&str, u128) -> Component,
+    /// `Entity.getTeam` of an entity that is no player, by UUID: the name of its scoreboard
+    /// team.
+    pub entity_team: &'a dyn Fn(u128) -> Option<Box<str>>,
 }
 
 impl std::fmt::Debug for Env<'_> {
@@ -554,6 +596,12 @@ impl Survival {
         if let Some(Tag::Compound(respawn)) = data.get("respawn") {
             s.respawn = RespawnConfig::load(respawn);
         }
+        // `readAdditionalSaveData`: a player saved asleep wakes at once (`stopSleeping` with
+        // its bed's chunk not loaded yet), which resets the timer.
+        s.sleep_timer = int(data, "SleepTimer").unwrap_or(0);
+        if matches!(data.get("sleeping_pos"), Some(Tag::IntArray(p)) if p.len() == 3) {
+            s.sleep_timer = 0;
+        }
         s.shoulders = super::shoulder::Shoulders::load(data);
         s
     }
@@ -611,6 +659,14 @@ impl Survival {
         out.remove("respawn");
         if let Some(respawn) = &self.respawn {
             out.insert("respawn", Tag::Compound(respawn.save()));
+        }
+        out.insert(
+            "SleepTimer",
+            Tag::Short(i16::try_from(self.sleep_timer).unwrap_or(0)),
+        );
+        out.remove("sleeping_pos");
+        if let Some(p) = self.sleeping_pos {
+            out.insert("sleeping_pos", Tag::IntArray(vec![p.x, p.y, p.z]));
         }
         self.shoulders.save(out);
     }
@@ -730,6 +786,67 @@ impl Survival {
     }
 }
 
+/// `checkTotemDeathProtection` of a dying player: a death protection item in a hand is used
+/// up and the player lives on with one health point.
+fn check_totem(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    kind: DamageKind,
+) -> bool {
+    if !crate::totem::can_protect(env.types, kind) {
+        return false;
+    }
+    let Some((slot, effects)) =
+        crate::totem::protecting_hand(player.inventory.selected_item(), &player.inventory.offhand)
+    else {
+        return false;
+    };
+    if !env
+        .hooks
+        .entity_resurrect(entity.as_ref().uuid(), "minecraft:player")
+    {
+        return false;
+    }
+    let index = match slot {
+        crate::item::EquipmentSlot::OffHand => crate::inventory::OFFHAND,
+        _ => player.inventory.selected,
+    };
+    let used = player.inventory.get(index).with_count(1);
+    if let Some(s) = player.inventory.get_mut(index) {
+        s.shrink(1);
+    }
+    player.stats.award(
+        crate::stats::Stat::of(crate::stats::StatType::Used, used.item),
+        1,
+    );
+    player
+        .advancements
+        .trigger(crate::advancements::trigger::Event::Item(
+            crate::advancements::trigger::TriggerKind::USED_TOTEM,
+            used,
+        ));
+    set_health(entity, &mut player.survival, 1.0);
+    {
+        let mut host = crate::effect::living::PlayerHost {
+            entity: &mut *entity,
+            player: &mut *player,
+            env: &mut *env,
+            players: None,
+        };
+        let mut roll = || crate::experience_orb::with_entity_random(|r| r.next_float());
+        crate::totem::apply_effects(
+            &effects,
+            vanillite_data::entity::ids::PLAYER,
+            &mut host,
+            &mut roll,
+        );
+    }
+    let (id, network_id) = (entity.as_ref().id(), entity.as_ref().network_id().0);
+    crate::totem::animation(env.out, id, network_id);
+    true
+}
+
 /// `setHealth`: clamped to `[0, max]`; marks the entity data dirty when it changed.
 fn set_health(entity: &mut EntityMut<'_>, s: &mut Survival, health: f32) {
     let health = health.clamp(0.0, s.max_health());
@@ -847,7 +964,10 @@ pub fn hurt_with(
     if damage == 0.0 {
         return false;
     }
-    // `LivingEntity.hurtServer`.
+    // `LivingEntity.hurtServer`: a hit wakes a sleeper.
+    if player.survival.sleeping_pos.is_some() {
+        player.survival.wake = true;
+    }
     if damage < 0.0 {
         damage = 0.0;
     }
@@ -936,10 +1056,12 @@ pub fn hurt_with(
         }
     }
     if player.survival.is_dead_or_dying() {
-        if took_full {
-            player_sound(env, id, pos, "minecraft:entity.player.death");
+        if !check_totem(entity, player, env, kind) {
+            if took_full {
+                player_sound(env, id, pos, "minecraft:entity.player.death");
+            }
+            die(entity, player, env, source);
         }
-        die(entity, player, env, source);
     } else if took_full {
         player_sound(env, id, pos, types.get(kind).effects.sound());
     }
@@ -1177,6 +1299,7 @@ fn protection(
         sheep_color: None,
         sheared: false,
         villager_variant: None,
+        ..Default::default()
     };
     let cx = crate::enchant::EnchantContext {
         types: env.types,
@@ -1191,6 +1314,9 @@ fn protection(
             direct: None,
             cause: None,
         }),
+        raining: false,
+        thundering: false,
+        location: None,
     };
     data.enchants.damage_protection(&equipment, &cx, env.random)
 }
@@ -1327,24 +1453,26 @@ pub fn die(
     );
     env.out.push(Effect::PearlsVanish(uuid));
     let sink = std::sync::Arc::clone(&player.connection.sink);
-    let mut broadcast = None;
-    if env.rules.bool(Rule::SHOW_DEATH_MESSAGES) {
-        let name = (env.display_name)(&player.profile.name, uuid);
-        let message = player.survival.combat.death_message(env.types, name);
-        sink.send(&PlayerCombatKill {
-            player_id: network_id,
-            message: message.clone(),
-        });
-        broadcast = Some(message);
-    } else {
-        sink.send(&PlayerCombatKill {
-            player_id: network_id,
-            message: Component::empty(),
-        });
+    let mut death = crate::hooks::Death {
+        message: env.rules.bool(Rule::SHOW_DEATH_MESSAGES).then(|| {
+            let name = (env.display_name)(&player.profile.name, uuid);
+            player.survival.combat.death_message(env.types, name)
+        }),
+        keep_inventory: env.rules.bool(Rule::KEEP_INVENTORY),
+    };
+    env.hooks
+        .player_death(uuid, &env.types.get(source.kind).id, None, &mut death);
+    sink.send(&PlayerCombatKill {
+        player_id: network_id,
+        message: death.message.clone().unwrap_or_else(Component::empty),
+    });
+    let broadcast = death.message;
+    if death.keep_inventory != env.rules.bool(Rule::KEEP_INVENTORY) {
+        player.survival.keep_inventory_override = Some(death.keep_inventory);
     }
     super::shoulder::remove_entities(entity, player, env);
     // `dropAllDeathLoot` → `dropEquipment` and `dropExperience`.
-    if !env.rules.bool(Rule::KEEP_INVENTORY) && player.game_mode != GameMode::Spectator {
+    if !death.keep_inventory && player.game_mode != GameMode::Spectator {
         let pos = entity.as_ref().pos();
         // `getEyeY()` with the pose's float eye height.
         let eye = match entity.as_ref().pose() {
@@ -1385,9 +1513,12 @@ pub fn die(
             event: entity_event::DEATH,
         }),
     });
-    entity.set_pose(Pose::Dying);
-    entity.set_dims(crate::player::dimensions(Pose::Dying));
+    // `ServerPlayer.die` does not call `LivingEntity.die`: the pose (and the box) stay.
     let s = &mut player.survival;
+    // `die`: a sleeper leaves its bed.
+    if s.sleeping_pos.is_some() {
+        s.wake = true;
+    }
     s.fire_ticks = s.fire_ticks.min(0);
     entity.set_flags(EntityFlags::ON_FIRE, false);
     let alive = s.health > 0.0;
@@ -1502,12 +1633,10 @@ pub fn do_tick_ai(
     env: &mut Env<'_>,
 ) -> std::ops::ControlFlow<TickResult, TickResult> {
     use std::ops::ControlFlow::{Break, Continue};
-    let spectator = player.game_mode == GameMode::Spectator;
     let abilities = Abilities::of(player.game_mode);
-    let mut result = TickResult::Alive;
     if player.survival.portal.won_game {
         // Removed from the world while the credits roll.
-        return Break(result);
+        return Break(TickResult::Alive);
     }
     {
         let s = &mut player.survival;
@@ -1515,7 +1644,6 @@ pub fn do_tick_ai(
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
-    let id = entity.as_ref().id();
     // `Entity.baseTick`: `handlePortal` first.
     let can_use_portal = !player.survival.is_dead_or_dying();
     let portal_delay = |kind| match kind {
@@ -1532,6 +1660,32 @@ pub fn do_tick_ai(
     if let Some((kind, entry)) = player.survival.portal.handle(can_use_portal, portal_delay) {
         return Break(TickResult::Portal(kind, entry));
     }
+    Continue(tick_after_portal(entity, player, env))
+}
+
+/// The rest of [`do_tick`] for a player whose portal took it to another world
+/// (`TickResult::Portal`), run where it arrived: Vanilla teleports inside `handlePortal` and
+/// the tick goes on in the new world.
+pub fn finish_tick_after_portal(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+) -> TickResult {
+    let result = tick_after_portal(entity, player, env);
+    do_tick_end(entity, player, env, result)
+}
+
+/// [`do_tick_ai`] after `handlePortal`.
+fn tick_after_portal(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+) -> TickResult {
+    let spectator = player.game_mode == GameMode::Spectator;
+    let abilities = Abilities::of(player.game_mode);
+    let mut result = TickResult::Alive;
+    let id = entity.as_ref().id();
+    player.survival.in_powder_snow = false;
     update_fluids(entity, player, env);
     update_swimming(entity, player);
     {
@@ -1654,6 +1808,10 @@ pub fn do_tick_ai(
             s.food.food_level += 1;
         }
     }
+    if entity.as_ref().flags().contains(EntityFlags::FALL_FLYING) {
+        crate::elytra::update_fall_flying(entity, player, env);
+    }
+    let before_travel = entity.as_ref().aabb();
     if result == TickResult::Alive {
         if player.survival.simulate_movement {
             simulate_travel(entity, player, env);
@@ -1661,15 +1819,23 @@ pub fn do_tick_ai(
             travel_motion(entity, player, env);
         }
     }
+    // `autoSpinAttackTicks` count down after the travel (the hits are the world's:
+    // [`crate::trident::spin_attack_hits`]).
+    if let Some(spin) = player.survival.spin_attack.as_mut() {
+        spin.ticks -= 1;
+        spin.swept = crate::trident::minmax(before_travel, entity.as_ref().aabb());
+        spin.horizontal_collision = player.survival.horizontal_collision;
+    }
     if result == TickResult::Alive && !player.survival.is_dead_or_dying() {
         if !spectator {
             apply_block_effects(entity, player, env);
         }
+        tick_freezing(entity, player, env);
         if enter_portals(entity, player, env) {
             result = TickResult::Credits;
         }
     }
-    Continue(result)
+    result
 }
 
 /// [`do_tick`] after `Player.aiStep`: the body turn, the food tick and the health packets.
@@ -1682,6 +1848,11 @@ pub fn do_tick_end(
     if player.survival.simulate_movement {
         tick_head_turn(entity, &mut player.survival);
     }
+    crate::elytra::count_fall_fly_ticks(entity, player);
+    if player.survival.impulse_grace > 0 {
+        player.survival.impulse_grace -= 1;
+    }
+    crate::elytra::update_player_pose(entity, player.survival.spin_attack.is_some());
     player.survival.last_box = Some(entity.as_ref().aabb());
     // `Player.aiStep`: `handleShoulderEntities`.
     super::shoulder::handle(entity, player, env, false);
@@ -1701,7 +1872,7 @@ pub fn do_tick_end(
             hurt(entity, player, env, source, 1.0);
         }
     }
-    // `ServerPlayer.doTick`'s time statistics; players never sleep yet.
+    // `ServerPlayer.doTick`'s time statistics.
     let stats = &mut player.stats;
     stats.award(custom::PLAY_TIME, 1);
     stats.award(custom::TOTAL_WORLD_TIME, 1);
@@ -1712,7 +1883,9 @@ pub fn do_tick_end(
     if entity.as_ref().flags().contains(EntityFlags::CROUCHING) {
         stats.award(custom::CROUCH_TIME, 1);
     }
-    stats.award(custom::TIME_SINCE_REST, 1);
+    if player.survival.sleeping_pos.is_none() {
+        stats.award(custom::TIME_SINCE_REST, 1);
+    }
     let sink = std::sync::Arc::clone(&player.connection.sink);
     // `Player.tick`: the turtle helmet outside water, then the item cool-downs.
     if !player.survival.fluids.eye_in_water {
@@ -1744,16 +1917,57 @@ pub fn do_tick_end(
 }
 
 /// `updateFluidInteraction`: the fluids around the player; touching water resets the fall
-/// distance.
-fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &Env<'_>) {
+/// distance, and entering it splashes.
+fn update_fluids(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
     let e = entity.as_ref();
     let pos = e.pos();
     let eye = Vec3::new(pos.x, pos.y + eye_height(e.dims().height), pos.z);
     let contact = blocks::fluid_contact(env.blocks, env.facts, e.aabb(), eye);
+    let was_in_water = player.survival.fluids.in_water();
     player.survival.fluids = contact;
     if contact.in_water() {
         reset_fall_distance(player);
+        if !was_in_water && !player.survival.first_tick && player.game_mode != GameMode::Spectator {
+            water_splash(entity, env);
+        }
     }
+}
+
+/// `Player.doWaterSplashEffect`: the splash sound and the `splash` game event (the bubble and
+/// splash particles are the clients'; the player's own random is not modelled, so the pitch
+/// and the particle draws do not touch the level random).
+fn water_splash(entity: &EntityMut<'_>, env: &mut Env<'_>) {
+    let e = entity.as_ref();
+    let v = e.velocity();
+    let point_two = f64::from(0.2f32);
+    #[allow(clippy::cast_possible_truncation)]
+    let speed =
+        ((v.x * v.x * point_two + v.y * v.y + v.z * v.z * point_two).sqrt() as f32 * 0.2).min(1.0);
+    let sound = if speed < 0.25 {
+        "minecraft:entity.player.splash"
+    } else {
+        "minecraft:entity.player.splash.high_speed"
+    };
+    let seed = crate::survival::sound_seed();
+    let mut r = LegacyRandom::new(seed);
+    let pitch = 1.0 + (r.next_float() - r.next_float()) * 0.4;
+    let id = e.id();
+    crate::survival::play_sound(
+        env.out,
+        Some(id),
+        e.pos(),
+        sound,
+        SoundSource::Players,
+        speed,
+        pitch,
+        r.next_long(),
+    );
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().splash,
+        e.pos(),
+        Some(id),
+    );
 }
 
 /// `updateSwimming`: sprinting under water swims.
@@ -1833,20 +2047,72 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
             vanillite_base::math::floor(pos.y - 0.2),
             vanillite_base::math::floor(pos.z),
         );
+        let on_state = env.blocks.block_state(on);
         // `MagmaBlock.stepOn`: careful (sneaking) players are safe.
-        if env
-            .blocks
-            .block_state(on)
-            .is_some_and(|s| env.facts.is_hot_floor(s))
+        if on_state.is_some_and(|s| env.facts.is_hot_floor(s))
             && !flags.contains(EntityFlags::CROUCHING)
         {
             let source = DamageSource::of(env.types.hot_floor);
             hurt(entity, player, env, source, 1.0);
+        } else if on_state.is_some_and(|s| crate::block::contact::has_step_on(s.block()))
+            && !flags.contains(EntityFlags::CROUCHING)
+        {
+            // `RedStoneOreBlock.stepOn`, sculk sensors and shriekers.
+            player
+                .survival
+                .world_actions
+                .push(crate::mob::WorldAction::StepOn(on, id));
         }
     }
     let was_on_fire = player.survival.fire_ticks > 0;
+    let was_freezing = player.survival.ticks_frozen > 0;
     let previous = player.survival.fire_ticks;
     let inside = blocks::inside_blocks(env.blocks, env.facts, aabb);
+    // The `entityInside` effects that act at once.
+    if inside.cactus {
+        let source = DamageSource::of(env.types.cactus);
+        hurt(entity, player, env, source, 1.0);
+    }
+    if inside.berry_bush == Some(true) {
+        // `SweetBerryBushBlock.entityInside`: the client reports the player's movement.
+        let moved = entity.as_ref().velocity();
+        if moved.x * moved.x + moved.z * moved.z > 0.0
+            && (moved.x.abs() >= f64::from(0.003_f32) || moved.z.abs() >= f64::from(0.003_f32))
+        {
+            let source = DamageSource::of(env.types.sweet_berry_bush);
+            hurt(entity, player, env, source, 1.0);
+        }
+    }
+    if let Some(damage) = inside.campfire {
+        let source = DamageSource::of(env.types.campfire);
+        hurt(entity, player, env, source, damage);
+    }
+    if inside.wither_rose
+        && env.difficulty != Difficulty::Peaceful
+        && !Abilities::of(player.game_mode).invulnerable
+        && !is_invulnerable_to(player, env, env.types.wither)
+    {
+        // `WitherRoseBlock.entityInside`.
+        let mut host = crate::effect::living::PlayerHost {
+            entity,
+            player,
+            env,
+            players: None,
+        };
+        crate::effect::active::add(
+            &mut host,
+            crate::effect::EffectInstance::new(crate::effect::MobEffect::WITHER, 40, 0),
+        );
+        crate::effect::living::sync_player(entity, player, env);
+    }
+    if inside.powder_snow.is_some() {
+        // `InsideBlockEffectType.FREEZE`.
+        player.survival.in_powder_snow = true;
+        if player_can_freeze(player) {
+            let s = &mut player.survival;
+            s.ticks_frozen = (s.ticks_frozen + 1).min(crate::mob::living::TICKS_TO_FREEZE);
+        }
+    }
     if let Some(damage) = inside.fire {
         // `BaseFireBlock.fireIgnite`, then the fire damage.
         let s = &mut player.survival;
@@ -1880,7 +2146,16 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
             );
         }
     }
-    if inside.water {
+    if let Some(snow) = inside.powder_snow
+        && player.survival.fire_ticks > 0
+    {
+        // A burning player melts the powder snow (`runBefore(EXTINGUISH)`).
+        player
+            .survival
+            .world_actions
+            .push(crate::mob::WorldAction::DestroyBlock(snow, false));
+    }
+    if inside.water || inside.powder_snow.is_some() {
         let s = &mut player.survival;
         s.fire_ticks = s.fire_ticks.min(0);
     }
@@ -1894,7 +2169,9 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         let s = &mut player.survival;
         s.fire_ticks = s.fire_ticks.min(0);
     }
-    if was_on_fire && player.survival.fire_ticks <= 0 {
+    if was_on_fire && player.survival.fire_ticks <= 0
+        || was_freezing && player.survival.ticks_frozen <= 0
+    {
         // `playEntityOnFireExtinguishedSound`.
         let pitch = 1.6 + (env.random.next_float() - env.random.next_float()) * 0.4;
         let seed = crate::survival::sound_seed();
@@ -1913,6 +2190,45 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     let s = &mut player.survival;
     if s.fire_ticks <= 0 && !ignited {
         s.fire_ticks = -FIRE_IMMUNE_TICKS;
+    }
+}
+
+/// `LivingEntity.canFreeze` of a player: not a spectator, no leather armor.
+fn player_can_freeze(player: &PlayerData) -> bool {
+    use crate::item::EquipmentSlot;
+    use vanillite_data::item::ids;
+    if player.game_mode == GameMode::Spectator {
+        return false;
+    }
+    let leather = [
+        ids::LEATHER_BOOTS,
+        ids::LEATHER_LEGGINGS,
+        ids::LEATHER_CHESTPLATE,
+        ids::LEATHER_HELMET,
+        ids::LEATHER_HORSE_ARMOR,
+    ];
+    ![
+        EquipmentSlot::Feet,
+        EquipmentSlot::Legs,
+        EquipmentSlot::Chest,
+        EquipmentSlot::Head,
+        EquipmentSlot::Body,
+    ]
+    .into_iter()
+    .any(|slot| leather.contains(&crate::item::item_id(player.inventory.equipment(slot))))
+}
+
+/// `LivingEntity.aiStep`'s freezing: thawing outside powder snow and the freeze damage every
+/// two seconds once fully frozen (the speed penalty is the client's).
+fn tick_freezing(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    let freezes = player_can_freeze(player);
+    let s = &mut player.survival;
+    if !s.in_powder_snow || !freezes {
+        s.ticks_frozen = (s.ticks_frozen - 2).max(0);
+    }
+    if s.tick_count % 40 == 0 && s.ticks_frozen >= crate::mob::living::TICKS_TO_FREEZE && freezes {
+        let source = DamageSource::of(env.types.freeze);
+        hurt(entity, player, env, source, 1.0);
     }
 }
 
@@ -2122,6 +2438,35 @@ fn check_fall_damage(
                     let kind = env.types.stalagmite;
                     cause_fall_damage(entity, player, env, fall + 2.5, 2.0, kind);
                 }
+                Landing::Bed => {
+                    let fall = fall * f64::from(1.0_f32 - 0.5);
+                    cause_fall_damage(entity, player, env, fall, 1.0, env.types.fall);
+                }
+                Landing::Farmland => {
+                    // `FarmlandBlock.fallOn` (spawn protection is not checked).
+                    if f64::from(env.random.next_float()) < fall - 0.5 {
+                        let dims = entity.as_ref().dims();
+                        if crate::block::contact::can_trample(dims.width, dims.height) {
+                            let id = entity.as_ref().id();
+                            player
+                                .survival
+                                .world_actions
+                                .push(crate::mob::WorldAction::TrampleFarmland(on_pos, id));
+                        }
+                    }
+                    cause_fall_damage(entity, player, env, fall, 1.0, env.types.fall);
+                }
+                Landing::PowderSnow => {
+                    if fall >= 4.0 {
+                        let id = entity.as_ref().id();
+                        let sound = if fall < 7.0 {
+                            "minecraft:entity.player.small_fall"
+                        } else {
+                            "minecraft:entity.player.big_fall"
+                        };
+                        player_sound(env, id, pos, sound);
+                    }
+                }
             }
         }
         reset_fall_distance(player);
@@ -2153,6 +2498,18 @@ fn cause_fall_damage(
     if Abilities::of(player.game_mode).mayfly {
         return;
     }
+    // `LivingEntity.causeFallDamage`: a fall after an impulse counts from its impact point.
+    let fall_distance = match player.survival.impulse_impact {
+        Some(impact) => {
+            let effective = fall_distance.min(impact.y - entity.as_ref().pos().y);
+            if effective <= 0.0 || player.survival.impulse_grace == 0 {
+                player.survival.impulse_impact = None;
+                player.survival.impulse_grace = 0;
+            }
+            effective
+        }
+        None => fall_distance,
+    };
     if fall_distance >= 2.0 {
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let cm = (fall_distance * 100.0).round() as i32;
@@ -2173,6 +2530,8 @@ fn cause_fall_damage(
         };
         player_sound(env, id, pos, sound);
         // TODO(block sounds): `playBlockFallSound` needs the block sound types.
+        player.survival.impulse_impact = None;
+        player.survival.impulse_grace = 0;
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let amount = damage as f32;
         hurt(entity, player, env, DamageSource::of(kind), amount);
@@ -2264,12 +2623,12 @@ fn simulate_travel(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     };
     let y = if v.y.abs() < 0.003 { 0.0 } else { v.y };
     entity.set_velocity(Vec3::new(x, y, z));
-    if player.survival.is_dead_or_dying() {
-        return;
-    }
+    // A dying player keeps moving (`travel` runs for immobile entities too).
     let fluids = player.survival.fluids;
     if fluids.in_water() || fluids.in_lava() {
         travel_in_fluid(entity, player, env);
+    } else if entity.as_ref().flags().contains(EntityFlags::FALL_FLYING) {
+        travel_fall_flying(entity, player, env);
     } else {
         travel_in_air(entity, player, env);
     }
@@ -2348,6 +2707,67 @@ fn travel_motion(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut 
     // `Player.travel` while flying keeps 60 % of the vertical motion instead.
     let y = if flying { v.y * 0.6 } else { m.y };
     entity.set_velocity(Vec3::new(m.x, y, m.z));
+}
+
+/// `move(SELF, (0, dy, 0))` of a player the server moves itself (the riptide lift).
+pub fn lift_player(
+    ents: &mut crate::entities::Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    dy: f64,
+) {
+    let crate::entities::Entities { store, players, .. } = ents;
+    let Some(mut entity) = store.get_mut(player) else {
+        return;
+    };
+    let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+        return;
+    };
+    let v = entity.as_ref().velocity();
+    simulate_move(&mut entity, data, env, Vec3::new(0.0, dy, 0.0));
+    entity.set_velocity(v);
+}
+
+/// `travelFallFlying`: the glide (`updateFallFlyingMovement`), the move, and the damage of
+/// flying into a wall; on a climbable block the player falls normally and stops gliding.
+fn travel_fall_flying(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    if player.survival.last_climbable.is_some() {
+        travel_in_air(entity, player, env);
+        entity.set_flags(EntityFlags::FALL_FLYING, false);
+        entity.mark_data_dirty();
+        return;
+    }
+    let last = entity.as_ref().velocity();
+    let last_speed = (last.x * last.x + last.z * last.z).sqrt();
+    let rot = entity.as_ref().rot();
+    let gravity = player_gravity(entity, player);
+    let m = crate::elytra::fall_flying_movement(last, rot.x_rot, rot.y_rot, gravity);
+    entity.set_velocity(m);
+    simulate_move(entity, player, env, m);
+    if player.survival.horizontal_collision {
+        let now = entity.as_ref().velocity();
+        let new_speed = (now.x * now.x + now.z * now.z).sqrt();
+        if let Some(damage) = crate::elytra::fly_into_wall_damage(last_speed, new_speed) {
+            let sound = if damage > 4.0 {
+                "minecraft:entity.player.big_fall"
+            } else {
+                "minecraft:entity.player.small_fall"
+            };
+            let seed = crate::survival::sound_seed();
+            crate::survival::play_sound(
+                env.out,
+                None,
+                entity.as_ref().pos(),
+                sound,
+                SoundSource::Players,
+                1.0,
+                1.0,
+                seed,
+            );
+            let source = DamageSource::of(env.types.named("minecraft:fly_into_wall"));
+            hurt(entity, player, env, source, damage);
+        }
+    }
 }
 
 /// The `minecraft:gravity` attribute of players.
@@ -2532,7 +2952,9 @@ fn simulate_move(
     let crouching = entity.as_ref().flags().contains(EntityFlags::CROUCHING);
     if moved_vertically && vertical || horizontal {
         let mut v = entity.as_ref().velocity();
-        // `restituteMovementAfterCollisions` without bounciness (Java's signed zeros).
+        // `restituteMovementAfterCollisions` (Java's signed zeros): players bounce on the
+        // blocks below them (beds, slime) unless they sneak.
+        let current = v;
         if x_collision {
             v.x = -v.x * 0.0;
         }
@@ -2540,7 +2962,38 @@ fn simulate_move(
             v.z = -v.z * 0.0;
         }
         if vertical {
-            v.y = -v.y * 0.0;
+            let gravity = player_gravity(entity, player);
+            let below = entity.as_ref().pos();
+            let effect_state = env.blocks.block_state(BlockPos::new(
+                vanillite_base::math::floor(below.x),
+                vanillite_base::math::floor(below.y - 0.2),
+                vanillite_base::math::floor(below.z),
+            ));
+            let restitution = match effect_state {
+                Some(state)
+                    if delta.y < 0.0
+                        && -current.y > gravity
+                        && !crouching
+                        && !crate::block::block_tags().suppresses_bounce.contains(state) =>
+                {
+                    bounce_restitution(state)
+                }
+                _ => 0.0,
+            };
+            v.y = if restitution > 0.0 {
+                let portion = movement.y / current.y;
+                let drag = 1.0 + portion * (f64::from(0.98_f32) - 1.0);
+                (portion * gravity - current.y) * drag * restitution
+            } else {
+                -current.y * 0.0
+            };
+            if restitution > 0.0 {
+                player.survival.game_events.push((
+                    crate::level::game_event::events().bounce,
+                    below,
+                    None,
+                ));
+            }
         }
         entity.set_velocity(v);
     }
@@ -2569,6 +3022,21 @@ fn simulate_move(
     };
     let v = entity.as_ref().velocity();
     entity.set_velocity(v.multiply(f64::from(factor), 1.0, f64::from(factor)));
+}
+
+/// `Block.getBounceRestitution` of the block a living entity lands on.
+fn bounce_restitution(state: vanillite_data::block::BlockState) -> f64 {
+    use vanillite_data::block::ids;
+    let block = state.block();
+    if block == ids::SLIME_BLOCK {
+        1.0
+    } else if block == ids::SHELF_MUSHROOM
+        || (block.info().kind == vanillite_data::block::BlockKind::BedBlock)
+    {
+        f64::from(0.75_f32)
+    } else {
+        0.0
+    }
 }
 
 /// `Math.abs(a - b) < 1.0E-5F` as `Mth.equal`.

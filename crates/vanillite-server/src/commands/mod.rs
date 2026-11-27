@@ -51,13 +51,20 @@ use vanillite_protocol::packets::play::clientbound::{Commands, SystemChat};
 use vanillite_protocol::text::{Arg, ClickEvent, Color, Component, NamedColor};
 use vanillite_world::entity::EntityId;
 
+pub(crate) use advancement_cmd::perform_on as perform_advancement;
 pub(crate) use bans::ban_reason;
+pub(crate) use data::{apply_entity_nbt, entity_nbt};
+pub(crate) use data_cmd::merge_compound;
+pub(crate) use entities_cmd::kill_any;
 pub(crate) use exec::{find_player, permission_event};
+pub(crate) use execute::summon;
 pub(crate) use operator::handle as handle_admin;
+pub(crate) use particle::particle;
 pub(crate) use player_data::add_experience;
-pub(crate) use select::find_uuid;
-pub(crate) use sound::send_post_effects;
+pub(crate) use select::{find_uuid, local as local_target};
+pub(crate) use sound::{send_post_effects, sound_source};
 pub(crate) use source::{CommandSource, SourceKind};
+pub(crate) use survival::{Weather, clock_changed, on_game_rule_changed, set_weather};
 pub(crate) use world_cmd::sprint_finished;
 
 use crate::global::Global;
@@ -80,6 +87,110 @@ pub(crate) struct Env<'a> {
     pub(crate) global: &'a Global,
     /// The world of `level`.
     pub(crate) world: WorldId,
+    /// The levels of the other worlds, when the execution has them at hand.
+    pub(crate) others: OtherLevels<'a>,
+}
+
+/// The levels of the other worlds by world index, with `None` at the own world's index: what
+/// a world's tick sees of the others when the dimensions tick one after another (Vanilla's
+/// order). Empty when they are not at hand (parallel dimensions, work between the ticks):
+/// what leaves the world then runs there later.
+pub(crate) type OtherLevels<'a> = Vec<Option<&'a mut vanillite_game::level::Level>>;
+
+impl<'a> Env<'a> {
+    /// Whether `world` is this execution's world or one at hand.
+    pub(crate) fn has(&self, world: WorldId) -> bool {
+        world == self.world || self.others.get(world.index()).is_some_and(Option::is_some)
+    }
+
+    /// The level of `world`, when it is this one or at hand.
+    pub(crate) fn level_of(&mut self, world: WorldId) -> Option<&mut vanillite_game::level::Level> {
+        if world == self.world {
+            return Some(&mut *self.level);
+        }
+        self.others.get_mut(world.index())?.as_deref_mut()
+    }
+
+    /// The other levels at hand with their worlds.
+    pub(crate) fn other_levels(
+        &self,
+    ) -> impl Iterator<Item = (WorldId, &vanillite_game::level::Level)> {
+        self.others.iter().enumerate().filter_map(|(index, level)| {
+            Some((WorldId(u16::try_from(index).ok()?), &**level.as_ref()?))
+        })
+    }
+
+    /// Runs `f` as an execution on `world` with this world among its others (a source that
+    /// left its world, `execute in`), or here when `world` is not at hand.
+    pub(crate) fn at<R>(&mut self, world: WorldId, f: impl FnOnce(&mut Env<'a>) -> R) -> R {
+        let home = self.world;
+        let other = if world != home && home.index() < self.others.len() {
+            self.others.get_mut(world.index()).and_then(Option::take)
+        } else {
+            None
+        };
+        let Some(other) = other else {
+            return f(self);
+        };
+        let own = std::mem::replace(&mut self.level, other);
+        if let Some(slot) = self.others.get_mut(home.index()) {
+            *slot = Some(own);
+        }
+        self.world = world;
+        let result = f(self);
+        if let Some(own) = self.others.get_mut(home.index()).and_then(Option::take) {
+            let other = std::mem::replace(&mut self.level, own);
+            if let Some(slot) = self.others.get_mut(world.index()) {
+                *slot = Some(other);
+            }
+            self.world = home;
+        }
+        result
+    }
+}
+
+/// The other worlds' levels lent to a world's command blocks while a phase of its tick runs:
+/// the blocks run inside the level, which cannot carry the borrows itself.
+#[derive(Default)]
+pub(crate) struct LentLevels(std::sync::Mutex<Vec<Option<LevelPtr>>>);
+
+struct LevelPtr(std::ptr::NonNull<vanillite_game::level::Level>);
+
+// SAFETY: a `LevelPtr` stands for a `&mut Level` (see `LentLevels::lend`), which is `Send`.
+unsafe impl Send for LevelPtr {}
+
+/// A loan of [`LentLevels`]: it keeps the levels borrowed and takes them back when dropped.
+pub(crate) struct Loan<'a> {
+    slot: Arc<LentLevels>,
+    levels: std::marker::PhantomData<&'a mut vanillite_game::level::Level>,
+}
+
+impl LentLevels {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Option<LevelPtr>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Lends `levels` (as [`OtherLevels`]) until the loan is dropped.
+    pub(crate) fn lend<'a>(
+        self: &Arc<Self>,
+        levels: impl Iterator<Item = Option<&'a mut vanillite_game::level::Level>>,
+    ) -> Loan<'a> {
+        let mut slot = self.lock();
+        slot.clear();
+        slot.extend(levels.map(|l| l.map(|l| LevelPtr(std::ptr::NonNull::from(l)))));
+        Loan {
+            slot: Arc::clone(self),
+            levels: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for Loan<'_> {
+    fn drop(&mut self) {
+        self.slot.lock().clear();
+    }
 }
 
 /// Loads the functions and advancements of the selected data packs once the server exists
@@ -111,29 +222,33 @@ pub(crate) fn load_advancements(
 }
 
 /// `ServerFunctionManager.tick` on the overworld.
-pub(crate) fn tick_functions(
-    level: &mut vanillite_game::level::Level,
-    global: &Global,
+pub(crate) fn tick_functions<'a>(
+    level: &'a mut vanillite_game::level::Level,
+    global: &'a Global,
     world: WorldId,
+    others: OtherLevels<'a>,
 ) {
     let mut env = Env {
         level,
         global,
         world,
+        others,
     };
     functions::tick(&mut env);
 }
 
 /// The scheduled functions due now (`TimerQueue.tick` in the overworld's `tickTime`).
-pub(crate) fn tick_scheduled(
-    level: &mut vanillite_game::level::Level,
-    global: &Global,
+pub(crate) fn tick_scheduled<'a>(
+    level: &'a mut vanillite_game::level::Level,
+    global: &'a Global,
     world: WorldId,
+    others: OtherLevels<'a>,
 ) {
     let mut env = Env {
         level,
         global,
         world,
+        others,
     };
     schedule::tick(&mut env);
 }
@@ -198,6 +313,7 @@ pub(crate) fn resolve_book(
             level: &mut *level,
             global,
             world,
+            others: Vec::new(),
         };
         vanillite_game::book::resolve_for_item(&mut stack, &mut |c| {
             text::resolve(&env, &source, c, None).ok()
@@ -411,6 +527,7 @@ pub(crate) fn run_player_command(
         level,
         global,
         world,
+        others: Vec::new(),
     };
     match parse.finish(&global.commands) {
         Ok(parsed) => {
@@ -494,6 +611,7 @@ pub fn run_command_on_level(
         level,
         global,
         world,
+        others: Vec::new(),
     };
     run_line(
         &mut env,
@@ -534,6 +652,7 @@ pub(crate) fn run_rcon_command(world: &mut ServerWorld, global: &Global, line: &
 pub(crate) struct BlockCommands {
     global: std::sync::Weak<Global>,
     world: WorldId,
+    lent: Arc<LentLevels>,
 }
 
 impl BlockCommands {
@@ -541,7 +660,13 @@ impl BlockCommands {
         Self {
             global: Arc::downgrade(global),
             world,
+            lent: Arc::default(),
         }
+    }
+
+    /// Where the world lends the other worlds' levels to its command blocks.
+    pub(crate) fn lent(&self) -> Arc<LentLevels> {
+        Arc::clone(&self.lent)
     }
 }
 
@@ -572,10 +697,21 @@ impl vanillite_game::block::technical::command_block::CommandRunner for BlockCom
         .with_callback(engine::Callback::Count(Arc::clone(&successes)));
         // `performPrefixedCommand`: one leading `/` is optional.
         let command = run.command.strip_prefix('/').unwrap_or(run.command);
+        // Out of the slot while the command runs: nothing else reaches the levels meanwhile.
+        let lent = std::mem::take(&mut *self.lent.lock());
         let mut env = Env {
             level,
             global: &global,
             world: self.world,
+            others: lent
+                .iter()
+                .map(|l| {
+                    // SAFETY: the loan holds the exclusive borrow of the level until it is
+                    // dropped and empties the slot then, so the pointer is valid; taken out
+                    // of the slot, this is the only reference made of it.
+                    l.as_ref().map(|l| unsafe { &mut *l.0.as_ptr() })
+                })
+                .collect(),
         };
         match global.commands.parse_command(command, &source) {
             Ok(parsed) => run_line(
@@ -588,6 +724,8 @@ impl vanillite_game::block::technical::command_block::CommandRunner for BlockCom
             ),
             Err(e) => send_error(&source, &global, &e, command),
         }
+        drop(env);
+        *self.lent.lock() = lent;
         vanillite_game::block::technical::command_block::CommandOutcome {
             successes: successes.load(std::sync::atomic::Ordering::Relaxed),
             last_message: output.take(),
@@ -618,6 +756,7 @@ fn run_server_command(world: &mut ServerWorld, global: &Global, line: &str, kind
         level: world.level_mut(),
         global,
         world: id,
+        others: Vec::new(),
     };
     match global.commands.parse_command(command, &source) {
         Ok(parsed) => {

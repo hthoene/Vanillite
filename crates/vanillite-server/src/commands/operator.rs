@@ -169,6 +169,11 @@ pub(crate) fn handle(
                 tag: Nbt(Some(Tag::Compound(nbt))),
             });
         }
+        AdminRequest::PluginMessage { channel, data } => {
+            global
+                .plugins
+                .plugin_message(u32::from(world.0), uuid, &channel, &data);
+        }
         AdminRequest::TeleportToEntity(to) => {
             if game_mode != GameMode::Spectator {
                 return;
@@ -191,8 +196,7 @@ fn teleport_to_entity(level: &mut Level, global: &Global, id: EntityId, world: W
         .map(|e| (e.pos(), e.rot()))
     {
         let (pos, rot) = place;
-        let _ =
-            super::exec::teleport_local(&mut level.entities, &target, pos, 0, rot.y_rot, rot.x_rot);
+        let _ = super::exec::teleport_local(level, &target, pos, 0, rot.y_rot, rot.x_rot);
         return;
     }
     // UUIDs are unique: at most one other world has the entity.

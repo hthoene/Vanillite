@@ -31,6 +31,9 @@ pub enum CommonGoal {
         found: Option<EntityId>,
         filter: TargetFilter,
         players_only: bool,
+        /// What a subclass checks before `super.canUse` and `super.canContinueToUse`
+        /// (`BeeBecomeAngryTargetGoal.beeCanTarget`), before the interval roll.
+        precheck: Option<fn(&Tick<'_, '_>) -> bool>,
     },
     /// `AvoidEntityGoal(mob, type, maxDist, walkSpeed, sprintSpeed, predicate)`.
     Avoid {
@@ -71,6 +74,7 @@ impl CommonGoal {
             found: None,
             filter,
             players_only: true,
+            precheck: None,
         }
     }
 
@@ -83,7 +87,17 @@ impl CommonGoal {
             found: None,
             filter,
             players_only: false,
+            precheck: None,
         }
+    }
+
+    /// With a check before `canUse` and `canContinueToUse` (before the interval roll).
+    #[must_use]
+    pub fn with_precheck(mut self, check: fn(&Tick<'_, '_>) -> bool) -> CommonGoal {
+        if let CommonGoal::NearestAttackable { precheck, .. } = &mut self {
+            *precheck = Some(check);
+        }
+        self
     }
 
     pub fn avoid(filter: TargetFilter, max_dist: f32, walk: f64, sprint: f64) -> CommonGoal {
@@ -424,12 +438,20 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
             found,
             filter,
             players_only,
+            precheck,
         } => {
+            if precheck.is_some_and(|g| !g(t)) {
+                return false;
+            }
             if *interval > 0 && t.mob().random.next_int_bounded(*interval) != 0 {
                 return false;
             }
             let range = t.mob_ref().attrs.follow_range;
-            let area = t.aabb().inflate(range, range, range);
+            let area = if t.mob_ref().kind == Kind::Shulker {
+                super::fam::illager::shulker::target_search_area(t, range)
+            } else {
+                t.aabb().inflate(range, range, range)
+            };
             *found = find_nearest(t, *filter, range, state.must_see, *players_only, area);
             found.is_some()
         }
@@ -518,7 +540,9 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
 pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
     match g {
         CommonGoal::Move(m) => super::movement::can_continue(t, m),
-        CommonGoal::NearestAttackable { state, .. } => target_can_continue(t, state),
+        CommonGoal::NearestAttackable {
+            state, precheck, ..
+        } => precheck.is_none_or(|g| g(t)) && target_can_continue(t, state),
         CommonGoal::Avoid { .. } | CommonGoal::MoveTowardsRestriction { .. } => {
             !t.mob_ref().nav.is_done()
         }

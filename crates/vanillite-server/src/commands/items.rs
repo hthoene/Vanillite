@@ -572,11 +572,12 @@ pub(crate) fn clear(
 
 // --- item ---------------------------------------------------------------------------------------
 
-/// A slot of an entity (`SlotProvider.getSlot`): player inventory indices 0–40, the cursor,
-/// the crafting grid, or the stack of an item entity.
+/// A slot of an entity (`SlotProvider.getSlot`): player inventory indices 0–40, the ender
+/// chest, the cursor, the crafting grid, or the stack of an item entity.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EntitySlot {
     Inventory(usize),
+    EnderChest(usize),
     Cursor,
     Craft(usize),
     ItemEntity,
@@ -595,16 +596,21 @@ pub(crate) fn entity_slot(entities: &Entities, id: EntityId, index: i32) -> Opti
         98 => EntitySlot::Inventory(player.inventory.selected),
         99 => EntitySlot::Inventory(OFFHAND),
         100..=103 => EntitySlot::Inventory(at(100)?.saturating_add(36)),
+        200..=226 => EntitySlot::EnderChest(at(200)?),
         499 => EntitySlot::Cursor,
         500..=503 => EntitySlot::Craft(at(500)?),
         _ => return None,
     })
 }
 
-fn slot_get(entities: &Entities, id: EntityId, slot: EntitySlot) -> ItemStack {
+/// The stack in a slot of an entity (`SlotAccess.get`).
+pub(crate) fn slot_get(entities: &Entities, id: EntityId, slot: EntitySlot) -> ItemStack {
     let stack = match slot {
         EntitySlot::ItemEntity => entities.item(id).map(|i| &i.stack),
         EntitySlot::Inventory(i) => entities.player(id).map(|p| p.inventory.get(i)),
+        EntitySlot::EnderChest(i) => entities
+            .player(id)
+            .and_then(|p| p.inventory.ender_chest.get(i)),
         EntitySlot::Cursor => entities.player(id).map(|p| &p.inventory.menu.carried),
         EntitySlot::Craft(i) => entities.player(id).and_then(|p| p.inventory.craft.get(i)),
     };
@@ -641,6 +647,7 @@ pub(crate) fn slot_set(
             inventory.get_mut(i)
         }
         EntitySlot::Inventory(i) => inventory.get_mut(i),
+        EntitySlot::EnderChest(i) => inventory.ender_chest.get_mut(i),
         EntitySlot::Cursor => Some(&mut inventory.menu.carried),
         EntitySlot::Craft(i) => inventory.craft.get_mut(i),
         EntitySlot::ItemEntity => None,
