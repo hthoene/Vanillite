@@ -343,7 +343,16 @@ impl ServerWorld {
                     .extra_environment(self.id)
                     .map_or(self.id == END, |e| e == Environment::TheEnd) =>
             {
-                Some((OVERWORLD, Route::Spawn))
+                // `ServerPlayer.findRespawnPositionAndUseSpawnBlock`: a player goes to the world
+                // of its respawn position.
+                let target = self
+                    .level
+                    .entities
+                    .player(id)
+                    .and_then(|p| p.survival.respawn.as_ref())
+                    .and_then(|r| global.dimensions.world(&r.dimension))
+                    .unwrap_or(OVERWORLD);
+                Some((target, Route::Spawn))
             }
             PortalKind::End => Some((END, Route::EndPlatform)),
             PortalKind::Gateway => None,
@@ -719,6 +728,11 @@ impl ServerWorld {
                     bad_respawn_point: false,
                 },
             );
+        }
+        // `Player.remove(KILLED)`: the open menu closes; the carried stack and the crafting grid
+        // of the dead player drop (also with keepInventory).
+        if !keep_all {
+            crate::players::drop_menus_on_leave(&mut self.level, id);
         }
         self.send_away(ctx, id, target, Route::Respawn { keep_all }, false);
     }
@@ -1154,6 +1168,7 @@ impl ServerWorld {
             traveller.route,
             Route::NetherPortal { .. } | Route::EndPlatform | Route::Spawn
         );
+        let spawn_route = matches!(traveller.route, Route::Spawn);
         let landing = match self.landing(global, &traveller) {
             Some(landing) => landing,
             None => return Some(traveller),
@@ -1271,6 +1286,28 @@ impl ServerWorld {
                 &self.survival.join_weather(),
             );
             data.connection.movement.restart_client_load_timer();
+            // `PlayerList.respawn`: the deplete sound of a respawn anchor at the respawn
+            // position (not after the credits).
+            if keep_all == Some(false)
+                && let Some(r) = data.survival.respawn.as_ref()
+                && r.dimension == self.dimension
+                && self.level.block(r.pos).block() == vanillite_data::block::ids::RESPAWN_ANCHOR
+            {
+                use vanillite_base::random::RandomSource;
+                let seed = self.level.random().next_long();
+                sink.send(&vanillite_protocol::packets::play::clientbound::Sound::at(
+                    vanillite_protocol::packets::play::clientbound::SoundEvent(i32::from(
+                        vanillite_game::block::sound_id("block.respawn_anchor.deplete"),
+                    )),
+                    vanillite_protocol::packets::play::clientbound::SoundSource::Blocks,
+                    f64::from(r.pos.x),
+                    f64::from(r.pos.y),
+                    f64::from(r.pos.z),
+                    1.0,
+                    1.0,
+                    seed,
+                ));
+            }
         } else {
             // `ServerPlayer.teleport` to another dimension; `triggerDimensionChangeTriggers`
             // forgets the Nether entry outside the Nether.
@@ -1284,6 +1321,13 @@ impl ServerWorld {
             }
             sink.send(&respawn);
             sink.send(&difficulty);
+            // `TeleportTransition.missingRespawnBlock` out of the End: the bed or anchor is gone.
+            if spawn_route && landing.missing {
+                sink.send(&vanillite_protocol::packets::play::clientbound::GameEvent {
+                    event: vanillite_protocol::packets::play::clientbound::GameEvent::NO_RESPAWN_BLOCK_AVAILABLE,
+                    param: 0.0,
+                });
+            }
             data.connection.movement.teleport_relative(
                 &mut body,
                 landing.pos,
@@ -1363,6 +1407,16 @@ impl ServerWorld {
             );
         }
         player.inventory.send_all(sink.as_ref());
+        // A new client player (not after a dimension change, which keeps the attributes):
+        // the equipment's attribute modifiers again.
+        if keep_all != Some(true) {
+            player.survival.equipment_modifiers = Default::default();
+            if let Some(update) =
+                vanillite_game::effect::living::player_equipment_update(network_id.0, player, true)
+            {
+                sink.send(&update);
+            }
+        }
         sink.send(&SetHeldSlot {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
@@ -1520,9 +1574,9 @@ impl ServerWorld {
                 })
             }
             Route::Spawn | Route::Respawn { .. } => {
-                // `findRespawnPositionAndUseSpawnBlock`: a respawn (not the End's exit) uses
-                // an anchor charge.
-                let consume = matches!(traveller.route, Route::Respawn { .. });
+                // `findRespawnPositionAndUseSpawnBlock`: a respawn after death (not the End's
+                // exit, not the return from the credits) uses an anchor charge.
+                let consume = matches!(traveller.route, Route::Respawn { keep_all: false });
                 let config = traveller
                     .data
                     .survival
@@ -1960,7 +2014,7 @@ impl ServerWorld {
         let mut no_gateway = |_| false;
         let dimension = self.dimension.clone();
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = self.survival.env(
             &mut random,
             state,

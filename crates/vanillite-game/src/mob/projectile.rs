@@ -56,11 +56,16 @@ pub struct ArrowData {
     pub pierce_level: u8,
     /// `piercingIgnoreEntityIds`: the entities it pierced (hits them no more).
     pub pierced: Vec<EntityId>,
+    /// `piercedAndKilledEntities`: what a piercing arrow killed, with the type and the
+    /// position at the kill (for `KILLED_BY_ARROW`).
+    pub pierced_killed: Vec<(EntityId, &'static str, Vec3)>,
     /// `soundEvent` is `item.crossbow.hit` (shot from a crossbow) instead of
     /// `entity.arrow.hit`.
     pub crossbow_sound: bool,
     /// The bow or crossbow it was shot from (`firedFromWeapon`).
     pub weapon: Option<crate::item::ItemStack>,
+    /// `Projectile.lastDeflectedBy`.
+    pub last_deflected: Option<EntityId>,
 }
 
 impl ArrowData {
@@ -92,8 +97,10 @@ impl ArrowData {
             has_been_shot: false,
             pierce_level: 0,
             pierced: Vec::new(),
+            pierced_killed: Vec::new(),
             crossbow_sound: false,
             weapon: None,
+            last_deflected: None,
         }
     }
 
@@ -313,6 +320,48 @@ pub(crate) fn mob_arrow(effect: Option<crate::effect::EffectInstance>) -> crate:
     item
 }
 
+/// `Entity.canBeHitByProjectile` (alive and `isPickable`): living entities but marker armor
+/// stands and spectators, end crystals, shulker bullets, the `#redirectable_projectile`s,
+/// item frames, paintings and cushions, boats, minecarts, primed TNT and falling blocks.
+pub fn can_be_hit_by_projectile(ents: &Entities, id: EntityId) -> bool {
+    use super::missile::MissileKind;
+    if let Some(p) = ents.player(id) {
+        return !p.survival.is_dead_or_dying()
+            && p.game_mode != vanillite_config::GameMode::Spectator;
+    }
+    if let Some(m) = ents.mob(id) {
+        return m.is_alive()
+            && !(m.kind == super::Kind::ArmorStand && crate::decoration::stand::is_marker(m));
+    }
+    if let Some(d) = ents.missile(id) {
+        return !d.removed
+            && matches!(
+                d.kind,
+                MissileKind::Fireball
+                    | MissileKind::WindCharge
+                    | MissileKind::BreezeWindCharge
+                    | MissileKind::ShulkerBullet
+            );
+    }
+    if let Some(s) = ents.special(id) {
+        return matches!(s, super::boss::special::SpecialData::EndCrystal(c) if !c.removed);
+    }
+    if let Some(d) = ents.decor(id) {
+        use crate::decoration::DecorData;
+        return matches!(
+            d.data,
+            DecorData::Frame(_) | DecorData::Painting(_) | DecorData::Cushion(_)
+        );
+    }
+    ents.store.get(id).is_some_and(|e| {
+        let kind = e.kind();
+        crate::vehicle::BoatKind::of(kind).is_some()
+            || crate::minecart::MinecartKind::of(kind).is_some()
+            || kind == entity_ids::TNT
+            || kind == entity_ids::FALLING_BLOCK
+    })
+}
+
 /// `AbstractArrow.tick` (with `Projectile.tick`'s owner check) and `Arrow.tick`.
 pub fn tick_arrow(
     level: &Level,
@@ -436,13 +485,15 @@ pub fn tick_arrow(
             if !a.left_owner && a.owner == Some(other) {
                 return;
             }
-            let alive = ents.mob(other).is_some_and(super::MobData::is_alive)
-                || ents.player(other).is_some_and(|p| {
-                    !p.survival.is_dead_or_dying()
-                        && p.game_mode != vanillite_config::GameMode::Spectator
-                })
-                || super::boss::dragon::crystal::hittable(ents, other);
-            if !alive {
+            if !can_be_hit_by_projectile(ents, other) {
+                return;
+            }
+            // `AbstractArrow.canHitEntity`: a player's arrow flies through the players it may
+            // not hurt (`canHarmPlayer`).
+            if ents.player(other).is_some()
+                && let Some(owner) = a.owner.filter(|&o| ents.player(o).is_some())
+                && !super::attack::can_harm_player(ents, env, owner, other)
+            {
                 return;
             }
             let Some(oe) = ents.store.get(other) else {
@@ -486,6 +537,19 @@ pub fn tick_arrow(
                 continue;
             }
             hit_any = true;
+            // `hitTargetOrDeflectSelf`: a breeze turns the arrow back, once in a row.
+            if super::missile::deflects(ents, target, kind) {
+                if a.last_deflected != Some(target) {
+                    (velocity, rot) =
+                        super::missile::reverse(ents, env, target, velocity, rot, &mut random);
+                    a.last_deflected = Some(target);
+                }
+                deflected = true;
+                break;
+            }
+            // `Projectile.onHit`: a `#redirectable_projectile` it hits flies off along the
+            // owner's look (`onRedirectProjectile`).
+            super::attack::aim_deflect(ents, target, a.owner, a.owner);
             // `onHit` posts `PROJECTILE_LAND` at the hit location after `onHitEntity`.
             super::missile::land_event(env.out, level, id, a.owner, None, hit);
             // `onHitEntity`.
@@ -507,10 +571,28 @@ pub fn tick_arrow(
             let mut source = combat::entity_source(ents, env.types.arrow, owner, id);
             source.position = Some(pos);
             source.projectile_motion = Some(velocity);
-            let living = ents.mob(target).is_some() || ents.player(target).is_some();
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
-            if hurt && living {
+            let living = crate::effect::thrown::is_living(ents, target);
+            if hurt && !living {
+                // A vehicle, crystal or decoration: only the hit sound (`onHitEntity`).
+                let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
+                let seed = crate::survival::sound_seed();
+                play_sound(
+                    env.out,
+                    None,
+                    pos,
+                    hit_sound(&a),
+                    SoundSource::Neutral,
+                    1.0,
+                    pitch,
+                    seed,
+                );
+                if a.pierce_level == 0 {
+                    discard = true;
+                    break;
+                }
+            } else if hurt {
                 if a.fire {
                     super::attack::ignite(ents, target, 100);
                 }
@@ -540,42 +622,79 @@ pub fn tick_arrow(
                         a.spectral_duration,
                         0,
                     );
-                    crate::effect::living::add_to_entity(level, ents, env, cx, target, glowing);
-                } else {
-                    crate::effect::cloud::arrow_hit(level, ents, env, cx, target, &a.item);
-                }
-                // `KILLED_BY_ARROW` of a player's arrow that killed what it hit (no piercing).
-                if let Some(player) = a.owner.filter(|&o| ents.player(o).is_some()) {
-                    let dead = ents.mob(target).map_or_else(
-                        || {
-                            ents.player(target)
-                                .is_some_and(|p| p.survival.is_dead_or_dying())
-                        },
-                        |m| !m.is_alive(),
+                    // `getEffectSource()`: the owner, else the arrow.
+                    crate::effect::living::add_to_entity_from(
+                        level,
+                        ents,
+                        env,
+                        cx,
+                        target,
+                        glowing,
+                        Some(owner),
                     );
-                    if dead {
-                        use crate::advancements::{trigger, view};
-                        view::fire(
-                            ents,
-                            player,
-                            trigger::TriggerKind::KILLED_BY_ARROW,
-                            |ents| {
-                                trigger::Event::KilledByArrow(
-                                    view::snapshots(ents, &[target]),
-                                    1,
-                                    a.weapon.clone(),
-                                )
-                            },
-                        );
+                } else {
+                    crate::effect::cloud::arrow_hit(level, ents, env, cx, target, &a.item, owner);
+                }
+                // A piercing arrow keeps what it killed (`piercedAndKilledEntities`); a player's
+                // arrow fires `KILLED_BY_ARROW` with that list on every hit, else with what it
+                // hit if that died.
+                let dead = ents.mob(target).map_or_else(
+                    || {
+                        ents.player(target)
+                            .is_some_and(|p| p.survival.is_dead_or_dying())
+                    },
+                    |m| !m.is_alive(),
+                );
+                let victim = ents
+                    .store
+                    .get(target)
+                    .map(|e| (target, e.kind().name(), e.pos()));
+                if dead
+                    && a.pierce_level > 0
+                    && let Some(v) = victim
+                {
+                    a.pierced_killed.push(v);
+                }
+                let victims = if a.pierce_level > 0 {
+                    Some(a.pierced_killed.clone())
+                } else {
+                    victim.filter(|_| dead).map(|v| vec![v])
+                };
+                if let Some(player) = a.owner.filter(|&o| ents.player(o).is_some())
+                    && let Some(victims) = victims
+                {
+                    use crate::advancements::{predicate::EntityView, trigger, view};
+                    view::fire(
+                        ents,
+                        player,
+                        trigger::TriggerKind::KILLED_BY_ARROW,
+                        |ents| {
+                            let mut types: Vec<&str> = victims.iter().map(|v| v.1).collect();
+                            types.sort_unstable();
+                            types.dedup();
+                            let views = victims
+                                .iter()
+                                .map(|&(id, kind, pos)| {
+                                    view::snapshot(ents, id)
+                                        .map_or_else(|| EntityView::new(kind, pos), |v| *v)
+                                })
+                                .collect();
+                            trigger::Event::KilledByArrow(
+                                views,
+                                i32::try_from(types.len()).unwrap_or(i32::MAX),
+                                a.weapon.clone(),
+                            )
+                        },
+                    );
+                }
+                // `owner.setLastHurtMob(entity)`: mobs and players (their wolves join in).
+                if let Some(owner) = a.owner {
+                    if let Some(m) = ents.mob_mut(owner) {
+                        m.last_hurt_mob = Some(target);
+                    } else if let Some(p) = ents.player_mut(owner) {
+                        p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
                     }
                 }
-                if let Some(owner) = a.owner
-                    && let Some(m) = ents.mob_mut(owner)
-                {
-                    m.last_hurt_mob = Some(target);
-                }
-            }
-            if hurt {
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
                 let seed = crate::survival::sound_seed();
                 play_sound(
@@ -592,13 +711,26 @@ pub fn tick_arrow(
                     discard = true;
                     break;
                 }
-            } else {
-                // Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back at half
-                // the power, turned by 170° to 190°.
+            } else if !ents
+                .mob(target)
+                .is_some_and(|m| m.kind == super::Kind::Enderman)
+            {
+                // `projectileReceivesSideEffectsOnHit(false)` (an enderman's is false: the arrow
+                // flies on). Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back
+                // at half the power, turned by 170° to 190°.
                 let turn = 170.0 + random.next_float() * 20.0;
                 velocity = velocity * -0.1;
                 rot.y_rot += turn;
                 if velocity.length_sqr() < 1.0e-7 {
+                    // Stopped: it drops as an item if it may be picked up
+                    // (`spawnAtLocation(pickupItem, 0.1F)`).
+                    if a.pickup == 1 {
+                        crate::decoration::spawn_item(
+                            env,
+                            Vec3::new(pos.x, pos.y + f64::from(0.1_f32), pos.z),
+                            a.item.clone(),
+                        );
+                    }
                     discard = true;
                 }
                 deflected = true;
@@ -653,7 +785,9 @@ pub fn tick_arrow(
             a.crit = false;
             a.pierce_level = 0;
             a.crossbow_sound = false;
+            // `resetPiercedEntities`.
             a.pierced.clear();
+            a.pierced_killed.clear();
         } else if flies_on {
             pos = to;
         }
@@ -731,6 +865,111 @@ pub fn inside_blocks(
     crate::block::plate::for_each_inside(level, dims, &way, |pos| {
         cx.actions.push(super::WorldAction::EntityInside(pos, id));
     });
+}
+
+/// How a projectile takes a bubble column's drag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BubbleDrag {
+    /// `Projectile.onAbove/InsideBubbleColumn`: the drag adds to the motion, uncapped.
+    Projectile,
+    /// `Entity.handleOnAbove/InsideBubbleColumn` (ender pearls): capped like any entity's.
+    Entity,
+}
+
+/// `BubbleColumnBlock.entityInside` (only `isPrecise`) of the bubble columns a throwable
+/// passes: on the way `from` to where it is now (`applyEffectsFromBlocks`), or, with `from` =
+/// `None`, those in its box (`ThrowableProjectile.handleFirstTickBubbleColumn`). Each pushes the
+/// motion up or down, more on the column's top (`onAboveBubbleColumn`, with splash and bubble
+/// particles drawn from the level's `random`) than inside it (`onInsideBubbleColumn`).
+pub fn bubble_columns(
+    level: &Level,
+    ents: &mut Entities,
+    random: &mut LegacyRandom,
+    cx: &mut MobContext,
+    id: EntityId,
+    from: Option<Vec3>,
+    drag: BubbleDrag,
+) {
+    use vanillite_base::math::floor;
+    use vanillite_data::block::ids::BUBBLE_COLUMN;
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    let (pos, dims, aabb) = (e.pos(), e.dims(), e.aabb());
+    let mut columns: Vec<(BlockPos, bool)> = Vec::new();
+    let drag_down = |state: BlockState| state.value("drag") == Some("true");
+    match from {
+        Some(from) => {
+            let way = [crate::survival::inside::Movement::plain(from, pos)];
+            let view = level.view();
+            let walker = crate::survival::inside::Walker {
+                blocks: &view,
+                facts: None,
+                dims,
+                fast_fall: false,
+            };
+            walker.walk(&way, |cell| {
+                if cell.in_block && cell.precise && cell.state.block() == BUBBLE_COLUMN {
+                    columns.push((cell.pos, drag_down(cell.state)));
+                }
+                true
+            });
+        }
+        None => {
+            // `findBlocksIn(getBoundingBox())`: Y, then Z, then X.
+            for y in floor(aabb.min_y)..=floor(aabb.max_y) {
+                for z in floor(aabb.min_z)..=floor(aabb.max_z) {
+                    for x in floor(aabb.min_x)..=floor(aabb.max_x) {
+                        let at = BlockPos::new(x, y, z);
+                        let state = level.block(at);
+                        if state.block() == BUBBLE_COLUMN {
+                            columns.push((at, drag_down(state)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (at, down) in columns {
+        let above = level.block(BlockPos::new(at.x, at.y + 1, at.z));
+        let nothing_above = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+        let Some(mut e) = ents.store.get_mut(id) else {
+            return;
+        };
+        let v = e.as_ref().velocity();
+        let y = match (drag, nothing_above, down) {
+            (BubbleDrag::Projectile, _, true) => v.y - 0.03,
+            (BubbleDrag::Projectile, true, false) => v.y + 0.1,
+            (BubbleDrag::Projectile, false, false) => v.y + 0.06,
+            (BubbleDrag::Entity, true, true) => (v.y - 0.03).max(-0.9),
+            (BubbleDrag::Entity, true, false) => (v.y + 0.1).min(1.8),
+            (BubbleDrag::Entity, false, true) => (v.y - 0.03).max(-0.3),
+            (BubbleDrag::Entity, false, false) => (v.y + 0.06).min(0.7),
+        };
+        e.set_velocity(Vec3::new(v.x, y, v.z));
+        if nothing_above {
+            bubble_column_particles(random, cx, at);
+        }
+    }
+}
+
+/// `Entity.sendBubbleColumnParticles`: splashes and bubbles at random spots on the column's
+/// top, drawn from the level's random.
+fn bubble_column_particles(random: &mut LegacyRandom, cx: &mut MobContext, pos: BlockPos) {
+    use crate::level::particles::simple;
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y + 1), f64::from(pos.z));
+    for _ in 0..2 {
+        let at = Vec3::new(x + random.next_double(), y, z + random.next_double());
+        cx.send_particles(simple("minecraft:splash"), at, 1, Vec3::ZERO, 1.0);
+        let at = Vec3::new(x + random.next_double(), y, z + random.next_double());
+        cx.send_particles(
+            simple("minecraft:bubble"),
+            at,
+            1,
+            Vec3::new(0.0, 0.01, 0.0),
+            0.2,
+        );
+    }
 }
 
 /// `soundEvent`: what the arrow sounds like when it hits.

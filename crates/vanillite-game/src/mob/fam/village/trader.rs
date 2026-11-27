@@ -375,13 +375,13 @@ impl FamilyHooks for Hooks {
     }
     fn encode_data(w: &mut DataWriter<'_>, m: &MobData) {
         w.boolean(16, m.baby, false);
-        w.boolean(17, false, false);
+        w.boolean(17, m.age_locked, false);
         w.int(18, state(m).merchant.unhappy_counter, 0);
     }
     fn save(m: &MobData, out: &mut Compound) {
         out.insert("Age", m.age);
         out.insert("ForcedAge", m.forced_age);
-        out.insert("AgeLocked", false);
+        out.insert("AgeLocked", m.age_locked);
         merchant::save(&state(m).merchant, out);
         let tr = &state(m).trader;
         out.insert("DespawnDelay", tr.despawn_delay);
@@ -399,6 +399,7 @@ impl FamilyHooks for Hooks {
         // `setAge(max(0, age))`.
         m.age = int("Age").max(0);
         m.forced_age = int("ForcedAge");
+        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
         m.baby = false;
         let s = state_mut(m);
         merchant::load(&mut s.merchant, tag);
@@ -496,7 +497,7 @@ impl FamilyHooks for Hooks {
                 state_mut(t.mob()).trader.use_remaining = 32;
                 crate::mob::projectile::start_using_item(t);
             }
-            Goal::TradeWithPlayer => t.mob().nav.stop(),
+            Goal::TradeWithPlayer => t.nav().stop(),
             Goal::LookAtTradingPlayer { time, .. } | Goal::LookAt { time, .. } => {
                 let r = t.mob().random.next_int_bounded(40);
                 *time = reduced(40 + r);
@@ -526,7 +527,7 @@ impl FamilyHooks for Hooks {
             }
             Goal::WanderToPosition => {
                 state_mut(t.mob()).trader.wander_target = None;
-                t.mob().nav.stop();
+                t.nav().stop();
             }
         }
     }
@@ -543,7 +544,7 @@ impl FamilyHooks for Hooks {
                 let Some(target) = state(t.mob_ref()).trader.wander_target else {
                     return;
                 };
-                if !t.mob_ref().nav.is_done() {
+                if !t.nav_ref().is_done() {
                     return;
                 }
                 let p = t.pos();

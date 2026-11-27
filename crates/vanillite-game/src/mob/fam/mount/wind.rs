@@ -14,6 +14,11 @@ use crate::survival::damage::DamageSource;
 /// `MissileData.ints[0]`: `WindCharge.noDeflectTicks`.
 const NO_DEFLECT: usize = 0;
 
+/// `WindCharge.deflect` refuses while `noDeflectTicks` run (a fresh player's charge).
+pub(crate) fn refuses_deflection(d: &MissileData) -> bool {
+    d.kind == MissileKind::WindCharge && d.ints[NO_DEFLECT] > 0
+}
+
 /// `Projectile.getMovementToShoot(x, y, z, pow, uncertainty)` with a random.
 pub fn movement_to_shoot(
     random: &mut impl RandomSource,
@@ -113,7 +118,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
     ) {
         return;
     }
-    let Some((pos, velocity)) = t.core().map(|e| (e.pos(), e.velocity())) else {
+    let Some((pos, mut velocity)) = t.core().map(|e| (e.pos(), e.velocity())) else {
         return;
     };
     // Above the build height plus 30: it bursts.
@@ -127,7 +132,20 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         discard(t);
         return;
     }
-    // `applyInertia`: inertia 1 and no acceleration keep the speed.
+    // `applyInertia` with inertia 1: thrown charges keep their speed, a deflected one
+    // (`accelerationPower` 0.1) speeds up.
+    let acceleration = t.ents.missile(t.id).map_or(0.0, |d| d.acceleration);
+    if acceleration != 0.0 {
+        let n = if velocity.length() < 1.0e-5 {
+            Vec3::ZERO
+        } else {
+            velocity.normalize()
+        };
+        velocity = velocity + n * acceleration;
+        if let Some(mut e) = t.ents.store.get_mut(t.id) {
+            e.set_velocity(velocity);
+        }
+    }
     let to = pos + velocity;
     let block_hit = crate::mob::physics::clip(t.level, pos, to);
     let end = block_hit.map_or(to, |(_, at)| at);
@@ -225,12 +243,12 @@ fn hit_entity(
         if id == t.id || (!left && Some(id) == owner) {
             return;
         }
-        let living = t.ents.mob(id).is_some_and(crate::mob::MobData::is_alive)
-            || t.ents.player(id).is_some_and(|p| {
-                p.game_mode != vanillite_config::GameMode::Spectator
-                    && !p.survival.is_dead_or_dying()
-            });
-        if !living {
+        // `AbstractWindCharge.canHitEntity`: no end crystals (no other wind charges either).
+        let crystal = matches!(
+            t.ents.special(id),
+            Some(crate::mob::boss::special::SpecialData::EndCrystal(_))
+        );
+        if crystal || !crate::effect::thrown::can_be_hit(t.ents, id) {
             return;
         }
         let Some(e) = t.ents.store.get(id) else {

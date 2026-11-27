@@ -325,9 +325,40 @@ pub fn center(pos: BlockPos) -> Vec3 {
 
 /// `Level.noCollision(type.getSpawnAABB(x, y, z))` against blocks.
 pub fn no_collision_at(level: &Level, type_id: EntityTypeId, pos: Vec3) -> bool {
-    let aabb = Dimensions::of(type_id).bounding_box(pos);
+    use vanillite_data::entity::ids as types;
+    // `EntityType.getSpawnAABB`: the box scaled by `spawnDimensionsScale` (in float).
+    let scale: f32 = if type_id == types::SLIME || type_id == types::MAGMA_CUBE {
+        4.0
+    } else if type_id == types::SULFUR_CUBE {
+        2.0
+    } else {
+        1.0
+    };
+    let d = Dimensions::of(type_id);
+    let half = f64::from(scale * d.width / 2.0);
+    let height = f64::from(scale * d.height);
+    let aabb = vanillite_base::Aabb::new(
+        pos.x - half,
+        pos.y,
+        pos.z - half,
+        pos.x + half,
+        pos.y + height,
+        pos.z + half,
+    );
     let mut scratch = Vec::new();
-    physics::no_collision(&level.view(), &aabb, &mut scratch)
+    if !physics::no_collision(&level.view(), &aabb, &mut scratch) {
+        return false;
+    }
+    // `getEntityCollisions(null, box)`: boats and living shulkers are solid.
+    let mut solid = false;
+    level.entities.store.for_each_in(&aabb, false, |id| {
+        solid |= level.entities.boat(id).is_some()
+            || level
+                .entities
+                .mob(id)
+                .is_some_and(|m| m.kind == Kind::Shulker && m.is_alive());
+    });
+    !solid
 }
 
 /// `SpawnPlacements.checkSpawnRules(type, level, SPAWNER or TRIAL_SPAWNER, pos, random)`:
@@ -386,14 +417,20 @@ pub fn create_mob(_level: &mut Level, data: &SpawnData, pos: Vec3) -> Option<(Mo
 }
 
 /// `Mob.checkSpawnRules(level, SPAWNER)` (the walk target value is not negative) and
-/// `checkSpawnObstruction` (no liquid in the box).
-pub fn mob_spawn_checks(level: &Level, kind: Kind, pos: Vec3, check_rules: bool) -> bool {
+/// `checkSpawnObstruction` (no liquid and no entity that blocks building in the box, with the
+/// kinds' overrides).
+pub fn mob_spawn_checks(
+    level: &Level,
+    mob: &crate::mob::MobData,
+    pos: Vec3,
+    check_rules: bool,
+) -> bool {
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
-    if check_rules && kinds::walk_target_value(kind, level, &level.spawner_env.env, block) < 0.0 {
+    if check_rules && kinds::walk_target_value(mob.kind, level, &level.spawner_env.env, block) < 0.0
+    {
         return false;
     }
-    let aabb = Dimensions::of(kind.type_id()).bounding_box(pos);
-    !physics::contains_any_liquid(level, &aabb)
+    spawn::check_spawn_obstruction(level, &level.spawner_env.env, mob, pos)
 }
 
 /// `level.gameEvent(entity, GameEvent.ENTITY_PLACE, pos)`.
@@ -695,7 +732,7 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
             return;
         }
         let y_rot = level.random().next_float() * 360.0;
-        if !mob_spawn_checks(level, mob.kind, at, custom.is_none()) {
+        if !mob_spawn_checks(level, &mob, at, custom.is_none()) {
             continue;
         }
         let mut mob = mob;
@@ -704,6 +741,11 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
         } else {
             Vec::new()
         };
+        // `nextSpawnData.getEquipment().ifPresent(mob::equip)`.
+        if let Some((table, chances)) = data.equipment() {
+            let table = table.to_owned();
+            equip_from_table(level, &mut mob, at, &table, &chances);
+        }
         // `AbstractCubeMob.onSyncedDataUpdated(ID_SIZE)`: a cube whose spawn size changed
         // turns to its head yaw (the loaded 0).
         let cube_turned = matches!(mob.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube)
@@ -736,6 +778,8 @@ fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
         }
         level.level_event(None, 2004, pos, 0);
         entity_place_event(level, id, block);
+        // `Mob.spawnAnim`: the poof particles.
+        level.broadcast_entity_event(id, crate::mob::living::event::SPAWN_POOF);
         delayed = true;
     }
     if delayed {
@@ -776,8 +820,15 @@ pub fn random_spawn_pos(random: &mut LegacyRandom, pos: BlockPos, range: i32) ->
 pub fn fixed_pos(data: &SpawnData) -> Option<Vec3> {
     match data.entity()?.get("Pos") {
         Some(Tag::List(l)) if l.0.len() == 3 => {
-            let d = |i: usize| match l.0.get(i) {
-                Some(Tag::Double(v)) => Some(*v),
+            // `Vec3.CODEC`: numbers of any numeric tag type.
+            let d = |i: usize| match l.0.get(i)? {
+                Tag::Double(v) => Some(*v),
+                Tag::Float(v) => Some(f64::from(*v)),
+                Tag::Byte(v) => Some(f64::from(*v)),
+                Tag::Short(v) => Some(f64::from(*v)),
+                Tag::Int(v) => Some(f64::from(*v)),
+                #[allow(clippy::cast_precision_loss)]
+                Tag::Long(v) => Some(*v as f64),
                 _ => None,
             };
             Some(Vec3::new(d(0)?, d(1)?, d(2)?))

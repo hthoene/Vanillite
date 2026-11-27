@@ -207,7 +207,18 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
             let block_hit = block_hit.filter(|&(hit_pos, at)| {
                 entity_hit.is_some() || hit_event(crate::mob::missile::HitWhat::Block(hit_pos, at))
             });
-            if let Some((target, hit)) = entity_hit {
+            let deflector = entity_hit.map(|(target, _)| target).filter(|&target| {
+                crate::mob::missile::deflects(t.ents, target, vanillite_data::entity::ids::TRIDENT)
+            });
+            if let Some(target) = deflector {
+                // `hitTargetOrDeflectSelf`: a breeze turns the trident back, once in a row.
+                if d.last_deflected != Some(target) {
+                    (velocity, rot) = crate::mob::missile::reverse(
+                        t.ents, t.env, target, velocity, rot, &mut own,
+                    );
+                    d.last_deflected = Some(target);
+                }
+            } else if let Some((target, hit)) = entity_hit {
                 pos = hit;
                 hit_entity(t, &mut d, target, pos);
                 crate::mob::missile::land_event(t.env.out, t.level, id, d.owner, None, hit);
@@ -294,13 +305,7 @@ fn find_hit(
         if other == t.id || (!d.left_owner && d.owner == Some(other)) {
             return;
         }
-        let alive = t.ents.mob(other).is_some_and(crate::mob::MobData::is_alive)
-            || t.ents.player(other).is_some_and(|p| {
-                !p.survival.is_dead_or_dying()
-                    && p.game_mode != vanillite_config::GameMode::Spectator
-            })
-            || crate::mob::boss::dragon::crystal::hittable(t.ents, other);
-        if !alive {
+        if !crate::effect::thrown::can_be_hit(t.ents, other) {
             return;
         }
         let Some(oe) = t.ents.store.get(other) else {
@@ -421,10 +426,13 @@ fn run_block_effect(
             ));
         }
         EntityEffect::PlaySound {
-            sound: s,
+            sounds,
             volume,
             pitch,
         } => {
+            let Some(s) = sounds.first() else {
+                return;
+            };
             play_sound(
                 t.env.out,
                 None,
@@ -460,8 +468,11 @@ pub fn try_pickup(
     if d.kind != MissileKind::Trident || d.removed {
         return false;
     }
-    let owned = d.owner == Some(player_id);
-    if !(owned || d.owner.is_none()) {
+    // `ownedBy` compares the UUID; `getOwner() == null` for an owner that is not here.
+    let player_uuid = ents.store.get(player_id).map(|e| e.uuid());
+    let owned = d.owner_uuid.is_some() && d.owner_uuid == player_uuid;
+    let ownerless = crate::mob::missile::resolve_owner(ents, d.owner, d.owner_uuid).is_none();
+    if !(owned || ownerless) {
         return false;
     }
     let returning = d.ints[2] & RETURNING != 0;

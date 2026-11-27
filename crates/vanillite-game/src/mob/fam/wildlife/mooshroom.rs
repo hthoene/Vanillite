@@ -5,7 +5,7 @@ use vanillite_base::Vec3;
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_protocol::packets::play::clientbound::SoundSource;
-use vanillite_world::entity::Rotation;
+use vanillite_world::entity::{EntityId, Rotation};
 
 use super::{st, st_mut};
 use crate::effect::MobEffect;
@@ -283,6 +283,20 @@ pub(crate) fn shear(
 }
 
 /// `MushroomCow.thunderHit`: red and brown swap.
+/// `lastLightningBoltUUID`: whether `bolt` differs from the last bolt that struck the
+/// mooshroom; remembers it.
+pub(crate) fn new_bolt(ents: &mut crate::entities::Entities, id: EntityId, bolt: u128) -> bool {
+    let Some(m) = ents.mob_mut(id) else {
+        return false;
+    };
+    let s = st_mut(m);
+    if s.last_bolt == Some(bolt) {
+        return false;
+    }
+    s.last_bolt = Some(bolt);
+    true
+}
+
 pub(super) fn thunder_hit(h: &mut Hurt<'_, '_>) {
     let Some(m) = h.ents.mob_mut(h.target) else {
         return;

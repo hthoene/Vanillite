@@ -375,6 +375,10 @@ fn execute(
     let target = source.target();
     match behaviour {
         B::Entity if item::item_id(&stack) == items::ARMOR_STAND => {
+            // `EntityType.create` snaps the stand to a random yaw from the level random before
+            // the dispenser's configuration turns it (Vanilla's head keeps the constructor's
+            // `Math.random` yaw, which cannot be reproduced; it follows the yaw here).
+            let _ = level.random().next_float();
             // `EntityType.spawn(level, config, pos, DISPENSER, false, false)` facing the
             // dispenser's direction (`toYRot`).
             let pos = Vec3::new(
@@ -394,7 +398,22 @@ fn execute(
             stack.shrink(1);
             stack
         }
-        B::Default | B::Entity | B::Chest => default_execute(level, source, stack),
+        B::Chest => {
+            // The chested horses in front without a chest: the first tame one takes it.
+            let mut found = Vec::new();
+            level
+                .entities
+                .store
+                .for_each_in(&Aabb::of_block(target), false, |id| found.push(id));
+            for id in found {
+                if crate::mob::fam::companion::horse::dispense_chest(&mut level.entities, id) {
+                    stack.shrink(1);
+                    return stack;
+                }
+            }
+            default_execute(level, source, stack)
+        }
+        B::Default | B::Entity => default_execute(level, source, stack),
         B::Projectile => {
             shoot_projectile(level, source, &stack);
             stack.shrink(1);
@@ -474,7 +493,7 @@ fn execute(
                 dispense(level, source, stack, B::Default)
             }
         }
-        B::EmptyBucket => match pickup_block(level, target) {
+        B::EmptyBucket => match pickup_block(level, target, false) {
             Some(filled) => {
                 level.game_event_at(None, events().fluid_pickup, target);
                 consume_with_remainder(level, source, stack, ItemStack::new(filled.0, 1))
@@ -595,8 +614,28 @@ fn execute(
             stack
         }
         B::Brush => {
-            // No armadillo to brush.
-            *success = false;
+            // The armadillos in front (no spectators): the first adult sheds a scute.
+            let mut armadillos = Vec::new();
+            level
+                .entities
+                .store
+                .for_each_in(&Aabb::of_block(target), false, |id| armadillos.push(id));
+            armadillos.retain(|&id| {
+                level
+                    .entities
+                    .mob(id)
+                    .is_some_and(|m| m.kind == crate::mob::Kind::Armadillo)
+            });
+            let brushed = !armadillos.is_empty()
+                && crate::level::mob_env::with_mob_env(level, |level, ents, env, cx| {
+                    armadillos.into_iter().any(|id| {
+                        crate::mob::fam::brainy::armadillo::dispense_brush(level, ents, env, cx, id)
+                    })
+                });
+            *success = brushed;
+            if brushed {
+                hurt_and_break(level, &mut stack, 16);
+            }
             stack
         }
         B::Honeycomb => {
@@ -871,7 +910,15 @@ pub(crate) fn empty_bucket_contents_by(
     let may_replace = !matches!(kind, BlockKind::EndGatewayBlock | BlockKind::EndPortalBlock)
         && (super::can_be_replaced(state) || !super::is_solid(state));
     let water = fluid == ids::WATER;
-    let waterloggable = state.value("waterlogged").is_some();
+    // `BarrierBlock.canPlaceLiquid`: only creative players waterlog a barrier.
+    let waterloggable = state.value("waterlogged").is_some()
+        && (!state.is(ids::BARRIER)
+            || user.is_some_and(|u| {
+                level
+                    .entities
+                    .player(u)
+                    .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative)
+            }));
     // `LiquidBlockContainer.canPlaceLiquid`: any water for waterloggable blocks, also when they
     // hold water already (the bucket then empties without effect); not double slabs.
     let place_liquid =
@@ -899,6 +946,16 @@ pub(crate) fn empty_bucket_contents_by(
             0.5,
             pitch,
         );
+        // `sendParticles(LARGE_SMOKE, x, y, z, 8, 1, 1, 1, 0, ALTERNATIVE)`.
+        let mut smoke = crate::level::particles::packet(
+            crate::level::particles::simple("minecraft:large_smoke"),
+            Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)),
+            8,
+            Vec3::new(1.0, 1.0, 1.0),
+            0.0,
+        );
+        smoke.randomization = 1;
+        level.send_particles_packet(smoke);
         return true;
     }
     if water && (waterloggable || is_closed_container(state.block())) {
@@ -971,7 +1028,7 @@ fn place_powder_snow(level: &mut Level, pos: BlockPos) -> bool {
 
 /// `BucketPickup.pickupBlock(null, level, pos, state)`: the filled bucket, `None` if the block
 /// gives nothing (also for blocks that are no `BucketPickup`).
-pub(crate) fn pickup_block(level: &mut Level, pos: BlockPos) -> Option<ItemId> {
+pub(crate) fn pickup_block(level: &mut Level, pos: BlockPos, creative: bool) -> Option<ItemId> {
     let state = level.block(pos);
     match state.block().info().kind {
         BlockKind::LiquidBlock => {
@@ -994,6 +1051,8 @@ pub(crate) fn pickup_block(level: &mut Level, pos: BlockPos) -> Option<ItemId> {
             level.set_block(pos, BlockState::AIR, update::ALL_IMMEDIATE);
             Some(items::WATER_BUCKET)
         }
+        // `BarrierBlock.pickupBlock`: only for creative players.
+        _ if state.is(ids::BARRIER) && !creative => None,
         _ if state.flag("waterlogged") => {
             // `SimpleWaterloggedBlock.pickupBlock`.
             level.set_block(pos, state.set_flag("waterlogged", false), update::ALL);

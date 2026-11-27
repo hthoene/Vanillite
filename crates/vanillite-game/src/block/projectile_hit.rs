@@ -222,6 +222,31 @@ fn tnt(level: &mut Level, _: BlockState, pos: BlockPos, hit: &ProjectileHit) {
             .get(o)
             .is_some_and(|e| crate::block::plate::is_living(e.kind()))
     });
+    // `prime`: an adventure mode owner's arrow needs `can_break` for the TNT.
+    let adventure = source.is_some_and(|o| {
+        level
+            .entities
+            .player(o)
+            .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Adventure)
+    });
+    if adventure && level.settings.tnt_explodes {
+        let arrow = level
+            .entities
+            .arrow(hit.projectile)
+            .map(|a| a.item.clone())
+            .unwrap_or_default();
+        let allowed = crate::player::play::game_data().is_some_and(|data| {
+            crate::player::play::adventure_allows(
+                &data,
+                Some(level),
+                arrow.component(vanillite_protocol::components::ids::CAN_BREAK),
+                pos,
+            )
+        });
+        if !allowed {
+            return;
+        }
+    }
     if super::tnt::prime(level, pos, source) {
         level.remove_block(pos, false);
     }

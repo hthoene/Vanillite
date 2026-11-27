@@ -153,6 +153,9 @@ struct Entry {
     entity: BlockEntity,
     /// The ticker slot of this block entity, if it ticks.
     ticker: Option<u32>,
+    /// `BlockEntity.components`: the item components the block entity keeps without using them
+    /// (`item_name`, `lore`, `custom_data`, ...), in their saved form (`"components"`).
+    components: Option<Box<Compound>>,
 }
 
 /// The block entities of a level, per chunk.
@@ -232,7 +235,14 @@ impl BlockEntities {
         };
         let new_listener = listener_of(pos, &entity);
         let gateway = matches!(entity, BlockEntity::EndGateway(_));
-        let old = entries.insert(pos, Entry { entity, ticker });
+        let old = entries.insert(
+            pos,
+            Entry {
+                entity,
+                ticker,
+                components: None,
+            },
+        );
         let old_gateway = matches!(
             old,
             Some(Entry {
@@ -269,6 +279,24 @@ impl BlockEntities {
             self.listeners.unregister(listener);
         }
         Some(removed.entity)
+    }
+
+    /// The components the block entity at `pos` keeps (`BlockEntity.components`).
+    pub fn kept_components(&self, pos: BlockPos) -> Option<&Compound> {
+        self.chunks
+            .get(&pos.chunk())?
+            .get(&pos)?
+            .components
+            .as_deref()
+    }
+
+    /// Sets the components the block entity at `pos` keeps.
+    pub fn set_kept_components(&mut self, pos: BlockPos, components: Option<Compound>) {
+        let chunk = pos.chunk();
+        if let Some(e) = self.chunks.get_mut(&chunk).and_then(|c| c.get_mut(&pos)) {
+            e.components = components.filter(|c| !c.is_empty()).map(Box::new);
+            self.touched.insert(chunk);
+        }
     }
 
     /// The block entities of a chunk.
@@ -695,16 +723,21 @@ fn load(state: BlockState, nbt: &Compound) -> Option<BlockEntity> {
         _ => None,
     };
     if state.is(ids::MOVING_PISTON) {
-        let moved = match nbt.get("blockState") {
-            Some(Tag::Compound(c)) => read_block_state(c),
-            _ => BlockState::AIR,
-        };
+        let moved = nbt
+            .get("blockState")
+            .and_then(read_state_codec)
+            .unwrap_or(BlockState::AIR);
         let flag = |name| matches!(nbt.get(name), Some(Tag::Byte(v)) if *v != 0);
         let progress = match nbt.get("progress") {
             Some(Tag::Float(v)) => *v,
             _ => 0.0,
         };
-        let direction = direction_from_3d(int("facing").unwrap_or(0));
+        // `Direction.LEGACY_ID_CODEC`: a byte (older saves of Vanillite: an int).
+        let facing = match nbt.get("facing") {
+            Some(Tag::Byte(v)) => i32::from(*v),
+            _ => int("facing").unwrap_or(0),
+        };
+        let direction = direction_from_3d(facing);
         let mut piston = MovingPiston::new(moved, direction, flag("extending"), flag("source"));
         piston.progress = progress;
         piston.progress_o = progress;
@@ -795,11 +828,11 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
     match entity {
         BlockEntity::Comparator { output } => nbt.insert("OutputSignal", Tag::Int(*output)),
         BlockEntity::MovingPiston(piston) => {
+            nbt.insert("blockState", write_state_codec(piston.moved_state));
             nbt.insert(
-                "blockState",
-                Tag::Compound(write_block_state(piston.moved_state)),
+                "facing",
+                Tag::Byte(i8::try_from(direction_to_3d(piston.direction)).unwrap_or(0)),
             );
-            nbt.insert("facing", Tag::Int(direction_to_3d(piston.direction)));
             nbt.insert("progress", Tag::Float(piston.progress_o));
             nbt.insert("extending", Tag::Byte(i8::from(piston.extending)));
             nbt.insert("source", Tag::Byte(i8::from(piston.source)));
@@ -907,18 +940,47 @@ pub fn read_block_state(c: &Compound) -> BlockState {
     state
 }
 
-/// `NbtUtils.writeBlockState`.
-pub(crate) fn write_block_state(state: BlockState) -> Compound {
+/// `BlockState.CODEC` (`CONSTANT_OR_DISPATCH_CODEC`): the block id of a default state, else
+/// `{id, properties}`; the `{Name, Properties}` of `NbtUtils` reads too. `None` for anything
+/// else.
+pub fn read_state_codec(tag: &Tag) -> Option<BlockState> {
+    match tag {
+        Tag::String(name) => vanillite_data::block::BlockId::by_name(name)
+            .map(vanillite_data::block::BlockId::default_state),
+        Tag::Compound(c) => match c.get("id") {
+            Some(Tag::String(name)) => {
+                let block = vanillite_data::block::BlockId::by_name(name)?;
+                let mut state = block.default_state();
+                if let Some(Tag::Compound(props)) = c.get("properties") {
+                    for (key, value) in props.iter() {
+                        if let Tag::String(value) = value {
+                            state = state.with(key, value).unwrap_or(state);
+                        }
+                    }
+                }
+                Some(state)
+            }
+            _ => c.get("Name").is_some().then(|| read_block_state(c)),
+        },
+        _ => None,
+    }
+}
+
+/// `BlockState.CODEC` of `state`: the block id for its default state, else
+/// `{id, properties}` with every property.
+pub fn write_state_codec(state: BlockState) -> Tag {
+    let name = state.block().name().to_owned();
+    if state == state.block().default_state() {
+        return Tag::String(name);
+    }
     let mut c = Compound::new();
-    c.insert("Name", Tag::String(state.block().name().to_owned()));
+    c.insert("id", Tag::String(name));
     let mut props = Compound::new();
     for (key, value) in state.properties() {
         props.insert(key, Tag::String(value.to_owned()));
     }
-    if !props.is_empty() {
-        c.insert("Properties", Tag::Compound(props));
-    }
-    c
+    c.insert("properties", Tag::Compound(props));
+    Tag::Compound(c)
 }
 
 impl Level {
@@ -977,7 +1039,12 @@ impl Level {
                 Some(BlockEntity::CommandBlock(c)) => Some(c.auto),
                 _ => None,
             };
+            let statue = matches!(entity, BlockEntity::CopperGolemStatue(_));
             self.block_entities.insert(pos, entity);
+            if !statue {
+                self.block_entities
+                    .set_kept_components(pos, saved_components(nbt));
+            }
             crate::block::technical::command_block::loaded(self, pos, previous_auto);
         } else {
             let mut data = nbt.clone();
@@ -1034,7 +1101,13 @@ impl Level {
                 continue;
             };
             if let Some(entity) = load(state, &nbt) {
+                let statue = matches!(entity, BlockEntity::CopperGolemStatue(_));
                 self.block_entities.insert(data.pos, entity);
+                if !statue && let Some(kept) = saved_components(&nbt) {
+                    self.block_entities
+                        .set_kept_components(data.pos, Some(kept));
+                    self.block_entities.touched.remove(&chunk);
+                }
             }
         }
         self.block_entities.touched.remove(&chunk);
@@ -1056,7 +1129,10 @@ impl Level {
             .collect();
         for (pos, entity) in self.block_entities.in_chunk(chunk) {
             let state = self.block(pos);
-            let nbt = save(entity, state, pos);
+            let mut nbt = save(entity, state, pos);
+            if let Some(kept) = self.block_entities.kept_components(pos) {
+                nbt.insert("components", Tag::Compound(kept.clone()));
+            }
             let mut bytes = Vec::new();
             if vanillite_nbt::write::write_network_compound(&nbt, &mut bytes).is_err() {
                 continue;
@@ -1226,7 +1302,61 @@ pub fn update_tag(entity: &BlockEntity, state: BlockState) -> Option<Compound> {
 // --- Components ------------------------------------------------------------------------------
 
 /// `BlockEntity.collectComponents`: the value of component `id` the block entity puts on the
-/// item it drops (loot `copy_components`), as a wire value.
+/// item it drops (loot `copy_components`), as a wire value: its own (implicit) value, else the
+/// one it keeps (`kept`, [`BlockEntities::kept_components`]).
+pub fn collect_component_with(
+    entity: &BlockEntity,
+    kept: Option<&Compound>,
+    id: u16,
+) -> Option<Box<[u8]>> {
+    if let Some(v) = collect_component(entity, id) {
+        return Some(v);
+    }
+    let kept = kept?;
+    let name = crate::item_nbt::component_type_name(id)?;
+    crate::item_nbt::component_from_nbt(id, kept.get(name)?)
+}
+
+/// The `"components"` of saved block entity data.
+fn saved_components(nbt: &Compound) -> Option<Compound> {
+    match nbt.get("components") {
+        Some(Tag::Compound(c)) if !c.is_empty() => Some(c.clone()),
+        _ => None,
+    }
+}
+
+/// The components a block entity uses itself (`applyImplicitComponents`); the others of the
+/// placed stack it keeps.
+const IMPLICIT_COMPONENTS: [u16; 11] = [
+    components::BLOCK_ENTITY_DATA,
+    components::BLOCK_STATE,
+    components::CUSTOM_NAME,
+    components::LOCK,
+    components::CONTAINER,
+    components::CONTAINER_LOOT,
+    components::BANNER_PATTERNS,
+    components::PROFILE,
+    components::NOTE_BLOCK_SOUND,
+    components::POT_DECORATIONS,
+    components::BEES,
+];
+
+/// `BlockEntity.applyComponents`: the stack's component patch without the implicit
+/// components, in its saved form.
+fn kept_of(stack: &ItemStack) -> Option<Compound> {
+    let patch = stack.patch()?;
+    let mut kept = patch.clone();
+    for id in IMPLICIT_COMPONENTS {
+        kept.unset(id);
+        if let Ok(i) = kept.removed.binary_search(&id) {
+            kept.removed.remove(i);
+        }
+    }
+    let (nbt, _) = crate::item_nbt::patch_to_nbt(&kept);
+    (!nbt.is_empty()).then_some(nbt)
+}
+
+/// [`collect_component_with`] without kept components.
 pub fn collect_component(entity: &BlockEntity, id: u16) -> Option<Box<[u8]>> {
     if id == components::LOCK {
         let lock = crate::block::lock::slot(entity)?.as_ref()?;
@@ -1354,6 +1484,14 @@ pub fn apply_block_entity_data(
 
 /// `BlockEntity.applyComponentsFromItemStack` of a placed block item.
 pub fn apply_components(level: &mut Level, pos: BlockPos, stack: &ItemStack) {
+    if !matches!(
+        level.block_entity(pos),
+        None | Some(BlockEntity::CopperGolemStatue(_))
+    ) {
+        level
+            .block_entities
+            .set_kept_components(pos, kept_of(stack));
+    }
     let contents = || {
         stack
             .component(components::CONTAINER)

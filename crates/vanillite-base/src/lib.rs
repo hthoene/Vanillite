@@ -11,6 +11,7 @@ pub mod hash;
 pub mod math;
 mod mth_tables;
 pub mod pos;
+pub mod prefetch;
 pub mod random;
 pub mod slot_map;
 pub mod vec3;

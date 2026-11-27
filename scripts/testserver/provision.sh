@@ -170,7 +170,8 @@ players='[
   {"uuid": "d97211d5-1155-4faa-95db-7ddec775418c", "name": "de_hannes"},
   {"uuid": "997ddb16-a31a-43b1-8f10-dac13d1f6af6", "name": "Looxtastisch", "creative": true},
   {"uuid": "759689da-4bf5-4370-8f27-08382b24bb63", "name": "Tiegertropfen119", "creative": true},
-  {"uuid": "57c2aa2f-d04a-4e8f-9e49-9e85adb3cef3", "name": "MobilGame06"}
+  {"uuid": "57c2aa2f-d04a-4e8f-9e49-9e85adb3cef3", "name": "MobilGame06"},
+  {"uuid": "00000000-0000-0000-0009-01f0d0488531", "name": ".Hannes7589"}
 ]'
 install -d /etc/vanillite-test
 echo "$players" | jq '[.[] | select(.creative) | {uuid, name}]' \
@@ -1420,7 +1421,8 @@ write_if_changed /usr/local/bin/vanillite-bench-auto 755 <<'EOF'
 #   new one when the newest dev commit whose CI passed has code that has not been benchmarked yet
 #   or the last finished run is older than 24 h. A run builds that commit (release-fast, nice,
 #   idle IO) in /opt/vanillite-bench-auto/src and then works through its steps: every scenario
-#   of `cargo xtask bench list` on every server one by one, then `cargo xtask loadtest --steps
+#   of `cargo xtask bench list` on every server one by one, then startup, dense, flight, farm
+#   and redstone again under the 1c1g profile (#222), then `cargo xtask loadtest --steps
 #   1000,2000,5000`. Everything holds the shared benchmark lock (`vanillite-bench lock`): a
 #   build or step starts only when the lock is free and nobody waits for it, a build stops as
 #   soon as someone waits, and after a step the run yields to a waiting run and resumes later.
@@ -1429,7 +1431,8 @@ write_if_changed /usr/local/bin/vanillite-bench-auto 755 <<'EOF'
 # Results: /opt/vanillite/bench/auto/runs/<time>-<code commit>/ (results.json: the whole run as
 # `cargo xtask bench` writes it; README.md, latest.json, history.json: rendered by `cargo xtask
 # bench publish` with the history of the runs here, kept in /opt/vanillite/bench/auto/benchmarks;
-# steps/ and logs/: raw, kept for the newest 30 runs), `latest` points to the newest finished run.
+# steps/ and logs/: raw, kept for the newest 30 runs; the 1c1g runs as results-1c1g.json,
+# README-1c1g.md, latest-1c1g.json, history-1c1g.json with the history in benchmarks-1c1g), `latest` points to the newest finished run.
 # Log: journalctl -u vanillite-bench-auto. Installed by scripts/testserver/provision.sh (role bench).
 set -uo pipefail
 repo=https://github.com/hthoene/vanillite.git
@@ -1445,6 +1448,9 @@ keep_days=365
 suite_days=30
 target_max_kib=$((40 * 1024 * 1024))
 loadtest_steps=1000,2000,5000
+# Weak hardware (#222): these scenarios again under the 1c1g profile, kept apart from the rest.
+weak_limits=1c1g
+weak_scenarios=" startup dense flight farm redstone "
 
 export HOME=$home/home RUSTUP_HOME=$home/rustup CARGO_HOME=$home/cargo
 export PATH=$home/shim:$home/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -1476,8 +1482,8 @@ case "${1:-status}" in
         fi
         if [ -s "$state/current" ]; then
             dir=$(cat "$state/current")
-            n=$(wc -l < "$dir/steps.txt" 2> /dev/null || echo 0)
-            d=$(wc -l < "$dir/done.txt" 2> /dev/null || echo 0)
+            n=$(cat "$dir/steps.txt" 2> /dev/null | wc -l)
+            d=$(cat "$dir/done.txt" 2> /dev/null | wc -l)
             echo "current run: ${dir##*/}, $d of $n steps done$( [ "$d" -lt "$n" ] && echo ", next: $(sed -n "$((d + 1))p" "$dir/steps.txt")")"
         else
             echo "current run: none"
@@ -1597,7 +1603,13 @@ if [ ! -s "$dir/steps.txt" ]; then
     xtask bench list | while read -r name rest; do
         servers=$(sed -n 's/.*(\(.*\))$/\1/p' <<< "$rest" | tr -d ' ' | tr , ' ')
         for server in $servers; do echo "bench $name $server"; done
-    done > "$dir/steps.tmp"
+        if [[ $weak_scenarios == *" $name "* ]]; then
+            for server in $servers; do echo "weak $name $server"; done
+        fi
+    done > "$dir/steps.tmp.all"
+    # The 1c1g steps after the 4c8g ones.
+    { grep '^bench ' "$dir/steps.tmp.all"; grep '^weak ' "$dir/steps.tmp.all"; } > "$dir/steps.tmp"
+    rm -f "$dir/steps.tmp.all"
     echo loadtest >> "$dir/steps.tmp"
     mv "$dir/steps.tmp" "$dir/steps.txt"
     touch "$dir/done.txt"
@@ -1613,13 +1625,20 @@ while :; do
     fi
     started=$SECONDS
     read -r kind name server <<< "$step"
-    if [ "$kind" = bench ]; then
-        log=$dir/logs/$name-$server.log
-        xtask bench "$name" --servers "$server" > "$log" 2>&1
+    if [ "$kind" = bench ] || [ "$kind" = weak ]; then
+        limits=()
+        steps_dir=$dir/steps
+        if [ "$kind" = weak ]; then
+            limits=(--limits "$weak_limits")
+            steps_dir=$dir/steps-$weak_limits
+        fi
+        log=$dir/logs/$kind-$name-$server.log
+        xtask bench "$name" --servers "$server" "${limits[@]}" > "$log" 2>&1
         rc=$?
         file=$(sed -n 's/^wrote \(.*\/results\.json\)$/\1/p' "$log" | tail -n 1)
         if [ -n "$file" ] && [ -f "$file" ]; then
-            cp "$file" "$dir/steps/$name-$server.json"
+            install -d "$steps_dir"
+            cp "$file" "$steps_dir/$name-$server.json"
             rm -rf "$(dirname "$file")"
         fi
     else
@@ -1630,21 +1649,30 @@ while :; do
     echo "step $((done_n + 1))/$total $step: exit $rc after $((SECONDS - started)) s"
 done
 
-# The whole run: the steps merged into one results.json, rendered with the history kept here.
-if compgen -G "$dir/steps/*.json" > /dev/null; then
-    jq -s --arg date "$stamp" 'reduce .[] as $r ({}; . * $r) | .date = $date' "$dir"/steps/*.json \
-        > "$dir/results.json"
-    pub=$out/benchmarks
-    [ -d "$pub" ] || cp -a "$src/benchmarks" "$pub"
-    rsync -a --delete "$pub/" "$src/benchmarks/"
-    if xtask bench publish "$dir/results.json" > "$dir/logs/publish.log" 2>&1; then
-        rsync -a --delete "$src/benchmarks/" "$pub/"
-        cp "$pub/README.md" "$pub/results/latest.json" "$pub/results/history.json" "$dir/"
+# The whole run: the steps merged into one results.json, rendered with the history kept here
+# (`cargo xtask bench publish`); the 1c1g steps likewise into results-1c1g.json with their own
+# history (benchmarks-1c1g), never mixed with the fixed profile.
+render() { # <steps dir> <results file> <history dir> <copy suffix>
+    jq -s --arg date "$stamp" 'reduce .[] as $r ({}; . * $r) | .date = $date' "$1"/*.json > "$2"
+    [ -d "$3" ] || cp -a "$src/benchmarks" "$3"
+    rsync -a --delete "$3/" "$src/benchmarks/"
+    if xtask bench publish "$2" > "$dir/logs/publish$4.log" 2>&1; then
+        rsync -a --delete "$src/benchmarks/" "$3/"
+        cp "$3/README.md" "$dir/README$4.md"
+        cp "$3/results/latest.json" "$dir/latest$4.json"
+        cp "$3/results/history.json" "$dir/history$4.json"
     else
-        echo "rendering failed, see $dir/logs/publish.log"
+        echo "rendering $2 failed, see $dir/logs/publish$4.log"
     fi
     git -C "$src" checkout --quiet -- benchmarks
     git -C "$src" clean -fdq -- benchmarks
+}
+if compgen -G "$dir/steps/*.json" > /dev/null; then
+    render "$dir/steps" "$dir/results.json" "$out/benchmarks" ""
+    if compgen -G "$dir/steps-$weak_limits/*.json" > /dev/null; then
+        render "$dir/steps-$weak_limits" "$dir/results-$weak_limits.json" \
+            "$out/benchmarks-$weak_limits" "-$weak_limits"
+    fi
     ln -sfn "runs/$id" "$out/latest.tmp" && mv -T "$out/latest.tmp" "$out/latest"
     chown -R vanillite:vanillite "$dir"
     echo "finished ${id}: $(grep -c . "$dir/done.txt") steps, $(awk -F'\t' '$2 != 0' "$dir/done.txt" | wc -l) failed; results in $dir"
@@ -1657,7 +1685,7 @@ rm -f "$state/current"
 
 # Bounded disk use: raw data of older runs, very old runs, raw per-server files of xtask bench.
 ls -1d "$out"/runs/*/ 2> /dev/null | sort -r | tail -n +$((keep_raw + 1)) \
-    | while read -r d; do rm -rf "$d/steps" "$d/logs"; done
+    | while read -r d; do rm -rf "$d/steps" "$d/steps-$weak_limits" "$d/logs"; done
 find "$out/runs" -mindepth 1 -maxdepth 1 -type d -mtime +"$keep_days" -exec rm -rf {} +
 find /opt/vanillite/bench/suite -mindepth 1 -maxdepth 1 -type d -mtime +"$suite_days" -exec rm -rf {} +
 exit 0

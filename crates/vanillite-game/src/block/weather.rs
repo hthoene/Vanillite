@@ -78,8 +78,11 @@ pub fn tick_precipitation(level: &mut Level, pos: BlockPos) {
                 let grown = state
                     .with("layers", &(layers + 1).to_string())
                     .unwrap_or(state);
-                super::contact::push_entities_up_states(level, top, state, grown);
-                he::set_block_and_update(level, BLOCK_FORM, top, grown);
+                if he::allows(level, BLOCK_FORM, top, grown) {
+                    // `Block.pushEntitiesUp`: the collision grows by one layer.
+                    super::contact::push_entities_up_states(level, top, state, grown);
+                    level.set_block_and_update(top, grown);
+                }
             }
         } else {
             he::set_block_and_update(level, BLOCK_FORM, top, ids::SNOW.default_state());
@@ -237,8 +240,12 @@ pub(super) fn frosted_ice_on_place(
 pub(super) fn frosted_ice_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let block = state.block();
     if level.random().next_int_bounded(3) == 0 || fewer_frosted_neighbours(level, pos, block, 4) {
-        // `getMaxLocalRawBrightness`; the End would use block light (no frosted ice there).
-        let brightness = level.max_local_raw_brightness(pos);
+        // `getMaxLocalRawBrightness`; block light only in the End.
+        let brightness = if level.settings.dimension == "minecraft:the_end" {
+            level.light(pos).1
+        } else {
+            level.max_local_raw_brightness(pos)
+        };
         let age = state.int("age").unwrap_or(0);
         if brightness > 11 - age - i32::from(state.light_dampening())
             && slightly_melt(level, state, pos)

@@ -308,6 +308,22 @@ impl Kind {
         if self.is_monster() { 80 } else { 120 }
     }
 
+    /// `instanceof AbstractHorse` (horses, donkeys, mules, llamas, camels).
+    pub fn is_abstract_horse(self) -> bool {
+        matches!(
+            self,
+            Kind::Horse
+                | Kind::Donkey
+                | Kind::Mule
+                | Kind::SkeletonHorse
+                | Kind::ZombieHorse
+                | Kind::Llama
+                | Kind::TraderLlama
+                | Kind::Camel
+                | Kind::CamelHusk
+        )
+    }
+
     /// `#burn_in_daylight`.
     pub fn burns_in_daylight(self) -> bool {
         if matches!(self, Kind::ZombieHorse | Kind::ZombieNautilus) {
@@ -343,12 +359,10 @@ impl Kind {
         self == Kind::Chicken
     }
 
-    /// `EntityType.isAllowedInPeaceful`.
+    /// `EntityType.isAllowedInPeaceful`: all but the types built with `notInPeaceful()`
+    /// (shulkers and piglins stay).
     pub fn allowed_in_peaceful(self) -> bool {
-        if !self.classic() {
-            return fam::allowed_in_peaceful(self);
-        }
-        !self.is_monster()
+        super::spawn::allowed_in_peaceful(self.name())
     }
 
     /// `removeWhenFarAway`: animals stay.
@@ -599,6 +613,10 @@ pub fn death_sound(m: &MobData) -> &'static str {
 
 /// `getBaseExperienceReward` of a mob.
 pub fn experience_reward(m: &mut MobData) -> i32 {
+    // `Zombie.getBaseExperienceReward`: babies give 2.5 times, plus the equipment bonus.
+    if m.kind == Kind::Zombie {
+        return fam::undead::zombies::experience_reward(m);
+    }
     if m.kind.classic() {
         let kind = m.kind;
         kind.base_experience_reward(&mut m.random)
@@ -1238,13 +1256,15 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
         t.mob().forced_age_timer -= 1;
     }
     if kind.ageable() && t.mob_ref().is_alive() {
-        // `AgeableMob.aiStep` and `Animal.aiStep`.
+        // `AgeableMob.aiStep` (`canAgeUp`: not age locked) and `Animal.aiStep`.
         let m = t.mob();
-        if m.age < 0 {
+        if m.age < 0 && !m.age_locked {
             m.age += 1;
         } else if m.age > 0 {
             m.age -= 1;
         }
+        super::age_lock::tick(t);
+        let m = t.mob();
         if m.age != 0 {
             m.in_love = 0;
         }
@@ -1295,6 +1315,7 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         let roll = t.mob().random.next_float() * 30.0;
         if br > 0.5 && sky && roll < (br - 0.4) * 2.0 {
             t.mob().target = None;
+            super::goals::enderman_set_target(t, None);
             let id = t.id;
             teleport_randomly(t.level, t.ents, t.env, id);
         }
@@ -1377,7 +1398,7 @@ pub fn eat_block(t: &mut Tick<'_, '_>) {
     super::living::post_game_event(t, crate::level::game_event::events().eat, at, None);
     let m = t.mob();
     m.sheared = false;
-    if m.baby {
+    if m.baby && !m.age_locked {
         m.age = (m.age + 60 * 20).min(0);
     }
     t.core_mut().mark_data_dirty();
@@ -1418,8 +1439,20 @@ pub fn set_creepy(t: &mut Tick<'_, '_>, on: bool) {
     }
 }
 
-/// `EnderMan.isBeingStaredBy`: the player looks at the enderman's eyes.
+/// `EnderMan.isBeingStaredBy`: the player looks at the enderman's eyes and wears no
+/// `#gaze_disguise_equipment` (a carved pumpkin) on its head.
 pub fn is_stared_at_by(t: &Tick<'_, '_>, player: EntityId) -> bool {
+    let disguised = t.ents.player(player).is_some_and(|p| {
+        let head = p.inventory.equipment(crate::item::EquipmentSlot::Head);
+        !head.is_empty()
+            && crate::mob::fam::wildlife::item_in_tag(
+                head.item,
+                "minecraft:gaze_disguise_equipment",
+            )
+    });
+    if disguised {
+        return false;
+    }
     let Some(e) = t.ents.store.get(player) else {
         return false;
     };
@@ -1443,6 +1476,20 @@ pub fn is_stared_at_by(t: &Tick<'_, '_>, player: EntityId) -> bool {
         Vec3::new(p.x, t.eye_y(), p.z),
     )
     .is_none()
+}
+
+/// `EnderMan.teleportTowards(entity)`: a spot 16 blocks from it towards `to` (its eye at
+/// `eye_y`).
+pub fn teleport_towards(t: &mut Tick<'_, '_>, to: Vec3, eye_y: f64) -> bool {
+    let p = t.pos();
+    let half = p.y + f64::from(t.core().dims().height) * 0.5;
+    let dir = Vec3::new(p.x - to.x, half - eye_y, p.z - to.z).normalize();
+    let r = &mut t.mob().random;
+    let x = p.x + (r.next_double() - 0.5) * 8.0 - dir.x * 16.0;
+    let y = p.y + f64::from(r.next_int_bounded(16) - 8) - dir.y * 16.0;
+    let z = p.z + (r.next_double() - 0.5) * 8.0 - dir.z * 16.0;
+    let id = t.id;
+    teleport_to(t.level, t.ents, t.env, id, Vec3::new(x, y, z))
 }
 
 /// `EnderMan.teleport()`: a random spot within 32 blocks.

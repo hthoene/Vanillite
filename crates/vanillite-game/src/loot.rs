@@ -388,7 +388,7 @@ impl LootTables {
     }
 
     /// Drops of breaking `ctx.state` (table `minecraft:blocks/<block path>`; no table → nothing).
-    /// Appends to `out`.
+    /// Appends to `out`, with emptied stacks as empty stacks.
     pub fn block_drops(
         &self,
         ctx: &BlockLootContext<'_>,
@@ -430,7 +430,9 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
-            keep_empty: false,
+            // `Block.getDrops` keeps stacks a function emptied: `popResource` still draws
+            // their position.
+            keep_empty: true,
         };
         eval.table(table);
     }
@@ -3066,14 +3068,26 @@ impl<'t> Eval<'t, '_> {
                 }
             }
             FuncKind::ExplorationMap(request) => {
-                // `ExplorationMapFunction.run`: an empty map becomes a map to the structure.
-                if stack.item != items::MAP.0 {
+                // `ExplorationMapFunction.run`: any stack (the explorer map items of 26.3) gets
+                // new map data to the structure (`applyNewSavedData`: its type is kept).
+                if stack.is_empty() {
                     return;
                 }
                 if let (Some(origin), Some(explore)) = (self.ctx.origin, self.ctx.exploration_map)
                     && let Some(map) = explore(request, origin)
                 {
-                    *stack = map;
+                    if stack.item == items::MAP.0 {
+                        *stack = map;
+                    } else {
+                        for id in [
+                            vanillite_protocol::components::ids::MAP_ID,
+                            vanillite_protocol::components::ids::MAP_DECORATIONS,
+                        ] {
+                            if let Some(value) = map.component(id) {
+                                stack.patch_mut().set(id, value.into());
+                            }
+                        }
+                    }
                 }
             }
             FuncKind::Noop => {}

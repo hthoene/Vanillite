@@ -1,0 +1,113 @@
+{
+  "description": "A squid touches an oak boat on water: AbstractBoat.tick does not board it (#cannot_be_pushed_onto_boats) but pushes it away.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -52,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -57,
+        14
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "squid",
+      "type": "minecraft:squid",
+      "pos": [
+        7.9,
+        -57.2,
+        8.5
+      ],
+      "seed": 9,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:oak_boat 8.5 -56.5 8.5 {UUID:[I;1,2,3,1]}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -96,6 +96,12 @@ pub fn hurt(
     if ents.decor(target).is_some() {
         return crate::decoration::hurt(level, ents, env, cx, target, &source);
     }
+    if ents
+        .missile(target)
+        .is_some_and(|d| d.kind == super::missile::MissileKind::ShulkerBullet && !d.removed)
+    {
+        return super::fam::illager::missiles::hurt_bullet(ents, env, cx, target);
+    }
     // `VehicleEntity.hurtServer`.
     if ents.minecart(target).is_some() {
         return crate::minecart::hurt(ents, env, cx, target, source, amount);
@@ -117,15 +123,18 @@ pub fn hurt(
             .and_then(|m| super::tame::owner_of(ents, m))
     });
     // `ServerPlayer.hurtServer`: a player-caused hit (also through projectiles, potions and
-    // arrows of a player) fails `canHarmPlayer` without the pvp rule.
-    if !env.rules.bool(Rule::PVP)
-        && (source.cause.is_some_and(|c| ents.player(c).is_some())
-            || source
+    // arrows of a player) fails `canHarmPlayer` (the pvp rule, teams without friendly fire).
+    let harmer = source
+        .cause
+        .filter(|&c| ents.player(c).is_some())
+        .or_else(|| {
+            source
                 .direct
                 .and_then(|d| ents.arrow(d))
                 .and_then(|a| a.owner)
-                .is_some_and(|o| ents.player(o).is_some()))
-    {
+                .filter(|&o| ents.player(o).is_some())
+        });
+    if harmer.is_some_and(|h| !super::attack::can_harm_player(ents, env, target, h)) {
         return false;
     }
     let armor = super::attack::armor_effectiveness(ents, env.types, target, &source);
@@ -259,6 +268,11 @@ fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, kind: Damag
         return true;
     };
     m.removed
+        || crate::enchant::location::frost_walker_immune(
+            types,
+            kind,
+            m.equipment.get(crate::item::EquipmentSlot::Feet),
+        )
         || types.is(kind, tag::IS_FIRE)
             && (e.kind().info().fire_immune
                 || m.effects.has(crate::effect::MobEffect::FIRE_RESISTANCE))
@@ -286,7 +300,7 @@ pub fn hurt_mob(
     {
         return took;
     }
-    if invulnerable_to(ents, env, target, kind) {
+    if invulnerable_to(ents, env, target, kind) || immune_to_damage(ents, env, target, &source) {
         return false;
     }
     if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
@@ -458,6 +472,7 @@ pub fn hurt_mob(
     }
     if let Some(m) = ents.mob_mut(target) {
         m.last_damage = Some((kind, env.game_time));
+        m.last_damage_cause = source.cause;
     }
     // `onMobHurt` of the effects (Infested).
     let view = ents.store.get(target).map(|e| (e.rot(), e.dims().height));
@@ -569,7 +584,10 @@ pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f6
     if super::boss::dragon::ignores_knockback(ents, target) {
         return;
     }
-    let Some(resistance) = ents.mob(target).map(|m| m.attrs.knockback_resistance) else {
+    let Some(resistance) = ents.mob(target).map(|m| {
+        let base = m.attrs.knockback_resistance;
+        super::equipment::attribute(m, "minecraft:knockback_resistance", base, 0.0, 1.0)
+    }) else {
         return;
     };
     let Entities { store, mobs, .. } = ents;
@@ -649,6 +667,32 @@ fn mob_protection(
         .damage_protection(&equipment, &cx, env.random)
 }
 
+/// `EnchantmentHelper.isImmuneToDamage` of a mob's equipment (Frost Walker on magma).
+fn immune_to_damage(
+    ents: &Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+) -> bool {
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    let equipment: Vec<(crate::item::EquipmentSlot, &crate::item::ItemStack)> = (0..8)
+        .filter_map(crate::item::EquipmentSlot::from_ordinal)
+        .map(|s| (s, m.equipment.get(s)))
+        .filter(|(_, s)| !s.is_empty() && !crate::item::enchantments(s).is_empty())
+        .collect();
+    if equipment.is_empty() {
+        return false;
+    }
+    let combat = super::attack::combat_data();
+    let tags: &dyn crate::predicate::EntityTags = &*combat;
+    let cx = super::attack::damage_context(ents, env.types, tags, target, source);
+    combat
+        .enchants
+        .immune_to_damage(&equipment, &cx, env.random)
+}
+
 /// `LivingEntity.actuallyHurt` of a mob: armour, then health.
 fn actually_hurt(
     ents: &mut Entities,
@@ -670,6 +714,8 @@ fn actually_hurt(
     let Some(m) = ents.mob_mut(target) else {
         return;
     };
+    // `Animal.actuallyHurt`: `resetLove()` (only animals are ever in love).
+    m.in_love = 0;
     let mut damage = damage;
     if !types.is(source.kind, tag::BYPASSES_ARMOR) {
         // `getArmorValue` and `ARMOR_TOUGHNESS` with the equipment's modifiers.
@@ -902,7 +948,11 @@ fn die(
         return;
     };
     let killed_by_player = m.last_hurt_by_player_time > 0;
-    let baby = m.baby;
+    // `shouldDropLoot`: `Monster` drops as a baby too (the hoglin is an animal);
+    // `shouldDropExperience`: `Monster` and `Hoglin` give experience as babies too.
+    let monster = m.kind.is_monster();
+    let loot_baby = m.baby && !(monster && m.kind != Kind::Hoglin);
+    let baby = m.baby && !monster;
     // `getExperienceReward` (it draws from the mob's random) only where Vanilla asks for it:
     // a sculk catalyst at the death, else `dropExperience` after the loot.
     let reward_of = |ents: &mut Entities| {
@@ -920,6 +970,30 @@ fn die(
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
+    // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
+    // last attacking mob.
+    let credit = ents.mob(target).and_then(|m| {
+        m.last_hurt_by_player
+            .filter(|_| m.last_hurt_by_player_time > 0)
+            .or(m.last_hurt_by_mob)
+    });
+    // `ServerPlayer.awardKillScore`: `PLAYER_KILLED_ENTITY` of the player with the credit,
+    // before the death loot (the victim still wears its equipment).
+    if let Some(player) = credit
+        .or(source.cause)
+        .filter(|&k| k != target && ents.player(k).is_some())
+    {
+        let types = env.types;
+        view::fire(ents, player, TriggerKind::PLAYER_KILLED_ENTITY, |ents| {
+            let victim = view::snapshot(ents, target)
+                .unwrap_or_else(|| Box::new(EntityView::new(mob_kind.name(), pos)));
+            Event::Killed(
+                TriggerKind::PLAYER_KILLED_ENTITY,
+                victim,
+                Box::new(view::damage_view(ents, types, &source)),
+            )
+        });
+    }
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
@@ -968,7 +1042,7 @@ fn die(
     ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     let mut drops = Vec::new();
-    if !baby && env.rules.bool(Rule::MOB_DROPS) {
+    if !loot_baby && env.rules.bool(Rule::MOB_DROPS) {
         let mut loot = table_loot(level, ents, env, target, &source)
             .or_else(|| {
                 ents.mob_mut(target)
@@ -1042,29 +1116,6 @@ fn die(
     }
     if experience > 0 {
         award_experience(env, pos, experience);
-    }
-    // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
-    // last attacking mob.
-    let credit = ents.mob(target).and_then(|m| {
-        m.last_hurt_by_player
-            .filter(|_| m.last_hurt_by_player_time > 0)
-            .or(m.last_hurt_by_mob)
-    });
-    // `ServerPlayer.awardKillScore`: `PLAYER_KILLED_ENTITY` of the player with the credit.
-    if let Some(player) = credit
-        .or(source.cause)
-        .filter(|&k| k != target && ents.player(k).is_some())
-    {
-        let types = env.types;
-        view::fire(ents, player, TriggerKind::PLAYER_KILLED_ENTITY, |ents| {
-            let victim = view::snapshot(ents, target)
-                .unwrap_or_else(|| Box::new(EntityView::new(mob_kind.name(), pos)));
-            Event::Killed(
-                TriggerKind::PLAYER_KILLED_ENTITY,
-                victim,
-                Box::new(view::damage_view(ents, types, &source)),
-            )
-        });
     }
     create_wither_rose(level, ents, env, cx, pos, credit);
     env.out.push(Effect::Died {
@@ -1406,6 +1457,14 @@ pub fn knock_living(
         knock_mob(ents, env, target, power, xd, zd, by);
         return;
     }
+    // `KNOCKBACK_RESISTANCE` of the player's equipment (netherite armour).
+    let resistance = ents.player(target).map_or(0.0, |p| {
+        crate::player::play::equipment_attribute(
+            &p.inventory,
+            "minecraft:knockback_resistance",
+            0.0,
+        )
+    });
     if let Some(mut e) = ents.store.get_mut(target) {
         let on_ground = e.as_ref().flags().contains(EntityFlags::ON_GROUND);
         if let Some(v) = knockback(
@@ -1414,7 +1473,7 @@ pub fn knock_living(
             power,
             xd,
             zd,
-            0.0,
+            resistance,
             env.random,
         ) {
             e.set_velocity(v);

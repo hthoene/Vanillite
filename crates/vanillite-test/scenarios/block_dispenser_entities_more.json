@@ -1,0 +1,239 @@
+{
+  "description": "Dispensers and hoppers with entities (#217): a chest goes onto a tame donkey (A2-14); a brush brushes a scute off an armadillo (A2-15); a dispensed armor stand (outside the region: Vanilla's head turns by Math.random) draws the yaw of EntityType.create (A2-19); a water bucket cannot waterlog a barrier and an empty bucket cannot dry one (dispensers and survival players, D-06); a hopper below a full block takes the item lying in its bowl (HopperBlock.entityInside, A2-21).",
+  "tier": "fast",
+  "level_rng": true,
+  "time": 6000,
+  "region": [
+    [
+      2,
+      -61,
+      0
+    ],
+    [
+      10,
+      -57,
+      20
+    ]
+  ],
+  "ticks": 30,
+  "entities": [
+    {
+      "name": "donkey",
+      "type": "minecraft:donkey",
+      "pos": [
+        3.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 1,
+      "finalize": false
+    },
+    {
+      "name": "armadillo",
+      "type": "minecraft:armadillo",
+      "pos": [
+        3.5,
+        -60.0,
+        5.5
+      ],
+      "seed": 2,
+      "finalize": false
+    },
+    {
+      "name": "p",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        14.5
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:dispenser[facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        5
+      ],
+      "block": "minecraft:dispenser[facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        8
+      ],
+      "block": "minecraft:dispenser[facing=west]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        11
+      ],
+      "block": "minecraft:dispenser[facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        11
+      ],
+      "block": "minecraft:barrier"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        14
+      ],
+      "block": "minecraft:dispenser[facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        14
+      ],
+      "block": "minecraft:barrier[waterlogged=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        11
+      ],
+      "block": "minecraft:barrier"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        17
+      ],
+      "block": "minecraft:barrier[waterlogged=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        18
+      ],
+      "block": "minecraft:hopper[facing=down,enabled=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -59,
+        18
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "op": "command",
+      "command": "data merge block 2 -60 2 {Items:[{Slot:0b,id:\"minecraft:chest\",count:1}]}",
+      "tick": 1
+    },
+    {
+      "op": "command",
+      "command": "data merge block 2 -60 5 {Items:[{Slot:0b,id:\"minecraft:brush\",count:1}]}",
+      "tick": 1
+    },
+    {
+      "op": "command",
+      "command": "data merge block 2 -60 8 {Items:[{Slot:0b,id:\"minecraft:armor_stand\",count:1}]}",
+      "tick": 1
+    },
+    {
+      "op": "command",
+      "command": "data merge block 2 -60 11 {Items:[{Slot:0b,id:\"minecraft:water_bucket\",count:1}]}",
+      "tick": 1
+    },
+    {
+      "op": "command",
+      "command": "data merge block 2 -60 14 {Items:[{Slot:0b,id:\"minecraft:bucket\",count:1}]}",
+      "tick": 1
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:donkey,limit=1] {Tame:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "setblock 1 -60 2 minecraft:redstone_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "setblock 1 -60 5 minecraft:redstone_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "setblock 2 -59 8 minecraft:redstone_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "setblock 1 -60 11 minecraft:redstone_block"
+    },
+    {
+      "tick": 8,
+      "op": "command",
+      "command": "setblock 1 -60 14 minecraft:redstone_block"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "summon minecraft:item 2.5 -59.3 18.5 {Item:{id:\"minecraft:dirt\",count:1},PickupDelay:100}"
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "p",
+      "pos": [
+        6,
+        -60,
+        11
+      ],
+      "face": "up",
+      "item": "minecraft:water_bucket"
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "p",
+      "pos": [
+        6,
+        -60,
+        17
+      ],
+      "face": "up",
+      "item": "minecraft:bucket"
+    }
+  ]
+}

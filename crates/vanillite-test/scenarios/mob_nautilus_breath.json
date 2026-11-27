@@ -1,0 +1,137 @@
+{
+  "description": "A player saddles and rides its tamed nautilus under water: AbstractNautilus.applyEffects gives the rider Breath of the Nautilus (60 ticks, renewed every 40).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -53,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -54,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -54,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -54,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -54,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -55,
+        14
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -59.0,
+        10.5
+      ]
+    },
+    {
+      "name": "nautilus",
+      "type": "minecraft:nautilus",
+      "pos": [
+        8.5,
+        -59.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:nautilus,limit=1] {Tame:1b,Owner:[I;1447120457,1,0,0]}"
+    },
+    {
+      "tick": 5,
+      "op": "interact",
+      "entity": "steve",
+      "target": "nautilus",
+      "item": "minecraft:saddle"
+    },
+    {
+      "tick": 8,
+      "op": "interact",
+      "entity": "steve",
+      "target": "nautilus",
+      "item": "minecraft:stick"
+    }
+  ],
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

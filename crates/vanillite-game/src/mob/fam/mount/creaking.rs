@@ -237,7 +237,7 @@ pub fn ai_step(t: &mut Tick<'_, '_>) {
             super::make_sound(t, "minecraft:entity.creaking.unfreeze");
         } else {
             // `stopInPlace`.
-            t.mob().nav.stop();
+            t.nav().stop();
             let m = t.mob();
             m.xxa = 0.0;
             m.zza = 0.0;
@@ -304,15 +304,15 @@ fn is_looked_at_by(t: &Tick<'_, '_>, player: EntityId, heights: &[f64]) -> bool 
         return false;
     };
     let rot = e.rot();
-    let view = view_vector(rot.x_rot, rot.y_rot).normalize();
+    let view = crate::mob::view_vector(rot.x_rot, rot.y_rot).normalize();
     let p = t.pos();
     let eye = Vec3::new(o.pos.x, o.eye_y, o.pos.z);
     for &h in heights {
         let to = Vec3::new(p.x - eye.x, h - eye.y, p.z - eye.z);
-        let dist = to.length();
         let dir = to.normalize();
         let dot = view.x * dir.x + view.y * dir.y + view.z * dir.z;
-        if dot > 1.0 - 0.5 / dist {
+        // `adjustForDistance` is false: the same cone at every distance.
+        if dot > 1.0 - 0.5 {
             let from = eye;
             let target = Vec3::new(p.x, h, p.z);
             if crate::mob::physics::clip(t.level, from, target).is_none() {
@@ -321,15 +321,6 @@ fn is_looked_at_by(t: &Tick<'_, '_>, player: EntityId, heights: &[f64]) -> bool 
         }
     }
     false
-}
-
-/// `Entity.calculateViewVector(xRot, yRot)`.
-fn view_vector(x_rot: f32, y_rot: f32) -> Vec3 {
-    let x = f64::from(x_rot).to_radians();
-    let y = f64::from(-y_rot).to_radians();
-    let (ycos, ysin) = (y.cos(), y.sin());
-    let (xcos, xsin) = (x.cos(), x.sin());
-    Vec3::new(ysin * xcos, -xsin, ycos * xcos)
 }
 
 /// `activate(player)`.
@@ -459,13 +450,5 @@ mod tests {
         let mut n = MobData::new(Kind::Creaking, 2);
         load(&mut n, &out);
         assert_eq!(creaking(&n).home, Some(BlockPos::new(1, 2, 3)));
-    }
-
-    #[test]
-    fn looking_vector() {
-        let v = view_vector(0.0, 0.0);
-        assert!((v.z - 1.0).abs() < 1e-9);
-        let v = view_vector(90.0, 0.0);
-        assert!((v.y + 1.0).abs() < 1e-9);
     }
 }

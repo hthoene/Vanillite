@@ -367,7 +367,7 @@ fn arrive(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, pos: Vec3, t
 }
 
 /// After the owner's teleport to a pearl (in the pearl's world or brought over from another
-/// one): `resetFallDistance`, then 5 ender pearl damage.
+/// one): `resetFallDistance`, `resetCurrentImpulseContext`, then 5 ender pearl damage.
 pub fn land(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(player) else {
@@ -378,6 +378,8 @@ pub fn land(ents: &mut Entities, env: &mut Env<'_>, player: EntityId) {
         return;
     };
     data.survival.fall_distance = 0.0;
+    data.survival.impulse_impact = None;
+    data.survival.impulse_grace = 0;
     let source = DamageSource::of(env.types.named("minecraft:ender_pearl"));
     crate::survival::player::hurt(&mut entity, data, env, source, 5.0);
 }

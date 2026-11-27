@@ -18,6 +18,20 @@ const EPSILON: f64 = 1.0e-7;
 pub trait Blocks {
     /// `getBlockState(pos)`.
     fn state(&self, pos: BlockPos) -> BlockState;
+    /// [`Blocks::state`] of every position in the box from `min` to `max` (inclusive) into
+    /// `out`, which holds exactly that many, in X, then Z, then Y order (Y varies fastest).
+    fn states_in(&self, min: BlockPos, max: BlockPos, out: &mut [BlockState]) {
+        let mut slots = out.iter_mut();
+        for x in min.x..=max.x {
+            for z in min.z..=max.z {
+                for y in min.y..=max.y {
+                    if let Some(slot) = slots.next() {
+                        *slot = self.state(BlockPos::new(x, y, z));
+                    }
+                }
+            }
+        }
+    }
     /// `getWorldBorder`, which entities collide with; `None` without one (tests).
     fn border(&self) -> Option<&WorldBorder> {
         None
@@ -26,12 +40,33 @@ pub trait Blocks {
     /// (`MovingPistonBlock.getCollisionShape` from its block entity); none without access to
     /// block entities.
     fn moving_piston_boxes(&self, _pos: BlockPos, _out: &mut Vec<[f64; 6]>) {}
+    /// Whether no block of the section at section coordinates (`x`, `y`, `z`) has a special
+    /// collision shape (large, dynamic like a moving piston, or neither empty nor a full cube),
+    /// so the ring and edge cells of [`block_boxes`] there add nothing. `false` = unknown.
+    fn plain_collision(&self, _x: i32, _y: i32, _z: i32) -> bool {
+        false
+    }
 }
 
 impl Blocks for Level {
     #[inline]
     fn state(&self, pos: BlockPos) -> BlockState {
         self.block(pos)
+    }
+
+    fn states_in(&self, min: BlockPos, max: BlockPos, out: &mut [BlockState]) {
+        let mut slots = out.iter_mut();
+        let mut y = min.y;
+        self.chunks.blocks_in(min, max, |state| {
+            if let Some(slot) = slots.next() {
+                *slot = match state {
+                    Some(state) => BlockState(state),
+                    None if self.in_height(y) => BlockState::AIR,
+                    None => crate::block::VOID_AIR,
+                };
+            }
+            y = if y == max.y { min.y } else { y + 1 };
+        });
     }
 
     #[inline]
@@ -113,6 +148,9 @@ const LAVA_STABLE_TOP: f64 = 0.5;
 /// [`block_boxes`] for an entity that stands on lava (`canStandOnFluid`) with its feet at
 /// `lava_bottom` (`EntityCollisionContext.entityBottom`): lava sources without lava above
 /// collide with their lower half when the feet are above it (`LiquidBlock.getCollisionShape`).
+/// Blocks of a collision box read into a buffer on the stack; larger boxes spill to the heap.
+const BOX_READ_INLINE: usize = 512;
+
 pub fn block_boxes_for(
     blocks: &dyn Blocks,
     area: &Aabb,
@@ -127,9 +165,43 @@ pub fn block_boxes_for(
     let max_y = floor(area.max_y + EPSILON) + 1;
     let min_z = floor(area.min_z - EPSILON) - 1;
     let max_z = floor(area.max_z + EPSILON) + 1;
-    for x in min_x..=max_x {
-        for z in min_z..=max_z {
-            for y in min_y..=max_y {
+    // Ring and edge cells only count with a large collision shape or a moving piston: without
+    // such blocks in the sections around, only the inner cells are read (same boxes, same
+    // order).
+    let inner = (min_x >> 4..=max_x >> 4).all(|sx| {
+        (min_z >> 4..=max_z >> 4)
+            .all(|sz| (min_y >> 4..=max_y >> 4).all(|sy| blocks.plain_collision(sx, sy, sz)))
+    });
+    let shrink = i32::from(inner);
+    let (read_min, read_max) = (
+        BlockPos::new(min_x + shrink, min_y + shrink, min_z + shrink),
+        BlockPos::new(max_x - shrink, max_y - shrink, max_z - shrink),
+    );
+    // The box's states in one read, in the loops' order.
+    let volume = [
+        read_max.x - read_min.x,
+        read_max.y - read_min.y,
+        read_max.z - read_min.z,
+    ]
+    .iter()
+    .map(|&d| usize::try_from(d + 1).unwrap_or(0))
+    .product::<usize>();
+    let mut inline = [BlockState::AIR; BOX_READ_INLINE];
+    let mut spilled = Vec::new();
+    let states: &mut [BlockState] = if volume <= BOX_READ_INLINE {
+        &mut inline[..volume]
+    } else {
+        spilled.resize(volume, BlockState::AIR);
+        &mut spilled
+    };
+    blocks.states_in(read_min, read_max, states);
+    let mut states = states.iter().copied();
+    for x in read_min.x..=read_max.x {
+        for z in read_min.z..=read_max.z {
+            for y in read_min.y..=read_max.y {
+                let Some(state) = states.next() else {
+                    return;
+                };
                 let edges = i32::from(x == min_x || x == max_x)
                     + i32::from(y == min_y || y == max_y)
                     + i32::from(z == min_z || z == max_z);
@@ -137,7 +209,6 @@ pub fn block_boxes_for(
                     continue;
                 }
                 let pos = BlockPos::new(x, y, z);
-                let state = blocks.state(pos);
                 if state.is_air() {
                     continue;
                 }
@@ -579,16 +650,35 @@ fn shape_clip(from: Vec3, to: Vec3, pos: BlockPos, boxes: &[[f64; 6]]) -> Option
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.NONE`: the first block whose
 /// collision shape the segment hits (`BlockGetter.traverseBlocks`), with the hit point.
 pub fn clip(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, false)
+    clip_with(blocks, from, to, Fluids::None)
+}
+
+/// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.SOURCE_ONLY`: also stops at the
+/// surfaces of source fluids.
+pub fn clip_source_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
+    clip_with(blocks, from, to, Fluids::Source)
+}
+
+/// `ClipContext.Fluid`.
+#[derive(Clone, Copy, PartialEq)]
+enum Fluids {
+    None,
+    Source,
+    Any,
 }
 
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.ANY`: also stops at fluid
 /// surfaces (a fluid's shape is its height in the block).
 pub fn clip_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, true)
+    clip_with(blocks, from, to, Fluids::Any)
 }
 
-fn clip_with(blocks: &dyn Blocks, from: Vec3, to: Vec3, fluids: bool) -> Option<(BlockPos, Vec3)> {
+fn clip_with(
+    blocks: &dyn Blocks,
+    from: Vec3,
+    to: Vec3,
+    fluids: Fluids,
+) -> Option<(BlockPos, Vec3)> {
     if from == to {
         return None;
     }
@@ -606,7 +696,12 @@ fn clip_with(blocks: &dyn Blocks, from: Vec3, to: Vec3, fluids: bool) -> Option<
         let state = blocks.state(pos);
         let block = shape_clip(from, to, pos, state.collision_shape());
         let fluid = state.fluid_state();
-        let liquid = if fluids && !fluid.is_empty() {
+        let takes = match fluids {
+            Fluids::None => false,
+            Fluids::Any => !fluid.is_empty(),
+            Fluids::Source => !fluid.is_empty() && fluid.info().source,
+        };
+        let liquid = if takes {
             let above = blocks
                 .state(BlockPos::new(pos.x, pos.y + 1, pos.z))
                 .fluid_state();

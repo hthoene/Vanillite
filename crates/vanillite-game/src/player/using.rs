@@ -72,10 +72,7 @@ fn class_use_duration(stack: &ItemStack) -> i32 {
     if name == "minecraft:spyglass" {
         return 1200;
     }
-    if stack
-        .component(vanillite_protocol::components::ids::INSTRUMENT)
-        .is_some()
-    {
+    if super::items::instrument(stack).is_some() {
         return super::items::instrument_use_ticks(stack);
     }
     0
@@ -711,8 +708,8 @@ fn consume(
     if !creative {
         let remainder = crate::consumable::use_remainder(stack);
         let i = hand_index(ents, player, hand);
+        let mut extra = None;
         if let Some(p) = ents.player_mut(player) {
-            let mut extra = None;
             if let Some(s) = p.inventory.get_mut(i) {
                 s.shrink(1);
                 if let Some(rest) = remainder {
@@ -723,9 +720,15 @@ fn consume(
                     }
                 }
             }
-            if let Some(mut rest) = extra {
-                p.inventory.add(None, &mut rest, false);
+            // `handleExtraItemsCreatedOnUse`: `inventory.add`, else `drop(extra, false)`.
+            if let Some(rest) = &mut extra
+                && p.inventory.add(None, rest, false)
+            {
+                extra = None;
             }
+        }
+        if let Some(rest) = extra.filter(|r| !r.is_empty()) {
+            super::items::drop_from_player(ents, env, player, rest, false);
         }
     }
     // The `use_cooldown` of the used stack.

@@ -350,7 +350,7 @@ pub fn move_control(t: &mut Tick<'_, '_>) -> bool {
     if on_still_timeout(t.mob_ref()) {
         t.mob().move_ctl.operation = Operation::Wait;
         // `stopInPlace`.
-        t.mob().nav.stop();
+        t.nav().stop();
         t.set_velocity(Vec3::ZERO);
     }
     if t.mob_ref().move_ctl.operation != Operation::MoveTo {
@@ -517,20 +517,16 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if m.baby {
         return animal::animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack);
     }
-    let name = crate::item::item_id(ix.stack).name();
-    if name.ends_with("_harness") && !harnessed(m) {
-        if let Some(m) = ix.ents.mob_mut(ix.target) {
-            m.equipment.set(EquipmentSlot::Body, ix.stack.with_count(1));
+    if !ix.stack.is_empty() {
+        // `itemStack.interactLivingEntity`: a harness (`Equippable.equipOnTarget`).
+        let r = animal::item_interact_pub(ix);
+        if r.consumes() {
+            return r;
         }
-        animal::use_item(ix.ents, ix.player, ix.hand);
-        crate::mob::combat::mob_sound(
-            ix.ents,
-            ix.env,
-            ix.target,
-            "minecraft:entity.happy_ghast.equip",
-        );
-        return Interaction::Success;
     }
+    let Some(m) = ix.ents.mob(ix.target) else {
+        return Interaction::Pass;
+    };
     if harnessed(m) && !ix.sneaking {
         let first = ix.ents.riding.passengers_of(ix.target).is_empty();
         if crate::riding::start_riding(ix.ents, ix.env, ix.player, ix.target, false) && first {
@@ -669,7 +665,7 @@ pub fn goal_can_continue(t: &mut Tick<'_, '_>, g: &mut GhastGoal) -> bool {
 pub fn goal_start(t: &mut Tick<'_, '_>, g: &mut GhastGoal) {
     if let GhastGoal::RandomFloat = g {
         let target = suitable_fly_to_position(t, 16);
-        t.mob().move_ctl.set_wanted_position(target, 1.0);
+        t.move_ctl().set_wanted_position(target, 1.0);
     }
 }
 
@@ -701,7 +697,7 @@ pub fn goal_tick(t: &mut Tick<'_, '_>, g: &mut GhastGoal) {
                 let p = t.pos();
                 let f = t.mob().random.next_double();
                 let target = p + (eye - p) * f;
-                t.mob().move_ctl.set_wanted_position(target, 1.0);
+                t.move_ctl().set_wanted_position(target, 1.0);
             }
         }
         GhastGoal::RandomFloat => {}

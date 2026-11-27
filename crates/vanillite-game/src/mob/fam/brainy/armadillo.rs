@@ -201,7 +201,7 @@ fn roll_up(t: &mut Tick<'_, '_>) {
         return;
     }
     // `stopInPlace`.
-    t.mob().nav.stop();
+    t.nav().stop();
     let m = t.mob();
     m.xxa = 0.0;
     m.zza = 0.0;
@@ -229,8 +229,12 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
     }
     let s = state_mut(t.mob());
     s.scute_time -= 1;
-    if s.scute_time <= 0 {
-        if t.env.rules.bool(crate::survival::rules::Rule::MOB_DROPS) {
+    // `shouldDropLoot`: adults with `mobDrops`; otherwise the timer keeps running down.
+    if s.scute_time <= 0
+        && !t.mob_ref().baby
+        && t.env.rules.bool(crate::survival::rules::Rule::MOB_DROPS)
+    {
+        {
             let items = super::gift_loot(t, "minecraft:gameplay/armadillo_shed");
             if !items.is_empty() {
                 for i in items {
@@ -244,6 +248,9 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
                     1.0,
                     pitch,
                 );
+                let event = crate::level::game_event::events().entity_place;
+                let pos = t.pos();
+                crate::survival::game_event(t.env.out, event, pos, Some(t.id));
             }
         }
         let time = next_scute_time(t.mob());
@@ -307,6 +314,41 @@ pub fn hurt_sound(m: &MobData) -> &'static str {
     }
 }
 
+/// `brushOffScute` of an adult armadillo: the brush loot, the sound and the
+/// `entity_interact` game event.
+pub fn brush_off_scute(t: &mut Tick<'_, '_>) {
+    let items = super::gift_loot(t, "minecraft:brush/armadillo");
+    for i in items {
+        crate::mob::equipment::spawn_at_location(t, i, 0.0);
+    }
+    crate::mob::kinds::play_sound(t, "minecraft:entity.armadillo.brush", 1.0, 1.0);
+}
+
+/// A dispenser's brush on the armadillo `id`: `brushOffScute(null, brush)`, whether it took.
+pub fn dispense_brush(
+    level: &Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::mob::Env<'_>,
+    cx: &mut crate::mob::MobContext,
+    id: vanillite_world::entity::EntityId,
+) -> bool {
+    if ents
+        .mob(id)
+        .is_none_or(|m| m.kind != crate::mob::Kind::Armadillo || m.baby)
+    {
+        return false;
+    }
+    let mut t = Tick {
+        level,
+        ents,
+        env,
+        cx,
+        id,
+    };
+    brush_off_scute(&mut t);
+    true
+}
+
 /// `mobInteract`: brushing off a scute; scared armadillos refuse the rest.
 pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     let name = crate::item::item_id(ix.stack).name();
@@ -322,11 +364,7 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             cx: &mut *ix.cx,
             id: target,
         };
-        let items = super::gift_loot(&mut t, "minecraft:entities/armadillo_brush");
-        for i in items {
-            crate::mob::equipment::spawn_at_location(&mut t, i, 0.0);
-        }
-        crate::mob::kinds::play_sound(&mut t, "minecraft:entity.armadillo.brush", 1.0, 1.0);
+        brush_off_scute(&mut t);
         crate::mob::animal::hurt_held_pub(ix, 16);
         return Interaction::Success;
     }

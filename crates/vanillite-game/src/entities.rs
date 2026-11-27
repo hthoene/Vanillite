@@ -36,6 +36,8 @@ pub struct FallingBlockData {
     pub cancel_drop: bool,
     /// `fallDistance`.
     pub fall_distance: f64,
+    /// `stuckSpeedMultiplier`: cobwebs and powder snow slow the next move.
+    pub stuck: vanillite_base::Vec3,
     /// The seed of the entity's own random (`Entity.random`), drawn once by an anvil's chip
     /// roll.
     pub seed: i64,
@@ -54,6 +56,7 @@ impl FallingBlockData {
             fall_hurt_max: 40,
             cancel_drop: false,
             fall_distance: 0.0,
+            stuck: vanillite_base::Vec3::ZERO,
             seed,
         }
     }
@@ -442,8 +445,12 @@ impl Entities {
         new: NewEntity,
         data: crate::mob::missile::MissileData,
     ) -> EntityId {
+        let network_id = new.network_id.0;
         let missiles = &mut self.missiles;
-        self.store.spawn(new, |id| missiles.push(id, data))
+        let id = self.store.spawn(new, |id| missiles.push(id, data));
+        // Players hit fireballs, wind charges and shulker bullets.
+        self.by_network_id.insert(network_id, id);
+        id
     }
 
     /// The missile data of an entity.

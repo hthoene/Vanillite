@@ -12,6 +12,7 @@ use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::{EntityId, NetworkIds, NewEntity};
 
 use super::animal::Interaction;
+use super::kinds::Kind;
 use super::{MobData, Tick, nav};
 use crate::entities::Entities;
 use crate::item::ItemStack;
@@ -80,7 +81,8 @@ pub fn set_in_sitting_pose(t: &mut Tick<'_, '_>, on: bool) {
 /// `SitWhenOrderedToGoal.canUse`.
 pub fn sit_can_use(t: &mut Tick<'_, '_>) -> bool {
     let m = t.mob_ref();
-    if !m.tame || m.fluids.in_water() || !t.on_ground() {
+    // An untamed mob ordered to sit (`Sitting` loaded or merged) sits too.
+    if (!m.order_to_sit && !m.tame) || m.fluids.in_water() || !t.on_ground() {
         return false;
     }
     let ordered = m.order_to_sit;
@@ -127,7 +129,7 @@ pub fn follow_can_use(t: &mut Tick<'_, '_>, start_distance: f32) -> bool {
 
 /// `FollowOwnerGoal.canContinueToUse`.
 pub fn follow_can_continue(t: &mut Tick<'_, '_>, stop_distance: f32) -> bool {
-    if t.mob_ref().nav.is_done() {
+    if t.nav_ref().is_done() {
         return false;
     }
     let Some(owner) = owner_of(t.ents, t.mob_ref()) else {
@@ -192,7 +194,7 @@ fn try_to_teleport_to_owner(t: &mut Tick<'_, '_>, owner: Vec3) {
                 f64::from(pos.z) + 0.5,
             );
             t.core_mut().set_pos(p);
-            t.mob().nav.stop();
+            t.nav().stop();
             return;
         }
     }
@@ -256,19 +258,34 @@ pub fn owner_hurt_by_can_use(
     if stamp == timestamp || target == t.id {
         return false;
     }
-    let alive = t.ents.mob(target).is_some_and(MobData::is_alive)
-        || t.ents.player(target).is_some_and(|p| {
-            !p.survival.is_dead_or_dying()
-                && matches!(p.game_mode, GameMode::Survival | GameMode::Adventure)
-        });
-    // `wantsToAttack`: never the owner's other pets.
-    let same_owner = t
-        .ents
-        .mob(target)
-        .is_some_and(|o| o.tame && o.owner == t.mob_ref().owner);
+    // `canAttack(target, TargetingConditions.DEFAULT)` (never the owner).
     let owner = owner_of(t.ents, t.mob_ref());
-    if !alive || same_owner || owner == Some(target) {
+    if !crate::mob::goals::can_attack(t, target) || owner == Some(target) {
         return false;
+    }
+    // `Wolf.wantsToAttack`: no creepers, ghasts, armour stands, tamed horses or tamed pets
+    // (other owners' wolves are fair game); other pets want to attack anything.
+    if t.mob_ref().kind == Kind::Wolf
+        && let Some(o) = t.ents.mob(target)
+    {
+        let wanted = match o.kind {
+            Kind::Creeper | Kind::Ghast | Kind::ArmorStand => false,
+            Kind::Wolf => !o.tame || o.owner != t.mob_ref().owner,
+            k if crate::mob::fam::companion::is_horse(k)
+                || matches!(k, Kind::Camel | Kind::CamelHusk) =>
+            {
+                !o.tame
+            }
+            k if crate::mob::fam::companion::is_tamable(k)
+                || matches!(k, Kind::Nautilus | Kind::ZombieNautilus) =>
+            {
+                !o.tame
+            }
+            _ => true,
+        };
+        if !wanted {
+            return false;
+        }
     }
     // `Wolf.wantsToAttack`: a player's wolf attacks no player when `canHarmPlayer` fails (the
     // pvp rule).
@@ -289,9 +306,48 @@ pub fn owner_hurt_stamp(t: &Tick<'_, '_>, by_owner: bool) -> i32 {
 
 // Leads.
 
-/// `canBeLeashed`: animals, not monsters.
-fn can_be_leashed(m: &MobData) -> bool {
-    !m.kind.is_monster()
+/// `canBeLeashed` with its overrides: tamables, squids, dolphins, axolotls and hoglins yes;
+/// fish, bats, villagers, pandas, turtles and enemies no; angry wolves, aggravated nautiluses
+/// and mob-ridden zombie mounts no; sulfur cubes only with a body item.
+fn can_be_leashed(ents: &Entities, id: EntityId, m: &MobData) -> bool {
+    use crate::mob::brain::memory::MemoryType;
+    let mob_controlled = || {
+        ents.riding
+            .passengers_of(id)
+            .first()
+            .is_some_and(|&p| ents.mob(p).is_some())
+    };
+    let aggravated = || {
+        m.brain
+            .as_ref()
+            .is_some_and(|b| b.has(MemoryType::AngryAt) || b.has(MemoryType::AttackTarget))
+    };
+    match m.kind {
+        Kind::Wolf => !crate::mob::common::is_angry(m, ents.game_time),
+        Kind::Squid
+        | Kind::GlowSquid
+        | Kind::Dolphin
+        | Kind::Axolotl
+        | Kind::Hoglin
+        | Kind::Zoglin => true,
+        Kind::Cod
+        | Kind::Salmon
+        | Kind::Pufferfish
+        | Kind::TropicalFish
+        | Kind::Tadpole
+        | Kind::Bat
+        | Kind::Villager
+        | Kind::WanderingTrader
+        | Kind::Panda
+        | Kind::Turtle => false,
+        Kind::CamelHusk => !mob_controlled(),
+        Kind::ZombieHorse => m.tame || !mob_controlled(),
+        Kind::Nautilus => !aggravated(),
+        Kind::ZombieNautilus => !aggravated() && !mob_controlled(),
+        Kind::SulfurCube => crate::mob::fam::undead::cubes::has_body_item(m),
+        _ if crate::mob::fam::companion::is_tamable(m.kind) => true,
+        k => !k.is_monster(),
+    }
 }
 
 /// The holder of `mob`'s lead.
@@ -452,6 +508,113 @@ fn entity_sound(ents: &Entities, env: &mut Env<'_>, id: EntityId, sound: &str) {
     );
 }
 
+/// `Equippable.shearingSound` of the items with `canBeSheared` (saddles, harnesses, carpets,
+/// horse, wolf and nautilus armour).
+fn shearing_sound(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "minecraft:saddle" => "minecraft:item.saddle.unequip",
+        "minecraft:wolf_armor" => "minecraft:item.armor.unequip_wolf",
+        n if n.ends_with("_harness") => "minecraft:entity.happy_ghast.unequip",
+        n if n.ends_with("_carpet") => "minecraft:item.llama_carpet.unequip",
+        n if n.ends_with("_horse_armor") => "minecraft:item.horse_armor.unequip",
+        n if n.ends_with("_nautilus_armor") => "minecraft:item.armor.unequip_nautilus",
+        _ => return None,
+    })
+}
+
+/// `Mob.canShearEquipment` and `attemptToShearEquipment`: shears take the first shearable item
+/// off (a wolf's only for its owner, others only without passengers), drop it at the passenger
+/// attachment, play its shearing sound and post `SHEAR`.
+fn shear_equipment(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    target: EntityId,
+    hand: Hand,
+) -> bool {
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    let allowed = if m.kind == Kind::Wolf {
+        ents.store.get(player).map(|e| e.uuid()) == m.owner
+    } else {
+        ents.riding.passengers_of(target).is_empty()
+    };
+    if !allowed {
+        return false;
+    }
+    let creative = ents
+        .player(player)
+        .is_some_and(|p| p.game_mode == GameMode::Creative);
+    let found = (0..8)
+        .filter_map(crate::item::EquipmentSlot::from_ordinal)
+        .find_map(|slot| {
+            let s = m.equipment.get(slot);
+            let sound = shearing_sound(crate::item::item_id(s).name())?;
+            // `PREVENT_ARMOR_CHANGE` (Curse of Binding) keeps it, unless creative.
+            let bound = crate::player::play::game_data()
+                .is_some_and(|d| d.enchantment_level(s, "minecraft:binding_curse") > 0);
+            (!s.is_empty() && (!bound || creative)).then(|| (slot, s.clone(), sound))
+        });
+    let Some((slot, stack, sound)) = found else {
+        return false;
+    };
+    let kind = m.kind;
+    super::animal::hurt_held(ents, env, player, hand, 1);
+    let height = ents.store.get(target).map_or(0.0, |e| e.dims().height);
+    if let Some(m) = ents.mob_mut(target) {
+        m.equipment.set(slot, ItemStack::default());
+        if slot == crate::item::EquipmentSlot::Saddle {
+            m.saddled = false;
+        }
+    }
+    let event = crate::level::game_event::events().shear;
+    super::animal::entity_game_event(ents, env, target, event, Some(player));
+    if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+        // `getAttachments().getAverage(PASSENGER)`: the type's passenger points, unrotated.
+        let offset = match kind {
+            Kind::Wolf => Vec3::new(0.0, 0.818_75, -0.0625),
+            Kind::Llama | Kind::TraderLlama => Vec3::new(0.0, 1.37, -0.3),
+            Kind::Camel | Kind::CamelHusk | Kind::Strider => Vec3::new(0.0, f64::from(height), 0.0),
+            _ => Vec3::new(0.0, crate::riding::mob_passenger_height(kind, height), 0.0),
+        };
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
+        env.out.push(crate::survival::Effect::DropItem {
+            random: item_random,
+            uuid,
+            pos: pos + offset,
+            velocity,
+            y_rot,
+            pickup_delay: 10,
+            stack,
+        });
+    }
+    if let Some(update) = super::equipment::tracking_update(ents, target) {
+        env.out.push(update);
+    }
+    if let Some(mut e) = ents.store.get_mut(target) {
+        e.mark_data_dirty();
+    }
+    // `playSound(shearingSound)`: the mob's sound source, its random draws no pitch.
+    if let Some(m) = ents.mob(target)
+        && !m.silent
+        && let Some(pos) = ents.store.get(target).map(|e| e.pos())
+    {
+        let seed = crate::survival::sound_seed();
+        play_sound(
+            env.out,
+            None,
+            pos,
+            sound,
+            m.kind.sound_source(),
+            1.0,
+            1.0,
+            seed,
+        );
+    }
+    true
+}
+
 /// The lead part of `Entity.interact`: tie, untie or pass on leads.
 pub fn leash_interact(
     ents: &mut Entities,
@@ -463,7 +626,7 @@ pub fn leash_interact(
 ) -> Interaction {
     let leashable = ents
         .mob(target)
-        .is_some_and(|m| m.is_alive() && can_be_leashed(m))
+        .is_some_and(|m| m.is_alive() && can_be_leashed(ents, target, m))
         || ents.boat(target).is_some();
     let baby = ents.mob(target).is_some_and(|m| m.baby);
     if sneaking && leashable && !baby {
@@ -511,6 +674,9 @@ pub fn leash_interact(
         let event = crate::level::game_event::events().shear;
         super::animal::entity_game_event(ents, env, target, event, Some(player));
         entity_sound(ents, env, target, "minecraft:item.shears.snip");
+        return Interaction::Success;
+    }
+    if name == "minecraft:shears" && !sneaking && shear_equipment(ents, env, player, target, hand) {
         return Interaction::Success;
     }
     if !leashable {
@@ -693,7 +859,8 @@ pub fn bind_player_mobs(
             (b.min_y + b.max_y) / 2.0,
             (b.min_z + b.max_z) / 2.0,
         );
-        c.distance_to_sqr(knot_center).sqrt() <= snap && ents.mob(m).is_none_or(can_be_leashed)
+        c.distance_to_sqr(knot_center).sqrt() <= snap
+            && ents.mob(m).is_none_or(|mob| can_be_leashed(ents, m, mob))
     });
     // Without a mob to tie, Vanilla discards the knot it just created.
     if mine.is_empty() {
@@ -716,6 +883,108 @@ pub fn bind_player_mobs(
         Some(player),
     );
     true
+}
+
+/// `Leashable.leashableLeashedTo(holder)` (a 32 block cube around the holder's box centre)
+/// filtered by `canHaveALeashAttachedTo(other)`: within the snap distance of `other` and
+/// leashable.
+fn leashed_to_attachable(ents: &Entities, holder: EntityId, other: EntityId) -> Vec<EntityId> {
+    let center = |id: EntityId| {
+        ents.store.get(id).map(|e| {
+            let b = e.aabb();
+            Vec3::new(
+                (b.min_x + b.max_x) / 2.0,
+                (b.min_y + b.max_y) / 2.0,
+                (b.min_z + b.max_z) / 2.0,
+            )
+        })
+    };
+    let (Some(hc), Some(oc)) = (center(holder), center(other)) else {
+        return Vec::new();
+    };
+    let area = Aabb::new(
+        hc.x - 16.0,
+        hc.y - 16.0,
+        hc.z - 16.0,
+        hc.x + 16.0,
+        hc.y + 16.0,
+        hc.z + 16.0,
+    );
+    let mut out = Vec::new();
+    ents.store.for_each_in(&area, false, |id| {
+        if ents.leashes.get(&id) == Some(&holder) {
+            out.push(id);
+        }
+    });
+    out.retain(|&m| {
+        if m == other {
+            return false;
+        }
+        let snap = match ents.store.get(m).map(|e| e.kind()) {
+            Some(k)
+                if k == vanillite_data::entity::ids::GHAST
+                    || k == vanillite_data::entity::ids::HAPPY_GHAST =>
+            {
+                16.0
+            }
+            _ => 12.0,
+        };
+        center(m).is_some_and(|c| c.distance_to_sqr(oc).sqrt() <= snap)
+            && ents.mob(m).is_none_or(|mob| can_be_leashed(ents, m, mob))
+    });
+    out
+}
+
+/// `LeashFenceKnotEntity.interact`: shears cut the knot's leads; the player's own leashed mobs
+/// get tied to the knot, else (not sneaking) the knot's mobs go onto the player's lead
+/// (`BLOCK_ATTACH`, the tie sound). `Pass` when nothing changed; an emptied knot is discarded
+/// (`notifyLeasheeRemoved`).
+pub fn knot_interact(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    discarded: &mut Vec<EntityId>,
+    player: EntityId,
+    knot: EntityId,
+    hand: Hand,
+    sneaking: bool,
+) -> Interaction {
+    let stack = super::animal::held(ents, player, hand);
+    if vanillite_data::registry::ITEM.name(stack.item) == Some("minecraft:shears")
+        && shear_off_all_leash_connections(ents, env, knot)
+    {
+        super::animal::hurt_held(ents, env, player, hand, 1);
+        discard_if_empty(ents, knot, discarded);
+        return Interaction::Success;
+    }
+    let mine = leashed_to_attachable(ents, player, knot);
+    let attached = !mine.is_empty();
+    for m in mine {
+        set_leashed_to(ents, env, m, knot);
+    }
+    let mut moved = false;
+    if !attached && !sneaking {
+        for m in leashed_to_attachable(ents, knot, player) {
+            set_leashed_to(ents, env, m, player);
+            moved = true;
+        }
+    }
+    if !attached && !moved {
+        return Interaction::Pass;
+    }
+    if let Some(pos) = ents.store.get(knot).map(|e| e.pos()) {
+        let event = crate::level::game_event::events().block_attach;
+        crate::survival::game_event(env.out, event, pos, Some(player));
+    }
+    entity_sound(ents, env, knot, "minecraft:item.lead.tied");
+    discard_if_empty(ents, knot, discarded);
+    Interaction::Success
+}
+
+/// `LeashFenceKnotEntity.notifyLeasheeRemoved`: a knot nothing is tied to goes.
+fn discard_if_empty(ents: &Entities, knot: EntityId, discarded: &mut Vec<EntityId>) {
+    if !ents.leashes.values().any(|&h| h == knot) {
+        discarded.push(knot);
+    }
 }
 
 /// A player hit or used a knot: it breaks and drops the leads tied to it.

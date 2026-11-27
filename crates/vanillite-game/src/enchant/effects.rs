@@ -459,11 +459,20 @@ pub enum EntityEffect {
     },
     /// `summon_entity` of a lightning bolt (Channeling).
     SummonLightning,
-    /// `play_sound`.
+    /// `play_sound`: the sound of the enchantment level (the last one beyond the list).
     PlaySound {
-        sound: String,
+        sounds: Vec<String>,
         volume: f32,
         pitch: f32,
+    },
+    /// `apply_exhaustion`: a player's food exhaustion grows.
+    ApplyExhaustion(LevelBased),
+    /// `apply_impulse`: a push along `direction` turned by the entity's look, scaled per
+    /// axis by `coordinate_scale` and by `magnitude` (Lunge).
+    ApplyImpulse {
+        direction: [f64; 3],
+        coordinate_scale: [f64; 3],
+        magnitude: LevelBased,
     },
     AllOf(Vec<EntityEffect>),
     /// Effects of systems that do not exist yet (explosions, sounds, summons).
@@ -581,13 +590,50 @@ impl EntityEffect {
                         v
                     })
                 };
-                match o.get("sound").and_then(Value::as_str) {
-                    Some(sound) => EntityEffect::PlaySound {
-                        sound: sound.to_owned(),
+                let sounds: Vec<String> = match o.get("sound") {
+                    Some(Value::String(s)) => vec![s.clone()],
+                    Some(Value::Array(a)) => a
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                if sounds.is_empty() {
+                    EntityEffect::Unsupported
+                } else {
+                    EntityEffect::PlaySound {
+                        sounds,
                         volume: f("volume").unwrap_or(1.0),
                         pitch: f("pitch").unwrap_or(1.0),
-                    },
-                    None => EntityEffect::Unsupported,
+                    }
+                }
+            }
+            "apply_exhaustion" => o
+                .get("amount")
+                .and_then(LevelBased::parse)
+                .map_or(EntityEffect::Unsupported, EntityEffect::ApplyExhaustion),
+            "apply_impulse" => {
+                let vec3 = |k: &str| {
+                    let a = o.get(k)?.as_array()?;
+                    match a.as_slice() {
+                        [x, y, z] => Some([x.as_f64()?, y.as_f64()?, z.as_f64()?]),
+                        _ => None,
+                    }
+                };
+                match (
+                    vec3("direction"),
+                    vec3("coordinate_scale"),
+                    o.get("magnitude").and_then(LevelBased::parse),
+                ) {
+                    (Some(direction), Some(coordinate_scale), Some(magnitude)) => {
+                        EntityEffect::ApplyImpulse {
+                            direction,
+                            coordinate_scale,
+                            magnitude,
+                        }
+                    }
+                    _ => EntityEffect::Unsupported,
                 }
             }
             "all_of" => EntityEffect::AllOf(
@@ -598,6 +644,15 @@ impl EntityEffect {
             ),
             _ => EntityEffect::Unsupported,
         }
+    }
+
+    /// `PlaySoundEffect`'s sound for an enchantment level: the level's entry, the last one
+    /// beyond the list.
+    pub fn sound_of_level(sounds: &[String], level: i32) -> Option<&str> {
+        let i = usize::try_from(level.saturating_sub(1))
+            .unwrap_or(0)
+            .min(sounds.len().saturating_sub(1));
+        sounds.get(i).map(String::as_str)
     }
 
     /// The seconds the affected entity burns (the longest `ignite`), if any.
@@ -679,6 +734,8 @@ pub struct Enchantment {
     pub damage: Vec<Conditional<ValueEffect>>,
     pub knockback: Vec<Conditional<ValueEffect>>,
     pub damage_protection: Vec<Conditional<ValueEffect>>,
+    /// `minecraft:damage_immunity` (Frost Walker against `#burn_from_stepping`).
+    pub damage_immunity: Vec<Conditional<()>>,
     pub armor_effectiveness: Vec<Conditional<ValueEffect>>,
     pub smash_damage_per_fallen_block: Vec<Conditional<ValueEffect>>,
     pub post_attack: Vec<PostAttack>,
@@ -704,6 +761,8 @@ pub struct Enchantment {
     pub fishing_luck_bonus: Vec<Conditional<ValueEffect>>,
     /// `minecraft:hit_block` (Channeling on lightning rods).
     pub hit_block: Vec<Conditional<EntityEffect>>,
+    /// `minecraft:post_piercing_attack` (Lunge).
+    pub post_piercing_attack: Vec<Conditional<EntityEffect>>,
     pub block_experience: Vec<Conditional<ValueEffect>>,
 }
 
@@ -801,6 +860,7 @@ impl Enchantment {
             damage: values("minecraft:damage"),
             knockback: values("minecraft:knockback"),
             damage_protection: values("minecraft:damage_protection"),
+            damage_immunity: conditionals(get("minecraft:damage_immunity"), |_| Some(())),
             armor_effectiveness: values("minecraft:armor_effectiveness"),
             smash_damage_per_fallen_block: values("minecraft:smash_damage_per_fallen_block"),
             post_attack,
@@ -833,6 +893,9 @@ impl Enchantment {
             fishing_time_reduction: values("minecraft:fishing_time_reduction"),
             fishing_luck_bonus: values("minecraft:fishing_luck_bonus"),
             hit_block: conditionals(get("minecraft:hit_block"), |e| Some(EntityEffect::parse(e))),
+            post_piercing_attack: conditionals(get("minecraft:post_piercing_attack"), |e| {
+                Some(EntityEffect::parse(e))
+            }),
             block_experience: values("minecraft:block_experience"),
         }
     }
@@ -1026,6 +1089,31 @@ impl Enchantments {
         out
     }
 
+    /// `EnchantmentHelper.doPostPiercingAttackEffects`: the `post_piercing_attack` effects of
+    /// the main hand `weapon` whose requirements hold (the user is `this`), with their level.
+    pub fn post_piercing_attack_effects(
+        &self,
+        weapon: &ItemStack,
+        cx: &EnchantContext<'_>,
+        random: &mut dyn FloatRandom,
+    ) -> Vec<(EntityEffect, i32)> {
+        let mut out = Vec::new();
+        for (e, level) in self.of(weapon) {
+            if !e.works_in(EquipmentSlot::MainHand) {
+                continue;
+            }
+            for c in &e.post_piercing_attack {
+                if c.requirements
+                    .as_ref()
+                    .is_none_or(|r| r.test(cx, level, random))
+                {
+                    out.push((c.effect.clone(), level));
+                }
+            }
+        }
+        out
+    }
+
     /// `EnchantmentHelper.pickHighestLevel(CROSSBOW_CHARGING_SOUNDS)`: the entry for the
     /// level of the highest enchantment that has the effect.
     pub fn crossbow_charging_sounds(&self, crossbow: &ItemStack) -> Option<&ChargingSounds> {
@@ -1179,6 +1267,32 @@ impl Enchantments {
             }
         }
         value
+    }
+
+    /// `EnchantmentHelper.isImmuneToDamage`: an enchantment of the equipment, in a slot it
+    /// works in, has a `damage_immunity` effect whose requirements hold.
+    pub fn immune_to_damage(
+        &self,
+        equipment: &[(EquipmentSlot, &ItemStack)],
+        cx: &EnchantContext<'_>,
+        random: &mut dyn FloatRandom,
+    ) -> bool {
+        for &(slot, stack) in equipment {
+            for (e, level) in self.of(stack) {
+                if !e.works_in(slot) {
+                    continue;
+                }
+                for c in &e.damage_immunity {
+                    if c.requirements
+                        .as_ref()
+                        .is_none_or(|r| r.test(cx, level, random))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// `Enchantment.doPostAttack` of every enchantment of `stack` for `party`: the post

@@ -1,0 +1,105 @@
+{
+  "description": "A player stares at an enderman 3.5 blocks away: it screams, takes the player as target (Enderman.setTarget: creepy, +0.15 speed) and, still stared at within 4 blocks, teleports away (EndermanLookForPlayerGoal.tick).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      -16,
+      -61,
+      -16
+    ],
+    [
+      31,
+      -50,
+      31
+    ]
+  ],
+  "ticks": 100,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        9.1,
+        -60.0,
+        11.0
+      ],
+      "rot": [
+        170.272,
+        -14.676
+      ]
+    },
+    {
+      "name": "enderman",
+      "type": "minecraft:enderman",
+      "pos": [
+        8.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 7,
+      "finalize": false
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

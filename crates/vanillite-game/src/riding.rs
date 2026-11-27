@@ -22,37 +22,69 @@ fn vehicle_attachment(ents: &Entities, passenger: EntityId) -> f64 {
     if ents.player(passenger).is_some() {
         return 0.6;
     }
-    match ents.mob(passenger).map(|m| m.kind) {
-        Some(Kind::Skeleton) => 0.7,
+    let Some(m) = ents.mob(passenger) else {
+        return 0.0;
+    };
+    // `EntityType.Builder.ridingOffset(offset)`: the vehicle attachment is `-offset`.
+    let offset = match m.kind {
+        // `Zombie.BABY_DIMENSIONS` attaches at 0.1875 (husks, drowned, zombie villagers and
+        // zombified piglins share it).
+        Kind::Zombie
+        | Kind::Husk
+        | Kind::Drowned
+        | Kind::ZombieVillager
+        | Kind::ZombifiedPiglin
+            if m.baby =>
+        {
+            return f64::from(0.1875_f32);
+        }
+        Kind::Zombie
+        | Kind::Husk
+        | Kind::Drowned
+        | Kind::ZombieVillager
+        | Kind::ZombifiedPiglin
+        | Kind::Skeleton
+        | Kind::Stray
+        | Kind::Bogged
+        | Kind::Parched
+        | Kind::Piglin
+        | Kind::PiglinBrute => -0.7_f32,
+        Kind::Evoker | Kind::Illusioner | Kind::Pillager | Kind::Vindicator => -0.6,
+        Kind::WitherSkeleton => -0.875,
+        Kind::Giant => -3.75,
+        Kind::Phantom => -0.125,
+        Kind::Allay | Kind::Vex => 0.04,
+        Kind::Ghast | Kind::HappyGhast => 0.5,
         _ => 0.0,
-    }
+    };
+    -f64::from(offset)
 }
 
 /// `getPassengerAttachmentPoint` of a living vehicle (`passengerAttachments`), scaled for
 /// babies.
-fn mob_passenger_height(kind: Kind, height: f32) -> f64 {
+pub(crate) fn mob_passenger_height(kind: Kind, height: f32) -> f64 {
     match kind {
-        Kind::Pig => 0.868_75,
-        Kind::Zombie => 2.0125,
-        Kind::Spider => 0.765,
-        Kind::Cow => 1.368_75,
-        Kind::Sheep => 1.2375,
+        Kind::Pig => f64::from(0.868_75_f32),
+        Kind::Zombie => f64::from(2.0125_f32),
+        Kind::Spider => f64::from(0.765_f32),
+        Kind::Cow => f64::from(1.368_75_f32),
+        Kind::Sheep => f64::from(1.2375_f32),
         Kind::Chicken => 0.7,
-        Kind::Enderman => 2.806_25,
-        Kind::Horse => 1.443_75,
-        Kind::Donkey => 1.1125,
-        Kind::Mule => 1.2125,
-        Kind::SkeletonHorse | Kind::ZombieHorse => 1.318_75,
+        Kind::Enderman => f64::from(2.806_25_f32),
+        Kind::Horse => f64::from(1.443_75_f32),
+        Kind::Donkey => f64::from(1.1125_f32),
+        Kind::Mule => f64::from(1.2125_f32),
+        Kind::SkeletonHorse | Kind::ZombieHorse => f64::from(1.318_75_f32),
         Kind::Llama | Kind::TraderLlama => 1.37,
         Kind::Wolf => 0.818_75,
-        Kind::Cat => 0.5125,
-        Kind::Ocelot => 0.6375,
-        Kind::Parrot => 0.4625,
+        Kind::Cat => f64::from(0.5125_f32),
+        Kind::Ocelot => f64::from(0.6375_f32),
+        Kind::Parrot => f64::from(0.4625_f32),
         Kind::Fox => 0.6375,
         // `getBodyAnchorAnimationYOffset` of a standing camel: its height less 0.375.
         Kind::Camel | Kind::CamelHusk => f64::from(height) - 0.375,
         Kind::HappyGhast => 4.0,
-        Kind::Nautilus | Kind::ZombieNautilus => 1.1375,
+        Kind::Nautilus | Kind::ZombieNautilus => f64::from(1.1375_f32),
         _ => f64::from(height),
     }
 }
@@ -619,6 +651,10 @@ pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
     let y_rot = v.rot().y_rot;
     let height = v.dims().height;
     let count = list.len();
+    // `AbstractHorse.positionRider`: living passengers turn their body with the horse.
+    let horse_body_rot = ents
+        .mob(vehicle)
+        .and_then(|m| m.kind.is_abstract_horse().then_some(m.y_body_rot));
     for (i, &p) in list.iter().enumerate() {
         let attach = if let Some(b) = ents.boat(vehicle) {
             let animal = ents.store.get(p).is_some_and(|e| is_animal(e.kind()));
@@ -627,13 +663,25 @@ pub fn position_riders_of(ents: &mut Entities, vehicle: EntityId) {
             Vec3::new(0.0, crate::minecart::passenger_height(ents, p), 0.0)
         } else if let Some(m) = ents.mob(vehicle) {
             let scale = if m.baby { 0.5 } else { 1.0 };
-            Vec3::new(0.0, mob_passenger_height(m.kind, height) * scale, 0.0)
+            let base = Vec3::new(0.0, mob_passenger_height(m.kind, height) * scale, 0.0);
+            if crate::mob::fam::companion::is_horse(m.kind) {
+                #[allow(clippy::cast_possible_truncation)]
+                let s = scale as f32;
+                base + crate::mob::fam::companion::horse::rearing_offset(m, y_rot, s)
+            } else {
+                base
+            }
         } else {
             Vec3::new(0.0, f64::from(height), 0.0)
         };
         let target = vpos + attach - Vec3::new(0.0, vehicle_attachment(ents, p), 0.0);
         if let Some(mut e) = ents.store.get_mut(p) {
             e.set_pos(target);
+        }
+        if let Some(rot) = horse_body_rot
+            && let Some(m) = ents.mob_mut(p)
+        {
+            m.y_body_rot = rot;
         }
     }
 }
@@ -910,8 +958,9 @@ pub fn boost(
     let mut n = 0;
     for _ in 0..7 {
         #[allow(clippy::cast_precision_loss)]
-        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
-        if unbreaking <= 0 || env.random.next_float() < chance {
+        let level = unbreaking.max(0) as f32;
+        // `remove_binomial`: the draw removes the point below level / (level + 1).
+        if unbreaking <= 0 || env.random.next_float() >= level / (level + 1.0) {
             n += 1;
         }
     }

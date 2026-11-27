@@ -1,0 +1,145 @@
+{
+  "description": "A golden dandelion locks a baby cow's age (AgeableMob.setAgeLocked: reset to the baby start age, persistent, use sound, pause particles); wheat then does not grow it. A second dandelion on a baby sheep and a third on the locked cow unlock them.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        1.5
+      ]
+    },
+    {
+      "name": "calf",
+      "type": "minecraft:cow",
+      "pos": [
+        8.5,
+        -60.0,
+        13.5
+      ],
+      "seed": 7,
+      "finalize": false,
+      "baby": true
+    },
+    {
+      "name": "lamb",
+      "type": "minecraft:sheep",
+      "pos": [
+        6.5,
+        -60.0,
+        13.5
+      ],
+      "seed": 8,
+      "finalize": false,
+      "baby": true
+    }
+  ],
+  "actions": [
+    {
+      "tick": 5,
+      "op": "interact",
+      "entity": "steve",
+      "target": "calf",
+      "item": "minecraft:golden_dandelion"
+    },
+    {
+      "tick": 10,
+      "op": "interact",
+      "entity": "steve",
+      "target": "calf",
+      "item": "minecraft:wheat"
+    },
+    {
+      "tick": 12,
+      "op": "interact",
+      "entity": "steve",
+      "target": "lamb",
+      "item": "minecraft:golden_dandelion"
+    },
+    {
+      "tick": 60,
+      "op": "interact",
+      "entity": "steve",
+      "target": "calf",
+      "item": "minecraft:golden_dandelion"
+    }
+  ],
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

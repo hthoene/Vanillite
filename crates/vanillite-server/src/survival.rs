@@ -41,6 +41,10 @@ impl BlockAccess for WorldBlocks<'_> {
     fn block_state(&self, pos: BlockPos) -> Option<BlockState> {
         self.0.block(pos).map(BlockState)
     }
+
+    fn block_states_in(&self, min: BlockPos, max: BlockPos, f: &mut dyn FnMut(Option<BlockState>)) {
+        self.0.blocks_in(min, max, |state| f(state.map(BlockState)));
+    }
 }
 
 /// What the players' tick asks of the world's portals.
@@ -387,7 +391,7 @@ impl WorldSurvival {
         enter_gateway: &'a mut dyn FnMut(BlockPos) -> bool,
         hooks: &'a dyn vanillite_game::hooks::GameHooks,
         display_name: &'a dyn Fn(&str, u128) -> Component,
-        entity_team: &'a dyn Fn(u128) -> Option<Box<str>>,
+        entity_team: &'a dyn Fn(&str) -> Option<vanillite_game::scoreboard::TeamFacts>,
     ) -> Env<'a> {
         Env {
             types: &level.damage_types,
@@ -427,7 +431,7 @@ impl WorldSurvival {
         let mut no_gateway = |_| false;
         let hooks = crate::plugins::Hooks::of(global, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = self.env(
             &mut random,
             level,
@@ -529,7 +533,7 @@ impl WorldSurvival {
         {
             let hooks = crate::plugins::Hooks::of(global, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             // `EndGatewayBlock.entityInside`: a gateway takes a player unless it cools down,
             // then starts its cooldown (applied after the tick, seen at once by the others).
             let gateways = &mut portals.gateways;
@@ -733,7 +737,7 @@ impl WorldSurvival {
             let mut no_gateway = |_| false;
             let hooks = crate::plugins::Hooks::of(global, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = Env {
                 hooks: &hooks,
                 display_name: &names,
@@ -823,7 +827,7 @@ impl WorldSurvival {
         let mut no_gateway = |_| false;
         let hooks = crate::plugins::Hooks::of(global, dimension);
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = Env {
             hooks: &hooks,
             display_name: &names,

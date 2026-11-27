@@ -92,12 +92,13 @@ impl Aabb {
     /// `intersects(AABB)`: strict overlap; touching faces do not intersect.
     #[inline]
     pub fn intersects(&self, other: &Self) -> bool {
-        self.min_x < other.max_x
-            && self.max_x > other.min_x
-            && self.min_y < other.max_y
-            && self.max_y > other.min_y
-            && self.min_z < other.max_z
-            && self.max_z > other.min_z
+        // Non-short-circuit `&`: no branches to mispredict in the hot neighbour scans.
+        (self.min_x < other.max_x)
+            & (self.max_x > other.min_x)
+            & (self.min_y < other.max_y)
+            & (self.max_y > other.min_y)
+            & (self.min_z < other.max_z)
+            & (self.max_z > other.min_z)
     }
 
     /// `contains(x, y, z)`: min inclusive, max exclusive.

@@ -13,6 +13,8 @@
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+//! cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
+//! cargo xtask light sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--host <host>] [--port <port>] [--release]
 //! cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
@@ -40,6 +42,7 @@ mod loadtest;
 mod merge;
 mod parity;
 mod version;
+mod worldgen;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -112,6 +115,24 @@ pub const USAGE: &str = "usage:
       <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
       tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
       Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
+  cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
+      World generation against Vanilla (#223): for --seeds world seeds (default 3, derived from
+      --seed, default the day number; or the given --world-seed values) and every kind
+      (overworld, nether, end, amplified, large_biomes, flat; --kinds picks some), Vanilla's
+      code generates the size×size chunks around the origin (default 16) and a far area of half
+      the size in-process (tools/extractor/.../golden/WorldSweep.java), then the ignored test
+      vanillite-worldgen/tests/vanilla_sweep.rs generates them with Vanillite and compares
+      blocks, biomes, heightmaps, ticks, structure starts and references and block entities.
+      Writes target/worldgen-sweep/summary.md (--keep keeps the Vanilla areas in vanilla/).
+      Runs nightly on vanillite-test2.
+  cargo xtask light sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
+      Light against Vanilla (#237), with the seeds, kinds and areas of the worldgen sweep
+      (origin area default 6×6 chunks): Vanilla generates and lights each area in-process and
+      replays a script of block changes seeded from it (tools/extractor/.../golden/
+      LightSweep.java), then the ignored test vanillite-light/tests/vanilla_light_sweep.rs
+      lights the same blocks with Vanillite, replays the changes and compares the light a
+      client receives after generation and after every batch. Writes
+      target/light-sweep/summary.md. Runs nightly on vanillite-test2.
   cargo xtask golden bless <scenario>...|all
       Run the scenarios in Vanillite and store their traces as the expected goldens in
       crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
@@ -262,6 +283,8 @@ fn main() -> ExitCode {
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
+        ["worldgen", "sweep", rest @ ..] => worldgen::sweep(&repo_root(), rest),
+        ["light", "sweep", rest @ ..] => worldgen::light_sweep(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),

@@ -313,12 +313,6 @@ fn can_hit(ents: &Entities, id: EntityId) -> bool {
         return !p.survival.is_dead_or_dying()
             && p.game_mode != vanillite_config::GameMode::Spectator;
     }
-    hittable(ents, id)
-}
-
-/// Whether `id` is an end crystal a projectile can hit (`canBeHitByProjectile`: alive and
-/// pickable).
-pub fn hittable(ents: &Entities, id: EntityId) -> bool {
     matches!(ents.special(id), Some(SpecialData::EndCrystal(c)) if !c.removed)
 }
 

@@ -25,11 +25,15 @@ pub fn drop_resources(
     };
     let mut stacks = Vec::new();
     let tool = ItemStack::EMPTY;
+    let Some(state) = loot_state(level, pos, state) else {
+        return;
+    };
     let entity = level.block_entity(pos).cloned();
+    let kept = level.block_entities.kept_components(pos).cloned();
     let components = |id: u16| {
         entity
             .as_ref()
-            .and_then(|e| crate::level::block_entity::collect_component(e, id))
+            .and_then(|e| crate::level::block_entity::collect_component_with(e, kept.as_ref(), id))
     };
     let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let loot = BlockLootContext {
@@ -104,6 +108,20 @@ pub fn block_drop_event(
     Some(i32::try_from(ev.value.clamp(0, MAX_PLUGIN_EXPERIENCE)).unwrap_or(0))
 }
 
+/// The state whose loot `state` at `pos` drops: `MovingPistonBlock.getDrops` rolls the moved
+/// state of its block entity (nothing without one).
+fn loot_state(level: &Level, pos: BlockPos, state: BlockState) -> Option<BlockState> {
+    if state.block() != vanillite_data::block::ids::MOVING_PISTON {
+        return Some(state);
+    }
+    match level.block_entity(pos) {
+        Some(crate::level::block_entity::BlockEntity::MovingPiston(piston)) => {
+            Some(piston.moved_state)
+        }
+        _ => None,
+    }
+}
+
 /// `BlockState.getDrops` of a block an explosion destroys (`onExplosionHit`): its loot without
 /// a tool, with the explosion radius for `explosion_decay` when the blocks decay. The loot
 /// is rolled whether or not blocks drop (`popResource` checks that).
@@ -119,6 +137,9 @@ pub fn explosion_loot(
         return;
     };
     let tool = ItemStack::EMPTY;
+    let Some(state) = loot_state(level, pos, state) else {
+        return;
+    };
     let entity = level.block_entity(pos).cloned();
     let components = |id: u16| {
         entity

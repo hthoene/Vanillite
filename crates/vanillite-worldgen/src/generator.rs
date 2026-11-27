@@ -243,6 +243,139 @@ pub struct TerrainGenerator {
     spawn_target: Vec<SpawnTarget>,
     /// `getOrigin(randomState)`, computed on first use.
     origin: OnceLock<ChunkPos>,
+    /// The layers of a flat generator (`FlatLevelSource`); `None` for the noise generator.
+    flat: Option<FlatTerrain>,
+}
+
+/// `FlatLevelGeneratorSettings`: the `settings` of a `minecraft:flat` generator.
+#[derive(Clone, Debug)]
+pub struct FlatSettings {
+    /// `layers`, one state per block row from the bottom of the level (`getLayers()`).
+    pub layers: Vec<BlockState>,
+    /// `biome` (default `minecraft:plains`).
+    pub biome: String,
+    /// `lakes`.
+    pub lakes: bool,
+    /// `features`.
+    pub features: bool,
+    /// `structure_overrides`: structure set ids and `#` tags; `None` for every set.
+    pub structure_overrides: Option<Vec<String>>,
+}
+
+impl FlatSettings {
+    /// `FlatLevelGeneratorSettings.getDefault`: bedrock, two dirt, grass block in plains, with
+    /// villages and strongholds.
+    pub fn classic() -> Self {
+        let state = |id: BlockId| id.default_state();
+        use vanillite_data::block::ids;
+        Self {
+            layers: vec![
+                state(ids::BEDROCK),
+                state(ids::DIRT),
+                state(ids::DIRT),
+                state(ids::GRASS_BLOCK),
+            ],
+            biome: "minecraft:plains".to_owned(),
+            lakes: false,
+            features: false,
+            structure_overrides: Some(vec![
+                "minecraft:strongholds".to_owned(),
+                "minecraft:villages".to_owned(),
+            ]),
+        }
+    }
+
+    /// Parses the settings as `FlatLevelGeneratorSettings.CODEC` reads them.
+    pub fn from_json(json: &Value) -> Result<Self, Error> {
+        let mut layers = Vec::new();
+        for layer in json
+            .get("layers")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::new("flat settings: no layers"))?
+        {
+            let name = layer
+                .get("block")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::new(format!("flat layer without block: {layer}")))?;
+            let block = BlockId::by_name(&crate::blocks::qualify(name))
+                .ok_or_else(|| Error::new(format!("flat layer: unknown block {name}")))?;
+            let height = layer
+                .get("height")
+                .and_then(Value::as_u64)
+                .filter(|h| *h <= 4064)
+                .ok_or_else(|| Error::new(format!("flat layer: bad height in {layer}")))?;
+            layers.extend(std::iter::repeat_n(block.default_state(), height as usize));
+        }
+        // `validateHeight`: the layers fit `DimensionType.Y_SIZE`.
+        if layers.len() > 4064 {
+            return Err(Error::new("flat settings: layers higher than 4064"));
+        }
+        let flag = |name: &str| json.get(name).and_then(Value::as_bool).unwrap_or(false);
+        let structure_overrides = match json.get("structure_overrides") {
+            None => None,
+            Some(Value::String(name)) => Some(vec![name.clone()]),
+            Some(Value::Array(names)) => Some(
+                names
+                    .iter()
+                    .filter_map(|n| n.as_str().map(str::to_owned))
+                    .collect(),
+            ),
+            Some(other) => {
+                return Err(Error::new(format!(
+                    "flat settings: unsupported structure_overrides {other}"
+                )));
+            }
+        };
+        Ok(Self {
+            layers,
+            biome: json
+                .get("biome")
+                .and_then(Value::as_str)
+                .map_or_else(|| "minecraft:plains".to_owned(), crate::blocks::qualify),
+            lakes: flag("lakes"),
+            features: flag("features"),
+            structure_overrides,
+        })
+    }
+}
+
+/// The layers of a flat generator after `adjustGenerationSettings`: layers that do not block
+/// motion are `None` (the `fill_layer` feature places them).
+#[derive(Debug)]
+struct FlatTerrain {
+    layers: Vec<Option<BlockState>>,
+}
+
+impl FlatTerrain {
+    /// `FlatLevelSource.getBaseHeight`.
+    fn base_height(&self, heightmap: HeightmapKind, level: LevelHeight) -> i32 {
+        let top = (self.layers.len() as i32 - 1).min(level.max_y());
+        for index in (0..=top).rev() {
+            if let Some(state) = self.layers[index as usize]
+                && heightmap.matches(facts::block_flags(state.0))
+            {
+                return level.min_y + index + 1;
+            }
+        }
+        level.min_y
+    }
+
+    /// `FlatLevelSource.buildTerrain`.
+    fn build(&self, chunk: &mut ProtoChunk) {
+        let rows = self.layers.len().min(chunk.height() as usize);
+        for (index, layer) in self.layers[..rows].iter().enumerate() {
+            let Some(state) = *layer else {
+                continue;
+            };
+            let y = chunk.min_y() + index as i32;
+            for z in 0..16 {
+                for x in 0..16 {
+                    chunk.set_block(x, y, z, state);
+                }
+            }
+        }
+        chunk.finish_terrain();
+    }
 }
 
 /// What a generator searched for on first use. A generator built again for the same world
@@ -306,6 +439,70 @@ impl TerrainGenerator {
         templates: Arc<StructureTemplateManager>,
     ) -> Result<Self, Error> {
         let settings = NoiseGeneratorSettings::load(packs, dimension.noise_settings)?;
+        Self::build(packs, dimension, settings, seed, templates, None)
+    }
+
+    /// A flat generator (`FlatLevelSource`) of `flat` for a level of that height, reading
+    /// structure templates through `templates`.
+    pub fn flat_with_templates(
+        packs: &LoadedPacks,
+        flat: &FlatSettings,
+        min_y: i32,
+        height: i32,
+        has_sky_light: bool,
+        seed: i64,
+        templates: Arc<StructureTemplateManager>,
+    ) -> Result<Self, Error> {
+        // What `FlatLevelSource` reports instead of noise settings: sea level -63, min Y 0,
+        // generation depth 384, origin chunk 0, 0, no mobs at generation. The rest (no noise,
+        // no aquifers, no surface) is never sampled.
+        let mut json: Value = packs
+            .registry("minecraft:worldgen/noise_settings")
+            .and_then(|r| r.get("minecraft:overworld"))
+            .and_then(|e| serde_json::from_str(e.json.get()).ok())
+            .ok_or_else(|| Error::new("flat generator: no overworld noise settings"))?;
+        if let Some(router) = json.get_mut("noise_router").and_then(Value::as_object_mut) {
+            for function in router.values_mut() {
+                *function = Value::from(0.0);
+            }
+        }
+        if let Some(object) = json.as_object_mut() {
+            object.remove("aquifers");
+            object.insert("spawn_target".into(), Value::Array(Vec::new()));
+            object.insert("sea_level".into(), Value::from(-63));
+            object.insert("disable_mob_generation".into(), Value::Bool(true));
+            object.insert(
+                "noise".into(),
+                serde_json::json!({"min_y": 0, "height": 384}),
+            );
+            object.insert(
+                "material_rule".into(),
+                serde_json::json!({"type": "minecraft:block", "result_state": "minecraft:air"}),
+            );
+        }
+        let settings = NoiseGeneratorSettings::from_json(
+            &json,
+            &mut crate::density::DensityParser::new(packs),
+        )?;
+        let biome_source = serde_json::json!({"type": "minecraft:fixed", "biome": flat.biome});
+        let dimension = DimensionSpec {
+            noise_settings: "minecraft:overworld",
+            biome_source: &biome_source,
+            min_y,
+            height,
+            has_sky_light,
+        };
+        Self::build(packs, dimension, settings, seed, templates, Some(flat))
+    }
+
+    fn build(
+        packs: &LoadedPacks,
+        dimension: DimensionSpec<'_>,
+        settings: NoiseGeneratorSettings,
+        seed: i64,
+        templates: Arc<StructureTemplateManager>,
+        flat: Option<&FlatSettings>,
+    ) -> Result<Self, Error> {
         let random_state = RandomState::new(packs, seed, settings.legacy_random_source)?;
         let biomes = BiomeRegistry::load(packs)?;
         let biome_source = BiomeSource::from_json(dimension.biome_source, packs, &biomes)?;
@@ -348,22 +545,62 @@ impl TerrainGenerator {
         // The final density is only sampled as whole volumes.
         program.set_masked_cache_root(final_density);
 
-        let features = FeatureSet::load(
+        // `adjustGenerationSettings`: layers that do not block motion become `fill_layer`
+        // features (the layer list itself changes, as Vanilla's `validate()` does at start).
+        let flat_terrain = flat.map(|flat| FlatTerrain {
+            layers: flat
+                .layers
+                .iter()
+                .map(|&state| {
+                    HeightmapKind::MotionBlocking
+                        .matches(facts::block_flags(state.0))
+                        .then_some(state)
+                })
+                .collect(),
+        });
+        let flat_features = match (flat, &biome_source) {
+            (Some(flat), BiomeSource::Fixed(biome)) => Some(crate::feature::FlatFeatures {
+                biome: *biome,
+                lakes: flat.lakes,
+                decoration: flat.features
+                    && (!flat.layers.iter().all(|s| s.is_air())
+                        || biomes.get(*biome).name == "minecraft:the_void"),
+                fill_layers: flat
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| {
+                        !HeightmapKind::MotionBlocking.matches(facts::block_flags(s.0))
+                    })
+                    .map(|(i, &s)| (i as i32, s))
+                    .collect(),
+            }),
+            _ => None,
+        };
+        let features = FeatureSet::load_with(
             packs,
             &biomes,
             &random_state,
             &biome_source.possible_biomes(),
             WorldGenerationContext::for_settings(&settings, dimension.min_y, dimension.height),
             &templates,
+            flat_features.as_ref(),
         )?;
 
-        let structures = StructureRegistry::load(
+        let mut structures = StructureRegistry::load(
             packs,
             &biomes,
             &features,
             &biome_source.possible_biomes(),
             &templates,
         )?;
+        if let Some(names) = flat.and_then(|f| f.structure_overrides.as_ref()) {
+            structures.restrict_possible_sets(
+                names,
+                packs.tags("minecraft:worldgen/structure_set"),
+                &biome_source.possible_biomes(),
+            );
+        }
 
         let block = |name: &str| {
             BlockId::by_name(name).ok_or_else(|| Error::new(format!("unknown block {name}")))
@@ -397,7 +634,19 @@ impl TerrainGenerator {
             spawn_target,
             origin: OnceLock::new(),
             random_state,
+            flat: flat_terrain,
         })
+    }
+
+    /// The concentric rings seed of `ChunkGeneratorStructureState`: the level seed, 0 for flat
+    /// generators (`createForFlat`).
+    pub fn concentric_rings_seed(&self) -> i64 {
+        if self.flat.is_some() { 0 } else { self.seed }
+    }
+
+    /// Whether this is a flat generator (`FlatLevelSource`).
+    pub fn is_flat(&self) -> bool {
+        self.flat.is_some()
     }
 
     /// `getOrigin(randomState)`: the chunk `NoiseSpawnFinder` picks for the settings'
@@ -695,6 +944,9 @@ impl TerrainGenerator {
     /// `getBaseHeight(x, z, heightmap, heightAccessor, randomState)`: the first free Y above the
     /// highest block of the noise column that matches the heightmap, or the level's lowest Y.
     pub fn base_height(&self, x: i32, z: i32, heightmap: HeightmapKind, level: LevelHeight) -> i32 {
+        if let Some(flat) = &self.flat {
+            return flat.base_height(heightmap, level);
+        }
         self.iterate_noise_column(level, x, z, None, Some(heightmap))
             .unwrap_or(level.min_y)
     }
@@ -724,6 +976,18 @@ impl TerrainGenerator {
     /// `getBaseColumn(x, z, heightAccessor, randomState)`: the column's blocks as the noise
     /// step fills them (no surface, no carvers).
     pub fn base_column(&self, x: i32, z: i32, level: LevelHeight) -> NoiseColumn {
+        if let Some(flat) = &self.flat {
+            let states = flat
+                .layers
+                .iter()
+                .take(level.height.max(0) as usize)
+                .map(|layer| layer.unwrap_or(BlockState::AIR))
+                .collect();
+            return NoiseColumn {
+                min_y: level.min_y,
+                states,
+            };
+        }
         let mut states = Vec::new();
         let min_y = self.iterate_noise_column_into(level, x, z, &mut states);
         NoiseColumn { min_y, states }
@@ -830,6 +1094,12 @@ impl TerrainGenerator {
             /// The terrain sampling context of this thread: reset per chunk, it keeps its
             /// buffer pool warm across chunks.
             static CONTEXT: RefCell<SamplerContext> = RefCell::new(SamplerContext::new(true));
+        }
+        if let Some(flat) = &self.flat {
+            for job in batch {
+                flat.build(&mut job.chunk);
+            }
+            return;
         }
         CONTEXT.with_borrow_mut(|ctx| {
             for job in batch {

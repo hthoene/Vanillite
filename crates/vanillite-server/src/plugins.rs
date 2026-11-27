@@ -28,7 +28,6 @@ mod populators;
 mod server_api;
 mod world16_api;
 
-pub(crate) use world16_api::default_component;
 mod world_api;
 
 pub(crate) use populators::with_populators;

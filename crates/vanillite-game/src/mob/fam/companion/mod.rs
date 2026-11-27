@@ -48,6 +48,9 @@ pub struct State {
     pub eating_counter: i32,
     pub mouth_counter: i32,
     pub stand_counter: i32,
+    /// `standAnim` and `standAnimO`: the rearing animation, which lifts and moves the rider.
+    pub stand_anim: f32,
+    pub stand_anim_o: f32,
     pub sprint_counter: i32,
     /// `AbstractHorse.gallopSoundCounter`.
     pub gallop_counter: i32,
@@ -376,7 +379,7 @@ pub fn ageable_group(m: &mut MobData, ctx: &SpawnContext<'_>, spawn_baby: bool, 
 pub fn save_ageable(m: &MobData, out: &mut Compound) {
     out.insert("Age", m.age);
     out.insert("ForcedAge", m.forced_age);
-    out.insert("AgeLocked", false);
+    out.insert("AgeLocked", m.age_locked);
     out.insert("InLove", m.in_love);
     if let Some(c) = m.love_cause {
         out.insert("LoveCause", uuid_ints(c));
@@ -388,6 +391,7 @@ pub fn load_ageable(m: &mut MobData, tag: &Compound) {
     m.age = int(tag, "Age").unwrap_or(0);
     m.baby = m.age < 0;
     m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
+    m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
     m.in_love = int(tag, "InLove").unwrap_or(0);
     m.love_cause = crate::mob::nbt::uuid_key_of(tag, "LoveCause");
 }
@@ -467,7 +471,7 @@ pub fn string<'a>(tag: &'a Compound, key: &str) -> Option<&'a str> {
 /// The `AgeableMob` data (baby, age locked) every companion writes first.
 pub fn encode_ageable(w: &mut DataWriter<'_>, m: &MobData) {
     w.boolean(16, m.baby, false);
-    w.boolean(17, false, false);
+    w.boolean(17, m.age_locked, false);
 }
 
 /// The `TamableAnimal` data (flags, owner).
@@ -722,7 +726,7 @@ impl FamilyHooks for Hooks {
     fn check_spawn_rules(
         kind: Kind,
         level: &Level,
-        _env: &Environment,
+        env: &Environment,
         pos: BlockPos,
         random: &mut LegacyRandom,
         reason: SpawnReason,
@@ -736,7 +740,10 @@ impl FamilyHooks for Hooks {
             Kind::Parrot => parrot::spawn_rules(level, pos, reason),
             Kind::Llama => llama::spawn_rules(level, pos, reason),
             Kind::SkeletonHorse => horse::skeleton_spawn_rules(level, pos, reason),
-            Kind::ZombieHorse => horse::zombie_spawn_rules(level, pos, reason),
+            // `SpawnPlacements`: `Monster::checkMonsterSpawnRules`.
+            Kind::ZombieHorse => {
+                crate::mob::spawn::check_monster_spawn_rules(kind, level, env, pos, random, reason)
+            }
             Kind::Panda
             | Kind::Horse
             | Kind::Donkey
@@ -823,6 +830,12 @@ impl FamilyHooks for Hooks {
             Kind::Panda => panda::before_tick(t),
             Kind::PolarBear => polar_bear::before_tick(t),
             _ => {}
+        }
+    }
+
+    fn after_tick(t: &mut Tick<'_, '_>) {
+        if is_horse(t.mob_ref().kind) {
+            horse::after_tick(t.mob());
         }
     }
 
@@ -1167,7 +1180,7 @@ impl FamilyHooks for Hooks {
         match g {
             Goal::Idle => false,
             Goal::Guard(c, cg) => cond_holds(t, *c) && crate::mob::common::can_continue(t, cg),
-            Goal::TamePanic { .. } => !t.mob_ref().nav.is_done(),
+            Goal::TamePanic { .. } => !t.nav_ref().is_done(),
             Goal::Horse(g) => horse::can_continue(t, g),
             Goal::Llama(g) => llama::can_continue(t, g),
             Goal::Wolf(g) => wolf::can_continue(t, g),

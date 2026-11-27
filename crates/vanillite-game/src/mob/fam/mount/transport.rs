@@ -15,7 +15,7 @@ use vanillite_base::{Aabb, BlockPos, ChunkPos, Direction, Vec3};
 use vanillite_data::block::BlockState;
 
 use super::copper_golem::{GolemState, golem_mut};
-use crate::block::container::{ContainerRef, Kind as ContainerKind, chest_blocked, kind_of};
+use crate::block::container::{ContainerRef, Kind as ContainerKind, kind_of};
 use crate::item::{EquipmentSlot, ItemStack};
 use crate::level::BlockEntity;
 use crate::mob::brain::{self, GlobalPos, MemValue, MemoryType as M, Tracker, brain_ref};
@@ -167,7 +167,9 @@ fn has_valid_target(t: &mut Tick<'_, '_>, s: &mut Transport) -> bool {
     // `targetHasNotChanged`: the chest's block entity is still there.
     let unchanged = t.level.block(pos).block() == state.block()
         && matches!(t.level.block_entity(pos), Some(BlockEntity::Container(_)));
-    if !(wanted_block(t, state) && unchanged) || chest_blocked(t.level, pos) {
+    if !(wanted_block(t, state) && unchanged)
+        || crate::block::container::chest_blocked_with(t.level, t.ents, pos)
+    {
         return false;
     }
     if s.phase != Phase::Travelling || valid_travelling_path(t, pos, state) {
@@ -179,7 +181,7 @@ fn has_valid_target(t: &mut Tick<'_, '_>, s: &mut Transport) -> bool {
 
 /// `hasValidTravellingPath`.
 fn valid_travelling_path(t: &mut Tick<'_, '_>, pos: BlockPos, state: BlockState) -> bool {
-    let path = match t.mob_ref().nav.path.clone() {
+    let path = match t.nav_ref().path.clone() {
         Some(p) => Some(p),
         None => crate::mob::nav::create_path_to(t, pos, 0),
     };
@@ -229,7 +231,7 @@ fn center_pos(t: &Tick<'_, '_>, pos: Vec3) -> Vec3 {
 
 /// `getInteractionRange`: 1 once the path is done, else 0.5.
 fn interaction_range(t: &Tick<'_, '_>) -> f64 {
-    if t.mob_ref().nav.path.as_ref().is_some_and(|p| p.is_done()) {
+    if t.nav_ref().path.as_ref().is_some_and(|p| p.is_done()) {
         1.0
     } else {
         0.5
@@ -430,14 +432,14 @@ fn target_container(t: &Tick<'_, '_>, pos: BlockPos, state: BlockState) -> Optio
             kind_of(state.block()),
             Some(ContainerKind::Chest | ContainerKind::TrappedChest)
         )
-        || chest_blocked(level, pos)
+        || crate::block::container::chest_blocked_with(level, t.ents, pos)
     {
         return None;
     }
     let Some(other) = crate::block::container::double_chest_partner(level, state, pos) else {
         return Some(ContainerRef::Block(pos));
     };
-    if chest_blocked(level, other) {
+    if crate::block::container::chest_blocked_with(level, t.ents, other) {
         return None;
     }
     Some(if state.value("type") == Some("right") {
@@ -592,7 +594,7 @@ fn mark_unreachable(t: &mut Tick<'_, '_>, s: &mut Transport, pos: BlockPos) {
 fn stop_targeting(t: &mut Tick<'_, '_>, s: &mut Transport) {
     s.ticks = 0;
     s.target = None;
-    t.mob().nav.stop();
+    t.nav().stop();
     brain::brain(t).erase(M::WalkTarget);
 }
 

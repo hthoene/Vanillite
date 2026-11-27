@@ -313,10 +313,14 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     let network_id = entity.as_ref().network_id().0;
     let fx = &mut player.survival.effects;
     if fx.has_events() {
-        let mut changed = false;
+        let kind = crate::advancements::trigger::TriggerKind::EFFECTS_CHANGED;
         for event in fx.take_events() {
             match event {
-                EffectEvent::Update { instance, blend } => {
+                EffectEvent::Update {
+                    instance,
+                    blend,
+                    source,
+                } => {
                     player
                         .connection
                         .sink
@@ -328,7 +332,18 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                             entity.as_ref().pos(),
                         );
                     }
-                    changed = true;
+                    // `onEffectAdded` / `onEffectUpdated`: `EFFECTS_CHANGED` with the source;
+                    // its view is taken with the world's entities (`view::resolve_combat`).
+                    if player.advancements.listens(kind) {
+                        match source {
+                            Some(source) => player.advancements.combat.push(
+                                crate::advancements::view::PendingCombat::EffectsChanged { source },
+                            ),
+                            None => player
+                                .advancements
+                                .trigger(crate::advancements::trigger::Event::EffectsChanged(None)),
+                        }
+                    }
                 }
                 EffectEvent::Resend(instance) => {
                     player
@@ -344,7 +359,10 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                     if effect == MobEffect::LEVITATION {
                         player.survival.tracking.levitation = None;
                     }
-                    changed = true;
+                    // `onEffectsRemoved`: `EFFECTS_CHANGED` without a source.
+                    player.advancements.trigger_with(kind, || {
+                        crate::advancements::trigger::Event::EffectsChanged(None)
+                    });
                 }
                 EffectEvent::Sound(sound) => {
                     let seed = env.random.next_long();
@@ -360,13 +378,6 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                     );
                 }
             }
-        }
-        // `EFFECTS_CHANGED` (the effect source is not known here).
-        if changed {
-            let kind = crate::advancements::trigger::TriggerKind::EFFECTS_CHANGED;
-            player.advancements.trigger_with(kind, || {
-                crate::advancements::trigger::Event::EffectsChanged(None)
-            });
         }
     }
     let fx = &mut player.survival.effects;
@@ -393,7 +404,16 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
             }
         }
     }
-    push_attributes(entity, &dirty, &s.effects, ids::PLAYER, None, env.out);
+    // The equipment's modifiers go along: the client replaces an attribute's modifiers.
+    if s.equipment_modifiers.is_empty() {
+        push_attributes(entity, &dirty, &s.effects, ids::PLAYER, None, env.out);
+    } else {
+        let mut fx = s.effects.clone();
+        for m in s.equipment_modifiers.iter() {
+            fx.modifiers.set(m.attribute, &m.id, m.amount, m.operation);
+        }
+        push_attributes(entity, &dirty, &fx, ids::PLAYER, None, env.out);
+    }
 }
 
 /// `update_attributes` of the syncable attributes in `dirty` to everyone tracking the entity
@@ -427,6 +447,79 @@ fn push_attributes(
             body: attribute::encode_update(e.network_id().0, &synced, &fx.modifiers),
         }),
     });
+}
+
+/// `collectEquipmentChanges` → `ItemStack.forEachModifier`: the attribute modifiers of a
+/// player's equipment (item and enchantment modifiers per slot) with those of the active
+/// location-based enchantments (Soul Speed).
+pub fn player_equipment_modifiers(player: &PlayerData) -> attribute::Modifiers {
+    let mut out = attribute::Modifiers::default();
+    let mut list = Vec::new();
+    for slot in crate::player::encode::EQUIPMENT_SLOTS {
+        let stack = player.inventory.equipment(slot);
+        if stack.is_empty() {
+            continue;
+        }
+        for (i, a) in vanillite_data::entity::ATTRIBUTES.iter().enumerate() {
+            let Ok(id) = u8::try_from(i) else {
+                break;
+            };
+            list.clear();
+            crate::item::attribute_modifiers(stack, slot, a.name, &mut list);
+            for (n, &(op, amount)) in list.iter().enumerate() {
+                let operation = match op {
+                    0 => super::Operation::AddValue,
+                    1 => super::Operation::AddMultipliedBase,
+                    _ => super::Operation::AddMultipliedTotal,
+                };
+                let key = format!("vanillite:equipment/{}/{n}", slot.ordinal());
+                out.set(Attribute(id), &key, amount, operation);
+            }
+        }
+    }
+    crate::enchant::location::location_modifiers(player, &mut out);
+    out.take_dirty();
+    out
+}
+
+/// The `update_attributes` of a player's attributes whose equipment modifiers changed (all
+/// of them when `full`, after a join or respawn), with the effect modifiers; `None` when
+/// nothing changed.
+pub fn player_equipment_update(
+    network_id: i32,
+    player: &mut PlayerData,
+    full: bool,
+) -> Option<UpdateAttributes> {
+    let new = player_equipment_modifiers(player);
+    let old = &player.survival.equipment_modifiers;
+    let mut changed: Vec<Attribute> = Vec::new();
+    for m in old.iter().chain(new.iter()) {
+        if changed.contains(&m.attribute) {
+            continue;
+        }
+        let a: Vec<_> = old.of(m.attribute).collect();
+        let b: Vec<_> = new.of(m.attribute).collect();
+        if full || a != b {
+            changed.push(m.attribute);
+        }
+    }
+    player.survival.equipment_modifiers = new;
+    player.survival.equipment_dirty = false;
+    let synced: Vec<(Attribute, f64)> = changed
+        .iter()
+        .filter(|a| a.syncable())
+        .map(|&a| (a, a.base_of(ids::PLAYER)))
+        .collect();
+    if synced.is_empty() {
+        return None;
+    }
+    let mut all = player.survival.effects.modifiers.clone();
+    for m in player.survival.equipment_modifiers.iter() {
+        all.set(m.attribute, &m.id, m.amount, m.operation);
+    }
+    Some(UpdateAttributes {
+        body: attribute::encode_update(network_id, &synced, &all),
+    })
 }
 
 /// `updateInvisibilityStatus` + `updateGlowingStatus`; the particles are part of the entity
@@ -493,6 +586,14 @@ pub fn sync_mob(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) {
     }
     if m.effects.take_dirty() {
         update_flags(&mut entity, &m.effects);
+        // `ArmorStand.updateInvisibilityStatus` keeps its own `Invisible`; the `Glowing` tag
+        // stays (`isCurrentlyGlowing`: the effect or the tag).
+        if let Some(s) = crate::decoration::stand::state(m) {
+            entity.set_flags(EntityFlags::INVISIBLE, s.invisible);
+            if s.glowing {
+                entity.set_flags(EntityFlags::GLOWING, true);
+            }
+        }
     }
     if !m.effects.modifiers.is_dirty() {
         return;
@@ -642,7 +743,17 @@ pub fn add_to_player(ents: &mut Entities, player: EntityId, new: EffectInstance)
 /// packets, flags, attributes and the sound follow with the entity's next tick. Returns
 /// whether the effect changed.
 pub fn add_detached(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
-    !new.effect.is_instantaneous() && add_queued(ents, id, new)
+    add_detached_from(ents, id, new, None)
+}
+
+/// [`add_detached`] with the entity that applies the effect (`addEffect(effect, source)`).
+pub fn add_detached_from(
+    ents: &mut Entities,
+    id: EntityId,
+    new: EffectInstance,
+    source: Option<EntityId>,
+) -> bool {
+    !new.effect.is_instantaneous() && add_queued_from(ents, id, new, source)
 }
 
 /// `addEffect` from a command (`/effect give`) on a player or mob of this world, with
@@ -650,6 +761,17 @@ pub fn add_detached(ents: &mut Entities, id: EntityId, new: EffectInstance) -> b
 /// with the entity's next effect tick (`InstantenousMobEffect.shouldApplyEffectTickThisTick`).
 /// Returns whether the effect changed.
 pub fn add_queued(ents: &mut Entities, id: EntityId, new: EffectInstance) -> bool {
+    add_queued_from(ents, id, new, None)
+}
+
+/// [`add_queued`] with the entity that applies the effect (`addEffect(effect, source)`, the
+/// command source's entity of `/effect give`).
+pub fn add_queued_from(
+    ents: &mut Entities,
+    id: EntityId,
+    new: EffectInstance,
+    source: Option<EntityId>,
+) -> bool {
     let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
         return false;
     };
@@ -657,12 +779,12 @@ pub fn add_queued(ents: &mut Entities, id: EntityId, new: EffectInstance) -> boo
         return false;
     }
     if let Some(m) = ents.mob_mut(id) {
-        return active::add(&mut BareMobHost { m, kind }, new);
+        return active::add_from(&mut BareMobHost { m, kind }, new, source);
     }
     let Some(data) = ents.player_mut(id) else {
         return false;
     };
-    active::add(&mut BareHost { player: data }, new)
+    active::add_from(&mut BareHost { player: data }, new, source)
 }
 
 /// `addEffect(effect, source)` on any living entity: players and mobs, with `canBeAffected`.
@@ -675,13 +797,29 @@ pub fn add_to_entity(
     target: EntityId,
     new: EffectInstance,
 ) -> bool {
+    add_to_entity_from(level, ents, env, cx, target, new, None)
+}
+
+/// [`add_to_entity`] with the entity that applies the effect (`addEffect(effect, source)`).
+pub fn add_to_entity_from(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    new: EffectInstance,
+    source: Option<EntityId>,
+) -> bool {
     let Some(kind) = ents.store.get(target).map(|e| e.kind()) else {
         return false;
     };
     if !super::can_be_affected(kind, new.effect) || super::refuses_all_effects(kind) {
         return false;
     }
-    with_host(level, ents, env, cx, target, |host| active::add(host, new)).unwrap_or(false)
+    with_host(level, ents, env, cx, target, |host| {
+        active::add_from(host, new, source)
+    })
+    .unwrap_or(false)
 }
 
 /// Runs `f` with the effect host of a living entity and syncs it afterwards; `None` when it

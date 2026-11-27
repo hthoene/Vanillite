@@ -307,7 +307,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         // The fight has the whole level and draws `level.getRandom()` from it; its `Env`
         // random is the unseeded `RandomSource.create()` of the spikes and gateways.
         let mut random = LegacyRandom::new(vanillite_game::mob::new_unique_seed());
@@ -365,7 +365,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         // As in `tick_dragon_fight`: the fight draws the level random from the level.
         let mut random = LegacyRandom::new(vanillite_game::mob::new_unique_seed());
         let mut env = survival.env(
@@ -445,7 +445,7 @@ impl WorldMobs {
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = survival.env(
                 &mut random,
                 state,
@@ -740,7 +740,7 @@ impl WorldMobs {
                 let raining = |_| false;
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+                let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
                 let mut env = survival.env(
                     &mut random,
                     state,
@@ -957,7 +957,7 @@ impl WorldMobs {
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+                let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
                 let mut env = survival.env(
                     &mut random,
                     state,
@@ -1034,7 +1034,7 @@ impl WorldMobs {
             let raining = |_| false;
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = survival.env(
                 &mut random,
                 state,
@@ -1223,7 +1223,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut random = level.lend_random();
         let mut env = survival.env(
             &mut random,
@@ -1350,7 +1350,7 @@ impl WorldMobs {
             let raining = |_| false;
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+            let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = survival.env(
                 &mut random,
                 state,
@@ -1392,7 +1392,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut random = level.lend_random();
         let mut env = survival.env(
             &mut random,
@@ -1448,7 +1448,7 @@ impl WorldMobs {
                 let hooks = crate::plugins::Hooks::of(global, dimension);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+                let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
                 let mut env = survival.env(
                     &mut random,
                     state,
@@ -1779,7 +1779,7 @@ pub fn player_entity_action(
                 .get(target)
                 .is_some_and(|e| e.kind() == ids::LEASH_KNOT)
             {
-                knot_interact(ents, env, cx, player, target)
+                tame::knot_interact(ents, env, &mut cx.discarded, player, target, hand, sneaking)
             } else if ents.decor(target).is_some() {
                 let spectator = ents
                     .player(player)
@@ -1950,41 +1950,6 @@ fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<Entity
         pe.pos().z,
     );
     (distance_sqr_to_box(&target_box, eye) < 36.0).then_some(target)
-}
-
-/// `LeashFenceKnotEntity.interact`: ties the player's leashed mobs to the knot, or breaks it.
-fn knot_interact(
-    ents: &mut Entities,
-    env: &mut vanillite_game::survival::player::Env<'_>,
-    cx: &mut MobContext,
-    player: EntityId,
-    knot: EntityId,
-) -> animal::Interaction {
-    let Some(pos) = ents.store.get(knot).map(|e| e.pos()) else {
-        return animal::Interaction::Pass;
-    };
-    let area = Aabb::new(
-        pos.x - 7.0,
-        pos.y - 7.0,
-        pos.z - 7.0,
-        pos.x + 7.0,
-        pos.y + 7.0,
-        pos.z + 7.0,
-    );
-    let mut mine = Vec::new();
-    ents.store.for_each_in(&area, false, |id| {
-        if ents.leashes.get(&id) == Some(&player) {
-            mine.push(id);
-        }
-    });
-    if mine.is_empty() {
-        tame::break_knot(ents, env, knot, &mut cx.discarded);
-    } else {
-        for m in mine {
-            tame::set_leashed_to(ents, env, m, knot);
-        }
-    }
-    animal::Interaction::Success
 }
 
 /// `Entity.getPickResult`: a mob's spawn egg, or the item of a vehicle or decoration.

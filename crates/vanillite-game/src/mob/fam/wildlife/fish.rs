@@ -205,7 +205,7 @@ pub(super) fn move_control(t: &mut Tick<'_, '_>) {
         t.set_velocity(Vec3::new(v.x, v.y + 0.005, v.z));
     }
     let ctl = t.mob_ref().move_ctl;
-    if ctl.operation == Operation::MoveTo && !t.mob_ref().nav.is_done() {
+    if ctl.operation == Operation::MoveTo && !t.nav_ref().is_done() {
         #[allow(clippy::cast_possible_truncation)]
         let target = (ctl.speed_modifier * t.mob_ref().attrs.movement_speed) as f32;
         let speed = t.mob_ref().speed;
@@ -313,6 +313,7 @@ fn scary(t: &Tick<'_, '_>, id: EntityId) -> bool {
             m.kind,
             Kind::Turtle
                 | Kind::Guardian
+                | Kind::ElderGuardian
                 | Kind::Cod
                 | Kind::Pufferfish
                 | Kind::Salmon
@@ -431,9 +432,7 @@ pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
 
 pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
-        Goal::Swim { .. } => {
-            !t.mob_ref().nav.is_done() && t.ents.riding.passengers_of(t.id).is_empty()
-        }
+        Goal::Swim { .. } => !t.nav_ref().is_done() && t.ents.riding.passengers_of(t.id).is_empty(),
         Goal::FollowFlockLeader { .. } => {
             let m = t.mob_ref();
             if !is_follower(t, m) {
@@ -564,7 +563,8 @@ pub(super) fn puffer_ai_step(t: &mut Tick<'_, '_>) {
         }
         let source = combat::entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
         if combat::hurt(t.level, t.ents, t.env, t.cx, id, source, damage) {
-            add_effect(t.ents, id, MobEffect::POISON, 60 * puff, 0);
+            let me = t.id;
+            add_effect(t.ents, id, MobEffect::POISON, 60 * puff, 0, Some(me));
             if !is_player {
                 crate::mob::kinds::play_sound(t, "minecraft:entity.puffer_fish.sting", 1.0, 1.0);
             }

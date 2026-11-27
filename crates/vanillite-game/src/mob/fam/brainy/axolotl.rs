@@ -212,8 +212,56 @@ fn find_attack_target(t: &mut Tick<'_, '_>) -> Option<EntityId> {
     brain_ref(t).entity(M::NearestAttackable)
 }
 
-/// `Axolotl.onStopAttacking`: killing for a nearby player buffs it (#74: player effects).
-fn on_stop_attacking(_t: &mut Tick<'_, '_>, _target: EntityId) {}
+/// `Axolotl.onStopAttacking`: a dead target whose last damage came from a player within 20
+/// blocks of the axolotl gives that player the supporting effects.
+fn on_stop_attacking(t: &mut Tick<'_, '_>, target: EntityId) {
+    let game_time = t.env.game_time;
+    let Some(player) = t
+        .ents
+        .mob(target)
+        .filter(|m| m.is_dead_or_dying())
+        .and_then(|m| m.last_damage_source(game_time).and(m.last_damage_cause))
+        .filter(|&p| t.ents.player(p).is_some())
+    else {
+        return;
+    };
+    // `getEntitiesOfClass(Player.class, getBoundingBox().inflate(20.0))`.
+    let area = t.aabb().inflate(20.0, 20.0, 20.0);
+    if t.ents
+        .store
+        .get(player)
+        .is_some_and(|p| p.aabb().intersects(&area))
+    {
+        apply_supporting_effects(t, player);
+    }
+}
+
+/// `Axolotl.applySupportingEffects`: Regeneration (up to two minutes, from the axolotl), and
+/// Mining Fatigue ends.
+fn apply_supporting_effects(t: &mut Tick<'_, '_>, player: EntityId) {
+    use crate::effect::{EffectInstance, MobEffect};
+    let Some(p) = t.ents.player(player) else {
+        return;
+    };
+    let regen = p.survival.effects.get(MobEffect::REGENERATION);
+    if regen.is_none_or(|e| e.ends_within(2399)) {
+        let previous = regen.map_or(0, |e| e.duration);
+        let duration = (100 + previous).min(2400);
+        let me = t.id;
+        crate::effect::living::add_to_entity_from(
+            t.level,
+            t.ents,
+            t.env,
+            t.cx,
+            player,
+            EffectInstance::new(MobEffect::REGENERATION, duration, 0),
+            Some(me),
+        );
+    }
+    if let Some(fx) = t.ents.effects_mut(player) {
+        fx.remove(MobEffect::MINING_FATIGUE);
+    }
+}
 
 /// `AxolotlAttackablesSensor`.
 pub fn attackables_sensor(t: &mut Tick<'_, '_>) {
@@ -390,7 +438,22 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
     };
     if kind == crate::mob::Kind::Tadpole && super::item_in_tag(ix.stack.item, "minecraft:frog_food")
     {
-        return super::frog::feed_tadpole(ix);
+        let fed = super::frog::feed_tadpole(ix);
+        if fed != Interaction::Pass {
+            return fed;
+        }
+    }
+    // `Tadpole.mobInteract`: the golden dandelion (`setAge(0)`).
+    if kind == crate::mob::Kind::Tadpole
+        && ix
+            .ents
+            .mob(ix.target)
+            .is_some_and(|m| crate::mob::age_lock::can_use(m, ix.stack, true))
+    {
+        crate::mob::age_lock::toggle(ix.ents, ix.env, ix.player, ix.target, ix.hand, |m| {
+            super::state_mut(m).tadpole_age = 0;
+        });
+        return Interaction::Success;
     }
     let name = crate::item::item_id(ix.stack).name();
     let alive = ix.ents.mob(ix.target).is_some_and(MobData::is_alive);
@@ -450,7 +513,7 @@ fn bucket_stack(m: &MobData, item: &str) -> crate::item::ItemStack {
             stack.patch_mut().set(id, v.into());
         }
         data.insert("Age", m.age);
-        data.insert("AgeLocked", false);
+        data.insert("AgeLocked", m.age_locked);
         if let Some(b) = m.brain.as_deref()
             && b.has(M::HasHuntingCooldown)
         {
@@ -458,7 +521,7 @@ fn bucket_stack(m: &MobData, item: &str) -> crate::item::ItemStack {
         }
     } else {
         data.insert("Age", s.tadpole_age);
-        data.insert("AgeLocked", s.playing_dead);
+        data.insert("AgeLocked", m.age_locked);
     }
     crate::mob::fam::set_bucket_data(&mut stack, data);
     stack

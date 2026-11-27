@@ -348,7 +348,7 @@ fn path_mob(t: &Tick<'_, '_>) -> PathMob {
 
 /// `PathNavigation.createPath(targets, radiusOffset, above, reachRange, maxPathLength)`.
 fn create_path(t: &mut Tick<'_, '_>, target: BlockPos, reach_range: i32) -> Option<Path> {
-    create_path_to_any(t, &[target], reach_range)
+    create_path_limited(t, &[target], reach_range, None)
 }
 
 /// `createPath(targets, reachRange)`: a path to the closest reachable of `targets` (no
@@ -358,7 +358,7 @@ pub fn create_path_to_any(
     targets: &[BlockPos],
     reach_range: i32,
 ) -> Option<Path> {
-    create_path_limited(t, targets, reach_range, None)
+    t.as_nav_owner(|t| create_path_limited(t, targets, reach_range, None))
 }
 
 /// `createPath(pos, reachRange, maxPathLength)`: a path to `target` of at most
@@ -369,7 +369,7 @@ pub fn create_path_within(
     reach_range: i32,
     max_path_length: f32,
 ) -> Option<Path> {
-    create_path_limited(t, &[target], reach_range, Some(max_path_length))
+    t.as_nav_owner(|t| create_path_limited(t, &[target], reach_range, Some(max_path_length)))
 }
 
 fn create_path_limited(
@@ -461,8 +461,14 @@ pub fn is_solid(state: BlockState) -> bool {
     state.has(vanillite_data::block::flags::SOLID)
 }
 
-/// `createPath(pos, reachRange)`: ground navigation paths to the surface of the column.
+/// `getNavigation().createPath(pos, reachRange)`: ground navigation paths to the surface of
+/// the column.
 pub fn create_path_to(t: &mut Tick<'_, '_>, pos: BlockPos, reach_range: i32) -> Option<Path> {
+    t.as_nav_owner(|t| create_path_to_here(t, pos, reach_range))
+}
+
+/// `createPath(pos, reachRange)` of the mob's own navigation.
+fn create_path_to_here(t: &mut Tick<'_, '_>, pos: BlockPos, reach_range: i32) -> Option<Path> {
     let nav = &t.mob_ref().nav;
     if nav.kind == NavKind::None {
         return None;
@@ -485,8 +491,13 @@ pub fn create_path_to(t: &mut Tick<'_, '_>, pos: BlockPos, reach_range: i32) -> 
     create_path(t, target, reach_range)
 }
 
-/// `moveTo(path, speedModifier)`.
+/// `getNavigation().moveTo(path, speedModifier)`.
 pub fn move_to_path(t: &mut Tick<'_, '_>, path: Option<Path>, speed: f64) -> bool {
+    t.as_nav_owner(|t| move_to_path_here(t, path, speed))
+}
+
+/// `moveTo(path, speedModifier)` of the mob's own navigation.
+fn move_to_path_here(t: &mut Tick<'_, '_>, path: Option<Path>, speed: f64) -> bool {
     let Some(new) = path else {
         t.mob().nav.path = None;
         return false;
@@ -513,24 +524,30 @@ pub fn move_to_path(t: &mut Tick<'_, '_>, path: Option<Path>, speed: f64) -> boo
     true
 }
 
-/// `moveTo(x, y, z, speedModifier)`.
+/// `getNavigation().moveTo(x, y, z, speedModifier)`.
 pub fn move_to_pos(t: &mut Tick<'_, '_>, pos: Vec3, speed: f64) -> bool {
-    let path = create_path_to(t, BlockPos::containing(pos.x, pos.y, pos.z), 1);
-    move_to_path(t, path, speed)
+    t.as_nav_owner(|t| {
+        let path = create_path_to_here(t, BlockPos::containing(pos.x, pos.y, pos.z), 1);
+        move_to_path_here(t, path, speed)
+    })
 }
 
 /// `moveTo(entity, reachRange, speedModifier)` (`moveTo(entity, speed)` uses reach range 1); a
 /// wall climber without a path climbs straight towards the entity.
 pub fn move_to_entity(t: &mut Tick<'_, '_>, target: Vec3, reach: i32, speed: f64) -> bool {
+    t.as_nav_owner(|t| move_to_entity_here(t, target, reach, speed))
+}
+
+fn move_to_entity_here(t: &mut Tick<'_, '_>, target: Vec3, reach: i32, speed: f64) -> bool {
     let block = BlockPos::containing(target.x, target.y, target.z);
-    let path = create_path_to(t, block, reach);
+    let path = create_path_to_here(t, block, reach);
     if path.is_none() && t.mob_ref().nav.kind == NavKind::WallClimber {
         let nav = &mut t.mob().nav;
         nav.path_to_position = Some(block);
         nav.speed_modifier = speed;
         return true;
     }
-    path.is_some() && move_to_path(t, path, speed)
+    path.is_some() && move_to_path_here(t, path, speed)
 }
 
 /// `trimPath`: a node in a cauldron moves up (and the next with it); ground navigation with
@@ -592,7 +609,7 @@ fn recompute_path(t: &mut Tick<'_, '_>) {
     };
     let reach = t.mob_ref().nav.reach_range;
     t.mob().nav.path = None;
-    let path = create_path_to(t, target, reach);
+    let path = create_path_to_here(t, target, reach);
     let nav = &mut t.mob().nav;
     nav.path = path;
     nav.time_last_recompute = time;
@@ -672,7 +689,7 @@ pub fn block_shape_changed(level: &mut crate::level::Level, pos: BlockPos) {
             };
             let reach = t.mob_ref().nav.reach_range;
             t.mob().nav.path = None;
-            let path = create_path_to(&mut t, target, reach);
+            let path = create_path_to_here(&mut t, target, reach);
             let nav = &mut t.mob().nav;
             nav.path = path;
             nav.time_last_recompute = time;
@@ -1226,7 +1243,7 @@ fn tick_smooth_swimming_move_control(
         t.set_velocity(Vec3::new(v.x, v.y + 0.005, v.z));
     }
     let ctl = t.mob_ref().move_ctl;
-    if ctl.operation != Operation::MoveTo || t.mob_ref().nav.is_done() {
+    if ctl.operation != Operation::MoveTo || t.nav_ref().is_done() {
         let m = t.mob();
         m.speed = 0.0;
         m.xxa = 0.0;
@@ -1350,7 +1367,7 @@ pub fn tick_look_control(t: &mut Tick<'_, '_>) {
     } else {
         rot.y_head_rot = rotate_towards(rot.y_head_rot, body, 10.0);
     }
-    if !t.mob_ref().nav.is_done() {
+    if !t.nav_ref().is_done() {
         let max = super::kinds::max_head_y_rot(t.mob_ref());
         rot.y_head_rot = rotate_if_necessary(rot.y_head_rot, body, max);
     }
@@ -1380,7 +1397,7 @@ fn tick_smooth_swimming_look_control(t: &mut Tick<'_, '_>, max_y_rot: i32) {
             rot.x_rot = rotate_towards(rot.x_rot, x_rot_d + 10.0, look.x_max_rot_angle);
         }
     } else {
-        if t.mob_ref().nav.is_done() {
+        if t.nav_ref().is_done() {
             rot.x_rot = rotate_towards(rot.x_rot, 0.0, 5.0);
         }
         let body = t.mob_ref().y_body_rot;

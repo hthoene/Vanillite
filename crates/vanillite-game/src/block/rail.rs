@@ -704,8 +704,8 @@ fn detector_direct_signal(
     }
 }
 
-/// `getAnalogOutputSignal`: while pressed, the success count of a command block minecart or
-/// the fill level of a container minecart.
+/// `getAnalogOutputSignal`: while pressed, the success count of the first command block
+/// minecart, else the fill level of the first container minecart.
 fn detector_analog_output(
     level: &Level,
     state: BlockState,

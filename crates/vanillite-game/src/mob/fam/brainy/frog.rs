@@ -446,8 +446,7 @@ pub fn tadpole_ai_step(t: &mut Tick<'_, '_>) {
     } else {
         t.mob().air = 300;
     }
-    if !state(t.mob_ref()).playing_dead {
-        // `playing_dead` is the tadpole's `AGE_LOCKED`.
+    if !t.mob_ref().age_locked {
         let age = state(t.mob_ref()).tadpole_age + 1;
         set_tadpole_age(t, age);
     }
@@ -490,10 +489,7 @@ fn set_tadpole_age(t: &mut Tick<'_, '_>, age: i32) {
 
 /// `Tadpole.feed`: frog food speeds up its growth.
 pub fn feed_tadpole(ix: &mut Interact<'_, '_>) -> Interaction {
-    let locked = ix
-        .ents
-        .mob(ix.target)
-        .is_some_and(|m| state(m).playing_dead);
+    let locked = ix.ents.mob(ix.target).is_some_and(|m| m.age_locked);
     if locked {
         return Interaction::Pass;
     }
@@ -520,7 +516,7 @@ pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     let s = state(m);
     if m.kind == Kind::Tadpole {
         w.boolean(16, s.from_bucket, false);
-        w.boolean(17, s.playing_dead, false);
+        w.boolean(17, m.age_locked, false);
         return;
     }
     crate::mob::fam::companion::encode_ageable(w, m);
@@ -551,7 +547,7 @@ pub fn save(m: &MobData, out: &mut Compound) {
     let s = state(m);
     if m.kind == Kind::Tadpole {
         out.insert("Age", s.tadpole_age);
-        out.insert("AgeLocked", s.playing_dead);
+        out.insert("AgeLocked", m.age_locked);
         out.insert("FromBucket", s.from_bucket);
         return;
     }
@@ -567,7 +563,7 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     if m.kind == Kind::Tadpole {
         let s = state_mut(m);
         s.tadpole_age = nbt_int(tag, "Age", 0);
-        s.playing_dead = nbt_bool(tag, "AgeLocked", false);
+        m.age_locked = nbt_bool(tag, "AgeLocked", false);
         return;
     }
     if let Some(Tag::String(v)) = tag.get("variant") {

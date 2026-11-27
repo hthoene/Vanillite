@@ -396,6 +396,10 @@ impl PacketSink for NetSink {
         self.out.threshold()
     }
 
+    fn flush(&self) {
+        self.out.flush();
+    }
+
     fn close(&self) {
         self.out.close();
     }
@@ -427,6 +431,8 @@ pub(crate) struct Arrival {
     pub(crate) advancements: Option<String>,
     pub(crate) address: String,
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
+    /// Transferred from another server: no `server_data` at join.
+    pub(crate) transferred: bool,
 }
 
 /// The players' side of a world.
@@ -443,6 +449,8 @@ pub(crate) struct WorldPlayers {
     respawns: Vec<EntityId>,
     /// `debug.session-recording` (overworld only).
     pub(crate) recording: crate::session_recording::SessionRecording,
+    /// The locator bar.
+    waypoints: crate::waypoints::Waypoints,
 }
 
 fn chunk_of(pos: Vec3) -> ChunkPos {
@@ -463,6 +471,7 @@ impl WorldPlayers {
             chatting: Vec::new(),
             respawns: Vec::new(),
             recording: crate::session_recording::SessionRecording::default(),
+            waypoints: crate::waypoints::Waypoints::default(),
         }
     }
 
@@ -677,6 +686,13 @@ impl WorldPlayers {
         connection
             .movement
             .teleport(&mut body, pos, rot.0, rot.1, sink.as_ref());
+        if !arrival.transferred {
+            let data = global
+                .server_data
+                .read()
+                .map_or_else(|e| Arc::clone(&e.into_inner()), |d| Arc::clone(&d));
+            sink.send_shared(&data);
+        }
         // The tab list: everyone to the new player (itself included), the new player to everyone else.
         let entries = global.players.info_entries();
         sink.send(&join::player_info_add(&entries));
@@ -714,6 +730,13 @@ impl WorldPlayers {
         player.inventory.send_all(sink.as_ref());
         for (last, slot) in player.last_equipment.iter_mut().zip(EQUIPMENT_SLOTS) {
             *last = player.inventory.equipment(slot).clone();
+        }
+        // The first `collectEquipmentChanges`: the equipment's attribute modifiers.
+        player.survival.equipment_modifiers = Default::default();
+        if let Some(update) =
+            vanillite_game::effect::living::player_equipment_update(network_id, player, true)
+        {
+            sink.send(&update);
         }
         // `sendPostEffects` of the first tick (an empty list changes nothing on the client).
         if !player.post_effects.is_empty() {
@@ -803,6 +826,7 @@ impl WorldPlayers {
                 &entity,
                 player.game_mode,
                 &player.survival.effects,
+                &player.inventory,
                 global,
                 &level.chunks,
             );
@@ -1120,6 +1144,7 @@ impl WorldPlayers {
             player.connection.chat.chat_spam.tick();
             player.connection.chat.command_spam.tick();
         }
+        self.waypoints.tick(entities, global);
         // `PlayerList.tick`: latencies for the tab list. The first world sends them for all.
         if tick.is_multiple_of(LATENCY_UPDATE_TICKS)
             && self.level.dimension.as_str() == "minecraft:overworld"
@@ -1152,6 +1177,7 @@ impl WorldPlayers {
             .collect();
         let mut taken: Vec<(EntityId, EntityId, i32)> = Vec::new();
         let mut equipment: Vec<(EntityId, SetEquipment)> = Vec::new();
+        let mut attributes = Vec::new();
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
@@ -1168,6 +1194,7 @@ impl WorldPlayers {
                 &entity,
                 player.game_mode,
                 &player.survival.effects,
+                &player.inventory,
                 global,
                 &level.chunks,
             );
@@ -1208,9 +1235,30 @@ impl WorldPlayers {
             // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1), where
             // the player's server-side travel took it (as its push and the cubes' touch,
             // `player_ai_step_end`).
+            // A passenger touches the box spanning it and its vehicle, grown by (1, 0, 1); a
+            // dead player touches nothing.
             let step = player.survival.server_step;
-            let reach = aabb.offset(step.x, step.y, step.z).inflate(1.0, 0.5, 1.0);
-            if player.game_mode != GameMode::Spectator {
+            let own = aabb.offset(step.x, step.y, step.z);
+            let reach = match level
+                .entities
+                .vehicle_of(id)
+                .and_then(|v| level.entities.store.get(v))
+            {
+                Some(v) => {
+                    let b = v.aabb();
+                    vanillite_base::Aabb::new(
+                        own.min_x.min(b.min_x),
+                        own.min_y.min(b.min_y),
+                        own.min_z.min(b.min_z),
+                        own.max_x.max(b.max_x),
+                        own.max_y.max(b.max_y),
+                        own.max_z.max(b.max_z),
+                    )
+                    .inflate(1.0, 0.0, 1.0)
+                }
+                None => own.inflate(1.0, 0.5, 1.0),
+            };
+            if player.game_mode != GameMode::Spectator && player.survival.health > 0.0 {
                 let store = &level.entities.store;
                 let mut near = Vec::new();
                 store.for_each_non_player_in(&reach, |e| {
@@ -1373,6 +1421,15 @@ impl WorldPlayers {
                     changed.push((slot.ordinal(), now.clone()));
                 }
             }
+            // `collectEquipmentChanges`: the attribute modifiers of the new equipment (and of
+            // Frost Walker / Soul Speed) to the client and its trackers.
+            if (!changed.is_empty() || player.survival.equipment_dirty)
+                && let Some(update) = vanillite_game::effect::living::player_equipment_update(
+                    network_id, player, false,
+                )
+            {
+                attributes.push((id, update));
+            }
             if !changed.is_empty() {
                 equipment.push((
                     id,
@@ -1387,6 +1444,17 @@ impl WorldPlayers {
         let entities = &mut level.entities;
         for (picker, thrower, stack) in thrown {
             vanillite_game::mob::animal::item_picked_up(entities, picker, thrower, &stack);
+        }
+        for (id, packet) in attributes {
+            let packet = SharedPacket::of(&packet);
+            if let Some(p) = entities.player(id) {
+                p.connection.sink.send_shared(&packet);
+            }
+            for viewer in blocks.tracker.seen_by(id) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
         }
         for (id, packet) in equipment {
             let packet = SharedPacket::of(&packet);
@@ -1875,11 +1943,19 @@ fn actor_of(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
     effects: &vanillite_game::effect::ActiveEffects,
+    inventory: &vanillite_game::inventory::PlayerInventory,
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
     let permission_level = crate::commands::permission_level(global, entity.uuid());
-    player_actor(entity, game_mode, effects, permission_level, chunks)
+    player_actor(
+        entity,
+        game_mode,
+        effects,
+        inventory,
+        permission_level,
+        chunks,
+    )
 }
 
 /// The player as the packet handlers see it: eye height of its pose, eyes in water, mining
@@ -1888,6 +1964,7 @@ pub fn player_actor(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
     effects: &vanillite_game::effect::ActiveEffects,
+    inventory: &vanillite_game::inventory::PlayerInventory,
     permission_level: u8,
     chunks: &Chunks,
 ) -> Actor {
@@ -1901,17 +1978,32 @@ pub fn player_actor(
         _ => 1.62,
     });
     let pos = entity.pos();
+    // `Entity.updateFluidOnEyes`: the water at `getEyeY() - 0.11111111F` reaches above it
+    // (`FluidState.getHeight`: a full block below water).
+    let eye_y = pos.y + eye_height - f64::from(0.111_111_11_f32);
     let eye = BlockPos::new(
         vanillite_base::math::floor(pos.x),
-        vanillite_base::math::floor(pos.y + eye_height),
+        vanillite_base::math::floor(eye_y),
         vanillite_base::math::floor(pos.z),
     );
-    let fluid = chunks
-        .block(eye)
-        .map_or(vanillite_data::fluid::FluidState::EMPTY, |s| {
-            vanillite_data::block::BlockState(s).fluid_state()
-        });
-    let eyes_in_water = !fluid.is_empty() && matches!(fluid.info().fluid, 1 | 2);
+    let fluid_at = |p: BlockPos| {
+        chunks
+            .block(p)
+            .map_or(vanillite_data::fluid::FluidState::EMPTY, |s| {
+                vanillite_data::block::BlockState(s).fluid_state()
+            })
+    };
+    let water =
+        |f: vanillite_data::fluid::FluidState| !f.is_empty() && matches!(f.info().fluid, 1 | 2);
+    let fluid = fluid_at(eye);
+    let eyes_in_water = water(fluid) && {
+        let height = if water(fluid_at(BlockPos::new(eye.x, eye.y + 1, eye.z))) {
+            1.0
+        } else {
+            fluid.info().own_height
+        };
+        f64::from(eye.y) + f64::from(height) > eye_y
+    };
     let flags = entity.flags();
     Actor {
         entity: Some(entity.id()),
@@ -1932,6 +2024,7 @@ pub fn player_actor(
         mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
         respawn_here: None,
         leads_mobs: false,
+        ranges: vanillite_game::player::play::interaction_ranges(inventory, game_mode),
     }
 }
 
@@ -1991,9 +2084,15 @@ pub(crate) fn info_entry(arrival: &Arrival) -> InfoEntry {
     }
 }
 
-/// `Player.remove` for a player that leaves: open menus close, what they held drops.
-fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
-    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+/// `Player.remove` for a player that leaves or a dead player that respawns: open menus close,
+/// the carried stack and the crafting grid drop (`player.drop(stack, false)`).
+pub(crate) fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
+    let Some((pos, rot, height)) = level
+        .entities
+        .store
+        .get(id)
+        .map(|e| (e.pos(), e.rot(), e.dims().height))
+    else {
         return;
     };
     let Some(player) = level.entities.player_mut(id) else {
@@ -2003,19 +2102,25 @@ fn drop_menus_on_leave(level: &mut Level, id: EntityId) {
     let mut inv = std::mem::take(&mut player.inventory);
     let mut drops = Vec::new();
     vanillite_game::menu::container::close_on_leave(&mut inv, level, spectator, &mut drops);
-    if let Some(player) = level.entities.player_mut(id) {
-        player.inventory = inv;
-    }
-    let eye = vanillite_base::Vec3::new(pos.x, pos.y + 1.62 - 0.3, pos.z);
-    for drop in drops {
-        vanillite_game::block::drops::spawn_item(
-            level,
-            eye,
-            drop.stack,
-            vanillite_base::Vec3::new(0.0, 0.1, 0.0),
-            40,
-            None,
-        );
+    let Some(player) = level.entities.player_mut(id) else {
+        return;
+    };
+    player.inventory = inv;
+    let eye = vanillite_game::survival::player::eye_height(height);
+    // The entity's random, which the death drops (`Inventory.dropAll`) drew from before.
+    let mut state = player.survival.random.state();
+    let throws: Vec<_> = drops
+        .into_iter()
+        .map(|drop| {
+            let (from, velocity) = vanillite_game::player::play::throw_motion(
+                pos, eye, rot.y_rot, rot.x_rot, &mut state,
+            );
+            (from, velocity, drop.stack)
+        })
+        .collect();
+    player.survival.random = vanillite_base::random::LegacyRandom::from_state(state);
+    for (from, velocity, stack) in throws {
+        vanillite_game::block::drops::spawn_item(level, from, stack, velocity, 40, None);
     }
 }
 

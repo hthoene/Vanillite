@@ -91,10 +91,17 @@ pub struct EntityFacts {
     pub vehicle: Option<EntityTypeId>,
     /// The size of a slime, magma cube or sulfur cube.
     pub cube_size: Option<i32>,
-    /// Whether a mob leads a patrol or raid wave wearing the ominous banner.
-    pub raid_captain: Option<bool>,
+    /// A raider: `hasRaid` (in a raid or near an active one) and `isCaptain` (a patrol or wave
+    /// leader wearing the ominous banner).
+    pub raider: Option<(bool, bool)>,
     /// A mooshroom's colour: 0 red, 1 brown.
     pub mooshroom_variant: Option<u8>,
+    /// `is_fall_flying`: gliding with elytra.
+    pub fall_flying: bool,
+    /// `is_in_water`.
+    pub in_water: bool,
+    /// A player's game mode (wire id) and food level.
+    pub player: Option<(i32, i32)>,
 }
 
 /// `EntityPredicate`: the parts the game evaluates (`type`, `flags`); other parts are
@@ -133,10 +140,19 @@ pub struct EntityPredicate {
     pub vehicle: Option<TypeSet>,
     /// `type_specific/cube_mob` `size`: the inclusive bounds.
     pub cube_size: Option<(Option<i32>, Option<i32>)>,
-    /// `type_specific/raider` `is_captain`.
-    pub raid_captain: Option<bool>,
+    /// `type_specific/raider`: `has_raid` and `is_captain` (both default false).
+    pub raider: Option<(bool, bool)>,
     /// `components` `minecraft:mooshroom/variant`: 0 red, 1 brown.
     pub mooshroom_variant: Option<u8>,
+    /// `flags.is_fall_flying`.
+    pub fall_flying: Option<bool>,
+    /// `flags.is_in_water`.
+    pub in_water: Option<bool>,
+    /// `vehicle: {}`: rides anything.
+    pub in_vehicle: bool,
+    /// `type_specific/player`: a player, in one of the game modes (wire ids) if given, with
+    /// at least / at most this food level if given.
+    pub player: Option<PlayerPredicate>,
     /// Has parts that are not evaluated.
     pub unsupported: bool,
 }
@@ -165,6 +181,8 @@ impl EntityPredicate {
                     p.swimming = flag("is_swimming");
                     p.on_ground = flag("is_on_ground");
                     p.flying = flag("is_flying");
+                    p.fall_flying = flag("is_fall_flying");
+                    p.in_water = flag("is_in_water");
                     let known = [
                         "is_on_fire",
                         "is_baby",
@@ -173,6 +191,8 @@ impl EntityPredicate {
                         "is_swimming",
                         "is_on_ground",
                         "is_flying",
+                        "is_fall_flying",
+                        "is_in_water",
                     ];
                     p.unsupported |= v
                         .as_object()
@@ -218,6 +238,13 @@ impl EntityPredicate {
                         || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none())
                         || (farm.is_some() && p.farm_variant.is_none());
                 }
+                "vehicle" if v.as_object().is_some_and(serde_json::Map::is_empty) => {
+                    p.in_vehicle = true;
+                }
+                "type_specific/player" => {
+                    p.player = PlayerPredicate::parse(v);
+                    p.unsupported |= p.player.is_none();
+                }
                 "vehicle" => {
                     // Only the type of the vehicle (the jockey drops).
                     p.vehicle = v
@@ -236,9 +263,14 @@ impl EntityPredicate {
                     p.unsupported |= !only || p.cube_size.is_none();
                 }
                 "type_specific/raider" => {
-                    let only = v.as_object().is_some_and(|o| o.len() == 1);
-                    p.raid_captain = v.get("is_captain").and_then(Value::as_bool);
-                    p.unsupported |= !only || p.raid_captain.is_none();
+                    let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+                    let known = v.as_object().is_some_and(|o| {
+                        o.iter().all(|(k, f)| {
+                            matches!(k.as_str(), "has_raid" | "is_captain") && f.is_boolean()
+                        })
+                    });
+                    p.raider = Some((flag("has_raid"), flag("is_captain")));
+                    p.unsupported |= !known;
                 }
                 "movement" => {
                     // Only a lower bound of `fall_distance` (Wind Burst).
@@ -332,6 +364,13 @@ impl EntityPredicate {
             && flag(self.swimming, e.swimming)
             && flag(self.on_ground, e.on_ground)
             && flag(self.flying, e.flying)
+            && flag(self.fall_flying, e.fall_flying)
+            && flag(self.in_water, e.in_water)
+            && (!self.in_vehicle || e.vehicle.is_some())
+            && self
+                .player
+                .as_ref()
+                .is_none_or(|p| e.player.is_some_and(|(mode, food)| p.test(mode, food)))
             && flag(self.can_see_sky, e.can_see_sky)
             && self
                 .vehicle
@@ -341,7 +380,7 @@ impl EntityPredicate {
                 e.cube_size
                     .is_some_and(|s| min.is_none_or(|m| m <= s) && max.is_none_or(|m| s <= m))
             })
-            && self.raid_captain.is_none_or(|c| e.raid_captain == Some(c))
+            && self.raider.is_none_or(|r| e.raider == Some(r))
             && self
                 .mooshroom_variant
                 .is_none_or(|v| e.mooshroom_variant == Some(v))
@@ -349,6 +388,61 @@ impl EntityPredicate {
             && self.fishing_hook.is_none_or(|want| {
                 e.fishing_hook
                     .is_some_and(|open| want.is_none_or(|w| w == open))
+            })
+    }
+}
+
+/// `PlayerPredicate`: the parts the game evaluates (`gamemode`, `food.level`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerPredicate {
+    /// The game modes (wire ids); `None` = any.
+    pub game_modes: Option<Vec<i32>>,
+    /// `food.level`: the inclusive bounds.
+    pub food_level: Option<(Option<i32>, Option<i32>)>,
+}
+
+impl PlayerPredicate {
+    /// Parses a `type_specific/player` object; `None` when it has parts that are not
+    /// evaluated.
+    fn parse(v: &Value) -> Option<PlayerPredicate> {
+        let o = v.as_object()?;
+        let mut p = PlayerPredicate::default();
+        for (k, v) in o {
+            match k.as_str() {
+                "gamemode" => {
+                    let names: Vec<&str> = match v {
+                        Value::String(s) => vec![s.as_str()],
+                        Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+                        _ => return None,
+                    };
+                    let modes = names
+                        .into_iter()
+                        .map(|n| {
+                            ["survival", "creative", "adventure", "spectator"]
+                                .iter()
+                                .position(|m| *m == n)
+                                .and_then(|i| i32::try_from(i).ok())
+                        })
+                        .collect::<Option<Vec<i32>>>()?;
+                    p.game_modes = Some(modes);
+                }
+                "food" => {
+                    let food = v.as_object()?;
+                    if food.keys().any(|k| k != "level") {
+                        return None;
+                    }
+                    p.food_level = Some(int_bounds(food.get("level")?)?);
+                }
+                _ => return None,
+            }
+        }
+        Some(p)
+    }
+
+    fn test(&self, mode: i32, food: i32) -> bool {
+        self.game_modes.as_ref().is_none_or(|m| m.contains(&mode))
+            && self.food_level.is_none_or(|(min, max)| {
+                min.is_none_or(|m| m <= food) && max.is_none_or(|m| food <= m)
             })
     }
 }
@@ -539,12 +633,15 @@ mod tests {
         let captain = parse(serde_json::json!(
             {"minecraft:type_specific/raider": {"is_captain": true}}));
         let mut e = EntityFacts {
-            raid_captain: Some(false),
+            raider: Some((false, false)),
             ..EntityFacts::default()
         };
         assert!(!captain.test(Some(&e), &NoTags));
-        e.raid_captain = Some(true);
+        e.raider = Some((false, true));
         assert!(captain.test(Some(&e), &NoTags));
+        // `RaiderPredicate.hasRaid` defaults to false: a wave captain drops nothing.
+        e.raider = Some((true, true));
+        assert!(!captain.test(Some(&e), &NoTags));
 
         let brown = parse(serde_json::json!(
             {"minecraft:components": {"minecraft:mooshroom/variant": "brown"}}));

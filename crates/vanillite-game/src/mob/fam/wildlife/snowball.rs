@@ -1,6 +1,6 @@
 //! Snowballs (`Snowball`, a `ThrowableItemProjectile`) and the flight all throwables share
 //! (`ThrowableProjectile.tick`): they fall with gravity 0.03, slow down by 0.99 in air and 0.8
-//! in water, go through End gateways and stop at the first block or entity they hit. A
+//! in water, go through End gateways, ride bubble columns and stop at the first block or entity they hit. A
 //! snowball breaks there; blazes take 3 damage, everything else a damage-free hit.
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
@@ -19,7 +19,7 @@ use crate::survival::player::Env;
 use crate::mob::kinds::Kind;
 use crate::mob::missile::{MissileKind, MissileTick};
 use crate::mob::physics::{self, Blocks};
-use crate::mob::projectile::{lerp_rotation, segment_box};
+use crate::mob::projectile::{BubbleDrag, bubble_columns, lerp_rotation, segment_box};
 use crate::survival::damage::DamageSource;
 
 /// `Projectile.shoot(x, y, z, power, uncertainty)`.
@@ -37,12 +37,7 @@ fn can_hit(t: &MissileTick<'_, '_>, id: EntityId, owner: Option<EntityId>, left:
     if id == t.id || (!left && Some(id) == owner) {
         return false;
     }
-    if let Some(p) = t.ents.player(id) {
-        return p.game_mode != GameMode::Spectator && !p.survival.is_dead_or_dying();
-    }
-    t.ents.mob(id).is_some_and(crate::mob::MobData::is_alive)
-        || t.ents.boat(id).is_some()
-        || crate::mob::boss::dragon::crystal::hittable(t.ents, id)
+    crate::effect::thrown::can_be_hit(t.ents, id)
 }
 
 /// The end of a throwable's flight this tick.
@@ -58,10 +53,10 @@ pub(super) enum Flight {
     Away,
 }
 
-/// `ThrowableProjectile.tick` up to the hit (`hitTargetOrDeflectSelf` is the caller's): gravity
-/// and inertia, the hit on the way (`getHitResultOnMoveVector`), the move, the End gateways on
-/// the way (`applyEffectsFromBlocks`), `checkLeftOwner`, then `baseTick`'s `handlePortal` and
-/// the void.
+/// `ThrowableProjectile.tick` up to the hit (`hitTargetOrDeflectSelf` is the caller's): the
+/// first tick's bubble columns, gravity and inertia, the hit on the way
+/// (`getHitResultOnMoveVector`), the move, the End gateways and bubble columns on the way
+/// (`applyEffectsFromBlocks`), `checkLeftOwner`, then `baseTick`'s `handlePortal` and the void.
 pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
     let Some(d) = t.ents.missile(t.id) else {
         return Flight::Gone;
@@ -71,8 +66,20 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
     let Some(core) = t.core() else {
         return Flight::Gone;
     };
-    let (pos, mut v, aabb, rot) = (core.pos(), core.velocity(), core.aabb(), core.rot());
     let no_gravity = core.flags().contains(EntityFlags::NO_GRAVITY);
+    let drag = if kind == MissileKind::EnderPearl {
+        BubbleDrag::Entity
+    } else {
+        BubbleDrag::Projectile
+    };
+    // `handleFirstTickBubbleColumn`.
+    if life == 1 {
+        bubble_columns(t.level, t.ents, t.env.random, t.cx, t.id, None, drag);
+    }
+    let Some(core) = t.core() else {
+        return Flight::Gone;
+    };
+    let (pos, mut v, aabb, rot) = (core.pos(), core.velocity(), core.aabb(), core.rot());
     // `applyGravity` (`getDefaultGravity`: 0.07 for experience bottles) and `applyInertia`.
     if !no_gravity {
         v.y -= if kind == MissileKind::ExperienceBottle {
@@ -81,11 +88,9 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
             0.03
         };
     }
-    let in_water = crate::mob::is_water(
-        t.level
-            .block(vanillite_base::BlockPos::containing(pos.x, pos.y, pos.z)),
-    );
-    let inertia = if in_water { 0.8 } else { f64::from(0.99_f32) };
+    // `isInWater()`: water reaches into the box (where the last tick's `baseTick` saw it).
+    let in_water = crate::experience_orb::touching_water(t.level, &aabb);
+    let inertia = f64::from(if in_water { 0.8_f32 } else { 0.99_f32 });
     v = v * inertia;
     // `getHitResultOnMoveVector`: blocks first, then entities up to that point.
     let mut to = pos + v;
@@ -163,7 +168,9 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         e.set_pos(new_pos);
         e.set_rot(new_rot);
     }
+    // `applyEffectsFromBlocks`: End gateways and bubble columns on the way.
     crate::portal::enter_portals(t.level, t.ents, t.id, &mut t.cx.gateways);
+    bubble_columns(t.level, t.ents, t.env.random, t.cx, t.id, Some(pos), drag);
     // `Projectile.checkLeftOwner`, after the move.
     if !left {
         let Some(e) = t.ents.store.get(t.id) else {
@@ -190,10 +197,42 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         }
         return Flight::Gone;
     }
+    // `hitTargetOrDeflectSelf`: a breeze turns it back (once in a row) instead of a hit.
+    if let Some((target, _)) = hit
+        && crate::mob::missile::deflects(t.ents, target, kind.type_id())
+    {
+        deflect(t, target);
+        return Flight::Miss;
+    }
     match (hit, block_hit) {
         (Some((target, _)), _) => Flight::Hit(Some(target), None, new_pos),
         (None, Some((block, at))) => Flight::Hit(None, Some(block), at),
         (None, None) => Flight::Miss,
+    }
+}
+
+/// `Projectile.deflect(deflection, breeze, owner, false, 1.0)` of a missile, with the
+/// projectile's own random; nothing when the same entity deflected it last.
+pub(crate) fn deflect(t: &mut MissileTick<'_, '_>, by: EntityId) {
+    let Some(d) = t.ents.missile(t.id) else {
+        return;
+    };
+    if d.last_deflected == Some(by) {
+        return;
+    }
+    let mut random = LegacyRandom::from_state(d.random_state);
+    let Some(core) = t.core() else {
+        return;
+    };
+    let (v, rot) = (core.velocity(), core.rot());
+    let (v, rot) = crate::mob::missile::reverse(t.ents, t.env, by, v, rot, &mut random);
+    if let Some(mut e) = t.ents.store.get_mut(t.id) {
+        e.set_velocity(v);
+        e.set_rot(rot);
+    }
+    if let Some(d) = t.data() {
+        d.random_state = random.state();
+        d.last_deflected = Some(by);
     }
 }
 

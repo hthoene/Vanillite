@@ -132,6 +132,22 @@ pub(crate) fn codes_of_conduct(dir: &Path) -> Result<BTreeMap<String, String>, S
 /// `MinecraftServer.loadStatusIcon`: `server-icon.png`, else the world's `icon.png`, as a data
 /// URL; it must be a 64x64 PNG.
 pub(crate) fn server_icon(dir: &Path, level_name: &str) -> Option<String> {
+    server_icon_png(dir, level_name)
+        .map(|bytes| format!("data:image/png;base64,{}", base64(&bytes)))
+}
+
+/// The `server_data` packet of the MOTD and icon (`ServerPlayer.sendServerStatus`).
+pub(crate) fn server_data(
+    motd: vanillite_protocol::text::Component,
+    icon: Option<Vec<u8>>,
+) -> std::sync::Arc<vanillite_protocol::SharedPacket> {
+    vanillite_protocol::SharedPacket::of(
+        &vanillite_protocol::packets::play::clientbound::ServerData { motd, icon },
+    )
+}
+
+/// The bytes of [`server_icon`]: a 64x64 PNG.
+pub(crate) fn server_icon_png(dir: &Path, level_name: &str) -> Option<Vec<u8>> {
     let path = [
         dir.join("server-icon.png"),
         dir.join(level_name).join("icon.png"),
@@ -146,7 +162,7 @@ pub(crate) fn server_icon(dir: &Path, level_name: &str) -> Option<String> {
         }
     };
     match png_size(&bytes) {
-        Some((64, 64)) => Some(format!("data:image/png;base64,{}", base64(&bytes))),
+        Some((64, 64)) => Some(bytes),
         Some((w, h)) => {
             log::error!(
                 "Couldn't load server icon: Invalid world icon size [{w}, {h}], but expected [64, 64]"

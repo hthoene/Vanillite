@@ -256,6 +256,13 @@ pub struct Survival {
     /// World changes of the player's contact with blocks (trampled farmland, redstone ore
     /// stepped on) for the world to apply.
     pub world_actions: Vec<crate::mob::WorldAction>,
+    /// Frost Walker and Soul Speed (`lastPos`, active location-based effects).
+    pub location: crate::enchant::location::LocationState,
+    /// The equipment's and the location-based enchantments' attribute modifiers as last sent
+    /// to the client (`collectEquipmentChanges`).
+    pub equipment_modifiers: crate::effect::attribute::Modifiers,
+    /// The location-based modifiers changed: the attributes are synced again.
+    pub equipment_dirty: bool,
     /// `getTicksFrozen` and `isInPowderSnow`.
     pub ticks_frozen: i32,
     pub in_powder_snow: bool,
@@ -381,6 +388,9 @@ impl Default for Survival {
             last_crystal_tick: 0,
             game_events: Vec::new(),
             world_actions: Vec::new(),
+            location: crate::enchant::location::LocationState::default(),
+            equipment_modifiers: crate::effect::attribute::Modifiers::default(),
+            equipment_dirty: false,
             ticks_frozen: 0,
             in_powder_snow: false,
             last_hurt_mob: None,
@@ -492,9 +502,9 @@ pub struct Env<'a> {
     pub hooks: &'a dyn crate::hooks::GameHooks,
     /// `Player.getDisplayName` by name and UUID: the name in its team's format.
     pub display_name: &'a dyn Fn(&str, u128) -> Component,
-    /// `Entity.getTeam` of an entity that is no player, by UUID: the name of its scoreboard
-    /// team.
-    pub entity_team: &'a dyn Fn(u128) -> Option<Box<str>>,
+    /// `Entity.getTeam` by score holder (a player's name, another entity's UUID string): its
+    /// scoreboard team.
+    pub entity_team: &'a dyn Fn(&str) -> Option<crate::scoreboard::TeamFacts>,
 }
 
 impl std::fmt::Debug for Env<'_> {
@@ -525,7 +535,7 @@ pub struct MoveRecord {
     pub accepted: bool,
 }
 
-fn block_pos(v: Vec3) -> BlockPos {
+pub(crate) fn block_pos(v: Vec3) -> BlockPos {
     BlockPos::new(
         vanillite_base::math::floor(v.x),
         vanillite_base::math::floor(v.y),
@@ -927,6 +937,13 @@ fn is_invulnerable_to(player: &PlayerData, env: &Env<'_>, kind: DamageKind) -> b
     }
     let t = env.types;
     let rules = env.rules;
+    if crate::enchant::location::frost_walker_immune(
+        t,
+        kind,
+        player.inventory.equipment(crate::item::EquipmentSlot::Feet),
+    ) {
+        return true;
+    }
     if t.is(kind, tag::IS_DROWNING) {
         !rules.bool(Rule::DROWNING_DAMAGE)
     } else if t.is(kind, tag::IS_FALL) {
@@ -1006,7 +1023,7 @@ pub fn hurt_with(
 ) -> bool {
     let types = env.types;
     let kind = source.kind;
-    if is_invulnerable_to(player, env, kind) {
+    if is_invulnerable_to(player, env, kind) || immune_to_damage(entity, player, env, &source) {
         return false;
     }
     if Abilities::of(player.game_mode).invulnerable
@@ -1160,18 +1177,34 @@ pub fn hurt_with(
             // `dealDefaultKnockback`: away from the source position.
             let (xd, zd) = source.knockback_direction(pos);
             let on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
+            let resistance = knockback_resistance(player);
             let v = crate::mob::combat::knockback(
                 entity.as_ref().velocity(),
                 on_ground,
                 f64::from(0.4_f32),
                 xd,
                 zd,
-                0.0,
+                resistance,
                 // `this.random`: the player's own.
                 &mut player.survival.random,
             );
             if let Some(v) = v {
                 entity.set_velocity(v);
+            }
+            if !blocked {
+                // `ServerPlayer.indicateDamage`: the camera tilts away from the source.
+                #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+                let yaw = (zd.atan2(xd) * 180.0 / f64::from(std::f32::consts::PI)
+                    - f64::from(entity.as_ref().rot().y_rot)) as f32;
+                env.out.push(Effect::To {
+                    player: id,
+                    packet: SharedPacket::of(
+                        &vanillite_protocol::packets::play::clientbound::HurtAnimation {
+                            entity_id: entity.as_ref().network_id().0,
+                            yaw,
+                        },
+                    ),
+                });
             }
         }
     }
@@ -1256,7 +1289,7 @@ fn actually_hurt(
 ) {
     let types = env.types;
     let kind = source.kind;
-    if is_invulnerable_to(player, env, kind) {
+    if is_invulnerable_to(player, env, kind) || immune_to_damage(entity, player, env, &source) {
         return;
     }
     let mut damage = damage;
@@ -1349,7 +1382,6 @@ fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource,
     }
     #[allow(clippy::cast_possible_truncation)]
     let amount = (damage / 4.0).max(1.0) as i32;
-    let fire = env.types.is(source.kind, tag::IS_FIRE);
     for index in 36..40 {
         let unbreaking = crate::player::play::game_data().map_or(0, |d| {
             d.enchantment_level(player.inventory.get(index), "minecraft:unbreaking")
@@ -1357,14 +1389,12 @@ fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource,
         let Some(stack) = player.inventory.get_mut(index) else {
             continue;
         };
-        if stack.is_empty() || !crate::item::is_damageable(stack) {
-            continue;
-        }
-        // Netherite (`damage_resistant` against fire) is not hurt by fire.
-        if fire
-            && crate::item::item_id(stack)
-                .name()
-                .starts_with("minecraft:netherite_")
+        // `doHurtEquipment`: only `equippable` items with `damage_on_hurt` (not elytra) that
+        // `canBeHurtBy` the source (`damage_resistant`, e.g. netherite against fire).
+        if stack.is_empty()
+            || !crate::item::is_damageable(stack)
+            || !crate::item::item_id(stack).info().equip_damage_on_hurt
+            || !crate::item::can_be_hurt_by(stack, env.types, source.kind)
         {
             continue;
         }
@@ -1396,9 +1426,48 @@ fn protection(
     env: &mut Env<'_>,
     source: &DamageSource,
 ) -> f32 {
-    let Some(data) = crate::player::play::game_data() else {
-        return 0.0;
-    };
+    with_damage_context(
+        entity,
+        player,
+        env,
+        source,
+        |enchants, equipment, cx, random| enchants.damage_protection(equipment, cx, random),
+    )
+    .unwrap_or(0.0)
+}
+
+/// `EnchantmentHelper.isImmuneToDamage` of a player's equipment (Frost Walker on magma).
+fn immune_to_damage(
+    entity: &EntityMut<'_>,
+    player: &PlayerData,
+    env: &mut Env<'_>,
+    source: &DamageSource,
+) -> bool {
+    with_damage_context(
+        entity,
+        player,
+        env,
+        source,
+        |enchants, equipment, cx, random| enchants.immune_to_damage(equipment, cx, random),
+    )
+    .unwrap_or(false)
+}
+
+/// Runs `f` with the enchantment context of `source` hurting the player and its non-empty
+/// equipment; `None` without equipment.
+fn with_damage_context<R>(
+    entity: &EntityMut<'_>,
+    player: &PlayerData,
+    env: &mut Env<'_>,
+    source: &DamageSource,
+    f: impl FnOnce(
+        &crate::enchant::Enchantments,
+        &[(crate::item::EquipmentSlot, &crate::item::ItemStack)],
+        &crate::enchant::EnchantContext<'_>,
+        &mut dyn crate::enchant::FloatRandom,
+    ) -> R,
+) -> Option<R> {
+    let data = crate::player::play::game_data()?;
     let equipment: Vec<(crate::item::EquipmentSlot, &crate::item::ItemStack)> =
         crate::player::encode::EQUIPMENT_SLOTS
             .iter()
@@ -1406,7 +1475,7 @@ fn protection(
             .filter(|(_, s)| !s.is_empty())
             .collect();
     if equipment.is_empty() {
-        return 0.0;
+        return None;
     }
     let flags = entity.as_ref().flags();
     let this = crate::predicate::EntityFacts {
@@ -1440,7 +1509,7 @@ fn protection(
         thundering: false,
         location: None,
     };
-    data.enchants.damage_protection(&equipment, &cx, env.random)
+    Some(f(&data.enchants, &equipment, &cx, env.random))
 }
 
 /// `applyItemBlocking`: the item a player blocks with (`blocks_attacks`, raised for its block
@@ -1534,13 +1603,14 @@ fn apply_item_blocking(
         {
             // `blockedByItem`: a hit that was not fully blocked pushes the defender back.
             let on_ground = entity.as_ref().flags().contains(EntityFlags::ON_GROUND);
+            let resistance = knockback_resistance(player);
             let v = crate::mob::combat::knockback(
                 entity.as_ref().velocity(),
                 on_ground,
                 0.5,
                 pos.x - at.x,
                 pos.z - at.z,
-                0.0,
+                resistance,
                 &mut player.survival.random,
             );
             if let Some(v) = v {
@@ -1968,7 +2038,7 @@ pub fn base_tick_after_portal(
                 .is_some_and(|s| env.facts.is_bubble_column(s));
         if eye_in_water {
             if !abilities.invulnerable && !player.survival.effects.has_water_breathing() {
-                let air = player.survival.air - 1;
+                let air = decrease_air(player, player.survival.air);
                 set_air(entity, &mut player.survival, air);
                 if player.survival.air <= -20 {
                     set_air(entity, &mut player.survival, 0);
@@ -1990,6 +2060,10 @@ pub fn base_tick_after_portal(
         } else if player.survival.air < MAX_AIR {
             let air = (player.survival.air + 4).min(MAX_AIR);
             set_air(entity, &mut player.survival, air);
+        }
+        // `EnchantmentHelper.tickEffects` and `onChangedBlock` (Frost Walker, Soul Speed).
+        if crate::enchant::location::base_tick(entity, player, env) {
+            player.survival.equipment_dirty = true;
         }
     }
     {
@@ -2469,6 +2543,7 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     let mut path = std::mem::take(&mut player.connection.movement.path);
     crate::survival::inside::finish(&mut path, pos, pos);
     let mut honey = Vec::new();
+    let mut bubbles = Vec::new();
     let inside = blocks::inside_blocks(
         env.blocks,
         env.facts,
@@ -2478,9 +2553,31 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         |cell| {
             if cell.state.block() == vanillite_data::block::ids::HONEY_BLOCK {
                 honey.push((cell.pos, cell.state));
+            } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
+                && cell.precise
+            {
+                bubbles.push(cell.pos);
             }
         },
     );
+    // `BubbleColumnBlock.entityInside` of a player that does not fly: the particles at the
+    // top of the column (the drag is the client's), the fall distance reset inside it.
+    if !player.survival.flying {
+        for column in bubbles {
+            let above = env
+                .blocks
+                .block_state(BlockPos::new(column.x, column.y + 1, column.z))
+                .unwrap_or(vanillite_data::block::BlockState::AIR);
+            if above.collision_shape().is_empty() && above.fluid_state().is_empty() {
+                player
+                    .survival
+                    .world_actions
+                    .push(crate::mob::WorldAction::BubbleColumnParticles(column));
+            } else {
+                crate::advancements::tracking::reset_fall_distance(player);
+            }
+        }
+    }
     path.clear();
     player.connection.movement.path = path;
     for (block, state) in honey {
@@ -2976,6 +3073,10 @@ fn check_fall_damage(
     if on_ground {
         let fall = player.survival.fall_distance;
         if fall > 0.0 {
+            // `onChangedBlock` of a landing.
+            if crate::enchant::location::on_changed_block(entity, player, env) {
+                player.survival.equipment_dirty = true;
+            }
             player.survival.game_events.push((
                 crate::level::game_event::events().hit_ground,
                 pos,
@@ -2998,8 +3099,10 @@ fn check_fall_damage(
                     cause_fall_damage(entity, player, env, fall, multiplier, env.types.fall);
                 }
                 Landing::Slime => {
-                    let multiplier = if crouching { 1.0 } else { 0.0 };
-                    cause_fall_damage(entity, player, env, fall, multiplier, env.types.fall);
+                    // `SlimeBlock.fallOn`: a sneaking player neither bounces nor takes damage.
+                    if !crouching {
+                        cause_fall_damage(entity, player, env, fall, 0.0, env.types.fall);
+                    }
                 }
                 Landing::Honey => {
                     let id = entity.as_ref().id();
@@ -3092,6 +3195,24 @@ pub fn fall_damage_with(fall_distance: f64, multiplier: f32, safe_fall_distance:
     let power = fall_distance + 1.0e-6 - safe_fall_distance;
     // `Mth.floor(double)`.
     vanillite_base::math::floor(power * f64::from(multiplier))
+}
+
+/// `Entity.propagateFallToPassengers` for a player riding a falling mob.
+pub(crate) fn passenger_fall(
+    ents: &mut crate::entities::Entities,
+    env: &mut Env<'_>,
+    player: EntityId,
+    fall_distance: f64,
+    multiplier: f32,
+    kind: DamageKind,
+) {
+    let crate::entities::Entities { store, players, .. } = ents;
+    if let Some(mut entity) = store.get_mut(player) {
+        let row = entity.as_ref().kind_row();
+        if let Some(data) = players.get_mut(row) {
+            cause_fall_damage(&mut entity, data, env, fall_distance, multiplier, kind);
+        }
+    }
 }
 
 /// `Player.causeFallDamage` → `LivingEntity.causeFallDamage`.
@@ -3555,6 +3676,20 @@ impl crate::mob::physics::Blocks for MoveBlocks<'_> {
             .unwrap_or(vanillite_data::block::BlockState::AIR)
     }
 
+    fn states_in(
+        &self,
+        min: BlockPos,
+        max: BlockPos,
+        out: &mut [vanillite_data::block::BlockState],
+    ) {
+        let mut slots = out.iter_mut();
+        self.0.block_states_in(min, max, &mut |state| {
+            if let Some(slot) = slots.next() {
+                *slot = state.unwrap_or(vanillite_data::block::BlockState::AIR);
+            }
+        });
+    }
+
     fn border(&self) -> Option<&crate::level::border::WorldBorder> {
         self.1
     }
@@ -3733,6 +3868,27 @@ fn tick_head_turn(entity: &EntityMut<'_>, s: &mut Survival) {
     let head = vanillite_base::math::wrap_degrees_f(yaw - s.y_body_rot);
     if head.abs() > 50.0 {
         s.y_body_rot += head - head.signum() * 50.0;
+    }
+}
+
+/// `getAttributeValue(KNOCKBACK_RESISTANCE)` of a player: its equipment's modifiers.
+fn knockback_resistance(player: &PlayerData) -> f64 {
+    crate::player::play::equipment_attribute(
+        &player.inventory,
+        "minecraft:knockback_resistance",
+        0.0,
+    )
+}
+
+/// `LivingEntity.decreaseAirSupply`: with `OXYGEN_BONUS` (Respiration) a tick may keep the air,
+/// drawing from the player's random.
+fn decrease_air(player: &mut PlayerData, air: i32) -> i32 {
+    let bonus =
+        crate::player::play::equipment_attribute(&player.inventory, "minecraft:oxygen_bonus", 0.0);
+    if bonus > 0.0 && player.survival.random.next_double() >= 1.0 / (bonus + 1.0) {
+        air
+    } else {
+        air - 1
     }
 }
 

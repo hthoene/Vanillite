@@ -624,7 +624,7 @@ pub fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if o.pos.distance_to_sqr(t.pos()) > 225.0 {
                 return false;
             }
-            !t.mob_ref().nav.is_done() || t.mob_ref().target.is_some()
+            !t.nav_ref().is_done() || t.mob_ref().target.is_some()
         }
     }
 }
@@ -653,13 +653,13 @@ pub fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             // The morning gift needs the owner's sleep timer, which players do not track yet.
             *on_bed_ticks = 0;
             set_relax(t, false);
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::LieOnBlock(_) => set_lying(t, false),
         Goal::SitOnBlock(_) => crate::mob::tame::set_in_sitting_pose(t, false),
         Goal::Attack { target, .. } => {
             *target = None;
-            t.mob().nav.stop();
+            t.nav().stop();
         }
     }
 }

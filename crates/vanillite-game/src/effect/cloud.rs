@@ -11,7 +11,7 @@ use vanillite_data::entity::ids;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::{Dimensions, EntityId, NetworkIds, NewEntity};
 
-use super::living::{add_to_entity, with_host_from};
+use super::living::{add_to_entity_from, with_host_from};
 use super::potion::{self, PotionContents};
 use super::{EffectInstance, HurtKind, active};
 use crate::entities::Entities;
@@ -315,8 +315,9 @@ fn splash(
                     effect.visible,
                     effect.visible,
                 );
+                // `getEffectSource()`: the owner, else the potion.
                 if !new.ends_within(20) {
-                    add_to_entity(level, ents, env, cx, id, new);
+                    add_to_entity_from(level, ents, env, cx, id, new, owner.or(projectile));
                 }
             }
         }
@@ -476,7 +477,8 @@ pub fn tick(
                     active::apply_instantaneous(e.effect, host, e.amplifier(), 0.5, source);
                 });
             } else {
-                add_to_entity(level, ents, env, cx, target, e.clone());
+                // The cloud is the source (`addEffect(effect, this)`).
+                add_to_entity_from(level, ents, env, cx, target, e.clone(), Some(id));
             }
         }
         let Some(c) = ents.cloud_mut(id) else {
@@ -529,11 +531,13 @@ pub fn arrow_hit(
     cx: &mut MobContext,
     target: EntityId,
     arrow_stack: &ItemStack,
+    effect_source: EntityId,
 ) {
     let contents = PotionContents::of_stack(arrow_stack);
     let scale = potion::duration_scale(arrow_stack);
-    // `forEachEffect(mob.addEffect)`: instant effects too, as one-tick effects.
+    // `forEachEffect(mob.addEffect(effect, effectSource))`: instant effects too, as one-tick
+    // effects.
     for e in contents.scaled_effects(scale) {
-        add_to_entity(level, ents, env, cx, target, e);
+        add_to_entity_from(level, ents, env, cx, target, e, Some(effect_source));
     }
 }

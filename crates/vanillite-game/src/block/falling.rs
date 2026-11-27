@@ -331,6 +331,8 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Resume {
     velocity: Vec3,
+    /// The movement `move` was asked for (the velocity, slowed by a cobweb or powder snow).
+    delta: Vec3,
     moved: Vec3,
     new_pos: Vec3,
     on_pos: BlockPos,
@@ -364,9 +366,25 @@ fn tick_move(level: &mut Level, id: EntityId) -> Option<Resume> {
     // `applyGravity` and `move(SELF, deltaMovement)`.
     let mut velocity = entity.velocity();
     velocity.y -= 0.04;
-    let moved = collide(&level.view(), aabb, velocity);
-    let vertical = moved.y != velocity.y;
-    let on_ground = vertical && velocity.y < 0.0;
+    let mut delta = velocity;
+    if data.stuck.length_sqr() > 1.0e-7 {
+        // `stuckSpeedMultiplier`: the slowed move, then the block stands still.
+        delta = velocity.multiply(data.stuck.x, data.stuck.y, data.stuck.z);
+        velocity = Vec3::ZERO;
+        if let Some(d) = level.entities.falling_block_mut(id) {
+            d.stuck = Vec3::ZERO;
+        }
+    }
+    // `PowderSnowBlock.getCollisionShape`: a falling block lands on powder snow, on the lower
+    // falling shape after a fall of more than 2.5 blocks.
+    let snow_top = if data.fall_distance > 2.5 {
+        0.899_999_976_158_142_1
+    } else {
+        1.0
+    };
+    let moved = collide_with_snow(&level.view(), aabb, delta, Some(snow_top));
+    let vertical = moved.y != delta.y;
+    let on_ground = vertical && delta.y < 0.0;
     let new_pos = Vec3::new(pos.x + moved.x, pos.y + moved.y, pos.z + moved.z);
     if let Some(mut entity) = level.entities.store.get_mut(id) {
         entity.set_pos(new_pos);
@@ -407,6 +425,7 @@ fn tick_move(level: &mut Level, id: EntityId) -> Option<Resume> {
     }
     Some(Resume {
         velocity,
+        delta,
         moved,
         new_pos,
         on_pos,
@@ -418,18 +437,19 @@ fn tick_move(level: &mut Level, id: EntityId) -> Option<Resume> {
 pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
     let Resume {
         mut velocity,
+        delta,
         moved,
         new_pos,
         on_pos,
         time,
     } = r;
-    let vertical = moved.y != velocity.y;
-    let horizontal = moved.x != velocity.x || moved.z != velocity.z;
-    let on_ground = vertical && velocity.y < 0.0;
-    if moved.x != velocity.x {
+    let vertical = moved.y != delta.y;
+    let horizontal = moved.x != delta.x || moved.z != delta.z;
+    let on_ground = vertical && delta.y < 0.0;
+    if moved.x != delta.x {
         velocity.x = 0.0;
     }
-    if moved.z != velocity.z {
+    if moved.z != delta.z {
         velocity.z = 0.0;
     }
     if vertical {
@@ -438,24 +458,48 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
     }
     // `applyEffectsFromBlocks`: `stepOn` of the block below (redstone ore lights up), then
     // `entityInside` of the plates, tripwire and kin on the way.
-    if on_ground && super::contact::has_step_on(level.block(on_pos).block()) {
-        super::contact::step_on(level, on_pos, id);
+    if on_ground {
+        let block = level.block(on_pos).block();
+        if block == ids::SLIME_BLOCK {
+            // `SlimeBlock.stepOn`.
+            let dy = velocity.y.abs();
+            if dy < 0.1 {
+                let factor = 0.4 + dy * 0.2;
+                velocity = Vec3::new(velocity.x * factor, velocity.y, velocity.z * factor);
+            }
+        } else if super::contact::has_step_on(block) {
+            super::contact::step_on(level, on_pos, id);
+        }
     }
     if let Some(dims) = level.entities.store.get(id).map(|e| e.dims()) {
         let way = [crate::survival::inside::Movement::plain(
             new_pos - moved,
             new_pos,
         )];
-        super::plate::entity_inside_along(level, id, dims, &way);
+        velocity = inside_blocks(level, id, dims, &way, velocity);
+        if !level.entities.store.contains(id) {
+            return;
+        }
     }
     let Some(data) = level.entities.falling_block(id).copied() else {
         return;
     };
-    let block_pos = BlockPos::containing(new_pos.x, new_pos.y, new_pos.z);
+    let mut block_pos = BlockPos::containing(new_pos.x, new_pos.y, new_pos.z);
     let block = data.state.block();
     let concrete = class_of(data.state) == Class::ConcretePowder;
-    // `isStuckInWater`; Vanilla also clips fast concrete powder against water it passed.
-    let stuck_in_water = concrete && fluid::is_water(level.fluid(block_pos));
+    // `isStuckInWater`.
+    let mut stuck_in_water = concrete && fluid::is_water(level.fluid(block_pos));
+    if concrete && velocity.length_sqr() > 1.0 {
+        // Fast concrete powder solidifies at the first water source it passed.
+        let from = new_pos - moved;
+        if let Some((hit, _)) =
+            crate::mob::physics::clip_source_fluids(&level.view(), from, new_pos)
+            && fluid::is_water(level.fluid(hit))
+        {
+            block_pos = hit;
+            stuck_in_water = true;
+        }
+    }
     let mut removed = false;
     if !on_ground && !stuck_in_water {
         if time > 100 && (block_pos.y <= level.min_y() || block_pos.y > level.max_y()) || time > 600
@@ -480,8 +524,6 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
             let would_continue =
                 is_free(level.block(block_pos.below())) && (!concrete || !stuck_in_water);
             let would_survive = level.can_survive(data.state, block_pos) && !would_continue;
-            level.entities.despawn(id);
-            removed = true;
             if may_replace && would_survive {
                 let mut state = data.state;
                 if level.fluid(block_pos).info().fluid == fluid::WATER
@@ -490,14 +532,23 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
                     state = waterlogged;
                 }
                 if level.set_block_and_update(block_pos, state) {
+                    level.entities.despawn(id);
+                    removed = true;
                     on_land(level, block_pos, state, current);
                 } else if data.drop_item && level.settings.entity_drops {
+                    // A block that could not be set stays an entity unless it drops.
+                    level.entities.despawn(id);
+                    removed = true;
                     on_broken_after_fall(level, data.state, block_pos, new_pos, id);
                     drops::spawn_block_item(level, new_pos, block);
                 }
-            } else if data.drop_item && level.settings.entity_drops {
-                on_broken_after_fall(level, data.state, block_pos, new_pos, id);
-                drops::spawn_block_item(level, new_pos, block);
+            } else {
+                level.entities.despawn(id);
+                removed = true;
+                if data.drop_item && level.settings.entity_drops {
+                    on_broken_after_fall(level, data.state, block_pos, new_pos, id);
+                    drops::spawn_block_item(level, new_pos, block);
+                }
             }
         }
     }
@@ -510,6 +561,83 @@ pub fn resume_tick(level: &mut Level, id: EntityId, r: Resume) {
             velocity.z * drag,
         ));
         entity.set_flags(EntityFlags::PRECISE_POSITION, horizontal || vertical);
+    }
+}
+
+/// `applyEffectsFromBlocks` of a falling block on `way`: cobwebs and powder snow slow its
+/// next move (`makeStuckInBlock`, resetting the fall distance), bubble columns drag it, and
+/// the blocks with an `entityInside` of their own (plates, tripwire, frogspawn) react, in the
+/// order of the walk. Returns the velocity.
+fn inside_blocks(
+    level: &mut Level,
+    id: EntityId,
+    dims: vanillite_world::entity::Dimensions,
+    way: &[crate::survival::inside::Movement],
+    mut velocity: Vec3,
+) -> Vec3 {
+    enum Hit {
+        Stuck(Vec3),
+        Bubble(BlockPos),
+        Hook(BlockPos),
+    }
+    let mut hits = Vec::new();
+    {
+        let view = level.view();
+        let walker = crate::survival::inside::Walker {
+            blocks: &view,
+            facts: None,
+            dims,
+            fast_fall: false,
+        };
+        walker.walk(way, |cell| {
+            let block = cell.state.block();
+            if block == ids::BUBBLE_COLUMN {
+                if cell.precise {
+                    hits.push(Hit::Bubble(cell.pos));
+                }
+            } else if !cell.in_block {
+            } else if block == ids::COBWEB {
+                hits.push(Hit::Stuck(Vec3::new(0.25, f64::from(0.05_f32), 0.25)));
+            } else if block == ids::POWDER_SNOW {
+                hits.push(Hit::Stuck(Vec3::new(
+                    f64::from(0.9_f32),
+                    1.5,
+                    f64::from(0.9_f32),
+                )));
+            } else if level.has_entity_inside(cell.state) {
+                hits.push(Hit::Hook(cell.pos));
+            }
+            true
+        });
+    }
+    for hit in hits {
+        if !level.entities.store.contains(id) {
+            break;
+        }
+        match hit {
+            Hit::Stuck(multiplier) => {
+                if let Some(d) = level.entities.falling_block_mut(id) {
+                    d.fall_distance = 0.0;
+                    d.stuck = multiplier;
+                }
+            }
+            Hit::Bubble(pos) => {
+                let (v, reset) = crate::level::particles::bubble_column_drag(level, pos, velocity);
+                velocity = v;
+                if reset && let Some(d) = level.entities.falling_block_mut(id) {
+                    d.fall_distance = 0.0;
+                }
+            }
+            Hit::Hook(pos) => level.entity_inside(pos, id),
+        }
+    }
+    velocity
+}
+
+/// `FrogspawnBlock.entityInside`: a falling block destroys the frogspawn.
+pub fn frogspawn_entity_inside(level: &mut Level, _: BlockState, pos: BlockPos, entity: EntityId) {
+    if level.entities.falling_block(entity).is_some() {
+        level.destroy_block(pos, false, None);
     }
 }
 
@@ -585,6 +713,16 @@ fn on_broken_after_fall(
 /// `Entity.collide` against block collision shapes: the movement left after the boxes in the
 /// way, Y first, then X and Z (larger first).
 pub(crate) fn collide(level: &LevelView<'_>, aabb: Aabb, movement: Vec3) -> Vec3 {
+    collide_with_snow(level, aabb, movement, None)
+}
+
+/// [`collide`] where powder snow is a box of the height `snow_top` (falling blocks).
+fn collide_with_snow(
+    level: &LevelView<'_>,
+    aabb: Aabb,
+    movement: Vec3,
+    snow_top: Option<f64>,
+) -> Vec3 {
     let mut border = Vec::new();
     if movement.length_sqr() != 0.0 {
         let area = aabb.expand_towards(movement.x, movement.y, movement.z);
@@ -592,7 +730,7 @@ pub(crate) fn collide(level: &LevelView<'_>, aabb: Aabb, movement: Vec3) -> Vec3
     }
     let bottom = aabb.min_y;
     let collide_axis = |aabb: &Aabb, axis: usize, delta: f64| {
-        let delta = collide_axis(level, aabb, axis, delta, bottom);
+        let delta = collide_axis(level, aabb, axis, delta, bottom, snow_top);
         crate::mob::physics::collide_axis(&border, aabb, axis, delta)
     };
     let mut aabb = aabb;
@@ -617,7 +755,14 @@ pub(crate) fn collide(level: &LevelView<'_>, aabb: Aabb, movement: Vec3) -> Vec3
 
 /// The movement along one axis (0 = X, 1 = Y, 2 = Z) until `aabb` touches a collision box
 /// (`Shapes.collide` with its 1.0E-7 tolerance).
-fn collide_axis(level: &LevelView<'_>, aabb: &Aabb, axis: usize, delta: f64, bottom: f64) -> f64 {
+fn collide_axis(
+    level: &LevelView<'_>,
+    aabb: &Aabb,
+    axis: usize,
+    delta: f64,
+    bottom: f64,
+    snow_top: Option<f64>,
+) -> f64 {
     const EPSILON: f64 = 1.0e-7;
     if delta.abs() < EPSILON {
         return 0.0;
@@ -641,7 +786,15 @@ fn collide_axis(level: &LevelView<'_>, aabb: &Aabb, axis: usize, delta: f64, bot
                 let pos = BlockPos::new(x, y, z);
                 let state = level.block(pos);
                 let origin = [f64::from(x), f64::from(y), f64::from(z)];
-                for b in crate::mob::physics::context_shape(state, origin[1], Some(bottom)) {
+                let snow;
+                let shape = match snow_top {
+                    Some(top) if state.block() == ids::POWDER_SNOW => {
+                        snow = [[0.0, 0.0, 0.0, 1.0, top, 1.0]];
+                        &snow[..]
+                    }
+                    _ => crate::mob::physics::context_shape(state, origin[1], Some(bottom)),
+                };
+                for b in shape {
                     let box_min = [b[0] + origin[0], b[1] + origin[1], b[2] + origin[2]];
                     let box_max = [b[3] + origin[0], b[4] + origin[1], b[5] + origin[2]];
                     let overlaps = (0..3)

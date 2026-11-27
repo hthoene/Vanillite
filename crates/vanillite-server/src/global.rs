@@ -68,8 +68,15 @@ pub struct Global {
     pub(crate) force_game_mode: bool,
     /// The plugins.
     pub(crate) plugins: vanillite_plugin_host::PluginHost,
+    /// The server's version as `vanillite --version` shows it (`/version`, Query).
+    pub(crate) version: String,
     /// A message of the day a plugin set, for the server list to take over.
     pub(crate) motd: std::sync::Mutex<Option<vanillite_protocol::text::Component>>,
+    /// `server_data` with the server list's MOTD and icon, sent to joining players
+    /// (`ServerPlayer.sendServerStatus`).
+    pub(crate) server_data: std::sync::RwLock<Arc<vanillite_protocol::SharedPacket>>,
+    /// The server icon (a 64x64 PNG) of `server_data`.
+    pub(crate) server_icon: Option<Vec<u8>>,
     /// This value itself, for work handed to other worlds.
     pub(crate) this: Weak<Global>,
 }

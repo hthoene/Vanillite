@@ -1,0 +1,3 @@
+tick = 8
+cause = "a nautilus ridden by a player keeps moving and turning by its own AI (Vanilla: the player controls it and it stands still without input); the goal selector never disables its movement while a passenger controls it (#221 gap table I-row)"
+owner = "gameplay-developer #221"
