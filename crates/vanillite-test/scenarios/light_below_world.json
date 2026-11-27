@@ -1,0 +1,15 @@
+{
+  "description": "Block light through the light section below the world: a world of stone without bedrock, a glowstone in its bottom layer lights an air pocket there that is only open downwards, then goes again.",
+  "tier": "fast",
+  "light": true,
+  "world": {"layers": [["minecraft:stone", 4]]},
+  "region": [[-1, -64, -2], [7, -62, 2]],
+  "ticks": 2,
+  "setup": [
+    {"op": "set", "pos": [5, -64, 0], "block": "minecraft:air"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "place", "pos": [0, -64, 0], "block": "minecraft:glowstone"},
+    {"tick": 2, "op": "place", "pos": [0, -64, 0], "block": "minecraft:stone"}
+  ]
+}

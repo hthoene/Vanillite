@@ -165,14 +165,14 @@ public final class WorldSweep {
   }
 
   @SuppressWarnings("unchecked")
-  private static void clearWorlds() throws Exception {
+  static void clearWorlds() throws Exception {
     Field f = FeatureGoldens.class.getDeclaredField("WORLDS");
     f.setAccessible(true);
     ((Map<String, World>) f.get(null)).clear();
   }
 
   /** One world's chunks taken through the generation steps on demand. */
-  private static final class Sweep {
+  static final class Sweep {
     // Static state is initialised on first use, after the bootstrap in main.
     private static final Dimension AMPLIFIED = new Dimension("minecraft:amplified", NoiseGeneratorSettings.AMPLIFIED,
         BuiltinDimensionTypes.OVERWORLD, -64, 384, new int[0]);
