@@ -1,0 +1,3 @@
+tick = 5
+cause = "the stared-at enderman teleports away one tick before Vanilla (tick 5 instead of 6); the scream, target, creepy flag and speed bonus at tick 4 match"
+owner = "gameplay-developer #221"

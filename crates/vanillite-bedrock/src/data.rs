@@ -33,6 +33,9 @@ pub struct Palette {
     pub creative: &'static [u8],
     /// Runtime ids of the frame blocks (`frames.bin`).
     frames_bin: &'static [u8],
+    /// Bedrock block states of potted plants (`pots.bin`).
+    pots_bin: &'static [u8],
+    pots: OnceLock<FxHashMap<u16, &'static [u8]>>,
     blocks: OnceLock<Blocks>,
     items: OnceLock<Items>,
 }
@@ -48,6 +51,8 @@ macro_rules! palette {
             item_registry: include_bytes!(concat!("../data/", $name, "/item_registry.bin")),
             creative: include_bytes!(concat!("../data/", $name, "/creative.bin")),
             frames_bin: include_bytes!(concat!("../data/", $name, "/frames.bin")),
+            pots_bin: include_bytes!(concat!("../data/", $name, "/pots.bin")),
+            pots: OnceLock::new(),
             blocks: OnceLock::new(),
             items: OnceLock::new(),
         }
@@ -78,6 +83,34 @@ impl Palette {
             Some(&[a, b]) => u32::from(u16::from_le_bytes([a, b])),
             _ => 0,
         }
+    }
+
+    /// The Bedrock block state (network NBT compound payload) of the plant in a Java potted
+    /// plant state.
+    pub fn potted_plant(&self, java: u32) -> Option<&'static [u8]> {
+        let pots = self.pots.get_or_init(|| {
+            let bin = self.pots_bin;
+            let mut map = FxHashMap::default();
+            let n = bin
+                .get(..4)
+                .and_then(|b| b.try_into().ok())
+                .map_or(0, u32::from_le_bytes);
+            let mut at = 4usize;
+            for _ in 0..n {
+                let Some(&[a, b, c, d]) = bin.get(at..at.saturating_add(4)) else {
+                    break;
+                };
+                let start = at.saturating_add(4);
+                let end = start.saturating_add(usize::from(u16::from_le_bytes([c, d])));
+                let Some(payload) = bin.get(start..end) else {
+                    break;
+                };
+                map.insert(u16::from_le_bytes([a, b]), payload);
+                at = end;
+            }
+            map
+        });
+        pots.get(&u16::try_from(java).ok()?).copied()
     }
 
     /// The item tables.
@@ -235,6 +268,11 @@ mod tests {
                 let user = r.bytes("user data", 1 << 16).unwrap();
                 let expected = if id == i32::from(shield) { 18 } else { 10 };
                 shields += usize::from(id == i32::from(shield));
+                if user.starts_with(&[0xff, 0xff, 1]) {
+                    // NBT (enchanted books, fireworks), then no place/destroy lists.
+                    assert!(user.ends_with(&[0; 8]), "{} item {id}", p.name);
+                    return;
+                }
                 assert_eq!(user.len(), expected, "{} item {id}", p.name);
             };
             for _ in 0..r.varu32().unwrap() {

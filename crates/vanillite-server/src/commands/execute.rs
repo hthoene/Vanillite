@@ -627,9 +627,16 @@ fn summon_one(
     };
     let uuid = match nbt.get("UUID") {
         Some(Tag::IntArray(ints)) => match ints.as_slice() {
-            [a, b, c, d] => [*a, *b, *c, *d]
-                .iter()
-                .fold(0u128, |acc, v| (acc << 32) | u128::from(v.cast_unsigned())),
+            [a, b, c, d] => {
+                // The entity's constructor still creates its random (and a UUID from it)
+                // before the NBT replaces the UUID.
+                if !own_seed {
+                    let _ = fresh_uuid();
+                }
+                [*a, *b, *c, *d]
+                    .iter()
+                    .fold(0u128, |acc, v| (acc << 32) | u128::from(v.cast_unsigned()))
+            }
             _ => fresh_uuid(),
         },
         _ => fresh_uuid(),
@@ -643,9 +650,11 @@ fn summon_one(
             .and_then(|v| i16::try_from(v).ok())
             .map_or(default, i32::from)
     };
-    let block_state = |key: &str, default: BlockState| match nbt.get(key) {
-        Some(Tag::Compound(c)) => vanillite_game::level::block_entity::read_block_state(c),
-        _ => default,
+    // `BlockState.CODEC`: a block id or `{id, properties}` (`{Name, Properties}` too).
+    let block_state = |key: &str, default: BlockState| {
+        nbt.get(key)
+            .and_then(vanillite_game::level::block_entity::read_state_codec)
+            .unwrap_or(default)
     };
     if let Some(mob) = vanillite_game::mob::kinds::Kind::by_name(id)
         .filter(|k| k.family() != vanillite_game::mob::Family::Decor)

@@ -517,20 +517,16 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if m.baby {
         return animal::animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack);
     }
-    let name = crate::item::item_id(ix.stack).name();
-    if name.ends_with("_harness") && !harnessed(m) {
-        if let Some(m) = ix.ents.mob_mut(ix.target) {
-            m.equipment.set(EquipmentSlot::Body, ix.stack.with_count(1));
+    if !ix.stack.is_empty() {
+        // `itemStack.interactLivingEntity`: a harness (`Equippable.equipOnTarget`).
+        let r = animal::item_interact_pub(ix);
+        if r.consumes() {
+            return r;
         }
-        animal::use_item(ix.ents, ix.player, ix.hand);
-        crate::mob::combat::mob_sound(
-            ix.ents,
-            ix.env,
-            ix.target,
-            "minecraft:entity.happy_ghast.equip",
-        );
-        return Interaction::Success;
     }
+    let Some(m) = ix.ents.mob(ix.target) else {
+        return Interaction::Pass;
+    };
     if harnessed(m) && !ix.sneaking {
         let first = ix.ents.riding.passengers_of(ix.target).is_empty();
         if crate::riding::start_riding(ix.ents, ix.env, ix.player, ix.target, false) && first {

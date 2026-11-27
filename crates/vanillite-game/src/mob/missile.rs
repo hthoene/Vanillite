@@ -180,6 +180,8 @@ pub struct MissileData {
     pub pickup: u8,
     /// The state of a fishing bobber.
     pub bobber: Option<Box<crate::fishing::Bobber>>,
+    /// `Projectile.lastDeflectedBy`.
+    pub last_deflected: Option<EntityId>,
 }
 
 impl MissileData {
@@ -204,6 +206,7 @@ impl MissileData {
             random_state: 0,
             pickup: 0,
             bobber: None,
+            last_deflected: None,
         }
     }
 }
@@ -454,6 +457,51 @@ pub enum HitWhat {
     Entity(EntityId),
     /// A block, at a point on it.
     Block(vanillite_base::BlockPos, Vec3),
+}
+
+/// `Entity.deflection(projectile)`: a breeze (`#deflects_projectiles`) reverses every
+/// projectile but wind charges.
+pub fn deflects(ents: &Entities, target: EntityId, projectile: EntityTypeId) -> bool {
+    if projectile == ids::WIND_CHARGE || projectile == ids::BREEZE_WIND_CHARGE {
+        return false;
+    }
+    ents.store
+        .get(target)
+        .is_some_and(|e| crate::effect::entity_in_tag(e.kind(), "minecraft:deflects_projectiles"))
+}
+
+/// `Breeze.PROJECTILE_DEFLECTION`: the deflect sound at the breeze, then
+/// `ProjectileDeflection.REVERSE` with power 1: half the speed backwards, turned by 170° to
+/// 190° (the projectile's random).
+pub fn reverse(
+    ents: &Entities,
+    env: &mut Env<'_>,
+    deflector: EntityId,
+    velocity: Vec3,
+    rot: Rotation,
+    random: &mut impl vanillite_base::random::RandomSource,
+) -> (Vec3, Rotation) {
+    if let Some(e) = ents.store.get(deflector) {
+        let seed = crate::survival::sound_seed();
+        crate::survival::play_sound(
+            env.out,
+            None,
+            e.pos(),
+            "minecraft:entity.breeze.deflect",
+            vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+            1.0,
+            1.0,
+            seed,
+        );
+    }
+    let turn = 170.0 + random.next_float() * 20.0;
+    (
+        velocity * -0.5,
+        Rotation {
+            y_rot: rot.y_rot + turn,
+            ..rot
+        },
+    )
 }
 
 /// The plugins' hit event (`vanillite_abi::event::PROJECTILE_HIT`, Bukkit's

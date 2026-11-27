@@ -1,0 +1,19 @@
+{
+  "description": "Block.popResourceFromFace with block_drops off (#217, E-21): tilling rooted dirt still draws the hanging roots' position and motion from the level random before the rule stops the item.",
+  "tier": "fast",
+  "level_rng": true,
+  "rules": {"block_drops": "false"},
+  "region": [[2, -62, 3], [11, -57, 10]],
+  "ticks": 8,
+  "entities": [
+    {"name": "p", "type": "minecraft:player", "pos": [8.5, -60.0, 6.5]}
+  ],
+  "setup": [
+    {"op": "set", "pos": [5, -60, 6], "block": "minecraft:rooted_dirt"},
+    {"op": "set", "pos": [6, -60, 9], "block": "minecraft:rooted_dirt"}
+  ],
+  "actions": [
+    {"tick": 2, "op": "use", "entity": "p", "pos": [5, -60, 6], "face": "west", "item": "minecraft:wooden_hoe"},
+    {"tick": 3, "op": "use", "entity": "p", "pos": [6, -60, 9], "face": "south", "item": "minecraft:wooden_hoe"}
+  ]
+}

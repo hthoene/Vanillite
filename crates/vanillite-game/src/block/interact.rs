@@ -42,6 +42,10 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         BlockKind::LightBlock => b.use_without_item = Some(light_use_without_item),
         BlockKind::CopperGolemStatueBlock | BlockKind::WeatheringCopperGolemStatueBlock => {
             b.use_item_on = Some(statue_use_item_on);
+            // `affectNeighborsAfterRemoval`: comparators behind a block re-read the pose.
+            b.affect_neighbors_after_removal = Some(|level, state, pos, _| {
+                level.update_neighbour_for_output_signal(pos, state.block());
+            });
         }
         _ => {}
     }
@@ -407,7 +411,7 @@ fn statue_use_item_on(
     level.play_block_sound(
         None,
         pos,
-        sound_id("entity.copper_golem.become_statue"),
+        sound_id("entity.copper_golem_become_statue"),
         SOUND_BLOCKS,
         1.0,
         1.0,

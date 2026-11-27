@@ -417,5 +417,6 @@ pub fn air_runtime_id(v: &Version) -> u32 {
 pub fn creative_net_id(v: &Version, java_item: &str) -> Option<u32> {
     let item = vanillite_data::item::ItemId::by_name(java_item)?.0;
     let items = v.palette.items();
-    (1..4096u32).find(|&n| items.creative(n) == Some(item))
+    let none = crate::items::Enchantments::default();
+    (1..4096u32).find(|&n| items.creative(n, &none).is_some_and(|s| s.item == item))
 }

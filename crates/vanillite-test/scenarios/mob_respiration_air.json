@@ -1,0 +1,130 @@
+{
+  "description": "A player under water wearing a Respiration III helmet: LivingEntity.decreaseAirSupply keeps the air with chance 3/4 each tick (oxygen_bonus). A second player without the helmet loses air every tick.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -56,
+        14
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        5.5,
+        -60.0,
+        7.5
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        10.5,
+        -60.0,
+        7.5
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:stick",
+      "inventory": [
+        {
+          "slot": 39,
+          "item": "minecraft:iron_helmet",
+          "count": 1,
+          "components": "{\"minecraft:enchantments\":{\"minecraft:respiration\":3}}"
+        }
+      ]
+    }
+  ],
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

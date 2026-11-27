@@ -463,10 +463,32 @@ fn clockwise(d: Direction) -> Direction {
     }
 }
 
-/// `ChestBlock.isChestBlockedAt`: a redstone conductor above (cats are not checked).
+/// `ChestBlock.isChestBlockedAt`: a redstone conductor or a sitting cat above.
 pub(crate) fn chest_blocked(level: &Level, pos: BlockPos) -> bool {
+    chest_blocked_with(level, &level.entities, pos)
+}
+
+/// [`chest_blocked`] with the entities `ents` (a mob's tick holds them).
+pub(crate) fn chest_blocked_with(
+    level: &Level,
+    ents: &crate::entities::Entities,
+    pos: BlockPos,
+) -> bool {
     let above = pos.above();
-    Level::is_redstone_conductor(level.block(above))
+    Level::is_redstone_conductor(level.block(above)) || cat_sitting_on(ents, pos)
+}
+
+/// `isCatSittingOnChest`: a cat in its sitting pose in the block above.
+fn cat_sitting_on(ents: &crate::entities::Entities, pos: BlockPos) -> bool {
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let above = vanillite_base::Aabb::new(x, y + 1.0, z, x + 1.0, y + 2.0, z + 1.0);
+    let mut sitting = false;
+    ents.store.for_each_in(&above, false, |id| {
+        sitting |= ents
+            .mob(id)
+            .is_some_and(|m| m.kind == crate::mob::Kind::Cat && m.in_sitting_pose);
+    });
+    sitting
 }
 
 /// The other half of a double chest (`ChestBlock.getConnectedBlockPos`), if it is there.

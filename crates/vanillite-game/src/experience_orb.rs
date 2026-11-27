@@ -250,15 +250,33 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         level.entities.despawn(id);
         return;
     }
-    // `baseTick`: water resets the fall distance.
-    let in_water = touching_water(level, &aabb);
+    // `baseTick`: `updateFluidInteraction` (water resets the fall distance, flowing water and
+    // lava push the orb), then `ExperienceOrb.tick` swims up with its eyes in water.
+    let eye = Vec3::new(pos.x, pos.y + f64::from(0.425_f32), pos.z);
+    let (contact, currents) = crate::mob::living::fluid_currents(
+        level,
+        crate::survival::blocks::BlockFacts::fluids_only(),
+        aabb,
+        eye,
+    );
+    let in_water = contact.in_water();
     if in_water {
         data.fall_distance = 0.0;
+        if let Some(pushed) = currents.water.push(v, 0.014) {
+            v = pushed;
+        }
+    }
+    if contact.in_lava()
+        && let Some(pushed) = currents.lava.push(v, lava_current_scale(level))
+    {
+        v = pushed;
     }
     let colliding = collides(level, &aabb);
-    if eye_in_water(level, pos) {
-        // `setUnderwaterMovement`.
-        v = Vec3::new(v.x * 0.99, (v.y + 5.0e-4).min(0.06), v.z * 0.99);
+    if contact.eye_in_water {
+        // `setUnderwaterMovement` (float constants).
+        let drag = f64::from(0.99_f32);
+        let rise = (v.y + f64::from(5.0e-4_f32)).min(f64::from(0.06_f32));
+        v = Vec3::new(v.x * drag, rise, v.z * drag);
     } else if !colliding {
         v.y -= GRAVITY;
     }
@@ -348,6 +366,50 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     if on_ground && on_block == vanillite_data::block::ids::SLIME_BLOCK {
         v = crate::block::contact::slime_step_on(v);
     }
+    // `applyEffectsFromBlocks`: the blocks on the way (one walk; bubble columns act at once,
+    // cacti, plates and tripwire after the move is stored).
+    let dims = level.entities.store.get(id).map(|e| e.dims());
+    let mut cacti = 0;
+    let mut reacting = Vec::new();
+    let mut bubbles = [None; 4];
+    if let Some(dims) = dims {
+        let way = [crate::survival::inside::Movement::plain(pos, new_pos)];
+        let view = level.view();
+        let walker = crate::survival::inside::Walker {
+            blocks: &view,
+            facts: None,
+            dims,
+            fast_fall: false,
+        };
+        let mut count = 0;
+        walker.walk(&way, |cell| {
+            if cell.in_block {
+                if cell.state.block() == vanillite_data::block::ids::CACTUS {
+                    cacti += 1;
+                } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN {
+                    if cell.precise
+                        && let Some(slot) = bubbles.get_mut(count)
+                    {
+                        *slot = Some((cell.pos, cell.state));
+                        count += 1;
+                    }
+                } else if level.has_entity_inside(cell.state) {
+                    reacting.push(cell.pos);
+                }
+            }
+            true
+        });
+    }
+    for (at, state) in bubbles.into_iter().flatten() {
+        let above = BlockPos::new(at.x, at.y + 1, at.z);
+        let (top, y) = crate::block::bubble::drag(level.block(above), state, v.y);
+        v.y = y;
+        if top {
+            crate::block::bubble::send_particles(level, at);
+        } else {
+            fall_distance = 0.0;
+        }
+    }
     // `getAirDrag()` (0.98F) times the block friction, in float.
     let mut friction: f32 = 0.98;
     if below {
@@ -389,28 +451,7 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         crate::block::contact::step_on(level, on, id);
     }
     // `applyEffectsFromBlocks`: cacti hurt the orb, plates and tripwire react.
-    let dims = level.entities.store.get(id).map(|e| e.dims());
-    if let Some(dims) = dims {
-        let way = [crate::survival::inside::Movement::plain(pos, new_pos)];
-        let mut cacti = 0;
-        let mut reacting = Vec::new();
-        let view = level.view();
-        let walker = crate::survival::inside::Walker {
-            blocks: &view,
-            facts: None,
-            dims,
-            fast_fall: false,
-        };
-        walker.walk(&way, |cell| {
-            if cell.in_block {
-                if cell.state.block() == vanillite_data::block::ids::CACTUS {
-                    cacti += 1;
-                } else if level.has_entity_inside(cell.state) {
-                    reacting.push(cell.pos);
-                }
-            }
-            true
-        });
+    if dims.is_some() {
         for block in reacting {
             if !level.entities.store.contains(id) {
                 return;
@@ -455,14 +496,13 @@ pub(crate) fn touching_water(level: &Level, b: &Aabb) -> bool {
     false
 }
 
-/// `isEyeInFluid(FluidTags.WATER)`: the fluid at the eye (0.425 above the feet, less
-/// `0.11111111`) is water that reaches above it.
-fn eye_in_water(level: &Level, pos: Vec3) -> bool {
-    let eye_y = pos.y + 0.425 - 0.111_111_11;
-    let at = BlockPos::new(floor(pos.x), floor(eye_y), floor(pos.z));
-    let fluid = level.fluid(at);
-    crate::block::fluid::is_water(fluid)
-        && eye_y < f64::from(at.y) + f64::from(crate::block::fluid::height(level, fluid, at))
+/// The scale of the lava current (`applyCurrentTo(LAVA, ...)`): faster where lava is fast.
+pub(crate) fn lava_current_scale(level: &Level) -> f64 {
+    if level.settings.fast_lava {
+        0.007
+    } else {
+        0.002_333_333_333_333_333_5
+    }
 }
 
 /// `scanForMerges`: orbs of the same value and merge group within `radius` (Vanilla half a

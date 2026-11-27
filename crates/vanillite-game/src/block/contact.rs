@@ -168,7 +168,15 @@ pub fn push_entities_up_states(
 /// [`push_entities_up`] for the gap between `bottom` and `top` (fractions of the block).
 fn push_entities_up_between(level: &mut Level, pos: BlockPos, bottom: f64, top: f64) {
     let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-    let gap = Aabb::new(x, y + bottom, z, x + 1.0, y + top, z + 1.0);
+    push_entities_up_from(
+        level,
+        Aabb::new(x, y + bottom, z, x + 1.0, y + top, z + 1.0),
+    );
+}
+
+/// `Block.pushEntitiesUp` for the box `gap` the new state adds: the entities in it move up
+/// onto its top. Players are left to their client.
+pub fn push_entities_up_from(level: &mut Level, gap: Aabb) {
     let mut found = Vec::new();
     level
         .entities
@@ -182,9 +190,9 @@ fn push_entities_up_between(level: &mut Level, pos: BlockPos, bottom: f64, top: 
             continue;
         }
         // `Shapes.collide(Y, box.move(0, 1, 0), [gap], -1)`: back down onto the new top.
-        let min_y = e.as_ref().aabb().min_y;
-        let offset = if min_y + 1.0 >= y + top {
-            (y + top - (min_y + 1.0)).max(-1.0)
+        let min_y = e.as_ref().aabb().min_y + 1.0;
+        let offset = if min_y >= gap.max_y - 1.0e-7 {
+            (gap.max_y - min_y).max(-1.0)
         } else {
             -1.0
         };

@@ -1,0 +1,28 @@
+{
+  "description": "Mining (#217): frosted ice mined by a survival player leaves water (IceBlock.playerDestroy, E-18); infested stone releases its silverfish (E-24); a stick with a patched minecraft:tool component mines stone at the component's speed and drops cobblestone (E-14); mushroom blocks whose loot rolls a zero count still draw the popResource position (E-20).",
+  "tier": "fast",
+  "level_rng": true,
+  "region": [[3, -62, 2], [13, -57, 10]],
+  "ticks": 30,
+  "entities": [
+    {"name": "p", "type": "minecraft:player", "pos": [8.5, -60.0, 6.5]}
+  ],
+  "setup": [
+    {"op": "set", "pos": [6, -60, 6], "block": "minecraft:frosted_ice[age=0]"},
+    {"op": "set", "pos": [10, -60, 6], "block": "minecraft:infested_stone"},
+    {"op": "set", "pos": [8, -60, 8], "block": "minecraft:stone"},
+    {"op": "set", "pos": [6, -60, 8], "block": "minecraft:brown_mushroom_block"},
+    {"op": "set", "pos": [10, -60, 8], "block": "minecraft:brown_mushroom_block"},
+    {"op": "set", "pos": [8, -60, 4], "block": "minecraft:red_mushroom_block"},
+    {"op": "set", "pos": [6, -60, 4], "block": "minecraft:brown_mushroom_block"}
+  ],
+  "actions": [
+    {"tick": 2, "op": "attack", "entity": "p", "pos": [6, -60, 6], "face": "east", "item": "minecraft:diamond_pickaxe", "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"},
+    {"tick": 4, "op": "attack", "entity": "p", "pos": [10, -60, 6], "face": "west", "item": "minecraft:diamond_pickaxe", "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"},
+    {"tick": 6, "op": "attack", "entity": "p", "pos": [8, -60, 8], "face": "north", "item": "minecraft:stick", "components": "{\"minecraft:tool\":{\"rules\":[{\"blocks\":\"minecraft:stone\",\"speed\":100.0,\"correct_for_drops\":true}]}}"},
+    {"tick": 8, "op": "attack", "entity": "p", "pos": [6, -60, 8], "face": "north", "item": "minecraft:diamond_axe", "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"},
+    {"tick": 9, "op": "attack", "entity": "p", "pos": [10, -60, 8], "face": "north", "item": "minecraft:diamond_axe", "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"},
+    {"tick": 10, "op": "attack", "entity": "p", "pos": [8, -60, 4], "face": "south", "item": "minecraft:diamond_axe", "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"},
+    {"tick": 11, "op": "attack", "entity": "p", "pos": [6, -60, 4], "face": "south", "item": "minecraft:diamond_axe", "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"}
+  ]
+}

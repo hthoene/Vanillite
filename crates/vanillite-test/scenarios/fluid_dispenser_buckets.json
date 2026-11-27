@@ -1,0 +1,240 @@
+{
+  "description": "Dispensers with buckets: a water bucket places water, an empty bucket picks up a water source and a lava source, an empty bucket in front of flowing water or air drops itself, a lava bucket places lava, an empty bucket takes the water out of a waterlogged fence, a water bucket into kelp keeps the kelp.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "level_rng": true,
+  "entities": [],
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      14,
+      -58,
+      10
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -59,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        0
+      ],
+      "to": [
+        14,
+        -60,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        12,
+        -60,
+        2
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        8
+      ],
+      "block": "minecraft:oak_fence[waterlogged=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:kelp"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 1 -60 0 minecraft:dispenser[facing=south]{Items:[{Slot:0b,id:\"minecraft:water_bucket\",count:1}]}"
+    },
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        1,
+        -61,
+        0
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 1 -59 1 minecraft:dispenser[facing=south]{Items:[{Slot:0b,id:\"minecraft:bucket\",count:1}]}"
+    },
+    {
+      "tick": 3,
+      "op": "place",
+      "pos": [
+        1,
+        -58,
+        1
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 5 -60 2 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:bucket\",count:1}]}"
+    },
+    {
+      "tick": 4,
+      "op": "place",
+      "pos": [
+        5,
+        -61,
+        2
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 12 -59 2 minecraft:dispenser[facing=down]{Items:[{Slot:0b,id:\"minecraft:bucket\",count:1}]}"
+    },
+    {
+      "tick": 5,
+      "op": "place",
+      "pos": [
+        12,
+        -58,
+        2
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 1 -60 6 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:lava_bucket\",count:1}]}"
+    },
+    {
+      "tick": 6,
+      "op": "place",
+      "pos": [
+        1,
+        -61,
+        6
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 3 -60 7 minecraft:dispenser[facing=south]{Items:[{Slot:0b,id:\"minecraft:bucket\",count:1}]}"
+    },
+    {
+      "tick": 7,
+      "op": "place",
+      "pos": [
+        3,
+        -61,
+        7
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 5 -60 8 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:water_bucket\",count:1}]}"
+    },
+    {
+      "tick": 8,
+      "op": "place",
+      "pos": [
+        5,
+        -61,
+        8
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        9,
+        -60,
+        9
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 20,
+      "op": "command",
+      "command": "setblock 9 -60 6 minecraft:dispenser[facing=south]{Items:[{Slot:0b,id:\"minecraft:bucket\",count:1}]}"
+    },
+    {
+      "tick": 21,
+      "op": "place",
+      "pos": [
+        9,
+        -61,
+        6
+      ],
+      "block": "minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 5 -60 4 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:bucket\",count:1}]}"
+    },
+    {
+      "tick": 9,
+      "op": "place",
+      "pos": [
+        5,
+        -61,
+        4
+      ],
+      "block": "minecraft:redstone_block"
+    }
+  ]
+}

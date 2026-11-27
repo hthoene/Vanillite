@@ -456,7 +456,12 @@ impl ServerBuilder {
         let store_settings = StoreSettings {
             sync: config.properties.sync_chunk_writes,
             read_ahead: storage_rules.read_ahead,
-            read_cache: (storage_rules.read_cache as usize) << 20,
+            // Under a memory limit at most 1/32 of it per dimension (32 MiB at 1 GiB).
+            read_cache: budget.cache_bytes(
+                1.0 / 32.0,
+                0,
+                (storage_rules.read_cache as usize) << 20,
+            ),
             max_open_files: storage_rules.max_open_files as usize,
         };
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
@@ -548,7 +553,10 @@ impl ServerBuilder {
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
-        let mut commands = crate::commands::build_dispatcher(command_limits(&config));
+        let mut commands = crate::commands::build_dispatcher(
+            command_limits(&config),
+            config.server.commands.bukkit_commands,
+        );
         plugins.register_commands(&mut commands, vanillite_game::commands::CommandId::Plugin);
         let game = Arc::new(crate::blocks::game_data(packs.as_deref()));
         vanillite_game::player::play::install_game_data(Arc::clone(&game));
@@ -602,6 +610,7 @@ impl ServerBuilder {
             broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
             broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
+            version: self.version.clone(),
             motd: std::sync::Mutex::new(None),
             this: this.clone(),
         });
@@ -691,6 +700,10 @@ impl ServerBuilder {
             self.network,
             global.chat.enforce_secure,
             Arc::clone(global.plugins.packet_tap()),
+            match config.server.threads.network {
+                0 => budget.limits().default_network_threads(),
+                n => usize::from(n),
+            },
         )?;
         if !config.properties.online_mode {
             log::warn!("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
@@ -1562,6 +1575,11 @@ impl Server {
                 }
                 if properties.enable_query {
                     net.query.set(players.into_iter().map(|p| p.name).collect());
+                    net.query
+                        .set_plugins(crate::commands::plugins_cmd::query_plugins(
+                            &self.global.version,
+                            &self.global.plugins.list(),
+                        ));
                 }
             }
         }

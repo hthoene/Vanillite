@@ -686,7 +686,13 @@ fn tick_world(
         close: &mut spawner.close,
         state: &mut state,
     };
-    for &chunk in &chunks {
+    for (i, &chunk) in chunks.iter().enumerate() {
+        // The chunks ahead start loading into the cache while this one spawns.
+        for (ahead, stage) in [(2, 0), (1, 1)] {
+            if let Some(&next) = chunks.get(i + ahead) {
+                round.level.chunks.prefetch(next, stage);
+            }
+        }
         // `tickSpawningChunk`.
         round.level.chunks.increment_inhabited_time(chunk);
         if round.level.chunks.in_entity_ticking_range(chunk) {
@@ -1047,17 +1053,19 @@ fn spawn_category_for_chunk<R: Round>(
     }
     let start = BlockPos::new(x0, y, z0);
     #[allow(clippy::cast_sign_loss)]
-    let conductor = match here.as_deref().and_then(|c| {
-        let sections = c.chunk.sections();
+    let in_chunk = here.as_deref().and_then(|c| {
         let index = usize::try_from((y >> 4) - c.chunk.min_section()).ok()?;
-        sections.get(index)
-    }) {
-        // A section of conductors only answers without reading its blocks.
-        Some(section) if section.summary().all_conductors() => true,
-        Some(section) => {
-            BlockState(section.block((x0 & 15) as u32, (y & 15) as u32, (z0 & 15) as u32))
-                .has(flags::REDSTONE_CONDUCTOR)
-        }
+        (index < c.chunk.sections().len()).then_some((c, index))
+    });
+    let conductor = match in_chunk {
+        // A section of conductors only answers without visiting it.
+        Some((c, index)) if c.chunk.section_all_conductors(index) => true,
+        Some((c, index)) => BlockState(c.chunk.sections()[index].block(
+            (x0 & 15) as u32,
+            (y & 15) as u32,
+            (z0 & 15) as u32,
+        ))
+        .has(flags::REDSTONE_CONDUCTOR),
         None => round.level().block(start).has(flags::REDSTONE_CONDUCTOR),
     };
     if conductor {
@@ -1502,6 +1510,14 @@ pub fn mob_check_spawn_rules(
 pub fn check_spawn_obstruction(level: &Level, env: &Environment, mob: &MobData, pos: Vec3) -> bool {
     let aabb = kinds::mob_dimensions(mob).bounding_box(pos);
     let liquid = || physics::contains_any_liquid(level, &aabb);
+    // `level.isUnobstructed(mob)`: no entity that blocks building in the box.
+    let unobstructed = || {
+        let mut blocked = false;
+        level.entities.store.for_each_in(&aabb, false, |id| {
+            blocked |= crate::block::dispenser::blocks_building(level, id);
+        });
+        !blocked
+    };
     match mob.kind {
         Kind::Squid
         | Kind::GlowSquid
@@ -1515,10 +1531,10 @@ pub fn check_spawn_obstruction(level: &Level, env: &Environment, mob: &MobData, 
         | Kind::Axolotl
         | Kind::Guardian
         | Kind::Strider
-        | Kind::Drowned => true,
+        | Kind::Drowned => unobstructed(),
         Kind::Ravager | Kind::ZombifiedPiglin => !liquid(),
         Kind::Ocelot => {
-            if liquid() {
+            if !unobstructed() || liquid() {
                 return false;
             }
             let block = BlockPos::containing(pos.x, pos.y, pos.z);
@@ -1545,7 +1561,7 @@ pub fn check_spawn_obstruction(level: &Level, env: &Environment, mob: &MobData, 
                     && valid_empty_spawn_block_ignoring_fluid(s, t)
             }
         }
-        _ => !liquid(),
+        _ => !liquid() && unobstructed(),
     }
 }
 
@@ -1905,8 +1921,14 @@ pub fn is_dark_enough_to_spawn(
     } else {
         max_local_raw_brightness(level, env, pos)
     };
+    // `monsterSpawnLightTest.sample`: a constant (the Nether's 7) draws nothing.
     let (lo, hi) = env.monster_light_test;
-    brightness <= random.next_int_between_inclusive(lo, hi)
+    let limit = if lo == hi {
+        lo
+    } else {
+        random.next_int_between_inclusive(lo, hi)
+    };
+    brightness <= limit
 }
 
 /// `getHeight(heightmap, x, z)`: the first free y of a column.
@@ -2422,7 +2444,9 @@ mod tests {
 
     /// The number of mobs, the digest of their types and positions and the level random's
     /// next value after 60 rounds.
-    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (92, 9_013_686_086_944_484_436, 260_617_355);
+    /// (#217: `checkSpawnObstruction` tests entities that block building, pack members no
+    /// longer spawn inside each other.)
+    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (82, 4_572_461_501_885_315_024, 619_422_097);
 
     /// Packs wander up to 20 blocks from their start, across the 32-block tiles of this test:
     /// the mobs land in several tiles, only in ticking chunks, and the tiles together respect

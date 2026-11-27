@@ -1,0 +1,106 @@
+{
+  "description": "A player punches an end crystal (EndCrystal.hurtServer: it explodes); a second player throws a snowball at another one (Projectile.canHitEntity: anything pickable), which explodes too.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      -8,
+      -63,
+      -24
+    ],
+    [
+      24,
+      -50,
+      24
+    ]
+  ],
+  "ticks": 110,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        -8,
+        -63,
+        -24
+      ],
+      "to": [
+        24,
+        -61,
+        24
+      ],
+      "block": "minecraft:obsidian"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        12.5
+      ],
+      "client": true
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        -8.5
+      ],
+      "rot": [
+        -180.0,
+        5.9
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:end_crystal 8.5 -60 10.5 {UUID:[I;1,2,3,2],ShowBottom:0b}"
+    },
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "steve",
+      "effect": "minecraft:resistance",
+      "duration": 600,
+      "amplifier": 4
+    },
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "alex",
+      "effect": "minecraft:resistance",
+      "duration": 600,
+      "amplifier": 4
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:end_crystal 8.5 -60 -14.5 {UUID:[I;1,2,3,3],ShowBottom:0b}"
+    },
+    {
+      "tick": 62,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "attack",
+      "data": "00",
+      "target": "uuid:00000001000000020000000300000002",
+      "what": "Attack crystal1"
+    },
+    {
+      "tick": 70,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:snowball"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false",
+    "mob_griefing": "false"
+  }
+}

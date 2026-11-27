@@ -393,6 +393,48 @@ impl StructureRegistry {
     pub fn possible_sets(&self) -> &[StructureSetId] {
         &self.possible_sets
     }
+
+    /// `ChunkGeneratorStructureState.createForFlat` with `structure_overrides`: only the sets
+    /// named (registry ids, `#` tags resolved by `tags`), in that order, are possible, and of
+    /// those only the ones with a structure in `possible_biomes`.
+    pub fn restrict_possible_sets(
+        &mut self,
+        names: &[String],
+        tags: Option<&std::collections::BTreeMap<String, Vec<String>>>,
+        possible_biomes: &[BiomeId],
+    ) {
+        let mut ids: Vec<StructureSetId> = Vec::new();
+        for name in names {
+            let members: Vec<String> = match name.strip_prefix('#') {
+                Some(tag) => tags
+                    .and_then(|t| t.get(&qualify(tag)))
+                    .cloned()
+                    .unwrap_or_default(),
+                None => vec![qualify(name)],
+            };
+            for member in members {
+                if let Some(index) = self.sets.iter().position(|s| s.name == member) {
+                    let id = StructureSetId(index as u32);
+                    let structures = &self.structures;
+                    let possible = self.sets[index].structures.iter().any(|(s, _)| {
+                        structures[s.0 as usize]
+                            .settings
+                            .biomes
+                            .contains_any(possible_biomes)
+                    });
+                    if possible && !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        for (index, set) in self.sets.iter_mut().enumerate() {
+            if let StructurePlacement::ConcentricRings { rings, .. } = &mut set.placement {
+                rings.placeable = ids.contains(&StructureSetId(index as u32));
+            }
+        }
+        self.possible_sets = ids;
+    }
 }
 
 const STRUCTURE_REGISTRY: &str = "minecraft:worldgen/structure";

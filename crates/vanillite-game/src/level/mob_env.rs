@@ -32,10 +32,9 @@ pub fn with_mob_env<R>(
     f: impl FnOnce(&Level, &mut Entities, &mut Env<'_>, &mut MobContext) -> R,
 ) -> R {
     static TYPES: OnceLock<DamageTypes> = OnceLock::new();
-    static FACTS: OnceLock<BlockFacts> = OnceLock::new();
     static RULES: OnceLock<GameRules> = OnceLock::new();
     let types = TYPES.get_or_init(DamageTypes::built_in);
-    let facts = FACTS.get_or_init(BlockFacts::default);
+    let facts = BlockFacts::fluids_only();
     let rules = RULES.get_or_init(GameRules::default);
     let mut ents = std::mem::take(&mut level.entities);
     let mut random = level.lend_random();

@@ -114,6 +114,7 @@ fn actor(game_mode: GameMode) -> Actor {
         mining_fatigue: None,
         respawn_here: None,
         leads_mobs: false,
+        ranges: crate::player::play::interaction_ranges(&PlayerInventory::default(), game_mode),
     }
 }
 

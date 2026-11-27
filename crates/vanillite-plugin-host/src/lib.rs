@@ -963,6 +963,26 @@ impl BlockBox {
     }
 }
 
+/// A plugin as `/plugins`, `/version <plugin>` and Query show it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PluginEntry {
+    /// The section it is listed under: `None` for native Vanillite plugins, else the group the
+    /// hosting plugin reported (`Bukkit`).
+    pub group: Option<String>,
+    /// Its name.
+    pub name: String,
+    /// Its version.
+    pub version: String,
+    /// Its description; may be empty.
+    pub description: String,
+    /// Its authors.
+    pub authors: Vec<String>,
+    /// Its website; may be empty.
+    pub website: String,
+    /// Whether it is enabled.
+    pub enabled: bool,
+}
+
 /// Settings of the host (`plugins.*` in `vanillite.toml`).
 #[derive(Clone, Debug, Default)]
 pub struct Settings {
@@ -1110,6 +1130,8 @@ pub(crate) struct Inner {
     pub(crate) permission_defaults: RwLock<HashMap<String, u32>>,
     /// Services by registration order.
     pub(crate) services: RwLock<Vec<Service>>,
+    /// Plugins that plugins host (`set_hosted_plugins`), by the hosting plugin.
+    pub(crate) hosted: RwLock<Vec<(u32, Vec<PluginEntry>)>>,
     /// Plugin message channels: (plugin, channel).
     pub(crate) channels: RwLock<Vec<(u32, String)>>,
     pub(crate) generator: Mutex<Option<(u32, abi::ChunkGeneratorProvider)>>,
@@ -1212,6 +1234,7 @@ impl PluginHost {
             permission: RwLock::new(None),
             permission_defaults: RwLock::new(HashMap::new()),
             services: RwLock::new(Vec::new()),
+            hosted: RwLock::new(Vec::new()),
             channels: RwLock::new(Vec::new()),
             generator: Mutex::new(None),
             populators: Mutex::new(Vec::new()),
@@ -1375,6 +1398,47 @@ impl PluginHost {
             .filter(|p| p.enabled.load(Ordering::Acquire))
             .map(|p| p.id().to_owned())
             .collect()
+    }
+
+    /// Every plugin for `/plugins`, `/version` and Query: the native plugins in load order
+    /// (disabled ones too), then the plugins they host, as reported. A hosted plugin counts as
+    /// disabled while its host is.
+    pub fn list(&self) -> Vec<PluginEntry> {
+        let plugins = self
+            .inner
+            .plugins
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let enabled = |local: u32| {
+            plugins
+                .get(usize::try_from(local).unwrap_or(usize::MAX))
+                .is_some_and(|p| p.enabled.load(Ordering::Acquire))
+        };
+        let mut list: Vec<PluginEntry> = plugins
+            .iter()
+            .map(|p| PluginEntry {
+                group: None,
+                name: p.manifest.name.clone(),
+                version: p.manifest.version.clone(),
+                description: p.manifest.description.clone(),
+                authors: p.manifest.authors.clone(),
+                website: p.manifest.website.clone(),
+                enabled: p.enabled.load(Ordering::Acquire),
+            })
+            .collect();
+        let hosted = self
+            .inner
+            .hosted
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (host, entries) in hosted.iter() {
+            let on = enabled(*host);
+            list.extend(entries.iter().map(|e| PluginEntry {
+                enabled: e.enabled && on,
+                ..e.clone()
+            }));
+        }
+        list
     }
 
     /// Connects the host to the running server. Until then server functions fail with
@@ -1587,6 +1651,15 @@ impl PluginHost {
 }
 
 impl Inner {
+    /// Replaces the plugins `local` hosts.
+    pub(crate) fn set_hosted(&self, local: u32, entries: Vec<PluginEntry>) {
+        let mut hosted = self.hosted.write().unwrap_or_else(PoisonError::into_inner);
+        hosted.retain(|(p, _)| *p != local);
+        if !entries.is_empty() {
+            hosted.push((local, entries));
+        }
+    }
+
     /// Removes everything a plugin registered (after a failed load or enable).
     pub(crate) fn forget(&self, local: u32) {
         if let (Some(server), Some(plugin)) = (self.server(), self.plugin(local)) {
@@ -1607,6 +1680,7 @@ impl Inner {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(p, _)| *p != local);
+        self.set_hosted(local, Vec::new());
         let mut permission = self
             .permission
             .write()
@@ -1657,4 +1731,99 @@ fn parse_pins(pins: &str) -> HashMap<&str, &str> {
         .filter_map(|p| p.split_once('='))
         .map(|(id, sha)| (id.trim(), sha.trim()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(name: &'static str, authors: &'static str) -> abi::HostedPlugin {
+        abi::HostedPlugin {
+            size: abi::size_of::<abi::HostedPlugin>(),
+            enabled: 1,
+            group: abi::Str::new("Bukkit"),
+            name: abi::Str::new(name),
+            version: abi::Str::new("1.2"),
+            description: abi::Str::new("Does things"),
+            authors: abi::Str::new(authors),
+            website: abi::Str::EMPTY,
+        }
+    }
+
+    fn copy(records: &[abi::HostedPlugin]) -> Option<Vec<PluginEntry>> {
+        // SAFETY: the records and their strings live for the call.
+        unsafe {
+            api::copy_hosted(
+                records.as_ptr(),
+                records.len(),
+                size_of::<abi::HostedPlugin>(),
+            )
+        }
+    }
+
+    fn names(host: &PluginHost) -> Vec<String> {
+        host.list().into_iter().map(|e| e.name).collect()
+    }
+
+    #[test]
+    fn hosted_plugins_are_copied_and_checked() {
+        let entries = copy(&[record("Essentials", "kenzie, snowleo")]).unwrap_or_default();
+        assert_eq!(
+            entries,
+            vec![PluginEntry {
+                group: Some("Bukkit".into()),
+                name: "Essentials".into(),
+                version: "1.2".into(),
+                description: "Does things".into(),
+                authors: vec!["kenzie".into(), "snowleo".into()],
+                website: String::new(),
+                enabled: true,
+            }]
+        );
+        assert_eq!(copy(&[]), Some(Vec::new()));
+        assert_eq!(copy(&[record("", "")]), None);
+        let long = "x".repeat(257);
+        let mut too_long = record("A", "");
+        too_long.name = abi::Str::new(&long);
+        assert_eq!(copy(&[too_long]), None);
+        let bad = [0xff_u8, 0xfe];
+        let mut not_utf8 = record("A", "");
+        not_utf8.version = abi::Str {
+            ptr: bad.as_ptr(),
+            len: bad.len(),
+        };
+        assert_eq!(copy(&[not_utf8]), None);
+        let mut small = record("A", "");
+        small.size = 8;
+        assert_eq!(copy(&[small]), None);
+    }
+
+    #[test]
+    fn hosted_plugins_are_replaced_cleared_and_forgotten() {
+        let host = PluginHost::empty();
+        let inner = &host.inner;
+        inner.set_hosted(
+            0,
+            copy(&[record("A", ""), record("B", "")]).unwrap_or_default(),
+        );
+        inner.set_hosted(1, copy(&[record("C", "")]).unwrap_or_default());
+        assert_eq!(names(&host), ["A", "B", "C"]);
+        // Without an enabled host plugin they count as disabled.
+        assert!(host.list().iter().all(|e| !e.enabled));
+        inner.set_hosted(0, copy(&[record("D", "")]).unwrap_or_default());
+        assert_eq!(names(&host), ["C", "D"]);
+        inner.set_hosted(0, Vec::new());
+        assert_eq!(names(&host), ["C"]);
+        inner.forget(1);
+        assert!(host.list().is_empty());
+    }
+
+    #[test]
+    fn bukkit_command_permissions_default_to_everyone() {
+        let host = PluginHost::empty();
+        assert!(host.has_permission(1, "bukkit.command.plugins", false));
+        assert!(host.has_permission(1, "bukkit.command.version", false));
+        assert!(!host.has_permission(1, "bukkit.command.reload", false));
+        assert!(host.has_permission(1, "bukkit.command.reload", true));
+    }
 }

@@ -189,6 +189,92 @@ impl Enchantments {
     pub fn bedrock(&self, java: i32) -> Option<u8> {
         self.0.get(usize::try_from(java).ok()?).copied().flatten()
     }
+
+    /// The Java registry id of a Bedrock enchantment id.
+    pub fn java(&self, bedrock: u8) -> Option<i32> {
+        let i = self.0.iter().position(|&b| b == Some(bedrock))?;
+        i32::try_from(i).ok()
+    }
+}
+
+/// Bedrock goat horn metadata -> Java instrument.
+const GOAT_HORNS: [&str; 8] = [
+    "minecraft:ponder_goat_horn",
+    "minecraft:sing_goat_horn",
+    "minecraft:seek_goat_horn",
+    "minecraft:feel_goat_horn",
+    "minecraft:admire_goat_horn",
+    "minecraft:call_goat_horn",
+    "minecraft:yearn_goat_horn",
+    "minecraft:dream_goat_horn",
+];
+
+/// The Java components of a creative item variant (`creative_java.bin`, kind and data).
+fn creative_components(
+    stack: &mut ItemStack,
+    kind: u8,
+    data: &[u8],
+    enchantments: &Enchantments,
+) -> Option<()> {
+    use vanillite_protocol::codec::write_varint;
+    use vanillite_protocol::components_nbt::RegistryNames;
+    let mut v = Vec::with_capacity(8);
+    let first = i32::from(*data.first()?);
+    let component = match kind {
+        1 => {
+            let name = BEDROCK_POTIONS.get(usize::try_from(first).ok()?)?;
+            let id = vanillite_data::registry::POTION.id(&format!("minecraft:{name}"))?;
+            v.push(1);
+            write_varint(&mut v, i32::from(id));
+            v.extend_from_slice(&[0, 0, 0]);
+            ids::POTION_CONTENTS
+        }
+        2 => {
+            let pairs: Vec<(i32, i32)> = data
+                .get(1..)?
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter_map(|&[e, l]| Some((enchantments.java(e)?, i32::from(l))))
+                .collect();
+            write_varint(&mut v, i32::try_from(pairs.len()).ok()?);
+            for (e, l) in pairs {
+                write_varint(&mut v, e);
+                write_varint(&mut v, l);
+            }
+            ids::STORED_ENCHANTMENTS
+        }
+        3 => {
+            write_varint(&mut v, first);
+            v.push(0);
+            ids::FIREWORKS
+        }
+        4 => {
+            let name = GOAT_HORNS.get(usize::try_from(first).ok()?)?;
+            let id = vanillite_protocol::item::InstalledRegistries
+                .entry_id("minecraft:instrument", name)?;
+            write_varint(&mut v, i32::try_from(id).ok()?.checked_add(1)?);
+            ids::INSTRUMENT
+        }
+        5 => {
+            write_varint(&mut v, first);
+            ids::OMINOUS_BOTTLE_AMPLIFIER
+        }
+        _ => return None,
+    };
+    stack.patch_mut().set(component, v.into_boxed_slice());
+    Some(())
+}
+
+/// The Bedrock goat horn metadata of a stack's `instrument`.
+fn goat_horn(stack: &ItemStack) -> Option<u16> {
+    use vanillite_protocol::components_nbt::RegistryNames;
+    let mut r = vanillite_protocol::codec::Reader::new(stack.component(ids::INSTRUMENT)?);
+    let id = usize::try_from(r.varint().ok()?.checked_sub(1)?).ok()?;
+    let name =
+        vanillite_protocol::item::InstalledRegistries.entry_name("minecraft:instrument", id)?;
+    let i = GOAT_HORNS.iter().position(|&n| n == name)?;
+    u16::try_from(i).ok()
 }
 
 /// Bedrock potion ids (item metadata of potions; tipped arrows add one) by Java potion name.
@@ -329,15 +415,27 @@ fn display_tags(nbt: &mut Nbt, stack: &ItemStack, lore_component: Option<u16>) {
 
 /// The Bedrock book tags of a writable or written book.
 fn book_tags(nbt: &mut Nbt, stack: &ItemStack) {
+    let Some((pages, written)) = book_content(stack) else {
+        return;
+    };
+    nbt.pages(pages.into_iter());
+    if let Some((title, author, generation)) = written {
+        nbt.string("title", &title);
+        nbt.string("author", &author);
+        nbt.int("generation", generation);
+        nbt.string("xuid", "");
+    }
+}
+
+/// The pages (plain text) of a writable or written book, with title, author and generation of
+/// a written one.
+pub fn book_content(stack: &ItemStack) -> Option<BookContent> {
     use vanillite_protocol::codec::DecodeLimited;
     use vanillite_protocol::text::Component;
     if stack.component(ids::WRITABLE_BOOK_CONTENT).is_some() {
-        nbt.pages(writable_pages(stack).into_iter());
-        return;
+        return Some((writable_pages(stack), None));
     }
-    let Some(value) = stack.component(ids::WRITTEN_BOOK_CONTENT) else {
-        return;
-    };
+    let value = stack.component(ids::WRITTEN_BOOK_CONTENT)?;
     // `WrittenBookContent`: filterable title, author, generation, filterable component pages.
     let mut r = vanillite_protocol::codec::Reader::new(value);
     let (Some(title), Ok(author), Ok(generation)) = (
@@ -345,11 +443,9 @@ fn book_tags(nbt: &mut Nbt, stack: &ItemStack) {
         r.string(32767).map(str::to_owned),
         r.varint(),
     ) else {
-        return;
+        return None;
     };
-    let Ok(n) = r.len_prefix("book pages", 1 << 16, 2) else {
-        return;
-    };
+    let n = r.len_prefix("book pages", 1 << 16, 2).ok()?;
     let mut pages = Vec::with_capacity(n.min(MAX_PAGES));
     for _ in 0..n {
         let Ok(page) = Component::decode_limited(&mut r, 2_097_152) else {
@@ -362,20 +458,19 @@ fn book_tags(nbt: &mut Nbt, stack: &ItemStack) {
             pages.push(page.plain());
         }
     }
-    nbt.pages(pages.into_iter());
-    nbt.string("title", &title);
-    nbt.string("author", &author);
-    nbt.int("generation", generation);
-    nbt.string("xuid", "");
+    Some((pages, Some((title, author, generation))))
 }
+
+/// Pages and, for written books, title, author and generation.
+pub type BookContent = (Vec<String>, Option<(String, String, i32)>);
 
 /// The item tables of one palette ([`crate::data::Palette::items`]).
 #[derive(Debug)]
 pub struct Items {
     /// Bedrock item id and metadata per Java item id.
     to_bedrock: Vec<(i16, u16)>,
-    /// Java item per creative item network id - 1.
-    creative: Vec<u16>,
+    /// Java item per creative item network id - 1, with the kind and data of its components.
+    creative: Vec<(u16, u8, Box<[u8]>)>,
     /// Bedrock block runtime id per Java item (0 for items that place no block).
     block: Vec<u32>,
     /// `minecraft:damage` component type id.
@@ -447,15 +542,18 @@ impl Items {
             })
             .collect();
         let n = usize::try_from(u32_at(creative_java, 0)).unwrap_or(0);
-        let creative = creative_java
-            .get(4..)
-            .unwrap_or_default()
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .take(n)
-            .map(|c| u16::from_le_bytes(*c))
-            .collect();
+        let mut creative = Vec::with_capacity(n);
+        let mut at = 4usize;
+        for _ in 0..n {
+            let Some(&[a, b, kind, len]) = creative_java.get(at..at.saturating_add(4)) else {
+                break;
+            };
+            let start = at.saturating_add(4);
+            let end = start.saturating_add(usize::from(len));
+            let data = creative_java.get(start..end).unwrap_or_default();
+            creative.push((u16::from_le_bytes([a, b]), kind, Box::from(data)));
+            at = end;
+        }
         let block = (0..to_bedrock.len())
             .map(|java| {
                 u16::try_from(java)
@@ -511,10 +609,16 @@ impl Items {
         Some((self.names.get(&id)?, meta))
     }
 
-    /// The Java item of a creative item network id.
-    pub fn creative(&self, net_id: u32) -> Option<u16> {
+    /// The Java stack (count 1) of a creative item network id, with the components of its
+    /// variant (potion, enchanted book, ...).
+    pub fn creative(&self, net_id: u32, enchantments: &Enchantments) -> Option<ItemStack> {
         let i = usize::try_from(net_id.checked_sub(1)?).ok()?;
-        self.creative.get(i).copied()
+        let (item, kind, data) = self.creative.get(i)?;
+        let mut stack = ItemStack::new(*item, 1);
+        if *kind != 0 {
+            creative_components(&mut stack, *kind, data, enchantments);
+        }
+        Some(stack)
     }
 
     /// Number of Java items.
@@ -600,6 +704,15 @@ impl Items {
             } else if self.potion_items[1..].contains(&stack.item) {
                 meta = p;
             }
+        } else if stack.item == vanillite_data::item::ids::GOAT_HORN.0 {
+            meta = goat_horn(stack).unwrap_or(meta);
+        } else if stack.item == vanillite_data::item::ids::OMINOUS_BOTTLE.0
+            && let Some(raw) = stack.component(ids::OMINOUS_BOTTLE_AMPLIFIER)
+        {
+            let amplifier = vanillite_protocol::codec::Reader::new(raw)
+                .varint()
+                .unwrap_or(0);
+            meta = u16::try_from(amplifier.clamp(0, 4)).unwrap_or(0);
         }
         let block = self
             .block
@@ -773,7 +886,29 @@ mod tests {
         let (id, _) = items.bedrock(stone);
         assert_ne!(items.block.get(usize::from(stone)), Some(&0));
         assert!(!items.creative.is_empty());
-        assert!(items.creative(1).is_some());
+        assert!(items.creative(1, &Enchantments::default()).is_some());
+        // Creative potions and enchanted books carry their Java components.
+        let ench = Enchantments::from_names(&["minecraft:protection".to_owned()]);
+        let variants: Vec<ItemStack> = (1..=u32::try_from(items.creative.len()).unwrap_or(0))
+            .filter_map(|n| items.creative(n, &ench))
+            .collect();
+        let healing = vanillite_data::registry::POTION
+            .id("minecraft:healing")
+            .unwrap();
+        assert!(variants.iter().any(|s| {
+            ItemId(s.item).name() == "minecraft:potion"
+                && s.component(ids::POTION_CONTENTS)
+                    == Some(&[1, u8::try_from(healing).unwrap(), 0, 0, 0][..])
+        }));
+        assert!(variants.iter().any(|s| {
+            ItemId(s.item).name() == "minecraft:enchanted_book"
+                && s.component(ids::STORED_ENCHANTMENTS) == Some(&[1, 0, 4][..])
+        }));
+        assert!(
+            variants
+                .iter()
+                .any(|s| ItemId(s.item).name() == "minecraft:tipped_arrow")
+        );
         let mut out = Vec::new();
         items.write_instance(
             &mut out,

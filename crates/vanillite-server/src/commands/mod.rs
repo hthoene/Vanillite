@@ -27,6 +27,7 @@ mod operator;
 mod pack_cmd;
 mod particle;
 mod player_data;
+pub(crate) mod plugins_cmd;
 mod schedule;
 mod scores;
 mod select;
@@ -75,10 +76,13 @@ use crate::world::{ServerWorld, WorldId};
 pub(crate) type CommandDispatcher = vanillite_command::Dispatcher<CommandId>;
 
 /// Builds the dispatcher with the configured limits.
-pub(crate) fn build_dispatcher(limits: vanillite_command::limits::Limits) -> CommandDispatcher {
+pub(crate) fn build_dispatcher(
+    limits: vanillite_command::limits::Limits,
+    bukkit_commands: bool,
+) -> CommandDispatcher {
     let mut dispatcher = CommandDispatcher::new();
     dispatcher.set_limits(limits);
-    vanillite_game::commands::register(&mut dispatcher);
+    vanillite_game::commands::register_server(&mut dispatcher, bukkit_commands);
     dispatcher
 }
 

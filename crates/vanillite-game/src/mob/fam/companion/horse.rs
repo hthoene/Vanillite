@@ -604,7 +604,7 @@ fn handle_eating(ix: &mut Interact<'_, '_>) -> bool {
         super::heal(m, heal);
         used = true;
     }
-    if m.baby && age_up > 0 {
+    if m.baby && age_up > 0 && !m.age_locked {
         // `ageUp(seconds)`.
         m.age = (m.age + age_up * 20).min(0);
         used = true;
@@ -815,6 +815,24 @@ pub fn open_inventory_screen(ix: &mut Interact<'_, '_>) {
     if let Some(request) = crate::menu::mount::request(ix.ents, ix.target, ix.player) {
         ix.cx.menus.push(request);
     }
+}
+
+/// `AbstractChestedHorse.getSlot(499).set(chest)` of a dispenser: a tame, living chested
+/// horse without a chest takes it (no sound). Whether it did.
+pub fn dispense_chest(ents: &mut crate::entities::Entities, id: EntityId) -> bool {
+    let Some(m) = ents.mob_mut(id) else {
+        return false;
+    };
+    if !is_chested(m.kind) || !m.is_alive() || st(m).chest || !m.tame {
+        return false;
+    }
+    st_mut(m).chest = true;
+    let size = inventory_size(m);
+    st_mut(m).inventory.resize(size, ItemStack::default());
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.mark_data_dirty();
+    }
+    true
 }
 
 /// `equipChest`.

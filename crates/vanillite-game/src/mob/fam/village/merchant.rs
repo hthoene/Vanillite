@@ -183,6 +183,22 @@ fn add_offers_from_set(
     };
     let in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let holder_set = |registry: &str, entry: &str| data.holder_set(registry, entry);
+    // `ExplorationMapFunction` of the cartographer's map trades.
+    let generation = level.generation.clone();
+    let maps = level.maps_shared();
+    let (min_y, height) = (level.min_y(), level.max_y() - level.min_y() + 1);
+    let sea_level = generation.as_ref().map_or(63, |g| g.terrain().sea_level());
+    let explore = |request: &crate::loot::ExplorationMap, origin: Vec3| {
+        crate::map::exploration_map(
+            generation.as_ref()?,
+            maps.as_deref()?,
+            min_y,
+            height,
+            sea_level,
+            request,
+            origin,
+        )
+    };
     let ctx = crate::loot::LootContext {
         origin: Some(pos),
         this_entity: Some(id),
@@ -191,6 +207,7 @@ fn add_offers_from_set(
         holder_set: &holder_set,
         this_present: true,
         entity: Some(&entity),
+        exploration_map: Some(&explore),
         ..crate::loot::LootContext::empty()
     };
     let sequence = set.random_sequence.as_deref().unwrap_or(key);
@@ -213,7 +230,7 @@ fn add_trades(level: &Level, m: &MobData, id: EntityId, pos: Vec3, offers: &mut 
 }
 
 /// `getOffers` on the merchant in the level: generated on first use.
-fn ensure_offers_in(level: &Level, ents: &mut Entities, id: EntityId) {
+pub(crate) fn ensure_offers_in(level: &Level, ents: &mut Entities, id: EntityId) {
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
         return;
     };

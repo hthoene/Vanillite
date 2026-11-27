@@ -7,8 +7,9 @@
 use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_config::GameMode;
-use vanillite_world::entity::{EntityFlags, EntityId};
+use vanillite_world::entity::EntityId;
 
+use super::kinds::Kind;
 use super::living::{self, has_line_of_sight};
 use super::path::{PathType, path_type_static};
 use super::{Tick, combat, kinds, nav, projectile};
@@ -248,6 +249,9 @@ impl Goal {
     pub fn interruptable(&self) -> bool {
         match self {
             Goal::Common(g) => g.interruptable(),
+            Goal::Fam(crate::mob::fam::FamGoal::Wildlife(g)) => {
+                crate::mob::fam::wildlife::goal_interruptable(g)
+            }
             _ => true,
         }
     }
@@ -723,6 +727,33 @@ pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
     if target == t.id {
         return false;
     }
+    let me = t.mob_ref();
+    // `Dolphin.canAttack`: babies never attack.
+    if me.kind == Kind::Dolphin && me.baby {
+        return false;
+    }
+    // `TamableAnimal.canAttack`: never the owner.
+    if me.tame
+        && me.owner.is_some()
+        && (crate::mob::fam::companion::is_tamable(me.kind)
+            || matches!(me.kind, Kind::Nautilus | Kind::ZombieNautilus))
+        && t.ents.store.get(target).map(|e| e.uuid()) == me.owner
+    {
+        return false;
+    }
+    // `IronGolem.canAttack`: no creepers, no players when it was built by one.
+    if me.kind == Kind::IronGolem {
+        if t.ents.mob(target).is_some_and(|o| o.kind == Kind::Creeper) {
+            return false;
+        }
+        if t.ents.player(target).is_some() && crate::mob::fam::wildlife::st(me).player_created {
+            return false;
+        }
+    }
+    // `Mob.canAttack`: never a ghast.
+    if t.ents.mob(target).is_some_and(|o| o.kind == Kind::Ghast) {
+        return false;
+    }
     if let Some(p) = t.ents.player(target) {
         if t.env.difficulty == Difficulty::Peaceful {
             return false;
@@ -756,14 +787,11 @@ pub(crate) fn test_player(
         return false;
     };
     if range > 0.0 {
-        // `getVisibilityPercent`: sneaking players are seen at 80 %.
-        let modifier = if e.flags().contains(EntityFlags::CROUCHING) {
-            0.8
-        } else {
-            1.0
-        };
+        // `getVisibilityPercent`: sneaking, Invisibility with the armour cover, mob heads.
+        let target_pos = e.pos();
+        let modifier = super::brain::sensing::visibility_percent(t, target);
         let visible = (range * modifier).max(2.0);
-        if t.pos().distance_to_sqr(e.pos()) > visible * visible {
+        if t.pos().distance_to_sqr(target_pos) > visible * visible {
             return false;
         }
     }
@@ -930,7 +958,27 @@ pub(crate) fn set_target_why(t: &mut Tick<'_, '_>, target: Option<EntityId>, rea
         return false;
     }
     assign_target(t.mob(), target);
+    if t.mob_ref().kind == Kind::Enderman {
+        enderman_set_target(t, target);
+    }
     true
+}
+
+/// `EnderMan.setTarget`: a target makes it creepy and faster (+0.15) and remembers the time;
+/// none takes both back.
+pub(crate) fn enderman_set_target(t: &mut Tick<'_, '_>, target: Option<EntityId>) {
+    let tick = t.mob_ref().tick_count;
+    let m = t.mob();
+    let had = super::fam::classic::enderman(m).attack_speed;
+    let e = super::fam::classic::enderman_mut(m);
+    e.target_change_time = if target.is_some() { tick } else { 0 };
+    e.attack_speed = target.is_some();
+    match (target.is_some(), had) {
+        (true, false) => m.attrs.movement_speed += 0.15,
+        (false, true) => m.attrs.movement_speed -= 0.15,
+        _ => {}
+    }
+    kinds::set_creepy(t, target.is_some());
 }
 
 /// The plugins' target event (`vanillite_abi::event::ENTITY_TARGET`) of the mob `id` about
@@ -1241,6 +1289,14 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             if t.ents.player(by).is_some() && t.env.rules.bool(Rule::UNIVERSAL_ANGER) {
                 return false;
             }
+            // `HurtByTargetGoal(this, Guardian.class)` of the dolphin.
+            if m.kind == Kind::Dolphin
+                && t.ents
+                    .mob(by)
+                    .is_some_and(|o| matches!(o.kind, Kind::Guardian | Kind::ElderGuardian))
+            {
+                return false;
+            }
             // `HURT_BY_TARGETING` ignores line of sight and invisibility.
             if t.ents.player(by).is_some() {
                 test_player(t, by, true, -1.0, false)
@@ -1359,11 +1415,17 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             ..
         } => {
             if pending.is_some() {
+                // `EndermanLookForPlayerGoal`: still waiting to scream while the player keeps
+                // staring (or it is angry at it).
                 if let Some(id) = *pending
                     && t.ents.player(id).is_some()
                     && *aggro_time > 0
+                    && (kinds::is_stared_at_by(t, id) || super::common::is_angry_at(t, id))
                 {
-                    // `EndermanLookForPlayerGoal`: still waiting to scream.
+                    // `enderman.lookAt(pendingTarget, 10, 10)`.
+                    if let Some(o) = t.other(id) {
+                        kinds::look_at_entity(t, o, 10.0, 10.0);
+                    }
                     return true;
                 }
                 return false;
@@ -1542,6 +1604,9 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
     let area =
         Aabb::new(p.x, p.y, p.z, p.x + 1.0, p.y + 1.0, p.z + 1.0).inflate(range, 10.0, range);
     let kind = t.mob_ref().kind;
+    let owner = t.mob_ref().owner;
+    let tamable = crate::mob::fam::companion::is_tamable(kind)
+        || matches!(kind, Kind::Nautilus | Kind::ZombieNautilus);
     let mut ids = std::mem::take(&mut t.cx.ids);
     ids.clear();
     t.ents.store.for_each_in(&area, false, |id| ids.push(id));
@@ -1552,7 +1617,14 @@ fn alert_others(t: &mut Tick<'_, '_>, by: EntityId) {
         let alerted = t
             .ents
             .mob(id)
-            .is_some_and(|m| m.kind == kind && m.target.is_none() && m.is_alive());
+            .is_some_and(|m| m.kind == kind && m.target.is_none() && m.is_alive())
+            // `alertOthers` of a pet: only the pets of the same owner.
+            && (!tamable || t.ents.mob(id).is_some_and(|o| o.owner == owner))
+            // `PandaHurtByTargetGoal.alertOther`: only aggressive pandas join in.
+            && (kind != Kind::Panda
+                || t.ents
+                    .mob(id)
+                    .is_some_and(crate::mob::fam::companion::panda::is_aggressive));
         if alerted
             && target_event(
                 t.ents,
@@ -1744,9 +1816,12 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         Goal::EndermanStare {
             pending,
             aggro_time,
+            teleport_time,
             state,
-            ..
         } => {
+            if t.mob_ref().target.is_none() {
+                state.target_mob = None;
+            }
             if let Some(id) = *pending {
                 *aggro_time -= 1;
                 if *aggro_time <= 0 {
@@ -1755,8 +1830,25 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                     state.target_mob = Some(id);
                     *pending = None;
                     kinds::play_sound(t, "minecraft:entity.enderman.stare", 2.5, 1.0);
-                } else if let Some(o) = t.other(id) {
-                    nav::look_at(t, Vec3::new(o.pos.x, o.eye_y, o.pos.z));
+                }
+            } else if let Some(target) = state.target_mob
+                && t.ents.vehicle_of(t.id).is_none()
+                && let Some(o) = t.other(target)
+            {
+                // Stared at up close it teleports away; far off it follows every 30 ticks.
+                let dist = o.pos.distance_to_sqr(t.pos());
+                if kinds::is_stared_at_by(t, target) {
+                    if dist < 16.0 {
+                        let id = t.id;
+                        kinds::teleport_randomly(t.level, t.ents, t.env, id);
+                    }
+                    *teleport_time = 0;
+                } else if dist > 256.0 {
+                    let due = *teleport_time >= reduced(30);
+                    *teleport_time += 1;
+                    if due && kinds::teleport_towards(t, o.pos, o.eye_y) {
+                        *teleport_time = 0;
+                    }
                 }
             }
         }

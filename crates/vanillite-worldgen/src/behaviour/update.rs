@@ -12,7 +12,7 @@ use super::class::{Class, class_of};
 use super::geometry::{Rect, face_covers};
 use super::props::{
     Axis, HORIZONTAL, PosExt, StateExt, axis, clockwise, counter_clockwise, cycle, direction_name,
-    is_horizontal, with_properties_of,
+    is_horizontal, wire_properties, with_properties_of,
 };
 use super::survive::{
     bell_connected_direction, can_survive, chest_connected_direction, diode_can_survive_on,
@@ -1286,31 +1286,36 @@ fn redstone_wire(
         }
         Direction::Up => wire_connection_state(level, state, pos),
         _ => {
-            let property = direction_name(dir);
-            let side = wire_connecting_side(level, pos, dir, wire_can_connect_up(level, pos));
-            let connected = |v: Option<&str>| v.is_some_and(|v| v != "none");
-            let is_cross = HORIZONTAL
-                .into_iter()
-                .all(|d| connected(state.value(direction_name(d))));
-            if (side != "none") == connected(state.value(property)) && !is_cross {
-                state.set(property, side)
+            let w = wire_properties();
+            let property = w.side_of(dir);
+            let side = w.side_index(wire_connecting_side(
+                level,
+                pos,
+                dir,
+                wire_can_connect_up(level, pos),
+            ));
+            let is_cross = HORIZONTAL.into_iter().all(|d| w.connected(state, d));
+            if (side != w.none) == (property.index(state) != w.none) && !is_cross {
+                property.with_index(state, side)
             } else {
-                let cross = wire_with_sides(state, "side").set(property, side);
+                let cross = property.with_index(wire_with_sides(state, w.side), side);
                 wire_connection_state(level, cross, pos)
             }
         }
     }
 }
 
-/// The wire with power of `state` and every side set to `side` (`crossState` for `"side"`).
-fn wire_with_sides(state: BlockState, side: &str) -> BlockState {
-    let power = state.value("power").unwrap_or("0");
-    HORIZONTAL
+/// The wire with power of `state` and every side set to the side value `side` (`crossState`
+/// for `side`).
+fn wire_with_sides(state: BlockState, side: u16) -> BlockState {
+    let w = wire_properties();
+    let power = w.power.index(state);
+    let wire = HORIZONTAL
         .into_iter()
         .fold(ids::REDSTONE_WIRE.default_state(), |s, d| {
-            s.set(direction_name(d), side)
-        })
-        .set("power", power)
+            w.side_of(d).with_index(s, side)
+        });
+    w.power.with_index(wire, power)
 }
 
 /// `!level.getBlockState(pos.above()).isRedstoneConductor(level, pos)`.
@@ -1368,42 +1373,37 @@ pub fn wire_connection_state(
     state: BlockState,
     pos: BlockPos,
 ) -> BlockState {
-    let is_dot = |s: BlockState| {
-        HORIZONTAL
-            .into_iter()
-            .all(|d| s.value(direction_name(d)) == Some("none"))
-    };
+    debug_assert!(state.is(ids::REDSTONE_WIRE));
+    let w = wire_properties();
+    let is_dot = |s: BlockState| HORIZONTAL.into_iter().all(|d| !w.connected(s, d));
     let was_dot = is_dot(state);
     // `getMissingConnections` on the default state with the power of `state`.
     let can_connect_up = wire_can_connect_up(level, pos);
-    let mut result = wire_with_sides(state, "none");
+    let mut result = wire_with_sides(state, w.none);
     for direction in HORIZONTAL {
         let side = wire_connecting_side(level, pos, direction, can_connect_up);
-        result = result.set(direction_name(direction), side);
+        result = w.side_of(direction).with_index(result, w.side_index(side));
     }
     if was_dot && is_dot(result) {
         return result;
     }
-    let connected = |d: Direction| result.value(direction_name(d)) != Some("none");
     let (north, south, east, west) = (
-        connected(Direction::North),
-        connected(Direction::South),
-        connected(Direction::East),
-        connected(Direction::West),
+        w.connected(result, Direction::North),
+        w.connected(result, Direction::South),
+        w.connected(result, Direction::East),
+        w.connected(result, Direction::West),
     );
     let north_south_empty = !north && !south;
     let east_west_empty = !east && !west;
-    if !west && north_south_empty {
-        result = result.set("west", "side");
-    }
-    if !east && north_south_empty {
-        result = result.set("east", "side");
-    }
-    if !north && east_west_empty {
-        result = result.set("north", "side");
-    }
-    if !south && east_west_empty {
-        result = result.set("south", "side");
+    for (direction, missing) in [
+        (Direction::West, !west && north_south_empty),
+        (Direction::East, !east && north_south_empty),
+        (Direction::North, !north && east_west_empty),
+        (Direction::South, !south && east_west_empty),
+    ] {
+        if missing {
+            result = w.side_of(direction).with_index(result, w.side);
+        }
     }
     result
 }

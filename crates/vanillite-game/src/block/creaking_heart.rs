@@ -514,7 +514,7 @@ fn spawn_protector(level: &mut Level, pos: BlockPos) -> Option<EntityId> {
             at,
             crate::mob::fam::SpawnReason::Spawner,
         );
-        if !super::spawner::mob_spawn_checks(level, Kind::Creaking, at, true) {
+        if !super::spawner::mob_spawn_checks(level, &mob, at, true) {
             continue;
         }
         creaking::set_transient(&mut mob, pos);
@@ -535,6 +535,8 @@ fn spawn_protector(level: &mut Level, pos: BlockPos) -> Option<EntityId> {
             creaking_sound(level, id, sound);
         }
         level.game_event(events().entity_place, at, GameEventContext::of(Some(id)));
+        // The poof particles at the new creaking.
+        level.broadcast_entity_event(id, 60);
         return Some(id);
     }
     None

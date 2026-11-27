@@ -153,8 +153,26 @@ pub fn travel(t: &mut Tick<'_, '_>, input: Vec3) -> bool {
     true
 }
 
-/// `AbstractNautilus.tick`: the dash ends, its cooldown runs out.
+/// `AbstractNautilus.tick`: `applyEffects` (Breath of the Nautilus for a riding player), the
+/// dash ends, its cooldown runs out.
 pub fn after_tick(t: &mut Tick<'_, '_>) {
+    if let Some(&rider) = t.ents.riding.passengers_of(t.id).first()
+        && let Some(p) = t.ents.player(rider)
+    {
+        use crate::effect::{EffectInstance, MobEffect};
+        let has = p.survival.effects.has(MobEffect::BREATH_OF_THE_NAUTILUS);
+        if !has || t.env.game_time % 40 == 0 {
+            let breath = EffectInstance::with_flags(
+                MobEffect::BREATH_OF_THE_NAUTILUS,
+                60,
+                0,
+                true,
+                true,
+                true,
+            );
+            crate::effect::living::add_to_entity(t.level, t.ents, t.env, t.cx, rider, breath);
+        }
+    }
     let n = nautilus_mut(t.mob());
     let mut dirty = false;
     if n.dash && n.dash_cooldown < 35 {
@@ -313,24 +331,10 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             }
             return Interaction::Success;
         }
-        let name = crate::item::item_id(ix.stack).name();
-        if name == "minecraft:saddle" && tame && !is_saddled(m) {
-            if let Some(m) = ix.ents.mob_mut(ix.target) {
-                m.equipment
-                    .set(EquipmentSlot::Saddle, ix.stack.with_count(1));
-            }
-            animal::use_item(ix.ents, ix.player, ix.hand);
-            let under = ix
-                .ents
-                .mob(ix.target)
-                .is_some_and(|m| m.fluids.eye_in_water);
-            let s = if under {
-                "minecraft:item.nautilus_saddle_underwater_equip"
-            } else {
-                "minecraft:item.nautilus_saddle_equip"
-            };
-            crate::mob::combat::mob_sound(ix.ents, ix.env, ix.target, s);
-            return Interaction::Success;
+        // `itemStack.interactLivingEntity`: saddles and armour (`Equippable.equipOnTarget`).
+        let r = animal::item_interact_pub(ix);
+        if r.consumes() {
+            return r;
         }
     }
     if tame && !ix.sneaking && !food {

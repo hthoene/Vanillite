@@ -854,7 +854,11 @@ fn absorb(level: &mut Level, start: BlockPos, pos: BlockPos) -> bool {
         level.set_block_and_update(pos, BlockState::AIR);
         return true;
     }
-    if container(state.block()) == Container::Waterlogged && waterlogged(state) {
+    // `BarrierBlock.pickupBlock(null)` takes nothing.
+    if container(state.block()) == Container::Waterlogged
+        && waterlogged(state)
+        && !state.is(ids::BARRIER)
+    {
         if let Some(dry) = state.with("waterlogged", "false") {
             level.set_block_and_update(pos, dry);
             if !level.can_survive(dry, pos) {

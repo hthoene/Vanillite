@@ -615,6 +615,51 @@ fn breaking_a_chest_drops_its_contents_and_closing_returns_the_carried_stack() {
 }
 
 #[test]
+fn removing_a_dead_player_drops_carried_grid_and_open_menu_cursor() {
+    install_data();
+    let pos = BlockPos::new(0, 0, 0);
+    let mut level = level_with(pos, blocks::CHEST.default_state());
+    let mut inv = PlayerInventory::default();
+    inv.craft[0] = stack("oak_planks", 1);
+    inv.craft[3] = stack("stick", 2);
+    inv.menu.carried = stack("bread", 3);
+    open(
+        &mut inv,
+        &mut level,
+        request(
+            MenuKind::Generic { rows: 3 },
+            Storage::Block(pos),
+            pos,
+            blocks::CHEST,
+        ),
+    );
+    if let Some(menu) = inv.container.as_deref_mut() {
+        menu.state.carried = stack("diamond", 5);
+    }
+    let mut drops = Vec::new();
+    super::container::close_on_leave(&mut inv, &mut level, false, &mut drops);
+    // Nothing goes back into the (already emptied) inventory: everything drops.
+    assert!(inv.container.is_none());
+    assert!(inv.menu.carried.is_empty());
+    assert!(inv.craft.iter().all(ItemStack::is_empty));
+    assert!(inv.items.iter().all(ItemStack::is_empty));
+    let dropped: Vec<(u16, i32)> = drops
+        .iter()
+        .map(|d| (d.stack.item, d.stack.count))
+        .collect();
+    assert_eq!(
+        dropped,
+        vec![
+            (item("diamond"), 5),
+            (item("bread"), 3),
+            (item("oak_planks"), 1),
+            (item("stick"), 2),
+        ]
+    );
+    assert!(matches!(level.block_entity(pos), Some(BlockEntity::Container(c)) if c.openers == 0));
+}
+
+#[test]
 fn furnace_smelts_in_200_ticks_and_burns_coal() {
     install_data();
     let pos = BlockPos::new(0, 0, 0);

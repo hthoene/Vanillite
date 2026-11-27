@@ -1,0 +1,148 @@
+{
+  "description": "A waterfall from a source on a pillar falls fifteen blocks as falling water, spreads at the bottom and dries up from the top when the source goes; an item and an experience orb fall through it, and items, an experience orb and primed TNT in a water stream are carried along (EntityFluidInteraction).",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "level_rng": true,
+  "entities": [],
+  "region": [
+    [
+      0,
+      -60,
+      0
+    ],
+    [
+      20,
+      -45,
+      10
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -60,
+        4
+      ],
+      "to": [
+        4,
+        -46,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        0
+      ],
+      "to": [
+        20,
+        -60,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        2
+      ],
+      "to": [
+        20,
+        -60,
+        2
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        4,
+        -45,
+        4
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        5,
+        -45,
+        4
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "tick": 30,
+      "op": "command",
+      "command": "summon item 4.5 -46 3.5 {Item:{id:\"minecraft:stick\",count:1}}"
+    },
+    {
+      "tick": 30,
+      "op": "command",
+      "command": "summon experience_orb 4.5 -52 3.5 {Value:3}"
+    },
+    {
+      "tick": 5,
+      "op": "place",
+      "pos": [
+        10,
+        -60,
+        1
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 15,
+      "op": "command",
+      "command": "summon item 12.5 -60 1.5 {Item:{id:\"minecraft:apple\",count:1}}"
+    },
+    {
+      "tick": 15,
+      "op": "command",
+      "command": "summon item 15.5 -59.9 1.5 {Item:{id:\"minecraft:stone\",count:5}}"
+    },
+    {
+      "tick": 15,
+      "op": "command",
+      "command": "summon tnt 13.5 -60 1.5 {fuse:200}"
+    },
+    {
+      "tick": 15,
+      "op": "command",
+      "command": "summon experience_orb 17.5 -60 1.5 {Value:1}"
+    },
+    {
+      "tick": 80,
+      "op": "place",
+      "pos": [
+        4,
+        -45,
+        4
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}

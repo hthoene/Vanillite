@@ -225,12 +225,12 @@ fn hit_entity(
         if id == t.id || (!left && Some(id) == owner) {
             return;
         }
-        let living = t.ents.mob(id).is_some_and(crate::mob::MobData::is_alive)
-            || t.ents.player(id).is_some_and(|p| {
-                p.game_mode != vanillite_config::GameMode::Spectator
-                    && !p.survival.is_dead_or_dying()
-            });
-        if !living {
+        // `AbstractWindCharge.canHitEntity`: no end crystals (no other wind charges either).
+        let crystal = matches!(
+            t.ents.special(id),
+            Some(crate::mob::boss::special::SpecialData::EndCrystal(_))
+        );
+        if crystal || !crate::effect::thrown::can_be_hit(t.ents, id) {
             return;
         }
         let Some(e) = t.ents.store.get(id) else {

@@ -743,6 +743,20 @@ fn apply_ominous(level: &mut Level, pos: BlockPos) {
         if let Some(e) = level.entities.store.get(id) {
             let at = e.pos();
             level.level_event(None, 3012, BlockPos::containing(at.x, at.y, at.z), 0);
+            // `Mob.dropPreservedEquipment`: what the mob picked up drops.
+            let mut preserved = Vec::new();
+            if let Some(m) = level.entities.mob_mut(id) {
+                for slot in crate::mob::equipment::SLOTS {
+                    if m.equipment.drop_chance(slot) > 1.0 && !m.equipment.get(slot).is_empty() {
+                        preserved.push(std::mem::take(
+                            &mut m.equipment.items[usize::from(slot.ordinal())],
+                        ));
+                    }
+                }
+            }
+            for stack in preserved {
+                super::drops::spawn_item_moving(level, at, stack, None, 10, None);
+            }
             level.entities.despawn(id);
         }
     }
@@ -827,7 +841,7 @@ fn spawn_mob(level: &mut Level, pos: BlockPos) -> Option<(u128, EntityId)> {
     }
     let (mut mob, at) = create_mob(level, &data, spawn_pos)?;
     let y_rot = level.random().next_float() * 360.0;
-    if !mob_spawn_checks(level, mob.kind, at, false) {
+    if !mob_spawn_checks(level, &mob, at, false) {
         return None;
     }
     let extra = if data.has_no_configuration() {
@@ -880,10 +894,8 @@ pub fn spawn_item_up(level: &mut Level, stack: ItemStack, accuracy: i32, at: Vec
         return;
     }
     let at = Vec3::new(at.x, at.y - 0.125, at.z);
-    // `new ItemEntity(level, x, y, z, stack)` draws its motion and yaw first.
-    let r = level.random();
-    let _ = (r.next_double(), r.next_double());
-    let Some(id) = super::drops::spawn_item(level, at, stack, Vec3::ZERO, 0, None) else {
+    // `new ItemEntity(level, x, y, z, stack)` draws its motion and yaw from its own random.
+    let Some(id) = super::drops::spawn_item_moving(level, at, stack, None, 0, None) else {
         return;
     };
     let r = level.random();
@@ -904,7 +916,13 @@ fn eject_reward(level: &mut Level, pos: BlockPos, table: &str) {
         return;
     };
     let mut items = Vec::new();
-    data.loot.random_items(table, level.random(), &mut items);
+    // `LootContext.Builder.create`: the table's random sequence, else the level random.
+    match data.loot.random_sequence(table) {
+        Some(key) => {
+            level.with_random_sequence(key, |r| data.loot.random_items(table, r, &mut items));
+        }
+        None => data.loot.random_items(table, level.random(), &mut items),
+    }
     if items.is_empty() {
         return;
     }

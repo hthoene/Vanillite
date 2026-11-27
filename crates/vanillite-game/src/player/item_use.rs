@@ -300,12 +300,27 @@ pub fn attack_entity(
             return;
         }
     }
+    if ents.missile(target).is_some() {
+        let mut t = crate::mob::missile::MissileTick {
+            level,
+            ents: &mut *ents,
+            env: &mut *env,
+            cx: &mut *cx,
+            id: target,
+        };
+        crate::mob::fam::illager::missiles::attacked_by_player(&mut t, player);
+        return;
+    }
     if kind == Some(ids::LEASH_KNOT) {
         // `LeashFenceKnotEntity.hurtServer`: it breaks.
         tame::break_knot(ents, env, target, &mut cx.discarded);
         return;
     }
-    if ents.boat(target).is_some() || ents.minecart(target).is_some() {
+    let crystal = matches!(
+        ents.special(target),
+        Some(crate::mob::boss::special::SpecialData::EndCrystal(_))
+    );
+    if ents.boat(target).is_some() || ents.minecart(target).is_some() || crystal {
         let scale = attack::attack_strength_scale(ents, player, 0.5);
         let base =
             attack::player_attribute(ents, player, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
@@ -316,7 +331,12 @@ pub fn attack_entity(
         }
         let mut source = combat::entity_source(ents, env.types.player_attack, player, player);
         source.cause_is_mob = false;
-        hurt_vehicle(ents, env, cx, target, source, damage);
+        if crystal {
+            // `EndCrystal.hurtServer`: any hit makes it explode.
+            combat::hurt(level, ents, env, cx, target, source, damage);
+        } else {
+            hurt_vehicle(ents, env, cx, target, source, damage);
+        }
         return;
     }
     // `canHarmPlayer`: the pvp rule.

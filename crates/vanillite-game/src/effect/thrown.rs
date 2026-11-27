@@ -174,7 +174,7 @@ fn thrown_mut(ents: &mut Entities, id: EntityId) -> Option<&mut ThrownPotion> {
 }
 
 /// `Entity.canBeHitByProjectile`: alive and pickable (living entities but spectators,
-/// vehicles, end crystals).
+/// vehicles, end crystals, item frames, paintings and cushions).
 pub fn can_be_hit(ents: &Entities, id: EntityId) -> bool {
     if let Some(m) = ents.mob(id) {
         return m.is_alive();
@@ -186,7 +186,15 @@ pub fn can_be_hit(ents: &Entities, id: EntityId) -> bool {
     if ents.boat(id).is_some() || ents.minecart(id).is_some() {
         return true;
     }
+    if crate::decoration::pickable(ents, id) {
+        return true;
+    }
     matches!(ents.special(id), Some(SpecialData::EndCrystal(c)) if !c.removed)
+}
+
+/// Whether `id` is a living entity (mob or player).
+pub fn is_living(ents: &Entities, id: EntityId) -> bool {
+    ents.mob(id).is_some() || ents.player(id).is_some()
 }
 
 /// `ProjectileUtil.computeMargin`.

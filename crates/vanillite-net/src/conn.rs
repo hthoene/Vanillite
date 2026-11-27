@@ -106,6 +106,9 @@ struct KeepAlive {
     next: Instant,
     pending: Option<(i64, Instant)>,
     latency: Latency,
+    /// In play until the game wrote its first packet: the `SentLog::written` count on
+    /// entering play.
+    login_mark: Option<usize>,
 }
 
 pub(crate) struct Conn {
@@ -226,6 +229,7 @@ impl Conn {
                 next: now,
                 pending: None,
                 latency: Latency::default(),
+                login_mark: None,
             },
             vouched,
             guard,
@@ -346,6 +350,11 @@ impl Conn {
         // outbound protocol, and the client then disconnects with "Pipeline has no outbound
         // protocol configured" (#135).
         self.keepalive.pending = None;
+        // Vanilla sends `login` right when the play listener is created; here the game sends
+        // it once it placed the player, which can take longer than an interval under load. A
+        // keepalive before `login` breaks the client, so the play keepalive starts after the
+        // game wrote its first packet.
+        self.keepalive.login_mark = (state == State::Play).then(|| self.out.sent_log().written());
         let now = Instant::now();
         self.keepalive.next = now
             .checked_add(self.shared.config.keepalive_interval)
@@ -488,6 +497,17 @@ impl Conn {
         }
         if !self.keepalive.enabled {
             return Ok(());
+        }
+        if let Some(mark) = self.keepalive.login_mark {
+            if self.out.sent_log().written() == mark {
+                if now >= self.keepalive.next {
+                    self.keepalive.next = now
+                        .checked_add(self.shared.config.keepalive_interval)
+                        .unwrap_or(now);
+                }
+                return Ok(());
+            }
+            self.keepalive.login_mark = None;
         }
         match self.keepalive.pending {
             Some((_, sent))

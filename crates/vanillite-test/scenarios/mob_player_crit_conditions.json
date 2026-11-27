@@ -1,0 +1,311 @@
+{
+  "description": "A client player with a stone sword jump-attacks three penned cows (Player.canCriticalAttack): a normal falling hit is a critical hit (x1.5, crit particles and sound); with blindness (isMobilityRestricted) and inside a ladder (onClimbable) the same falling hit is not critical.",
+  "tier": "fast",
+  "time": 6000,
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 85,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        12
+      ],
+      "to": [
+        11,
+        -59,
+        14
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -60,
+        13
+      ],
+      "to": [
+        6,
+        -59,
+        13
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        8,
+        -60,
+        13
+      ],
+      "to": [
+        8,
+        -59,
+        13
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        10,
+        -60,
+        13
+      ],
+      "to": [
+        10,
+        -59,
+        13
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        8.5,
+        -60.0,
+        11.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "inventory": [
+        [
+          0,
+          "minecraft:stone_sword",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "a",
+      "type": "minecraft:cow",
+      "pos": [
+        6.5,
+        -60.0,
+        13.5
+      ],
+      "seed": 3,
+      "finalize": false
+    },
+    {
+      "name": "b",
+      "type": "minecraft:cow",
+      "pos": [
+        8.5,
+        -60.0,
+        13.5
+      ],
+      "seed": 4,
+      "finalize": false
+    },
+    {
+      "name": "c",
+      "type": "minecraft:cow",
+      "pos": [
+        10.5,
+        -60.0,
+        13.5
+      ],
+      "seed": 5,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 20,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04d800000000000402700000000000000",
+      "what": "MovePlayerPos { x: 8.5, y: -59.0, z: 11.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 21,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04da00000000000402700000000000000",
+      "what": "MovePlayerPos { x: 8.5, y: -59.25, z: 11.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 21,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "attack",
+      "data": "00",
+      "target": "a",
+      "what": "Attack a"
+    },
+    {
+      "tick": 23,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04e000000000000402700000000000001",
+      "what": "MovePlayerPos { x: 8.5, y: -60.0, z: 11.5, flags: MoveFlags { on_ground: true, horizontal_collision: false } }"
+    },
+    {
+      "tick": 42,
+      "op": "effect",
+      "entity": "steve",
+      "effect": "minecraft:blindness",
+      "duration": 20,
+      "amplifier": 0
+    },
+    {
+      "tick": 44,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04d800000000000402700000000000000",
+      "what": "MovePlayerPos { x: 8.5, y: -59.0, z: 11.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 45,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04da00000000000402700000000000000",
+      "what": "MovePlayerPos { x: 8.5, y: -59.25, z: 11.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 45,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "attack",
+      "data": "00",
+      "target": "b",
+      "what": "Attack b"
+    },
+    {
+      "tick": 47,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04e000000000000402700000000000001",
+      "what": "MovePlayerPos { x: 8.5, y: -60.0, z: 11.5, flags: MoveFlags { on_ground: true, horizontal_collision: false } }"
+    },
+    {
+      "tick": 66,
+      "op": "command",
+      "command": "setblock 8 -60 11 minecraft:ladder[facing=north]"
+    },
+    {
+      "tick": 66,
+      "op": "command",
+      "command": "setblock 8 -59 11 minecraft:ladder[facing=north]"
+    },
+    {
+      "tick": 70,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04d800000000000402700000000000000",
+      "what": "MovePlayerPos { x: 8.5, y: -59.0, z: 11.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 71,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04da00000000000402700000000000000",
+      "what": "MovePlayerPos { x: 8.5, y: -59.25, z: 11.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 71,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "attack",
+      "data": "00",
+      "target": "c",
+      "what": "Attack c"
+    },
+    {
+      "tick": 73,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4021000000000000c04e000000000000402700000000000001",
+      "what": "MovePlayerPos { x: 8.5, y: -60.0, z: 11.5, flags: MoveFlags { on_ground: true, horizontal_collision: false } }"
+    }
+  ]
+}

@@ -801,32 +801,29 @@ impl MenuSlots for PlayerInventory {
     }
 }
 
-/// `Player.getDestroySpeed` without attributes other than the enchantment-driven ones the
-/// caller passes: `efficiency` level, the dig effects (Haste / Conduit Power amplification,
-/// Mining Fatigue amplifier), whether the player is in water without aqua affinity, and whether
-/// it stands on the ground.
+/// `Player.getDestroySpeed` with the player's `mining_efficiency` and `block_break_speed`, the
+/// dig effects (Haste / Conduit Power amplification, Mining Fatigue amplifier), the
+/// `submerged_mining_speed` while the eyes are in water, and whether it stands on the ground.
 #[allow(clippy::too_many_arguments)]
 pub fn destroy_speed(
     tools: &ToolTable,
     stack: &ItemStack,
     state: vanillite_data::block::BlockState,
-    efficiency: i32,
+    mining_efficiency: f32,
     dig_speed: Option<i32>,
     mining_fatigue: Option<i32>,
-    submerged_penalty: bool,
+    block_break_speed: f32,
+    submerged_mining_speed: Option<f32>,
     on_ground: bool,
 ) -> f32 {
     let mut speed = tools.destroy_speed(stack, state);
-    if speed > 1.0 && efficiency > 0 {
-        // `minecraft:efficiency` adds `level² + 1` to `mining_efficiency`.
-        let bonus = efficiency.saturating_mul(efficiency).saturating_add(1);
-        #[allow(clippy::as_conversions)]
-        let bonus = bonus as f32;
-        speed += bonus;
+    if speed > 1.0 {
+        speed += mining_efficiency;
     }
     speed = crate::player::play::dig_effects(speed, dig_speed, mining_fatigue);
-    if submerged_penalty {
-        speed *= 0.2;
+    speed *= block_break_speed;
+    if let Some(factor) = submerged_mining_speed {
+        speed *= factor;
     }
     if !on_ground {
         speed /= 5.0;
