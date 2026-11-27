@@ -1,17 +1,16 @@
 //! A player's connection as the world sees it, and the play packet handlers of milestone 1
 //! (Vanilla's `ServerGamePacketListenerImpl`).
 
-use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use vanillite_base::Vec3;
-use vanillite_protocol::InboundReceiver;
 use vanillite_protocol::chat::{
     ArgumentSignature, ChatSessionData, LastSeenUpdate, MessageSignature,
 };
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
 use vanillite_protocol::packets::play::clientbound::SystemChat;
+use vanillite_protocol::{Inbound, InboundReceiver};
 
 use crate::block::technical;
 use vanillite_protocol::packets::play::serverbound::{
@@ -244,6 +243,8 @@ pub struct Connection {
     /// Clientbound packets.
     pub sink: Arc<dyn PacketSink>,
     inbound: InboundReceiver,
+    /// The packets taken from `inbound` for this tick (kept for its capacity).
+    taken: Vec<Inbound>,
     /// Movement validation and teleports.
     pub movement: Movement,
     /// Chunk view and sending.
@@ -317,6 +318,7 @@ impl Connection {
         Connection {
             sink,
             inbound,
+            taken: Vec::new(),
             movement: Movement::new(pos),
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
@@ -340,20 +342,22 @@ impl Connection {
         play: &mut PlayContext<'_>,
         budget: usize,
     ) -> Handled {
-        for _ in 0..budget {
-            let packet = match self.inbound.try_recv() {
-                Ok(inbound) => inbound.packet,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Handled::Disconnected,
-            };
+        let mut taken = std::mem::take(&mut self.taken);
+        taken.clear();
+        let disconnected = self.inbound.take(budget, &mut taken).is_err();
+        for inbound in taken.drain(..) {
             play.actor.pos = state.body.pos;
             play.actor.y_rot = state.body.y_rot;
             play.actor.x_rot = state.body.x_rot;
             play.actor.on_ground = state.body.on_ground;
             play.actor.sneaking = state.shift_key_down;
-            if let Err(Kick(reason)) = self.handle(packet, state, ctx, chat, play) {
+            if let Err(Kick(reason)) = self.handle(inbound.packet, state, ctx, chat, play) {
                 return Handled::Kick(reason);
             }
+        }
+        self.taken = taken;
+        if disconnected {
+            return Handled::Disconnected;
         }
         if self.sink.is_closed() {
             Handled::Disconnected
