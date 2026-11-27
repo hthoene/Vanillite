@@ -214,7 +214,13 @@ impl OreFeature {
         let [x0, x1, y0, y1, z0, z1] = line;
         let size = self.config.size as usize;
         let mut placed = 0;
-        let mut tested = BitSet::with_bits((size_xz * size_y * size_xz).max(0) as usize);
+        // Vanilla's `BitSet` of tested blocks, at index `row + dz * size_xz * size_y` with
+        // `row = dx + dy * size_xz` (`d` = offset from `start`). A radius stays below
+        // `size / 16 + 0.5 <= max_radius`, so `dx, dz <= size_xz <= 26` and
+        // `dy <= size_y - 2`: `row < size_xz * size_y` and an index has exactly one
+        // `(row, dz)`, including Vanilla's aliasing of `dx == size_xz` with the next row. One
+        // word per row with a bit per `dz` is the same set.
+        let mut tested = vec![0u64; (size_xz * size_y).max(0) as usize];
         // `data`: x, y, z, radius per point.
         let mut data = [[0.0f64; 4]; 64];
         for (i, point) in data.iter_mut().enumerate().take(size) {
@@ -250,8 +256,12 @@ impl OreFeature {
         }
 
         let FeatureContext { level, random, .. } = ctx;
+        let min_section = level.min_y() >> 4;
         // The chunk of the last block as `(x, z, slot if writable)`: a blob touches few chunks.
         let mut chunk = (i32::MIN, i32::MIN, None);
+        // `yd * yd` and `zd * zd` of the current sphere per row: the same values Vanilla
+        // computes in its inner loops.
+        let (mut yd_sqrs, mut zd_sqrs) = (Vec::new(), Vec::new());
         for &[xx, yy, zz, r] in &data[..size] {
             if r < 0.0 {
                 continue;
@@ -262,29 +272,39 @@ impl OreFeature {
             let x_max = floor(xx + r).max(x_min);
             let y_max = floor(yy + r).max(y_min);
             let z_max = floor(zz + r).max(z_min);
-            for x in (0..x_max - x_min + 1).map(|offset| x_min + offset) {
+            let squares = |min: i32, max: i32, centre: f64, out: &mut Vec<f64>| {
+                out.clear();
+                out.extend((min..=max).map(|v| {
+                    let d = (f64::from(v) + 0.5 - centre) / r;
+                    d * d
+                }));
+            };
+            squares(y_min, y_max, yy, &mut yd_sqrs);
+            squares(z_min, z_max, zz, &mut zd_sqrs);
+            for x in x_min..=x_max {
                 let xd = (f64::from(x) + 0.5 - xx) / r;
                 let xd_sqr = xd * xd;
                 if xd_sqr >= 1.0 {
                     continue;
                 }
-                for y in (0..y_max - y_min + 1).map(|offset| y_min + offset) {
-                    let yd = (f64::from(y) + 0.5 - yy) / r;
-                    let xyd_sqr = xd_sqr + yd * yd;
+                for (y, &yd_sqr) in (y_min..).zip(&yd_sqrs) {
+                    let xyd_sqr = xd_sqr + yd_sqr;
                     if xyd_sqr >= 1.0 || level.is_outside_build_height(y) {
                         continue;
                     }
-                    for z in (0..z_max - z_min + 1).map(|offset| z_min + offset) {
-                        let zd = (f64::from(z) + 0.5 - zz) / r;
-                        if xyd_sqr + zd * zd >= 1.0 {
-                            continue;
-                        }
-                        let index = (x - start.x)
-                            + (y - start.y) * size_xz
-                            + (z - start.z) * size_xz * size_y;
-                        if !tested.insert(index as usize) {
-                            continue;
-                        }
+                    let section = ((y >> 4) - min_section) as usize;
+                    // The Zs of this row inside the sphere, as bits of `dz`.
+                    let first = (z_min - start.z) as u32;
+                    let mut chord = 0u64;
+                    for (k, &zd_sqr) in zd_sqrs.iter().enumerate() {
+                        chord |= u64::from(xyd_sqr + zd_sqr < 1.0) << (first + k as u32);
+                    }
+                    let row = &mut tested[((x - start.x) + (y - start.y) * size_xz) as usize];
+                    let mut fresh = chord & !*row;
+                    *row |= chord;
+                    while fresh != 0 {
+                        let z = start.z + fresh.trailing_zeros() as i32;
+                        fresh &= fresh - 1;
                         if (chunk.0, chunk.1) != (x >> 4, z >> 4) {
                             // `ensureCanWrite(pos)`.
                             chunk = (x >> 4, z >> 4, level.writable_chunk(x >> 4, z >> 4));
@@ -295,15 +315,19 @@ impl OreFeature {
                         // The targets against the section's block; the first matching
                         // replacement goes straight into the section.
                         let pos = BlockPos::new(x, y, z);
-                        let state = level.chunk_at(slot).block(x, y, z);
+                        let state = level.chunk_at(slot).section_block(section, x, y, z);
                         let shared = &**level;
                         // `BulkSectionAccess.getBlockState`: air outside the build height.
                         let block_getter = |p: BlockPos| shared.chunk(p).block(p.x, p.y, p.z);
                         let target = self.config.target_for(state, block_getter, *random, pos);
                         if let Some(replacement) = target.map(|target| target.state) {
-                            level
-                                .chunk_at_mut(slot)
-                                .set_block_in_section(x, y, z, replacement);
+                            level.chunk_at_mut(slot).set_section_block(
+                                section,
+                                x,
+                                y,
+                                z,
+                                replacement,
+                            );
                             placed += 1;
                         }
                     }
@@ -311,28 +335,6 @@ impl OreFeature {
             }
         }
         placed > 0
-    }
-}
-
-/// A growable bit set (`java.util.BitSet`): Vanilla's indices can exceed the initial size.
-struct BitSet(Vec<u64>);
-
-impl BitSet {
-    fn with_bits(bits: usize) -> Self {
-        Self(vec![0; bits.div_ceil(64)])
-    }
-
-    /// Sets a bit; whether it was clear before.
-    #[inline]
-    fn insert(&mut self, index: usize) -> bool {
-        let word = index / 64;
-        if word >= self.0.len() {
-            self.0.resize(word + 1, 0);
-        }
-        let mask = 1u64 << (index % 64);
-        let was_clear = self.0[word] & mask == 0;
-        self.0[word] |= mask;
-        was_clear
     }
 }
 
