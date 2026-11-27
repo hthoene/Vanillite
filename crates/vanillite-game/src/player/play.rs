@@ -1585,6 +1585,16 @@ impl Digging {
         }
         if let Some(level) = ctx.level.level_mut() {
             state = crate::block::creaking_heart::placement_state(level, state);
+            // `canSurvive` with the light the placement rules take as met: crops and pitcher
+            // pods need light 8, mushrooms less than 13 (`getRawBrightness(pos, 0)`).
+            use vanillite_worldgen::behaviour::{Class, class_of_block};
+            if matches!(
+                class_of_block(state.block()),
+                Class::Crop | Class::Mushroom | Class::PitcherCrop
+            ) && !level.can_survive(state, target)
+            {
+                return false;
+            }
         }
         if !ctx.level.is_unobstructed(state, target) {
             return false;
