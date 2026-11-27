@@ -14,6 +14,7 @@ use vanillite_protocol::packets::login::{
     CookieResponse, CustomQueryAnswer, Hello, LoginAcknowledged,
 };
 use vanillite_protocol::sets::ClientboundLogin;
+use vanillite_protocol::text::Component;
 use vanillite_protocol::types::{GameProfile, RawBytes};
 
 use crate::config::Forwarding;
@@ -30,6 +31,45 @@ pub(crate) struct Backend {
     pub(crate) passthrough: bool,
 }
 
+/// Why a backend did not take the player.
+#[derive(Debug, Clone)]
+pub(crate) enum Refusal {
+    /// The connection or the login failed.
+    Failed(String),
+    /// The server disconnected the player with this reason.
+    Kicked(Box<Component>),
+}
+
+impl From<String> for Refusal {
+    fn from(e: String) -> Self {
+        Self::Failed(e)
+    }
+}
+
+impl From<&str> for Refusal {
+    fn from(e: &str) -> Self {
+        Self::Failed(e.to_owned())
+    }
+}
+
+impl Refusal {
+    /// The reason as text, for logs.
+    pub(crate) fn plain(&self) -> String {
+        match self {
+            Self::Failed(e) => e.clone(),
+            Self::Kicked(c) => c.plain(),
+        }
+    }
+
+    /// The reason as a component.
+    pub(crate) fn component(&self) -> Component {
+        match self {
+            Self::Failed(e) => Component::text(e.clone()),
+            Self::Kicked(c) => (**c).clone(),
+        }
+    }
+}
+
 /// What the connection needs to know about the player.
 #[derive(Debug, Clone)]
 pub(crate) struct Player {
@@ -43,20 +83,20 @@ pub(crate) struct Player {
     pub(crate) link_threshold: Option<i32>,
 }
 
-/// Connects and logs in; the error is a reason for the player.
+/// Connects and logs in.
 pub(crate) async fn connect(
     name: Arc<str>,
     address: String,
     player: Arc<Player>,
     timeout: Duration,
-) -> Result<Backend, String> {
+) -> Result<Backend, Refusal> {
     match tokio::time::timeout(timeout, login(name, &address, &player)).await {
         Ok(r) => r,
-        Err(_) => Err("the server did not answer in time".to_owned()),
+        Err(_) => Err("the server did not answer in time".into()),
     }
 }
 
-async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend, String> {
+async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend, Refusal> {
     let stream = TcpStream::connect(address)
         .await
         .map_err(|e| format!("cannot connect: {e}"))?;
@@ -99,7 +139,7 @@ async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend
                 break ClientboundLogin::decode(frame).map_err(fail)?;
             }
             if !rx.fill().await {
-                return Err("the server closed the connection".to_owned());
+                return Err("the server closed the connection".into());
             }
         };
         match packet {
@@ -151,14 +191,16 @@ async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend
                 return Err(
                     "the server is in online mode without proxy forwarding (configure modern \
                      forwarding with the proxy's secret)"
-                        .to_owned(),
+                        .into(),
                 );
             }
-            ClientboundLogin::LoginDisconnect(d) => return Err(d.reason.0.plain()),
+            ClientboundLogin::LoginDisconnect(d) => {
+                return Err(Refusal::Kicked(Box::new(d.reason.0)));
+            }
             ClientboundLogin::LoginFinished(f) => {
                 // Without forwarding an offline backend picks its own (offline) UUID.
                 if f.profile.id != player.profile.id && player.forwarding != Forwarding::None {
-                    return Err("the server did not accept the forwarded identity".to_owned());
+                    return Err("the server did not accept the forwarded identity".into());
                 }
                 tx.send(&LoginAcknowledged).map_err(fail)?;
                 tx.flush(flush_timeout).await.map_err(io)?;

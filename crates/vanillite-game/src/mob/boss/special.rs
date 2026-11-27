@@ -20,6 +20,7 @@ pub enum SpecialData {
     EndCrystal(Box<dragon::Crystal>),
     DragonFireball(Box<dragon::Fireball>),
     ThrownPotion(Box<crate::effect::thrown::ThrownPotion>),
+    OminousItemSpawner(Box<crate::block::trial_spawner::OminousItemSpawner>),
 }
 
 /// Whether entities of `kind` carry [`SpecialData`].
@@ -28,6 +29,7 @@ pub fn is_special_kind(kind: EntityTypeId) -> bool {
         || kind == ids::END_CRYSTAL
         || kind == ids::DRAGON_FIREBALL
         || crate::effect::thrown::is_thrown_potion(kind)
+        || kind == ids::OMINOUS_ITEM_SPAWNER
 }
 
 /// What one special entity tick works on (like [`crate::mob::Tick`]).
@@ -71,6 +73,8 @@ pub fn tick(
         SpecialData::EndCrystal(_) => dragon::tick_crystal,
         SpecialData::DragonFireball(_) => dragon::tick_fireball,
         SpecialData::ThrownPotion(_) => crate::effect::thrown::tick,
+        // Ticked with the whole level (`trial_spawner::tick_item_spawner`).
+        SpecialData::OminousItemSpawner(_) => return,
     };
     let mut t = SpecialTick {
         level,
@@ -98,6 +102,9 @@ pub fn entity_data(out: &mut Vec<u8>, data: &SpecialData, all: bool) {
         }
         SpecialData::WitherSkull(s) => wither::skull_entity_data(out, s, all),
         SpecialData::ThrownPotion(p) => crate::effect::thrown::entity_data(out, p, all),
+        SpecialData::OminousItemSpawner(s) => {
+            crate::block::trial_spawner::item_spawner_entity_data(out, s, all);
+        }
     }
 }
 
@@ -131,6 +138,10 @@ pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
             crate::effect::thrown::save(p, out);
             Some(())
         }
+        SpecialData::OminousItemSpawner(s) => {
+            crate::block::trial_spawner::save_item_spawner(s, out);
+            Some(())
+        }
     }
 }
 
@@ -138,6 +149,10 @@ pub fn save(data: &SpecialData, out: &mut Compound) -> Option<()> {
 pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<SpecialData> {
     if kind == ids::WITHER_SKULL {
         Some(SpecialData::WitherSkull(Box::new(wither::load_skull(tag))))
+    } else if kind == ids::OMINOUS_ITEM_SPAWNER {
+        Some(SpecialData::OminousItemSpawner(Box::new(
+            crate::block::trial_spawner::load_item_spawner(tag),
+        )))
     } else if crate::effect::thrown::is_thrown_potion(kind) {
         Some(SpecialData::ThrownPotion(Box::new(
             crate::effect::thrown::load(kind, tag),

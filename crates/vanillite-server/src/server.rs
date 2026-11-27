@@ -200,7 +200,20 @@ pub struct ServerBuilder {
     version: String,
     /// The parity harness drives the server (`test-support`).
     harness: bool,
+    /// Wraps whatever fills the `chunk-generator` slot (`test-support`).
+    wrap_generator: Option<GeneratorWrap>,
     memory_release: Option<fn()>,
+}
+
+/// A wrapper around the provider that fills the `chunk-generator` slot.
+struct GeneratorWrap(Box<dyn FnOnce(GeneratorBox) -> GeneratorBox + Send>);
+
+type GeneratorBox = Box<dyn ChunkGeneratorProvider>;
+
+impl std::fmt::Debug for GeneratorWrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GeneratorWrap")
+    }
 }
 
 impl ServerBuilder {
@@ -216,6 +229,7 @@ impl ServerBuilder {
             vanilla_pack: VanillaPack::default(),
             network: true,
             harness: false,
+            wrap_generator: None,
             memory_release: None,
             version: format!(
                 "Vanillite {} (Minecraft {})",
@@ -514,6 +528,10 @@ impl ServerBuilder {
                     None => (built_in_generators(), Origin::BuiltIn),
                 },
             };
+        let generator_provider = match self.wrap_generator {
+            Some(GeneratorWrap(wrap)) => wrap(generator_provider),
+            None => generator_provider,
+        };
         // Plugin chunk populators run after the steps of whichever generator fills the slot.
         let generator_provider =
             crate::plugins::with_populators(generator_provider, plugins.chunk_populators());
@@ -2288,6 +2306,19 @@ impl ServerBuilder {
         self.harness = true;
         self
     }
+
+    /// Wraps the provider that fills the `chunk-generator` slot (the built-in one unless a
+    /// plugin fills it), e.g. to serve some dimensions from it and others from a test
+    /// generator.
+    pub fn wrap_chunk_generator(
+        &mut self,
+        wrap: impl FnOnce(Box<dyn ChunkGeneratorProvider>) -> Box<dyn ChunkGeneratorProvider>
+        + Send
+        + 'static,
+    ) -> &mut Self {
+        self.wrap_generator = Some(GeneratorWrap(Box::new(wrap)));
+        self
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -2350,14 +2381,30 @@ impl Server {
         name: &str,
         uuid: u128,
     ) -> vanillite_protocol::InboundSender {
-        self.join_unread(name, uuid)
+        self.join_unread(name, uuid, None)
+    }
+
+    /// [`Server::join_without_network`] with the packets the player gets going to `sink`
+    /// (what its client would receive).
+    pub fn join_into_sink(
+        &mut self,
+        name: &str,
+        uuid: u128,
+        sink: Arc<dyn vanillite_game::player::sink::PacketSink>,
+    ) -> vanillite_protocol::InboundSender {
+        self.join_unread(name, uuid, Some(sink))
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl Server {
     /// [`Server::join_without_network`].
-    fn join_unread(&mut self, name: &str, uuid: u128) -> vanillite_protocol::InboundSender {
+    fn join_unread(
+        &mut self,
+        name: &str,
+        uuid: u128,
+        sink: Option<Arc<dyn vanillite_game::player::sink::PacketSink>>,
+    ) -> vanillite_protocol::InboundSender {
         /// A connection nobody reads.
         struct Unread;
         impl vanillite_game::player::sink::PacketSink for Unread {
@@ -2384,7 +2431,7 @@ impl Server {
             },
             client: vanillite_game::player::ClientInformation::default(),
             game_mode: vanillite_config::GameMode::Survival,
-            sink: Arc::new(Unread),
+            sink: sink.unwrap_or_else(|| Arc::new(Unread)),
             inbound,
             memory_connection: true,
             virtual_connection: true,

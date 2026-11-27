@@ -41,44 +41,34 @@ impl BiomeManager {
         let abs_x = x.wrapping_sub(2);
         let abs_y = y.wrapping_sub(2);
         let abs_z = z.wrapping_sub(2);
-        let parent_x = abs_x >> 2;
-        let parent_y = abs_y >> 2;
-        let parent_z = abs_z >> 2;
-        let fract_x = f64::from(abs_x & 3) / 4.0;
-        let fract_y = f64::from(abs_y & 3) / 4.0;
-        let fract_z = f64::from(abs_z & 3) / 4.0;
+        let parent = [abs_x >> 2, abs_y >> 2, abs_z >> 2];
+        let fract = [
+            f64::from(abs_x & 3) / 4.0,
+            f64::from(abs_y & 3) / 4.0,
+            f64::from(abs_z & 3) / 4.0,
+        ];
+        let seed = self.biome_zoom_seed;
+        // The corners in Vanilla's order (x, then y, then z bit). A corner whose fiddled
+        // distance cannot get below the best so far is not hashed: it could never win.
+        let corner = |axis: usize, odd: bool| {
+            if odd {
+                (parent[axis].wrapping_add(1), fract[axis] - 1.0)
+            } else {
+                (parent[axis], fract[axis])
+            }
+        };
         let mut min_i = 0;
         let mut min_fiddled_distance = f64::INFINITY;
         for i in 0..8 {
-            let x_even = i & 4 == 0;
-            let y_even = i & 2 == 0;
-            let z_even = i & 1 == 0;
-            let corner_x = if x_even {
-                parent_x
-            } else {
-                parent_x.wrapping_add(1)
-            };
-            let corner_y = if y_even {
-                parent_y
-            } else {
-                parent_y.wrapping_add(1)
-            };
-            let corner_z = if z_even {
-                parent_z
-            } else {
-                parent_z.wrapping_add(1)
-            };
-            let distance_x = if x_even { fract_x } else { fract_x - 1.0 };
-            let distance_y = if y_even { fract_y } else { fract_y - 1.0 };
-            let distance_z = if z_even { fract_z } else { fract_z - 1.0 };
+            let (corner_x, distance_x) = corner(0, i & 4 != 0);
+            let (corner_y, distance_y) = corner(1, i & 2 != 0);
+            let (corner_z, distance_z) = corner(2, i & 1 != 0);
+            let bound = min_square(distance_x) + min_square(distance_y) + min_square(distance_z);
+            if bound > min_fiddled_distance {
+                continue;
+            }
             let next = fiddled_distance(
-                self.biome_zoom_seed,
-                corner_x,
-                corner_y,
-                corner_z,
-                distance_x,
-                distance_y,
-                distance_z,
+                seed, corner_x, corner_y, corner_z, distance_x, distance_y, distance_z,
             );
             if min_fiddled_distance > next {
                 min_i = i;
@@ -86,26 +76,25 @@ impl BiomeManager {
             }
         }
         (
-            if min_i & 4 == 0 {
-                parent_x
-            } else {
-                parent_x.wrapping_add(1)
-            },
-            if min_i & 2 == 0 {
-                parent_y
-            } else {
-                parent_y.wrapping_add(1)
-            },
-            if min_i & 1 == 0 {
-                parent_z
-            } else {
-                parent_z.wrapping_add(1)
-            },
+            corner(0, min_i & 4 != 0).0,
+            corner(1, min_i & 2 != 0).0,
+            corner(2, min_i & 1 != 0).0,
         )
     }
 }
 
-/// `getFiddledDistance(seed, x, y, z, distanceX, distanceY, distanceZ)`.
+/// A lower bound of `square(distance + fiddle)` over every value of [`fiddle`] (in
+/// [-0.45, 0.45]), slightly lowered so rounding never puts it above the exact value.
+#[inline]
+fn min_square(distance: f64) -> f64 {
+    let gap = distance.abs() - 0.45;
+    if gap <= 0.0 {
+        0.0
+    } else {
+        gap * gap * 0.999_999
+    }
+}
+
 fn fiddled_distance(
     seed: i64,
     x: i32,

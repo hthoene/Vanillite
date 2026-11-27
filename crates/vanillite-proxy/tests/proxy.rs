@@ -194,3 +194,73 @@ fn join_switch_and_fallback() {
         thread.join().unwrap();
     }
 }
+
+/// A player no server admits (whitelists on, #206) is disconnected with the last server's
+/// reason after each server was tried once, instead of being passed between them.
+#[test]
+fn refused_everywhere_ends_with_the_reason() {
+    let mut servers = Vec::new();
+    let mut addrs = Vec::new();
+    for name in ["wl-a", "wl-b"] {
+        let dir = server_dir(name, 20);
+        let properties = dir.join("server.properties");
+        let mut text = std::fs::read_to_string(&properties).unwrap();
+        text.push_str("white-list=true\n");
+        std::fs::write(&properties, text).unwrap();
+        let mut builder = ServerBuilder::new(dir);
+        builder.vanilla_pack(VanillaPack::None).network(false);
+        let server = builder.start().expect("server starts");
+        addrs.push(server.local_addr().expect("network"));
+        let handle = server.handle();
+        servers.push((handle, std::thread::spawn(move || server.run())));
+    }
+    let mut config = ProxyConfig::parse(&format!(
+        "bind = \"127.0.0.1:0\"\nonline-mode = false\ntry = [\"a\", \"b\"]\n\
+         [servers]\na = \"{}\"\nb = \"{}\"\n[limits]\nlogin-interval-ms = 0\n",
+        addrs[0], addrs[1]
+    ))
+    .unwrap();
+    config.secret = vanillite_net::velocity::Secret::new(SECRET.as_bytes());
+    let proxy = Proxy::start(config).unwrap();
+
+    let stream = TcpStream::connect(proxy.local_addr()).unwrap();
+    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let mut client = TestClient::new(stream);
+    client
+        .handshake("localhost", proxy.local_addr().port(), Intent::Login)
+        .unwrap();
+    client.login("Mallory", None).unwrap();
+    client.configure().unwrap();
+    // Vanillite refuses after the configuration: the proxy falls back to the other server
+    // once, then gives up.
+    let mut fallbacks = 0;
+    let deadline = Instant::now() + TIMEOUT;
+    let reason = loop {
+        assert!(Instant::now() < deadline, "timed out waiting for the kick");
+        let raw = client
+            .recv_raw()
+            .expect("the proxy disconnects with a reason");
+        if raw.first() == Some(&u8::try_from(StartConfiguration::ID).unwrap()) && raw.len() == 1 {
+            fallbacks += 1;
+            assert_eq!(fallbacks, 1, "passed around between the servers");
+            client.send(&ConfigurationAcknowledged).unwrap();
+            client.configure().unwrap();
+            continue;
+        }
+        match ClientboundPlay::decode(&raw) {
+            Ok(ClientboundPlay::Disconnect(d)) => break d.reason,
+            Ok(ClientboundPlay::Login(_)) => panic!("a server admitted the player"),
+            _ => {}
+        }
+    };
+    assert_eq!(fallbacks, 1);
+    assert_eq!(reason.plain(), "multiplayer.disconnect.not_whitelisted");
+    // Nothing after the kick: the connection is closed.
+    assert!(client.recv_raw().is_err());
+
+    drop(proxy);
+    for (handle, thread) in servers {
+        handle.stop();
+        thread.join().unwrap();
+    }
+}

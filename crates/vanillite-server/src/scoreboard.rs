@@ -350,14 +350,17 @@ pub(crate) fn died(
     let victim_kind = entities.store.get(victim).map(|e| e.kind());
     let team = global.systems.scoreboard().team_of(&name).cloned();
     if victim_player && let Some(message) = message {
-        match &team {
-            None => global
+        // `broadcastSystemMessage` logs the message (`MinecraftServer.sendSystemMessage`).
+        let broadcast = || {
+            log::info!("System chat: {}", global.english(message));
+            global
                 .players
-                .broadcast_system(message.clone(), false, None),
+                .broadcast_system(message.clone(), false, None);
+        };
+        match &team {
+            None => broadcast(),
             Some(t) => match t.death_message_visibility {
-                Visibility::Always => global
-                    .players
-                    .broadcast_system(message.clone(), false, None),
+                Visibility::Always => broadcast(),
                 Visibility::Never => {}
                 // `broadcastSystemToTeam`: the other members.
                 Visibility::HideForOtherTeams => {

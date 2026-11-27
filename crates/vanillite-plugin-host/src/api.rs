@@ -187,6 +187,11 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     packet_receive,
     entities_in_box,
     entity_type_name,
+    block_type_info,
+    item_type_info,
+    registry_entries,
+    registry_tag,
+    player_update_commands,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -2469,6 +2474,176 @@ unsafe extern "C" fn entity_type_name(
         match info {
             Some(info) => write_str(out, info.name),
             None => status::INVALID_ARGUMENT,
+        }
+    })
+}
+
+unsafe extern "C" fn block_type_info(
+    id: abi::PluginId,
+    name: abi::Str,
+    out: *mut abi::BlockTypeInfo,
+) -> Status {
+    use vanillite_data::block::{BlockId, BlockKind, flags, ids};
+    with(id, |inner, _| {
+        // SAFETY: the plugin's string is valid for the call.
+        let Some(block) = BlockId::by_name(unsafe { str(name) }) else {
+            return status::NOT_FOUND;
+        };
+        let info = block.info();
+        let state = block.default_state();
+        let mut f = 0;
+        let mut set = |on: bool, flag: u32| {
+            if on {
+                f |= flag;
+            }
+        };
+        set(state.is_air(), abi::block_type_flag::AIR);
+        set(
+            state.has(flags::SOLID) && block != ids::COBWEB && block != ids::BAMBOO_SAPLING,
+            abi::block_type_flag::SOLID,
+        );
+        set(
+            state.has(flags::REDSTONE_CONDUCTOR),
+            abi::block_type_flag::OCCLUDING,
+        );
+        set(
+            state.has(flags::IGNITED_BY_LAVA),
+            abi::block_type_flag::FLAMMABLE,
+        );
+        set(
+            server!(inner).block_burnable(u32::from(state.0)),
+            abi::block_type_flag::BURNABLE,
+        );
+        set(
+            matches!(
+                info.kind,
+                BlockKind::ColoredFallingBlock
+                    | BlockKind::ConcretePowderBlock
+                    | BlockKind::AnvilBlock
+                    | BlockKind::DragonEggBlock
+                    | BlockKind::BrushableBlock
+                    | BlockKind::PointedDripstoneBlock
+            ),
+            abi::block_type_flag::GRAVITY,
+        );
+        set(
+            info.block_entity != u16::MAX,
+            abi::block_type_flag::BLOCK_ENTITY,
+        );
+        set(
+            state.has(flags::REPLACEABLE),
+            abi::block_type_flag::REPLACEABLE,
+        );
+        set(state.has(flags::LIQUID), abi::block_type_flag::LIQUID);
+        set(info.item != u16::MAX, abi::block_type_flag::ITEM);
+        write(
+            out,
+            abi::BlockTypeInfo {
+                size: abi::size_of::<abi::BlockTypeInfo>(),
+                default_state: u32::from(state.0),
+                state_count: u32::from(info.state_count),
+                flags: f,
+                hardness: info.hardness,
+                blast_resistance: info.blast_resistance,
+                friction: info.friction,
+                speed_factor: info.speed_factor,
+                jump_factor: info.jump_factor,
+            },
+        )
+    })
+}
+
+unsafe extern "C" fn item_type_info(
+    id: abi::PluginId,
+    name: abi::Str,
+    out: *mut abi::ItemTypeInfo,
+) -> Status {
+    use vanillite_data::item::{ItemId, Rarity};
+    with(id, |_, _| {
+        // SAFETY: the plugin's string is valid for the call.
+        let Some(item) = ItemId::by_name(unsafe { str(name) }) else {
+            return status::NOT_FOUND;
+        };
+        let info = item.info();
+        let mut f = 0;
+        if info.food.is_some() {
+            f |= abi::item_type_flag::EDIBLE;
+        }
+        if !info.jukebox_song.is_empty() {
+            f |= abi::item_type_flag::RECORD;
+        }
+        if !info.compostable.is_empty() {
+            f |= abi::item_type_flag::COMPOSTABLE;
+        }
+        write(
+            out,
+            abi::ItemTypeInfo {
+                size: abi::size_of::<abi::ItemTypeInfo>(),
+                max_stack_size: u32::from(info.max_stack_size),
+                max_damage: u32::from(info.max_damage),
+                block_state: item
+                    .block()
+                    .map_or(u32::MAX, |b| u32::from(b.default_state().0)),
+                flags: f,
+                rarity: match info.rarity {
+                    Rarity::Common => 0,
+                    Rarity::Uncommon => 1,
+                    Rarity::Rare => 2,
+                    Rarity::Epic => 3,
+                },
+                equip_slot: if info.equip_slot == 255 {
+                    u32::MAX
+                } else {
+                    u32::from(info.equip_slot)
+                },
+            },
+        )
+    })
+}
+
+unsafe extern "C" fn registry_entries(
+    id: abi::PluginId,
+    name: abi::Str,
+    sink: *const abi::ByteSink,
+) -> Status {
+    with(id, |inner, _| {
+        let Ok(name) = arg(name) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let list = match vanillite_data::registry::Registry::by_name(name) {
+            Some(r) => r.entries.join("\n"),
+            None => match server!(inner).registry_entries(name) {
+                Some(entries) => entries.join("\n"),
+                None => return status::NOT_FOUND,
+            },
+        };
+        write_sink(sink, list.as_bytes())
+    })
+}
+
+unsafe extern "C" fn registry_tag(
+    id: abi::PluginId,
+    registry: abi::Str,
+    tag: abi::Str,
+    sink: *const abi::ByteSink,
+) -> Status {
+    with(id, |inner, _| {
+        let (Ok(registry), Ok(tag)) = (arg(registry), arg(tag)) else {
+            return status::INVALID_ARGUMENT;
+        };
+        match server!(inner).registry_tag(registry, tag) {
+            Some(entries) => write_sink(sink, entries.join("\n").as_bytes()),
+            None => status::NOT_FOUND,
+        }
+    })
+}
+
+unsafe extern "C" fn player_update_commands(id: abi::PluginId, player: abi::Uuid) -> Status {
+    with(id, |inner, _| {
+        if server!(inner).update_commands(player.to_u128()) {
+            status::OK
+        } else {
+            status::NOT_FOUND
         }
     })
 }

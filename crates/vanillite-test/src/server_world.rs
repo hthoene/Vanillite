@@ -40,23 +40,80 @@ const NETHER: &str = "minecraft:the_nether";
 const END: &str = "minecraft:the_end";
 /// Server ticks the chunks of the regions get to become ticking.
 const SETTLE_LIMIT: usize = 200;
+/// The chunk rate the scenario clients ask for (`ScenarioEntities.CHUNKS_PER_TICK`).
+const CHUNKS_PER_TICK: f32 = 64.0;
 /// View and simulation distance (`ScenarioRecorder.VIEW_DISTANCE`).
 const VIEW_DISTANCE: u32 = 2;
+
+/// The packets a scenario player's client receives (id + body each), until the frame takes
+/// them.
+#[derive(Default)]
+struct Capture(std::sync::Mutex<Vec<Vec<u8>>>);
+
+impl Capture {
+    fn take(&self) -> Vec<Vec<u8>> {
+        std::mem::take(
+            &mut *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn push(&self, body: Vec<u8>) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(body);
+        true
+    }
+}
+
+impl vanillite_game::player::sink::PacketSink for Capture {
+    fn send_body(&self, body: Vec<u8>) -> bool {
+        self.push(body)
+    }
+    fn send_shared(&self, packet: &Arc<vanillite_protocol::SharedPacket>) -> bool {
+        self.push(packet.body().to_vec())
+    }
+    fn close(&self) {}
+    fn is_closed(&self) -> bool {
+        false
+    }
+    fn latency_ms(&self) -> u32 {
+        0
+    }
+}
 
 /// Dimension keys with their flat layers (block, height), bottom first.
 type PackDimensions = Vec<(String, Vec<(String, u32)>)>;
 
 /// The flat layers of each dimension: the scenario's overworld, the recorder's Nether and End
 /// (`ParityServer.NETHER_LAYERS`, `END_LAYERS`), the data pack's own.
-#[derive(Debug)]
 struct ScenarioGenerators {
     overworld: Vec<(String, u32)>,
     /// The flat layers of the scenario data pack's dimensions, by dimension key.
     pack_dimensions: PackDimensions,
+    /// The server's own generators, for the End of `"end": "normal"`.
+    normal_end: Option<Box<dyn ChunkGeneratorProvider>>,
+}
+
+impl std::fmt::Debug for ScenarioGenerators {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScenarioGenerators")
+            .field("overworld", &self.overworld)
+            .field("pack_dimensions", &self.pack_dimensions)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ChunkGeneratorProvider for ScenarioGenerators {
     fn create(&self, world: &WorldInfo) -> Result<Arc<dyn ChunkGenerator>, String> {
+        if world.dimension == END
+            && let Some(normal) = &self.normal_end
+        {
+            return normal.create(world);
+        }
         let nether = [("minecraft:bedrock", 1), ("minecraft:netherrack", 3)];
         let end = [("minecraft:bedrock", 1), ("minecraft:end_stone", 3)];
         let layers: Vec<(&str, u32)> = match world.dimension.as_str() {
@@ -169,9 +226,31 @@ pub struct ServerWorld {
     players: Vec<(String, vanillite_protocol::InboundSender)>,
     /// The world of the player [`ServerWorld::player`] found last.
     selected_player: WorldId,
-    /// The packet-level players (`"client": true`) and whether their client finished the
-    /// join (accepted the first teleport, sent `player_loaded`).
-    clients: Vec<(String, bool)>,
+    /// What the scenario players' clients receive (`"client_view"`), by name.
+    captures: Vec<(String, Arc<Capture>)>,
+    clients: crate::client_view::ClientViews,
+    /// The packet-level players (`"client": true`) by name, and whether their client
+    /// reported the world loaded.
+    client_players: Vec<(String, bool)>,
+}
+
+/// A sink for packets nobody reads.
+struct Discard;
+
+impl vanillite_game::player::sink::PacketSink for Discard {
+    fn send_body(&self, _: Vec<u8>) -> bool {
+        true
+    }
+    fn send_shared(&self, _: &Arc<vanillite_protocol::SharedPacket>) -> bool {
+        true
+    }
+    fn close(&self) {}
+    fn is_closed(&self) -> bool {
+        false
+    }
+    fn latency_ms(&self) -> u32 {
+        0
+    }
 }
 
 impl std::fmt::Debug for ServerWorld {
@@ -238,13 +317,26 @@ impl ServerWorld {
         builder
             .scheduler(Box::new(vanillite_server::InlineScheduler))
             .and_then(|b| b.chunk_storage(Box::new(MemoryStores)))
-            .and_then(|b| {
-                b.chunk_generator(Box::new(ScenarioGenerators {
-                    overworld: spec.layers.clone(),
-                    pack_dimensions,
-                }))
-            })
             .map_err(|e| e.to_string())?;
+        let overworld = spec.layers.clone();
+        if spec.normal_end {
+            // The built-in generators fill the slot; the scenario's serve all but the End.
+            builder.wrap_chunk_generator(move |built_in| {
+                Box::new(ScenarioGenerators {
+                    overworld,
+                    pack_dimensions,
+                    normal_end: Some(built_in),
+                })
+            });
+        } else {
+            builder
+                .chunk_generator(Box::new(ScenarioGenerators {
+                    overworld,
+                    pack_dimensions,
+                    normal_end: None,
+                }))
+                .map_err(|e| e.to_string())?;
+        }
         let server = builder.start().map_err(|e| e.to_string())?;
         let selected = world_id(&server, &spec.dimension)?;
         let mut world = Self {
@@ -255,7 +347,9 @@ impl ServerWorld {
             names: Vec::new(),
             players: Vec::new(),
             selected_player: WorldId(0),
-            clients: Vec::new(),
+            captures: Vec::new(),
+            clients: crate::client_view::ClientViews::default(),
+            client_players: Vec::new(),
         };
         // The recorder's rules (`ScenarioRecorder.rules`).
         let mut rules: Vec<(String, String)> = [
@@ -400,8 +494,18 @@ impl ServerWorld {
 
     fn add_player(&mut self, spec: &EntitySpec, index: usize) -> Result<(), String> {
         let uuid = spec.uuid(index);
-        let tx = self.server.join_without_network(&spec.name, uuid);
+        let tx = if self.spec.client_view {
+            let capture = Arc::new(Capture::default());
+            self.captures
+                .push((spec.name.clone(), Arc::clone(&capture)));
+            self.server.join_into_sink(&spec.name, uuid, capture)
+        } else {
+            self.server.join_without_network(&spec.name, uuid)
+        };
         self.players.push((spec.name.clone(), tx));
+        if spec.client {
+            self.client_players.push((spec.name.clone(), false));
+        }
         self.names.push((uuid, spec.name.clone()));
         let overworld = self.server.world(WorldId(0)).level_mut();
         let id = overworld
@@ -429,9 +533,25 @@ impl ServerWorld {
             // A new player is not on the ground before its first move.
             e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, false);
         }
+        // The join of a client: the server teleports the player where it stands
+        // (`placeNewPlayer`); the client accepts at the start of its first tick.
+        let body = spec.client.then(|| {
+            overworld
+                .entities
+                .store
+                .get(id)
+                .map(|e| vanillite_game::player::movement::Body {
+                    pos: e.pos(),
+                    velocity: e.velocity(),
+                    y_rot: e.rot().y_rot,
+                    x_rot: e.rot().x_rot,
+                    on_ground: false,
+                    horizontal_collision: false,
+                    fall_flying: false,
+                })
+        });
         if let Some(p) = overworld.entities.player_mut(id) {
-            // A client player moves by its packets; the server moves the others, like
-            // Vanilla's.
+            // A client player moves by its packets.
             p.survival.simulate_movement = !spec.client;
             for (slot, item, count) in &spec.inventory {
                 let item = vanillite_data::item::ItemId::by_name(item)
@@ -443,16 +563,17 @@ impl ServerWorld {
             if let Some(food) = spec.food {
                 p.survival.food.food_level = food;
             }
+            if let Some(Some(mut body)) = body {
+                let (pos, y_rot, x_rot) = (body.pos, body.y_rot, body.x_rot);
+                p.connection
+                    .movement
+                    .teleport(&mut body, pos, y_rot, x_rot, &Discard);
+            }
             p.survival.y_body_rot = spec.rot[0];
             // The recorder seeds the player's own random with its `seed` at the end of the
             // `Entity` constructor; the `LivingEntity` constructor then draws the yaw.
             p.survival.random = vanillite_base::random::LegacyRandom::new(spec.seed);
             vanillite_base::random::RandomSource::next_float(&mut p.survival.random);
-        }
-        if spec.client {
-            // The join teleport above waits for the client: it accepts and reports the world
-            // loaded at the start of its first tick ([`ScenarioWorld::client_begin`]).
-            self.clients.push((spec.name.clone(), false));
         }
         Ok(())
     }
@@ -497,6 +618,26 @@ impl ServerWorld {
             .map(|(u, _)| *u)
             .ok_or_else(|| format!("no scenario entity `{name}`"))?;
         Ok((self.network_id(name)?, uuid))
+    }
+
+    /// Queues a packet the client of the scenario player `name` sends by itself (it does not
+    /// mark the player loaded); the server handles it in its next tick.
+    fn push(
+        &self,
+        name: &str,
+        packet: vanillite_protocol::sets::ServerboundPlay,
+    ) -> Result<(), String> {
+        let tx = self
+            .players
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, tx)| tx)
+            .ok_or("no packet queue")?;
+        if tx.try_send(vanillite_protocol::Inbound { seq: 0, packet }) {
+            Ok(())
+        } else {
+            Err(format!("the packet of `{name}` was dropped"))
+        }
     }
 
     /// Queues a packet of the scenario player `name`; the server handles it in its next tick.
@@ -593,8 +734,6 @@ impl ScenarioWorld for ServerWorld {
         let ents = &level.entities;
         let core = ents.store.columns();
         let name_of = |id: EntityId| ents.store.get(id).and_then(|e| self.name_of(e.uuid()));
-        let is_client =
-            |id: EntityId| name_of(id).is_some_and(|n| self.clients.iter().any(|(c, _)| *c == n));
         for row in 0..core.id.len() {
             let pos = core.pos[row];
             let block = BlockPos::new(
@@ -617,6 +756,10 @@ impl ScenarioWorld for ServerWorld {
                 Vec3::ZERO
             } else {
                 core.velocity[row]
+            };
+            let is_client = |id: EntityId| {
+                core.kind[row] == ids::PLAYER
+                    && name_of(id).is_some_and(|n| self.client_players.iter().any(|(c, _)| *c == n))
             };
             let mut detail = entity_detail(
                 ents,
@@ -683,6 +826,89 @@ impl ScenarioWorld for ServerWorld {
 
     fn level_rng(&mut self) -> Option<i64> {
         (self.spec.level_rng || !self.names.is_empty()).then(|| self.level_mut().random().state())
+    }
+
+    /// Every client player accepts the teleport the server waits for, and reports the world
+    /// loaded in its first tick (`ScenarioEntities.clientBegin`).
+    fn client_begin(&mut self) -> Result<(), String> {
+        use vanillite_protocol::packets::play::serverbound::{AcceptTeleportation, PlayerLoaded};
+        use vanillite_protocol::sets::ServerboundPlay;
+        let names: Vec<String> = self.client_players.iter().map(|(n, _)| n.clone()).collect();
+        for name in &names {
+            let id = self.player(name)?;
+            let level = self.server.world_ref(self.selected_player).level();
+            let pending = level
+                .entities
+                .player(id)
+                .and_then(|p| p.connection.movement.pending_teleport());
+            let rot = level.entities.store.get(id).map(|e| e.rot());
+            if let (Some((teleport, to)), Some(rot)) = (pending, rot) {
+                self.push(
+                    name,
+                    ServerboundPlay::AcceptTeleportation(AcceptTeleportation {
+                        id: teleport,
+                        x: to.x,
+                        y: to.y,
+                        z: to.z,
+                        y_rot: rot.y_rot,
+                        x_rot: rot.x_rot,
+                    }),
+                )?;
+            }
+        }
+        for i in 0..self.client_players.len() {
+            if !std::mem::replace(&mut self.client_players[i].1, true) {
+                let name = self.client_players[i].0.clone();
+                self.push(&name, ServerboundPlay::PlayerLoaded(PlayerLoaded))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `client_tick_end` of every client player.
+    fn client_end(&mut self) -> Result<(), String> {
+        use vanillite_protocol::packets::play::serverbound::ClientTickEnd;
+        use vanillite_protocol::sets::ServerboundPlay;
+        if self.spec.client_tick_end {
+            for (name, _) in &self.client_players {
+                self.push(name, ServerboundPlay::ClientTickEnd(ClientTickEnd))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The client of every player also acknowledges each chunk batch it got
+    /// (`chunk_batch_received`, like `ScenarioEntities.packets`), so chunks keep coming.
+    fn client_view(&mut self) -> Result<Vec<String>, String> {
+        use vanillite_protocol::Packet;
+        use vanillite_protocol::packets::play::clientbound::ChunkBatchFinished;
+        use vanillite_protocol::packets::play::serverbound::ChunkBatchReceived;
+        use vanillite_protocol::sets::ServerboundPlay;
+        let packets: Vec<(String, Vec<Vec<u8>>)> = self
+            .captures
+            .iter()
+            .map(|(name, capture)| (name.clone(), capture.take()))
+            .collect();
+        for (name, bodies) in &packets {
+            let finished = bodies.iter().any(|b| {
+                vanillite_protocol::codec::Reader::new(b)
+                    .varint()
+                    .is_ok_and(|id| id == ChunkBatchFinished::ID)
+            });
+            if finished {
+                self.push(
+                    name,
+                    ServerboundPlay::ChunkBatchReceived(ChunkBatchReceived {
+                        desired_chunks_per_tick: CHUNKS_PER_TICK,
+                    }),
+                )?;
+            }
+        }
+        Ok(self.clients.frame(
+            packets
+                .iter()
+                .map(|(n, p)| (n.as_str(), p.iter().map(Vec::as_slice).collect())),
+        ))
     }
 
     /// As the server at the origin of the overworld, before the tick.
@@ -876,65 +1102,6 @@ impl ScenarioWorld for ServerWorld {
         let packet = vanillite_protocol::sets::ServerboundPlay::decode(&bytes)
             .map_err(|e| format!("`{}` does not decode: {e}", op.packet))?;
         self.send(&op.entity, packet)
-    }
-
-    /// The start of a client tick: every client accepts the teleport the server waits for; a
-    /// client that has just joined then reports the world loaded.
-    fn client_begin(&mut self) -> Result<(), String> {
-        use vanillite_protocol::packets::play::serverbound::{AcceptTeleportation, PlayerLoaded};
-        use vanillite_protocol::sets::ServerboundPlay;
-        for i in 0..self.clients.len() {
-            let name = self.clients[i].0.clone();
-            // A dead player leaves the world 20 ticks after its death (`tickDeath`).
-            let Ok(id) = self.player(&name) else {
-                continue;
-            };
-            let level = self.server.world_ref(self.selected_player).level();
-            let pending = level
-                .entities
-                .player(id)
-                .and_then(|p| p.connection.movement.pending_teleport());
-            if let Some((teleport, to)) = pending {
-                let rot = level
-                    .entities
-                    .store
-                    .get(id)
-                    .map(|e| e.rot())
-                    .ok_or("the player is gone")?;
-                self.send(
-                    &name,
-                    ServerboundPlay::AcceptTeleportation(AcceptTeleportation {
-                        id: teleport,
-                        x: to.x,
-                        y: to.y,
-                        z: to.z,
-                        y_rot: rot.y_rot,
-                        x_rot: rot.x_rot,
-                    }),
-                )?;
-            }
-            if !std::mem::replace(&mut self.clients[i].1, true) {
-                self.send(&name, ServerboundPlay::PlayerLoaded(PlayerLoaded))?;
-            }
-        }
-        Ok(())
-    }
-
-    /// The end of a client tick: `client_tick_end` of every client; the server handles the
-    /// packets in its next tick.
-    fn client_end(&mut self) -> Result<(), String> {
-        use vanillite_protocol::packets::play::serverbound::ClientTickEnd;
-        use vanillite_protocol::sets::ServerboundPlay;
-        if !self.spec.client_tick_end {
-            return Ok(());
-        }
-        for i in 0..self.clients.len() {
-            let name = self.clients[i].0.clone();
-            if self.player(&name).is_ok() {
-                self.send(&name, ServerboundPlay::ClientTickEnd(ClientTickEnd))?;
-            }
-        }
-        Ok(())
     }
 }
 

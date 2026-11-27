@@ -1,0 +1,3 @@
+tick = 2
+cause = "the end crystals reach the client one tick early (tick 2 instead of 3) after the teleport into the End; the dragon does not spawn at tick 16 and there is no boss bar (#195, client view #196)"
+owner = "world-developer #195"

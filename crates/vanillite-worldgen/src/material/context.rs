@@ -3,13 +3,14 @@
 
 use vanillite_chunk::BiomeId;
 
-use super::rule::FoldedRules;
+use super::rule::{FoldedRules, StoneDepth};
 use super::system::MaterialSystem;
 use crate::anchor::{VerticalAnchor, WorldGenerationContext};
 use crate::biome::BiomeRegistry;
 use crate::density::{Program, SamplerContext};
 use crate::mth::floor_f;
 use crate::volume::DensityVolume;
+use vanillite_base::math;
 
 /// `HOW_FAR_BELOW_PRELIMINARY_SURFACE_LEVEL_TO_BUILD_SURFACE`.
 const BELOW_PRELIMINARY_SURFACE: i32 = 8;
@@ -295,6 +296,42 @@ impl<'a> MaterialRuleContext<'a> {
                 .wrapping_add(self.surface_depth)
                 .wrapping_sub(BELOW_PRELIMINARY_SURFACE);
         }
+    }
+
+    /// The stone depths from which on every condition of `conditions` is false in the current
+    /// column: above for floors and below for ceilings (each is true up to its own bound, as
+    /// `test` computes it).
+    pub(super) fn stone_depth_reach(&mut self, conditions: &[StoneDepth]) -> (i32, i32) {
+        let (mut floor, mut ceiling) = (i32::MIN, i32::MIN);
+        for condition in conditions {
+            let surface_depth = if condition.add_surface_depth {
+                self.surface_depth
+            } else {
+                0
+            };
+            let secondary_surface_depth = if condition.secondary_depth_range == 0 {
+                0
+            } else {
+                math::map(
+                    self.surface_secondary(),
+                    -1.0,
+                    1.0,
+                    0.0,
+                    f64::from(condition.secondary_depth_range),
+                ) as i32
+            };
+            let bound = 1_i32
+                .wrapping_add(condition.offset)
+                .wrapping_add(surface_depth)
+                .wrapping_add(secondary_surface_depth);
+            let reach = if condition.ceiling {
+                &mut ceiling
+            } else {
+                &mut floor
+            };
+            *reach = (*reach).max(bound);
+        }
+        (floor, ceiling)
     }
 
     /// Whether [`Self::min_surface_level`] of the current column reads the sampled layer, so

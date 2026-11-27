@@ -458,6 +458,9 @@ pub struct Digging {
     /// `FenceBlock.useWithoutItem` of the last `use_item_on`: the fence the player's leashed
     /// mobs get tied to (the world runs it next).
     pub bind_fence: Option<BlockPos>,
+    /// `BlockItem.useOn` fell back to `Item.use` of a consumable block item (carrots, berries)
+    /// that could not be placed: the world starts using it with this hand next.
+    pub start_using: Option<Hand>,
 }
 
 /// `getDestroyProgress` of `state` for the actor.
@@ -1002,6 +1005,7 @@ impl Digging {
         self.ack(p.sequence.max(0));
         self.entity_item_use = false;
         self.bind_fence = None;
+        self.start_using = None;
         let pos = BlockPos::new(p.pos.x, p.pos.y, p.pos.z);
         let face = direction_wrapped(p.face);
         if !ctx.actor.within_block_range(pos, 1.0) {
@@ -1400,6 +1404,7 @@ impl Digging {
         let Some(place_ctx) =
             place::update_placement_context(&place_ctx, &LevelReader(&*ctx.level))
         else {
+            self.consumable_fallback(ctx, hand, &stack, pos);
             return false;
         };
         let placed = self.place_block(ctx, hand, &stack, &place_ctx);
@@ -1409,8 +1414,41 @@ impl Digging {
             ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
             ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
             any_block_use(ctx, hand, pos);
+        } else {
+            self.consumable_fallback(ctx, hand, &stack, pos);
         }
         placed
+    }
+
+    /// The end of `BlockItem.useOn`: a block item with `consumable` that was not placed is used
+    /// like in the air (`Item.use` -> `Consumable.startConsuming`). It consumes the click
+    /// without a swing when the player can eat it (`CONSUME`: the stat and the triggers of a
+    /// successful item use), and fails otherwise.
+    fn consumable_fallback(
+        &mut self,
+        ctx: &mut PlayContext<'_>,
+        hand: Hand,
+        stack: &ItemStack,
+        pos: BlockPos,
+    ) {
+        if !crate::consumable::is_consumable(stack) {
+            return;
+        }
+        let can = crate::consumable::food(stack).is_none_or(|food| {
+            food.can_always_eat
+                || matches!(
+                    ctx.actor.game_mode,
+                    GameMode::Creative | GameMode::Spectator
+                )
+                || ctx.food.as_deref().is_some_and(|f| f.needs_food())
+        });
+        if !can {
+            return;
+        }
+        self.start_using = Some(hand);
+        ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
+        ctx.trigger(Event::ItemUsedOnBlock(pos, stack.clone()));
+        any_block_use(ctx, hand, pos);
     }
 
     /// `useOn` of the items that place decorations: armor stands, item frames, paintings and

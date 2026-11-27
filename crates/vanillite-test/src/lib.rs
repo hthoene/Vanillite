@@ -20,6 +20,7 @@
 //! Goldens are recorded on the pinned Vanilla jar by `cargo xtask golden regen`; intended
 //! differences are accepted with `cargo xtask golden bless <scenario>`.
 
+pub mod client_view;
 pub mod fuzz;
 pub mod game_world;
 pub mod golden;

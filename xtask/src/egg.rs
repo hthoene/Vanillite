@@ -276,6 +276,8 @@ echo \"Nothing to install.\"
 pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     match args {
         [] => {
+            crate::write(&root.join(VERSIONS_PATH), &render_versions(root)?)?;
+            println!("wrote {VERSIONS_PATH}");
             for kind in Egg::ALL {
                 let egg = render(root, kind)?;
                 check_format(&egg)?;
@@ -296,6 +298,12 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
 /// eggs differ in what they share, or if the configuration reference is stale.
 pub fn check(root: &Path) -> Result<()> {
     crate::configdoc::check(root)?;
+    if crate::read(&root.join(VERSIONS_PATH)).unwrap_or_default() != render_versions(root)? {
+        return Err(format!(
+            "{VERSIONS_PATH} lacks the Minecraft version or release channel of the sources; run \
+             `cargo xtask egg`"
+        ));
+    }
     let mut eggs = Vec::new();
     for kind in Egg::ALL {
         let egg = render(root, kind)?;
@@ -477,14 +485,18 @@ pub fn render(root: &Path, kind: Egg) -> Result<String> {
              Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the \
              essential settings first, then every server.properties and vanillite.toml \
              setting, grouped by area. For only the basic settings use the egg \
-             \"Vanillite (Simple)\". https://github.com/hthoene/vanillite",
+             \"Vanillite (Simple)\". The image (Startup page) picks the Minecraft version; \"Latest Minecraft\" follows new \
+             versions on the next restart, other new versions appear after re-importing this \
+             egg. https://github.com/hthoene/vanillite",
         ),
         Egg::Simple => (
             "Vanillite (Simple)",
             "Vanillite: a Minecraft Java Edition server that plays exactly like the official \
              one, but is faster and needs less memory. This egg shows only the basic \
              settings; everything else uses the defaults of the chosen server type. For every \
-             setting use the egg \"Vanillite\" (servers can switch between the two). \
+             setting use the egg \"Vanillite\" (servers can switch between the two). The image (Startup page) picks the Minecraft version; \"Latest Minecraft\" follows new \
+             versions on the next restart, other new versions appear after re-importing this \
+             egg. \
              https://github.com/hthoene/vanillite",
         ),
     };
@@ -520,43 +532,140 @@ pub fn render(root: &Path, kind: Egg) -> Result<String> {
     Ok(out)
 }
 
-/// The images the panel offers, the default first: the newest build of this release channel
-/// for this Minecraft version, then the newest of the channel (moves to new Minecraft versions).
-/// Tags as `scripts/release/meta.sh` pushes them.
+/// The images the panel offers, the default first: one entry per Minecraft version of
+/// [`VERSIONS_PATH`] (the version of the sources first, then newest first), then the moving tags
+/// that follow new Minecraft versions. Tags as `scripts/release/meta.sh` pushes them.
 fn docker_images(root: &Path) -> Result<Value> {
+    let mut versions = minecraft_versions(root)?;
+    let current = current_version(root)?.id;
+    if let Some(i) = versions.iter().position(|v| v.id == current) {
+        let v = versions.remove(i);
+        versions.insert(0, v);
+    }
+    let mut images = serde_json::Map::new();
+    for v in &versions {
+        let (name, tag) = if v.channel == STABLE {
+            (format!("Minecraft {}", v.id), format!("mc{}", v.id))
+        } else {
+            (
+                format!("Minecraft {} - {}", v.id, title(&v.channel)),
+                format!("mc{}-{}", v.id, v.channel),
+            )
+        };
+        images.insert(name, format!("{REPOSITORY}:{tag}").into());
+    }
+    if versions.iter().any(|v| v.channel == STABLE) {
+        images.insert(
+            "Latest Minecraft".to_owned(),
+            format!("{REPOSITORY}:latest").into(),
+        );
+    }
+    // Stable releases move the beta tags too, so `beta` always holds the newest build.
+    images.insert(
+        "Latest Minecraft - Beta".to_owned(),
+        format!("{REPOSITORY}:beta").into(),
+    );
+    Ok(Value::Object(images))
+}
+
+/// The Minecraft versions with images, generated into [`VERSIONS_PATH`]. One line per version:
+/// `<minecraft version> <channel>`, the channel of its newest images (`beta`, or `stable` once a
+/// stable release for it exists).
+const VERSIONS_PATH: &str = "deploy/minecraft-versions.txt";
+/// The channel of a release without a pre-release part.
+const STABLE: &str = "stable";
+const VERSIONS_HEADER: &str = "\
+# Minecraft versions Vanillite publishes Docker images for: `<minecraft version> <channel>`,
+# newest first, channel `beta` or `stable` (a stable release exists). The source of the image
+# dropdown of the Pterodactyl eggs and of the moving Docker tags (scripts/release/meta.sh moves
+# `beta`/`latest` only for the newest version). `cargo xtask egg` adds the version of the sources;
+# remove a line once that version gets no more images (its tags stay pullable).
+";
+
+/// One line of [`VERSIONS_PATH`].
+struct McVersion {
+    id: String,
+    channel: String,
+}
+
+/// The Minecraft version of the sources and the release channel of the workspace version.
+fn current_version(root: &Path) -> Result<McVersion> {
     let source = crate::read(&root.join(MC_VERSION_PATH))?;
-    let mc = source
+    let id = source
         .lines()
         .find_map(|l| l.strip_prefix("pub const VERSION_ID: &str = \""))
         .and_then(|l| l.strip_suffix("\";"))
         .ok_or_else(|| format!("{MC_VERSION_PATH}: no VERSION_ID"))?;
-    let version = env!("CARGO_PKG_VERSION");
-    let mut images = serde_json::Map::new();
-    match version.split_once('-') {
-        Some((_, pre)) => {
-            let channel = pre.split('.').next().unwrap_or(pre);
-            let label = title(channel);
-            images.insert(
-                format!("{label} - Minecraft {mc}"),
-                format!("{REPOSITORY}:mc{mc}-{channel}").into(),
-            );
-            images.insert(
-                format!("{label} - newest Minecraft version"),
-                format!("{REPOSITORY}:{channel}").into(),
-            );
-        }
-        None => {
-            images.insert(
-                format!("Minecraft {mc}"),
-                format!("{REPOSITORY}:mc{mc}").into(),
-            );
-            images.insert(
-                "Newest Minecraft version".to_owned(),
-                format!("{REPOSITORY}:latest").into(),
-            );
-        }
+    let channel = match env!("CARGO_PKG_VERSION").split_once('-') {
+        Some((_, pre)) => pre.split('.').next().unwrap_or(pre),
+        None => STABLE,
+    };
+    if channel != STABLE && channel != "beta" {
+        return Err(format!(
+            "release channel {channel}: the eggs and {VERSIONS_PATH} know only beta and stable"
+        ));
     }
-    Ok(Value::Object(images))
+    Ok(McVersion {
+        id: id.to_owned(),
+        channel: channel.to_owned(),
+    })
+}
+
+/// The committed versions plus the version of the sources (a stable entry stays stable), newest
+/// first.
+fn minecraft_versions(root: &Path) -> Result<Vec<McVersion>> {
+    let current = current_version(root)?;
+    let text = crate::read(&root.join(VERSIONS_PATH)).unwrap_or_default();
+    let mut versions = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let (Some(id), Some(channel), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(format!(
+                "{VERSIONS_PATH}: `{line}` is not `<version> <channel>`"
+            ));
+        };
+        if channel != STABLE && channel != "beta" {
+            return Err(format!(
+                "{VERSIONS_PATH}: {id}: channel must be beta or stable"
+            ));
+        }
+        if !id
+            .split('.')
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Err(format!("{VERSIONS_PATH}: {id} is not a release version"));
+        }
+        if versions.iter().any(|v: &McVersion| v.id == id) {
+            return Err(format!("{VERSIONS_PATH}: {id} is listed twice"));
+        }
+        versions.push(McVersion {
+            id: id.to_owned(),
+            channel: channel.to_owned(),
+        });
+    }
+    match versions.iter_mut().find(|v| v.id == current.id) {
+        Some(v) if current.channel == STABLE => v.channel = current.channel,
+        Some(_) => {}
+        None => versions.push(current),
+    }
+    versions.sort_by_cached_key(|v| {
+        let parts: Vec<u64> = v.id.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+        std::cmp::Reverse(parts)
+    });
+    Ok(versions)
+}
+
+/// The text of [`VERSIONS_PATH`]: the versions newest first.
+fn render_versions(root: &Path) -> Result<String> {
+    let versions = minecraft_versions(root)?;
+    let mut out = VERSIONS_HEADER.to_owned();
+    for v in versions {
+        out.push_str(&format!("{} {}\n", v.id, v.channel));
+    }
+    Ok(out)
 }
 
 fn rule_entries<R: RuleSet>(entries: &mut Vec<Entry>, scope: &str) {

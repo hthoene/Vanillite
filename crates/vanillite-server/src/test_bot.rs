@@ -3,7 +3,8 @@
 //! A bot joins over a virtual connection like any other client (handshake, login,
 //! configuration, play), so it goes through the same validation as real players. Virtual
 //! connections are opened by the server itself and need no authentication; no network client
-//! can use this path. A bot walks in a circle around its spawn point and sneaks now and then.
+//! can use this path. A bot walks in a circle around its spawn point, sneaks now and then and
+//! respawns after dying.
 
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
@@ -15,8 +16,8 @@ use vanillite_protocol::codec::write_varint;
 use vanillite_protocol::frame::encode_body;
 use vanillite_protocol::packets::handshake::Intent;
 use vanillite_protocol::packets::play::serverbound::{
-    AcceptTeleportation, ChunkBatchReceived, ClientTickEnd, Input, KeepAlive, MoveFlags,
-    MovePlayerPosRot, PlayerInput, PlayerLoaded,
+    AcceptTeleportation, ChunkBatchReceived, ClientCommand, ClientCommandAction, ClientTickEnd,
+    Input, KeepAlive, MoveFlags, MovePlayerPosRot, PlayerInput, PlayerLoaded,
 };
 use vanillite_protocol::sets::ClientboundPlay;
 use vanillite_protocol::types::{GameProfile, Uuid};
@@ -163,14 +164,27 @@ fn run(opener: &VirtualOpener, name: &str, n: f64) -> Result<(), String> {
     walk(&mut play, n)
 }
 
-/// Answers the server and walks in a circle at 20 moves per second; bot `n` walks a circle
-/// `n` blocks wide around its spawn point.
+/// Ticks a dead bot waits before it respawns (the death screen's buttons wait 20 ticks), and
+/// between two respawn requests while the server keeps it dead.
+const RESPAWN_DELAY: u64 = 20;
+const RESPAWN_RETRY: u64 = 100;
+
+/// Answers the server like a client and walks in a circle at 20 moves per second; bot `n`
+/// walks a circle `n` blocks wide around the point the server put it at on joining and
+/// respawning. Dead, it sends no moves and asks to respawn like a client's death screen.
 fn walk(play: &mut Play, n: f64) -> Result<(), String> {
-    let radius = RADIUS * n;
+    let mut radius = RADIUS * n;
+    // The circle's center (set by the first teleport after joining or respawning), the bot's
+    // distance from it (it walks out from the center first), its angle and direction.
     let mut center: Option<(f64, f64, f64)> = None;
+    let mut distance = 0.0f64;
     let mut angle = 0.0f64;
+    let mut direction = 1.0f64;
+    let mut last = (0.0f64, 0.0f64);
     let mut ticks = 0u64;
     let mut sneaking = false;
+    // The tick the bot died at, while it is dead.
+    let mut dead_since: Option<u64> = None;
     let tick = Duration::from_millis(50);
     let mut next = Instant::now();
     loop {
@@ -195,12 +209,43 @@ fn walk(play: &mut Play, n: f64) -> Result<(), String> {
                         y_rot: t.change.y_rot,
                         x_rot: t.change.x_rot,
                     })?;
-                    if center.is_none() {
-                        play.send(&PlayerLoaded)?;
+                    last = (p.x, p.z);
+                    match center {
+                        None => {
+                            play.send(&PlayerLoaded)?;
+                            center = Some((p.x, p.y, p.z));
+                            radius = RADIUS * n;
+                            distance = 0.0;
+                            angle = 0.0;
+                        }
+                        // The server put the bot back (it walked into something): it goes on
+                        // from there the other way round, on a smaller circle when it was
+                        // still walking out.
+                        Some((cx, _, cz)) => {
+                            let (dx, dz) = (p.x - cx, p.z - cz);
+                            distance = dx.hypot(dz).min(radius);
+                            if distance < radius {
+                                radius = distance.max(SPEED);
+                                distance = radius;
+                            }
+                            angle = dz.atan2(dx);
+                            direction = -direction;
+                        }
                     }
-                    // Walk around the point the server put the bot at.
-                    center = Some((p.x - radius, p.y, p.z));
-                    angle = 0.0;
+                }
+                Ok(ClientboundPlay::SetHealth(h)) => {
+                    if h.health <= 0.0 {
+                        dead_since.get_or_insert(ticks);
+                    } else {
+                        dead_since = None;
+                    }
+                }
+                // Respawned (or another dimension): the next teleport places the bot anew.
+                Ok(ClientboundPlay::Respawn(_)) => {
+                    center = None;
+                    radius = RADIUS * n;
+                    direction = 1.0;
+                    dead_since = None;
                 }
                 Ok(ClientboundPlay::Disconnect(d)) => {
                     return Err(format!("kicked: {}", d.reason.plain()));
@@ -208,16 +253,29 @@ fn walk(play: &mut Play, n: f64) -> Result<(), String> {
                 _ => {}
             }
         }
-        if let Some((cx, cy, cz)) = center {
-            angle = (angle + SPEED / radius) % std::f64::consts::TAU;
+        if let Some(since) = dead_since {
+            let dead_for = ticks.saturating_sub(since);
+            if dead_for >= RESPAWN_DELAY && (dead_for - RESPAWN_DELAY).is_multiple_of(RESPAWN_RETRY)
+            {
+                play.send(&ClientCommand {
+                    action: ClientCommandAction::PerformRespawn,
+                })?;
+            }
+        } else if let Some((cx, cy, cz)) = center {
+            if distance < radius {
+                distance = (distance + SPEED).min(radius);
+            } else {
+                angle = (angle + direction * SPEED / radius) % std::f64::consts::TAU;
+            }
             let (sin, cos) = angle.sin_cos();
-            // Facing along the circle: the direction is (-sin, cos) and Minecraft's yaw is
-            // atan2(-dx, dz), which is the angle itself.
-            let yaw = angle.to_degrees() as f32;
+            let (x, z) = (cx + distance * cos, cz + distance * sin);
+            // Facing the way it walks: Minecraft's yaw is atan2(-dx, dz).
+            let yaw = (last.0 - x).atan2(z - last.1).to_degrees() as f32;
+            last = (x, z);
             play.send(&MovePlayerPosRot {
-                x: cx + radius * cos,
+                x,
                 y: cy,
-                z: cz + radius * sin,
+                z,
                 y_rot: yaw,
                 x_rot: 0.0,
                 flags: MoveFlags {
@@ -234,8 +292,8 @@ fn walk(play: &mut Play, n: f64) -> Result<(), String> {
                 }))?;
             }
             play.send(&ClientTickEnd)?;
-            ticks += 1;
         }
+        ticks += 1;
         next += tick;
         let now = Instant::now();
         if next > now {

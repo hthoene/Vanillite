@@ -146,6 +146,22 @@ public final class ParityServer extends MinecraftServer {
   public static ParityServer start(
       Path dir, long seed, List<Layer> layers, String biome, boolean flatOthers, Path datapack)
       throws Exception {
+    return start(dir, seed, layers, biome, flatOthers, datapack, false);
+  }
+
+  /**
+   * Like {@link #start(Path, long, List, String, boolean, Path)}; with {@code normalEnd} the End
+   * generates like a new Vanilla world even with {@code flatOthers}.
+   */
+  public static ParityServer start(
+      Path dir,
+      long seed,
+      List<Layer> layers,
+      String biome,
+      boolean flatOthers,
+      Path datapack,
+      boolean normalEnd)
+      throws Exception {
     Files.createDirectories(dir);
     LevelStorageSource.LevelStorageAccess access =
         LevelStorageSource.createDefault(dir).validateAndCreateAccess("world");
@@ -167,7 +183,7 @@ public final class ParityServer extends MinecraftServer {
     }
     PackRepository packs = ServerPacksSource.createPackRepository(access);
     packs.reload();
-    WorldStem stem = loadStem(packs, seed, layers, biome, flatOthers);
+    WorldStem stem = loadStem(packs, seed, layers, biome, flatOthers, normalEnd);
     ParityServer server = new ParityServer(Thread.currentThread(), access, packs, stem);
     if (!server.initServer()) {
       throw new IllegalStateException("parity server failed to start");
@@ -178,7 +194,7 @@ public final class ParityServer extends MinecraftServer {
   /** The Vanilla data pack and world settings, loaded like {@code WorldLoader} does at start. */
   public static WorldStem loadStem(
       PackRepository packs, long seed, List<Layer> layers, String biome) throws Exception {
-    return loadStem(packs, seed, layers, biome, false);
+    return loadStem(packs, seed, layers, biome, false, false);
   }
 
   /** The Nether of scenarios across dimensions: bedrock and netherrack up to y 3. */
@@ -190,7 +206,12 @@ public final class ParityServer extends MinecraftServer {
       List.of(new Layer("minecraft:bedrock", 1), new Layer("minecraft:end_stone", 3));
 
   private static WorldStem loadStem(
-      PackRepository packs, long seed, List<Layer> layers, String biome, boolean flatOthers)
+      PackRepository packs,
+      long seed,
+      List<Layer> layers,
+      String biome,
+      boolean flatOthers,
+      boolean normalEnd)
       throws Exception {
     WorldDataConfiguration config = WorldDataConfiguration.DEFAULT;
     LevelSettings settings =
@@ -223,11 +244,14 @@ public final class ParityServer extends MinecraftServer {
                                 stems.get(LevelStem.NETHER).type(),
                                 new FlatLevelSource(
                                     flat(lookup, NETHER_LAYERS, "minecraft:nether_wastes"))));
-                        stems.put(
-                            LevelStem.END,
-                            new LevelStem(
-                                stems.get(LevelStem.END).type(),
-                                new FlatLevelSource(flat(lookup, END_LAYERS, "minecraft:the_end"))));
+                        if (!normalEnd) {
+                          stems.put(
+                              LevelStem.END,
+                              new LevelStem(
+                                  stems.get(LevelStem.END).type(),
+                                  new FlatLevelSource(
+                                      flat(lookup, END_LAYERS, "minecraft:the_end"))));
+                        }
                         dimensions = new WorldDimensions(stems);
                       }
                       // The data packs' dimensions, like `Main.createNewWorldData`.

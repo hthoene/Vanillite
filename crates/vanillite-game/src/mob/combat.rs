@@ -283,9 +283,9 @@ pub fn hurt_mob(
     if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
         return false;
     }
-    let Some(amount) = super::boss::filter_hurt(level, ents, env, cx, target, &source, amount)
-    else {
-        return false;
+    let amount = match super::boss::filter_hurt(level, ents, env, cx, target, &source, amount) {
+        Ok(amount) => amount,
+        Err(took) => return took,
     };
     let Some(m) = ents.mob_mut(target) else {
         return false;
@@ -544,6 +544,60 @@ pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f6
     }
 }
 
+/// The armour and armour toughness of a mob: its attributes with the modifiers of its
+/// equipment.
+fn mob_armor_values(m: &super::MobData) -> (f32, f32) {
+    let mut armor = Vec::new();
+    let mut toughness = Vec::new();
+    for slot in (0..8).filter_map(crate::item::EquipmentSlot::from_ordinal) {
+        let stack = m.equipment.get(slot);
+        if stack.is_empty() {
+            continue;
+        }
+        crate::item::attribute_modifiers(stack, slot, "minecraft:armor", &mut armor);
+        crate::item::attribute_modifiers(stack, slot, "minecraft:armor_toughness", &mut toughness);
+    }
+    let value = |base: f64, mods: &[_], max: f64| {
+        if mods.is_empty() {
+            base
+        } else {
+            crate::item::attribute_value(base, mods, 0.0, max)
+        }
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    (
+        value(m.attrs.armor, &armor, 30.0) as f32,
+        value(m.attrs.armor_toughness, &toughness, 20.0) as f32,
+    )
+}
+
+/// `EnchantmentHelper.getDamageProtection` of a mob's equipment (Protection, Fire Protection,
+/// ...).
+fn mob_protection(
+    ents: &Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+) -> f32 {
+    let Some(m) = ents.mob(target) else {
+        return 0.0;
+    };
+    let equipment: Vec<(crate::item::EquipmentSlot, &crate::item::ItemStack)> = (0..8)
+        .filter_map(crate::item::EquipmentSlot::from_ordinal)
+        .map(|s| (s, m.equipment.get(s)))
+        .filter(|(_, s)| !s.is_empty() && !crate::item::enchantments(s).is_empty())
+        .collect();
+    if equipment.is_empty() {
+        return 0.0;
+    }
+    let combat = super::attack::combat_data();
+    let tags: &dyn crate::predicate::EntityTags = &*combat;
+    let cx = super::attack::damage_context(ents, env.types, tags, target, source);
+    combat
+        .enchants
+        .damage_protection(&equipment, &cx, env.random)
+}
+
 /// `LivingEntity.actuallyHurt` of a mob: armour, then health.
 fn actually_hurt(
     ents: &mut Entities,
@@ -554,13 +608,21 @@ fn actually_hurt(
 ) {
     let types = env.types;
     let effectiveness = super::attack::armor_effectiveness(ents, types, target, &source);
+    // `EnchantmentHelper.getDamageProtection` of the mob's equipment.
+    let protection = if types.is(source.kind, tag::BYPASSES_EFFECTS)
+        || types.is(source.kind, tag::BYPASSES_ENCHANTMENTS)
+    {
+        0.0
+    } else {
+        mob_protection(ents, env, target, &source)
+    };
     let Some(m) = ents.mob_mut(target) else {
         return;
     };
     let mut damage = damage;
     if !types.is(source.kind, tag::BYPASSES_ARMOR) {
-        #[allow(clippy::cast_possible_truncation)]
-        let (armor, toughness) = (m.attrs.armor as f32, m.attrs.armor_toughness as f32);
+        // `getArmorValue` and `ARMOR_TOUGHNESS` with the equipment's modifiers.
+        let (armor, toughness) = mob_armor_values(m);
         damage = crate::survival::combat::damage_after_absorb_with(
             damage,
             armor,
@@ -578,6 +640,8 @@ fn actually_hurt(
         }
         if damage <= 0.0 {
             damage = 0.0;
+        } else if protection > 0.0 {
+            damage = crate::survival::combat::damage_after_magic_absorb(damage, protection);
         }
     }
     damage = super::fam::absorb(m, &source, env, damage);
@@ -1095,13 +1159,40 @@ pub fn attack_damage(m: &super::MobData) -> f32 {
 }
 
 pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
-    let damage = attack_damage(t.mob_ref());
+    use crate::predicate::EntityTags;
+    let weapon = t
+        .mob_ref()
+        .equipment
+        .get(crate::item::EquipmentSlot::MainHand)
+        .clone();
     let source = entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
+    let combat = super::attack::combat_data();
+    let tags: &dyn EntityTags = &*combat;
+    // `EnchantmentHelper.modifyDamage` of the weapon.
+    let damage = attack_damage(t.mob_ref());
+    let damage = if weapon.is_empty() {
+        damage
+    } else {
+        let ecx = super::attack::damage_context(t.ents, t.env.types, tags, target, &source);
+        combat
+            .enchants
+            .modify_damage(&weapon, &ecx, t.env.random, damage)
+    };
     let hurt_ok = hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
     if hurt_ok {
+        // `getKnockback`: the attribute through the weapon's enchantments, halved.
         #[allow(clippy::cast_possible_truncation)]
-        let kb = t.mob_ref().attrs.attack_knockback as f32;
-        if kb > 0.0 {
+        let base = t.mob_ref().attrs.attack_knockback as f32;
+        let kb = if weapon.is_empty() {
+            base
+        } else {
+            let ecx = super::attack::damage_context(t.ents, t.env.types, tags, target, &source);
+            combat
+                .enchants
+                .modify_knockback(&weapon, &ecx, t.env.random, base)
+        } / 2.0;
+        let living = t.ents.mob(target).is_some() || t.ents.player(target).is_some();
+        if kb > 0.0 && living {
             let rad = f64::from(t.core().rot().y_rot * super::DEG_TO_RAD);
             let (sin, cos) = (
                 f64::from(vanillite_base::math::sin(rad)),
@@ -1111,9 +1202,38 @@ pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
             let v = t.velocity();
             t.set_velocity(v.multiply(0.6, 1.0, 0.6));
         }
-        // `EnchantmentHelper.doPostAttackEffects`: the target's equipment (Thorns); mobs
-        // hold no enchanted weapons.
-        super::attack::post_attack(t.level, t.ents, t.env, t.cx, target, &source, None);
+        // `weaponItem.hurtEnemy`: the weapon loses its `item_damage_per_attack`.
+        if let Some(per_attack) = crate::item::item_id(&weapon)
+            .info()
+            .weapon
+            .map(|w| w.item_damage_per_attack)
+            && per_attack > 0
+            && crate::item::is_damageable(&weapon)
+        {
+            let unbreaking = combat.enchantment_level(&weapon, "minecraft:unbreaking");
+            let mut amount = i32::try_from(per_attack).unwrap_or(i32::MAX);
+            if unbreaking > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                let chance = unbreaking as f32 / (unbreaking as f32 + 1.0);
+                let removed = (0..amount)
+                    .filter(|_| t.env.random.next_float() < chance)
+                    .count();
+                amount -= i32::try_from(removed).unwrap_or(0);
+            }
+            if amount > 0 {
+                let m = t.mob();
+                let stack = &mut m.equipment.items[0];
+                let damage = crate::item::damage(stack) + amount;
+                crate::item::set_damage(stack, damage);
+                if damage >= crate::item::max_damage(stack) {
+                    stack.shrink(1);
+                }
+            }
+        }
+        // `EnchantmentHelper.doPostAttackEffects`: the target's equipment (Thorns), then the
+        // weapon (Fire Aspect).
+        let weapon = (!weapon.is_empty()).then_some(&weapon);
+        super::attack::post_attack(t.level, t.ents, t.env, t.cx, target, &source, weapon);
         t.mob().last_hurt_mob = Some(target);
         kinds::after_attack(t, target);
     }

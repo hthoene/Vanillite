@@ -1,0 +1,21 @@
+{
+  "description": "Client view (#196): a player teleports (execute in the_end) onto an obsidian platform above a freshly generated End's main island: the dragon fight starts, the dragon spawns, the ten crystals stand on the spikes and the client gets the dragon's boss bar. Back in the overworld (/tp at tick 70) the boss bar is removed at the fight's next player scan.",
+  "dimensions": true,
+  "end": "normal",
+  "client_view": true,
+  "dimension": "minecraft:the_end",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-3, 99, 13], [3, 103, 19]],
+  "views": [{"dimension": "minecraft:the_end", "region": [[-48, 0, -48], [47, 255, 47]]}],
+  "ticks": 100,
+  "setup": [
+    {"op": "fill", "dimension": "minecraft:the_end", "from": [-2, 99, 14], "to": [2, 99, 18], "block": "minecraft:obsidian"}
+  ],
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "client": true, "pos": [8.5, -60.0, 8.5], "rot": [0, 0]}
+  ],
+  "actions": [
+    {"tick": 2, "op": "command", "command": "execute in minecraft:the_end run tp steve 0.5 100.0 16.5"},
+    {"tick": 70, "op": "command", "command": "execute in minecraft:overworld run tp steve 8.5 -60.0 8.5"}
+  ]
+}
