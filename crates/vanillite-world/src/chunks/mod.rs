@@ -1143,6 +1143,7 @@ impl Chunks {
                 break;
             }
         }
+        // What changed since the last tick ended (tasks between ticks).
         self.start_relights();
         self.unload();
         self.check_visibility();
@@ -2644,6 +2645,14 @@ impl Chunks {
         self.drain_done();
         self.start_relights();
         self.drain_done();
+    }
+
+    /// Starts the light recomputation around the chunks changed in a tick, at its end: the
+    /// results are applied between ticks ([`Chunks::pump`]) or by the next [`Chunks::tick`],
+    /// so the next tick sees the new light. Vanilla's light thread works the same way: the tick
+    /// loop starts it while it waits for the next tick (`ServerChunkCache.pollTask`).
+    pub fn end_tick(&mut self) {
+        self.start_relights();
     }
 
     /// Starts light recomputation around changed chunks whose 5 × 5 area is loaded.

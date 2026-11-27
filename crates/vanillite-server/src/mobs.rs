@@ -673,6 +673,7 @@ impl WorldMobs {
         );
         // What random ticks read of this tick's environment (turtle eggs).
         level.spawner_env.env = env;
+        level.entities.day_time = env.day_time;
         let Some(table) = self.table.clone() else {
             return;
         };
