@@ -25,6 +25,7 @@ use crate::global::Global;
 use crate::player_list::Uuid;
 use crate::world::ServerWorld;
 
+mod bukkit_setup;
 mod entity_api;
 mod populators;
 mod server_api;
@@ -41,6 +42,9 @@ const BACKGROUND_PRIORITY: u32 = 1 << 20;
 /// Loads the plugins of `dir/plugins` with the `plugins.*` settings.
 pub(crate) fn load(dir: &std::path::Path, config: &Config) -> PluginHost {
     let rules = &config.server.plugins;
+    if rules.enabled {
+        bukkit_setup::prepare(&dir.join("plugins"), &config.server.bukkit);
+    }
     PluginHost::load(
         &dir.join("plugins"),
         Settings {

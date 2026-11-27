@@ -36,7 +36,7 @@ pub(super) struct GradientNoise {
     /// Per index `i`: `perms[i]`, `perms[i + 1]` and the gradient indices of both (`& 15`), one
     /// byte each from the lowest. Perlin noise always reads the permutations of `i` and
     /// `i + 1` together, so one entry answers both (see [`Pair`]).
-    pairs: [u32; 256],
+    pub pairs: [u32; 256],
     pub offset_x: f64,
     pub offset_y: f64,
     pub offset_z: f64,

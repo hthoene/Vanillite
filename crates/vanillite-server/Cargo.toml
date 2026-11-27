@@ -31,6 +31,10 @@ vanillite-light.workspace = true
 vanillite-storage.workspace = true
 vanillite-plugin-host.workspace = true
 vanillite-abi.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+tar.workspace = true
+ureq.workspace = true
 
 [features]
 # What the parity harness of vanillite-test drives (`Server::step`, `Server::world`, players
