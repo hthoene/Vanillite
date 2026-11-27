@@ -13,6 +13,7 @@
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+//! cargo xtask parity quick
 //! cargo xtask parity worlds [--ticks N] [--jobs N] [--minutes N] [--prepare-only] [<world>...]
 //! cargo xtask parity coverage [--jobs N] [--fuzz-minutes N] [--report-only] [<scenario>...]
 //! cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
@@ -122,6 +123,11 @@ pub const USAGE: &str = "usage:
       <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
       tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
       Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
+  cargo xtask parity quick
+      The quick tier of the parity scenarios (#257, part of scripts/quick-check.sh): the fast
+      scenarios without the slow ones of crates/vanillite-test/scenarios/quick-skip.txt against
+      their goldens, serial and parallel, on all cores (about a minute). The full fast tier
+      runs on every land.
   cargo xtask parity worlds [--ticks N] [--jobs N] [--minutes N] [--prepare-only] [<world>...]
       Complex real-world worlds and schematics (redstone, farms, machines; #244) against
       Vanilla: the corpus crates/vanillite-test/parity-worlds.toml is downloaded into
@@ -305,6 +311,7 @@ fn main() -> ExitCode {
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
+        ["parity", "quick"] => parity::quick(&repo_root()),
         ["parity", "worlds", rest @ ..] => parity_worlds::worlds(&repo_root(), rest),
         ["parity", "coverage", rest @ ..] => coverage::run_coverage(&repo_root(), rest),
         ["worldgen", "sweep", rest @ ..] => worldgen::sweep(&repo_root(), rest),
