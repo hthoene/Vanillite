@@ -15,8 +15,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml" | head -n 1)"
-mc="$(sed -n 's/^pub const VERSION_ID: &str = "\(.*\)";$/\1/p' \
-    "$root/crates/vanillite-data/src/generated/version.rs")"
+mc="$(sed -n 's/^id = "\(.*\)"$/\1/p' "$root/data/vanilla/version.toml")"
 [[ -n "$version" && -n "$mc" ]] || { echo "cannot read the version or the Minecraft version" >&2; exit 1; }
 tag="v${version}+mc${mc}"
 

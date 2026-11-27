@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! cargo xtask vanilla update [<version>] [--jar <server.jar>]
+//! cargo xtask vanilla export <dir>
 //! cargo xtask version check
 //! cargo xtask version update <version> [--final] [--bulk] [--no-test]
 //! cargo xtask multiversion add <version>
@@ -29,22 +30,21 @@
 //! ```
 
 mod bench;
-mod codegen;
 mod configdoc;
+mod data;
 mod devenv;
 mod docker;
 mod egg;
 mod golden;
 mod loadtest;
 mod merge;
-mod multiversion;
-mod normalize;
 mod parity;
-mod vanilla;
 mod version;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use vanillite_datagen::{cache, codegen, keep, multiversion, normalize, vanilla};
 
 /// Errors are reported as text; xtask is a developer tool.
 pub type Result<T> = std::result::Result<T, String>;
@@ -52,16 +52,21 @@ pub type Result<T> = std::result::Result<T, String>;
 pub const USAGE: &str = "usage:
   cargo xtask vanilla update [<version>] [--jar <server.jar>]
       Download (or take) the server jar, verify its SHA-1, run Mojang's data generator and
-      tools/extractor, normalise into data/vanilla/, run codegen and print a change report.
-      <version> defaults to the latest release. Needs a JDK (JAVA_HOME or
-      VANILLITE_JAVA_HOME, else java/javac on PATH) of the version the jar asks for.
+      tools/extractor, normalise into the data cache, pin the version in
+      data/vanilla/version.toml and print a change report. <version> defaults to the latest
+      release. Uses a JDK of the version the jar asks for (VANILLITE_JAVA_HOME, JAVA_HOME,
+      java/javac on PATH, else Temurin downloaded into the cache).
+  cargo xtask vanilla export <dir>
+      Copy the data of all pinned versions (extracted first if needed) to <dir> in the layout
+      VANILLITE_DATA_DIR expects (vanilla/, multiversion/<id>/): offline builds, build
+      machines without network or Java.
   cargo xtask version check
       Compare the pinned version (data/vanilla/version.toml) with the latest release in Mojang's
       version manifest; fails if a newer release exists (in GitHub Actions also sets the step
       output `newer`).
   cargo xtask version update <version> [--final] [--bulk] [--no-test]
       Prepare the switch to another version (release, pre-release or snapshot): extract the
-      pinned and the new jar, regenerate data/vanilla and the generated code, record all
+      pinned and the new jar, store the new data in the data cache and pin it, record all
       repository goldens (--bulk also the bulk goldens and runs the ignored tests) and run the
       tests, all in the worktree target/version/<version>/tree, and write the change report
       target/version/<version>/change-report.md (protocol, packet fields, registries, blocks,
@@ -70,13 +75,14 @@ pub const USAGE: &str = "usage:
   cargo xtask multiversion add <version>...
       Extract older versions (releases or snapshots, 1.20.5 and later; obfuscated jars are
       remapped with Mojang's mappings) and keep what the multi-version layer needs to translate
-      between each and its successor in data/multiversion/<version>/ (packets, packet shapes,
-      registries, blocks, entity types, synchronised registry entries), then run codegen.
-      `version update --final` keeps the outgoing version the same way.
+      between each and its successor (packets, packet shapes, registries, blocks, entity types,
+      synchronised registry entries) in the data cache, and pin each in
+      data/multiversion/<version>/version.toml. `version update --final` pins the outgoing
+      version the same way.
   cargo xtask codegen [--check]
-      Generate crates/vanillite-data/src/generated/ from data/vanilla/ and the adapter tables
-      crates/vanillite-multiversion/src/generated/ from data/multiversion/.
-      --check fails if the committed files are not current.
+      Write the tables the build generates (vanillite-data from the current version, the
+      adapter tables of vanillite-multiversion from the kept versions) to target/generated/
+      for reading; --check only generates them. The build itself generates them into OUT_DIR.
   cargo xtask golden check
       Fail if a repository golden (worldgen, data, fast scenarios) is missing or stale: its key
       (Minecraft version, jar SHA-1, tools/extractor/harness-version, source or scenario hash)
@@ -233,8 +239,8 @@ pub const USAGE: &str = "usage:
       golden KEYS.toml, the egg, Cargo.toml, module lists, the rule catalogue): parallel
       additions there merge without conflicts. --global: for all clones of this user.
   cargo xtask regen
-      After a merge: rewrite the generated files (vanillite-data codegen, the egg, the
-      configuration reference) from their sources; cargo updates Cargo.lock on the way.";
+      After a merge: rewrite the generated files (the egg, the configuration reference) from
+      their sources; cargo updates Cargo.lock on the way.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -243,9 +249,10 @@ fn main() -> ExitCode {
         ["vanilla", "update", rest @ ..] => vanilla_update(rest),
         ["version", "check"] => version::check(&repo_root()),
         ["version", "update", rest @ ..] => version::update(&repo_root(), rest),
-        ["multiversion", "add", rest @ ..] => multiversion::add(&repo_root(), rest),
-        ["codegen"] => codegen::run(&repo_root(), false),
-        ["codegen", "--check"] => codegen::run(&repo_root(), true),
+        ["vanilla", "export", rest @ ..] => data::export(&repo_root(), rest),
+        ["multiversion", "add", rest @ ..] => data::multiversion_add(&repo_root(), rest),
+        ["codegen"] => data::codegen(&repo_root(), false),
+        ["codegen", "--check"] => data::codegen(&repo_root(), true),
         ["golden", "check"] => golden::check(&repo_root()),
         ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
         ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
@@ -287,7 +294,7 @@ fn vanilla_update(args: &[&str]) -> Result<()> {
             _ => return Err(USAGE.to_owned()),
         }
     }
-    vanilla::update(&repo_root(), version.as_deref(), jar.as_deref())
+    data::update(&repo_root(), version.as_deref(), jar.as_deref())
 }
 
 /// The workspace root (the parent of the xtask crate).
