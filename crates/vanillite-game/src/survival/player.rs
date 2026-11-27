@@ -1633,12 +1633,10 @@ pub fn do_tick_ai(
     env: &mut Env<'_>,
 ) -> std::ops::ControlFlow<TickResult, TickResult> {
     use std::ops::ControlFlow::{Break, Continue};
-    let spectator = player.game_mode == GameMode::Spectator;
     let abilities = Abilities::of(player.game_mode);
-    let mut result = TickResult::Alive;
     if player.survival.portal.won_game {
         // Removed from the world while the credits roll.
-        return Break(result);
+        return Break(TickResult::Alive);
     }
     {
         let s = &mut player.survival;
@@ -1646,7 +1644,6 @@ pub fn do_tick_ai(
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
-    let id = entity.as_ref().id();
     // `Entity.baseTick`: `handlePortal` first.
     let can_use_portal = !player.survival.is_dead_or_dying();
     let portal_delay = |kind| match kind {
@@ -1663,6 +1660,31 @@ pub fn do_tick_ai(
     if let Some((kind, entry)) = player.survival.portal.handle(can_use_portal, portal_delay) {
         return Break(TickResult::Portal(kind, entry));
     }
+    Continue(tick_after_portal(entity, player, env))
+}
+
+/// The rest of [`do_tick`] for a player whose portal took it to another world
+/// (`TickResult::Portal`), run where it arrived: Vanilla teleports inside `handlePortal` and
+/// the tick goes on in the new world.
+pub fn finish_tick_after_portal(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+) -> TickResult {
+    let result = tick_after_portal(entity, player, env);
+    do_tick_end(entity, player, env, result)
+}
+
+/// [`do_tick_ai`] after `handlePortal`.
+fn tick_after_portal(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+) -> TickResult {
+    let spectator = player.game_mode == GameMode::Spectator;
+    let abilities = Abilities::of(player.game_mode);
+    let mut result = TickResult::Alive;
+    let id = entity.as_ref().id();
     player.survival.in_powder_snow = false;
     update_fluids(entity, player, env);
     update_swimming(entity, player);
@@ -1813,7 +1835,7 @@ pub fn do_tick_ai(
             result = TickResult::Credits;
         }
     }
-    Continue(result)
+    result
 }
 
 /// [`do_tick`] after `Player.aiStep`: the body turn, the food tick and the health packets.

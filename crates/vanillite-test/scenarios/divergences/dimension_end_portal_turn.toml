@@ -1,4 +1,0 @@
-# Across dimensions (#131): a player's tick after its portal teleport.
-tick = 2
-cause = "Vanilla teleports a player inside ServerPlayer.doTick and the rest of that tick (aiStep, tickHeadTurn) runs in the new world, so its body turns towards the new yaw in the tick it arrives; Vanillite moves the player out of its tick and places it after the world phase without the rest of the tick (body yaw 0 instead of 40 at tick 2)"
-owner = "gameplay-developer"

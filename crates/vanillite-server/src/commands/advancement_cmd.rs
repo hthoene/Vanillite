@@ -154,6 +154,7 @@ pub(crate) fn advancement(
                             level,
                             global: &global,
                             world,
+                            others: Vec::new(),
                         };
                         crate::progress::grant_rewards(&mut env, id);
                     });
