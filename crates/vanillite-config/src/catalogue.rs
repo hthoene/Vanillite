@@ -40,6 +40,16 @@ rules! {
             /// detect: the cgroup memory limit (`memory.max`), none without a container.
             memory: u32 = "memory", Setting, range = [0, 16_777_216], restart = true, vanilla = 0;
         }
+        /// Memory of an empty server.
+        memory: MemoryRules = "performance.memory" {
+            /// Seconds without players after which the server frees what it can build again:
+            /// the tables of the world generators, structure templates and caches. They come
+            /// back in the background when a player joins (new chunks then start a moment
+            /// later, chunks from disk do not wait). In-game behaviour does not change;
+            /// disabled keeps everything in memory.
+            release_when_empty: DisabledOr<u32> = "release-when-empty", Setting,
+                range = [1, 86_400], vanilla = DisabledOr::Value(60);
+        }
         /// Saving.
         autosave: AutosaveRules = "performance.autosave" {
             /// Ticks between autosaves. Vanilla saves every 5 minutes of game time.

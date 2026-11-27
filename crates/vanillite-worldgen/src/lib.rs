@@ -36,7 +36,7 @@ pub use generator::{
 };
 pub use proto::ProtoChunk;
 pub use random_state::RandomState;
-pub use slot::VanillaChunkGenerator;
+pub use slot::{SharedTerrain, VanillaChunkGenerator};
 pub use structure::{NeighbourStarts, ReferencedStarts};
 
 use std::fmt;

@@ -404,6 +404,8 @@ pub(crate) struct BuiltInGenerators {
     pub(crate) created: GeneratorsByDimension,
     /// The settings of the extra worlds, by dimension key.
     pub(crate) extra: ExtraWorldGens,
+    /// The server's structure template cache.
+    pub(crate) templates: Arc<vanillite_worldgen::template::StructureTemplateManager>,
 }
 
 /// The generator settings of the extra worlds by dimension key, shared with the server.
@@ -439,7 +441,7 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
             _ => {}
         }
         let (Some(packs), Some(generator), Some("minecraft:noise")) =
-            (self.packs.as_deref(), generator, kind)
+            (self.packs.as_ref(), generator, kind)
         else {
             if let Some(kind) = kind {
                 log::warn!(
@@ -452,16 +454,35 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
         let noise_settings = generator
             .get("settings")
             .and_then(|s| s.as_str())
-            .ok_or("inline noise settings are not supported")?;
-        let spec = DimensionSpec {
-            noise_settings,
-            biome_source: generator.get("biome_source").ok_or("no biome source")?,
-            min_y: world.min_y,
-            height: i32::try_from(world.height).map_err(|e| e.to_string())?,
-            has_sky_light: world.has_sky_light,
+            .ok_or("inline noise settings are not supported")?
+            .to_owned();
+        let biome_source = generator.get("biome_source").ok_or("no biome source")?;
+        let (min_y, has_sky_light) = (world.min_y, world.has_sky_light);
+        let height = i32::try_from(world.height).map_err(|e| e.to_string())?;
+        // Built now and again after an empty server released it (`performance.memory`).
+        let terrain = {
+            let (packs, biome_source) = (Arc::clone(packs), biome_source.clone());
+            let (seed, dimension) = (world_gen.seed, world.dimension.clone());
+            let templates = Arc::clone(&self.templates);
+            vanillite_worldgen::SharedTerrain::rebuildable(move || {
+                let started = std::time::Instant::now();
+                let spec = DimensionSpec {
+                    noise_settings: &noise_settings,
+                    biome_source: &biome_source,
+                    min_y,
+                    height,
+                    has_sky_light,
+                };
+                let terrain =
+                    TerrainGenerator::with_templates(&packs, spec, seed, Arc::clone(&templates));
+                log::debug!(
+                    "{dimension}: terrain generator built in {:.0?}",
+                    started.elapsed()
+                );
+                terrain
+            })
+            .map_err(|e| e.to_string())?
         };
-        let terrain =
-            TerrainGenerator::new(packs, spec, world_gen.seed).map_err(|e| e.to_string())?;
         let generator = VanillaChunkGenerator::new(terrain, world.clone())
             .with_structures(world_gen.generate_structures);
         self.created
@@ -470,7 +491,7 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
             .insert(
                 world.dimension.clone(),
                 vanillite_game::level::Generation {
-                    terrain: generator.shared(),
+                    shared: generator.shared(),
                     dimension: world.dimension.clone(),
                     structures: generator.generates_structures(),
                 },
@@ -669,6 +690,12 @@ pub(crate) struct ChunkPackets {
 }
 
 impl ChunkPackets {
+    /// Drops the encoded chunk packets; they are encoded again when a player needs them.
+    pub(crate) fn release_memory(&mut self) {
+        *self.cache.get_mut() = FxHashMap::default();
+        self.changes.shrink_to_fit();
+    }
+
     /// Applies the world's `anticheat.anti-xray` rules; changed rules drop every packet.
     pub(crate) fn set_anti_xray(
         &mut self,

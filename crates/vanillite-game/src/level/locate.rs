@@ -54,9 +54,10 @@ pub fn nearest_named(
     max_radius: i32,
 ) -> Option<BlockPos> {
     let g = level.generation.as_ref().filter(|g| g.structures)?;
+    let terrain = g.terrain();
     let wanted: Vec<_> = names
         .iter()
-        .filter_map(|id| g.terrain.structures().structure_id(id))
+        .filter_map(|id| terrain.structures().structure_id(id))
         .collect();
     let height = LevelHeight {
         min_y: level.min_y(),
@@ -65,7 +66,7 @@ pub fn nearest_named(
             .saturating_sub(level.min_y())
             .saturating_add(1),
     };
-    nearest_structure(&g.terrain, &wanted, origin, height, max_radius).map(|(p, _)| p)
+    nearest_structure(&terrain, &wanted, origin, height, max_radius).map(|(p, _)| p)
 }
 
 /// `ChunkGenerator.findNearestMapStructure(level, structures, pos, radius, false)`.

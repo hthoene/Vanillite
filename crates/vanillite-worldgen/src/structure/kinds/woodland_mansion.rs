@@ -29,6 +29,7 @@ use crate::structure::{
     GenerationContext, GenerationStub, PieceBase, PieceSettings, StructureParser, StructurePiece,
     StructureType, TemplatePiece,
 };
+use crate::template::TemplateRef;
 use crate::template::structure::zero_position_with_transform;
 use crate::template::transform::{clockwise, counter_clockwise};
 use crate::template::{BoundingBox, Mirror, Rotation, StructureProcessor, StructureTemplate};
@@ -114,7 +115,7 @@ const TEMPLATES: [&str; 73] = [
 ];
 
 /// The templates by name (without the `woodland_mansion/` prefix).
-type Templates = FxHashMap<&'static str, Arc<StructureTemplate>>;
+type Templates = FxHashMap<&'static str, TemplateRef>;
 
 /// `WoodlandMansionStructure`.
 #[derive(Debug)]
@@ -127,10 +128,10 @@ impl StructureType for WoodlandMansionStructure {
         let templates = TEMPLATES
             .iter()
             .map(|&name| {
-                let template = parser.template(&format!("minecraft:woodland_mansion/{name}"))?;
-                Ok((name, template))
+                let template = parser.template(&format!("minecraft:woodland_mansion/{name}"));
+                (name, template)
             })
-            .collect::<Result<_, Error>>()?;
+            .collect();
         Ok(Self { templates })
     }
 
@@ -734,7 +735,7 @@ impl<R: RandomSource> MansionPiecePlacer<'_, R> {
             .unwrap_or_else(|| panic!("unknown woodland mansion template {name}"));
         self.pieces.push(WoodlandMansionPiece::new(
             name,
-            Arc::clone(template),
+            template.get(),
             position,
             rotation,
             mirror,

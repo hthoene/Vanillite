@@ -167,7 +167,7 @@ enum Data {
         items: Vec<ItemPredicate>,
     },
     /// `location` of the block triggers (`ItemUsedOnLocationTrigger`, ...).
-    Location(Option<Condition>),
+    Location(Option<Box<Condition>>),
     /// `enter_block`, `slide_down_block`.
     EnterBlock {
         blocks: Option<IdSet>,
@@ -188,13 +188,13 @@ enum Data {
     /// `KilledTrigger`: `player_killed_entity`, `entity_killed_player`,
     /// `kill_mob_near_sculk_catalyst`.
     Killed {
-        entity: Option<Condition>,
+        entity: Option<Box<Condition>>,
         killing_blow: Option<DamageSourcePredicate>,
     },
     /// `player_hurt_entity`, `entity_hurt_player` (without `entity`).
     Hurt {
         damage: Option<DamagePredicate>,
-        entity: Option<Condition>,
+        entity: Option<Box<Condition>>,
     },
     /// `enchanted_item`.
     Enchanted {
@@ -209,23 +209,23 @@ enum Data {
     /// `construct_beacon` levels, `used_ender_eye` distance.
     Bounds(Bounds),
     /// `summoned_entity`, `tame_animal`: the entity.
-    Entity(Option<Condition>),
+    Entity(Option<Box<Condition>>),
     /// `bred_animals`.
     Bred {
-        parent: Option<Condition>,
-        partner: Option<Condition>,
-        child: Option<Condition>,
+        parent: Option<Box<Condition>>,
+        partner: Option<Box<Condition>>,
+        child: Option<Box<Condition>>,
     },
     /// `cured_zombie_villager`.
     Cured {
-        zombie: Option<Condition>,
-        villager: Option<Condition>,
+        zombie: Option<Box<Condition>>,
+        villager: Option<Box<Condition>>,
     },
     /// `villager_trade`, `player_interacted_with_entity`, `player_sheared_equipment`,
     /// `thrown_item_picked_up_by_entity`, `thrown_item_picked_up_by_player`: an entity and an
     /// item.
     EntityItem {
-        entity: Option<Condition>,
+        entity: Option<Box<Condition>>,
         item: Option<ItemPredicate>,
     },
     /// `item_durability_changed`.
@@ -242,18 +242,18 @@ enum Data {
     /// `effects_changed`.
     Effects {
         effects: Option<MobEffectsPredicate>,
-        source: Option<Condition>,
+        source: Option<Box<Condition>>,
     },
     /// `DistanceTrigger` and `fall_after_explosion` (with `cause`).
     Distance {
         start: Option<LocationPredicate>,
         distance: Option<DistancePredicate>,
-        cause: Option<Condition>,
+        cause: Option<Box<Condition>>,
     },
     /// `fishing_rod_hooked`.
     Fishing {
         rod: Option<ItemPredicate>,
-        entity: Option<Condition>,
+        entity: Option<Box<Condition>>,
         item: Option<ItemPredicate>,
     },
     /// `channeled_lightning`, `killed_by_arrow`.
@@ -274,26 +274,27 @@ enum Data {
     /// `target_hit`.
     Target {
         signal: Bounds,
-        projectile: Option<Condition>,
+        projectile: Option<Box<Condition>>,
     },
     /// `player_generates_container_loot`.
     Loot(IdSet),
     /// `lightning_strike`.
     Lightning {
-        lightning: Option<Condition>,
-        bystander: Option<Condition>,
+        lightning: Option<Box<Condition>>,
+        bystander: Option<Box<Condition>>,
     },
 }
 
 /// The conditions of one criterion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Conditions {
-    player: Option<Condition>,
+    player: Option<Box<Condition>>,
     data: Data,
 }
 
-fn condition(o: &Map<String, Value>, key: &str) -> Res<Option<Condition>> {
-    o.get(key).map(Condition::parse).transpose()
+/// Boxed: conditions are large and most criteria have none.
+fn condition(o: &Map<String, Value>, key: &str) -> Res<Option<Box<Condition>>> {
+    Ok(o.get(key).map(Condition::parse).transpose()?.map(Box::new))
 }
 
 fn item(o: &Map<String, Value>, key: &str) -> Res<Option<ItemPredicate>> {
@@ -737,7 +738,7 @@ impl Conditions {
     fn data_matches(&self, event: &Event, ctx: &TriggerContext<'_>) -> bool {
         let world = ctx.world;
         let origin = ctx.player.pos;
-        let location = |c: &Option<Condition>, pos: BlockPos, tool: Option<&ItemStack>| {
+        let location = |c: &Option<Box<Condition>>, pos: BlockPos, tool: Option<&ItemStack>| {
             c.as_ref().is_none_or(|c| {
                 c.test(&Context {
                     world,
@@ -758,7 +759,7 @@ impl Conditions {
                 tool: None,
             })
         };
-        let entity = |c: &Option<Condition>, e: Option<&EntityView<'_>>| {
+        let entity = |c: &Option<Box<Condition>>, e: Option<&EntityView<'_>>| {
             c.as_ref().is_none_or(|c| entity_test(c, e))
         };
         let item = |p: &Option<ItemPredicate>, stack: &ItemStack| {
