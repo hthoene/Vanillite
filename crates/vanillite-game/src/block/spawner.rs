@@ -235,7 +235,7 @@ pub fn center(pos: BlockPos) -> Vec3 {
 pub fn no_collision_at(level: &Level, type_id: EntityTypeId, pos: Vec3) -> bool {
     let aabb = Dimensions::of(type_id).bounding_box(pos);
     let mut scratch = Vec::new();
-    physics::no_collision(level, &aabb, &mut scratch)
+    physics::no_collision(&level.view(), &aabb, &mut scratch)
 }
 
 /// `SpawnPlacements.checkSpawnRules(type, level, SPAWNER or TRIAL_SPAWNER, pos, random)`:

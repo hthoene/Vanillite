@@ -373,6 +373,52 @@ enum Check {
     Full,
 }
 
+/// A pure, read-only view of a world's full chunks (`getChunkNow` without the chunk cache):
+/// its reads have no side effects, so it is `Send + Sync` and phases that only read (collision,
+/// path finding, tracking, AI proposals) can share it across threads while the world thread
+/// does not write. It does not touch tickets: a synchronous load's `unknown` ticket is kept
+/// alive only by [`Chunks::block`].
+#[derive(Clone, Copy)]
+pub struct ChunkView<'a> {
+    holders: &'a FxHashMap<ChunkPos, Holder>,
+}
+
+const _: () = {
+    const fn shareable<T: Send + Sync>() {}
+    shareable::<ChunkView<'static>>();
+};
+
+impl ChunkView<'_> {
+    /// The block state at `pos`, `None` outside full chunks and the build height.
+    #[inline]
+    pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
+        let chunk = self.holders.get(&pos.chunk())?.chunk.as_ref()?;
+        if chunk.status != ChunkStatus::Full {
+            return None;
+        }
+        chunk
+            .chunk
+            .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+    }
+
+    /// Whether the chunk is loaded as a full chunk.
+    #[inline]
+    pub fn is_full(&self, pos: ChunkPos) -> bool {
+        self.holders
+            .get(&pos)
+            .and_then(|h| h.chunk.as_ref())
+            .is_some_and(|c| c.status == ChunkStatus::Full)
+    }
+}
+
+impl fmt::Debug for ChunkView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChunkView")
+            .field("chunks", &self.holders.len())
+            .finish()
+    }
+}
+
 /// The chunk runtime of one world.
 pub struct Chunks {
     info: WorldInfo,
@@ -2207,7 +2253,10 @@ impl Chunks {
         }
     }
 
-    /// The block state at `pos`, `None` outside full chunks and the build height.
+    /// The block state at `pos`, `None` outside full chunks and the build height. This is
+    /// the world thread's read (`getBlockState`): it goes through Vanilla's chunk cache and
+    /// keeps a synchronous load's `unknown` ticket alive. Reads that Vanilla does without
+    /// tickets (collisions, path finding) and reads from other threads use [`Chunks::view`].
     pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
         let chunk_pos = pos.chunk();
         let holder = self.holders.get(&chunk_pos)?;
@@ -2221,6 +2270,15 @@ impl Chunks {
         chunk
             .chunk
             .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+    }
+
+    /// The pure read view of the full chunks: reads without side effects, shareable with
+    /// other threads while nothing writes.
+    #[inline]
+    pub fn view(&self) -> ChunkView<'_> {
+        ChunkView {
+            holders: &self.holders,
+        }
     }
 
     /// Sets a block state in a full chunk like `LevelChunk.setBlockState` (heightmaps follow,

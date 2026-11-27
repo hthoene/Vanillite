@@ -837,6 +837,6 @@ pub fn rotation(y_rot: f32) -> Rotation {
 pub fn box_free(level: &Level, kind: Kind, pos: Vec3, liquids_ok: bool) -> bool {
     let aabb = Dimensions::of(kind.type_id()).bounding_box(pos);
     let mut scratch = Vec::new();
-    crate::mob::physics::no_collision(level, &aabb, &mut scratch)
+    crate::mob::physics::no_collision(&level.view(), &aabb, &mut scratch)
         && (liquids_ok || !crate::mob::physics::contains_any_liquid(level, &aabb))
 }

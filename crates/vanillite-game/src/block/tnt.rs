@@ -256,7 +256,7 @@ fn move_self(
     delta: Vec3,
     gravity: f64,
 ) -> Moved {
-    let movement = falling::collide(level, aabb, delta);
+    let movement = falling::collide(&level.view(), aabb, delta);
     let movement_length = movement.length_sqr();
     let mut new_pos = pos;
     if movement_length > 1.0e-7 || delta.length_sqr() - movement_length < 1.0e-7 {

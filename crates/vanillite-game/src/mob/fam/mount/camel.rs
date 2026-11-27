@@ -265,7 +265,7 @@ pub fn can_change_pose(t: &Tick<'_, '_>) -> bool {
         .bounding_box(t.pos())
         .inflate(-1.0e-7, -1.0e-7, -1.0e-7);
     let mut scratch = Vec::new();
-    crate::mob::physics::no_collision(t.level, &aabb, &mut scratch)
+    crate::mob::physics::no_collision(&t.level.view(), &aabb, &mut scratch)
 }
 
 /// `Camel.tick` after `LivingEntity.tick`: the dash ends on the ground, its cooldown runs

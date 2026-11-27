@@ -129,7 +129,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
     if d.in_ground && !no_physics {
         let last = u16::try_from(d.ints[1] - 1).ok().map(BlockState);
         let probe = Aabb::new(pos.x, pos.y, pos.z, pos.x, pos.y, pos.z).inflate(0.06, 0.06, 0.06);
-        if last != Some(state) && physics::no_collision(t.level, &probe, &mut t.cx.boxes) {
+        if last != Some(state) && physics::no_collision(&t.level.view(), &probe, &mut t.cx.boxes) {
             d.in_ground = false;
             let r = &mut *t.env.random;
             velocity = velocity.multiply(

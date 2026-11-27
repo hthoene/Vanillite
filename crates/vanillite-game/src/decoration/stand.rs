@@ -230,7 +230,7 @@ pub fn use_on(
     );
     let aabb = Dimensions::of(vanillite_data::entity::ids::ARMOR_STAND).bounding_box(spawn);
     let mut scratch = Vec::new();
-    if !crate::mob::physics::no_collision(level, &aabb, &mut scratch) {
+    if !crate::mob::physics::no_collision(&level.view(), &aabb, &mut scratch) {
         return false;
     }
     let mut any = false;
