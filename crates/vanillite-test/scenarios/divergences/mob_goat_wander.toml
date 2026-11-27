@@ -1,0 +1,3 @@
+tick = 44
+cause = "the ram ends on tick 44 in Vanillite (`finishRam`: 1 level random draw), Vanilla keeps ramming"
+owner = "architect #120"

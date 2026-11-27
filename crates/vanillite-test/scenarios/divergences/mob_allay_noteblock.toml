@@ -1,0 +1,3 @@
+tick = 1
+cause = "brain: the allay's random and the level random differ from tick 1 (RunOne/GateBehavior (ShufflingList.shuffle) draws its weights from the level random; Vanilla's ShufflingList has its own random), as in mob_allay_fly; the note block plays on tick 10"
+owner = "gameplay-developer #81"

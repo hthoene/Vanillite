@@ -1,0 +1,13 @@
+# Generated and collective files merge with the `vanillite` merge driver: parallel additions
+# there merge without conflicts. Install it with `cargo xtask setup` (see docs/development.md);
+# without it git merges these files as usual. The driver takes both sides of a conflict where
+# both only inserted lines, so list here only files where that is the right resolution.
+Cargo.lock merge=vanillite
+Cargo.toml merge=vanillite
+KEYS.toml merge=vanillite
+deploy/pterodactyl/egg-vanillite.json merge=vanillite
+# Only `mod`/`use` declarations and attributes are taken from both sides in these.
+lib.rs merge=vanillite
+mod.rs merge=vanillite
+main.rs merge=vanillite
+crates/vanillite-config/src/catalogue.rs merge=vanillite
