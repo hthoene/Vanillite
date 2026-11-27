@@ -62,6 +62,7 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     if info.blocks_attacks
         || name == "minecraft:bow"
         || name == crate::crossbow::CROSSBOW
+        || name == "minecraft:trident"
         || crate::spear::is_kinetic(stack)
     {
         return 72000;
@@ -159,6 +160,9 @@ pub fn start(
             && p.survival.tick_count < p.survival.shield_disabled_until
     });
     if cooling {
+        return;
+    }
+    if crate::trident::is_trident(&stack) && !crate::trident::can_start(ents, env, player, &stack) {
         return;
     }
     if item::item_id(&stack).name() == "minecraft:bow" && find_arrow(ents, player).is_none() {
@@ -613,6 +617,10 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             );
         }
     }
+    if name == "minecraft:chorus_fruit" {
+        // `on_consume_effects`: `teleport_randomly`.
+        super::chorus::teleport_randomly(ents, env, player, super::chorus::DIAMETER);
+    }
     if matches!(
         name,
         "minecraft:milk_bucket"
@@ -1000,7 +1008,14 @@ pub fn release(
         return;
     }
     let was_using = stop_quietly(ents, player);
-    shoot_bow(ents, env, network_ids, player, u, &stack);
+    let mut stack = stack;
+    if stack.item == u.item && crate::trident::is_trident(&stack) {
+        let i = hand_index(ents, player, u.hand);
+        crate::trident::release(ents, env, network_ids, player, i, u.ticks);
+        stack = held(ents, player, u.hand);
+    } else {
+        shoot_bow(ents, env, network_ids, player, u, &stack);
+    }
     // `stopUsingItem` after `releaseUsing`.
     if was_using && !stack.is_empty() && use_vibrations(&stack) {
         let event = crate::level::game_event::events().item_interact_finish;

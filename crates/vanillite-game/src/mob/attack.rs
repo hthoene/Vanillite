@@ -62,6 +62,14 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
         sheep_color: sheep.map(|s| s.0),
         sheared: sheep.is_some_and(|s| s.1),
         villager_variant: None,
+        // Creative flight is the client's: only gliding counts.
+        flying: flags.contains(EntityFlags::FALL_FLYING),
+        fall_distance: ents.player(id).map_or_else(
+            || ents.mob(id).map_or(0.0, |m| m.fall_distance),
+            |p| p.survival.fall_distance,
+        ),
+        can_see_sky: false,
+        fishing_hook: None,
     })
 }
 
@@ -92,6 +100,9 @@ pub fn damage_context<'a>(
             direct,
             cause: attacker,
         }),
+        raining: false,
+        thundering: false,
+        location: None,
     }
 }
 
@@ -178,7 +189,15 @@ pub fn player_attack(
     let Some(p) = ents.player(attacker) else {
         return;
     };
-    let weapon = p.inventory.selected_item().clone();
+    // `getWeaponItem`: the riptide trident while spinning.
+    let spin = p
+        .survival
+        .spin_attack
+        .as_ref()
+        .map(|s| (s.damage, s.item.clone()));
+    let weapon = spin
+        .as_ref()
+        .map_or_else(|| p.inventory.selected_item().clone(), |s| s.1.clone());
     let fall_distance = p.survival.fall_distance;
     let in_water = p.survival.fluids.in_water();
     let combat = combat_data();
@@ -186,8 +205,15 @@ pub fn player_attack(
 
     let base = player_attribute(ents, attacker, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
     #[allow(clippy::cast_possible_truncation)]
-    let mut base_damage = base as f32;
-    let mut source = entity_source(ents, env.types.player_attack, attacker, attacker);
+    let mut base_damage = spin.as_ref().map_or(base as f32, |s| s.0);
+    // `getItemDamageSource`: a smash attack is `mace` damage.
+    let smash = can_smash_attack(ents, attacker, &weapon);
+    let kind = if smash {
+        env.types.named("minecraft:mace")
+    } else {
+        env.types.player_attack
+    };
+    let mut source = entity_source(ents, kind, attacker, attacker);
     source.cause_is_mob = false;
     source.disable_shield_seconds = item::item_id(&weapon)
         .info()
@@ -285,8 +311,16 @@ pub fn player_attack(
     if let Some(p) = ents.player_mut(attacker) {
         p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
     }
+    // `itemAttackInteraction`: `hurtEnemy`, the post attack effects, `postHurtEnemy`.
+    if smash {
+        mace_hurt_enemy(ents, env, cx, attacker, target, fall_distance);
+    }
     post_attack(level, ents, env, cx, target, &source, Some(&weapon));
     hurt_weapon(ents, env, attacker, &weapon);
+    if smash && let Some(p) = ents.player_mut(attacker) {
+        // `MaceItem.postHurtEnemy`: `resetFallDistance`.
+        p.survival.fall_distance = 0.0;
+    }
     // `damageStatsAndHearts`: `DAMAGE_DEALT` of the health the living target lost,
     // then dark hearts for more than one heart of damage.
     if let (Some(old), Some(now)) = (old_health, living_health(ents, target)) {
@@ -345,15 +379,7 @@ fn mace_bonus(
     source: &DamageSource,
     fall_distance: f64,
 ) -> f32 {
-    if item::item_id(weapon).name() != "minecraft:mace" {
-        return 0.0;
-    }
-    let on_ground = ents
-        .store
-        .get(attacker)
-        .is_some_and(|e| e.flags().contains(EntityFlags::ON_GROUND));
-    // `canSmashAttack`: falling more than 1.5 blocks, not gliding.
-    if fall_distance <= 1.5 || on_ground {
+    if !can_smash_attack(ents, attacker, weapon) {
         return 0.0;
     }
     let f = fall_distance;
@@ -372,6 +398,153 @@ fn mace_bonus(
     #[allow(clippy::cast_possible_truncation)]
     let b = bonus as f32 + per_block;
     b
+}
+
+/// `MaceItem.canSmashAttack` with a mace: falling more than 1.5 blocks, not gliding.
+pub fn can_smash_attack(ents: &Entities, attacker: EntityId, weapon: &ItemStack) -> bool {
+    if weapon.is_empty() || item::item_id(weapon).name() != "minecraft:mace" {
+        return false;
+    }
+    let gliding = ents
+        .store
+        .get(attacker)
+        .is_some_and(|e| e.flags().contains(EntityFlags::FALL_FLYING));
+    let fall = ents.player(attacker).map_or_else(
+        || ents.mob(attacker).map_or(0.0, |m| m.fall_distance),
+        |p| p.survival.fall_distance,
+    );
+    fall > 1.5 && !gliding
+}
+
+/// `MaceItem.hurtEnemy` of a smash attack: the attacker stops falling (its later fall from the
+/// impact point does not hurt), the smash sound, and the living entities within 3.5 blocks of
+/// the target are knocked away.
+fn mace_hurt_enemy(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    attacker: EntityId,
+    target: EntityId,
+    fall_distance: f64,
+) {
+    let Some((apos, network_id)) = ents
+        .store
+        .get(attacker)
+        .map(|e| (e.pos(), e.network_id().0))
+    else {
+        return;
+    };
+    if let Some(mut e) = ents.store.get_mut(attacker) {
+        let v = e.as_ref().velocity();
+        e.set_velocity(Vec3::new(v.x, f64::from(0.01_f32), v.z));
+    }
+    if let Some(p) = ents.player_mut(attacker) {
+        // `setIgnoreFallDamageFromCurrentImpulse(true, calculateImpactPosition)`.
+        let s = &mut p.survival;
+        let impact = match s.impulse_impact {
+            Some(i) if i.y <= apos.y => i,
+            _ => apos,
+        };
+        s.impulse_grace = s.impulse_grace.max(40);
+        s.impulse_impact = Some(impact);
+    }
+    if let Some(v) = ents.store.get(attacker).map(|e| e.velocity()) {
+        env.out.push(Effect::To {
+            player: attacker,
+            packet: SharedPacket::of(&SetEntityMotion {
+                entity_id: network_id,
+                movement: LpVec3(vanillite_protocol::types::Vec3 {
+                    x: v.x,
+                    y: v.y,
+                    z: v.z,
+                }),
+            }),
+        });
+    }
+    let Some((tpos, t_on_ground, tbox)) = ents.store.get(target).map(|e| {
+        (
+            e.pos(),
+            e.flags().contains(EntityFlags::ON_GROUND),
+            e.aabb(),
+        )
+    }) else {
+        return;
+    };
+    let sound = if t_on_ground {
+        if fall_distance > 5.0 {
+            "minecraft:item.mace.smash_ground_heavy"
+        } else {
+            "minecraft:item.mace.smash_ground"
+        }
+    } else {
+        "minecraft:item.mace.smash_air"
+    };
+    player_sound(env, apos, sound);
+    // `knockback`: the dust (level event 2013) and the push.
+    let on_pos = vanillite_base::BlockPos::new(
+        vanillite_base::math::floor(tpos.x),
+        vanillite_base::math::floor(tpos.y - 0.2),
+        vanillite_base::math::floor(tpos.z),
+    );
+    cx.actions
+        .push(super::WorldAction::LevelEvent(2013, on_pos, 750));
+    let mut near = Vec::new();
+    ents.store
+        .for_each_in(&tbox.inflate(3.5, 3.5, 3.5), false, |e| near.push(e));
+    for nearby in near {
+        if nearby == attacker || nearby == target {
+            continue;
+        }
+        let living = ents.mob(nearby).is_some_and(super::MobData::is_alive)
+            || ents
+                .player(nearby)
+                .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
+        if !living {
+            continue;
+        }
+        // Tamed animals of the attacker stay.
+        if ents.mob(nearby).is_some_and(|m| {
+            m.owner.is_some() && m.owner == ents.store.get(attacker).map(|e| e.uuid())
+        }) {
+            continue;
+        }
+        let Some(npos) = ents.store.get(nearby).map(|e| e.pos()) else {
+            continue;
+        };
+        let direction = npos - tpos;
+        if direction.length_sqr() > 3.5 * 3.5 {
+            continue;
+        }
+        let resistance = knockback_resistance(ents, nearby);
+        let power = (3.5 - direction.length())
+            * f64::from(0.7_f32)
+            * if fall_distance > 5.0 { 2.0 } else { 1.0 }
+            * (1.0 - resistance);
+        if power <= 0.0 {
+            continue;
+        }
+        let k = direction.normalize() * power;
+        if let Some(mut e) = ents.store.get_mut(nearby) {
+            let v = e.as_ref().velocity();
+            e.set_velocity(v + Vec3::new(k.x, f64::from(0.7_f32), k.z));
+            e.set_flags(EntityFlags::HAS_IMPULSE, true);
+            if ents_is_player(&e) {
+                e.set_flags(EntityFlags::HURT_MARKED, true);
+            }
+        }
+    }
+}
+
+fn ents_is_player(e: &vanillite_world::entity::EntityMut<'_>) -> bool {
+    e.as_ref().kind() == vanillite_data::entity::ids::PLAYER
+}
+
+/// The `knockback_resistance` attribute of a living entity.
+fn knockback_resistance(ents: &Entities, id: EntityId) -> f64 {
+    if let Some(m) = ents.mob(id) {
+        return m.attrs.knockback_resistance;
+    }
+    player_attribute(ents, id, "minecraft:knockback_resistance", 0.0, 0.0, 1.0)
 }
 
 /// `causeExtraKnockback`: knocks the target back in the attacker's facing and slows the
@@ -534,7 +707,8 @@ pub fn post_attack(
     // `runIterationOnEquipment` of the victim (`EquipmentSlot` order).
     for (slot, stack) in equipment(ents, victim) {
         let effects = {
-            let ecx = damage_context(ents, env.types, tags, victim, source);
+            let mut ecx = damage_context(ents, env.types, tags, victim, source);
+            with_world(&mut ecx, level, ents, victim, source);
             enchants.post_attack_effects(&stack, Some(slot), Party::Victim, &ecx, env.random)
         };
         for (effect, ench_level, affected) in effects {
@@ -564,7 +738,8 @@ pub fn post_attack(
         return;
     };
     let effects = {
-        let ecx = damage_context(ents, env.types, tags, victim, source);
+        let mut ecx = damage_context(ents, env.types, tags, victim, source);
+        with_world(&mut ecx, level, ents, victim, source);
         enchants.post_attack_effects(
             weapon,
             Some(EquipmentSlot::MainHand),
@@ -681,14 +856,98 @@ fn run_entity_effect(
                 run_entity_effect(level, ents, env, cx, e, ench_level, target, item);
             }
         }
+        EntityEffect::WindBurst {
+            radius,
+            knockback,
+            sound,
+        } => {
+            let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
+                return;
+            };
+            cx.actions
+                .push(super::WorldAction::WindBurst(super::WindBurst {
+                    source: None,
+                    pos,
+                    radius: *radius,
+                    knockback: f64::from(knockback.calculate(ench_level)),
+                    sound: static_sound(sound),
+                }));
+        }
+        EntityEffect::SummonLightning => {
+            if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+                cx.actions.push(super::WorldAction::Level(
+                    super::boss::warden::LevelAction::Lightning { pos },
+                ));
+            }
+        }
+        EntityEffect::PlaySound {
+            sound,
+            volume,
+            pitch,
+        } => {
+            let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
+                return;
+            };
+            let source = ents.mob(target).map_or(
+                vanillite_protocol::packets::play::clientbound::SoundSource::Players,
+                |m| m.kind.sound_source(),
+            );
+            crate::survival::play_sound(
+                env.out,
+                None,
+                pos,
+                sound,
+                source,
+                *volume,
+                *pitch,
+                crate::survival::sound_seed(),
+            );
+        }
         EntityEffect::Unsupported => {}
+    }
+}
+
+/// The burst sounds of the `explode` effects as static names.
+fn static_sound(sound: &str) -> &'static str {
+    match sound {
+        "minecraft:entity.wind_charge.wind_burst" => "minecraft:entity.wind_charge.wind_burst",
+        "minecraft:entity.generic.explode" => "minecraft:entity.generic.explode",
+        _ => "minecraft:entity.wind_charge.wind_burst",
+    }
+}
+
+/// The world facts of an enchantment context: the weather and whether the entities of the
+/// context see the sky.
+pub fn with_world(
+    ecx: &mut crate::enchant::EnchantContext<'_>,
+    level: &Level,
+    ents: &Entities,
+    victim: EntityId,
+    source: &DamageSource,
+) {
+    ecx.raining = level.is_raining();
+    ecx.thundering = level.is_thundering();
+    let sky = |id: Option<EntityId>| {
+        id.and_then(|i| ents.store.get(i)).is_some_and(|e| {
+            let p = e.pos();
+            super::can_see_sky(level, vanillite_base::BlockPos::containing(p.x, p.y, p.z))
+        })
+    };
+    if let Some(f) = ecx.this.as_mut() {
+        f.can_see_sky = sky(Some(victim));
+    }
+    if let Some(f) = ecx.attacker.as_mut() {
+        f.can_see_sky = sky(source.cause);
+    }
+    if let Some(f) = ecx.direct_attacker.as_mut() {
+        f.can_see_sky = sky(source.direct);
     }
 }
 
 /// `ItemStack.hurtAndBreak(amount, level, player)` of a player's equipment piece: Unbreaking
 /// saves points (armour: 2·level / (5·level + 5) each, other items level / (level + 1));
 /// creative players' items take no damage.
-fn hurt_equipment(
+pub(crate) fn hurt_equipment(
     ents: &mut Entities,
     env: &mut Env<'_>,
     owner: EntityId,
@@ -798,6 +1057,9 @@ pub fn armor_effectiveness<'t>(
             direct_attacker,
             attacking_player,
             source,
+            raining: false,
+            thundering: false,
+            location: None,
         };
         crate::experience_orb::with_entity_random(|r| {
             combat

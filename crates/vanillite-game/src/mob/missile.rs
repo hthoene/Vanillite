@@ -32,6 +32,16 @@ pub enum MissileKind {
     Snowball,
     /// `ThrownEnderpearl` (players).
     EnderPearl,
+    /// `ThrownEgg`.
+    Egg,
+    /// `ThrownExperienceBottle`.
+    ExperienceBottle,
+    /// `EyeOfEnder` (no `Projectile`, but it flies like one).
+    EyeOfEnder,
+    /// `FireworkRocketEntity`.
+    FireworkRocket,
+    /// `FishingHook`.
+    FishingBobber,
     /// `ThrownTrident` (drowned).
     Trident,
     WindCharge,
@@ -39,7 +49,7 @@ pub enum MissileKind {
 }
 
 impl MissileKind {
-    pub const ALL: [MissileKind; 12] = [
+    pub const ALL: [MissileKind; 17] = [
         MissileKind::SmallFireball,
         MissileKind::Fireball,
         MissileKind::ShulkerBullet,
@@ -49,6 +59,11 @@ impl MissileKind {
         MissileKind::LlamaSpit,
         MissileKind::Snowball,
         MissileKind::EnderPearl,
+        MissileKind::Egg,
+        MissileKind::ExperienceBottle,
+        MissileKind::EyeOfEnder,
+        MissileKind::FireworkRocket,
+        MissileKind::FishingBobber,
         MissileKind::Trident,
         MissileKind::WindCharge,
         MissileKind::BreezeWindCharge,
@@ -66,6 +81,11 @@ impl MissileKind {
             MissileKind::LlamaSpit => ids::LLAMA_SPIT,
             MissileKind::Snowball => ids::SNOWBALL,
             MissileKind::EnderPearl => ids::ENDER_PEARL,
+            MissileKind::Egg => ids::EGG,
+            MissileKind::ExperienceBottle => ids::EXPERIENCE_BOTTLE,
+            MissileKind::EyeOfEnder => ids::EYE_OF_ENDER,
+            MissileKind::FireworkRocket => ids::FIREWORK_ROCKET,
+            MissileKind::FishingBobber => ids::FISHING_BOBBER,
             MissileKind::Trident => ids::TRIDENT,
             MissileKind::WindCharge => ids::WIND_CHARGE,
             MissileKind::BreezeWindCharge => ids::BREEZE_WIND_CHARGE,
@@ -78,6 +98,8 @@ impl MissileKind {
             self,
             MissileKind::Snowball
                 | MissileKind::EnderPearl
+                | MissileKind::Egg
+                | MissileKind::ExperienceBottle
                 | MissileKind::SplashPotion
                 | MissileKind::LingeringPotion
         )
@@ -98,7 +120,13 @@ impl MissileKind {
             | MissileKind::SplashPotion
             | MissileKind::LingeringPotion => Family::Illager,
             MissileKind::LlamaSpit => Family::Companion,
-            MissileKind::Snowball | MissileKind::EnderPearl => Family::Wildlife,
+            MissileKind::Snowball
+            | MissileKind::EnderPearl
+            | MissileKind::Egg
+            | MissileKind::ExperienceBottle
+            | MissileKind::EyeOfEnder
+            | MissileKind::FireworkRocket
+            | MissileKind::FishingBobber => Family::Wildlife,
             MissileKind::Trident => Family::Undead,
             MissileKind::WindCharge | MissileKind::BreezeWindCharge => Family::Mount,
         }
@@ -148,6 +176,10 @@ pub struct MissileData {
     /// kinds that draw from it (ender pearls, shulker bullets); the shooter seeds it with
     /// [`new_projectile_random`].
     pub random_state: i64,
+    /// `AbstractArrow.pickup` of tridents: 0 disallowed, 1 allowed, 2 creative only.
+    pub pickup: u8,
+    /// The state of a fishing bobber.
+    pub bobber: Option<Box<crate::fishing::Bobber>>,
 }
 
 impl MissileData {
@@ -170,6 +202,8 @@ impl MissileData {
             in_ground: false,
             removed: false,
             random_state: 0,
+            pickup: 0,
+            bobber: None,
         }
     }
 }
@@ -251,6 +285,81 @@ fn spawn_owned(
         rot,
         data,
     )
+}
+
+/// `Projectile.spawnProjectileFromRotation` from `source`: the projectile takes its seed
+/// (its constructor) and a UUID, `shootFromRotation(xRot, yRot, yOffset, pow, uncertainty)`
+/// draws the spread from its random and adds the source's known movement (its vertical part
+/// only off the ground), then it joins the world at `start`. Its random's state ends in
+/// `data.random_state`; the owner is the source.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_from_rotation(
+    ents: &mut Entities,
+    network_ids: &NetworkIds,
+    source: EntityId,
+    start: Vec3,
+    y_offset: f32,
+    pow: f32,
+    uncertainty: f32,
+    mut data: MissileData,
+) -> Option<EntityId> {
+    let e = ents.store.get(source)?;
+    let (rot, on_ground, uuid) = (
+        e.rot(),
+        e.flags()
+            .contains(vanillite_world::entity::EntityFlags::ON_GROUND),
+        e.uuid(),
+    );
+    let known = crate::spear::known_movement(ents, source);
+    let mut own = new_projectile_random();
+    let projectile_uuid = crate::mob::new_uuid();
+    let dir = direction_from_rotation(rot.x_rot, rot.y_rot, y_offset);
+    let (velocity, shot_rot) = crate::mob::projectile::shoot(&mut own, dir, pow, uncertainty);
+    let velocity = velocity + Vec3::new(known.x, if on_ground { 0.0 } else { known.y }, known.z);
+    data.owner = Some(source);
+    data.owner_uuid = Some(uuid);
+    data.random_state = own.state();
+    let id = spawn(
+        ents,
+        network_ids,
+        projectile_uuid,
+        start,
+        velocity,
+        Rotation {
+            y_head_rot: 0.0,
+            ..shot_rot
+        },
+        data,
+    );
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.set_flags(vanillite_world::entity::EntityFlags::HAS_IMPULSE, true);
+    }
+    Some(id)
+}
+
+/// The direction of `shootFromRotation(xRot, yRot, yOffset)`.
+pub fn direction_from_rotation(x_rot: f32, y_rot: f32, y_offset: f32) -> Vec3 {
+    let rad = crate::mob::DEG_TO_RAD;
+    let sin = |a: f32| vanillite_base::math::sin(f64::from(a));
+    let cos = |a: f32| vanillite_base::math::cos(f64::from(a));
+    Vec3::new(
+        f64::from(-sin(y_rot * rad) * cos(x_rot * rad)),
+        f64::from(-sin((x_rot + y_offset) * rad)),
+        f64::from(cos(y_rot * rad) * cos(x_rot * rad)),
+    )
+}
+
+/// The eye height of an entity (`getEyeY() - getY()`): players' from their pose, mobs' from
+/// their kind.
+pub fn eye_height(ents: &Entities, id: EntityId) -> f64 {
+    let Some(e) = ents.store.get(id) else {
+        return 0.0;
+    };
+    if ents.player(id).is_some() {
+        return crate::survival::player::eye_height(e.dims().height);
+    }
+    ents.mob(id)
+        .map_or_else(|| f64::from(e.dims().height * 0.85), crate::mob::eye_height)
 }
 
 /// What one projectile tick works on.

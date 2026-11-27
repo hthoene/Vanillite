@@ -8,10 +8,11 @@ mod bat;
 pub(crate) mod bee;
 mod dolphin;
 pub mod ender_pearl;
+pub mod eye_of_ender;
 pub(crate) mod fish;
 mod golem;
 mod mooshroom;
-mod snowball;
+pub mod snowball;
 mod squid;
 mod strider;
 mod turtle;
@@ -32,7 +33,7 @@ use crate::level::Level;
 use crate::mob::animal::Interaction;
 use crate::mob::common::MoveToBlock;
 use crate::mob::kinds::{DefaultSound, Kind};
-use crate::mob::missile::{MissileData, MissileTick};
+use crate::mob::missile::{MissileData, MissileKind, MissileTick};
 use crate::mob::path::{MalusTable, PathType};
 use crate::mob::{Environment, MobData, Tick};
 use crate::player::encode::DataWriter;
@@ -1161,13 +1162,29 @@ impl FamilyHooks for Hooks {
         snowball::tick(t);
     }
 
-    fn missile_save(_d: &MissileData, _out: &mut Compound) {}
+    fn missile_save(d: &MissileData, out: &mut Compound) {
+        match d.kind {
+            MissileKind::FireworkRocket => crate::firework::save(d, out),
+            MissileKind::FishingBobber => crate::fishing::save(d, out),
+            _ => {}
+        }
+    }
 
-    fn missile_load(_d: &mut MissileData, _tag: &Compound) {}
+    fn missile_load(d: &mut MissileData, tag: &Compound) {
+        match d.kind {
+            MissileKind::FireworkRocket => crate::firework::load(d, tag),
+            MissileKind::FishingBobber => crate::fishing::load(d, tag),
+            _ => {}
+        }
+    }
 
     fn missile_encode(w: &mut DataWriter<'_>, d: &MissileData) {
-        // `ThrowableItemProjectile.DATA_ITEM_STACK`.
-        w.stack(8, &d.item);
+        match d.kind {
+            MissileKind::FireworkRocket => crate::firework::encode(w, d),
+            MissileKind::FishingBobber => crate::fishing::encode(w, d),
+            // `ThrowableItemProjectile.DATA_ITEM_STACK`, `EyeOfEnder.DATA_ITEM_STACK`.
+            _ => w.stack(8, &d.item),
+        }
     }
 
     fn goal_flags(g: &Goal) -> u8 {

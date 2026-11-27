@@ -466,7 +466,7 @@ fn player_movement(ents: &Entities, id: EntityId) -> Vec3 {
 
 /// `getKnownMovement`: a player's own movement, a mob's velocity (or the movement of the
 /// player controlling it).
-fn known_movement(ents: &Entities, id: EntityId) -> Vec3 {
+pub(crate) fn known_movement(ents: &Entities, id: EntityId) -> Vec3 {
     if ents.player(id).is_some() {
         return player_movement(ents, id);
     }

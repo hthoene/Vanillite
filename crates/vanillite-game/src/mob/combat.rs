@@ -322,7 +322,8 @@ pub fn hurt_mob(
     }
     let dead = ents
         .mob(target)
-        .is_some_and(super::MobData::is_dead_or_dying);
+        .is_some_and(super::MobData::is_dead_or_dying)
+        && !mob_totem(level, ents, env, cx, target, source.kind);
     if dead {
         if took_full {
             let sound = ents.mob(target).map(kinds::death_sound);
@@ -506,6 +507,66 @@ pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Op
         m.last_hurt_by_player_time = 100;
     }
     is_player.then_some(cause)
+}
+
+/// `checkTotemDeathProtection` of a dying mob: a death protection item in a hand is used up
+/// and the mob lives on with one health point.
+fn mob_totem(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    cx: &mut MobContext,
+    target: EntityId,
+    kind: crate::survival::damage::DamageKind,
+) -> bool {
+    use crate::item::EquipmentSlot;
+    if !crate::totem::can_protect(env.types, kind) {
+        return false;
+    }
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    let Some((slot, effects)) = crate::totem::protecting_hand(
+        m.equipment.get(EquipmentSlot::MainHand),
+        m.equipment.get(EquipmentSlot::OffHand),
+    ) else {
+        return false;
+    };
+    let kind_name = m.kind.type_id().name();
+    if let Some(uuid) = ents.store.get(target).map(|e| e.uuid())
+        && !env.hooks.entity_resurrect(uuid, kind_name)
+    {
+        return false;
+    }
+    let mut rolls = Vec::new();
+    if let Some(m) = ents.mob_mut(target) {
+        let mut stack = m.equipment.get(slot).clone();
+        stack.shrink(1);
+        m.equipment.set(slot, stack);
+        m.health = 1.0;
+        // `ApplyStatusEffectsConsumeEffect`: one roll of the mob's random per entry.
+        for e in &effects {
+            if matches!(e, crate::effect::consume::ConsumeEffect::Apply(..)) {
+                rolls.push(m.random.next_float());
+            }
+        }
+    }
+    let mob_kind = ents.mob(target).map(|m| m.kind.type_id());
+    if let Some(mob_kind) = mob_kind {
+        crate::effect::living::with_host(level, ents, env, cx, target, |host| {
+            let mut rolls = rolls.into_iter();
+            let mut roll = || rolls.next().unwrap_or(0.0);
+            crate::totem::apply_effects(&effects, mob_kind, host, &mut roll);
+        });
+    }
+    if let Some(mut e) = ents.store.get_mut(target) {
+        e.mark_data_dirty();
+    }
+    if let Some(network_id) = ents.store.get(target).map(|e| e.network_id().0) {
+        crate::totem::animation(env.out, target, network_id);
+    }
+    ents.equipment_updates.push(target);
+    true
 }
 
 /// `blameSourceForDamage(source)` and `die(source)` of a mob killed without damage (a

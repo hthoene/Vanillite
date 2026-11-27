@@ -18,6 +18,7 @@ mod entity_storage;
 pub mod explosion;
 pub mod forced;
 pub mod game_event;
+pub mod locate;
 mod neighbors;
 pub mod particles;
 pub mod place;

@@ -259,26 +259,51 @@ final class ScenarioEntities {
   }
 
   /**
-   * The {@code use_item} action: the named player gets {@code count} of {@code item} in its main
-   * hand and uses it, as a {@code use_item} packet would ({@code ServerPlayerGameMode.useItem}).
-   * The {@code interact} action uses it on the named {@code target} instead ({@code
-   * Player.interactOn}).
+   * The {@code use_item}, {@code release_item} and {@code attack_entity} actions: the named player
+   * gets {@code count} of {@code item} (with SNBT {@code components}; without {@code item} the hand
+   * stays as it is) in its main hand, then uses it as a {@code use_item} packet would ({@code
+   * ServerPlayerGameMode.useItem}), stops using it ({@code releaseUsingItem}, the {@code
+   * RELEASE_USE_ITEM} action) or attacks the named {@code target} ({@code Player.attack}) with its
+   * {@code fall_distance} set first if given (as its client's moves would). The {@code interact} action
+   * uses it on the named {@code target} instead ({@code Player.interactOn}).
    */
-  void useItem(JsonObject action) {
+  void useItem(JsonObject action, String op) throws Exception {
     ServerPlayer player = (ServerPlayer) byName.get(action.get("entity").getAsString());
-    var item =
-        BuiltInRegistries.ITEM.getValue(Identifier.parse(action.get("item").getAsString()));
-    int count = action.has("count") ? action.get("count").getAsInt() : 1;
-    net.minecraft.world.item.ItemStack stack = new net.minecraft.world.item.ItemStack(item, count);
-    player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, stack);
-    if (action.has("target")) {
-      player.interactOn(
-          byName.get(action.get("target").getAsString()),
-          net.minecraft.world.InteractionHand.MAIN_HAND,
-          net.minecraft.world.phys.Vec3.ZERO);
-      return;
+    if (action.has("item")) {
+      net.minecraft.nbt.CompoundTag tag = new net.minecraft.nbt.CompoundTag();
+      tag.putString("id", action.get("item").getAsString());
+      tag.putInt("count", action.has("count") ? action.get("count").getAsInt() : 1);
+      if (action.has("components")) {
+        tag.put(
+            "components",
+            net.minecraft.nbt.TagParser.parseCompoundFully(action.get("components").getAsString()));
+      }
+      net.minecraft.world.item.ItemStack stack =
+          net.minecraft.world.item.ItemStack.CODEC
+              .parse(
+                  level.registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE),
+                  tag)
+              .getOrThrow();
+      player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, stack);
     }
-    player.gameMode.useItem(player, level, stack, net.minecraft.world.InteractionHand.MAIN_HAND);
+    if (action.has("fall_distance")) {
+      player.fallDistance = action.get("fall_distance").getAsDouble();
+    }
+    switch (op) {
+      case "release_item" -> player.releaseUsingItem();
+      case "attack_entity" -> player.attack(byName.get(action.get("target").getAsString()));
+      case "interact" ->
+          player.interactOn(
+              byName.get(action.get("target").getAsString()),
+              net.minecraft.world.InteractionHand.MAIN_HAND,
+              net.minecraft.world.phys.Vec3.ZERO);
+      default ->
+          player.gameMode.useItem(
+              player,
+              level,
+              player.getItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND),
+              net.minecraft.world.InteractionHand.MAIN_HAND);
+    }
   }
 
   /** The {@code effect} action: {@code addEffect} on a named living entity. */

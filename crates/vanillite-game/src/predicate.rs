@@ -77,6 +77,14 @@ pub struct EntityFacts {
     pub sheared: bool,
     /// A villager's or zombie villager's type (`minecraft:villager_type` id).
     pub villager_variant: Option<u16>,
+    /// `is_flying`: gliding or flying with the creative abilities.
+    pub flying: bool,
+    /// `movement.fall_distance`.
+    pub fall_distance: f64,
+    /// `location.can_see_sky` at the entity's position (known where the level is).
+    pub can_see_sky: bool,
+    /// A fishing hook and whether it fishes in open water.
+    pub fishing_hook: Option<bool>,
 }
 
 /// `EntityPredicate`: the parts the game evaluates (`type`, `flags`); other parts are
@@ -100,6 +108,14 @@ pub struct EntityPredicate {
     pub sheared: Option<bool>,
     /// `predicates` `minecraft:villager/variant`: the villager types (`villager_type` ids).
     pub villager_variants: Option<Vec<u16>>,
+    /// `flags.is_flying`.
+    pub flying: Option<bool>,
+    /// `movement.fall_distance.min`.
+    pub min_fall_distance: Option<f64>,
+    /// `location.can_see_sky`.
+    pub can_see_sky: Option<bool>,
+    /// `type_specific/fishing_hook`: a hook, with `in_open_water` if given.
+    pub fishing_hook: Option<Option<bool>>,
     /// Has parts that are not evaluated.
     pub unsupported: bool,
 }
@@ -127,6 +143,7 @@ impl EntityPredicate {
                     p.sprinting = flag("is_sprinting");
                     p.swimming = flag("is_swimming");
                     p.on_ground = flag("is_on_ground");
+                    p.flying = flag("is_flying");
                     let known = [
                         "is_on_fire",
                         "is_baby",
@@ -134,6 +151,7 @@ impl EntityPredicate {
                         "is_sprinting",
                         "is_swimming",
                         "is_on_ground",
+                        "is_flying",
                     ];
                     p.unsupported |= v
                         .as_object()
@@ -149,6 +167,27 @@ impl EntityPredicate {
                         .and_then(dye_id);
                     p.unsupported |= !known
                         || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none());
+                }
+                "movement" => {
+                    // Only a lower bound of `fall_distance` (Wind Burst).
+                    let fall = v.get("fall_distance");
+                    let only = v.as_object().is_some_and(|m| m.len() == 1)
+                        && fall.is_some_and(|f| {
+                            f.as_object().is_some_and(|f| f.keys().all(|k| k == "min"))
+                        });
+                    p.min_fall_distance = fall.and_then(|f| f.get("min")).and_then(Value::as_f64);
+                    p.unsupported |= !only || p.min_fall_distance.is_none();
+                }
+                "location" => {
+                    // Only `can_see_sky` (Channeling).
+                    let only = v
+                        .as_object()
+                        .is_some_and(|l| l.keys().all(|k| k == "can_see_sky"));
+                    p.can_see_sky = v.get("can_see_sky").and_then(Value::as_bool);
+                    p.unsupported |= !only || p.can_see_sky.is_none();
+                }
+                "type_specific/fishing_hook" => {
+                    p.fishing_hook = Some(v.get("in_open_water").and_then(Value::as_bool));
                 }
                 "type_specific/sheep" => {
                     p.sheared = v.get("sheared").and_then(Value::as_bool);
@@ -217,6 +256,13 @@ impl EntityPredicate {
             && flag(self.sprinting, e.sprinting)
             && flag(self.swimming, e.swimming)
             && flag(self.on_ground, e.on_ground)
+            && flag(self.flying, e.flying)
+            && flag(self.can_see_sky, e.can_see_sky)
+            && self.min_fall_distance.is_none_or(|m| e.fall_distance >= m)
+            && self.fishing_hook.is_none_or(|want| {
+                e.fishing_hook
+                    .is_some_and(|open| want.is_none_or(|w| w == open))
+            })
     }
 }
 

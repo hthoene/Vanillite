@@ -88,6 +88,11 @@ pub fn with_entity_random<R>(f: impl FnOnce(&mut LegacyRandom) -> R) -> R {
     ORB_RANDOM.with_borrow_mut(f)
 }
 
+/// Reseeds this thread's [`with_entity_random`] (tick exact comparisons with Vanilla).
+pub fn seed_entity_random(seed: i64) {
+    ORB_RANDOM.with_borrow_mut(|r| *r = LegacyRandom::new(seed));
+}
+
 fn seed() -> i64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -169,20 +174,20 @@ fn can_merge(entities: &Entities, orb: EntityId, group: i32, value: i32) -> bool
 }
 
 /// `new ExperienceOrb(level, pos, roughly, value)` and `addFreshEntity`.
-fn spawn(
+pub(crate) fn spawn(
     entities: &mut Entities,
     network_ids: &NetworkIds,
     pos: Vec3,
     direction: Vec3,
     value: i32,
 ) -> EntityId {
-    let (y_rot, mut motion) = ORB_RANDOM.with_borrow_mut(|r| {
-        let y_rot = r.next_float() * 360.0;
-        let x = (r.next_double() * 0.2 - 0.1) * 2.0;
-        let y = r.next_double() * 0.2 * 2.0;
-        let z = (r.next_double() * 0.2 - 0.1) * 2.0;
-        (y_rot, Vec3::new(x, y, z))
-    });
+    // The constructor draws from the new orb's own random (`Entity.random`).
+    let mut r = LegacyRandom::new(crate::mob::new_entity_seed());
+    let y_rot = r.next_float() * 360.0;
+    let x = (r.next_double() * 0.2 - 0.1) * 2.0;
+    let y = r.next_double() * 0.2 * 2.0;
+    let z = (r.next_double() * 0.2 - 0.1) * 2.0;
+    let mut motion = Vec3::new(x, y, z);
     let length_sqr = direction.length_sqr();
     let mut at = pos;
     if length_sqr > 0.0 {
@@ -280,7 +285,13 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     let fall_speed = v.y;
     // `move(MoverType.SELF, delta)`.
     let movement = crate::block::falling::collide(&level.view(), aabb, v);
-    let new_pos = pos + movement;
+    // `Entity.move` keeps the position when the collision left almost nothing of the motion.
+    let moved = movement.length_sqr();
+    let new_pos = if moved > 1.0e-7 || v.length_sqr() - moved < 1.0e-7 {
+        pos + movement
+    } else {
+        pos
+    };
     let hit_x = (v.x - movement.x).abs() >= 1.0e-5;
     let hit_z = (v.z - movement.z).abs() >= 1.0e-5;
     let hit_y = v.y != movement.y;
@@ -295,15 +306,17 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         // `Block.updateEntityMovementAfterFallOn`.
         v.y = 0.0;
     }
-    let mut friction = 0.98;
+    // `getAirDrag` (a float), times the friction of the block below on the ground.
+    let mut friction = 0.98_f32;
     if below {
         let under = BlockPos::new(
             floor(new_pos.x),
             floor(new_pos.y - 0.999_999),
             floor(new_pos.z),
         );
-        friction *= f64::from(level.block(under).block().info().friction);
+        friction *= level.block(under).block().info().friction;
     }
+    let friction = f64::from(friction);
     v = Vec3::new(v.x * friction, v.y * friction, v.z * friction);
     if below && fall_speed < -GRAVITY {
         v.y = -fall_speed * 0.4;

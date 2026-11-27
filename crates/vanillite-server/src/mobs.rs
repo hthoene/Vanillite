@@ -18,12 +18,11 @@ use vanillite_game::minecart::{self, MinecartKind};
 use vanillite_game::mob::boss;
 use vanillite_game::mob::boss::dragon::{self, fight::DragonFight};
 use vanillite_game::mob::boss::special::{self, is_special_kind};
-use vanillite_game::mob::fam::wildlife::ender_pearl;
 use vanillite_game::mob::spawn::{self, SpawnInput, SpawnLimits, SpawnTable, Spawner};
 use vanillite_game::mob::{
-    self, Environment, MobContext, MobSettings, WorldAction, animal, attack, combat, projectile,
-    tame,
+    self, Environment, MobContext, MobSettings, WorldAction, animal, combat, projectile, tame,
 };
+use vanillite_game::player::item_use;
 use vanillite_game::player::{EntityAction, VehicleInput};
 use vanillite_game::portal;
 use vanillite_game::riding;
@@ -31,7 +30,6 @@ use vanillite_game::survival::blocks::BlockAccess;
 use vanillite_game::survival::damage::DamageSource;
 use vanillite_game::survival::rules::{Difficulty, Rule};
 use vanillite_game::vehicle::{self, BoatKind};
-use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::EntityId;
 
 use crate::global::Global;
@@ -453,7 +451,14 @@ impl WorldMobs {
                         {
                             s.hit_part = Some(i);
                         }
-                        attack_entity(level, &mut ents, &mut env, &mut self.cx, player, target);
+                        item_use::attack_entity(
+                            level,
+                            &mut ents,
+                            &mut env,
+                            &mut self.cx,
+                            player,
+                            target,
+                        );
                     }
                     EntityAction::Interact {
                         entity,
@@ -530,12 +535,25 @@ impl WorldMobs {
                     }
                     EntityAction::UseItem(hand) => {
                         if usable {
-                            use_item(level, &mut ents, &mut env, &network_ids, player, hand);
+                            item_use::use_item(
+                                level,
+                                &mut ents,
+                                &mut env,
+                                &mut self.cx,
+                                &network_ids,
+                                player,
+                                hand,
+                            );
                         }
                     }
-                    EntityAction::UseItemOn { hand, pos, face } => {
+                    EntityAction::UseItemOn {
+                        hand,
+                        pos,
+                        face,
+                        location,
+                    } => {
                         if usable {
-                            use_item_on(
+                            item_use::use_item_on(
                                 level,
                                 &mut ents,
                                 &mut env,
@@ -544,7 +562,13 @@ impl WorldMobs {
                                 hand,
                                 pos,
                                 face,
+                                location,
                             );
+                        }
+                    }
+                    EntityAction::StartFallFlying => {
+                        if usable {
+                            vanillite_game::elytra::start_fall_flying(&mut ents, player);
                         }
                     }
                     EntityAction::Stab => {
@@ -1068,12 +1092,16 @@ impl WorldMobs {
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
             vanillite_game::spear::tick_players(level, &mut ents, &mut env, &mut self.cx);
+            vanillite_game::trident::tick_spin_attacks(level, &mut ents, &mut env, &mut self.cx);
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
             for d in discarded {
                 ents.despawn(d);
             }
         }
         level.entities = ents;
+        if !self.cx.actions.is_empty() {
+            self.apply_actions(level, survival, global, dimension);
+        }
         // `TheEndGatewayBlockEntity.triggerCooldown` of the gateways that took an entity.
         for pos in std::mem::take(&mut self.cx.gateways) {
             let state = level.block(pos);
@@ -1231,7 +1259,7 @@ impl WorldMobs {
                 // `VehicleEntity.ignoreExplosion`: mob explosions without mob griefing.
                 let mob_source = hurt.indirect.is_some_and(|c| ents.mob(c).is_some());
                 if !(mob_source && !rules.bool(Rule::MOB_GRIEFING)) {
-                    hurt_vehicle(
+                    item_use::hurt_vehicle(
                         &mut ents,
                         &mut env,
                         &mut self.cx,
@@ -1552,64 +1580,6 @@ fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<Entity
     (distance_sqr_to_box(&target_box, eye) < 36.0).then_some(target)
 }
 
-/// `Player.attack` of mobs and players, boats and knots.
-fn attack_entity(
-    level: &Level,
-    ents: &mut Entities,
-    env: &mut vanillite_game::survival::player::Env<'_>,
-    cx: &mut MobContext,
-    player: EntityId,
-    target: EntityId,
-) {
-    let kind = ents.store.get(target).map(|e| e.kind());
-    if ents.decor(target).is_some() {
-        // `skipAttackInteraction` of block-attached entities and interactions.
-        if vanillite_game::decoration::attack(level, ents, env, cx, player, target) {
-            return;
-        }
-    }
-    if kind == Some(ids::LEASH_KNOT) {
-        // `LeashFenceKnotEntity.hurtServer`: it breaks.
-        tame::break_knot(ents, env, target, &mut cx.discarded);
-        return;
-    }
-    if ents.boat(target).is_some() || ents.minecart(target).is_some() {
-        let scale = attack::attack_strength_scale(ents, player, 0.5);
-        let base =
-            attack::player_attribute(ents, player, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
-        #[allow(clippy::cast_possible_truncation)]
-        let damage = base as f32 * (0.2 + scale * scale * 0.8);
-        if let Some(p) = ents.player_mut(player) {
-            p.survival.attack_ticker = 0;
-        }
-        let mut source = combat::entity_source(ents, env.types.player_attack, player, player);
-        source.cause_is_mob = false;
-        hurt_vehicle(ents, env, cx, target, source, damage);
-        return;
-    }
-    // `canHarmPlayer`: the pvp rule.
-    if ents.player(target).is_some() && !env.rules.bool(Rule::PVP) {
-        return;
-    }
-    attack::player_attack(level, ents, env, cx, player, target);
-}
-
-/// `VehicleEntity.hurtServer` of a boat or minecart.
-fn hurt_vehicle(
-    ents: &mut Entities,
-    env: &mut vanillite_game::survival::player::Env<'_>,
-    cx: &mut MobContext,
-    target: EntityId,
-    source: DamageSource,
-    amount: f32,
-) {
-    if ents.minecart(target).is_some() {
-        minecart::hurt(ents, env, cx, target, source, amount);
-    } else {
-        vehicle::hurt_boat(ents, env, cx, target, source, amount);
-    }
-}
-
 /// `LeashFenceKnotEntity.interact`: ties the player's leashed mobs to the knot, or breaks it.
 fn knot_interact(
     ents: &mut Entities,
@@ -1643,88 +1613,6 @@ fn knot_interact(
         }
     }
     animal::Interaction::Success
-}
-
-/// The inventory index of a hand.
-fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
-    match hand {
-        Hand::MainHand => ents.player(player).map_or(0, |p| p.inventory.selected),
-        Hand::OffHand => vanillite_game::inventory::OFFHAND,
-    }
-}
-
-/// Takes the stack out of a hand to use it with the entities; [`put_back`] returns it.
-fn take_held(ents: &mut Entities, player: EntityId, hand: Hand) -> ItemStack {
-    let i = hand_index(ents, player, hand);
-    ents.player_mut(player)
-        .and_then(|p| p.inventory.get_mut(i).map(std::mem::take))
-        .unwrap_or_default()
-}
-
-fn put_back(ents: &mut Entities, player: EntityId, hand: Hand, stack: ItemStack) {
-    let i = hand_index(ents, player, hand);
-    if let Some(p) = ents.player_mut(player) {
-        p.inventory.set(i, stack);
-    }
-}
-
-/// `use_item` of the items that need entities: boats, the carrot on a stick, ender pearls,
-/// thrown potions, and items used over time.
-fn use_item(
-    level: &Level,
-    ents: &mut Entities,
-    env: &mut vanillite_game::survival::player::Env<'_>,
-    network_ids: &vanillite_world::entity::NetworkIds,
-    player: EntityId,
-    hand: Hand,
-) {
-    // `ServerPlayerGameMode.useItem`: nothing while the item cools down.
-    let cooling = ents.player(player).is_some_and(|p| {
-        let i = hand_index(ents, player, hand);
-        p.survival.cooldowns.is_on_cooldown(p.inventory.get(i))
-    });
-    if cooling {
-        return;
-    }
-    if vanillite_game::player::items::use_item(level, ents, env, network_ids, player, hand) {
-        return;
-    }
-    let mut stack = take_held(ents, player, hand);
-    let name = vanillite_game::item::item_id(&stack).name();
-    let creative = ents
-        .player(player)
-        .is_some_and(|p| p.game_mode == GameMode::Creative);
-    let item = stack.item;
-    if name.ends_with("_boat") || name.ends_with("_raft") {
-        let reach = if creative { 5.0 } else { 4.5 };
-        if vehicle::use_boat_item(
-            level,
-            ents,
-            network_ids,
-            player,
-            &mut stack,
-            creative,
-            reach,
-        ) {
-            award_used(ents, player, item);
-        }
-    } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
-    {
-        // `FoodOnAStickItem.use` counts the use only when nothing was boosted.
-        if !riding::boost(ents, env, player, &mut stack, creative) {
-            award_used(ents, player, item);
-        }
-    } else if name == ender_pearl::ITEM {
-        ender_pearl::throw(ents, env, network_ids, player, &mut stack, hand);
-    } else if vanillite_game::effect::thrown::kind_of(&stack).is_some() {
-        vanillite_game::effect::thrown::throw(ents, env, network_ids, player, &mut stack, creative);
-        award_used(ents, player, item);
-    } else {
-        put_back(ents, player, hand, stack);
-        vanillite_game::player::using::start(ents, env, network_ids, player, hand);
-        return;
-    }
-    put_back(ents, player, hand, stack);
 }
 
 /// `Entity.getPickResult`: a mob's spawn egg, or the item of a vehicle or decoration.
@@ -1779,62 +1667,4 @@ fn pick_item_from_entity(ents: &mut Entities, player: EntityId, network_id: i32)
     let sink = Arc::clone(&p.connection.sink);
     sink.send(&vanillite_protocol::packets::play::clientbound::SetHeldSlot { slot });
     p.inventory.broadcast_changes(sink.as_ref());
-}
-
-/// `use_item_on` with spawn eggs and leads.
-#[allow(clippy::too_many_arguments)]
-fn use_item_on(
-    level: &Level,
-    ents: &mut Entities,
-    env: &mut vanillite_game::survival::player::Env<'_>,
-    network_ids: &vanillite_world::entity::NetworkIds,
-    player: EntityId,
-    hand: Hand,
-    pos: BlockPos,
-    face: vanillite_base::Direction,
-) {
-    let mut stack = take_held(ents, player, hand);
-    let before = stack.clone();
-    let creative = ents
-        .player(player)
-        .is_some_and(|p| p.game_mode == GameMode::Creative);
-    let used = if let Some(kind) = animal::spawn_egg_kind(&stack) {
-        animal::use_spawn_egg_on(
-            level,
-            ents,
-            env,
-            network_ids,
-            kind,
-            pos,
-            face,
-            &mut stack,
-            creative,
-        )
-    } else if vanillite_game::item::item_id(&stack).name() == "minecraft:lead" {
-        tame::use_lead_on_fence(level, ents, env, player, pos)
-    } else {
-        minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative)
-    };
-    put_back(ents, player, hand, stack);
-    if used && !before.is_empty() {
-        // `ItemStack.useOn` of a successful item interaction, then `ITEM_USED_ON_BLOCK` and
-        // `ANY_BLOCK_USE`.
-        award_used(ents, player, before.item);
-        if let Some(p) = ents.player_mut(player) {
-            use vanillite_game::advancements::trigger::Event;
-            p.advancements
-                .trigger(Event::ItemUsedOnBlock(pos, before.clone()));
-            p.advancements.trigger(Event::AnyBlockUse(pos, before));
-        }
-    }
-}
-
-/// `player.awardStat(Stats.ITEM_USED.get(item))`.
-fn award_used(ents: &mut Entities, player: EntityId, item: u16) {
-    if let Some(p) = ents.player_mut(player) {
-        p.stats.award(
-            vanillite_game::stats::Stat::of(vanillite_game::stats::StatType::Used, item),
-            1,
-        );
-    }
 }

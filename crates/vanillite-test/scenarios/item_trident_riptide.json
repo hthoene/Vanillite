@@ -1,0 +1,14 @@
+{
+  "description": "A player in the rain releases a Riptide II trident (#107): the launch along the look, the lift off the ground and the spin attack ticks until it lands.",
+  "rules": {"spawn_monsters": "false", "advance_weather": "false"},
+  "weather": "rain",
+  "region": [[0, -61, 0], [31, -30, 15]],
+  "ticks": 110,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [2.5, -60.0, 8.5], "rot": [-90, -30]}
+  ],
+  "actions": [
+    {"tick": 62, "op": "use_item", "entity": "steve", "item": "minecraft:trident", "components": "{\"minecraft:enchantments\": {\"minecraft:riptide\": 2}}"},
+    {"tick": 75, "op": "release_item", "entity": "steve"}
+  ]
+}
