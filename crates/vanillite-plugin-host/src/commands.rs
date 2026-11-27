@@ -176,6 +176,11 @@ impl Commands {
                 return status::INVALID_ARGUMENT;
             }
         };
+        let late = !inner.may_register(plugin);
+        // A disabled (or unloaded) plugin registers nothing after the start.
+        if late && !plugin.enabled.load(Ordering::Acquire) {
+            return status::WRONG_PHASE;
+        }
         let mut trees = self.trees.write().unwrap_or_else(PoisonError::into_inner);
         if inner.is_reloading(plugin) {
             let mut reload = self.reload.lock().unwrap_or_else(PoisonError::into_inner);
@@ -218,7 +223,7 @@ impl Commands {
             suggest: spec.suggest,
             user: SendPtr(spec.user),
         });
-        if !inner.may_register(plugin) {
+        if late {
             self.late.store(true, Ordering::Release);
         }
         status::OK
@@ -342,6 +347,15 @@ impl PluginHost {
             let Some(root) = tree.nodes.first() else {
                 continue;
             };
+            // Late trees of a plugin disabled before they were applied are dropped.
+            if from > 0
+                && self
+                    .inner
+                    .plugin(tree.plugin)
+                    .is_some_and(|p| !p.enabled.load(Ordering::Acquire))
+            {
+                continue;
+            }
             let id = self
                 .inner
                 .plugin(tree.plugin)
