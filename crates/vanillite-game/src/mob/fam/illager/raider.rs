@@ -738,8 +738,9 @@ pub fn pick_up_item(t: &mut Tick<'_, '_>, item: EntityId) -> bool {
         let chance = t.mob_ref().equipment.drop_chance(EquipmentSlot::Head);
         if !current.is_empty() && (t.mob().random.next_float() - 0.1).max(0.0) < chance {
             let pos = t.pos();
-            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+            let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
             t.env.out.push(crate::survival::Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos,
                 velocity,

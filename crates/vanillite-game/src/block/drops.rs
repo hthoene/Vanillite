@@ -200,8 +200,45 @@ pub fn spawn_item_moving(
     }
     // The `ItemEntity` constructor draws `bobOffs`, the yaw and the motion from the item's own
     // random (seeded from the entity seed stream).
-    let (uuid, y_rot, motion) = crate::mob::new_item_entity();
+    let (uuid, y_rot, motion, item_random) = crate::mob::new_item_entity();
     let velocity = velocity.unwrap_or(motion);
+    add_item(
+        level,
+        (uuid, y_rot, item_random),
+        pos,
+        stack,
+        velocity,
+        pickup_delay,
+        thrower,
+    )
+}
+
+/// [`spawn_item`] with `new ItemEntity(level, x, y, z, stack, dx, dy, dz)`, which draws no
+/// motion from the item's own random (`Block.popResourceFromFace`, a goat's horn).
+pub fn spawn_item_with_motion(
+    level: &mut Level,
+    pos: Vec3,
+    stack: ItemStack,
+    velocity: Vec3,
+    pickup_delay: i16,
+) -> Option<EntityId> {
+    if stack.is_empty() {
+        return None;
+    }
+    let new = crate::mob::new_item_entity_with_motion();
+    add_item(level, new, pos, stack, velocity, pickup_delay, None)
+}
+
+/// Adds the item entity `(uuid, y_rot, random state)`.
+fn add_item(
+    level: &mut Level,
+    (uuid, y_rot, item_random): (u128, f32, i64),
+    pos: Vec3,
+    stack: ItemStack,
+    velocity: Vec3,
+    pickup_delay: i16,
+    thrower: Option<u128>,
+) -> Option<EntityId> {
     let network_id = level.network_ids().next();
     let id = level.entities.spawn_item(
         network_id,
@@ -209,7 +246,7 @@ pub fn spawn_item_moving(
         pos,
         velocity,
         y_rot,
-        ItemData::new(stack, pickup_delay, thrower),
+        ItemData::new(stack, pickup_delay, thrower, item_random),
     );
     level
         .entities

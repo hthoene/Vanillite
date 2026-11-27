@@ -118,8 +118,9 @@ fn tick_trident(t: &mut MissileTick<'_, '_>) {
         if !alive {
             if d.pickup == 1 {
                 // `spawnAtLocation(getPickupItem(), 0.1)`.
-                let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+                let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
                 t.env.out.push(crate::survival::Effect::DropItem {
+                    random: item_random,
                     uuid,
                     pos: Vec3::new(pos.x, pos.y + 0.1, pos.z),
                     velocity,

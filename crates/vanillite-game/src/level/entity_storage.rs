@@ -312,7 +312,12 @@ impl Level {
             if stack.is_empty() {
                 return Some(None);
             }
-            let mut data = ItemData::new(stack, short("PickupDelay", 0), uuid_of(&nbt, "Thrower"));
+            let mut data = ItemData::new(
+                stack,
+                short("PickupDelay", 0),
+                uuid_of(&nbt, "Thrower"),
+                crate::item_entity::loaded_random(seed),
+            );
             data.age = short("Age", 0);
             data.target = uuid_of(&nbt, "Owner");
             let items = &mut self.entities.items;

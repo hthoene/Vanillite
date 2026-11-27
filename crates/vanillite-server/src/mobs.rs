@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
 use vanillite_config::{GameMode, VanillaOr, WorldRules};
 use vanillite_data::entity::ids;
@@ -137,9 +136,7 @@ pub(crate) struct WorldMobs {
 }
 
 /// What the item entities' tick needs from the world.
-pub(crate) struct ItemTick<'a> {
-    /// The random the items draw from (Vanilla: each item's own, unseeded).
-    pub(crate) random: &'a mut vanillite_base::random::XoroshiroRandom,
+pub(crate) struct ItemTick {
     /// Despawn and merge rules.
     pub(crate) settings: crate::blocks::ItemSettings,
 }
@@ -660,7 +657,7 @@ impl WorldMobs {
         survival: &mut WorldSurvival,
         global: &Global,
         dimension: &str,
-        items: ItemTick<'_>,
+        items: ItemTick,
     ) {
         self.ticks += 1;
         level.flush_poi_changes();
@@ -741,7 +738,6 @@ impl WorldMobs {
                         &mut ents,
                         chunks,
                         id,
-                        &mut || items.random.next_float(),
                         level.min_y(),
                         items.settings,
                         &mut self.item_scratch,

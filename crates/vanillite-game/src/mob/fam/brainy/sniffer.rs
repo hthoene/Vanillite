@@ -293,8 +293,9 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
         let head = head_block(t);
         let items = super::gift_loot(t, "minecraft:gameplay/sniffer_digging");
         for stack in items {
-            let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+            let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
             t.env.out.push(crate::survival::Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos: Vec3::new(f64::from(head.x), f64::from(head.y), f64::from(head.z)),
                 velocity,
@@ -326,9 +327,10 @@ pub fn spawn_child_from_breeding(t: &mut Tick<'_, '_>, partner: EntityId) {
     let r = &mut t.mob().random;
     let pitch = (r.next_float() - r.next_float()) * 0.2 + 0.5;
     crate::mob::kinds::play_sound(t, "minecraft:entity.sniffer.egg_plop", 1.0, pitch);
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     let pos = t.pos();
     t.env.out.push(crate::survival::Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,

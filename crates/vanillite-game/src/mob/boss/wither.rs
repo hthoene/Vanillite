@@ -1425,16 +1425,14 @@ pub fn on_death(
     let Some(item) = vanillite_data::registry::ITEM.id("minecraft:nether_star") else {
         return;
     };
-    let r = &mut *env.random;
-    let velocity = Vec3::new(
-        r.next_double() * 0.2 - 0.1,
-        0.2,
-        r.next_double() * 0.2 - 0.1,
+    // `spawnAtLocation`: `new ItemEntity(level, x, y, z, stack)` draws from its own random.
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
+    let mut data = crate::item_entity::ItemData::new(
+        crate::item::ItemStack::new(item, 1),
+        10,
+        None,
+        item_random,
     );
-    let uuid = crate::mob::random_uuid(r);
-    let y_rot = r.next_float() * 360.0;
-    let mut data =
-        crate::item_entity::ItemData::new(crate::item::ItemStack::new(item, 1), 10, None);
     // `setExtendedLifetime`.
     data.age = -6000;
     let id = ents.spawn_item(level.network_ids().next(), uuid, pos, velocity, y_rot, data);

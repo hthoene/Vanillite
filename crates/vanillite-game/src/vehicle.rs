@@ -617,8 +617,9 @@ pub fn hurt_boat(
                 .patch_mut()
                 .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
         }
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos,
             velocity,

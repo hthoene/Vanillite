@@ -1601,7 +1601,7 @@ fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>
     for stack in drops {
         // `new ItemEntity(level, x, y, z, stack)`; the throw replaces its motion. The throw
         // draws from the player's own random in Vanilla, here from the level random.
-        let (uuid, y_rot, _) = crate::mob::new_item_entity();
+        let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
         let pow = env.random.next_float() * 0.5;
         let dir = env.random.next_float() * std::f32::consts::TAU;
         let velocity = Vec3::new(
@@ -1610,6 +1610,7 @@ fn throw_drops(drops: Vec<crate::item::ItemStack>, from: Vec3, env: &mut Env<'_>
             f64::from(vanillite_base::math::cos(f64::from(dir)) * pow),
         );
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos: from,
             velocity,

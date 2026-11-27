@@ -749,8 +749,9 @@ pub fn destroy_with_loot(level: &mut Level, d: LootVehicleDrop) {
 /// `spawnAtLocation(stack)`: an item at the entity's position with the default pickup delay
 /// (the item draws its yaw and motion from its own random).
 pub(crate) fn spawn_at_location(env: &mut Env<'_>, pos: Vec3, stack: ItemStack) {
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,
@@ -785,8 +786,9 @@ pub(crate) fn drop_contents(env: &mut Env<'_>, pos: Vec3, items: &[ItemStack]) {
             let velocity = Vec3::new(triangle(0.0), triangle(0.2), triangle(0.0));
             // `new ItemEntity(level, x, y, z, stack)` draws its yaw and first motion from the
             // item's own random.
-            let (uuid, y_rot, _) = crate::mob::new_item_entity();
+            let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
             env.out.push(Effect::DropItem {
+                random: item_random,
                 uuid,
                 pos: Vec3::new(xo, yo, zo),
                 velocity,
