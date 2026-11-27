@@ -94,6 +94,12 @@ pub fn hurt(
     if ents.decor(target).is_some() {
         return crate::decoration::hurt(level, ents, env, cx, target, &source);
     }
+    if ents
+        .missile(target)
+        .is_some_and(|d| d.kind == super::missile::MissileKind::ShulkerBullet && !d.removed)
+    {
+        return super::fam::illager::missiles::hurt_bullet(ents, env, cx, target);
+    }
     // `VehicleEntity.hurtServer`.
     if ents.minecart(target).is_some() {
         return crate::minecart::hurt(ents, env, cx, target, source, amount);
@@ -115,15 +121,18 @@ pub fn hurt(
             .and_then(|m| super::tame::owner_of(ents, m))
     });
     // `ServerPlayer.hurtServer`: a player-caused hit (also through projectiles, potions and
-    // arrows of a player) fails `canHarmPlayer` without the pvp rule.
-    if !env.rules.bool(Rule::PVP)
-        && (source.cause.is_some_and(|c| ents.player(c).is_some())
-            || source
+    // arrows of a player) fails `canHarmPlayer` (the pvp rule, teams without friendly fire).
+    let harmer = source
+        .cause
+        .filter(|&c| ents.player(c).is_some())
+        .or_else(|| {
+            source
                 .direct
                 .and_then(|d| ents.arrow(d))
                 .and_then(|a| a.owner)
-                .is_some_and(|o| ents.player(o).is_some()))
-    {
+                .filter(|&o| ents.player(o).is_some())
+        });
+    if harmer.is_some_and(|h| !super::attack::can_harm_player(ents, env, target, h)) {
         return false;
     }
     let armor = super::attack::armor_effectiveness(ents, env.types, target, &source);

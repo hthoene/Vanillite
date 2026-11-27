@@ -488,9 +488,9 @@ pub struct Env<'a> {
     pub hooks: &'a dyn crate::hooks::GameHooks,
     /// `Player.getDisplayName` by name and UUID: the name in its team's format.
     pub display_name: &'a dyn Fn(&str, u128) -> Component,
-    /// `Entity.getTeam` of an entity that is no player, by UUID: the name of its scoreboard
-    /// team.
-    pub entity_team: &'a dyn Fn(u128) -> Option<Box<str>>,
+    /// `Entity.getTeam` by score holder (a player's name, another entity's UUID string): its
+    /// scoreboard team.
+    pub entity_team: &'a dyn Fn(&str) -> Option<crate::scoreboard::TeamFacts>,
 }
 
 impl std::fmt::Debug for Env<'_> {

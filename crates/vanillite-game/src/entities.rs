@@ -442,8 +442,22 @@ impl Entities {
         new: NewEntity,
         data: crate::mob::missile::MissileData,
     ) -> EntityId {
+        use crate::mob::missile::MissileKind;
+        // Players hit fireballs, wind charges and shulker bullets.
+        let attackable = matches!(
+            data.kind,
+            MissileKind::Fireball
+                | MissileKind::WindCharge
+                | MissileKind::BreezeWindCharge
+                | MissileKind::ShulkerBullet
+        );
+        let network_id = new.network_id.0;
         let missiles = &mut self.missiles;
-        self.store.spawn(new, |id| missiles.push(id, data))
+        let id = self.store.spawn(new, |id| missiles.push(id, data));
+        if attackable {
+            self.by_network_id.insert(network_id, id);
+        }
+        id
     }
 
     /// The missile data of an entity.

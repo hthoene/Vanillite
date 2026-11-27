@@ -95,6 +95,12 @@ pub struct EntityFacts {
     pub raid_captain: Option<bool>,
     /// A mooshroom's colour: 0 red, 1 brown.
     pub mooshroom_variant: Option<u8>,
+    /// `is_fall_flying`: gliding with elytra.
+    pub fall_flying: bool,
+    /// `is_in_water`.
+    pub in_water: bool,
+    /// A player's game mode (wire id) and food level.
+    pub player: Option<(i32, i32)>,
 }
 
 /// `EntityPredicate`: the parts the game evaluates (`type`, `flags`); other parts are
@@ -137,6 +143,15 @@ pub struct EntityPredicate {
     pub raid_captain: Option<bool>,
     /// `components` `minecraft:mooshroom/variant`: 0 red, 1 brown.
     pub mooshroom_variant: Option<u8>,
+    /// `flags.is_fall_flying`.
+    pub fall_flying: Option<bool>,
+    /// `flags.is_in_water`.
+    pub in_water: Option<bool>,
+    /// `vehicle: {}`: rides anything.
+    pub in_vehicle: bool,
+    /// `type_specific/player`: a player, in one of the game modes (wire ids) if given, with
+    /// at least / at most this food level if given.
+    pub player: Option<PlayerPredicate>,
     /// Has parts that are not evaluated.
     pub unsupported: bool,
 }
@@ -165,6 +180,8 @@ impl EntityPredicate {
                     p.swimming = flag("is_swimming");
                     p.on_ground = flag("is_on_ground");
                     p.flying = flag("is_flying");
+                    p.fall_flying = flag("is_fall_flying");
+                    p.in_water = flag("is_in_water");
                     let known = [
                         "is_on_fire",
                         "is_baby",
@@ -173,6 +190,8 @@ impl EntityPredicate {
                         "is_swimming",
                         "is_on_ground",
                         "is_flying",
+                        "is_fall_flying",
+                        "is_in_water",
                     ];
                     p.unsupported |= v
                         .as_object()
@@ -217,6 +236,13 @@ impl EntityPredicate {
                     p.unsupported |= !known
                         || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none())
                         || (farm.is_some() && p.farm_variant.is_none());
+                }
+                "vehicle" if v.as_object().is_some_and(serde_json::Map::is_empty) => {
+                    p.in_vehicle = true;
+                }
+                "type_specific/player" => {
+                    p.player = PlayerPredicate::parse(v);
+                    p.unsupported |= p.player.is_none();
                 }
                 "vehicle" => {
                     // Only the type of the vehicle (the jockey drops).
@@ -332,6 +358,13 @@ impl EntityPredicate {
             && flag(self.swimming, e.swimming)
             && flag(self.on_ground, e.on_ground)
             && flag(self.flying, e.flying)
+            && flag(self.fall_flying, e.fall_flying)
+            && flag(self.in_water, e.in_water)
+            && (!self.in_vehicle || e.vehicle.is_some())
+            && self
+                .player
+                .as_ref()
+                .is_none_or(|p| e.player.is_some_and(|(mode, food)| p.test(mode, food)))
             && flag(self.can_see_sky, e.can_see_sky)
             && self
                 .vehicle
@@ -349,6 +382,61 @@ impl EntityPredicate {
             && self.fishing_hook.is_none_or(|want| {
                 e.fishing_hook
                     .is_some_and(|open| want.is_none_or(|w| w == open))
+            })
+    }
+}
+
+/// `PlayerPredicate`: the parts the game evaluates (`gamemode`, `food.level`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerPredicate {
+    /// The game modes (wire ids); `None` = any.
+    pub game_modes: Option<Vec<i32>>,
+    /// `food.level`: the inclusive bounds.
+    pub food_level: Option<(Option<i32>, Option<i32>)>,
+}
+
+impl PlayerPredicate {
+    /// Parses a `type_specific/player` object; `None` when it has parts that are not
+    /// evaluated.
+    fn parse(v: &Value) -> Option<PlayerPredicate> {
+        let o = v.as_object()?;
+        let mut p = PlayerPredicate::default();
+        for (k, v) in o {
+            match k.as_str() {
+                "gamemode" => {
+                    let names: Vec<&str> = match v {
+                        Value::String(s) => vec![s.as_str()],
+                        Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+                        _ => return None,
+                    };
+                    let modes = names
+                        .into_iter()
+                        .map(|n| {
+                            ["survival", "creative", "adventure", "spectator"]
+                                .iter()
+                                .position(|m| *m == n)
+                                .and_then(|i| i32::try_from(i).ok())
+                        })
+                        .collect::<Option<Vec<i32>>>()?;
+                    p.game_modes = Some(modes);
+                }
+                "food" => {
+                    let food = v.as_object()?;
+                    if food.keys().any(|k| k != "level") {
+                        return None;
+                    }
+                    p.food_level = Some(int_bounds(food.get("level")?)?);
+                }
+                _ => return None,
+            }
+        }
+        Some(p)
+    }
+
+    fn test(&self, mode: i32, food: i32) -> bool {
+        self.game_modes.as_ref().is_none_or(|m| m.contains(&mode))
+            && self.food_level.is_none_or(|(min, max)| {
+                min.is_none_or(|m| m <= food) && max.is_none_or(|m| food <= m)
             })
     }
 }

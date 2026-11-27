@@ -420,10 +420,13 @@ fn run_block_effect(
             ));
         }
         EntityEffect::PlaySound {
-            sound: s,
+            sounds,
             volume,
             pitch,
         } => {
+            let Some(s) = sounds.first() else {
+                return;
+            };
             play_sound(
                 t.env.out,
                 None,
