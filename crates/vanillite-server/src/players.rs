@@ -693,7 +693,6 @@ impl WorldPlayers {
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
     ) {
-        let border = level.border.clone();
         let (movement_check, elytra_movement_check) = {
             use vanillite_game::survival::rules::Rule;
             let game_rules = global.level.rules();
@@ -705,8 +704,13 @@ impl WorldPlayers {
         let ctx = MoveContext {
             runs_normally,
             rules: &rules.movement,
-            border: Some(&border),
             no_wrong_move_check: false,
+            no_physics: false,
+            dims: vanillite_world::entity::Dimensions {
+                width: 0.6,
+                height: 1.8,
+            },
+            blocks: None,
             movement_check,
             elytra_movement_check,
         };
@@ -766,7 +770,7 @@ impl WorldPlayers {
                 .map(|r| r.pos);
             let op = actor.permission_level > 0;
             let protected = |pos: BlockPos| protection.protects(pos, op);
-            let aabb = entity.aabb();
+            let (aabb, dims) = (entity.aabb(), entity.dims());
             let mut drops: Vec<Drop> = Vec::new();
             let mut hands: Vec<Hand> = Vec::new();
             let handled = {
@@ -777,8 +781,7 @@ impl WorldPlayers {
                     actor: Some((id, aabb)),
                     dimension: dimension_name,
                 };
-                let hooks =
-                    crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+                let hooks = crate::plugins::Hooks::of(global, self.level.dimension.as_str());
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
@@ -801,6 +804,8 @@ impl WorldPlayers {
                             player.game_mode,
                             GameMode::Spectator | GameMode::Creative
                         ),
+                        no_physics: player.game_mode == GameMode::Spectator,
+                        dims,
                         ..ctx
                     },
                     chat,
@@ -836,7 +841,7 @@ impl WorldPlayers {
                             .award(Stat::of(StatType::Dropped, item), drop.stack.count);
                         player.stats.award(custom::DROP, 1);
                     }
-                    throw_item(&mut level, &actor, drop);
+                    throw_item(&mut level, &actor, drop, &mut player.survival.own_random);
                 }
                 handled
             };
@@ -878,6 +883,9 @@ impl WorldPlayers {
             let body = state.body;
             if body.pos != before.body.pos {
                 entity.set_pos(body.pos);
+            }
+            if body.velocity != before.body.velocity {
+                entity.set_velocity(body.velocity);
             }
             if body.y_rot != before.body.y_rot || body.x_rot != before.body.x_rot {
                 entity.set_rot(Rotation {
@@ -937,7 +945,7 @@ impl WorldPlayers {
         level.entities.players = players;
         // The bed and anchor clicks, then `STOP_SLEEPING`.
         {
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension_name);
+            let hooks = crate::plugins::Hooks::of(global, dimension_name);
             vanillite_game::survival::sleep::run_block_uses(level, &hooks);
             let leaving: Vec<EntityId> = level
                 .entities
@@ -1130,8 +1138,7 @@ impl WorldPlayers {
                 };
                 let mut drops = Vec::new();
                 let mut hands = Vec::new();
-                let hooks =
-                    crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+                let hooks = crate::plugins::Hooks::of(global, self.level.dimension.as_str());
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
@@ -1191,7 +1198,7 @@ impl WorldPlayers {
                         .plugins
                         .wants(vanillite_abi::event::ENTITY_PICKUP_ITEM)
                     {
-                        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension_name);
+                        let hooks = crate::plugins::Hooks::of(global, dimension_name);
                         let room = if infinite {
                             item.stack.count
                         } else {
@@ -1252,7 +1259,11 @@ impl WorldPlayers {
                     pos: actor.pos,
                     y_rot: actor.y_rot,
                     dimension: dimension_name,
-                    has_ceiling: dimension_name == "minecraft:the_nether",
+                    has_ceiling: global
+                        .dimensions
+                        .world(dimension_name)
+                        .and_then(|w| global.level.dimension_types.get(w.index()))
+                        .is_some_and(|t| t.has_ceiling),
                 };
                 vanillite_game::carried::tick(level, owner, player);
             }
@@ -1294,7 +1305,7 @@ impl WorldPlayers {
                         dimension: dimension_name,
                     };
                     for drop in drops {
-                        throw_item(&mut world, &actor, drop);
+                        throw_item(&mut world, &actor, drop, &mut player.survival.own_random);
                     }
                 }
             } else {
@@ -1409,7 +1420,7 @@ impl WorldPlayers {
         reason: Option<Box<Component>>,
     ) {
         // `ServerPlayer.disconnect`: out of bed before the player is saved.
-        let hooks = crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+        let hooks = crate::plugins::Hooks::of(global, self.level.dimension.as_str());
         vanillite_game::survival::sleep::stop_sleep_in_bed(level, id, true, false, &hooks);
         let entities = &mut level.entities;
         let Some(entity) = entities.store.get(id) else {
@@ -1448,11 +1459,10 @@ impl WorldPlayers {
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
         let message = join::left_message(crate::scoreboard::display_name(global, &name, uuid));
-        let world = crate::server::DIMENSIONS
-            .iter()
-            .position(|d| *d == self.level.dimension.as_str())
-            .and_then(|i| u32::try_from(i).ok())
-            .unwrap_or(0);
+        let world = global
+            .dimensions
+            .world(self.level.dimension.as_str())
+            .map_or(0, |w| u32::from(w.0));
         let message = crate::plugins::player_message(global, message, |json| {
             global.plugins.player_leave(world, uuid, &name, json)
         });
@@ -1483,14 +1493,11 @@ impl WorldPlayers {
                 );
             }
         });
-        for (i, other) in crate::server::DIMENSIONS.iter().enumerate() {
-            if *other == dimension.as_str() {
+        for (world, other, _) in global.dimensions.iter() {
+            if other == dimension.as_str() {
                 continue;
             }
-            let Ok(index) = u16::try_from(i) else {
-                continue;
-            };
-            global.run_in_world(crate::world::WorldId(index), move |world| {
+            global.run_in_world(world, move |world| {
                 world.add_pearls_of(uuid);
             });
         }
@@ -1972,7 +1979,8 @@ fn touch_orb(
         return;
     }
     let n = i32::try_from(near.len()).unwrap_or(i32::MAX);
-    let pick = orbs::with_entity_random(|r| r.next_int_bounded(n));
+    // `Util.getRandom(orbs, player.getRandom())`.
+    let pick = survival.random.next_int_bounded(n);
     let Some(&orb) = usize::try_from(pick).ok().and_then(|i| near.get(i)) else {
         return;
     };
@@ -1980,15 +1988,14 @@ fn touch_orb(
         return;
     }
     survival.take_xp_delay = orbs::TAKE_XP_DELAY;
-    let points = orbs::with_entity_random(|r| {
-        orbs::take_one(
-            &mut level.entities,
-            orb,
-            inventory,
-            &global.game().enchanting,
-            &mut |n| r.next_int_bounded(n),
-        )
-    });
+    let random = &mut survival.random;
+    let points = orbs::take_one(
+        &mut level.entities,
+        orb,
+        inventory,
+        &global.game().enchanting,
+        &mut |n| random.next_int_bounded(n),
+    );
     let Some(points) = points else {
         return;
     };

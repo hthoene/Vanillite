@@ -165,22 +165,27 @@ fn facing(source: &CommandSource, at: Vec3) -> CommandSource {
 }
 
 /// `DimensionType.getTeleportationScale` between two worlds.
-fn teleport_scale(from: WorldId, to: WorldId) -> f64 {
-    let scale = |w: WorldId| if w.0 == 1 { 8.0 } else { 1.0 };
+fn teleport_scale(global: &crate::global::Global, from: WorldId, to: WorldId) -> f64 {
+    let scale = |w: WorldId| {
+        global
+            .level
+            .dimension_types
+            .get(w.index())
+            .map_or(1.0, |t| t.coordinate_scale)
+    };
     scale(from) / scale(to)
 }
 
 /// The world of a dimension argument (`DimensionArgument.getDimension`).
-pub(crate) fn dimension(args: &Args, name: &str) -> Result<WorldId, CommandError> {
+pub(crate) fn dimension(
+    global: &crate::global::Global,
+    args: &Args,
+    name: &str,
+) -> Result<WorldId, CommandError> {
     let id = args.identifier(name).ok_or_else(|| missing(name))?;
-    crate::server::DIMENSIONS
-        .iter()
-        .position(|d| d == id)
-        .and_then(|i| u16::try_from(i).ok())
-        .map(WorldId)
-        .ok_or_else(|| {
-            CommandError::new("argument.dimension.invalid", vec![ErrArg::Str(id.clone())])
-        })
+    global.dimensions.world(id).ok_or_else(|| {
+        CommandError::new("argument.dimension.invalid", vec![ErrArg::Str(id.clone())])
+    })
 }
 
 /// `BlockPosArgument.getLoadedBlockPos`.
@@ -347,10 +352,10 @@ pub(crate) fn modify(
             one(out)
         }
         ExecuteOp::In => {
-            let world = dimension(args, "dimension")?;
+            let world = dimension(env.global, args, "dimension")?;
             let mut out = source.clone();
             if world != source.world {
-                let scale = teleport_scale(source.world, world);
+                let scale = teleport_scale(env.global, source.world, world);
                 out.pos = Vec3::new(source.pos.x * scale, source.pos.y, source.pos.z * scale);
                 out.world = world;
             }
@@ -606,11 +611,15 @@ pub(crate) fn summon_for(
     let decor = vanillite_game::decoration::is_decor_kind(kind)
         || vanillite_game::mob::kinds::Kind::by_name(id)
             .is_some_and(|k| k.family() == vanillite_game::mob::Family::Decor);
+    // The seed a fresh UUID's new entity took (its own random).
+    let mut fresh_seed = None;
     let mut fresh_uuid = || {
         if decor {
             vanillite_game::mob::new_uuid()
         } else {
-            env.level.new_uuid()
+            let (uuid, seed) = env.level.new_uuid_and_seed();
+            fresh_seed = Some(seed);
+            uuid
         }
     };
     let uuid = match nbt.get("UUID") {
@@ -625,9 +634,6 @@ pub(crate) fn summon_for(
     if select::find_uuid(&env.level.entities, uuid).is_some() {
         return Err(duplicate());
     }
-    // The level's allocator (the server's shared one).
-    let network_id = env.level.network_ids_arc().next();
-    let new = NewEntity::new(kind, network_id, uuid, pos);
     let short = |key: &str, default: i32| {
         nbt.get(key)
             .and_then(Tag::as_i64)
@@ -738,6 +744,9 @@ pub(crate) fn summon_for(
         }
         return select::local(entities, env.world, id).ok_or_else(failed);
     }
+    // The level's allocator (the server's shared one).
+    let network_id = env.level.network_ids_arc().next();
+    let new = NewEntity::new(kind, network_id, uuid, pos);
     let entities = &mut env.level.entities;
     let id = if kind == ids::ITEM {
         let stack = match nbt.get("Item") {
@@ -749,7 +758,23 @@ pub(crate) fn summon_for(
         if stack.is_empty() {
             return Err(duplicate());
         }
-        let data = vanillite_game::item_entity::ItemData::new(stack, 0, None);
+        #[allow(clippy::cast_possible_truncation)]
+        let short = |name: &str, default: i16| {
+            nbt.get(name)
+                .and_then(Tag::as_i64)
+                .map_or(default, |v| v as i16)
+        };
+        let mut data = vanillite_game::item_entity::ItemData::new(
+            stack,
+            short("PickupDelay", 0),
+            None,
+            vanillite_game::item_entity::loaded_random(
+                fresh_seed.unwrap_or_else(vanillite_game::mob::new_entity_seed),
+            ),
+        );
+        data.age = short("Age", 0);
+        data.health = short("Health", 5);
+        data.fire_ticks = i32::from(short("Fire", 0)).max(0);
         entities.spawn_item(network_id, uuid, pos, Vec3::new(0.0, 0.0, 0.0), 0.0, data)
     } else if kind == ids::FALLING_BLOCK {
         let mut data = FallingBlockData::new(
@@ -861,7 +886,9 @@ fn test(
                 && env.level.is_block_ticking(pos.chunk());
             i32::from(loaded)
         }
-        ExecuteCondition::Dimension => i32::from(dimension(args, "dimension")? == source.world),
+        ExecuteCondition::Dimension => {
+            i32::from(dimension(env.global, args, "dimension")? == source.world)
+        }
         ExecuteCondition::Score(op) => {
             let board_check = |holder: &str, objective: &str| {
                 env.global

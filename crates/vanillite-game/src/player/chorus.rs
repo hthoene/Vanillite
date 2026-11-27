@@ -39,8 +39,8 @@ fn logical_height(dimension: &str) -> i32 {
     }
 }
 
-/// `TeleportRandomlyConsumeEffect.apply` of a player. The tries draw from the shared entity
-/// random (Vanillite keeps no random per player). Returns whether it teleported.
+/// `TeleportRandomlyConsumeEffect.apply` of a player. The tries draw from the player's own
+/// random. Returns whether it teleported.
 pub fn teleport_randomly(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -57,9 +57,12 @@ pub fn teleport_randomly(
     let mut scratch = Vec::new();
     let mut found = None;
     for _ in 0..16 {
-        let (dx, dy, dz) = crate::experience_orb::with_entity_random(|r| {
+        let Some((dx, dy, dz)) = ents.player_mut(player).map(|p| {
+            let r = &mut p.survival.random;
             (r.next_double(), r.next_double(), r.next_double())
-        });
+        }) else {
+            return false;
+        };
         let x = old.x + (dx - 0.5) * diameter;
         let y = (old.y + (dy - 0.5) * diameter).clamp(min_y, max_y);
         let z = old.z + (dz - 0.5) * diameter;

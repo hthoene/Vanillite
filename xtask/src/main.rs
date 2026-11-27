@@ -128,14 +128,17 @@ pub const USAGE: &str = "usage:
       with the egg's startup command and default variables (EULA accepted), on the Docker host
       of `docker`, and check that the server starts and answers a status ping on port 30950.
   cargo xtask loadtest [--server vanillite|paper|both] [--steps 50,100@<movement>,...]
-                       [--movement <movement>] [--hold <s>] [--join-rate <per s>] [--chat <s>]
+                       [--movement <movement>] [--hold <s>] [--settle <s>]
+                       [--join-rate <per s>] [--chat <s>]
                        [--view-distance <n>] [--release] [--no-deploy] [--no-gate]
+                       [--rule <key>=<value>]...
                        [--fresh-players] [--binary <file>]
                        [--plugin <dir> [--plugin-set <toml line>]...]...
       Scaling benchmark: tools/loadbot bots (here) against vanillite@30901 (deployed from this
       checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the test
       server and only running during the run. Steps default to 50,100,250,500,1000,2000,5000,
-      each held 60 s; chat is off by default (--chat sets seconds between messages per bot).
+      each held 60 s after --settle seconds (default 0); chat is off by default (--chat sets
+      seconds between messages per bot).
       Movement (default for all steps: --movement, per step: <players>@<movement>; counts
       must not decrease): random (walk around the spawn) or straight:<speed>[:<turn s>],
       straight flight at y 300 in a random direction per bot at <speed> blocks/s or a preset
@@ -147,11 +150,13 @@ pub const USAGE: &str = "usage:
       Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
       results of clean checkouts under /opt/vanillite/bench/results on the test server and
       fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of
-      the last 5 runs (--no-gate skips the check). --binary deploys that server binary instead
-      of building one (before/after comparisons). --plugin installs a plugin folder on
-      vanillite@30901 for the run and removes it afterwards: plugin.toml, the library it names
-      (from the folder, or built from the folder's crate, e.g. examples/packet-bench) and
-      config.toml with each --plugin-set line set (e.g. --plugin-set 'mode = \"receiver\"').
+      the last 5 runs (--no-gate skips the check). --rule sets a rule of vanillite.toml for
+      the Vanillite instance of this run (e.g. performance.region-threading.enabled=true);
+      such runs are experiments: no regression check, not kept as a baseline.
+      --binary deploys that server binary instead of building one (before/after comparisons).
+      --plugin installs a plugin folder on vanillite@30901 for the run and removes it
+      afterwards: plugin.toml, the library it names (from the folder, or built from the
+      folder's crate, e.g. examples/packet-bench) and config.toml with each --plugin-set line set (e.g. --plugin-set 'mode = \"receiver\"').
       Runs with --plugin or --binary are not kept in the results history. --fresh-players
       deletes the players vanillite@30901 saved, so the bots start at the spawn and not where
       an earlier run (e.g. a bench spread scenario) left them.

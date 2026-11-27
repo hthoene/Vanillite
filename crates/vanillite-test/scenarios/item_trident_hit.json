@@ -1,0 +1,73 @@
+{
+  "description": "A thrown trident hits a pig (#162): it turns around with a turn from its own random, drops and sticks in the ground (the pitch of the hit ground sound is from its own random too, the level random stays untouched); when the ground under it is removed it falls with factors from its own random.",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -63,
+      0
+    ],
+    [
+      31,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 130,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        -90,
+        8
+      ]
+    },
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        7.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 41,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:trident"
+    },
+    {
+      "tick": 15,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 70,
+      "op": "fill",
+      "from": [
+        5,
+        -61,
+        7
+      ],
+      "to": [
+        14,
+        -61,
+        9
+      ],
+      "block": "minecraft:air"
+    }
+  ]
+}

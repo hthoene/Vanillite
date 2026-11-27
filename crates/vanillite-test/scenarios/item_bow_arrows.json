@@ -1,0 +1,194 @@
+{
+  "description": "A player's bow picks its arrow like Player.getProjectile (#162): the first arrow of the inventory when the hands hold none (a tipped arrow of poison, which poisons the iron golem it hits), the off hand before the inventory (a spectral arrow), Infinity keeps a plain arrow but not a tipped one, a bow without arrows is not drawn and a short draw shoots nothing. The off hand stack is in the frames.",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 220,
+  "player_state": true,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        20,
+        -60,
+        2
+      ],
+      "to": [
+        20,
+        -56,
+        14
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        -90,
+        0
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        3.5
+      ],
+      "rot": [
+        -90,
+        0
+      ],
+      "seed": 4
+    },
+    {
+      "name": "golem",
+      "type": "minecraft:iron_golem",
+      "pos": [
+        10.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 31,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:iron_golem,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:bow",
+      "inventory": [
+        {
+          "slot": 5,
+          "item": "minecraft:arrow",
+          "count": 3
+        },
+        {
+          "slot": 3,
+          "item": "minecraft:tipped_arrow",
+          "count": 2,
+          "components": "{\"minecraft:potion_contents\": {\"potion\": \"minecraft:poison\"}}"
+        },
+        {
+          "slot": 4,
+          "item": "minecraft:spectral_arrow",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "tick": 27,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 40,
+      "op": "use_item",
+      "entity": "steve",
+      "inventory": [
+        {
+          "slot": 40,
+          "item": "minecraft:spectral_arrow",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "tick": 50,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 60,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:bow",
+      "components": "{\"minecraft:enchantments\": {\"minecraft:infinity\": 1}}",
+      "inventory": [
+        {
+          "slot": 40,
+          "item": "minecraft:arrow",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "tick": 85,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 95,
+      "op": "use_item",
+      "entity": "steve",
+      "inventory": [
+        {
+          "slot": 40,
+          "item": "minecraft:tipped_arrow",
+          "count": 2,
+          "components": "{\"minecraft:potion_contents\": {\"potion\": \"minecraft:poison\"}}"
+        }
+      ]
+    },
+    {
+      "tick": 120,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 130,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:bow"
+    },
+    {
+      "tick": 150,
+      "op": "release_item",
+      "entity": "alex"
+    },
+    {
+      "tick": 160,
+      "op": "use_item",
+      "entity": "steve",
+      "inventory": [
+        {
+          "slot": 40,
+          "item": "minecraft:arrow",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "tick": 162,
+      "op": "release_item",
+      "entity": "steve"
+    }
+  ]
+}

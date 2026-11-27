@@ -477,7 +477,7 @@ pub fn render(root: &Path, kind: Egg) -> Result<String> {
              Vanilla in game; fast, multithreaded and low on RAM. The startup page shows the \
              essential settings first, then every server.properties and vanillite.toml \
              setting, grouped by area. For only the basic settings use the egg \
-             \"Vanillite (Simple)\". https://github.com/hthoene/Vanillite",
+             \"Vanillite (Simple)\". https://github.com/hthoene/vanillite",
         ),
         Egg::Simple => (
             "Vanillite (Simple)",
@@ -485,7 +485,7 @@ pub fn render(root: &Path, kind: Egg) -> Result<String> {
              one, but is faster and needs less memory. This egg shows only the basic \
              settings; everything else uses the defaults of the chosen server type. For every \
              setting use the egg \"Vanillite\" (servers can switch between the two). \
-             https://github.com/hthoene/Vanillite",
+             https://github.com/hthoene/vanillite",
         ),
     };
     let config = |value: Value| Value::String(serde_json::to_string(&value).unwrap_or_default());

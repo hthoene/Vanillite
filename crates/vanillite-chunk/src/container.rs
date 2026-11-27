@@ -288,6 +288,27 @@ impl<S: Strategy> PalettedContainer<S> {
         }
     }
 
+    /// Copies every value into `out` (`S::ENTRIES` values, in index order): much cheaper than
+    /// reading them one by one.
+    pub fn copy_to(&self, out: &mut [u16]) {
+        assert_eq!(out.len(), S::ENTRIES, "one value per entry");
+        match &self.data {
+            ContainerData::Single(value) => out.fill(*value),
+            ContainerData::Indirect {
+                bits,
+                palette,
+                data,
+            } => bits::for_each(data, *bits, S::ENTRIES, |index, id| {
+                out[index] = palette[id as usize];
+            }),
+            ContainerData::Direct { bits, data } => {
+                bits::for_each(data, *bits, S::ENTRIES, |index, value| {
+                    out[index] = value as u16;
+                });
+            }
+        }
+    }
+
     /// Value at local coordinates.
     #[inline]
     pub fn get_at(&self, x: u32, y: u32, z: u32) -> u16 {

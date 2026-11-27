@@ -9,11 +9,10 @@ use vanillite_base::hash::FxHashMap;
 use vanillite_config::{TrackingRules, WorldRules};
 use vanillite_game::entities::Entities;
 use vanillite_game::level::Level;
+use vanillite_game::level::tiles::TileRun;
 use vanillite_world::chunks::{Chunks, FULL_LEVEL, TicketId};
 use vanillite_world::entity::EntityId;
 use vanillite_world::tracking::{EntityTracker, TrackerInput, TrackerOutput, Viewer};
-
-use vanillite_base::random::XoroshiroRandom;
 
 use crate::blocks::LevelEffects;
 use crate::compute::Compute;
@@ -99,8 +98,6 @@ pub struct ServerWorld {
     packets: ChunkPackets,
     /// Sounds and crack progress of the player handlers.
     effects: LevelEffects,
-    /// The random of the item entities (`Entity.random`).
-    item_random: XoroshiroRandom,
     /// The counters of the world access rules at the last report ([`Self::report_rules`]).
     reported: RuleCounters,
     updates: WorldUpdates,
@@ -200,9 +197,10 @@ impl ServerWorld {
         survival: crate::survival::WorldSurvival,
         mut mobs: crate::mobs::WorldMobs,
         data: vanillite_storage::saved_data::SavedDataStore,
+        dragon_fight: bool,
     ) -> ServerWorld {
         // `dimensionType().hasEnderDragonFight()`.
-        if dimension == "minecraft:the_end" {
+        if dragon_fight {
             mobs.init_dragon_fight(&data, &mut level);
         }
         mobs.init_raids(&data, &mut level);
@@ -210,11 +208,6 @@ impl ServerWorld {
         if dimension == "minecraft:overworld" {
             mobs.init_trader_spawner(&data);
         }
-        // Entity randoms are `RandomSource.create()`: seeded from the clock, not the world seed.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as i64)
-            ^ i64::from(id.0);
         if let Some(climate) = survival.climate() {
             level.set_climate(Arc::clone(climate));
         }
@@ -241,7 +234,6 @@ impl ServerWorld {
             focus: Vec::new(),
             center_tickets: FxHashMap::default(),
             effects: LevelEffects::default(),
-            item_random: XoroshiroRandom::new(seed),
             reported: RuleCounters::default(),
             scratch: Vec::new(),
             survival,
@@ -669,11 +661,9 @@ impl ServerWorld {
                     ctx.other_levels().collect(),
                 );
             }
-            {
-                // Command blocks run here: `execute in` continues in the other world at once.
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.level.run_scheduled_ticks();
-            }
+            // Command blocks run here: `execute in` continues in the other world at once.
+            self.lent
+                .with(ctx.other_levels(), || self.level.run_scheduled_ticks());
             // `raids.tick`.
             self.mobs.tick_raids(
                 &mut self.level,
@@ -706,14 +696,28 @@ impl ServerWorld {
             let (spawn, _) = effective_spawn(level, self.players.level.spawn);
             let spawn_point = (self.dimension == "minecraft:overworld")
                 .then(|| vanillite_base::BlockPos::containing(spawn.x, spawn.y, spawn.z));
+            // `performance.region-threading`: spawning and random ticks run per tile on the
+            // compute pool; off, both keep Vanilla's serial order.
+            let compute = ctx.compute;
+            let fork = move |n: usize, job: &(dyn Fn(usize) + Sync)| compute.for_each(n, job);
+            let region = &self.rules.region_threading;
+            let tiles = region.enabled.then(|| TileRun {
+                size: i32::from(region.tile_size),
+                min_chunks: vanillite_game::level::tiles::MIN_CHUNKS,
+                fork: &fork,
+            });
             self.mobs.spawn(
                 level,
                 &self.survival,
                 ctx.global,
                 &self.dimension,
                 spawn_point,
+                tiles.as_ref(),
             );
-            level.tick_chunks(&mut self.scratch);
+            match &tiles {
+                Some(run) => level.tick_chunks_tiled(&mut self.scratch, run),
+                None => level.tick_chunks(&mut self.scratch),
+            }
             level.run_block_events();
         }
         level.set_handling_tick(false);
@@ -722,8 +726,8 @@ impl ServerWorld {
             {
                 // Command block minecarts.
                 let global = ctx.global;
-                let _loan = self.lent.lend(ctx.other_levels());
-                self.tick_entities(global);
+                let lent = Arc::clone(&self.lent);
+                lent.with(ctx.other_levels(), || self.tick_entities(global));
             }
             self.entity_travel(ctx);
             self.level.tick_block_entities();
@@ -780,7 +784,7 @@ impl ServerWorld {
         {
             // `Player.tick`'s sleep part; the sleeping player list follows joins, leaves and
             // game mode changes.
-            let hooks = crate::plugins::Hooks::of(&ctx.global.plugins, &self.dimension);
+            let hooks = crate::plugins::Hooks::of(ctx.global, &self.dimension);
             vanillite_game::survival::sleep::update_sleeping_player_list(&mut self.level);
             vanillite_game::survival::sleep::tick_players(&mut self.level, &hooks);
         }
@@ -792,6 +796,12 @@ impl ServerWorld {
             ctx.global,
             &self.dimension,
             &mut portals,
+        );
+        self.mobs.tick_player_items(
+            &mut self.level,
+            &mut self.survival,
+            ctx.global,
+            &self.dimension,
         );
         vanillite_game::raid::start_pending_raids(
             &mut self.level.entities,
@@ -886,7 +896,7 @@ impl ServerWorld {
     /// and rain stops (with `advance_weather`).
     fn skip_night(&mut self, global: &Global) {
         use vanillite_game::survival::rules::Rule;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, &self.dimension);
+        let hooks = crate::plugins::Hooks::of(global, &self.dimension);
         if !vanillite_game::survival::sleep::skip_night(&mut self.level, &hooks) {
             return;
         }
@@ -957,8 +967,7 @@ impl ServerWorld {
             value: skip,
             ..vanillite_game::hooks::Event::new(vanillite_abi::event::TIME_SKIP)
         };
-        let host = global.plugins.clone();
-        crate::plugins::Hooks::of(&host, &self.dimension).event_in(
+        crate::plugins::Hooks::of(global, &self.dimension).event_in(
             Some(&mut crate::plugins::PluginWorld(self, global)),
             &mut ev,
         );
@@ -991,7 +1000,6 @@ impl ServerWorld {
         self.mobs
             .tick_dragon_fight(&mut self.level, &mut self.survival, global, &self.dimension);
         let items = crate::mobs::ItemTick {
-            random: &mut self.item_random,
             settings: crate::blocks::ItemSettings {
                 lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
                 merge_radius: self.rules.items.merge_radius,

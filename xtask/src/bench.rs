@@ -734,6 +734,7 @@ fn options(steps: &[Step], settle: u64, hold: u64) -> Options {
         binary: None,
         plugins: Vec::new(),
         fresh_players: false,
+        rules: Vec::new(),
     }
 }
 

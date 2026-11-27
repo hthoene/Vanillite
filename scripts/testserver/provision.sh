@@ -1338,8 +1338,8 @@ write_if_changed /usr/local/bin/vanillite-autodeploy 755 <<'EOF'
 # next green one is.
 # Log: /var/log/vanillite-autodeploy.log. Installed by scripts/testserver/provision.sh.
 set -uo pipefail
-repo=https://github.com/hthoene/Vanillite.git
-api=https://api.github.com/repos/hthoene/Vanillite
+repo=https://github.com/hthoene/vanillite.git
+api=https://api.github.com/repos/hthoene/vanillite
 ports=(30001 30002 30030)
 declare -A motd=([30001]="Vanillite test: own worldgen" [30002]="Vanillite test: Paper world import"
     [30030]="Vanillite test: chunk generation, no movement checks")

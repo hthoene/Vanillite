@@ -26,6 +26,7 @@ pub mod place;
 pub(crate) use neighbors::STEPS as NEIGHBOR_STEPS;
 pub mod signal;
 mod tick;
+pub mod tiles;
 pub mod update;
 pub mod view;
 
@@ -512,6 +513,12 @@ pub struct Level {
         Option<crate::poi::PoiType>,
     )>,
 }
+
+// Read-only phases share the level between threads (tile region mode, `tiles`).
+const _: () = {
+    const fn shareable<T: Sync>() {}
+    shareable::<Level>();
+};
 
 impl std::fmt::Debug for Level {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

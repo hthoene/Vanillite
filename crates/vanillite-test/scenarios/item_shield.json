@@ -1,0 +1,243 @@
+{
+  "description": "A player blocks with the blocks_attacks component (#162): a shield only blocks after its delay, then blocks hits from the front (not from behind, not damage without a position), is put on cool-down by an axe (using it again is refused until the cool-down ends; a second use while it is raised changes nothing) and breaks from the durability a blocked hit costs, after which the emptied stack stays in use until the hand holds something else; a stick with its own component (half a second delay, half the damage plus one blocked within 120 degrees, no item damage, half the cool-down, no sounds) takes part of a hit and the player is pushed back. Actions start after the 60 ticks of spawn protection.",
+  "rules": {
+    "spawn_monsters": "false",
+    "natural_health_regeneration": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 580,
+  "player_state": true,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        16.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        -90,
+        0
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        24.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        90,
+        0
+      ],
+      "seed": 3
+    },
+    {
+      "name": "bob",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        -90,
+        0
+      ],
+      "seed": 6
+    }
+  ],
+  "actions": [
+    {
+      "tick": 62,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:shield"
+    },
+    {
+      "tick": 64,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 4,
+      "by": "alex"
+    },
+    {
+      "tick": 90,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 5,
+      "by": "alex"
+    },
+    {
+      "tick": 116,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:iron_axe"
+    },
+    {
+      "tick": 120,
+      "op": "attack_entity",
+      "entity": "alex",
+      "target": "steve"
+    },
+    {
+      "tick": 122,
+      "op": "use_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 150,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 3,
+      "by": "alex"
+    },
+    {
+      "tick": 160,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:stick"
+    },
+    {
+      "tick": 230,
+      "op": "use_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 240,
+      "op": "use_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 243,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 4,
+      "by": "alex"
+    },
+    {
+      "tick": 290,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 4,
+      "by": "bob"
+    },
+    {
+      "tick": 315,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 4
+    },
+    {
+      "tick": 330,
+      "op": "release_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 332,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:shield",
+      "components": "{\"minecraft:damage\": 331}"
+    },
+    {
+      "tick": 360,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 6,
+      "by": "alex"
+    },
+    {
+      "tick": 370,
+      "op": "effect",
+      "entity": "steve",
+      "effect": "minecraft:instant_health",
+      "duration": 1,
+      "amplifier": 4
+    },
+    {
+      "tick": 380,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:stick",
+      "components": "{\"minecraft:blocks_attacks\": {\"block_delay_seconds\": 0.5, \"disable_cooldown_scale\": 0.5, \"damage_reductions\": [{\"horizontal_blocking_angle\": 120.0, \"base\": 1.0, \"factor\": 0.5}], \"item_damage\": {\"threshold\": 100.0, \"base\": 0.0, \"factor\": 0.0}}}"
+    },
+    {
+      "tick": 385,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 6,
+      "by": "alex"
+    },
+    {
+      "tick": 402,
+      "op": "use_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 410,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 6,
+      "by": "alex"
+    },
+    {
+      "tick": 435,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 6,
+      "by": "alex"
+    },
+    {
+      "tick": 440,
+      "op": "effect",
+      "entity": "steve",
+      "effect": "minecraft:instant_health",
+      "duration": 1,
+      "amplifier": 4
+    },
+    {
+      "tick": 446,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:iron_axe"
+    },
+    {
+      "tick": 480,
+      "op": "attack_entity",
+      "entity": "alex",
+      "target": "steve"
+    },
+    {
+      "tick": 482,
+      "op": "use_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 540,
+      "op": "use_item",
+      "entity": "steve"
+    },
+    {
+      "tick": 555,
+      "op": "hurt",
+      "entity": "steve",
+      "amount": 2,
+      "by": "alex"
+    }
+  ]
+}

@@ -35,8 +35,9 @@ check fails, the world stays as it was and the server starts with it.
 
 A conversion that stopped (killed, disk full, an unreadable chunk) is resumed by running it
 again: files that were already verified and whose original did not change since are kept. One
-that stopped after every file was verified is finished at the next start. Worlds with
-dimensions this server does not load (custom dimensions of data packs) are not converted.
+that stopped after every file was verified is finished at the next start. Dimensions of the
+world's enabled data packs are converted and exported with the others; a world with dimension
+folders the server does not load (those of a removed data pack) is not converted.
 
 An own-format world written by an older Minecraft version is read by newer servers (block and
 entity ids are mapped by name); a world of a newer version is refused.
@@ -49,6 +50,11 @@ entity ids are mapped by name); a world of a newer version is refused.
 |---|---|---|---|
 | `vanilla` (Vanilla and Paper) | `<level>/dimensions/minecraft/overworld/` | `<level>/dimensions/minecraft/the_nether/` | `<level>/dimensions/minecraft/the_end/` |
 | `spigot` (Spigot and CraftBukkit) | `<level>/dimensions/minecraft/overworld/` | `<level>_nether/dimensions/minecraft/the_nether/` | `<level>_the_end/dimensions/minecraft/the_end/` |
+
+Dimensions of data packs (`data/<namespace>/dimension/<path>.json`, loaded at startup like
+Vanilla, with the dimensions of `world_gen_settings.dat`) live in
+`<level>/dimensions/<namespace>/<path>/`, with `spigot` in
+`<level>_<namespace>_<path>/dimensions/<namespace>/<path>/`.
 
 Players, `level.dat` and the world-wide saved data stay in `<level>/` in both layouts. A world
 found in the other layout is moved into the configured one once at startup, so a world can go

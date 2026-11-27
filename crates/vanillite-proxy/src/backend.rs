@@ -182,23 +182,33 @@ async fn login(name: Arc<str>, address: &str, player: &Player) -> Result<Backend
 /// BungeeCord forwarding: the handshake host carries the player's address, undashed UUID and
 /// profile properties (JSON), separated by NUL.
 fn legacy_host(host: &str, player: &Player) -> String {
-    let properties: Vec<serde_json::Value> = player
+    // Written by hand in BungeeCord's field order (name, value, signature): a
+    // `serde_json::Value` map would depend on whether some other crate in the
+    // build enables serde_json's `preserve_order` feature.
+    let quote = |text: &str| serde_json::Value::from(text).to_string();
+    let properties: Vec<String> = player
         .profile
         .properties
         .iter()
-        .map(|p| {
-            let mut v = serde_json::json!({"name": p.name, "value": p.value});
-            if let (Some(sig), Some(obj)) = (&p.signature, v.as_object_mut()) {
-                obj.insert("signature".to_owned(), serde_json::Value::from(sig.clone()));
-            }
-            v
+        .map(|p| match &p.signature {
+            Some(sig) => format!(
+                "{{\"name\":{},\"value\":{},\"signature\":{}}}",
+                quote(&p.name),
+                quote(&p.value),
+                quote(sig)
+            ),
+            None => format!(
+                "{{\"name\":{},\"value\":{}}}",
+                quote(&p.name),
+                quote(&p.value)
+            ),
         })
         .collect();
     format!(
-        "{host}\0{}\0{:032x}\0{}",
+        "{host}\0{}\0{:032x}\0[{}]",
         player.address,
         player.profile.id.0,
-        serde_json::Value::from(properties)
+        properties.join(",")
     )
 }
 
@@ -366,7 +376,7 @@ mod tests {
         assert_eq!(
             legacy_host("lobby", &player),
             "lobby\u{0}10.0.0.7\u{0}0123456789abcdef0123456789abcdef\u{0}\
-             [{\"name\":\"textures\",\"signature\":\"s\",\"value\":\"v\"}]"
+             [{\"name\":\"textures\",\"value\":\"v\",\"signature\":\"s\"}]"
         );
     }
 
