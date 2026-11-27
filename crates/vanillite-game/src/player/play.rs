@@ -46,7 +46,7 @@ pub struct GameData {
     /// `#minecraft:enderman_holdable` block ids.
     pub enderman_holdable: Vec<u16>,
     /// Block tags: tag id → sorted block ids.
-    pub block_tags: HashMap<String, Vec<u16>>,
+    pub block_tags: std::sync::Arc<HashMap<String, Vec<u16>>>,
     /// Recipes.
     pub recipes: crate::recipe::Recipes,
     /// Enchantment data.
@@ -182,6 +182,29 @@ pub struct Actor {
     pub respawn_here: Option<BlockPos>,
     /// The player holds the lead of some mob (`FenceBlock.useWithoutItem` binds them).
     pub leads_mobs: bool,
+    /// `blockInteractionRange()` and `entityInteractionRange()` (see [`interaction_ranges`]).
+    pub ranges: (f64, f64),
+}
+
+/// The `block_interaction_range` (base 4.5) and `entity_interaction_range` (base 3) of a
+/// player: its equipment's modifiers and the creative mode ones (+0.5 / +2,
+/// `Player.updatePlayerAttributes`).
+pub fn interaction_ranges(inventory: &PlayerInventory, game_mode: GameMode) -> (f64, f64) {
+    let creative = game_mode == GameMode::Creative;
+    let range = |name: &str, base: f64, bonus: f64| {
+        let mut modifiers = Vec::new();
+        for slot in super::encode::EQUIPMENT_SLOTS {
+            item::attribute_modifiers(inventory.equipment(slot), slot, name, &mut modifiers);
+        }
+        if creative {
+            modifiers.push((0, bonus));
+        }
+        item::attribute_value(base, &modifiers, 0.0, 64.0)
+    };
+    (
+        range("minecraft:block_interaction_range", 4.5, 0.5),
+        range("minecraft:entity_interaction_range", 3.0, 2.0),
+    )
 }
 
 impl Actor {
@@ -193,9 +216,9 @@ impl Actor {
         Vec3::new(self.pos.x, self.pos.y + self.eye_height, self.pos.z)
     }
 
-    /// `blockInteractionRange`: 4.5, plus 0.5 in creative.
+    /// `blockInteractionRange`.
     fn block_range(&self) -> f64 {
-        if self.creative() { 5.0 } else { 4.5 }
+        self.ranges.0
     }
 
     /// `isWithinBlockInteractionRange(pos, buffer)`.
@@ -204,11 +227,9 @@ impl Actor {
         aabb_distance_sqr(&Aabb::of_block(pos), self.eye()) < max * max
     }
 
-    /// `isWithinEntityInteractionRange(box, buffer)`: the entity range is 3, plus 2 in
-    /// creative.
+    /// `isWithinEntityInteractionRange(box, buffer)`.
     pub fn within_entity_range(&self, aabb: &Aabb, buffer: f64) -> bool {
-        let range = if self.creative() { 5.0 } else { 3.0 };
-        let max = range + buffer;
+        let max = self.ranges.1 + buffer;
         aabb_distance_sqr(aabb, self.eye()) < max * max
     }
 }
@@ -474,22 +495,40 @@ fn destroy_progress(ctx: &PlayContext<'_>, state: BlockState) -> f32 {
     let tool = ctx.inventory.selected_item();
     let correct = !state.has(block_flags::REQUIRES_CORRECT_TOOL)
         || ctx.data.tools.is_correct_for_drops(tool, state);
-    let efficiency = ctx.data.enchantment_level(tool, "minecraft:efficiency");
-    let aqua = ctx.inventory.equipment(item::EquipmentSlot::Head).clone();
-    let submerged = ctx.actor.eyes_in_water
-        && ctx.data.enchantment_level(&aqua, "minecraft:aqua_affinity") == 0;
+    let attribute = |name: &str, base: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let value = equipment_attribute(ctx.inventory, name, base) as f32;
+        value
+    };
     let player_speed = crate::inventory::destroy_speed(
         &ctx.data.tools,
         tool,
         state,
-        efficiency,
+        attribute("minecraft:mining_efficiency", 0.0),
         ctx.actor.dig_speed,
         ctx.actor.mining_fatigue,
-        submerged,
+        attribute("minecraft:block_break_speed", 1.0),
+        ctx.actor
+            .eyes_in_water
+            .then(|| attribute("minecraft:submerged_mining_speed", 0.2)),
         ctx.actor.on_ground,
     );
     let modifier = if correct { 30.0 } else { 100.0 };
     player_speed / speed / modifier
+}
+
+/// `getAttributeValue(name)` of a player whose attribute `name` has the base value `base`:
+/// the modifiers of its equipment and of their enchantments (`minecraft:attributes`).
+pub fn equipment_attribute(inventory: &PlayerInventory, name: &str, base: f64) -> f64 {
+    let mut modifiers = Vec::new();
+    for slot in super::encode::EQUIPMENT_SLOTS {
+        item::attribute_modifiers(inventory.equipment(slot), slot, name, &mut modifiers);
+    }
+    let attribute = item::attribute_id(name)
+        .and_then(|id| u8::try_from(id).ok())
+        .map(crate::effect::attribute::Attribute);
+    let value = item::attribute_value(base, &modifiers, f64::MIN, f64::MAX);
+    attribute.map_or(value, |a| a.sanitize(value))
 }
 
 /// `Player.getDestroySpeed`'s effect part: Haste / Conduit Power speed it up by 20 % per level,
@@ -858,13 +897,17 @@ impl Digging {
             drop_resources(ctx, state, pos, &tool, None, None);
         }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
-        // of double blocks.
-        ctx.level.level_event(
-            Some(ctx.actor.network_id),
-            events::PARTICLES_DESTROY_BLOCK,
-            pos,
-            i32::from(state.0),
-        );
+        // of double blocks. `BaseFireBlock` sends the extinguish sound to everyone instead.
+        if crate::block::is_fire(state) {
+            ctx.level.level_event(None, 1009, pos, 0);
+        } else {
+            ctx.level.level_event(
+                Some(ctx.actor.network_id),
+                events::PARTICLES_DESTROY_BLOCK,
+                pos,
+                i32::from(state.0),
+            );
+        }
         // `DoorBlock.playerWillDestroy`: also without the correct tool for drops the lower
         // half goes without dropping (`preventDropFromBottomPart`).
         let door = matches!(
@@ -933,6 +976,13 @@ impl Digging {
         // `removeBlock`: the fluid of a waterlogged block stays.
         let replacement = state.fluid_state().block_state();
         let changed = ctx.level.set_block(pos, replacement, update::ALL);
+        // `Block.destroy`: a moving block takes an extended piston base behind it along.
+        if changed
+            && state.block() == vanillite_data::block::ids::MOVING_PISTON
+            && let Some(level) = ctx.level.level_mut()
+        {
+            crate::block::piston::moving_destroyed(level, pos, state);
+        }
         if ctx.actor.creative() {
             return true;
         }
@@ -995,7 +1045,7 @@ impl Digging {
             }
             ctx.data.tools.damage_per_block(tool)
         };
-        if damage == 0 {
+        if damage == 0 || !item::is_damageable(ctx.inventory.selected_item()) {
             return;
         }
         let unbreaking = ctx
@@ -1003,10 +1053,10 @@ impl Digging {
             .enchantment_level(ctx.inventory.selected_item(), "minecraft:unbreaking");
         let mut amount: i32 = 0;
         for _ in 0..damage {
-            // `minecraft:unbreaking`: a tool loses durability with chance 1 / (level + 1).
             #[allow(clippy::as_conversions)]
-            let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
-            if unbreaking <= 0 || ctx.level.random_float() < chance {
+            let level = unbreaking.max(0) as f32;
+            // `remove_binomial`: the draw removes the point below level / (level + 1).
+            if unbreaking <= 0 || ctx.level.random_float() >= level / (level + 1.0) {
                 amount = amount.saturating_add(1);
             }
         }
@@ -1415,7 +1465,7 @@ impl Digging {
             }
             return false;
         }
-        if let Some(done) = self.spawn_egg_on_spawner(ctx, hand, pos, &stack) {
+        if let Some(done) = self.spawn_egg_on_spawner(ctx, hand, pos, &stack, sink) {
             return done;
         }
         if let Some(placed) = self.place_decoration(ctx, hand, &stack, pos, face, hit) {
@@ -1912,6 +1962,7 @@ impl Digging {
         hand: Hand,
         pos: BlockPos,
         stack: &ItemStack,
+        sink: &dyn PacketSink,
     ) -> Option<bool> {
         let name = item::item_id(stack).name();
         let entity = name.strip_suffix("_spawn_egg")?;
@@ -1926,7 +1977,22 @@ impl Digging {
         ) {
             return None;
         }
+        // `EntityType.canSpawn`: monsters not in Peaceful.
+        if level.spawner_env.difficulty == crate::survival::rules::Difficulty::Peaceful
+            && !crate::mob::spawn::allowed_in_peaceful(entity.trim_start_matches("minecraft:"))
+        {
+            return Some(false);
+        }
         if !level.spawner_env.spawner_blocks_work {
+            sink.send(
+                &vanillite_protocol::packets::play::clientbound::SystemChat {
+                    content: vanillite_protocol::text::Component::translatable_args(
+                        "advMode.notEnabled.spawner",
+                        Vec::new(),
+                    ),
+                    overlay: false,
+                },
+            );
             return Some(false);
         }
         let mut random = level.random().clone();
@@ -2175,7 +2241,14 @@ fn use_ender_eye(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) -> bool {
         return false;
     }
     let filled = state.with("eye", "true").unwrap_or(state);
-    // `Block.pushEntitiesUp` comes with entity collisions.
+    // `Block.pushEntitiesUp`: entities on the frame move onto the eye.
+    if let Some(level) = ctx.level.level_mut() {
+        let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+        crate::block::contact::push_entities_up_from(
+            level,
+            vanillite_base::Aabb::new(x + 0.25, y + 0.8125, z + 0.25, x + 0.75, y + 1.0, z + 0.75),
+        );
+    }
     ctx.level.set_block(pos, filled, update::CLIENTS);
     if !ctx.actor.creative() {
         let slot = match hand {
@@ -2208,8 +2281,9 @@ fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
     let mut damage: i32 = 0;
     for _ in 0..amount {
         #[allow(clippy::as_conversions)]
-        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
-        if unbreaking <= 0 || ctx.level.random_float() < chance {
+        let level = unbreaking.max(0) as f32;
+        // `remove_binomial`: the draw removes the point below level / (level + 1).
+        if unbreaking <= 0 || ctx.level.random_float() >= level / (level + 1.0) {
             damage = damage.saturating_add(1);
         }
     }
@@ -2426,12 +2500,32 @@ pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop, own_rand
     if drop.stack.is_empty() {
         return;
     }
-    let y = actor.pos.y + actor.eye_height - f64::from(0.3_f32);
+    let (from, velocity) = throw_motion(
+        actor.pos,
+        actor.eye_height,
+        actor.y_rot,
+        actor.x_rot,
+        own_random,
+    );
+    let thrower = drop.thrown.then_some(actor.uuid);
+    level.spawn_item(from, drop.stack, velocity, 40, thrower);
+}
+
+/// `createItemStackToDrop(stack, false, _)`'s start position and motion for a player at `pos`
+/// with eye height `eye_height` looking at `y_rot`/`x_rot`; draws from `own_random`.
+pub fn throw_motion(
+    pos: Vec3,
+    eye_height: f64,
+    y_rot: f32,
+    x_rot: f32,
+    own_random: &mut i64,
+) -> (Vec3, Vec3) {
+    let y = pos.y + eye_height - f64::from(0.3_f32);
     let deg = std::f64::consts::PI / 180.0;
-    let sin_x = sin(f64::from(actor.x_rot) * deg);
-    let cos_x = cos(f64::from(actor.x_rot) * deg);
-    let sin_y = sin(f64::from(actor.y_rot) * deg);
-    let cos_y = cos(f64::from(actor.y_rot) * deg);
+    let sin_x = sin(f64::from(x_rot) * deg);
+    let cos_x = cos(f64::from(x_rot) * deg);
+    let sin_y = sin(f64::from(y_rot) * deg);
+    let cos_y = cos(f64::from(y_rot) * deg);
     // The player's own random, not the level's.
     let mut r = vanillite_base::random::LegacyRandom::from_state(*own_random);
     let (dir, pow2, spread) = {
@@ -2447,14 +2541,7 @@ pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop, own_rand
         f64::from(-sin_x * 0.3 + 0.1 + spread * 0.1),
         f64::from(cos_y * cos_x * 0.3) + f64::from(dir).sin() * f64::from(pow2),
     );
-    let thrower = drop.thrown.then_some(actor.uuid);
-    level.spawn_item(
-        Vec3::new(actor.pos.x, y, actor.pos.z),
-        drop.stack,
-        velocity,
-        40,
-        thrower,
-    );
+    (Vec3::new(pos.x, y, pos.z), velocity)
 }
 
 /// `floor` of a position.

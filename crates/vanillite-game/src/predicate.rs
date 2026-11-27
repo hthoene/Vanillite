@@ -91,8 +91,9 @@ pub struct EntityFacts {
     pub vehicle: Option<EntityTypeId>,
     /// The size of a slime, magma cube or sulfur cube.
     pub cube_size: Option<i32>,
-    /// Whether a mob leads a patrol or raid wave wearing the ominous banner.
-    pub raid_captain: Option<bool>,
+    /// A raider: `hasRaid` (in a raid or near an active one) and `isCaptain` (a patrol or wave
+    /// leader wearing the ominous banner).
+    pub raider: Option<(bool, bool)>,
     /// A mooshroom's colour: 0 red, 1 brown.
     pub mooshroom_variant: Option<u8>,
     /// `is_fall_flying`: gliding with elytra.
@@ -139,8 +140,8 @@ pub struct EntityPredicate {
     pub vehicle: Option<TypeSet>,
     /// `type_specific/cube_mob` `size`: the inclusive bounds.
     pub cube_size: Option<(Option<i32>, Option<i32>)>,
-    /// `type_specific/raider` `is_captain`.
-    pub raid_captain: Option<bool>,
+    /// `type_specific/raider`: `has_raid` and `is_captain` (both default false).
+    pub raider: Option<(bool, bool)>,
     /// `components` `minecraft:mooshroom/variant`: 0 red, 1 brown.
     pub mooshroom_variant: Option<u8>,
     /// `flags.is_fall_flying`.
@@ -262,9 +263,14 @@ impl EntityPredicate {
                     p.unsupported |= !only || p.cube_size.is_none();
                 }
                 "type_specific/raider" => {
-                    let only = v.as_object().is_some_and(|o| o.len() == 1);
-                    p.raid_captain = v.get("is_captain").and_then(Value::as_bool);
-                    p.unsupported |= !only || p.raid_captain.is_none();
+                    let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+                    let known = v.as_object().is_some_and(|o| {
+                        o.iter().all(|(k, f)| {
+                            matches!(k.as_str(), "has_raid" | "is_captain") && f.is_boolean()
+                        })
+                    });
+                    p.raider = Some((flag("has_raid"), flag("is_captain")));
+                    p.unsupported |= !known;
                 }
                 "movement" => {
                     // Only a lower bound of `fall_distance` (Wind Burst).
@@ -374,7 +380,7 @@ impl EntityPredicate {
                 e.cube_size
                     .is_some_and(|s| min.is_none_or(|m| m <= s) && max.is_none_or(|m| s <= m))
             })
-            && self.raid_captain.is_none_or(|c| e.raid_captain == Some(c))
+            && self.raider.is_none_or(|r| e.raider == Some(r))
             && self
                 .mooshroom_variant
                 .is_none_or(|v| e.mooshroom_variant == Some(v))
@@ -627,12 +633,15 @@ mod tests {
         let captain = parse(serde_json::json!(
             {"minecraft:type_specific/raider": {"is_captain": true}}));
         let mut e = EntityFacts {
-            raid_captain: Some(false),
+            raider: Some((false, false)),
             ..EntityFacts::default()
         };
         assert!(!captain.test(Some(&e), &NoTags));
-        e.raid_captain = Some(true);
+        e.raider = Some((false, true));
         assert!(captain.test(Some(&e), &NoTags));
+        // `RaiderPredicate.hasRaid` defaults to false: a wave captain drops nothing.
+        e.raider = Some((true, true));
+        assert!(!captain.test(Some(&e), &NoTags));
 
         let brown = parse(serde_json::json!(
             {"minecraft:components": {"minecraft:mooshroom/variant": "brown"}}));

@@ -7,6 +7,7 @@
 //! queued as a [`WorldAction`] and applied by the world right after that mob's tick.
 
 pub mod activation;
+pub mod age_lock;
 pub mod animal;
 pub mod attack;
 pub mod boss;
@@ -185,6 +186,9 @@ pub struct MobData {
     pub age: i32,
     pub in_love: i32,
     pub baby: bool,
+    /// `AgeableMob.AGE_LOCKED` (golden dandelion) and `ageLockParticleTimer`.
+    pub age_locked: bool,
+    pub age_lock_timer: u8,
     /// Ticks the mob draws its bow (`useItemRemaining` counted up), `-1` when not using it.
     pub using_item: i32,
     /// `Entity.lastKnownPosition` (`None` before the first tick).
@@ -346,6 +350,8 @@ impl MobData {
             age: 0,
             in_love: 0,
             baby: false,
+            age_locked: false,
+            age_lock_timer: 0,
             using_item: -1,
             last_known_pos: None,
             known_speed: Vec3::ZERO,
@@ -807,6 +813,8 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// `stepOn` of the block at the position for the entity standing on it.
     StepOn(BlockPos, EntityId),
+    /// `Entity.sendBubbleColumnParticles` at the top of the bubble column at the position.
+    BubbleColumnParticles(BlockPos),
     /// `onProjectileHit` of the block at the position, hit by the projectile at the point
     /// with the speed.
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
@@ -889,6 +897,9 @@ impl WorldAction {
                 if level.entities.store.contains(id) {
                     crate::block::contact::step_on(level, pos, id);
                 }
+            }
+            WorldAction::BubbleColumnParticles(pos) => {
+                crate::level::particles::bubble_column_particles(level, pos);
             }
             WorldAction::TrampleFarmland(pos, id) => {
                 crate::block::contact::trample_farmland(level, pos, Some(id));

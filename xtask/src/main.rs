@@ -13,6 +13,7 @@
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+//! cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--host <host>] [--port <port>] [--release]
 //! cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
@@ -40,6 +41,7 @@ mod loadtest;
 mod merge;
 mod parity;
 mod version;
+mod worldgen;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -112,6 +114,16 @@ pub const USAGE: &str = "usage:
       <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
       tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
       Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
+  cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
+      World generation against Vanilla (#223): for --seeds world seeds (default 3, derived from
+      --seed, default the day number; or the given --world-seed values) and every kind
+      (overworld, nether, end, amplified, large_biomes, flat; --kinds picks some), Vanilla's
+      code generates the size×size chunks around the origin (default 16) and a far area of half
+      the size in-process (tools/extractor/.../golden/WorldSweep.java), then the ignored test
+      vanillite-worldgen/tests/vanilla_sweep.rs generates them with Vanillite and compares
+      blocks, biomes, heightmaps, ticks, structure starts and references and block entities.
+      Writes target/worldgen-sweep/summary.md (--keep keeps the Vanilla areas in vanilla/).
+      Runs nightly on vanillite-test2.
   cargo xtask golden bless <scenario>...|all
       Run the scenarios in Vanillite and store their traces as the expected goldens in
       crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
@@ -205,6 +217,7 @@ pub const USAGE: &str = "usage:
   cargo xtask loadtest report <run.json>...
       Writes report.md and chart.svg for earlier runs next to the first file.
   cargo xtask bench all|<scenario>... [--servers <server,...>] [--publish] [--no-deploy]
+                                     [--limits 4c8g|1c1g]
       Benchmark suite (`bench list` shows the scenarios): every scenario against Vanillite
       (vanillite@30901, deployed from this checkout; also with the paper rule profile), Paper,
       Vanilla and Pumpkin (taking turns on 30900), or the proxies Velocity and vanillite-proxy,
@@ -218,6 +231,8 @@ pub const USAGE: &str = "usage:
       benchmarks/results/ (latest.json, history.json, runs/<time>.json) and regenerates
       benchmarks/README.md with regressions and improvements against the previous run.
       --servers limits the run to these servers; --no-deploy uses the binaries installed there.
+      --limits runs every scenario under that hardware profile instead (e.g. 1c1g for the weak
+      hardware numbers of startup, redstone, mobs, flight); such runs cannot be published.
       Every server runs under the same fixed hardware profile (4c8g; the weak scenario 1c1g),
       and the run records the test server's hardware and the host load per server.
   cargo xtask bench publish <time|latest|results.json>
@@ -259,6 +274,7 @@ fn main() -> ExitCode {
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
+        ["worldgen", "sweep", rest @ ..] => worldgen::sweep(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),

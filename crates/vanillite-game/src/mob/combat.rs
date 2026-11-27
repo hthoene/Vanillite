@@ -296,7 +296,7 @@ pub fn hurt_mob(
     {
         return took;
     }
-    if invulnerable_to(ents, env, target, kind) {
+    if invulnerable_to(ents, env, target, kind) || immune_to_damage(ents, env, target, &source) {
         return false;
     }
     if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
@@ -580,7 +580,10 @@ pub fn apply_knockback(ents: &mut Entities, target: EntityId, power: f64, xd: f6
     if super::boss::dragon::ignores_knockback(ents, target) {
         return;
     }
-    let Some(resistance) = ents.mob(target).map(|m| m.attrs.knockback_resistance) else {
+    let Some(resistance) = ents.mob(target).map(|m| {
+        let base = m.attrs.knockback_resistance;
+        super::equipment::attribute(m, "minecraft:knockback_resistance", base, 0.0, 1.0)
+    }) else {
         return;
     };
     let Entities { store, mobs, .. } = ents;
@@ -660,6 +663,32 @@ fn mob_protection(
         .damage_protection(&equipment, &cx, env.random)
 }
 
+/// `EnchantmentHelper.isImmuneToDamage` of a mob's equipment (Frost Walker on magma).
+fn immune_to_damage(
+    ents: &Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+) -> bool {
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    let equipment: Vec<(crate::item::EquipmentSlot, &crate::item::ItemStack)> = (0..8)
+        .filter_map(crate::item::EquipmentSlot::from_ordinal)
+        .map(|s| (s, m.equipment.get(s)))
+        .filter(|(_, s)| !s.is_empty() && !crate::item::enchantments(s).is_empty())
+        .collect();
+    if equipment.is_empty() {
+        return false;
+    }
+    let combat = super::attack::combat_data();
+    let tags: &dyn crate::predicate::EntityTags = &*combat;
+    let cx = super::attack::damage_context(ents, env.types, tags, target, source);
+    combat
+        .enchants
+        .immune_to_damage(&equipment, &cx, env.random)
+}
+
 /// `LivingEntity.actuallyHurt` of a mob: armour, then health.
 fn actually_hurt(
     ents: &mut Entities,
@@ -681,6 +710,8 @@ fn actually_hurt(
     let Some(m) = ents.mob_mut(target) else {
         return;
     };
+    // `Animal.actuallyHurt`: `resetLove()` (only animals are ever in love).
+    m.in_love = 0;
     let mut damage = damage;
     if !types.is(source.kind, tag::BYPASSES_ARMOR) {
         // `getArmorValue` and `ARMOR_TOUGHNESS` with the equipment's modifiers.
@@ -906,7 +937,11 @@ fn die(
         return;
     };
     let killed_by_player = m.last_hurt_by_player_time > 0;
-    let baby = m.baby;
+    // `shouldDropLoot`: `Monster` drops as a baby too (the hoglin is an animal);
+    // `shouldDropExperience`: `Monster` and `Hoglin` give experience as babies too.
+    let monster = m.kind.is_monster();
+    let loot_baby = m.baby && !(monster && m.kind != Kind::Hoglin);
+    let baby = m.baby && !monster;
     // `getExperienceReward` (it draws from the mob's random) only where Vanilla asks for it:
     // a sculk catalyst at the death, else `dropExperience` after the loot.
     let reward_of = |ents: &mut Entities| {
@@ -996,7 +1031,7 @@ fn die(
     ));
     // `dropAllDeathLoot`: the loot table, then the experience.
     let mut drops = Vec::new();
-    if !baby && env.rules.bool(Rule::MOB_DROPS) {
+    if !loot_baby && env.rules.bool(Rule::MOB_DROPS) {
         let mut loot = table_loot(level, ents, env, target, &source)
             .or_else(|| {
                 ents.mob_mut(target)
@@ -1319,6 +1354,14 @@ pub fn knock_living(
         knock_mob(ents, env, target, power, xd, zd, by);
         return;
     }
+    // `KNOCKBACK_RESISTANCE` of the player's equipment (netherite armour).
+    let resistance = ents.player(target).map_or(0.0, |p| {
+        crate::player::play::equipment_attribute(
+            &p.inventory,
+            "minecraft:knockback_resistance",
+            0.0,
+        )
+    });
     if let Some(mut e) = ents.store.get_mut(target) {
         let on_ground = e.as_ref().flags().contains(EntityFlags::ON_GROUND);
         if let Some(v) = knockback(
@@ -1327,7 +1370,7 @@ pub fn knock_living(
             power,
             xd,
             zd,
-            0.0,
+            resistance,
             env.random,
         ) {
             e.set_velocity(v);

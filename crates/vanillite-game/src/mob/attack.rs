@@ -103,10 +103,18 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
                 )
             })
             .map(crate::mob::fam::undead::cubes::size),
-        raid_captain: ents.mob(id).filter(|m| m.kind.is_raider()).map(|m| {
+        raider: ents.mob(id).filter(|m| m.kind.is_raider()).map(|m| {
             use crate::mob::fam::illager::{raider, st};
-            st(m).patrol_leader
-                && raider::is_ominous_banner(m.equipment.get(crate::item::EquipmentSlot::Head))
+            let captain = st(m).patrol_leader
+                && raider::is_ominous_banner(m.equipment.get(crate::item::EquipmentSlot::Head));
+            // `Raider.hasRaid`: its raid or a raid at its block position.
+            let at = ents.store.get(id).map(|e| {
+                let p = e.pos();
+                vanillite_base::BlockPos::containing(p.x, p.y, p.z)
+            });
+            let has_raid = crate::raid::current_raid(ents, m).is_some()
+                || at.is_some_and(|b| ents.raids.raid_at(b).is_some());
+            (has_raid, captain)
         }),
         mooshroom_variant: ents
             .mob(id)
@@ -412,6 +420,13 @@ pub fn player_attack(
         .map_or_else(|| p.inventory.selected_item().clone(), |s| s.1.clone());
     let fall_distance = p.survival.fall_distance;
     let in_water = p.survival.fluids.in_water();
+    // `onClimbable` and `isMobilityRestricted` (blindness) of `canCriticalAttack`.
+    let climbing = p.game_mode != vanillite_config::GameMode::Spectator
+        && env
+            .blocks
+            .block_state(player::block_pos(ppos))
+            .is_some_and(|s| env.facts.is_climbable(s.block()));
+    let blind = p.survival.effects.has(crate::effect::MobEffect::BLINDNESS);
     let combat = combat_data();
     let (enchants, tags): (&Enchantments, &dyn EntityTags) = (&combat.enchants, &*combat);
 
@@ -455,6 +470,8 @@ pub fn player_attack(
             smash,
             fall_distance,
             in_water,
+            climbing,
+            blind,
             ppos,
             flags,
             y_rot,
@@ -527,6 +544,8 @@ struct Hit<'a> {
     smash: bool,
     fall_distance: f64,
     in_water: bool,
+    climbing: bool,
+    blind: bool,
     ppos: Vec3,
     flags: EntityFlags,
     y_rot: f32,
@@ -552,6 +571,8 @@ fn attack_hit(
         smash,
         fall_distance,
         in_water,
+        climbing,
+        blind,
         ppos,
         flags,
         y_rot,
@@ -572,7 +593,9 @@ fn attack_hit(
     let crit = full
         && fall_distance > 0.0
         && !on_ground
+        && !climbing
         && !in_water
+        && !blind
         && !passenger
         && !sprinting
         && living;

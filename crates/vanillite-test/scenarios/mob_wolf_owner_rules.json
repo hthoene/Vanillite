@@ -1,0 +1,137 @@
+{
+  "description": "A player's tamed wolf: after the owner hits a creeper the wolf does not attack it (Wolf.wantsToAttack); hit by its owner it does not fight back (TamableAnimal.canAttack).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 160,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        10.5
+      ]
+    },
+    {
+      "name": "wolf",
+      "type": "minecraft:wolf",
+      "pos": [
+        6.5,
+        -60.0,
+        10.5
+      ],
+      "seed": 7,
+      "finalize": false
+    },
+    {
+      "name": "creeper",
+      "type": "minecraft:creeper",
+      "pos": [
+        8.5,
+        -60.0,
+        8.0
+      ],
+      "seed": 8,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:wolf,limit=1] {Tame:1b,Owner:[I;1447120457,1,0,0]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:creeper,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 65,
+      "op": "attack_entity",
+      "entity": "steve",
+      "target": "creeper"
+    },
+    {
+      "tick": 110,
+      "op": "hurt",
+      "entity": "wolf",
+      "by": "steve",
+      "amount": 1
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

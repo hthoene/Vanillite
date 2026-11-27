@@ -394,21 +394,10 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         crate::mob::fam::companion::horse::open_inventory_screen(ix);
         return Interaction::Success;
     }
-    let name = crate::item::item_id(ix.stack).name();
-    // `ItemStack.interactLivingEntity`: saddles (`Equippable` with `#can_equip_saddle`).
-    if name == "minecraft:saddle" && !baby && !is_saddled(m) {
-        if let Some(m) = ix.ents.mob_mut(ix.target) {
-            m.equipment
-                .set(EquipmentSlot::Saddle, ix.stack.with_count(1));
-        }
-        animal::use_item(ix.ents, ix.player, ix.hand);
-        let s = if kind == Kind::CamelHusk {
-            "minecraft:entity.camel_husk.saddle"
-        } else {
-            "minecraft:entity.camel.saddle"
-        };
-        crate::mob::combat::mob_sound(ix.ents, ix.env, ix.target, s);
-        return Interaction::Success;
+    // `ItemStack.interactLivingEntity`: saddles (`Equippable.equipOnTarget`).
+    let r = animal::item_interact_pub(ix);
+    if r.consumes() {
+        return r;
     }
     if crate::mob::animal::is_food(kind, ix.stack.item) {
         return fed_food(ix);
@@ -417,6 +406,10 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if riders < 2 && !baby {
         crate::riding::start_riding(ix.ents, ix.env, ix.player, ix.target, false);
         return Interaction::Consume;
+    }
+    if baby {
+        // `AbstractHorse.mobInteract` -> `AgeableMob.mobInteract`: the golden dandelion.
+        return crate::mob::age_lock::interact_pub(ix).unwrap_or(Interaction::Pass);
     }
     Interaction::Pass
 }
@@ -429,7 +422,7 @@ fn fed_food(ix: &mut Interact<'_, '_>) -> Interaction {
     let kind = m.kind;
     let could_heal = m.health < m.max_health();
     let can_love = kind == Kind::Camel && m.age == 0 && m.in_love <= 0;
-    let can_age_up = m.age < 0;
+    let can_age_up = m.age < 0 && !m.age_locked;
     if !could_heal && !can_love && !can_age_up {
         return Interaction::Pass;
     }

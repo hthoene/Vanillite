@@ -412,6 +412,8 @@ struct Ctx<'a> {
     hardware: Value,
     /// The hardware profile of the current server run (`vanillite-bench limit`).
     limits: Value,
+    /// The hardware profile of the scenarios (`--limits`, default [`loadtest::LIMITS`]).
+    profile: String,
 }
 
 /// `cargo xtask bench ...`.
@@ -447,6 +449,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
     let mut only_servers: Option<Vec<String>> = None;
     let mut publish = false;
     let mut deploy = true;
+    let mut profile = loadtest::LIMITS.to_owned();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match *arg {
@@ -461,6 +464,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
             }
             "--publish" => publish = true,
             "--no-deploy" => deploy = false,
+            "--limits" => profile = (*it.next().ok_or("--limits needs a value")?).to_owned(),
             "all" => names.extend(SCENARIOS.iter().map(|s| s.name)),
             name if SCENARIOS.iter().any(|s| s.name == name) => names.push(name),
             _ => return Err(crate::USAGE.to_owned()),
@@ -500,6 +504,12 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
         ],
     )?
     .is_empty();
+    if publish && profile != loadtest::LIMITS {
+        return Err(format!(
+            "--publish keeps the fixed profile {}: results under --limits are experiments",
+            loadtest::LIMITS
+        ));
+    }
     if publish && dirty {
         return Err("--publish needs a checkout without local changes".into());
     }
@@ -511,6 +521,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
         versions: BTreeMap::new(),
         hardware: Value::Null,
         limits: Value::Null,
+        profile,
     };
     let _lock = loadtest::Lock::take(&ctx.host, &format!("xtask bench from {}", root.display()))?;
     ctx.hardware = loadtest::hardware(&ctx.host)?;
@@ -751,10 +762,12 @@ fn fresh_start(
 ) -> Result<Value> {
     let proxy = matches!(target, Target::Velocity | Target::VanilliteProxy);
     if proxy {
-        reset(ctx, "vanillite", loadtest::LIMITS)?;
+        let limits = ctx.profile.clone();
+        reset(ctx, "vanillite", &limits)?;
         bench_json(&ctx.host, &["start", "vanillite"])?;
     }
-    reset(ctx, target.name(), loadtest::LIMITS)?;
+    let limits = ctx.profile.clone();
+    reset(ctx, target.name(), &limits)?;
     let mut args = vec!["start", target.name()];
     args.extend(profile);
     let started = bench_json(&ctx.host, &args)?;
@@ -1028,7 +1041,7 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
     match target {
         Target::Vanillite => {
             // `vanillite-bench pregen` runs chunk_bench under this profile.
-            ctx.limits = bench_json(&ctx.host, &["profile", loadtest::LIMITS])?;
+            ctx.limits = bench_json(&ctx.host, &["profile", &ctx.profile])?;
             let mut scaling = Map::new();
             let mut lines: Vec<Value> = Vec::new();
             for threads in ["1", "2", "4"] {
@@ -1077,7 +1090,8 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
             let mut cpu = Vec::new();
             let mut last_error = None;
             for _ in 0..REPS {
-                reset(ctx, "paper", loadtest::LIMITS)?;
+                let profile = ctx.profile.clone();
+                reset(ctx, "paper", &profile)?;
                 bench_cmd(&ctx.host, &["chunky", "on"])?;
                 let run = (|| -> Result<(f64, f64)> {
                     let started = bench_json(&ctx.host, &["start", "paper"])?;
@@ -1696,6 +1710,7 @@ fn remote_run(host: &str, stamp: &str) -> Result<Value> {
         versions,
         hardware: Value::Null,
         limits: Value::Null,
+        profile: loadtest::LIMITS.to_owned(),
     };
     Ok(json!({
         "suite": 1,

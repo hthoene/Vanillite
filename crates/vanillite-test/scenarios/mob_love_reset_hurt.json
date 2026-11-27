@@ -1,0 +1,134 @@
+{
+  "description": "A cow is fed wheat and hurt right after (Animal.actuallyHurt: resetLove); the second cow is fed later, so they do not breed.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        11.5
+      ]
+    },
+    {
+      "name": "cow1",
+      "type": "minecraft:cow",
+      "pos": [
+        7.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false
+    },
+    {
+      "name": "cow2",
+      "type": "minecraft:cow",
+      "pos": [
+        9.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 8,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 5,
+      "op": "interact",
+      "entity": "steve",
+      "target": "cow2",
+      "item": "minecraft:wheat"
+    },
+    {
+      "tick": 6,
+      "op": "hurt",
+      "entity": "cow2",
+      "amount": 1
+    },
+    {
+      "tick": 8,
+      "op": "interact",
+      "entity": "steve",
+      "target": "cow1",
+      "item": "minecraft:wheat"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

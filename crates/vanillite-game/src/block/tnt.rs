@@ -290,6 +290,19 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         }
     };
     super::plate::entity_inside_along(level, id, dims, &[way]);
+    // `BubbleColumnBlock.entityInside`.
+    let mut pushed = level.entities.store.get(id).map(|e| e.velocity());
+    if let Some(v) = pushed.as_mut()
+        && super::bubble::along(level, dims, &[way], v)
+        && let Some(d) = level.entities.primed_tnt_mut(id)
+    {
+        d.fall_distance = 0.0;
+    }
+    if let Some(v) = pushed
+        && let Some(mut e) = level.entities.store.get_mut(id)
+    {
+        e.set_velocity(v);
+    }
     let Some(entity) = level.entities.store.get(id) else {
         return;
     };
@@ -304,6 +317,10 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     if let Some(d) = level.entities.primed_tnt_mut(id) {
         d.fuse = fuse;
     }
+    if fuse > 0 {
+        // `updateFluidInteraction`: water resets the fall distance, flowing water and lava push.
+        velocity = push_by_fluids(level, id, velocity);
+    }
     if let Some(mut entity) = level.entities.store.get_mut(id) {
         entity.set_velocity(velocity);
         // `setFuse` changes synched data every tick.
@@ -317,6 +334,38 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         level.entities.despawn(id);
         explode(level, id, new_pos, data);
     }
+}
+
+/// `Entity.updateFluidInteraction` of a primed TNT at its current place: in water its fall
+/// distance resets; the currents of water and lava push `velocity`.
+fn push_by_fluids(level: &mut Level, id: EntityId, mut velocity: Vec3) -> Vec3 {
+    let Some(entity) = level.entities.store.get(id) else {
+        return velocity;
+    };
+    let aabb = entity.aabb();
+    let eye = entity.pos() + Vec3::new(0.0, f64::from(0.15_f32), 0.0);
+    let (contact, currents) = crate::mob::living::fluid_currents(
+        level,
+        crate::survival::blocks::BlockFacts::fluids_only(),
+        aabb,
+        eye,
+    );
+    if contact.in_water() {
+        if let Some(d) = level.entities.primed_tnt_mut(id) {
+            d.fall_distance = 0.0;
+        }
+        if let Some(pushed) = currents.water.push(velocity, 0.014) {
+            velocity = pushed;
+        }
+    }
+    if contact.in_lava()
+        && let Some(pushed) = currents
+            .lava
+            .push(velocity, crate::experience_orb::lava_current_scale(level))
+    {
+        velocity = pushed;
+    }
+    velocity
 }
 
 /// `PrimedTnt.explode`: power 4 at a sixteenth of its height, breaking blocks like TNT
@@ -449,7 +498,7 @@ fn move_self(
 
 /// `getBlockBounciness(block)` of a non-living entity: the block's bounce restitution times
 /// 0.8 (slime blocks 1.0, beds and shelf mushrooms 0.75).
-fn block_bounciness(block: BlockId) -> f64 {
+pub(crate) fn block_bounciness(block: BlockId) -> f64 {
     let restitution: f32 = if block == ids::SLIME_BLOCK {
         1.0
     } else if block == ids::SHELF_MUSHROOM

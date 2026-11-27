@@ -112,7 +112,9 @@ final class ScenarioEntities {
           "container_set_content",
           "container_set_slot",
           "set_player_inventory",
-          "set_held_slot");
+          "set_held_slot",
+          "level_event",
+          "entity_event");
 
   ScenarioEntities(ParityServer server, ServerLevel level) {
     this.server = server;

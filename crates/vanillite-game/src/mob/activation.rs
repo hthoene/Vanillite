@@ -284,7 +284,7 @@ impl Activation {
 pub fn age(m: &mut MobData) {
     m.tick_count += 1;
     if m.kind.ageable() && m.is_alive() {
-        if m.age < 0 {
+        if m.age < 0 && !m.age_locked {
             m.age += 1;
         } else if m.age > 0 {
             m.age -= 1;

@@ -1,0 +1,35 @@
+{
+  "description": "Death drops every slot (#233): a client player holds items in the hotbar, the main inventory, all four armour slots and the off hand, picks a stack onto its cursor and puts two items of it into the 2x2 crafting grid (container_click PICKUP), then dies (/kill at tick 10). Inventory.dropAll throws the inventory and equipment at death; the cursor stack and the crafting grid drop when the client asks to respawn (client_command at tick 20, Player.remove of the dead player). The client view shows the inventory menu sync after the respawn (no ghost items).",
+  "dimensions": true,
+  "client_view": true,
+  "player_state": true,
+  "rules": {"spawn_monsters": "false", "respawn_radius": "0"},
+  "region": [[-2, -62, -2], [12, -55, 12]],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [4.5, -60.0, 4.5],
+      "rot": [30, 10],
+      "inventory": [
+        [0, "minecraft:cobblestone", 16],
+        [9, "minecraft:oak_planks", 16],
+        [20, "minecraft:bread", 8],
+        [36, "minecraft:leather_boots", 1],
+        [37, "minecraft:leather_leggings", 1],
+        [38, "minecraft:leather_chestplate", 1],
+        [39, "minecraft:leather_helmet", 1],
+        [40, "minecraft:shield", 1]
+      ]
+    }
+  ],
+  "actions": [
+    {"tick": 3, "op": "packet", "entity": "steve", "packet": "container_click", "data": "0000000900000000", "what": "ContainerClick { container_id: 0, state_id: 0, slot: 9, button: 0, input: Pickup, changed: [], carried: HashedStack { item: None } }"},
+    {"tick": 4, "op": "packet", "entity": "steve", "packet": "container_click", "data": "0000000101000000", "what": "ContainerClick { container_id: 0, state_id: 0, slot: 1, button: 1, input: Pickup, changed: [], carried: HashedStack { item: None } }"},
+    {"tick": 5, "op": "packet", "entity": "steve", "packet": "container_click", "data": "0000000401000000", "what": "ContainerClick { container_id: 0, state_id: 0, slot: 4, button: 1, input: Pickup, changed: [], carried: HashedStack { item: None } }"},
+    {"tick": 10, "op": "command", "command": "kill steve"},
+    {"tick": 20, "op": "packet", "entity": "steve", "packet": "client_command", "data": "00", "what": "ClientCommand { action: PerformRespawn }"}
+  ]
+}

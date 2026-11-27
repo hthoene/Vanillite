@@ -1,0 +1,146 @@
+{
+  "description": "A player tries a lead on a turtle and a villager (Turtle and AbstractVillager.canBeLeashed are false: the lead stays in the hand), then on a cow (leashed).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        10.5
+      ]
+    },
+    {
+      "name": "turtle",
+      "type": "minecraft:turtle",
+      "pos": [
+        6.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 7,
+      "finalize": false
+    },
+    {
+      "name": "villager",
+      "type": "minecraft:villager",
+      "pos": [
+        8.5,
+        -60.0,
+        7.5
+      ],
+      "seed": 8,
+      "finalize": false
+    },
+    {
+      "name": "cow",
+      "type": "minecraft:cow",
+      "pos": [
+        10.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 9,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 5,
+      "op": "interact",
+      "entity": "steve",
+      "target": "turtle",
+      "item": "minecraft:lead",
+      "count": 3
+    },
+    {
+      "tick": 6,
+      "op": "interact",
+      "entity": "steve",
+      "target": "villager"
+    },
+    {
+      "tick": 7,
+      "op": "interact",
+      "entity": "steve",
+      "target": "cow"
+    }
+  ],
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

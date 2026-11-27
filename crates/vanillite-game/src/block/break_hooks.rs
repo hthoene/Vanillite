@@ -180,14 +180,19 @@ fn spawn_infestation(level: &mut Level, pos: BlockPos) {
         f64::from(pos.y),
         f64::from(pos.z) + 0.5,
     );
-    crate::mob::spawn::add_mob(level, mob, at, 0.0, crate::mob::fam::SpawnReason::Triggered);
+    let id =
+        crate::mob::spawn::add_mob(level, mob, at, 0.0, crate::mob::fam::SpawnReason::Triggered);
+    // `silverfish.spawnAnim()`: entity event 20 (poof particles).
+    level.broadcast_entity_event(id, crate::mob::living::event::SPAWN_POOF);
 }
 
 /// `IceBlock.playerDestroy` after the drops: without a melting-preventing enchantment, the ice
 /// leaves water above a block in `#ice_melts_when_destroyed_above` or a liquid (nothing where
 /// water evaporates).
 pub fn ice_player_destroy(level: &mut Level, state: BlockState, pos: BlockPos, tool: &ItemStack) {
-    if !state.is(ids::ICE) || has_enchantment_tag(tool, "minecraft:prevents_ice_melting") {
+    if !(state.is(ids::ICE) || state.is(ids::FROSTED_ICE))
+        || has_enchantment_tag(tool, "minecraft:prevents_ice_melting")
+    {
         return;
     }
     if level.settings.water_evaporates {

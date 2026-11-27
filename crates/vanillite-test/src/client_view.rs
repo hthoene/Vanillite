@@ -11,7 +11,8 @@
 //!   (both forget every entity).
 //! - `block <x> <y> <z> <state>`: a block change in view (`block_update` and
 //!   `section_blocks_update` alike; the last state per position and tick).
-//! - `game_event <id> <param>`.
+//! - `game_event <id> <param>`, `level_event <id> <x> <y> <z> <data>`, `entity_event <type>
+//!   <event>`.
 //! - `boss#<n> <name> <progress> <color> <overlay> <flags>` or `boss#<n> removed`: a boss bar
 //!   that changed during the tick, numbered in the order the client got them (their UUIDs are
 //!   random).
@@ -221,6 +222,20 @@ impl ClientView {
             cb::GameEvent::ID => {
                 let p: cb::GameEvent = decode(r)?;
                 events.push(format!("game_event {} {}", p.event, p.param));
+            }
+            cb::LevelEvent::ID => {
+                let p: cb::LevelEvent = decode(r)?;
+                events.push(format!(
+                    "level_event {} {} {} {} {}",
+                    p.event, p.pos.x, p.pos.y, p.pos.z, p.data
+                ));
+            }
+            cb::EntityEvent::ID => {
+                let p: cb::EntityEvent = decode(r)?;
+                // Events of the player itself (permission levels) are left out.
+                if let Some(kind) = self.entities.get(&p.entity_id) {
+                    events.push(format!("entity_event {kind} {}", p.event));
+                }
             }
             cb::BossEvent::ID => {
                 let p: cb::BossEvent = decode(r)?;

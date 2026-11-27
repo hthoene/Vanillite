@@ -186,6 +186,12 @@ impl Inventory {
             | (Kind::Grindstone, container::GRINDSTONE_ADDITIONAL)
             | (Kind::Cartography, container::CARTOGRAPHY_ADDITIONAL) => own(1),
             (Kind::Smithing, container::SMITHING_MATERIAL) => own(2),
+            (Kind::Beacon, container::BEACON_PAYMENT) | (Kind::Loom, container::LOOM_INPUT) => {
+                own(0)
+            }
+            (Kind::Loom, container::LOOM_DYE) => own(1),
+            (Kind::Loom, container::LOOM_MATERIAL) => own(2),
+            (Kind::Mount(m), container::HORSE_EQUIP | container::LEVEL_ENTITY) => own(m.java(s)),
             _ => target(r),
         }
     }
@@ -217,7 +223,7 @@ impl Inventory {
                 Kind::Crafting => Some(Target::Open(0)),
                 Kind::Stonecutter => Some(Target::Open(1)),
                 Kind::Anvil | Kind::Grindstone | Kind::Cartography => Some(Target::Open(2)),
-                Kind::Smithing => Some(Target::Open(3)),
+                Kind::Smithing | Kind::Loom => Some(Target::Open(3)),
                 _ => None,
             },
         }
@@ -559,6 +565,30 @@ impl Session {
                 Ok(())
             }
             StackAction::CraftGrindstone => Ok(()),
+            StackAction::BeaconPayment { primary, secondary } => {
+                if !self
+                    .inv
+                    .open
+                    .as_ref()
+                    .is_some_and(|o| o.kind == Kind::Beacon)
+                {
+                    return Err(Refused);
+                }
+                self.java_send(&psb::SetBeacon {
+                    primary: crate::entity::java_effect(primary),
+                    secondary: crate::entity::java_effect(secondary),
+                });
+                Ok(())
+            }
+            StackAction::CraftLoom { pattern } => {
+                let len = pattern
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(pattern.len());
+                let code = std::str::from_utf8(pattern.get(..len).unwrap_or_default())
+                    .map_err(|_| Refused)?;
+                self.craft_loom(code)
+            }
             StackAction::CraftRecipeAuto { net_id, .. } => {
                 self.inv.recipe = self.recipes.result(net_id);
                 self.inv.auto = Some(self.recipes.java(net_id).ok_or(Refused)?);
@@ -606,6 +636,70 @@ impl Session {
         Ok(())
     }
 
+    /// `craft_loom`: the Java button of the pattern in the loom's list (`LoomMenu`'s selectable
+    /// patterns: the pattern item's patterns, or those that need none), and the expected result.
+    fn craft_loom(&mut self, code: &str) -> Result<(), Refused> {
+        let container_id = self
+            .inv
+            .open
+            .as_ref()
+            .filter(|o| o.kind == Kind::Loom)
+            .ok_or(Refused)?
+            .container;
+        let java = crate::blockentity::java_pattern(code).ok_or(Refused)?;
+        let pattern_item = self.inv.get(Target::Open(2));
+        let tag = if pattern_item.is_empty() {
+            "minecraft:no_item_required".to_owned()
+        } else {
+            let name = ItemId(pattern_item.item).name();
+            let base = name
+                .strip_prefix("minecraft:")
+                .and_then(|n| n.strip_suffix("_banner_pattern"))
+                .ok_or(Refused)?;
+            format!("minecraft:pattern_item/{base}")
+        };
+        let registry_id = |id: &i32| {
+            usize::try_from(*id)
+                .ok()
+                .and_then(|i| self.banner_patterns.get(i))
+        };
+        let list = self.banner_tags.get(&tag).ok_or(Refused)?;
+        let button = list
+            .iter()
+            .position(|id| registry_id(id).is_some_and(|n| *n == java))
+            .ok_or(Refused)?;
+        let pattern_id = *list.get(button).ok_or(Refused)?;
+        self.java_send(&psb::ContainerButtonClick {
+            container_id,
+            button_id: i32::try_from(button).map_err(|_| Refused)?,
+        });
+        // `LoomMenu.setupResultSlot`: the banner with one more layer in the dye's colour.
+        let banner = self.inv.get(Target::Open(0));
+        let dye = self.inv.get(Target::Open(1));
+        let color = crate::blockentity::dye_of_item(ItemId(dye.item).name()).ok_or(Refused)?;
+        if banner.is_empty() || dye.is_empty() {
+            return Err(Refused);
+        }
+        let mut result = banner.with_count(1);
+        let component = vanillite_protocol::components::ids::BANNER_PATTERNS;
+        let (count, layers) = match result.component(component) {
+            Some(raw) => {
+                let mut r = vanillite_protocol::codec::Reader::new(raw);
+                let n = r.varint().map_err(|_| Refused)?;
+                (n, r.rest().to_vec())
+            }
+            None => (0, Vec::new()),
+        };
+        let mut value = Vec::with_capacity(layers.len().saturating_add(8));
+        vanillite_protocol::codec::write_varint(&mut value, count.saturating_add(1));
+        value.extend_from_slice(&layers);
+        vanillite_protocol::codec::write_varint(&mut value, pattern_id.saturating_add(1));
+        vanillite_protocol::codec::write_varint(&mut value, i32::try_from(color).unwrap_or(0));
+        result.patch_mut().set(component, value.into_boxed_slice());
+        self.inv.recipe = Some(result);
+        Ok(())
+    }
+
     /// Sets a slot in creative mode: mirror and Java creative slot.
     fn creative_put(&mut self, t: Target, stack: ItemStack) {
         if self.inv.put(t, stack.clone())
@@ -621,13 +715,12 @@ impl Session {
         let t = |r: &SlotRef| target(r).ok_or(Refused);
         match *a {
             StackAction::CraftCreative { net_id, .. } => {
-                let item = self
+                let stack = self
                     .version
                     .palette
                     .items()
-                    .creative(net_id)
+                    .creative(net_id, &self.enchantments)
                     .ok_or(Refused)?;
-                let stack = ItemStack::new(item, 1);
                 let max = max_stack(&stack);
                 self.inv.created = Some(stack.with_count(max));
                 Ok(())

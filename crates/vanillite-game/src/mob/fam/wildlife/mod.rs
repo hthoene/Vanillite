@@ -60,6 +60,8 @@ pub struct State {
     /// Salmon size (0 small, 1 medium, 2 large), the packed tropical fish variant, the
     /// mooshroom type (0 red, 1 brown).
     pub variant: i32,
+    /// `MushroomCow.lastLightningBoltUUID` (not saved).
+    pub last_bolt: Option<u128>,
     /// `TropicalFish.isSchool`.
     pub is_school: bool,
     /// Pufferfish puff state, inflate counter and deflate timer.
@@ -128,6 +130,7 @@ impl State {
         leader: None,
         school_size: 1,
         variant: 0,
+        last_bolt: None,
         is_school: true,
         puff_state: 0,
         inflate_counter: 0,
@@ -346,6 +349,15 @@ pub(crate) fn is_water_animal(kind: Kind) -> bool {
     is_fish(kind) || matches!(kind, Kind::Squid | Kind::GlowSquid | Kind::Dolphin)
 }
 
+/// `isInterruptable` of the wildlife goals: false for `BreathAirGoal`, `DolphinJumpGoal` and
+/// `DolphinSwimToTreasureGoal`.
+pub(crate) fn goal_interruptable(g: &Goal) -> bool {
+    !matches!(
+        g,
+        Goal::BreathAir | Goal::DolphinJump { .. } | Goal::DolphinSwimToTreasure { .. }
+    )
+}
+
 /// A block of the given block tag (the tag tables of the data packs).
 pub(crate) fn block_tags() -> &'static vanillite_worldgen::behaviour::BlockTags {
     crate::block::block_tags()
@@ -360,7 +372,7 @@ pub(crate) fn item_in_tag(item: u16, tag: &str) -> bool {
 pub(crate) fn save_ageable(m: &MobData, out: &mut Compound) {
     out.insert("Age", m.age);
     out.insert("ForcedAge", m.forced_age);
-    out.insert("AgeLocked", false);
+    out.insert("AgeLocked", m.age_locked);
 }
 
 /// `Animal` save data (love).
@@ -376,6 +388,7 @@ pub(crate) fn load_ageable(m: &mut MobData, tag: &Compound) {
     m.age = int(tag, "Age").unwrap_or(0);
     m.baby = m.age < 0;
     m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
+    m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
     m.in_love = int(tag, "InLove").unwrap_or(0);
     m.love_cause = crate::mob::nbt::uuid_key_of(tag, "LoveCause");
 }
@@ -1038,6 +1051,10 @@ impl FamilyHooks for Hooks {
             Kind::Turtle => crate::mob::animal::animal_interact(
                 ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack,
             ),
+            // `AgeableMob.mobInteract`: the golden dandelion.
+            Kind::Squid | Kind::GlowSquid => {
+                crate::mob::age_lock::interact_pub(ix).unwrap_or(Interaction::Pass)
+            }
             _ => Interaction::Pass,
         }
     }
@@ -1058,7 +1075,7 @@ impl FamilyHooks for Hooks {
         let s = st(m);
         if Self::ageable(m.kind) {
             w.boolean(16, m.baby, false);
-            w.boolean(17, false, false);
+            w.boolean(17, m.age_locked, false);
         }
         match m.kind {
             k if is_fish(k) => {
@@ -1229,8 +1246,6 @@ impl FamilyHooks for Hooks {
         matches!(
             g,
             Goal::SquidFlee { .. }
-                | Goal::BreathAir
-                | Goal::DolphinJump { .. }
                 | Goal::TurtleLayEgg(_)
                 | Goal::TurtleGoToWater(_)
                 | Goal::StriderGoToLava(_)

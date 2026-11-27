@@ -31,7 +31,25 @@ enum Entry {
     Stonecutter(usize, ItemStack),
     /// The smithing trim recipe (the Java server computes the result).
     Trim,
+    /// A Bedrock multi recipe (the client and the Java server compute the result).
+    Multi,
 }
+
+/// Bedrock's hard-coded crafting and cartography recipes (multi recipes, by their fixed UUIDs):
+/// the client shows their results only when the server lists them. The Java server's special
+/// recipes decide the real result.
+const MULTI_RECIPES: [u128; 10] = [
+    0xd1ca6b84_338e_4f2f_9c6b_76cc8b4bd98d, // book cloning
+    0x00000000_0000_0000_0000_000000000001, // repairing in the grid
+    0xd392b075_4ba1_40ae_8789_af868d56f6ce, // map extending
+    0x85939755_ba10_4d9d_a4cc_efb7a8e943c4, // map cloning
+    0x00000000_0000_0000_0000_000000000002, // firework rockets
+    0x685a742a_c42e_4a4e_88ea_5eb83fc98e5b, // decorated pots
+    0x8b36268c_1829_483c_a0f1_993b7156a8f2, // cartography: map extending
+    0x442d85ed_8272_4543_a6f1_418f90ded05d, // cartography: map cloning
+    0x98c84b38_1085_46bd_b1ce_dd38c159e6cc, // cartography: map upgrading
+    0x602234e4_cac1_4353_8bb7_b1ebff70024b, // cartography: map locking
+];
 
 /// One stonecutter recipe of `update_recipes`: the items it takes and its result.
 #[derive(Debug, Clone)]
@@ -168,7 +186,7 @@ impl Recipes {
     pub fn result(&self, net_id: u32) -> Option<ItemStack> {
         match self.entry(net_id)? {
             Entry::Book(_, r) | Entry::Stonecutter(_, r) => Some(r.clone()),
-            Entry::Trim => None,
+            Entry::Trim | Entry::Multi => None,
         }
     }
 
@@ -419,8 +437,11 @@ impl Recipes {
                 *n = n.saturating_add(1);
             }
         }
-        // The whole book clears the client's recipes: the stonecutter and trim recipes again.
+        // The whole book clears the client's recipes: the stonecutter, trim and multi recipes
+        // again.
         let mut trim = Vec::new();
+        let mut multi = Vec::new();
+        let mut n_multi = 0usize;
         if replace {
             n_shapeless = n_shapeless.saturating_add(self.write_stonecutter(items, &mut shapeless));
             if self.java.len() < MAX_RECIPES {
@@ -432,6 +453,15 @@ impl Recipes {
                 write_tag_descriptor(&mut trim, "minecraft:trim_materials");
                 io::write_str(&mut trim, "smithing_table");
                 io::write_varu32(&mut trim, net_id);
+            }
+            for uuid in MULTI_RECIPES {
+                if self.java.len() >= MAX_RECIPES {
+                    break;
+                }
+                self.java.push(Entry::Multi);
+                io::write_uuid(&mut multi, uuid);
+                io::write_varu32(&mut multi, u32::try_from(self.java.len()).unwrap_or(0));
+                n_multi = n_multi.saturating_add(1);
             }
         }
         if n_shaped == 0 && n_shapeless == 0 && n_transform == 0 && !replace {
@@ -447,8 +477,10 @@ impl Recipes {
         body.extend_from_slice(&shaped);
         io::write_len(&mut body, n_shapeless);
         body.extend_from_slice(&shapeless);
-        // Multi, user data shapeless, chemistry shapeless and shaped: none.
-        body.extend_from_slice(&[0; 4]);
+        io::write_len(&mut body, n_multi);
+        body.extend_from_slice(&multi);
+        // User data shapeless, chemistry shapeless and shaped: none.
+        body.extend_from_slice(&[0; 3]);
         io::write_len(&mut body, n_transform);
         body.extend_from_slice(&transform);
         io::write_len(&mut body, usize::from(!trim.is_empty()));
@@ -570,6 +602,9 @@ mod tests {
         assert_eq!(recipes.java(3), Some(9));
         assert_eq!(recipes.result(3).map(|r| r.count), Some(4));
         assert_eq!(recipes.java(4), None);
+        // The multi recipes (here the firework rocket's UUID, both halves little-endian).
+        let firework = [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0];
+        assert!(body.windows(16).any(|w| w == firework));
         assert_eq!(
             *body.last().unwrap(),
             1,

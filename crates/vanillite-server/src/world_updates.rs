@@ -8,7 +8,7 @@ use std::sync::Arc;
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::{BlockPos, ChunkPos, SectionPos};
 use vanillite_game::entities::Entities;
-use vanillite_game::level::{Level, LevelOutput};
+use vanillite_game::level::{Level, LevelOutput, SectionChanges};
 use vanillite_protocol::SharedPacket;
 use vanillite_protocol::codec::{write_varint, write_varlong};
 use vanillite_protocol::ids::play::clientbound as ids;
@@ -28,7 +28,7 @@ pub(crate) struct WorldUpdates {
 }
 
 /// Changed positions per section, each once, in change order.
-type Changes = FxHashMap<SectionPos, Vec<BlockPos>>;
+type Changes = FxHashMap<SectionPos, SectionChanges>;
 
 impl WorldUpdates {
     /// The light changes of this tick, for the chunk packet cache and the broadcast, and the
@@ -208,10 +208,10 @@ impl WorldUpdates {
             if level.chunks.chunk(chunk).is_none() || positions.is_empty() {
                 continue;
             }
-            let packet = if let [pos] = positions[..] {
+            let packet = if let [pos] = positions.positions()[..] {
                 block_update(pos, level.block(pos).0)
             } else {
-                section_blocks_update(section, &positions, |pos| level.block(pos).0)
+                section_blocks_update(section, positions.positions(), |pos| level.block(pos).0)
             };
             self.per_chunk.entry(chunk).or_default().push(packet);
         }
@@ -226,10 +226,8 @@ fn merge_changes(into: &mut Changes, from: Changes) {
     }
     for (section, positions) in from {
         let list = into.entry(section).or_default();
-        for pos in positions {
-            if !list.contains(&pos) {
-                list.push(pos);
-            }
+        for &pos in positions.positions() {
+            list.insert(pos);
         }
     }
 }

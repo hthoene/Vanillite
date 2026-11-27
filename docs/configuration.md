@@ -106,6 +106,7 @@ These apply to the whole server.
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
 | `compute` | setting | yes | `0` | `0` | `0` | `0` | `0` | Worker threads of the compute pool (world generation, lighting, saving, parallel tick phases). 0 = number of cores minus one (the tick threads), at least 1. Integer from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__THREADS__COMPUTE`. |
+| `network` | setting | yes | `0` | `0` | `0` | `0` | `0` | I/O threads of the network (connections, encryption, compression of outgoing packets). 0 = 2, or 1 with less than two cores, so the tick keeps the only core. Integer from 0 to 64. Environment: `VANILLITE_PERFORMANCE__THREADS__NETWORK`. |
 
 #### `[performance.budget]`
 
@@ -138,7 +139,7 @@ These apply to the whole server.
 | `io-threads` | performance | yes | `2` | `2` | `2` | `2` | `2` | Disk IO threads shared by all dimensions. They only read and write files; compression runs on the compute pool. More help on network volumes with high latency. Integer from 1 to 16. Environment: `VANILLITE_STORAGE__IO_THREADS`. |
 | `commit-interval` | performance |  | `30` | `30` | `30` | `30` | `30` | Seconds after which saves of unloaded chunks are made durable (synced when `sync-chunk-writes` is on). Save rounds and `save-all flush` commit at their end. Integer from 5 to 300. Environment: `VANILLITE_STORAGE__COMMIT_INTERVAL`. |
 | `read-ahead` | performance | yes | `true` | `true` | `true` | `true` | `true` | Reads the neighbours of a loaded chunk in its 4 × 4 tile along when they lie next to it in the file, and keeps them for a short time: fewer disk reads for moving players. Environment: `VANILLITE_STORAGE__READ_AHEAD`. |
-| `read-cache` | performance | yes | `64` | `64` | `64` | `64` | `64` | MiB of chunk records read ahead kept per dimension. Integer from 0 to 65536. Environment: `VANILLITE_STORAGE__READ_CACHE`. |
+| `read-cache` | performance | yes | `64` | `64` | `64` | `64` | `64` | MiB of chunk records read ahead kept per dimension; under a memory limit (`performance.budget.memory`) at most 1/32 of it. Integer from 0 to 65536. Environment: `VANILLITE_STORAGE__READ_CACHE`. |
 | `max-open-files` | performance | yes | `256` | `256` | `256` | `256` | `256` | Region files kept open per dimension while unused; files in use always stay open. Integer from 16 to 65536. Environment: `VANILLITE_STORAGE__MAX_OPEN_FILES`. |
 | `max-pending-writes` | performance |  | `64` | `64` | `64` | `64` | `64` | MiB of saved chunks waiting for the disk per dimension above which no more saves are queued: changed chunks stay loaded and save rounds pause until the disk caught up. Bounds RAM on slow disks. Integer from 4 to 65536. Environment: `VANILLITE_STORAGE__MAX_PENDING_WRITES`. |
 
@@ -195,6 +196,7 @@ These apply to the whole server.
 | `max-selector-options` | security |  | `64` | `64` | `64` | `64` | `64` | Options inside one entity selector `[...]`. Integer from 1 to 1024. Environment: `VANILLITE_COMMANDS__MAX_SELECTOR_OPTIONS`. |
 | `max-message-selectors` | security |  | `16` | `16` | `16` | `16` | `16` | Entity selectors inside one message argument. Integer from 0 to 256. Environment: `VANILLITE_COMMANDS__MAX_MESSAGE_SELECTORS`. |
 | `max-redirect-depth` | security |  | `64` | `64` | `64` | `64` | `64` | Nested redirects followed while parsing one command. Integer from 1 to 1024. Environment: `VANILLITE_COMMANDS__MAX_REDIRECT_DEPTH`. |
+| `bukkit-commands` | setting | yes | `false` | `false` | `true` | `true` | `false` | Paper's `/version` (also `/ver` and `/about`): the server's version or that of a plugin, for everyone with `bukkit.command.version` (all players by default); Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is Vanilla's command for operators. `/plugins` is always there. Environment: `VANILLITE_COMMANDS__BUKKIT_COMMANDS`. |
 
 #### `[performance.survival]`
 
@@ -319,7 +321,7 @@ view-distance = 8
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
-| `enabled` | performance |  | `false` | `false` | `false` | `false` | `false` | Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial order at no cost. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED`. |
+| `enabled` | performance |  | `false` | `false` | `false` | `false` | `true` | Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. On in the performance profile; `false` keeps Vanilla's exact serial order at no cost. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED`. |
 | `tile-size` | performance |  | `16` | `16` | `16` | `16` | `16` | Edge of a tile in chunks. Smaller tiles balance better over the cores, larger ones cost less bookkeeping. Integer from 8 to 32. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__TILE_SIZE`. |
 
 #### `[performance.simulation]`

@@ -183,6 +183,7 @@ impl vanillite_command::Source for CommandSource {
                     .collect()
             }
             suggest::WHITELISTED => access.whitelisted_names(),
+            suggest::PLUGINS => super::plugins_cmd::names(&self.global),
             suggest::SCORE_HOLDERS => {
                 let mut names: Vec<String> = online.into_iter().map(|p| p.name).collect();
                 names.extend(

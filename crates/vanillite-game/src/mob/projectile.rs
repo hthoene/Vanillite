@@ -64,6 +64,8 @@ pub struct ArrowData {
     pub crossbow_sound: bool,
     /// The bow or crossbow it was shot from (`firedFromWeapon`).
     pub weapon: Option<crate::item::ItemStack>,
+    /// `Projectile.lastDeflectedBy`.
+    pub last_deflected: Option<EntityId>,
 }
 
 impl ArrowData {
@@ -98,6 +100,7 @@ impl ArrowData {
             pierced_killed: Vec::new(),
             crossbow_sound: false,
             weapon: None,
+            last_deflected: None,
         }
     }
 
@@ -534,6 +537,16 @@ pub fn tick_arrow(
                 continue;
             }
             hit_any = true;
+            // `hitTargetOrDeflectSelf`: a breeze turns the arrow back, once in a row.
+            if super::missile::deflects(ents, target, kind) {
+                if a.last_deflected != Some(target) {
+                    (velocity, rot) =
+                        super::missile::reverse(ents, env, target, velocity, rot, &mut random);
+                    a.last_deflected = Some(target);
+                }
+                deflected = true;
+                break;
+            }
             // `Projectile.onHit`: a `#redirectable_projectile` it hits flies off along the
             // owner's look (`onRedirectProjectile`).
             super::attack::aim_deflect(ents, target, a.owner, a.owner);
@@ -560,10 +573,11 @@ pub fn tick_arrow(
             source.projectile_motion = Some(velocity);
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
-            let living = ents.mob(target).is_some() || ents.player(target).is_some();
+            let living = crate::effect::thrown::is_living(ents, target);
             if hurt && !living {
-                // Vehicles, end crystals, shulker bullets: only the sound.
+                // A vehicle, crystal or decoration: only the hit sound (`onHitEntity`).
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
+                let seed = crate::survival::sound_seed();
                 play_sound(
                     env.out,
                     None,
@@ -572,7 +586,7 @@ pub fn tick_arrow(
                     SoundSource::Neutral,
                     1.0,
                     pitch,
-                    crate::survival::sound_seed(),
+                    seed,
                 );
                 if a.pierce_level == 0 {
                     discard = true;
@@ -673,10 +687,13 @@ pub fn tick_arrow(
                         },
                     );
                 }
-                if let Some(owner) = a.owner
-                    && let Some(m) = ents.mob_mut(owner)
-                {
-                    m.last_hurt_mob = Some(target);
+                // `owner.setLastHurtMob(entity)`: mobs and players (their wolves join in).
+                if let Some(owner) = a.owner {
+                    if let Some(m) = ents.mob_mut(owner) {
+                        m.last_hurt_mob = Some(target);
+                    } else if let Some(p) = ents.player_mut(owner) {
+                        p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
+                    }
                 }
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
                 let seed = crate::survival::sound_seed();

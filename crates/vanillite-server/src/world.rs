@@ -860,6 +860,10 @@ impl ServerWorld {
         );
         self.effects.flush(&self.level.entities);
         crate::scoreboard::flush(ctx.global);
+        // One write per connection and tick.
+        for (_, player) in self.level.entities.players.iter() {
+            player.connection.sink.flush();
+        }
         self.overload
             .update(started.elapsed(), &self.rules.tracking, &self.dimension);
         self.report_rules();

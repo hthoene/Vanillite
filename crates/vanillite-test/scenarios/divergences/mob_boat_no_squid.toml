@@ -1,0 +1,3 @@
+tick = 1
+cause = "boat floating: Vanilla applies the water friction (floatBoat) before the move and bobs the boat down to y -56.498; Vanillite moves the full push and keeps it at -56.4615 (the squid is pushed twice and does not board, as in Vanilla)"
+owner = "gameplay-developer #221"

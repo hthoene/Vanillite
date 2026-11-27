@@ -106,8 +106,82 @@ impl Level {
             .push(packet(particle, pos, count, dist, speed));
     }
 
+    /// `broadcastEntityEvent(entity, event)` for the players near the entity.
+    pub fn broadcast_entity_event(&mut self, entity: vanillite_world::entity::EntityId, event: i8) {
+        let Some((pos, network_id)) = self
+            .entities
+            .store
+            .get(entity)
+            .map(|e| (e.pos(), e.network_id().0))
+        else {
+            return;
+        };
+        self.output.nearby_packets.push((
+            pos,
+            160.0,
+            vanillite_protocol::SharedPacket::of(
+                &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                    entity_id: network_id,
+                    event,
+                },
+            ),
+        ));
+    }
+
     /// `sendParticles` with all of the packet's fields.
     pub fn send_particles_packet(&mut self, packet: LevelParticles) {
         self.output.particles.push(packet);
+    }
+}
+
+/// `BubbleColumnBlock.entityInside` of an entity without a behaviour of its own (items,
+/// experience orbs, falling blocks), at a column it is precisely in: the new velocity and
+/// whether the fall distance resets (`onInsideBubbleColumn`). At the top of the column
+/// (`onAboveBubbleColumn`) the level random draws the splash and bubble particles.
+pub fn bubble_column_drag(
+    level: &mut Level,
+    pos: vanillite_base::BlockPos,
+    v: Vec3,
+) -> (Vec3, bool) {
+    let state = level.block(pos);
+    let drag_down = state.value("drag") == Some("true");
+    let above = level.block(vanillite_base::BlockPos::new(pos.x, pos.y + 1, pos.z));
+    let nothing_above = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+    let yd = match (nothing_above, drag_down) {
+        (true, true) => (v.y - 0.03).max(-0.9),
+        (true, false) => (v.y + 0.1).min(1.8),
+        (false, true) => (v.y - 0.03).max(-0.3),
+        (false, false) => (v.y + 0.06).min(0.7),
+    };
+    if nothing_above {
+        bubble_column_particles(level, pos);
+    }
+    (Vec3::new(v.x, yd, v.z), !nothing_above)
+}
+
+/// `Entity.sendBubbleColumnParticles`: splashes and bubbles at random spots on the top of the
+/// column at `pos`, drawn from the level random.
+pub fn bubble_column_particles(level: &mut Level, pos: vanillite_base::BlockPos) {
+    use vanillite_base::random::RandomSource;
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y + 1), f64::from(pos.z));
+    for _ in 0..2 {
+        let at = Vec3::new(
+            x + level.random().next_double(),
+            y,
+            z + level.random().next_double(),
+        );
+        level.send_particles(simple("minecraft:splash"), at, 1, Vec3::ZERO, 1.0);
+        let at = Vec3::new(
+            x + level.random().next_double(),
+            y,
+            z + level.random().next_double(),
+        );
+        level.send_particles(
+            simple("minecraft:bubble"),
+            at,
+            1,
+            Vec3::new(0.0, 0.01, 0.0),
+            0.2,
+        );
     }
 }

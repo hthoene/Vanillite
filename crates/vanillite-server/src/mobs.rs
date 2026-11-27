@@ -1779,13 +1779,7 @@ pub fn player_entity_action(
                 .get(target)
                 .is_some_and(|e| e.kind() == ids::LEASH_KNOT)
             {
-                let shears = vanillite_game::item::item_id(&animal::held(ents, player, hand))
-                    == vanillite_data::item::ids::SHEARS;
-                if tame::knot_interact(ents, env, player, target, shears, sneaking) {
-                    animal::Interaction::Success
-                } else {
-                    animal::Interaction::Pass
-                }
+                tame::knot_interact(ents, env, &mut cx.discarded, player, target, hand, sneaking)
             } else if ents.decor(target).is_some() {
                 let spectator = ents
                     .player(player)

@@ -1144,6 +1144,7 @@ pub fn load_from_bucket(m: &mut MobData, stack: &crate::item::ItemStack) {
                 m.age = *age;
                 m.baby = m.age < 0;
             }
+            m.age_locked = flag("AgeLocked").unwrap_or(false);
             if let Some(b) = m.brain.as_deref_mut() {
                 let cooldown = super::brain::MemoryType::HasHuntingCooldown;
                 match tag
@@ -1161,8 +1162,8 @@ pub fn load_from_bucket(m: &mut MobData, stack: &crate::item::ItemStack) {
             if let Some(vanillite_nbt::Tag::Int(age)) = tag.get("Age") {
                 s.tadpole_age = *age;
             }
-            s.playing_dead = flag("AgeLocked").unwrap_or(false);
             s.from_bucket = true;
+            m.age_locked = flag("AgeLocked").unwrap_or(false);
         }
         Kind::SulfurCube => {
             let age = match tag.get("age") {

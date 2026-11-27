@@ -304,6 +304,17 @@ pub fn attack_entity(
             return;
         }
     }
+    if ents.missile(target).is_some() {
+        let mut t = crate::mob::missile::MissileTick {
+            level,
+            ents: &mut *ents,
+            env: &mut *env,
+            cx: &mut *cx,
+            id: target,
+        };
+        crate::mob::fam::illager::missiles::attacked_by_player(&mut t, player);
+        return;
+    }
     if kind == Some(ids::LEASH_KNOT) {
         // `LeashFenceKnotEntity.hurtServer`: it breaks.
         tame::break_knot(ents, env, target, &mut cx.discarded);

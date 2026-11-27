@@ -1,0 +1,122 @@
+{
+  "description": "On Peaceful a zombie is removed (Mob.checkDespawn), while a shulker and a piglin stay: their types are not built with notInPeaceful().",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 20,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -55,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "shulker",
+      "type": "minecraft:shulker",
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "seed": 7,
+      "finalize": false
+    },
+    {
+      "name": "piglin",
+      "type": "minecraft:piglin",
+      "pos": [
+        10.5,
+        -60.0,
+        10.5
+      ],
+      "seed": 8,
+      "finalize": false
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        4.5,
+        -60.0,
+        10.5
+      ],
+      "seed": 9,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "difficulty peaceful"
+    }
+  ],
+  "dimensions": true,
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

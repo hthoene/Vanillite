@@ -166,9 +166,13 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                 || (t.mob_ref().kind == super::Kind::SulfurCube
                     && super::fam::undead::cubes::has_body_item(t.mob_ref()));
             if !breathes && !t.mob_ref().effects.has_water_breathing() {
-                let bonus = oxygen_bonus(t.mob_ref());
+                // `decreaseAirSupply`: Respiration (`OXYGEN_BONUS`) may keep the air.
                 let m = t.mob();
-                m.air = crate::survival::player::decrease_air_supply(m.air, bonus, &mut m.random);
+                let bonus =
+                    crate::mob::equipment::attribute(m, "minecraft:oxygen_bonus", 0.0, 0.0, 1024.0);
+                if !(bonus > 0.0 && m.random.next_double() >= 1.0 / (bonus + 1.0)) {
+                    m.air -= 1;
+                }
                 if t.mob_ref().air <= -20 {
                     t.mob().air = 0;
                     let id = t.id;
@@ -796,7 +800,7 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     if !t.exists() {
         return;
     }
-    if t.mob_ref().kind.burns_in_daylight() && is_sun_burn_tick(t) {
+    if t.mob_ref().kind.burns_in_daylight() && t.mob_ref().is_alive() && is_sun_burn_tick(t) {
         // `burnUndead`: a helmet takes the sun (and wears), else `igniteForSeconds(8)`.
         let head = crate::item::EquipmentSlot::Head;
         let helmet = t.mob_ref().equipment.get(head).clone();
@@ -819,23 +823,6 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         return;
     }
     kinds::ai_step(t);
-}
-
-/// The `oxygen_bonus` attribute of a mob from its equipment (Respiration).
-fn oxygen_bonus(m: &super::MobData) -> f64 {
-    let mut mods = Vec::new();
-    for slot in (0..8).filter_map(crate::item::EquipmentSlot::from_ordinal) {
-        crate::item::attribute_modifiers(
-            m.equipment.get(slot),
-            slot,
-            "minecraft:oxygen_bonus",
-            &mut mods,
-        );
-    }
-    if mods.is_empty() {
-        return 0.0;
-    }
-    crate::item::attribute_value(0.0, &mods, 0.0, 1024.0)
 }
 
 /// `hurtAndBreak(amount, mob, slot)` of a mob's equipment (without Unbreaking).
@@ -2012,6 +1999,14 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) -> bo
     if t.mob_ref().kind.fall_damage_immune() {
         return false;
     }
+    // `AbstractHorse.causeFallDamage` passes the fall on only after taking damage itself;
+    // `Entity.causeFallDamage` first.
+    let kind = t.mob_ref().kind;
+    let horse = crate::mob::fam::companion::is_horse(kind)
+        || matches!(kind, super::Kind::Camel | super::Kind::CamelHusk);
+    if !horse {
+        propagate_fall(t, distance, multiplier);
+    }
     let attrs = t.mob_ref().attrs;
     let power = distance + 1.0e-6 - attrs.safe_fall_distance;
     let damage = floor(power * f64::from(multiplier) * attrs.fall_damage_multiplier);
@@ -2026,11 +2021,34 @@ fn cause_fall_damage(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) -> bo
         let source = DamageSource::of(t.env.types.fall);
         #[allow(clippy::cast_precision_loss)]
         let hurt = hurt_self(t, source, damage as f32);
+        if horse && t.exists() {
+            propagate_fall(t, distance, multiplier);
+        }
         kinds::on_fall_damage(t, distance);
         return hurt;
     }
     kinds::on_fall_damage(t, distance);
     false
+}
+
+/// `Entity.propagateFallToPassengers`: every passenger takes the fall too.
+fn propagate_fall(t: &mut Tick<'_, '_>, distance: f64, multiplier: f32) {
+    let passengers = t.ents.riding.passengers_of(t.id).to_vec();
+    for p in passengers {
+        if t.ents.mob(p).is_some() {
+            let mut pt = Tick {
+                level: t.level,
+                ents: &mut *t.ents,
+                env: &mut *t.env,
+                cx: &mut *t.cx,
+                id: p,
+            };
+            cause_fall_damage(&mut pt, distance, multiplier);
+        } else if t.ents.player(p).is_some() {
+            let kind = t.env.types.fall;
+            crate::survival::player::passenger_fall(t.ents, t.env, p, distance, multiplier, kind);
+        }
+    }
 }
 
 /// `LivingEntity.playBlockFallSound`: the fall sound of the block 0.2 below the feet.
@@ -2112,10 +2130,15 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     let mut honey_count = 0;
     let mut bubbles = [(BlockPos::new(0, 0, 0), false); 4];
     let mut bubble_count = 0;
+    let mut eyeblossom = false;
     let dims = t.core().dims();
     let fast_fall = t.mob_ref().fall_distance > 2.5;
     // `WebBlock.entityInside`: Weaving halves the slowdown.
-    let weaving = t.mob_ref().effects.has(crate::effect::MobEffect::WEAVING);
+    let web = if t.mob_ref().effects.has(crate::effect::MobEffect::WEAVING) {
+        Vec3::new(0.5, 0.25, 0.5)
+    } else {
+        Vec3::new(0.25, f64::from(0.05_f32), 0.25)
+    };
     let (id, actions, level) = (t.id, &mut t.cx.actions, t.level);
     // `Spider.makeStuckInBlock`: spiders and cave spiders pass cobwebs.
     let spider = matches!(kind, super::Kind::Spider | super::Kind::CaveSpider);
@@ -2130,11 +2153,7 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         }
         if block == ids::COBWEB {
             if !spider {
-                stuck = Some(if weaving {
-                    Vec3::new(0.5, 0.25, 0.5)
-                } else {
-                    Vec3::new(0.25, f64::from(0.05_f32), 0.25)
-                });
+                stuck = Some(web);
             }
         } else if block == ids::SWEET_BERRY_BUSH {
             if !matches!(kind, super::Kind::Fox | super::Kind::Bee) {
@@ -2149,6 +2168,9 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
                 *slot = pos;
                 honey_count += 1;
             }
+        } else if block == ids::OPEN_EYEBLOSSOM {
+            // `EyeblossomBlock.entityInside` (in `#bee_attractive`).
+            eyeblossom |= kind == super::Kind::Bee;
         } else if block == ids::BUBBLE_COLUMN {
             // `BubbleColumnBlock.entityInside`: only where the mob ends up.
             if cell.precise
@@ -2208,13 +2230,12 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             &mut crate::effect::living::MobHost { t },
         );
     }
-    if inside.eyeblossom
-        && kind == super::Kind::Bee
+    if eyeblossom
         && t.exists()
         && t.env.difficulty != crate::survival::rules::Difficulty::Peaceful
         && !t.mob_ref().effects.has(crate::effect::MobEffect::POISON)
     {
-        // `EyeblossomBlock.entityInside`: `getBeeInteractionEffect`.
+        // `EyeblossomBlock.entityInside`: a bee in an open eyeblossom is poisoned.
         let effect = crate::effect::EffectInstance::new(crate::effect::MobEffect::POISON, 25, 0);
         let type_id = kind.type_id();
         crate::effect::consume::add_effect(
@@ -2541,6 +2562,7 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             .mob(o)
             .is_some_and(|m| m.is_alive() && crate::decoration::stand::pushable(m))
             || t.ents.minecart(o).is_some()
+            || t.ents.boat(o).is_some()
             || t.ents.player(o).is_some_and(|p| {
                 !p.survival.is_dead_or_dying()
                     && p.game_mode != vanillite_config::GameMode::Spectator
@@ -2587,6 +2609,19 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         if t.ents.minecart(other).is_some() {
             // `AbstractMinecart.push(this)`.
             crate::minecart::push_by(t.ents, other, id);
+            sulfur_contact(t, other);
+            continue;
+        }
+        if t.ents.boat(other).is_some() {
+            // `AbstractBoat.push(this)`: a mob below the boat's top pushes and is pushed.
+            let below = t
+                .ents
+                .store
+                .get(other)
+                .is_some_and(|b| aabb.min_y < b.aabb().max_y);
+            if below && t.ents.vehicle_of(id) != Some(other) {
+                crate::vehicle::push_apart(t.ents, other, id);
+            }
             sulfur_contact(t, other);
             continue;
         }

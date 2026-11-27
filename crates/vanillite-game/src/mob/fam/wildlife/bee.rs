@@ -612,6 +612,11 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             if let Some(hive) = st(t.mob_ref()).hive_pos
                 && beehive(t).is_some_and(|h| !h.is_full())
             {
+                // `stopRiding`, `ejectPassengers`, `dropLeash`.
+                let id = t.id;
+                crate::riding::stop_riding(t.ents, t.env, id);
+                crate::riding::eject_passengers(t.ents, t.env, id);
+                crate::mob::tame::drop_leash(t.ents, t.env, id, true);
                 let data = crate::mob::nbt::save_mob(&t.core(), t.mob_ref());
                 let flower = st(t.mob_ref()).flower_pos;
                 t.cx.actions.push(WorldAction::EnterHive {

@@ -78,13 +78,7 @@ fn can_hit(ents: &Entities, d: &MissileData, me: EntityId, target: EntityId) -> 
     if target == me {
         return false;
     }
-    let alive = ents
-        .mob(target)
-        .is_some_and(super::super::super::MobData::is_alive)
-        || ents
-            .player(target)
-            .is_some_and(|p| !p.survival.is_dead_or_dying() && p.game_mode != GameMode::Spectator);
-    alive && (d.left_owner || d.owner != Some(target))
+    crate::effect::thrown::can_be_hit(ents, target) && (d.left_owner || d.owner != Some(target))
 }
 
 /// `ProjectileUtil.getHitResultOnMoveVector`: the first block along the move, or the nearest
@@ -263,9 +257,32 @@ fn fireball_tick(t: &mut MissileTick<'_, '_>) {
     if let Some(mut e) = t.ents.store.get_mut(me) {
         e.set_flags(EntityFlags::ON_FIRE, true);
     }
-    if hit != Hit::Miss {
+    if hit != Hit::Miss && !deflected(t, hit, true) {
         fireball_hit(t, &d, hit, new_pos);
     }
+}
+
+/// `hitTargetOrDeflectSelf`: an entity hit of a breeze turns the projectile back instead
+/// (`AbstractHurtingProjectile.onDeflection(false)` halves the acceleration).
+fn deflected(t: &mut MissileTick<'_, '_>, hit: Hit, hurting: bool) -> bool {
+    let Hit::Entity(target, _) = hit else {
+        return false;
+    };
+    let Some(d) = t.ents.missile(t.id) else {
+        return false;
+    };
+    if !crate::mob::missile::deflects(t.ents, target, d.kind.type_id()) {
+        return false;
+    }
+    let first = d.last_deflected != Some(target);
+    crate::mob::fam::wildlife::snowball::deflect(t, target);
+    if first
+        && hurting
+        && let Some(d) = t.ents.missile_mut(t.id)
+    {
+        d.acceleration *= 0.5;
+    }
+    true
 }
 
 fn fireball_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3) {
@@ -487,7 +504,7 @@ fn bullet_tick(t: &mut MissileTick<'_, '_>) {
             (d.vec.y - v.y) * 0.2,
             (d.vec.z - v.z) * 0.2,
         );
-    } else {
+    } else if !e.flags().contains(EntityFlags::NO_GRAVITY) {
         v.y -= 0.04;
     }
     let hit = hit_on_move(t.level, t.ents, me, &d, pos, v);
@@ -499,7 +516,7 @@ fn bullet_tick(t: &mut MissileTick<'_, '_>) {
         e.set_pos(new_pos);
         e.set_velocity(v);
     }
-    if hit != Hit::Miss {
+    if hit != Hit::Miss && !deflected(t, hit, false) {
         bullet_hit(t, &d, hit);
         if t.ents.missile(me).is_none_or(|x| x.removed) {
             return;
@@ -754,7 +771,7 @@ fn potion_tick(t: &mut MissileTick<'_, '_>) {
     if let Some(slot) = t.ents.missile_mut(me) {
         *slot = d.clone();
     }
-    if hit != Hit::Miss {
+    if hit != Hit::Miss && !deflected(t, hit, false) {
         potion_hit(t, &d, hit, new_pos);
     }
 }
@@ -991,5 +1008,97 @@ pub fn encode(w: &mut DataWriter<'_>, d: &MissileData) {
         | MissileKind::SplashPotion
         | MissileKind::LingeringPotion => w.stack(8, &d.item),
         _ => {}
+    }
+}
+
+// --- Player attacks -----------------------------------------------------------------------
+
+/// `Player.attack` of a projectile: a fireball or wind charge (`#redirectable_projectile`) is
+/// sent along the player's look (`deflectProjectile`, `AIM_DEFLECT`) and becomes the player's;
+/// a shulker bullet breaks (`ShulkerBullet.hurtServer`); others take no damage.
+pub fn attacked_by_player(t: &mut MissileTick<'_, '_>, player: EntityId) {
+    let Some(kind) = t.ents.missile(t.id).map(|d| d.kind) else {
+        return;
+    };
+    // Only these are attackable and take part (`AbstractArrow.isAttackable` is false).
+    if !matches!(
+        kind,
+        MissileKind::Fireball
+            | MissileKind::SmallFireball
+            | MissileKind::WindCharge
+            | MissileKind::BreezeWindCharge
+            | MissileKind::ShulkerBullet
+    ) {
+        return;
+    }
+    // `onAttack`: `resetOnlyAttackStrengthTicker`.
+    if let Some(p) = t.ents.player_mut(player) {
+        p.survival.attack_ticker = 0;
+    }
+    let Some((ppos, rot, uuid)) = t
+        .ents
+        .store
+        .get(player)
+        .map(|e| (e.pos(), e.rot(), e.uuid()))
+    else {
+        return;
+    };
+    let nodamage = |t: &mut MissileTick<'_, '_>| {
+        let seed = crate::survival::sound_seed();
+        crate::survival::play_sound(
+            t.env.out,
+            None,
+            ppos,
+            "minecraft:entity.player.attack.nodamage",
+            vanillite_protocol::packets::play::clientbound::SoundSource::Players,
+            1.0,
+            1.0,
+            seed,
+        );
+    };
+    if matches!(
+        kind,
+        MissileKind::Fireball | MissileKind::WindCharge | MissileKind::BreezeWindCharge
+    ) {
+        let look = crate::mob::randompos::view_vector(rot.x_rot, rot.y_rot);
+        if let Some(mut e) = t.ents.store.get_mut(t.id) {
+            e.set_velocity(look);
+        }
+        if let Some(d) = t.ents.missile_mut(t.id) {
+            d.owner = Some(player);
+            d.owner_uuid = Some(uuid);
+            // `AbstractHurtingProjectile.onDeflection(true)`.
+            d.acceleration = 0.1;
+        }
+        nodamage(t);
+        return;
+    }
+    if kind != MissileKind::ShulkerBullet {
+        // A small fireball: `AbstractHurtingProjectile.hurtServer` is false.
+        nodamage(t);
+        return;
+    }
+    let pos = t.ents.store.get(t.id).map_or(Vec3::ZERO, |e| e.pos());
+    let seed = crate::survival::sound_seed();
+    crate::survival::play_sound(
+        t.env.out,
+        None,
+        pos,
+        "minecraft:entity.shulker_bullet.hurt",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+        1.0,
+        1.0,
+        seed,
+    );
+    let crit = crate::level::particles::simple("minecraft:crit");
+    t.cx.send_particles(crit, pos, 15, Vec3::new(0.2, 0.2, 0.2), 0.0);
+    // `destroy`: discarded with an `ENTITY_DAMAGE` game event.
+    let event = crate::level::game_event::events().entity_damage;
+    crate::survival::game_event(t.env.out, event, pos, Some(t.id));
+    discard(t);
+    t.cx.discarded.push(t.id);
+    // The hit counts (`causeFoodExhaustion(0.1F)`).
+    if let Some(p) = t.ents.player_mut(player) {
+        crate::survival::player::cause_food_exhaustion(p, 0.1);
     }
 }

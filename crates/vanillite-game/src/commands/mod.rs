@@ -105,6 +105,8 @@ pub mod suggest {
     pub const POST_EFFECTS: &str = "minecraft:post_effects";
     /// The criteria of the `advancement` argument (`/advancement ... only <advancement>`).
     pub const ADVANCEMENT_CRITERIA: &str = "advancement.criteria";
+    /// Names of the server's plugins (`/version <plugin>`).
+    pub const PLUGINS: &str = "plugins";
 }
 
 /// Which advancements `/advancement grant|revoke` changes (`AdvancementCommands.Mode`).
@@ -888,8 +890,12 @@ pub enum CommandId {
     ScheduleFunction(bool),
     /// `schedule clear <function>`.
     ScheduleClear,
-    /// `version`.
+    /// `version` (Vanilla's).
     Version,
+    /// `plugins` / `pl` (Paper's).
+    Plugins,
+    /// `version|ver|about [<plugin>]` (Bukkit's).
+    BukkitVersion,
     /// `spectate [<target> [<player>]]`.
     Spectate,
     /// `stopwatch ...`.
@@ -970,6 +976,28 @@ pub enum CommandId {
 
 /// Registers all commands in Vanilla's registration order (`Commands` constructor).
 pub fn register(d: &mut Dispatcher<CommandId>) {
+    register_vanilla(d, "version");
+}
+
+/// Registers the commands of a server: Vanilla's and Paper's `plugins` (`pl`). With `bukkit`
+/// (rule `commands.bukkit-commands`) `version`, `ver` and `about` are Bukkit's and Vanilla's
+/// `version` is `minecraft:version`, as on Paper.
+pub fn register_server(d: &mut Dispatcher<CommandId>, bukkit: bool) {
+    register_vanilla(
+        d,
+        if bukkit {
+            "minecraft:version"
+        } else {
+            "version"
+        },
+    );
+    system::register_plugins(d);
+    if bukkit {
+        system::register_bukkit_version(d);
+    }
+}
+
+fn register_vanilla(d: &mut Dispatcher<CommandId>, version: &str) {
     players::register_advancement(d);
     items::register_attribute(d);
     execute::register_execute(d);
@@ -1018,7 +1046,7 @@ pub fn register(d: &mut Dispatcher<CommandId>) {
     system::register_schedule(d);
     execute::register_scoreboard(d);
     world::register_seed(d);
-    system::register_version(d);
+    system::register_version(d, version);
     blocks::register_set_block(d);
     world_state::register_spawn_point(d);
     world_state::register_set_world_spawn(d);

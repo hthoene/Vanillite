@@ -47,10 +47,16 @@ started_at=$(date +%s)
 
 rustup toolchain install --profile minimal > /dev/null 2>&1
 step build 30 bash -c 'cargo build --locked -q -p xtask -p vanillite-test --bins &&
-    cargo build --locked -q --profile release-fast -p vanillite-test --bin parity_soak'
+    cargo build --locked -q --profile release-fast -p vanillite-test --bin parity_soak &&
+    cargo test --locked -q --release -p vanillite-worldgen --test vanilla_sweep --no-run'
 
 # Bulk parity scenarios: records missing or stale bulk goldens and runs the ignored tests.
 step golden-bulk 35 cargo xtask golden regen --bulk
+
+# World generation against Vanilla (#223): new world seeds every night, every dimension and
+# world type (origin area and a far area each).
+step worldgen-sweep 30 cargo xtask worldgen sweep --seed "$(($(date -u +%s) / 86400))" --seeds 4
+[ -f target/worldgen-sweep/summary.md ] && cp target/worldgen-sweep/summary.md "$out/worldgen-sweep.md"
 
 # Soak parity runs (#166): game days against Vanilla, per-tick checksums; Vanilla's run is
 # recorded once per golden key, so only a new jar, harness or scenario costs its recording.
@@ -69,6 +75,9 @@ else
     echo "| parity-fuzz | skipped (no time left) | 0 |" >> "$out/summary.md"
 fi
 
+if [ -f "$out/worldgen-sweep.md" ]; then
+    { echo; echo "## worldgen sweep"; sed '1d' "$out/worldgen-sweep.md"; } >> "$out/summary.md"
+fi
 if [ -f "$out/parity-soak/summary.md" ]; then
     { echo; echo "## parity soak"; cat "$out/parity-soak/summary.md"; } >> "$out/summary.md"
 fi

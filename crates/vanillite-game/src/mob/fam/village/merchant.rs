@@ -230,7 +230,7 @@ fn add_trades(level: &Level, m: &MobData, id: EntityId, pos: Vec3, offers: &mut 
 }
 
 /// `getOffers` on the merchant in the level: generated on first use.
-fn ensure_offers_in(level: &Level, ents: &mut Entities, id: EntityId) {
+pub(crate) fn ensure_offers_in(level: &Level, ents: &mut Entities, id: EntityId) {
     let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
         return;
     };

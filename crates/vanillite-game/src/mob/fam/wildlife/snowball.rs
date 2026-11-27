@@ -37,10 +37,7 @@ fn can_hit(t: &MissileTick<'_, '_>, id: EntityId, owner: Option<EntityId>, left:
     if id == t.id || (!left && Some(id) == owner) {
         return false;
     }
-    if let Some(p) = t.ents.player(id) {
-        return p.game_mode != GameMode::Spectator && !p.survival.is_dead_or_dying();
-    }
-    t.ents.mob(id).is_some_and(crate::mob::MobData::is_alive) || t.ents.boat(id).is_some()
+    crate::effect::thrown::can_be_hit(t.ents, id)
 }
 
 /// The end of a throwable's flight this tick.
@@ -200,10 +197,42 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         }
         return Flight::Gone;
     }
+    // `hitTargetOrDeflectSelf`: a breeze turns it back (once in a row) instead of a hit.
+    if let Some((target, _)) = hit
+        && crate::mob::missile::deflects(t.ents, target, kind.type_id())
+    {
+        deflect(t, target);
+        return Flight::Miss;
+    }
     match (hit, block_hit) {
         (Some((target, _)), _) => Flight::Hit(Some(target), None, new_pos),
         (None, Some((block, at))) => Flight::Hit(None, Some(block), at),
         (None, None) => Flight::Miss,
+    }
+}
+
+/// `Projectile.deflect(deflection, breeze, owner, false, 1.0)` of a missile, with the
+/// projectile's own random; nothing when the same entity deflected it last.
+pub(crate) fn deflect(t: &mut MissileTick<'_, '_>, by: EntityId) {
+    let Some(d) = t.ents.missile(t.id) else {
+        return;
+    };
+    if d.last_deflected == Some(by) {
+        return;
+    }
+    let mut random = LegacyRandom::from_state(d.random_state);
+    let Some(core) = t.core() else {
+        return;
+    };
+    let (v, rot) = (core.velocity(), core.rot());
+    let (v, rot) = crate::mob::missile::reverse(t.ents, t.env, by, v, rot, &mut random);
+    if let Some(mut e) = t.ents.store.get_mut(t.id) {
+        e.set_velocity(v);
+        e.set_rot(rot);
+    }
+    if let Some(d) = t.data() {
+        d.random_state = random.state();
+        d.last_deflected = Some(by);
     }
 }
 

@@ -1,0 +1,353 @@
+{
+  "description": "Pointed dripstone under a block with water or lava above drips it into cauldrons (PointedDripstoneBlock.maybeTransferFluid on random ticks): an empty cauldron fills with water or lava, a water cauldron rises; mud above the block a dripstone hangs from dries to clay.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "rules": {
+    "random_tick_speed": "200"
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -60,
+      0
+    ],
+    [
+      22,
+      -54,
+      2
+    ]
+  ],
+  "ticks": 500,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -55,
+        1
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=base,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -58,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        1,
+        -60,
+        1
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -55,
+        1
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=base,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -58,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        1
+      ],
+      "block": "minecraft:cauldron"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -55,
+        1
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=base,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -58,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        1
+      ],
+      "block": "minecraft:water_cauldron[level=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -55,
+        1
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=base,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -58,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        1
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -55,
+        1
+      ],
+      "block": "minecraft:mud"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        15,
+        -55,
+        1
+      ],
+      "block": "minecraft:mud"
+    },
+    {
+      "op": "set",
+      "pos": [
+        15,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        15,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -55,
+        1
+      ],
+      "block": "minecraft:mud"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        19,
+        -55,
+        1
+      ],
+      "block": "minecraft:mud"
+    },
+    {
+      "op": "set",
+      "pos": [
+        19,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        19,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -55,
+        1
+      ],
+      "block": "minecraft:mud"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -56,
+        1
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -57,
+        1
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down,waterlogged=false]"
+    }
+  ],
+  "actions": []
+}

@@ -192,6 +192,7 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     registry_entries,
     registry_tag,
     player_update_commands,
+    set_hosted_plugins,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -651,6 +652,10 @@ pub(crate) fn has_permission(inner: &Inner, player: u128, node: &str, operator: 
 }
 
 /// Who has a node without a provider's answer: its registered default, else operators.
+/// Bukkit's command permissions with the default `TRUE` (`CommandPermissions`): everyone has
+/// them unless a plugin registers the node otherwise or the permission provider decides.
+const DEFAULT_TRUE: [&str; 2] = ["bukkit.command.plugins", "bukkit.command.version"];
+
 fn default_permission(inner: &Inner, node: &str, operator: bool) -> bool {
     let defaults = inner
         .permission_defaults
@@ -660,6 +665,7 @@ fn default_permission(inner: &Inner, node: &str, operator: bool) -> bool {
         Some(abi::permission_default::TRUE) => true,
         Some(abi::permission_default::FALSE) => false,
         Some(abi::permission_default::NOT_OP) => !operator,
+        None if DEFAULT_TRUE.contains(&node) => true,
         _ => operator,
     }
 }
@@ -2634,6 +2640,83 @@ unsafe extern "C" fn registry_tag(
         match server!(inner).registry_tag(registry, tag) {
             Some(entries) => write_sink(sink, entries.join("\n").as_bytes()),
             None => status::NOT_FOUND,
+        }
+    })
+}
+
+/// Copies the records of `set_hosted_plugins`; `None` when one is invalid.
+///
+/// # Safety
+///
+/// `records` must point to `count` records `stride` bytes apart whose strings are valid for
+/// the call (or may be null when `count` is 0).
+pub(crate) unsafe fn copy_hosted(
+    records: *const abi::HostedPlugin,
+    count: usize,
+    stride: usize,
+) -> Option<Vec<crate::PluginEntry>> {
+    const SHORT: usize = 256;
+    const LONG: usize = 4096;
+    if count == 0 {
+        return Some(Vec::new());
+    }
+    let max = usize::try_from(abi::limits::MAX_HOSTED_PLUGINS).unwrap_or(0);
+    if records.is_null() || count > max || stride < size_of::<abi::HostedPlugin>() {
+        return None;
+    }
+    let text = |s: abi::Str, limit: usize| -> Option<String> {
+        // SAFETY: the plugin's strings are valid for the call.
+        let s = unsafe { str_checked(s) }?;
+        (s.len() <= limit).then(|| s.to_owned())
+    };
+    let mut entries = Vec::with_capacity(count);
+    for i in 0..count {
+        // SAFETY: the caller passes `count` records `stride` bytes apart.
+        let raw = unsafe {
+            &*records
+                .cast::<u8>()
+                .add(i * stride)
+                .cast::<abi::HostedPlugin>()
+        };
+        if usize::try_from(raw.size).unwrap_or(0) < size_of::<abi::HostedPlugin>() {
+            return None;
+        }
+        let name = text(raw.name, SHORT)?;
+        if name.trim().is_empty() {
+            return None;
+        }
+        let authors = text(raw.authors, LONG)?;
+        entries.push(crate::PluginEntry {
+            group: Some(text(raw.group, SHORT)?).filter(|g| !g.is_empty()),
+            name,
+            version: text(raw.version, SHORT)?,
+            description: text(raw.description, LONG)?,
+            authors: authors
+                .split(", ")
+                .filter(|a| !a.trim().is_empty())
+                .map(str::to_owned)
+                .collect(),
+            website: text(raw.website, SHORT)?,
+            enabled: raw.enabled != 0,
+        });
+    }
+    Some(entries)
+}
+
+unsafe extern "C" fn set_hosted_plugins(
+    id: abi::PluginId,
+    records: *const abi::HostedPlugin,
+    count: usize,
+    stride: usize,
+) -> Status {
+    with(id, |inner, plugin| {
+        // SAFETY: the plugin passes valid records.
+        match unsafe { copy_hosted(records, count, stride) } {
+            Some(entries) => {
+                inner.set_hosted(plugin.local, entries);
+                status::OK
+            }
+            None => status::INVALID_ARGUMENT,
         }
     })
 }

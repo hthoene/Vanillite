@@ -41,6 +41,10 @@ impl BlockAccess for WorldBlocks<'_> {
     fn block_state(&self, pos: BlockPos) -> Option<BlockState> {
         self.0.block(pos).map(BlockState)
     }
+
+    fn block_states_in(&self, min: BlockPos, max: BlockPos, f: &mut dyn FnMut(Option<BlockState>)) {
+        self.0.blocks_in(min, max, |state| f(state.map(BlockState)));
+    }
 }
 
 /// What the players' tick asks of the world's portals.

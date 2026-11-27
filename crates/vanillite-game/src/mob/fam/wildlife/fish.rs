@@ -313,6 +313,7 @@ fn scary(t: &Tick<'_, '_>, id: EntityId) -> bool {
             m.kind,
             Kind::Turtle
                 | Kind::Guardian
+                | Kind::ElderGuardian
                 | Kind::Cod
                 | Kind::Pufferfish
                 | Kind::Salmon

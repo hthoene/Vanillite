@@ -53,6 +53,12 @@ pub struct Manifest {
     pub uses: Vec<String>,
     /// Slots the plugin may fill (`chunk-generator`).
     pub provides: Vec<String>,
+    /// What the plugin does, for `/version <plugin>`; may be empty.
+    pub description: String,
+    /// Its authors.
+    pub authors: Vec<String>,
+    /// Its website; may be empty.
+    pub website: String,
 }
 
 fn strings(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
@@ -120,6 +126,9 @@ impl Manifest {
             threading,
             uses: strings(&table, "uses")?,
             provides: strings(&table, "provides")?,
+            description: string("description")?.unwrap_or_default(),
+            authors: strings(&table, "authors")?,
+            website: string("website")?.unwrap_or_default(),
             id,
         })
     }

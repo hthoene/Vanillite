@@ -308,7 +308,18 @@ pub fn check(scenario: &Scenario, factory: WorldFactory) -> Result<(), String> {
         eprintln!("blessed {}", path.display());
         return Ok(());
     }
-    let expected = expected(scenario)?;
+    let mut expected = expected(scenario)?;
+    let mut serial = serial;
+    if scenario.world.client_view && !scenario.world.view_events {
+        // Level and entity events only count where the scenario asks for them.
+        for trace in [&mut expected, &mut serial] {
+            for frame in &mut trace.frames {
+                frame
+                    .view
+                    .retain(|e| !e.contains(" level_event ") && !e.contains(" entity_event "));
+            }
+        }
+    }
     let first = expected.first_divergence(&serial);
     let known = scenario.diverges.as_ref();
     if first == known.map(|d| d.tick) {

@@ -376,7 +376,7 @@ pub fn ageable_group(m: &mut MobData, ctx: &SpawnContext<'_>, spawn_baby: bool, 
 pub fn save_ageable(m: &MobData, out: &mut Compound) {
     out.insert("Age", m.age);
     out.insert("ForcedAge", m.forced_age);
-    out.insert("AgeLocked", false);
+    out.insert("AgeLocked", m.age_locked);
     out.insert("InLove", m.in_love);
     if let Some(c) = m.love_cause {
         out.insert("LoveCause", uuid_ints(c));
@@ -388,6 +388,7 @@ pub fn load_ageable(m: &mut MobData, tag: &Compound) {
     m.age = int(tag, "Age").unwrap_or(0);
     m.baby = m.age < 0;
     m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
+    m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
     m.in_love = int(tag, "InLove").unwrap_or(0);
     m.love_cause = crate::mob::nbt::uuid_key_of(tag, "LoveCause");
 }
@@ -467,7 +468,7 @@ pub fn string<'a>(tag: &'a Compound, key: &str) -> Option<&'a str> {
 /// The `AgeableMob` data (baby, age locked) every companion writes first.
 pub fn encode_ageable(w: &mut DataWriter<'_>, m: &MobData) {
     w.boolean(16, m.baby, false);
-    w.boolean(17, false, false);
+    w.boolean(17, m.age_locked, false);
 }
 
 /// The `TamableAnimal` data (flags, owner).

@@ -83,6 +83,10 @@ impl ChunkGenerator for Populating {
     fn release_memory(&self) {
         self.inner.release_memory();
     }
+
+    fn spawns_original_mobs(&self) -> bool {
+        self.inner.spawns_original_mobs()
+    }
 }
 
 impl Populating {

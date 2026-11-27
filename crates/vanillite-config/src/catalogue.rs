@@ -27,6 +27,9 @@ rules! {
             /// Worker threads of the compute pool (world generation, lighting, saving, parallel
             /// tick phases). 0 = number of cores minus one (the tick threads), at least 1.
             compute: u16 = "compute", Setting, range = [0, 1024], restart = true, vanilla = 0;
+            /// I/O threads of the network (connections, encryption, compression of outgoing
+            /// packets). 0 = 2, or 1 with less than two cores, so the tick keeps the only core.
+            network: u16 = "network", Setting, range = [0, 64], restart = true, vanilla = 0;
         }
         /// What the hardware allows. With less than two cores, background work (generation,
         /// light, saving) runs only between ticks and below the CPU quota, so the tick stays
@@ -96,7 +99,8 @@ rules! {
             /// next to it in the file, and keeps them for a short time: fewer disk reads for
             /// moving players.
             read_ahead: bool = "read-ahead", Performance, restart = true, vanilla = true;
-            /// MiB of chunk records read ahead kept per dimension.
+            /// MiB of chunk records read ahead kept per dimension; under a memory limit
+            /// (`performance.budget.memory`) at most 1/32 of it.
             read_cache: u32 = "read-cache", Performance, range = [0, 65_536], restart = true,
                 vanilla = 64;
             /// Region files kept open per dimension while unused; files in use always stay
@@ -209,6 +213,12 @@ rules! {
             /// Nested redirects followed while parsing one command.
             max_redirect_depth: u32 = "max-redirect-depth", Security, range = [1, 1024],
                 vanilla = 64;
+            /// Paper's `/version` (also `/ver` and `/about`): the server's version or that of
+            /// a plugin, for everyone with `bukkit.command.version` (all players by default);
+            /// Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is
+            /// Vanilla's command for operators. `/plugins` is always there.
+            bukkit_commands: bool = "bukkit-commands", Setting, restart = true,
+                vanilla = false, paper = true, spigot = true;
         }
         /// Survival: time and weather.
         survival: SurvivalRules = "performance.survival" {
@@ -461,9 +471,9 @@ rules! {
             /// players are spread out; no gain for a crowd in one place. Deviation: these
             /// phases draw their random numbers per tile, so a seeded world differs from
             /// Vanilla (same rates), and a player's mob cap can be exceeded by one tick's
-            /// spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial
-            /// order at no cost.
-            enabled: bool = "enabled", Performance, vanilla = false;
+            /// spawns at a tile border. On in the performance profile; `false` keeps Vanilla's
+            /// exact serial order at no cost.
+            enabled: bool = "enabled", Performance, vanilla = false, performance = true;
             /// Edge of a tile in chunks. Smaller tiles balance better over the cores, larger
             /// ones cost less bookkeeping.
             tile_size: u8 = "tile-size", Performance, range = [8, 32], vanilla = 16;

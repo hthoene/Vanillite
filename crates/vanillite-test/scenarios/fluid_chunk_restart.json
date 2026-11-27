@@ -1,0 +1,153 @@
+{
+  "description": "Water and lava flowing across a chunk border keep their scheduled fluid ticks over restarts (saved with the chunk, loaded again) and continue tick-exactly; water falls into a hole in the next chunk; the chunk with the flow is no longer forced (its fluid ticks wait, also over a restart) and is forced again.",
+  "tier": "fast",
+  "world": {
+    "seed": 225,
+    "layers": [
+      [
+        "minecraft:bedrock",
+        1
+      ],
+      [
+        "minecraft:stone",
+        3
+      ]
+    ]
+  },
+  "region": [
+    [
+      8,
+      -62,
+      0
+    ],
+    [
+      26,
+      -60,
+      14
+    ]
+  ],
+  "ticks": 140,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        16,
+        -61,
+        3
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -61,
+        10
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -62,
+        10
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        14,
+        -60,
+        3
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        14,
+        -60,
+        10
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "tick": 6,
+      "op": "restart"
+    },
+    {
+      "tick": 20,
+      "op": "restart"
+    },
+    {
+      "tick": 25,
+      "op": "unforce",
+      "chunks": [
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ]
+      ]
+    },
+    {
+      "tick": 70,
+      "op": "restart"
+    },
+    {
+      "tick": 90,
+      "op": "force",
+      "chunks": [
+        [
+          1,
+          -1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          -1
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          2,
+          1
+        ]
+      ]
+    }
+  ]
+}

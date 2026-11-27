@@ -433,14 +433,13 @@ pub fn tick_boat(
                 .push(crate::mob::WorldAction::EntityInside(pos, id));
         });
     }
-    // Living entities pushed against a boat no player steers get in.
-    if !controlled {
-        board_nearby(ents, env, id);
-    }
+    // Living entities pushed against a boat no player steers get in; the others are pushed.
+    board_nearby(ents, env, id, !controlled);
 }
 
-/// The pushable entities next to the boat: mobs board it when there is room.
-fn board_nearby(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+/// The pushable entities next to the boat: mobs board it when there is room (and
+/// `add_passengers`), else the boat and the mob push each other (`Entity.push(entity)`).
+fn board_nearby(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, add_passengers: bool) {
     let Some(e) = ents.store.get(id) else {
         return;
     };
@@ -456,20 +455,60 @@ fn board_nearby(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
         }
     });
     for o in near {
-        if ents.riding.passengers_of(id).len() >= max {
-            break;
-        }
         let Some(m) = ents.mob(o) else {
             continue;
         };
-        if !m.is_alive() || ents.vehicle_of(o).is_some() {
+        // `EntitySelector.pushableBy`: alive, pushable mobs (bats are not).
+        if !m.is_alive() || m.kind == crate::mob::Kind::Bat || ents.vehicle_of(o) == Some(id) {
             continue;
         }
         let fits = ents.store.get(o).is_some_and(|e| e.dims().width < width);
-        if fits {
+        let boards = add_passengers
+            && ents.riding.passengers_of(id).len() < max
+            && ents.vehicle_of(o).is_none()
+            && fits
+            && !crate::effect::entity_in_tag(
+                m.kind.type_id(),
+                "minecraft:cannot_be_pushed_onto_boats",
+            );
+        if boards {
             crate::riding::start_riding(ents, env, o, id, false);
+        } else {
+            push_apart(ents, id, o);
         }
     }
+}
+
+/// `Entity.push(entity)` of a boat and a mob: both are pushed apart (5 % of the unit direction
+/// along the larger axis), unless they carry passengers.
+pub(crate) fn push_apart(ents: &mut Entities, boat: EntityId, other: EntityId) {
+    let (Some(a), Some(b)) = (ents.store.get(boat), ents.store.get(other)) else {
+        return;
+    };
+    let (pa, pb) = (a.pos(), b.pos());
+    let (mut xa, mut za) = (pb.x - pa.x, pb.z - pa.z);
+    let mut dd = xa.abs().max(za.abs());
+    if dd < f64::from(0.01_f32) {
+        return;
+    }
+    dd = dd.sqrt();
+    xa /= dd;
+    za /= dd;
+    let pow = (1.0 / dd).min(1.0);
+    xa *= pow;
+    za *= pow;
+    xa *= f64::from(0.05_f32);
+    za *= f64::from(0.05_f32);
+    let push = |ents: &mut Entities, id: EntityId, x: f64, z: f64| {
+        if ents.riding.passengers_of(id).is_empty()
+            && let Some(mut e) = ents.store.get_mut(id)
+        {
+            let v = e.as_ref().velocity();
+            e.set_velocity(Vec3::new(v.x + x, v.y, v.z + z));
+        }
+    };
+    push(ents, boat, -xa, -za);
+    push(ents, other, xa, za);
 }
 
 /// `floatBoat`.

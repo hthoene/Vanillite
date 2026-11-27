@@ -319,7 +319,7 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
             out.insert("Age", m.age);
             out.insert("ForcedAge", m.forced_age);
-            out.insert("AgeLocked", false);
+            out.insert("AgeLocked", m.age_locked);
             out.insert("InLove", m.in_love);
             if let Some(cause) = m.love_cause {
                 out.insert("LoveCause", uuid_ints(cause));
@@ -503,6 +503,8 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
             m.in_love = int(tag, "InLove").unwrap_or(0);
             m.love_cause = uuid_key(tag, "LoveCause");
             m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
+            m.age_locked =
+                matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
             if kind == Kind::Sheep {
                 super::fam::classic::sheep_mut(m).color =
                     u8::try_from(int(tag, "Color").unwrap_or(0) & 15).unwrap_or(0);
@@ -772,6 +774,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
                 Some(Tag::Compound(c)) => Some(crate::item_nbt::stack_from_nbt(c)),
                 _ => None,
             },
+            last_deflected: None,
         },
     ))
 }
@@ -865,7 +868,7 @@ pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) ->
     if let Some(state) = m.display_state {
         out.insert(
             "DisplayState",
-            Tag::Compound(crate::level::block_entity::write_block_state(state)),
+            crate::level::block_entity::write_state_codec(state),
         );
     }
     if m.display_offset != m.kind.default_display_offset() {
@@ -936,8 +939,11 @@ pub fn apply_minecart(m: &mut crate::minecart::MinecartData, tag: &Compound) {
     let kind = m.kind;
     m.custom_name = tag.get("CustomName").and_then(tag_component);
     m.fall_distance = double(tag, "fall_distance").unwrap_or(0.0);
-    if let Some(Tag::Compound(c)) = tag.get("DisplayState") {
-        m.display_state = Some(crate::level::block_entity::read_block_state(c));
+    if let Some(state) = tag
+        .get("DisplayState")
+        .and_then(crate::level::block_entity::read_state_codec)
+    {
+        m.display_state = Some(state);
     }
     m.display_offset = int(tag, "DisplayOffset").unwrap_or(kind.default_display_offset());
     m.flipped = boolean(tag, "FlippedRotation");
