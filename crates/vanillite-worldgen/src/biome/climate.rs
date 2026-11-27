@@ -483,6 +483,7 @@ impl<T> ParameterList<T> {
         }
         let mut index = closest.1;
         if let Some(previous) = cache.0
+            && previous != index
             && (previous as usize) < self.values.len()
             && distance(self.tree.leaf_space(previous as usize), &target) == closest.0
         {

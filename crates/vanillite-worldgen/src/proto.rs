@@ -513,6 +513,50 @@ impl ProtoChunk {
         }
     }
 
+    /// [`Self::replace_solid`] for the run of blocks of column `x`, `z` from `from_y` up, whose
+    /// current blocks are `olds`: replaces all of them by `state` if it can replace each one,
+    /// otherwise none. Returns whether it did.
+    pub(crate) fn replace_solid_run(
+        &mut self,
+        x: i32,
+        z: i32,
+        from_y: i32,
+        olds: &[BlockState],
+        state: BlockState,
+    ) -> bool {
+        const HEIGHTMAPS: u8 = facts::AIR | facts::BLOCKS_MOTION | facts::FLUID;
+        let flags = facts::block_flags(state.0);
+        let Some(dense) = &mut self.dense else {
+            return false;
+        };
+        if self.terrain_done || from_y < self.min_y {
+            return false;
+        }
+        let row = (from_y - self.min_y) as usize;
+        if row + olds.len() > dense.height {
+            return false;
+        }
+        let start = dense.index(x, row, z);
+        let slots = &mut dense.states[start..start + olds.len()];
+        let mut checked = None;
+        for (&slot, old) in slots.iter().zip(olds) {
+            if slot != old.0 {
+                return false;
+            }
+            if checked != Some(slot) {
+                let old_flags = facts::block_flags(slot);
+                if old_flags & (facts::AIR | facts::FLUID) != 0
+                    || (old_flags ^ flags) & HEIGHTMAPS != 0
+                {
+                    return false;
+                }
+                checked = Some(slot);
+            }
+        }
+        slots.fill(state.0);
+        true
+    }
+
     /// `getBlockState(pos)` with Vanilla's `VOID_AIR` outside the build height.
     #[inline]
     pub fn block_or_void(&self, x: i32, y: i32, z: i32) -> BlockState {
