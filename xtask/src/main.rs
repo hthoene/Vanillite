@@ -105,10 +105,11 @@ pub const USAGE: &str = "usage:
       over SSH. --push logs in as $VANILLITE_REGISTRY_USER (default deploy) with the password
       from $PRIVATE_DOCKER_REPO_KEY and pushes; without it the image is loaded into the engine.
   cargo xtask egg [--check]
-      Generate the Pterodactyl egg deploy/pterodactyl/egg-vanillite.json from the configuration
-      schema (server.properties keys and vanillite.toml rules) and check it against the egg
-      format, and the configuration reference (config-docs). --check fails if either committed
-      file is not current.
+      Generate the Pterodactyl eggs deploy/pterodactyl/egg-vanillite.json (every setting) and
+      egg-vanillite-simple.json (basic settings only) from the configuration schema
+      (server.properties keys and vanillite.toml rules) and check them against the egg format,
+      and the configuration reference (config-docs). --check fails if a committed file is not
+      current or the eggs differ in what they share.
   cargo xtask config-docs [--check]
       Generate the configuration reference docs/configuration.md from the configuration schema
       (server.properties keys and vanillite.toml rules with their value in every profile).
