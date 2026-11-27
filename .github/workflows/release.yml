@@ -146,6 +146,15 @@ jobs:
             fi
             echo
             echo "Download the archive for your system, unpack it and start \`vanillite\` (\`vanillite.exe\` on Windows); the README.txt inside explains the first start. Docker: \`docker pull thoenehannes/vanillite:${VERSION}-mc${MC}\`. Checksums: SHA256SUMS."
+            # The version's section of CHANGELOG.md, without its heading.
+            changes="$(awk -v v="## $VERSION" '$0 == v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md)"
+            if [[ -n "${changes//[[:space:]]/}" ]]; then
+              echo
+              echo "## Changes"
+              echo "$changes"
+            else
+              echo "::warning::CHANGELOG.md has no section for $VERSION" >&2
+            fi
           } > notes.md
           cat notes.md
       - name: Create the GitHub release

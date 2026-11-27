@@ -85,7 +85,7 @@ impl Crafter {
                 out.insert("LootTableSeed", Tag::Long(self.loot_seed));
             }
         } else {
-            super::container::save_items(&self.items, out);
+            super::container::save_items_always(&self.items, out);
         }
         let disabled: Vec<i32> = (0..9)
             .filter(|&i| self.is_disabled(i))

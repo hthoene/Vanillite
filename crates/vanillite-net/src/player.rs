@@ -1,14 +1,56 @@
-//! What the server receives when a connection finishes configuration and enters play.
+//! What the server receives from a connection: the login to decide on, then the player that
+//! finished configuration and enters play.
 
 use crate::outbound::Outbound;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, oneshot};
 
 use vanillite_protocol::packets::common::ClientInfo;
+use vanillite_protocol::text::Component;
 use vanillite_protocol::types::GameProfile;
+
+/// A login waiting for the server's decision before `LoginFinished` (Vanilla's
+/// `verifyLoginAndFinishConnectionSetup` → `PlayerList.canPlayerLogin` on the server thread):
+/// bans, whitelist, player limit, plugins. The connection waits until [`LoginCheck::admit`] or
+/// [`LoginCheck::refuse`], at most until its login timeout; dropping the check unanswered
+/// refuses the login.
+#[derive(Debug)]
+pub struct LoginCheck {
+    /// Authenticated (or vouched-for) profile.
+    pub profile: GameProfile,
+    /// Remote address.
+    pub address: SocketAddr,
+    /// Whether this is a virtual connection (in-memory, Bedrock, proxy edge).
+    pub is_virtual: bool,
+    /// An in-process client (Vanilla's `memoryConnection`).
+    pub memory: bool,
+    pub(crate) answer: oneshot::Sender<LoginAnswer>,
+}
+
+/// The server's answer to a [`LoginCheck`].
+#[derive(Debug)]
+pub(crate) enum LoginAnswer {
+    /// Logged in; `overridden` when the server let the player in against its own rules.
+    Admit { overridden: bool },
+    /// Refused with this reason, sent as `LoginDisconnect`.
+    Refuse(Box<Component>),
+}
+
+impl LoginCheck {
+    /// Lets the player log in. `overridden`: the server's rules refused it and something else
+    /// (a plugin) let it in anyway; it comes back as [`Joined::login_overridden`].
+    pub fn admit(self, overridden: bool) {
+        let _ = self.answer.send(LoginAnswer::Admit { overridden });
+    }
+
+    /// Refuses the login with `reason` (the client's login disconnect screen).
+    pub fn refuse(self, reason: Component) {
+        let _ = self.answer.send(LoginAnswer::Refuse(Box::new(reason)));
+    }
+}
 
 /// A player connection handed to the server. Dropping `inbound`'s sender (the connection
 /// ending) shows up as a disconnected channel.
@@ -33,6 +75,9 @@ pub struct Joined {
     pub latency: Latency,
     /// Feeds packets into the connection as if the client sent them.
     pub injector: Injector,
+    /// The server's login check admitted the player against its own rules
+    /// ([`LoginCheck::admit`]).
+    pub login_overridden: bool,
 }
 
 /// Feeds play packets into a connection as if its client sent them (a plugin's

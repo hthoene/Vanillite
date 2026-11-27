@@ -816,7 +816,11 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         }
         BlockEntity::SculkShrieker(shrieker) => shrieker.save(&mut nbt),
         BlockEntity::SculkCatalyst(catalyst) => catalyst.save(&mut nbt),
-        BlockEntity::Container(c) => c.save(&mut nbt),
+        BlockEntity::Container(c) => c.save(
+            &mut nbt,
+            crate::block::container::kind_of(state.block())
+                != Some(crate::block::container::Kind::ShulkerBox),
+        ),
         BlockEntity::Furnace(f) => f.save(&mut nbt),
         BlockEntity::BrewingStand(b) => b.save(&mut nbt),
         BlockEntity::Sign(sign) => sign.save(&mut nbt),
@@ -836,7 +840,7 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
             crate::block::lock::save(&h.lock, &mut nbt);
             crate::block::container::save_name(&h.custom_name, &mut nbt);
             if !crate::block::chest_loot::save(h.loot_table.as_deref(), h.loot_seed, &mut nbt) {
-                crate::block::container::save_items(&h.items, &mut nbt);
+                crate::block::container::save_items_always(&h.items, &mut nbt);
             }
             nbt.insert("TransferCooldown", Tag::Int(h.cooldown_time));
         }

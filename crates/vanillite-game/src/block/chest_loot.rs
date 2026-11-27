@@ -103,7 +103,8 @@ pub fn unpack(level: &mut Level, pos: BlockPos, player: Option<EntityId>) {
     let mut items = items;
     generated_loot(level, player, &table);
     let origin = super::furnace::center(pos);
-    fill(level, &table, seed, origin, 0.0, player, &mut items);
+    let luck = player_luck(level, player);
+    fill(level, &table, seed, origin, luck, player, &mut items);
     if let Some((_, _, slots)) = level.block_entity_mut(pos).and_then(loot_parts) {
         for (slot, stack) in slots.iter_mut().zip(items) {
             *slot = stack;
@@ -129,7 +130,8 @@ pub fn unpack_entity(level: &mut Level, id: EntityId, player: Option<EntityId>) 
         return;
     };
     generated_loot(level, player, &table);
-    fill(level, &table, seed, origin, 0.0, player, &mut items);
+    let luck = player_luck(level, player);
+    fill(level, &table, seed, origin, luck, player, &mut items);
     if let Some(slots) = level.entities.container_items_mut(id) {
         for (slot, stack) in slots.iter_mut().zip(items) {
             *slot = stack;
@@ -160,6 +162,21 @@ pub fn generated_loot(level: &mut Level, player: Option<EntityId>, table: &str) 
     }
 }
 
+/// `withLuck(player.getLuck())`: the player's `luck` attribute (Luck and Bad Luck effects).
+fn player_luck(level: &Level, player: Option<EntityId>) -> f32 {
+    player
+        .and_then(|p| level.entities.player(p))
+        .map_or(0.0, |p| {
+            #[allow(clippy::cast_possible_truncation)]
+            let luck = p
+                .survival
+                .effects
+                .attribute(crate::effect::attribute::Attribute::LUCK, 0.0)
+                as f32;
+            luck
+        })
+}
+
 /// `LootTable.fill(container, params, seed)` of the table `table` for a container at `origin`.
 pub fn fill(
     level: &mut Level,
@@ -170,9 +187,17 @@ pub fn fill(
     player: Option<EntityId>,
     items: &mut [ItemStack],
 ) {
-    with_context(level, seed, origin, luck, player, |data, ctx, rng| {
-        data.loot.fill(table, ctx, rng, items);
-    });
+    with_context(
+        level,
+        table,
+        seed,
+        origin,
+        luck,
+        player,
+        |data, ctx, rng| {
+            data.loot.fill(table, ctx, rng, items);
+        },
+    );
 }
 
 /// `LootTable.getRandomItems(params, seed)` of the table `table` for a container at `origin`
@@ -186,16 +211,25 @@ pub fn roll(
     player: Option<EntityId>,
 ) -> Vec<ItemStack> {
     let mut out = Vec::new();
-    with_context(level, seed, origin, luck, player, |data, ctx, rng| {
-        data.loot.roll(table, ctx, rng, &mut out);
-    });
+    with_context(
+        level,
+        table,
+        seed,
+        origin,
+        luck,
+        player,
+        |data, ctx, rng| {
+            data.loot.roll(table, ctx, rng, &mut out);
+        },
+    );
     out
 }
 
 /// Runs `f` with the loot context of a container at `origin` and the roll's random
-/// (`withOptionalRandomSeed(seed)`).
+/// (`withOptionalRandomSeed(seed)`, else the table's random sequence, else the level random).
 fn with_context(
     level: &mut Level,
+    table: &str,
     seed: i64,
     origin: Vec3,
     luck: f32,
@@ -247,6 +281,8 @@ fn with_context(
     if seed != 0 {
         let mut rng = LegacyRandom::new(seed);
         f(&data, &ctx, &mut rng);
+    } else if let Some(key) = data.loot.random_sequence(table) {
+        level.with_random_sequence(key, |r| f(&data, &ctx, r));
     } else {
         f(&data, &ctx, level.random());
     }
