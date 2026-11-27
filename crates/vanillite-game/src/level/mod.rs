@@ -1350,7 +1350,12 @@ impl Level {
             block::drops::drop_resources(self, pos, state, breaker);
         }
         let fluid = self.fluid(pos);
-        self.set_block_depth(pos, fluid.block_state(), update::ALL, limit)
+        let destroyed = self.set_block_depth(pos, fluid.block_state(), update::ALL, limit);
+        if destroyed {
+            let context = game_event::GameEventContext::with_state(breaker, state);
+            self.game_event_block(game_event::events().block_destroy, pos, context);
+        }
+        destroyed
     }
 
     /// `sendBlockUpdated`: the position goes to the clients that see its chunk.

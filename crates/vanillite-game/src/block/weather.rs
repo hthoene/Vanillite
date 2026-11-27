@@ -334,6 +334,26 @@ pub(super) fn redstone_ore_attack(
     redstone_ore_interact(level, state, pos);
 }
 
+/// `RedStoneOreBlock.useItemOn`: the ore lights up; a block item that can be placed against it
+/// is placed (`PASS`), everything else counts as used.
+pub(super) fn redstone_ore_use_item_on(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    ctx: &super::UseContext,
+    stack: &mut crate::item::ItemStack,
+) -> super::ItemInteraction {
+    redstone_ore_interact(level, state, pos);
+    let places = !stack.is_empty()
+        && crate::item::item_id(stack).block().is_some()
+        && super::can_be_replaced(level.block(pos.relative(ctx.face)));
+    if places {
+        super::ItemInteraction::Pass
+    } else {
+        super::ItemInteraction::Done(super::Interaction::Success)
+    }
+}
+
 /// `RedStoneOreBlock.randomTick`: lit ore goes dark again.
 pub(super) fn redstone_ore_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if state.flag("lit") {

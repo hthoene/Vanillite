@@ -294,7 +294,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
             b.random_tick = Some(growth::bamboo_random_tick);
         }
         Class::BambooSapling => b.random_tick = Some(growth::bamboo_sapling_random_tick),
-        Class::ChorusPlant | Class::HangingMoss => b.tick = Some(destroy_unless_survives),
+        Class::ChorusPlant | Class::HangingMoss | Class::BigDripleafStem => {
+            b.tick = Some(destroy_unless_survives);
+        }
         Class::Kelp | Class::WeepingVines | Class::TwistingVines | Class::CaveVines => {
             b.tick = Some(destroy_unless_survives);
             b.random_tick = Some(growth::growing_plant_head_random_tick);
@@ -356,11 +358,17 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     } else if block == ids::REDSTONE_ORE || block == ids::DEEPSLATE_REDSTONE_ORE {
         b.random_tick = Some(weather::redstone_ore_random_tick);
         b.attack = Some(weather::redstone_ore_attack);
+        b.use_item_on = Some(weather::redstone_ore_use_item_on);
     } else if block == ids::SPONGE {
         b.on_place = Some(fluid::sponge_on_place);
         b.neighbor_changed = Some(fluid::sponge_neighbor_changed);
+    } else if block == ids::WET_SPONGE {
+        b.on_place = Some(fluid::wet_sponge_on_place);
     } else if weather::weathers(block) {
         b.random_tick = Some(weather::copper_random_tick);
+    }
+    if decor::is_skull(block) {
+        b.neighbor_changed = Some(decor::skull_neighbor_changed);
     }
     redstone::fill(block, &mut b);
     piston::fill(block, &mut b);
