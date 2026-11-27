@@ -2169,6 +2169,7 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     let id = e.id();
     let flags = e.flags();
     let aabb = e.aabb();
+    let dims = e.dims();
     if flags.contains(EntityFlags::ON_GROUND) {
         let on = BlockPos::new(
             vanillite_base::math::floor(pos.x),
@@ -2195,7 +2196,20 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     let was_on_fire = player.survival.fire_ticks > 0;
     let was_freezing = player.survival.ticks_frozen > 0;
     let previous = player.survival.fire_ticks;
-    let inside = blocks::inside_blocks(env.blocks, env.facts, aabb);
+    // The moves of the player's packets and of the server's own simulation, then the way to
+    // where the player is now (`applyEffectsFromBlocks`).
+    let mut path = std::mem::take(&mut player.connection.movement.path);
+    crate::survival::inside::finish(&mut path, pos, pos);
+    let inside = blocks::inside_blocks(
+        env.blocks,
+        env.facts,
+        dims,
+        player.survival.fall_distance > 2.5,
+        &path,
+        |_| {},
+    );
+    path.clear();
+    player.connection.movement.path = path;
     // The `entityInside` effects that act at once.
     if inside.cactus {
         let source = DamageSource::of(env.types.cactus);
@@ -2234,59 +2248,66 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         );
         crate::effect::living::sync_player(entity, player, env);
     }
-    if inside.powder_snow.is_some() {
-        // `InsideBlockEffectType.FREEZE`.
-        player.survival.in_powder_snow = true;
-        if player_can_freeze(player) {
+    // The collected effects, step by step (`StepBasedCollector.applyAndClear`).
+    for step in inside.steps() {
+        if step.freeze {
+            // `InsideBlockEffectType.FREEZE`.
+            player.survival.in_powder_snow = true;
+            if player_can_freeze(player) {
+                let s = &mut player.survival;
+                s.ticks_frozen = (s.ticks_frozen + 1).min(crate::mob::living::TICKS_TO_FREEZE);
+            }
+        }
+        if step.clear_freeze {
+            // `InsideBlockEffectType.CLEAR_FREEZE`.
+            player.survival.ticks_frozen = 0;
+        }
+        if let Some(damage) = step.fire {
+            // `BaseFireBlock.fireIgnite`, then the fire damage.
             let s = &mut player.survival;
-            s.ticks_frozen = (s.ticks_frozen + 1).min(crate::mob::living::TICKS_TO_FREEZE);
+            if s.fire_ticks < 0 {
+                s.fire_ticks += 1;
+            } else {
+                s.fire_ticks += env.random.next_int_between(1, 3);
+            }
+            if s.fire_ticks >= 0 {
+                ignite_for_ticks(s, 160);
+            }
+            let source = DamageSource::of(env.types.in_fire);
+            hurt(entity, player, env, source, damage);
         }
-    }
-    if let Some(damage) = inside.fire {
-        // `BaseFireBlock.fireIgnite`, then the fire damage.
-        let s = &mut player.survival;
-        if s.fire_ticks < 0 {
-            s.fire_ticks += 1;
-        } else {
-            s.fire_ticks += env.random.next_int_between(1, 3);
+        if step.lava_blocks > 0 && !player.survival.is_dead_or_dying() {
+            // `lavaIgnite`, then `lavaHurt`.
+            ignite_for_ticks(&mut player.survival, 300);
+            let source = DamageSource::of(env.types.lava);
+            if hurt(entity, player, env, source, 4.0) {
+                let pitch = 2.0 + env.random.next_float() * 0.4;
+                let seed = crate::survival::sound_seed();
+                play_sound(
+                    env.out,
+                    None,
+                    pos,
+                    "minecraft:entity.generic.burn",
+                    SoundSource::Players,
+                    0.4,
+                    pitch,
+                    seed,
+                );
+            }
         }
-        if s.fire_ticks >= 0 {
-            ignite_for_ticks(s, 160);
+        if let Some(snow) = step.melt_snow
+            && player.survival.fire_ticks > 0
+        {
+            // A burning player melts the powder snow (`runBefore(EXTINGUISH)`).
+            player
+                .survival
+                .world_actions
+                .push(crate::mob::WorldAction::DestroyBlock(snow, false));
         }
-        let source = DamageSource::of(env.types.in_fire);
-        hurt(entity, player, env, source, damage);
-    }
-    if inside.lava_blocks > 0 && !player.survival.is_dead_or_dying() {
-        // `lavaIgnite`, then `lavaHurt`.
-        ignite_for_ticks(&mut player.survival, 300);
-        let source = DamageSource::of(env.types.lava);
-        if hurt(entity, player, env, source, 4.0) {
-            let pitch = 2.0 + env.random.next_float() * 0.4;
-            let seed = crate::survival::sound_seed();
-            play_sound(
-                env.out,
-                None,
-                pos,
-                "minecraft:entity.generic.burn",
-                SoundSource::Players,
-                0.4,
-                pitch,
-                seed,
-            );
+        if step.extinguish {
+            let s = &mut player.survival;
+            s.fire_ticks = s.fire_ticks.min(0);
         }
-    }
-    if let Some(snow) = inside.powder_snow
-        && player.survival.fire_ticks > 0
-    {
-        // A burning player melts the powder snow (`runBefore(EXTINGUISH)`).
-        player
-            .survival
-            .world_actions
-            .push(crate::mob::WorldAction::DestroyBlock(snow, false));
-    }
-    if inside.water || inside.powder_snow.is_some() {
-        let s = &mut player.survival;
-        s.fire_ticks = s.fire_ticks.min(0);
     }
     let raining = (env.raining_at)(block_pos(pos))
         || (env.raining_at)(BlockPos::new(
@@ -3066,6 +3087,14 @@ fn simulate_move(
     );
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
+        crate::survival::inside::record(
+            &mut player.connection.movement.path,
+            crate::survival::inside::Movement {
+                from,
+                to: from + movement,
+                original: Some(delta),
+            },
+        );
         entity.set_pos(from + movement);
     }
     let x_collision = !java_equal(delta.x, movement.x);

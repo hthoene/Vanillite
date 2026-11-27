@@ -12,6 +12,7 @@ pub mod clock;
 pub mod combat;
 pub mod damage;
 pub mod food;
+pub mod inside;
 pub mod player;
 pub mod respawn;
 pub mod rules;

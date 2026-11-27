@@ -976,6 +976,9 @@ impl WorldAction {
 pub struct MobContext {
     pub finder: path::PathFinder,
     pub boxes: Vec<Aabb>,
+    /// `movementThisTick` of the mob that ticks: the moves of `Entity.move`, for the blocks
+    /// on their way (`applyEffectsFromBlocks`).
+    pub movements: Vec<crate::survival::inside::Movement>,
     pub actions: Vec<WorldAction>,
     pub env: Environment,
     pub settings: MobSettings,
