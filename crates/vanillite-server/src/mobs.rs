@@ -458,16 +458,14 @@ impl WorldMobs {
         survival.deliver(&mut level.entities, global);
     }
 
-    /// Natural spawning (`NaturalSpawner` via `ServerChunkCache.tickChunks`) and the animals of
-    /// chunks generated since the last tick.
-    pub(crate) fn spawn(
-        &mut self,
+    /// `updateSkyBrightness`: this tick's environment (sky darkness from the day time and the
+    /// weather), which scheduled and random block ticks read (light checks, turtle eggs).
+    pub(crate) fn update_environment(
+        &self,
         level: &mut Level,
         survival: &WorldSurvival,
         global: &Global,
         dimension: &str,
-        spawn_point: Option<BlockPos>,
-        tiles: Option<&vanillite_game::level::tiles::TileRun<'_>>,
     ) {
         let env = environment(
             global,
@@ -476,9 +474,22 @@ impl WorldMobs {
             self.seed,
             level.climate().map(|c| c.sea_level),
         );
-        // What random ticks read of this tick's environment (turtle eggs).
         level.spawner_env.env = env;
         level.entities.day_time = env.day_time;
+    }
+
+    /// Natural spawning (`NaturalSpawner` via `ServerChunkCache.tickChunks`) and the animals of
+    /// chunks generated since the last tick, in the environment of
+    /// [`Self::update_environment`].
+    pub(crate) fn spawn(
+        &mut self,
+        level: &mut Level,
+        global: &Global,
+        dimension: &str,
+        spawn_point: Option<BlockPos>,
+        tiles: Option<&vanillite_game::level::tiles::TileRun<'_>>,
+    ) {
+        let env = level.spawner_env.env;
         let Some(table) = self.table.clone() else {
             return;
         };

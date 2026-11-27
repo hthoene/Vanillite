@@ -528,12 +528,9 @@ impl GameWorld {
             d => return Err(format!("unknown difficulty `{d}`")),
         };
         level.settings.difficulty = difficulty;
-        // The world starts at day time 0 unless the scenario sets one; time does not advance.
-        let env = Environment {
-            sea_level: FLAT_SEA_LEVEL,
-            day_time: spec.time.unwrap_or(0),
-            ..Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0)
-        };
+        // The world starts at day time 0 unless the scenario sets one; time advances with
+        // `advance_time` (off by default).
+        let env = day_environment(spec.time.unwrap_or(0));
         // What spawner blocks and creaking hearts read when the block entities tick.
         level.spawner_env = vanillite_game::block::spawner::SpawnerEnv {
             env,
@@ -1607,6 +1604,15 @@ fn path_type_name(t: mob::path::PathType) -> String {
     out
 }
 
+/// The flat overworld's environment at `day` ticks of the day, without weather.
+fn day_environment(day: i64) -> Environment {
+    Environment {
+        sea_level: FLAT_SEA_LEVEL,
+        day_time: day,
+        ..Environment::overworld(day, 0.0, 0.0)
+    }
+}
+
 /// The recorder's default game rules (`ScenarioRecorder.DEFAULT_RULES`: no random ticks, no
 /// mobs, no time or weather) with the scenario's rules on top.
 /// A new level of `spec` over the chunks in `store`.
@@ -1845,11 +1851,21 @@ impl ScenarioWorld for GameWorld {
     /// ticks, the chunk source (post-processing, random ticks), block events, entities, block
     /// entities, entity management (pending entity loads).
     fn step(&mut self) {
-        // `ServerLevel.tick`: the night skip (time and weather stand still in scenarios).
+        // `MinecraftServer.tickChildren`: the clocks advance before the levels tick.
+        if self.rules.bool(Rule::ADVANCE_TIME) {
+            self.clock_time += 1;
+        }
+        // `ServerLevel.tick`: the night skip (the weather stands still in scenarios).
         vanillite_game::survival::sleep::skip_night(
             &mut self.level,
             &vanillite_game::hooks::NoHooks,
         );
+        // `updateSkyBrightness`: what this tick's block ticks read of the sky.
+        if self.env.day_time != self.clock_time {
+            self.env = day_environment(self.clock_time);
+            self.level.spawner_env.env = self.env;
+            self.level.entities.day_time = self.env.day_time;
+        }
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();
