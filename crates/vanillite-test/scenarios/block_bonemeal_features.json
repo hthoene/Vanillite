@@ -1,0 +1,419 @@
+{
+  "description": "Bone meal that places Vanilla's configured features in the live world with the level random: brown and red mushrooms (40 %, huge mushroom or back), crimson and warped fungi on their nylium (40 %, planted huge fungus), moss and pale moss blocks (moss patches), crimson nylium (nylium vegetation), glow lichen (spreads from a random face toward a random direction) and grass blocks (short grass and the plains flowers of getBoneMealFeatures).",
+  "tier": "fast",
+  "world": {
+    "seed": 2024
+  },
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      39,
+      -45,
+      39
+    ]
+  ],
+  "ticks": 29,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -61,
+        0
+      ],
+      "to": [
+        39,
+        -61,
+        39
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        4
+      ],
+      "block": "minecraft:mycelium"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:brown_mushroom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -61,
+        4
+      ],
+      "block": "minecraft:podzol"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -60,
+        4
+      ],
+      "block": "minecraft:red_mushroom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        24,
+        -61,
+        4
+      ],
+      "block": "minecraft:crimson_nylium"
+    },
+    {
+      "op": "set",
+      "pos": [
+        24,
+        -60,
+        4
+      ],
+      "block": "minecraft:crimson_fungus"
+    },
+    {
+      "op": "set",
+      "pos": [
+        34,
+        -61,
+        4
+      ],
+      "block": "minecraft:warped_nylium"
+    },
+    {
+      "op": "set",
+      "pos": [
+        34,
+        -60,
+        4
+      ],
+      "block": "minecraft:warped_fungus"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        16
+      ],
+      "block": "minecraft:moss_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -61,
+        16
+      ],
+      "block": "minecraft:pale_moss_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        22,
+        -61,
+        14
+      ],
+      "to": [
+        26,
+        -61,
+        18
+      ],
+      "block": "minecraft:netherrack"
+    },
+    {
+      "op": "set",
+      "pos": [
+        24,
+        -61,
+        16
+      ],
+      "block": "minecraft:crimson_nylium"
+    },
+    {
+      "op": "set",
+      "pos": [
+        34,
+        -60,
+        16
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        34,
+        -59,
+        16
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        35,
+        -60,
+        16
+      ],
+      "block": "minecraft:glow_lichen[west=true,down=true]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        26
+      ],
+      "to": [
+        12,
+        -61,
+        36
+      ],
+      "block": "minecraft:grass_block"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "bonemeal",
+      "pos": [
+        4,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 3,
+      "op": "bonemeal",
+      "pos": [
+        14,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 4,
+      "op": "bonemeal",
+      "pos": [
+        24,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 5,
+      "op": "bonemeal",
+      "pos": [
+        34,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 6,
+      "op": "bonemeal",
+      "pos": [
+        4,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 7,
+      "op": "bonemeal",
+      "pos": [
+        14,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 8,
+      "op": "bonemeal",
+      "pos": [
+        24,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 9,
+      "op": "bonemeal",
+      "pos": [
+        34,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 10,
+      "op": "bonemeal",
+      "pos": [
+        4,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 11,
+      "op": "bonemeal",
+      "pos": [
+        14,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 12,
+      "op": "bonemeal",
+      "pos": [
+        24,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 13,
+      "op": "bonemeal",
+      "pos": [
+        34,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 14,
+      "op": "bonemeal",
+      "pos": [
+        4,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 15,
+      "op": "bonemeal",
+      "pos": [
+        14,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 16,
+      "op": "bonemeal",
+      "pos": [
+        24,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 17,
+      "op": "bonemeal",
+      "pos": [
+        34,
+        -60,
+        4
+      ]
+    },
+    {
+      "tick": 18,
+      "op": "bonemeal",
+      "pos": [
+        4,
+        -61,
+        16
+      ]
+    },
+    {
+      "tick": 19,
+      "op": "bonemeal",
+      "pos": [
+        14,
+        -61,
+        16
+      ]
+    },
+    {
+      "tick": 20,
+      "op": "bonemeal",
+      "pos": [
+        24,
+        -61,
+        16
+      ]
+    },
+    {
+      "tick": 21,
+      "op": "bonemeal",
+      "pos": [
+        35,
+        -60,
+        16
+      ]
+    },
+    {
+      "tick": 22,
+      "op": "bonemeal",
+      "pos": [
+        35,
+        -60,
+        16
+      ]
+    },
+    {
+      "tick": 23,
+      "op": "bonemeal",
+      "pos": [
+        35,
+        -60,
+        16
+      ]
+    },
+    {
+      "tick": 24,
+      "op": "bonemeal",
+      "pos": [
+        7,
+        -61,
+        31
+      ]
+    },
+    {
+      "tick": 25,
+      "op": "bonemeal",
+      "pos": [
+        7,
+        -61,
+        31
+      ]
+    },
+    {
+      "tick": 26,
+      "op": "bonemeal",
+      "pos": [
+        7,
+        -61,
+        31
+      ]
+    }
+  ]
+}

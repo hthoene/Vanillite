@@ -1,0 +1,113 @@
+{
+  "description": "By day a player uses a bed: it does not sleep, but the bed becomes its respawn point (clicking the head or the foot); a bed without its other half does nothing.",
+  "tier": "fast",
+  "time": 6000,
+  "sleep_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      12,
+      -57,
+      10
+    ]
+  ],
+  "ticks": 3,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "block": "minecraft:red_bed[facing=south,occupied=false,part=foot]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        7
+      ],
+      "block": "minecraft:red_bed[facing=south,occupied=false,part=head]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "block": "minecraft:lime_bed[facing=south,occupied=false,part=foot]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    },
+    {
+      "name": "lone",
+      "type": "minecraft:player",
+      "pos": [
+        9.5,
+        -60,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 2
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "alex",
+      "pos": [
+        4,
+        -60,
+        7
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "lone",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "alex",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    }
+  ]
+}

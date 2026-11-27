@@ -13,8 +13,10 @@ pub mod combat;
 pub mod damage;
 pub mod food;
 pub mod player;
+pub mod respawn;
 pub mod rules;
 pub mod shoulder;
+pub mod sleep;
 pub mod weather;
 
 use std::sync::Arc;

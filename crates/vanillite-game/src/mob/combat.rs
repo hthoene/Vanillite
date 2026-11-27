@@ -118,8 +118,15 @@ pub fn hurt(
     let Some(data) = players.get_mut(row) else {
         return false;
     };
+    let was_alive = !data.survival.is_dead_or_dying();
     let hurt = player::hurt_with(&mut entity, data, env, source, amount, armor.as_deref());
+    let died = was_alive && data.survival.is_dead_or_dying();
     view::resolve_combat(ents, env.types, target);
+    // `ServerPlayer.die` → `tellNeutralMobsThatIDied`: at once, so an attacker calms down
+    // within its own tick.
+    if died && env.rules.bool(Rule::FORGIVE_DEAD_PLAYERS) {
+        super::common::tell_neutral_mobs_player_died(ents, target);
+    }
     hurt
 }
 
@@ -228,6 +235,16 @@ pub fn hurt_mob(
             None => return false,
         }
     }
+    // Plugins see the damage after the kind's own filters.
+    if let Some(e) = ents.store.get(target) {
+        match env
+            .hooks
+            .entity_damage(e.uuid(), e.kind().name(), &types.get(kind).id, amount)
+        {
+            Some(changed) => amount = changed,
+            None => return false,
+        }
+    }
     let Some(m) = ents.mob_mut(target) else {
         return false;
     };
@@ -256,6 +273,18 @@ pub fn hurt_mob(
         }
         true
     };
+    // What the kinds' `actuallyHurt` overrides do after `super.actuallyHurt`.
+    if mob_kind.family() != super::Family::Classic {
+        let mut h = super::fam::Hurt {
+            level,
+            ents,
+            env,
+            cx,
+            target,
+            source,
+        };
+        super::fam::actually_hurt(&mut h, mob_kind);
+    }
     // `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage`.
     if let Some(cause) = source.cause {
         let is_player = ents.player(cause).is_some();
@@ -637,6 +666,18 @@ fn die(
     };
     m.dead = true;
     let mob_kind = m.kind;
+    if let Some(e) = ents.store.get(target) {
+        let killer = source
+            .cause
+            .and_then(|c| ents.store.get(c))
+            .map(|c| c.uuid());
+        env.hooks.entity_death(
+            e.uuid(),
+            e.kind().name(),
+            &env.types.get(source.kind).id,
+            killer,
+        );
+    }
     if mob_kind.family() != super::Family::Classic {
         let mut h = super::fam::Hurt {
             level,
@@ -876,12 +917,22 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
         return;
     };
     let volume = super::fam::mob_sound_volume(m);
-    let a = m.random.next_float();
-    let b = m.random.next_float();
-    let pitch = if m.baby {
-        (a - b) * 0.2 + 1.5
+    // `getVoicePitch`: the happy ghast's is constant (no draws), the bat's a little lower.
+    let pitch = if m.kind == Kind::HappyGhast {
+        1.0
     } else {
-        (a - b) * 0.2 + 1.0
+        let a = m.random.next_float();
+        let b = m.random.next_float();
+        let pitch = if m.baby {
+            (a - b) * 0.2 + 1.5
+        } else {
+            (a - b) * 0.2 + 1.0
+        };
+        if m.kind == Kind::Bat {
+            pitch * 0.95
+        } else {
+            pitch
+        }
     };
     // `playSound` checks `isSilent` after the pitch is drawn.
     if m.silent {
@@ -903,9 +954,30 @@ pub fn mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
 }
 
 /// `Mob.doHurtTarget` itself (families call it from their override).
-pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
+/// `getAttributeValue(ATTACK_DAMAGE)`: the mob's attack damage with the attribute modifiers of
+/// its equipment (a vex's iron sword, a vindicator's axe).
+pub fn attack_damage(m: &super::MobData) -> f32 {
+    let mut mods = Vec::new();
+    for slot in (0..8).filter_map(crate::item::EquipmentSlot::from_ordinal) {
+        crate::item::attribute_modifiers(
+            m.equipment.get(slot),
+            slot,
+            "minecraft:attack_damage",
+            &mut mods,
+        );
+    }
+    let value = if mods.is_empty() {
+        m.attrs.attack_damage
+    } else {
+        crate::item::attribute_value(m.attrs.attack_damage, &mods, 0.0, 2048.0)
+    };
     #[allow(clippy::cast_possible_truncation)]
-    let damage = t.mob_ref().attrs.attack_damage as f32;
+    let value = value as f32;
+    value
+}
+
+pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
+    let damage = attack_damage(t.mob_ref());
     let source = entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
     let hurt_ok = hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
     if hurt_ok {

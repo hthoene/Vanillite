@@ -365,6 +365,15 @@ pub fn set_aggressive(t: &mut Tick<'_, '_>, on: bool) {
 impl FamilyHooks for Hooks {
     type Goal = Goal;
 
+    fn ambient_sound_interval(kind: Kind) -> i32 {
+        // `Monster`s (piglins, the zoglin) 80; the others are `Animal`s or fish (120), also
+        // the hostile hoglin.
+        match kind {
+            Kind::Piglin | Kind::PiglinBrute | Kind::Zoglin => 80,
+            _ => 120,
+        }
+    }
+
     fn ageable(kind: Kind) -> bool {
         matches!(
             kind,
@@ -636,6 +645,12 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn after_tick(t: &mut Tick<'_, '_>) {
+        if t.mob_ref().kind == Kind::Armadillo {
+            armadillo::after_tick(t);
+        }
+    }
+
     fn register_goals(m: &mut MobData) {
         // A tadpole is an `AbstractFish`: the fish goals besides its brain.
         if m.kind == Kind::Tadpole {
@@ -715,6 +730,18 @@ impl FamilyHooks for Hooks {
         }
     }
 
+    fn actually_hurt(h: &mut Hurt<'_, '_>) {
+        if h.ents
+            .mob(h.target)
+            .is_some_and(|m| m.kind == Kind::Armadillo)
+        {
+            let source = h.source;
+            let mut t = hurt_tick(h);
+            let living = living_cause(&t, &source).is_some();
+            armadillo::actually_hurt(&mut t, living, source.kind);
+        }
+    }
+
     fn after_hurt(h: &mut Hurt<'_, '_>, amount: f32) {
         let Some(kind) = h.ents.mob(h.target).map(|m| m.kind) else {
             return;
@@ -725,9 +752,6 @@ impl FamilyHooks for Hooks {
             if kind == Kind::Axolotl {
                 axolotl::after_hurt(&mut t, None, amount);
             }
-            if kind == Kind::Armadillo {
-                armadillo::after_hurt(&mut t);
-            }
             return;
         };
         match kind {
@@ -736,7 +760,6 @@ impl FamilyHooks for Hooks {
             Kind::Hoglin => hoglin::was_hurt_by(&mut t, cause),
             Kind::Zoglin => hoglin::zoglin_was_hurt_by(&mut t, cause),
             Kind::Axolotl => axolotl::after_hurt(&mut t, Some(cause), amount),
-            Kind::Armadillo => armadillo::after_hurt(&mut t),
             Kind::Sniffer | Kind::Goat | Kind::Frog => {}
             _ => {}
         }

@@ -325,6 +325,8 @@ pub fn tick_arrow(
         return;
     };
     let mut pos = e.pos();
+    let start = pos;
+    let start_box = e.aabb();
     let mut velocity = e.velocity();
     let mut rot = e.rot();
     let (kind, network_id) = (e.kind(), e.network_id().0);
@@ -378,6 +380,9 @@ pub fn tick_arrow(
             }
         }
         a.in_ground_time += 1;
+        if !discard {
+            inside_blocks(level, cx, id, start_box, start, pos);
+        }
     } else {
         a.in_ground_time = 0;
         // The step and the rotation use the motion from the start of the tick.
@@ -618,6 +623,7 @@ pub fn tick_arrow(
         } else if flies_on {
             pos = to;
         }
+        inside_blocks(level, cx, id, start_box, start, pos);
         if !super::is_water(level.block(BlockPos::containing(pos.x, pos.y, pos.z))) {
             // `applyInertia(0.99F)`.
             velocity = velocity * f64::from(0.99_f32);
@@ -662,6 +668,39 @@ pub fn tick_arrow(
     }
     if let Some(d) = ents.arrow_mut(id) {
         *d = a;
+    }
+}
+
+/// `Entity.applyEffectsFromBlocks(from, to)` of a projectile whose box was `start_box` at
+/// `from`: `entityInside` (buttons, pressure plates, tripwires) of the blocks the box touches
+/// on its way, as world actions. The way is sampled in steps of at most a quarter block.
+pub fn inside_blocks(
+    level: &Level,
+    cx: &mut MobContext,
+    id: EntityId,
+    start_box: Aabb,
+    from: Vec3,
+    to: Vec3,
+) {
+    let delta = to - from;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let steps = ((delta.length() / 0.25).ceil() as u32).clamp(1, 64);
+    let base = start_box.inflate(-1.0e-5, -1.0e-5, -1.0e-5);
+    let mut seen: Vec<BlockPos> = Vec::new();
+    for i in 0..=steps {
+        let f = f64::from(i) / f64::from(steps);
+        let b = base.offset(delta.x * f, delta.y * f, delta.z * f);
+        for x in b.min_x.floor() as i32..=b.max_x.floor() as i32 {
+            for y in b.min_y.floor() as i32..=b.max_y.floor() as i32 {
+                for z in b.min_z.floor() as i32..=b.max_z.floor() as i32 {
+                    let p = BlockPos::new(x, y, z);
+                    if !seen.contains(&p) && level.has_entity_inside(level.block(p)) {
+                        seen.push(p);
+                        cx.actions.push(super::WorldAction::EntityInside(p, id));
+                    }
+                }
+            }
+        }
     }
 }
 

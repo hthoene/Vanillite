@@ -1,13 +1,46 @@
 //! Example Vanillite plugin: a `/hello` command with suggestions, `/hello pad` (bulk block
 //! access by numeric id from a task on the player's owner), a join message from its config,
-//! and a simple flat generator that replaces the `chunk-generator` slot when
-//! `generator.enabled` is set in `plugins/hello/config.toml`.
+//! a join counter in the player's persistent data shown above the hotbar, in a scoreboard
+//! objective and with a boss bar and a sound, a refused login name, fire protection and kept
+//! inventories (`protect.enabled`), a periodic background task, and a simple flat generator
+//! that replaces the `chunk-generator` slot when `generator.enabled` is set in
+//! `plugins/hello/config.toml`.
+//!
+//! It also shows the rest of the API: `/hello treat` (food, an effect, an item and particles
+//! on the player's owner), `/hello pig <pos>` (spawns a glowing pig), a `hello:ping` plugin
+//! message channel that answers on `hello:pong`, an advancement message, a permission node
+//! with a default, a `hello:greeter` service for other plugins, a `hello:greeted` plugin
+//! event, handlers of another plugin's `economy:payment` event that skip cancelled ones, and
+//! the greeting count saved to its config at shutdown.
 //!
 //! Build it with `cargo build -p vanillite-example-hello` and put `plugin.toml` and the library
 //! into `plugins/hello/` (or `plugins/hello/native/<target-triple>/`).
 
 use vanillite_plugin::prelude::*;
 use vanillite_plugin::{ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, WorldInfo};
+
+/// The `hello:greeter` service other plugins call (version 1): a `repr(C)` table, so plugins
+/// in any language can use it.
+#[repr(C)]
+#[derive(Debug)]
+pub struct GreeterApi {
+    /// Size of this table in bytes.
+    pub size: u32,
+    /// How often `/hello` ran.
+    pub greetings: extern "C" fn() -> u64,
+}
+
+static GREETER: GreeterApi = GreeterApi {
+    size: size_of::<GreeterApi>() as u32,
+    greetings,
+};
+
+/// The greeting count the service reports.
+static GREETINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+extern "C" fn greetings() -> u64 {
+    GREETINGS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The plugin's state.
 struct Hello {
@@ -27,7 +60,103 @@ impl Plugin for Hello {
                 .unwrap_or_else(|| "Welcome, {name}!".to_owned());
             let text = template.replace("{name}", event.name());
             let _ = server.send_message(event.player(), Text::colored(&text, "gold"));
+            // The join counter lives in the player's persistent data (`hello:joins`).
+            let (world, player) = (event.world(), event.player());
+            let joins = match ctx.entity_data(world, player, "joins") {
+                Ok(Some(DataValue::Int(n))) => n,
+                _ => 0,
+            } + 1;
+            if ctx
+                .set_entity_data(world, player, "joins", &DataValue::Int(joins))
+                .is_ok()
+            {
+                let visit = server
+                    .config_string("messages.visit")
+                    .unwrap_or_else(|| "Visit #{count}".to_owned());
+                let _ =
+                    server.send_action_bar(player, visit.replace("{count}", &joins.to_string()));
+            }
+            // The count in the player list, a welcome boss bar and a sound.
+            let _ = server.set_score("hello_joins", event.name(), joins);
+            let _ = server.boss_bar("welcome").show(player);
+            if let Ok(pos) = ctx.player_position(player) {
+                let mut sound = Sound::new("minecraft:entity.player.levelup", pos);
+                sound.source = vanillite_plugin::abi::sound_source::PLAYER;
+                let _ = server.play_sound(player, &sound);
+            }
+            if let Some(text) = server.config_string("messages.broadcast") {
+                event.set_message(Text::colored(
+                    &text.replace("{name}", event.name()),
+                    "yellow",
+                ));
+            }
         });
+
+        registrar.on_plugin_message("hello:ping", priority::NORMAL, |_, ctx, message| {
+            let _ =
+                ctx.server()
+                    .send_plugin_message(message.player(), "hello:pong", message.data());
+        });
+
+        registrar.on_advancement(priority::MONITOR, |_, ctx, done| {
+            let _ = ctx
+                .server()
+                .send_action_bar(done.player(), format!("Well done: {}", done.advancement()));
+        });
+
+        // Another plugin's event; cancelled payments are skipped.
+        registrar.ignore_cancelled().on_plugin_event(
+            "economy:payment",
+            priority::MONITOR,
+            |_, ctx, event| {
+                let text = String::from_utf8_lossy(event.data()).into_owned();
+                for player in ctx.server().online_players() {
+                    let _ = ctx
+                        .server()
+                        .send_action_bar(player, format!("Payment: {text}"));
+                }
+            },
+        );
+
+        registrar.permission("hello.pad", PermissionDefault::Op);
+        registrar.permission("hello.treat", PermissionDefault::True);
+        server.register_service("hello:greeter", 1, &GREETER)?;
+
+        registrar.on_login(priority::NORMAL, |_, ctx, login| {
+            let server = ctx.server();
+            let refused = server.config_string("login.refuse").unwrap_or_default();
+            if !refused.is_empty() && login.name() == refused {
+                let message = server
+                    .config_string("login.message")
+                    .unwrap_or_else(|| "This name is reserved.".to_owned());
+                login.refuse(Text::colored(&message, "red"));
+            }
+        });
+
+        if server.config_bool("protect.enabled") == Some(true) {
+            registrar.on_interact(priority::NORMAL, |_, ctx, interact| {
+                if matches!(
+                    interact.item(),
+                    "minecraft:flint_and_steel" | "minecraft:fire_charge"
+                ) {
+                    interact.set_cancelled(true);
+                    let _ = ctx
+                        .server()
+                        .send_action_bar(interact.player(), Text::colored("No fire here", "red"));
+                }
+            });
+            registrar.on_death(priority::NORMAL, |_, ctx, death| {
+                death.set_keep_inventory(true);
+                let name = ctx
+                    .server()
+                    .player_name(death.player())
+                    .unwrap_or_else(|| "A player".to_owned());
+                death.set_message(Text::colored(
+                    &format!("{name} died and kept everything"),
+                    "gray",
+                ));
+            });
+        }
 
         registrar.command(
             Command::literal("hello")
@@ -38,29 +167,75 @@ impl Plugin for Hello {
                             .player_name(player)
                             .unwrap_or_else(|| "player".to_owned()),
                         vanillite_plugin::Sender::Console => "console".to_owned(),
+                        vanillite_plugin::Sender::CommandBlock => "command block".to_owned(),
+                        vanillite_plugin::Sender::Entity(_) => "entity".to_owned(),
                     };
                     Ok(greet(hello, ctx, invocation, &name))
                 })
                 .then(
-                    Command::literal("pad").executes(|_: &mut Hello, ctx, invocation| {
-                        let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
-                            return Ok(0);
-                        };
-                        // Commands cannot touch blocks: the player's owner does it in a task.
-                        let server = ctx.server();
-                        let (Some(world), Some(glass)) = (
-                            server.player_world(player),
-                            server.block_state_id("minecraft:glass"),
-                        ) else {
-                            return Ok(0);
-                        };
-                        let air = server.block_state_id("minecraft:air").unwrap_or(0);
-                        let task =
-                            server.schedule(Owner::Entity(world, player), 0, 0, move |ctx| {
-                                let _ = pad(ctx, world, player, glass, air);
-                            });
-                        Ok(i32::from(task.is_ok()))
-                    }),
+                    Command::literal("treat")
+                        .requires_permission("hello.treat")
+                        .executes(|_: &mut Hello, ctx, invocation| {
+                            let vanillite_plugin::Sender::Player(player) = invocation.sender()
+                            else {
+                                return Ok(0);
+                            };
+                            let server = ctx.server();
+                            let Some(world) = server.player_world(player) else {
+                                return Ok(0);
+                            };
+                            let task =
+                                server.schedule(Owner::Entity(world, player), 0, 0, move |ctx| {
+                                    let _ = treat(ctx, world, player);
+                                });
+                            Ok(i32::from(task.is_ok()))
+                        }),
+                )
+                .then(Command::literal("pig").then(
+                    Command::argument("pos", ArgType::Vec3).executes(
+                        |_: &mut Hello, ctx, invocation| {
+                            let (Some(world), Some(pos)) =
+                                (invocation.world(), invocation.vec3("pos"))
+                            else {
+                                return Ok(0);
+                            };
+                            let task =
+                                ctx.server()
+                                    .schedule(Owner::World(world), 0, 0, move |ctx| {
+                                        let _ = ctx.spawn_entity(
+                                            world,
+                                            "minecraft:pig",
+                                            pos,
+                                            "{Glowing:1b,CustomName:\"Hello\"}",
+                                        );
+                                    });
+                            Ok(i32::from(task.is_ok()))
+                        },
+                    ),
+                ))
+                .then(
+                    Command::literal("pad")
+                        .requires_permission("hello.pad")
+                        .executes(|_: &mut Hello, ctx, invocation| {
+                            let vanillite_plugin::Sender::Player(player) = invocation.sender()
+                            else {
+                                return Ok(0);
+                            };
+                            // Commands cannot touch blocks: the player's owner does it in a task.
+                            let server = ctx.server();
+                            let (Some(world), Some(glass)) = (
+                                server.player_world(player),
+                                server.block_state_id("minecraft:glass"),
+                            ) else {
+                                return Ok(0);
+                            };
+                            let air = server.block_state_id("minecraft:air").unwrap_or(0);
+                            let task =
+                                server.schedule(Owner::Entity(world, player), 0, 0, move |ctx| {
+                                    let _ = pad(ctx, world, player, glass, air);
+                                });
+                            Ok(i32::from(task.is_ok()))
+                        }),
                 )
                 .then(
                     Command::argument("name", ArgType::Word)
@@ -94,12 +269,40 @@ impl Plugin for Hello {
     }
 
     fn enable(&mut self, ctx: &mut Ctx<'_>) {
-        let worlds = ctx.server().worlds().len();
+        let server = ctx.server();
+        let worlds = server.worlds().len();
         vanillite_plugin::info!("Hello is enabled ({worlds} worlds)");
+        // Both are saved with the world: they exist after the first start.
+        if server.score("hello_joins", "#check").is_none() {
+            let _ = server.add_objective("hello_joins", "dummy", Text::colored("Joins", "gold"));
+        }
+        let _ = server.display_objective(
+            vanillite_plugin::abi::display_slot::LIST,
+            Some("hello_joins"),
+        );
+        if let Ok(bar) = server.create_boss_bar("welcome", Text::colored("Welcome!", "green")) {
+            let _ = bar.set_color(vanillite_plugin::abi::bossbar_color::GREEN);
+        }
+        if let Some(motd) = server.config_string("messages.motd") {
+            let _ = server.set_motd(motd);
+        }
+        // Every five minutes off the tick: how many players are online (a real plugin would
+        // write statistics to a database here).
+        let _ = server.run_async_timer(6000, 6000, move || {
+            let online = server.online_players().len();
+            vanillite_plugin::debug!("{online} players online");
+        });
     }
 
-    fn disable(&mut self, _ctx: &mut Ctx<'_>) {
+    fn disable(&mut self, ctx: &mut Ctx<'_>) {
         vanillite_plugin::info!("Hello is disabled after {} greetings", self.greetings);
+        let server = ctx.server();
+        if server
+            .set_config("stats.greetings", &self.greetings.to_string())
+            .is_ok()
+        {
+            let _ = server.save_config();
+        }
     }
 
     fn save_state(&mut self) -> Vec<u8> {
@@ -109,6 +312,7 @@ impl Plugin for Hello {
     fn restore_state(&mut self, state: &[u8]) {
         if let Ok(bytes) = <[u8; 8]>::try_from(state) {
             self.greetings = u64::from_le_bytes(bytes);
+            GREETINGS.store(self.greetings, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -120,6 +324,9 @@ fn greet(
     name: &str,
 ) -> i32 {
     hello.greetings += 1;
+    GREETINGS.store(hello.greetings, std::sync::atomic::Ordering::Relaxed);
+    // Other plugins may listen (this plugin's own handlers are never called for it).
+    let _ = ctx.fire_event("hello:greeted", name.as_bytes());
     let template = ctx
         .server()
         .config_string("messages.hello")
@@ -154,6 +361,25 @@ fn pad(ctx: &mut Ctx<'_>, world: World, player: Uuid, glass: u32, air: u32) -> R
     }
     ctx.set_blocks(world, area, &blocks, SetMode::Update)?;
     Ok(())
+}
+
+/// `/hello treat`: a full food bar, a short speed boost, a cookie and hearts, on the player's
+/// owner.
+fn treat(ctx: &mut Ctx<'_>, world: World, player: Uuid) -> Result<(), Error> {
+    use vanillite_plugin::abi::player_prop;
+    ctx.set_player_prop(world, player, player_prop::FOOD, 20.0)?;
+    ctx.set_player_prop(world, player, player_prop::SATURATION, 5.0)?;
+    ctx.add_effect(world, player, &Effect::new("minecraft:speed", 200, 0))?;
+    ctx.give_item(world, player, "{id:\"minecraft:cookie\",count:1}")?;
+    let at = ctx.location(world, player)?;
+    let mut hearts = Particle::new("minecraft:heart", at.pos, 5);
+    hearts.pos.y += 2.0;
+    hearts.delta = Vec3 {
+        x: 0.5,
+        y: 0.3,
+        z: 0.5,
+    };
+    ctx.server().spawn_particle(player, &hearts)
 }
 
 /// Flat stone with a grass surface in one dimension.

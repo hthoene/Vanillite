@@ -51,7 +51,8 @@ contracts live in the crate that owns them (`Scheduler` here; world-scoped slots
   cross-world hand-offs in world order → G2 (player list, autosave).
 - **Sequential mode**: the server thread ticks the worlds in Vanilla order (overworld, nether,
   end). `TickContext::in_world` runs on the other world immediately.
-- **Parallel mode** (default): every world has a thread that owns it, ticks on command and runs
+- **Parallel mode** (`performance.tick.parallel-dimensions`, on in the `paper`, `spigot` and
+  `performance` profiles): every world has a thread that owns it, ticks on command and runs
   the world's tasks between ticks. `in_world` is queued and runs after the world phase,
   before the target's next tick. A panicking world thread stops the server.
 - `ServerHandle` (any thread): `stop`, `console`, `run_global`, `run_in_world`.
@@ -67,9 +68,3 @@ contracts live in the crate that owns them (`Scheduler` here; world-scoped slots
   `watchdog.early-warning-after` seconds it warns every `watchdog.warning-interval` seconds
   and names the busy threads; after `max-tick-time` (server.properties, ≤ 0 disables) it logs
   and exits the process. Thread backtraces are not printed yet.
-
-## Not yet wired
-
-Network (joins in G1, bounded by `security.max-joins-per-tick`), the world runtime inside
-`ServerWorld`, players and their saving, the command system (the console knows `stop`,
-`help` and `vanillite reload config`).

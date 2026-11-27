@@ -58,19 +58,27 @@ mod server;
 mod types;
 
 pub use command::{ArgType, Command, Invocation, Sender, SuggestRequest};
-pub use events::{BlockChange, EntityDamage, PlayerJoin, PlayerLeave, PlayerText, PlayersMoved};
+pub use events::{
+    AdvancementDone, BlockChange, CustomEvent, EntityDamage, EntityDeath, GameModeChange, Interact,
+    Login, LoginReason, PlayerDeath, PlayerJoin, PlayerLeave, PlayerText, PlayerWorld,
+    PlayersMoved, PluginMessage,
+};
 pub use generator::{ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, WorldInfo};
-pub use registrar::{Permission, Registrar};
-pub use server::{Ctx, Owner, Server, TaskId};
-pub use types::{BlockBox, BlockPos, Error, NO_BLOCK, SetMode, Text, Uuid, Vec3, World};
+pub use registrar::{Permission, PermissionDefault, Registrar};
+pub use server::{BossBar, Ctx, Owner, Server, TaskId};
+pub use types::{
+    AccessList, BlockBox, BlockPos, DataValue, Effect, Error, GameMode, Hand, Location, NO_BLOCK,
+    Particle, PlayerInfo, ServerStats, SetMode, Sound, Text, Uuid, Vec3, Weather, World,
+};
 pub use vanillite_abi as abi;
 pub use vanillite_abi::priority;
 
 /// The usual imports of a plugin.
 pub mod prelude {
     pub use crate::{
-        ArgType, BlockBox, BlockPos, Command, Ctx, Error, Owner, Permission, Plugin, Registrar,
-        Server, SetMode, Text, Uuid, Vec3, World, priority,
+        ArgType, BlockBox, BlockPos, Command, Ctx, DataValue, Effect, Error, GameMode, Location,
+        Owner, Particle, Permission, PermissionDefault, Plugin, Registrar, Server, SetMode, Sound,
+        Text, Uuid, Vec3, World, priority,
     };
 }
 

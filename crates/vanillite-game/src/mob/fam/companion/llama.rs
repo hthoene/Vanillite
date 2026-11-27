@@ -136,6 +136,8 @@ pub fn register_goals(m: &mut MobData) {
         tg.add(2, common(CommonGoal::nearest(10, true, illagers)));
     }
     m.nav.can_float = true;
+    let follow = m.attrs.follow_range;
+    m.nav.set_required_path_length(40.0, follow);
 }
 
 /// `finalizeSpawn` of the llamas: strength, variant (shared by the group), babies.

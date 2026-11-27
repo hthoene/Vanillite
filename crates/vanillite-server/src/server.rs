@@ -149,6 +149,8 @@ pub struct ServerBuilder {
     vanilla_pack: VanillaPack,
     network: bool,
     version: String,
+    /// The parity harness drives the server (`test-support`).
+    harness: bool,
     memory_release: Option<fn()>,
 }
 
@@ -164,6 +166,7 @@ impl ServerBuilder {
             light_engine: Slot::new("light-engine"),
             vanilla_pack: VanillaPack::default(),
             network: true,
+            harness: false,
             memory_release: None,
             version: format!(
                 "Vanillite {} (Minecraft {})",
@@ -333,6 +336,7 @@ impl ServerBuilder {
         if let Some(packs) = packs.as_deref() {
             vanillite_worldgen::behaviour::init(packs);
         }
+        let spawn_known = prepared.spawn_known;
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
         let mut behaviours = vanillite_game::block::Behaviours::vanilla();
@@ -513,6 +517,7 @@ impl ServerBuilder {
             broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
             broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
+            motd: std::sync::Mutex::new(None),
             this: this.clone(),
         });
         global
@@ -604,6 +609,7 @@ impl ServerBuilder {
                     dimension: DimensionId(index),
                     ..save_settings
                 },
+                blocking_tickets: self.harness,
             };
             let level_settings = crate::world_setup::level_settings(
                 packs.as_deref(),
@@ -671,6 +677,9 @@ impl ServerBuilder {
             );
             world.restore_tickets(saved_tickets);
             worlds.push(world);
+        }
+        if !spawn_known {
+            initial_spawn(&mut worlds, &global, world_gen.flat_spawn_height());
         }
         prepare_levels(&mut worlds);
         let (worlds, routes) = if parallel {
@@ -1310,23 +1319,41 @@ impl Server {
         let access = &self.global.access;
         // The server's own test bots come over virtual connections it opened itself.
         let test_bot = arrival.memory_connection && self.test_bots.contains(&uuid);
+        use vanillite_abi::login_reason;
         use vanillite_protocol::text::Component;
-        let refuse = if let Some(reason) = crate::commands::ban_reason(access, uuid, None) {
-            Some(reason)
+        let (reason, refuse) = if let Some(reason) = crate::commands::ban_reason(access, uuid, None)
+        {
+            (login_reason::BANNED, Some(reason))
         } else if !test_bot && !access.is_whitelisted(uuid) {
-            Some(Component::translatable(
-                "multiplayer.disconnect.not_whitelisted",
-                vec![],
-            ))
+            (
+                login_reason::NOT_WHITELISTED,
+                Some(Component::translatable(
+                    "multiplayer.disconnect.not_whitelisted",
+                    vec![],
+                )),
+            )
         } else if let Some(reason) = crate::commands::ban_reason(access, uuid, Some(&ip)) {
-            Some(reason)
+            (login_reason::BANNED, Some(reason))
         } else if players.count() >= players.max_players() && !access.bypasses_player_limit(uuid) {
-            Some(Component::translatable(
-                "multiplayer.disconnect.server_full",
-                vec![],
-            ))
+            (
+                login_reason::FULL,
+                Some(Component::translatable(
+                    "multiplayer.disconnect.server_full",
+                    vec![],
+                )),
+            )
         } else {
-            None
+            (login_reason::ALLOWED, None)
+        };
+        let refuse = if self
+            .global
+            .plugins
+            .wants(vanillite_abi::event::PLAYER_LOGIN)
+        {
+            let name = arrival.profile.name.clone();
+            crate::plugins::login(&self.global, uuid, &name, &ip, reason, refuse)
+        } else {
+            refuse
         };
         if let Some(reason) = refuse {
             sink.kick(reason);
@@ -1343,6 +1370,15 @@ impl Server {
         };
         arrival.stats = json(JsonFile::Stats);
         arrival.advancements = json(JsonFile::Advancements);
+        self.place_new_player(arrival, ip);
+    }
+
+    /// The end of [`Server::accept`]: the player list entry, then the world part on the
+    /// player's world.
+    fn place_new_player(&mut self, arrival: crate::players::Arrival, ip: String) {
+        let players = &self.global.players;
+        let uuid = arrival.uuid;
+        let sink = Arc::clone(&arrival.sink);
         let world = arrival
             .saved
             .as_ref()
@@ -1433,6 +1469,15 @@ impl Server {
         let properties = &self.config.properties;
         if let Some(net) = self.net.as_mut() {
             net.set_online(online);
+            let motd = self
+                .global
+                .motd
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(motd) = motd {
+                net.set_motd(motd);
+            }
             // `rebuildServerStatus` every 5 seconds; the Query names every second.
             let (sample_due, query_due) = (
                 self.tick_count.is_multiple_of(100),
@@ -1855,6 +1900,37 @@ fn open_tick_log() -> Option<io::BufWriter<File>> {
     }
 }
 
+/// `MinecraftServer.setInitialSpawn` of a new world: the generator's origin chunk (the noise
+/// spawn search), then the first chunk with a respawn column in a spiral of 11 × 11 chunks
+/// around it. `flat_height` is the flat generator's layer height (`getSpawnHeight`).
+fn initial_spawn(worlds: &mut [ServerWorld], global: &Global, flat_height: Option<i32>) {
+    let Some(world) = worlds.first_mut() else {
+        return;
+    };
+    let spawn = world.search_initial_spawn(flat_height);
+    log::info!(
+        "Spawn of the new world: {}, {}, {}",
+        spawn.x,
+        spawn.y,
+        spawn.z
+    );
+    global.level.set_spawn(vanillite_storage::level_dat::Spawn {
+        dimension: "minecraft:overworld".to_owned(),
+        pos: [spawn.x, spawn.y, spawn.z],
+        yaw: 0.0,
+        pitch: 0.0,
+    });
+    let at = vanillite_base::Vec3::new(
+        f64::from(spawn.x) + 0.5,
+        f64::from(spawn.y),
+        f64::from(spawn.z) + 0.5,
+    );
+    global.systems.set_spawn(at);
+    for world in worlds.iter_mut() {
+        world.players.level.spawn = (at, 0.0);
+    }
+}
+
 /// `MinecraftServer.prepareLevels`: the chunks of the saved tickets (forced chunks, portal
 /// tickets) become full before the first tick, so forced chunks tick from the first tick on.
 fn prepare_levels(worlds: &mut [ServerWorld]) {
@@ -1882,4 +1958,119 @@ fn prepare_levels(worlds: &mut [ServerWorld]) {
         "Loaded the chunks of the saved chunk tickets in {} ms",
         started.elapsed().as_millis()
     );
+}
+
+/// What the parity harness of `vanillite-test` drives (feature `test-support`): the tick loop
+/// without its clock, the worlds, and players without a network.
+#[cfg(feature = "test-support")]
+impl ServerBuilder {
+    /// Parity harness mode: every chunk ticket loads its chunks before the tick goes on
+    /// ([`ChunkSettings::blocking_tickets`]), like Vanilla's synchronous loads.
+    pub fn harness(&mut self) -> &mut Self {
+        self.harness = true;
+        self
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Server {
+    /// One iteration of [`Server::run`] without the clock: the messages that arrived while it
+    /// waited, the tick, then the work queued during the tick.
+    pub fn step(&mut self) {
+        self.wait_until_next_tick(0, true);
+        self.tick_server();
+        self.wait_until_next_tick(0, true);
+    }
+
+    /// A world (sequential dimensions only).
+    ///
+    /// # Panics
+    ///
+    /// If the dimensions tick in parallel or the world does not exist.
+    pub fn world(&mut self, id: WorldId) -> &mut ServerWorld {
+        match &mut self.worlds {
+            Worlds::Sequential(worlds) => &mut worlds[id.index()],
+            Worlds::Parallel(_) => panic!("the harness needs sequential dimensions"),
+        }
+    }
+
+    /// A world for reading (sequential dimensions only).
+    ///
+    /// # Panics
+    ///
+    /// If the dimensions tick in parallel or the world does not exist.
+    pub fn world_ref(&self, id: WorldId) -> &ServerWorld {
+        match &self.worlds {
+            Worlds::Sequential(worlds) => &worlds[id.index()],
+            Worlds::Parallel(_) => panic!("the harness needs sequential dimensions"),
+        }
+    }
+
+    /// Runs a console command now, as the global pre-phase runs one.
+    pub fn command(&mut self, line: &str) {
+        self.run_console_command(line);
+    }
+
+    /// Sets the game time of the server and every world (`setGameTime` of the overworld's
+    /// data).
+    pub fn set_game_time(&mut self, time: i64) {
+        self.global
+            .level
+            .game_time
+            .store(time, std::sync::atomic::Ordering::Relaxed);
+        if let Worlds::Sequential(worlds) = &mut self.worlds {
+            for world in worlds {
+                world.level_mut().set_game_time(time);
+            }
+        }
+    }
+
+    /// A survival player without saved data joins like [`Server::accept`] admits one, on a
+    /// connection nobody reads. Its packets go through the returned sender.
+    pub fn join_without_network(
+        &mut self,
+        name: &str,
+        uuid: u128,
+    ) -> vanillite_protocol::InboundSender {
+        /// A connection nobody reads.
+        struct Unread;
+        impl vanillite_game::player::sink::PacketSink for Unread {
+            fn send_body(&self, _: Vec<u8>) -> bool {
+                true
+            }
+            fn send_shared(&self, _: &Arc<vanillite_protocol::SharedPacket>) -> bool {
+                true
+            }
+            fn close(&self) {}
+            fn is_closed(&self) -> bool {
+                false
+            }
+            fn latency_ms(&self) -> u32 {
+                0
+            }
+        }
+        let (tx, inbound) = vanillite_protocol::inbound_queue(64);
+        let arrival = crate::players::Arrival {
+            uuid,
+            profile: vanillite_game::player::GameProfile {
+                name: name.to_owned(),
+                properties: Vec::new(),
+            },
+            client: vanillite_game::player::ClientInformation::default(),
+            game_mode: vanillite_config::GameMode::Survival,
+            sink: Arc::new(Unread),
+            inbound,
+            memory_connection: true,
+            virtual_connection: true,
+            saved: None,
+            stats: None,
+            advancements: None,
+            address: "harness".to_owned(),
+            inbox: Arc::new(Mutex::new(
+                vanillite_game::player::chat::ChatInbox::default(),
+            )),
+        };
+        self.place_new_player(arrival, "127.0.0.1".to_owned());
+        tx
+    }
 }

@@ -14,6 +14,7 @@ use vanillite_base::{Aabb, BlockPos, Direction, Vec3};
 use vanillite_data::block::{BlockId, BlockKind, BlockState};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_protocol::text::Component;
+use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::{PosExt, StateExt};
 
 use super::{BlockBehaviour, Interaction, UseContext, sound_id};
@@ -177,6 +178,12 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         }
         _ => {}
     }
+    if matches!(
+        kind,
+        Kind::Chest | Kind::TrappedChest | Kind::EnderChest | Kind::Barrel
+    ) {
+        b.tick = Some(recheck_openers);
+    }
     match kind {
         Kind::Chest
         | Kind::TrappedChest
@@ -188,6 +195,12 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
             b.analog_output = Some(super::dispenser::container_signal);
         }
         _ => {}
+    }
+    if matches!(
+        kind,
+        Kind::Chest | Kind::TrappedChest | Kind::Barrel | Kind::EnderChest
+    ) {
+        b.tick = Some(recheck_open);
     }
     if kind == Kind::TrappedChest {
         b.signal = Some(trapped_chest_signal);
@@ -562,7 +575,8 @@ pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockE
         BlockEntity::Shelf(s) => &s.items,
         _ => return,
     };
-    let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();
+    // Every slot draws its drop position, empty ones too.
+    let items: Vec<ItemStack> = items.to_vec();
     for stack in items {
         drop_item_stack(level, pos, stack);
     }
@@ -614,6 +628,9 @@ pub enum ContainerRef {
     Double(BlockPos, BlockPos),
     /// A container entity (chest and hopper minecarts, chest boats).
     Entity(vanillite_world::entity::EntityId),
+    /// `ComposterBlock.getContainer`: the composter at the position with the state its
+    /// container was made for (input below level 7, bone meal output at level 8, none at 7).
+    Composter(BlockPos, BlockState),
 }
 
 impl ContainerRef {
@@ -636,11 +653,21 @@ impl ContainerRef {
         Some(ContainerRef::Block(pos))
     }
 
+    /// `HopperBlockEntity.getBlockContainer`: a composter's container (`WorldlyContainerHolder`)
+    /// or [`ContainerRef::at`].
+    pub fn at_block(level: &Level, pos: BlockPos) -> Option<ContainerRef> {
+        let state = level.block(pos);
+        if state.block() == vanillite_data::block::ids::COMPOSTER {
+            return Some(ContainerRef::Composter(pos, state));
+        }
+        ContainerRef::at(level, pos)
+    }
+
     /// `HopperBlockEntity.getContainerAt(level, x, y, z)`: the block container at the point,
     /// else a random container entity within half a block of it.
     pub fn at_point(level: &mut Level, point: Vec3) -> Option<ContainerRef> {
         let pos = BlockPos::containing(point.x, point.y, point.z);
-        if let Some(c) = ContainerRef::at(level, pos) {
+        if let Some(c) = ContainerRef::at_block(level, pos) {
             return Some(c);
         }
         let area = vanillite_base::Aabb::new(
@@ -668,7 +695,7 @@ impl ContainerRef {
 
     fn locate(self, level: &Level, slot: usize) -> Option<(BlockPos, usize)> {
         match self {
-            ContainerRef::Entity(_) => None,
+            ContainerRef::Entity(_) | ContainerRef::Composter(..) => None,
             ContainerRef::Block(p) => Some((p, slot)),
             ContainerRef::Double(a, b) => {
                 let first = items(level, a).map_or(0, <[ItemStack]>::len);
@@ -693,6 +720,7 @@ impl ContainerRef {
                 items(level, a).map_or(0, <[ItemStack]>::len)
                     + items(level, b).map_or(0, <[ItemStack]>::len)
             }
+            ContainerRef::Composter(_, state) => usize::from(composter_level(state) != 7),
         }
     }
 
@@ -704,6 +732,14 @@ impl ContainerRef {
                 .container_items(id)
                 .and_then(|items| items.get(slot).cloned())
                 .unwrap_or_default();
+        }
+        if let ContainerRef::Composter(pos, state) = self {
+            // The output holds its bone meal until it empties the composter.
+            return if slot == 0 && composter_level(state) == 8 && level.block(pos) == state {
+                ItemStack::new(vanillite_data::item::ids::BONE_MEAL.0, 1)
+            } else {
+                ItemStack::EMPTY
+            };
         }
         self.locate(level, slot)
             .and_then(|(p, i)| items(level, p)?.get(i).cloned())
@@ -731,6 +767,18 @@ impl ContainerRef {
             }
             return;
         }
+        if let ContainerRef::Composter(pos, state) = self {
+            // `InputContainer.setItem` → `setChanged`: the item becomes a layer at once.
+            let mut stack = stack;
+            if composter_level(state) < 7
+                && let Some(provider) = super::composter::compostable(&stack)
+            {
+                let new_state = super::composter::add_layer(level, None, state, pos, &provider);
+                level.level_event(None, 1500, pos, i32::from(new_state != state));
+                stack.shrink(1);
+            }
+            return;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return;
         };
@@ -747,6 +795,11 @@ impl ContainerRef {
 
     /// `removeItem(slot, 1)`: one item of a slot (a bookshelf updates its state).
     pub fn remove_one(self, level: &mut Level, slot: usize) {
+        if let ContainerRef::Composter(..) = self {
+            // `SimpleContainer.removeItem` → `OutputContainer.setChanged`.
+            self.set_changed(level);
+            return;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return;
         };
@@ -766,6 +819,13 @@ impl ContainerRef {
                 set_changed(level, b);
             }
             ContainerRef::Entity(_) => {}
+            // `OutputContainer.setChanged` empties the composter (again); the input turned its
+            // item into a layer when it was set.
+            ContainerRef::Composter(pos, state) => {
+                if composter_level(state) == 8 {
+                    super::composter::empty(level, None, state, pos);
+                }
+            }
         }
     }
 
@@ -796,7 +856,7 @@ impl ContainerRef {
                 ContainerRef::Block(b).is_empty(level)
             }
             // `isChestVehicleEmpty` reads the stacks as they are.
-            ContainerRef::Entity(_) => self.is_empty(level),
+            ContainerRef::Entity(_) | ContainerRef::Composter(..) => self.is_empty(level),
         }
     }
 
@@ -809,12 +869,22 @@ impl ContainerRef {
     pub fn hopper(self) -> Option<BlockPos> {
         match self {
             ContainerRef::Block(p) => Some(p),
-            ContainerRef::Double(..) | ContainerRef::Entity(_) => None,
+            ContainerRef::Double(..) | ContainerRef::Entity(_) | ContainerRef::Composter(..) => {
+                None
+            }
         }
     }
 
     /// `getSlotsForFace` (`WorldlyContainer`; all slots otherwise).
     pub fn slots_for_face(self, level: &Level, face: Direction) -> Vec<usize> {
+        if let ContainerRef::Composter(_, state) = self {
+            let open = match composter_level(state) {
+                8 => Direction::Down,
+                7 => return Vec::new(),
+                _ => Direction::Up,
+            };
+            return if face == open { vec![0] } else { Vec::new() };
+        }
         if let ContainerRef::Block(p) = self {
             match level.block_entity(p) {
                 Some(BlockEntity::Furnace(_)) => {
@@ -842,6 +912,9 @@ impl ContainerRef {
         if let ContainerRef::Entity(_) = self {
             return slot < self.size(level);
         }
+        if let ContainerRef::Composter(_, state) = self {
+            return composter_level(state) < 7 && super::composter::compostable(stack).is_some();
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };
@@ -867,6 +940,11 @@ impl ContainerRef {
         if let ContainerRef::Entity(_) = self {
             return slot < self.size(level);
         }
+        if let ContainerRef::Composter(_, state) = self {
+            return composter_level(state) == 8
+                && face == Direction::Down
+                && crate::item::item_id(stack) == vanillite_data::item::ids::BONE_MEAL;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };
@@ -886,6 +964,11 @@ impl ContainerRef {
     }
 }
 
+/// The `level` of a composter state.
+fn composter_level(state: BlockState) -> i32 {
+    state.int("level").unwrap_or(0)
+}
+
 // --- Viewers ---------------------------------------------------------------------------------
 
 /// `startOpen(player)`: one more viewer (spectators are not counted).
@@ -900,14 +983,104 @@ pub fn start_open(level: &mut Level, pos: BlockPos, spectator: bool) {
             c.openers += 1;
             let current = c.openers;
             openers_changed(level, state, pos, previous, current);
+            if previous == 0 {
+                schedule_recheck(level, state, pos);
+            }
         }
         Some(BlockEntity::EnderChest { openers }) => {
             let previous = *openers;
             *openers += 1;
             let current = *openers;
             openers_changed(level, state, pos, previous, current);
+            if previous == 0 {
+                schedule_recheck(level, state, pos);
+            }
         }
         _ => {}
+    }
+}
+
+/// `ContainerOpenersCounter.scheduleRecheck`: chests, barrels and ender chests count their
+/// viewers again in 5 ticks.
+fn schedule_recheck(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if matches!(
+        kind_of(state.block()),
+        Some(Kind::Chest | Kind::TrappedChest | Kind::Barrel | Kind::EnderChest)
+    ) {
+        level.schedule_block_tick(pos, state.block(), 5);
+    }
+}
+
+/// `tick` of chests, barrels and ender chests: `recheckOpen` (`recheckOpeners`): the viewers
+/// are counted again from the players and copper golems that have the container open near it
+/// (a viewer that left without closing no longer counts); while any remain, again in 5 ticks.
+fn recheck_open(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let previous = match level.block_entity(pos) {
+        Some(BlockEntity::Container(c)) => c.openers,
+        Some(BlockEntity::EnderChest { openers }) => *openers,
+        _ => return,
+    };
+    // `getEntitiesWithContainerOpen`: the box of the block inflated by the interaction range
+    // (a player's 4.5) plus 4.
+    let range = 4.5 + 4.0;
+    let (min, max) = (
+        Vec3::new(
+            f64::from(pos.x) - range,
+            f64::from(pos.y) - range,
+            f64::from(pos.z) - range,
+        ),
+        Vec3::new(
+            f64::from(pos.x) + 1.0 + range,
+            f64::from(pos.y) + 1.0 + range,
+            f64::from(pos.z) + 1.0 + range,
+        ),
+    );
+    let near = |level: &Level, id: EntityId| {
+        level.entities.store.get(id).is_some_and(|e| {
+            let b = e.aabb();
+            b.max_x > min.x
+                && b.min_x < max.x
+                && b.max_y > min.y
+                && b.min_y < max.y
+                && b.max_z > min.z
+                && b.min_z < max.z
+        })
+    };
+    let mut count = 0;
+    for (id, p) in level.entities.players.iter() {
+        if p.game_mode == vanillite_config::GameMode::Spectator || !near(level, id) {
+            continue;
+        }
+        let viewing = p.inventory.container.as_ref().is_some_and(|m| {
+            m.storage_positions()
+                .into_iter()
+                .flatten()
+                .any(|v| v == pos)
+        });
+        if viewing {
+            count += 1;
+        }
+    }
+    for (id, m) in level.entities.mobs.iter() {
+        if m.kind != crate::mob::Kind::CopperGolem || !near(level, id) {
+            continue;
+        }
+        let golem = crate::mob::fam::mount::copper_golem::golem(m);
+        let open = golem.opened_chest.is_some_and(|(opened, c)| {
+            opened == pos || matches!(c, ContainerRef::Double(a, b) if a == pos || b == pos)
+        });
+        if open {
+            count += 1;
+        }
+    }
+    match level.block_entity_mut(pos) {
+        Some(BlockEntity::Container(c)) => c.openers = count,
+        Some(BlockEntity::EnderChest { openers }) => *openers = count,
+        _ => return,
+    }
+    openers_changed(level, state, pos, previous, count);
+    if count > 0 {
+        schedule_recheck(level, state, pos);
     }
 }
 
@@ -934,6 +1107,23 @@ pub fn stop_open(level: &mut Level, pos: BlockPos, spectator: bool) {
     }
 }
 
+/// The delay of `ContainerOpenersCounter.scheduleRecheck`.
+const OPENERS_RECHECK_DELAY: i32 = 5;
+
+/// The scheduled tick of chests, ender chests and barrels (`recheckOpen`): an open container
+/// checks its viewers again every five ticks. The viewer count here is kept exact by
+/// [`start_open`] and [`stop_open`], so only the next check is scheduled.
+fn recheck_openers(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let open = match level.block_entity(pos) {
+        Some(BlockEntity::Container(c)) => c.openers > 0,
+        Some(BlockEntity::EnderChest { openers }) => *openers > 0,
+        _ => false,
+    };
+    if open {
+        level.schedule_block_tick(pos, state.block(), OPENERS_RECHECK_DELAY);
+    }
+}
+
 /// `onOpen` / `onClose` / `openerCountChanged` of the kinds that count viewers.
 fn openers_changed(
     level: &mut Level,
@@ -950,6 +1140,13 @@ fn openers_changed(
     let events = crate::level::game_event::events();
     if opened {
         level.game_event_at(None, events.container_open, pos);
+        // `ContainerOpenersCounter.scheduleRecheck`.
+        if matches!(
+            kind,
+            Kind::Chest | Kind::TrappedChest | Kind::EnderChest | Kind::Barrel
+        ) {
+            level.schedule_block_tick(pos, state.block(), OPENERS_RECHECK_DELAY);
+        }
     } else if closed {
         level.game_event_at(None, events.container_close, pos);
     }

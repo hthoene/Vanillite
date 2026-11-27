@@ -1,0 +1,21 @@
+{
+  "description": "Player break hooks: instantly mining ice with an efficiency pickaxe leaves water (IceBlock.playerDestroy), breaking unstable TNT by hand primes it (playerWillDestroy), and a left click lights redstone ore (RedStoneOreBlock.attack).",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "region": [[3, -62, 3], [13, -57, 10]],
+  "ticks": 20,
+  "entities": [
+    {"name": "p", "type": "minecraft:player", "pos": [8.5, -60.0, 6.5]}
+  ],
+  "setup": [
+    {"op": "set", "pos": [6, -60, 6], "block": "minecraft:ice"},
+    {"op": "set", "pos": [10, -60, 6], "block": "minecraft:redstone_ore"},
+    {"op": "set", "pos": [8, -60, 8], "block": "minecraft:tnt[unstable=true]"}
+  ],
+  "actions": [
+    {"tick": 2, "op": "attack", "entity": "p", "pos": [6, -60, 6], "face": "east", "item": "minecraft:diamond_pickaxe", "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"},
+    {"tick": 4, "op": "attack", "entity": "p", "pos": [10, -60, 6], "face": "west", "item": "minecraft:air"},
+    {"tick": 6, "op": "attack", "entity": "p", "pos": [8, -60, 8], "face": "north", "item": "minecraft:air"}
+  ]
+}

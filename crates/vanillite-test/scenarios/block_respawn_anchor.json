@@ -1,0 +1,96 @@
+{
+  "description": "A player charges a respawn anchor with glowstone twice (one glowstone each), then uses it with an empty hand: outside the Nether it explodes (power 5, fire, bad_respawn_point damage) behind an obsidian wall that shields the player.",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "sleep_state": true,
+  "region": [
+    [
+      2,
+      -63,
+      2
+    ],
+    [
+      14,
+      -56,
+      14
+    ]
+  ],
+  "ticks": 4,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "block": "minecraft:respawn_anchor[charges=0]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -60,
+        5
+      ],
+      "to": [
+        12,
+        -56,
+        5
+      ],
+      "block": "minecraft:obsidian"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        3.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "item": "minecraft:glowstone",
+      "count": 3
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        8
+      ]
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "item": "minecraft:air"
+    }
+  ]
+}

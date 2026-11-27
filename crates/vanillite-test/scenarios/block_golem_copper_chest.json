@@ -1,0 +1,78 @@
+{
+  "description": "Copper golems built next to single copper chests: the chest that replaces the copper block joins the neighbour facing the same way (getChestType) as the least oxidized of the pair, a waxed body next to an unwaxed chest gives an unwaxed chest.",
+  "tier": "fast",
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 3,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        10
+      ],
+      "block": "minecraft:weathered_copper"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        9
+      ],
+      "block": "minecraft:exposed_copper_chest[facing=east,type=single]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "block": "minecraft:waxed_copper_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        11
+      ],
+      "block": "minecraft:oxidized_copper_chest[facing=east,type=single]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        4,
+        -59,
+        10
+      ],
+      "block": "minecraft:carved_pumpkin[facing=east]"
+    },
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        10,
+        -59,
+        10
+      ],
+      "block": "minecraft:carved_pumpkin[facing=east]"
+    }
+  ]
+}

@@ -57,8 +57,25 @@ pub fn border_boxes(border: &WorldBorder, entity: &Aabb, area: &Aabb, out: &mut 
 /// `BlockCollisions`: the cells the box touches plus a ring around it, where ring cells only
 /// count with a large collision shape (fences, walls) and edge cells only for moving pistons.
 pub fn block_boxes(blocks: &dyn Blocks, area: &Aabb, out: &mut Vec<Aabb>) {
-    block_boxes_for(blocks, area, out, None);
+    block_boxes_for(blocks, area, out, None, SnowCollision::None);
 }
+
+/// How powder snow collides with an entity (`PowderSnowBlock.getCollisionShape` with the
+/// entity's context); its plain collision shape is empty.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum SnowCollision {
+    /// Entities sink in.
+    #[default]
+    None,
+    /// `fallDistance > 2.5`: the falling shape, 0.9 blocks high.
+    Falling,
+    /// `canEntityWalkOnPowderSnow` (powder snow walkable mobs, leather boots) with the feet
+    /// at this height: a full block below the feet, none above.
+    Walker(f64),
+}
+
+/// `PowderSnowBlock.FALLING_COLLISION_SHAPE` top: `0.9F`.
+const SNOW_FALLING_TOP: f64 = 0.899_999_976_158_142_1;
 
 /// `getLiquidCollisionShape` of the mobs that stand on lava (`Strider`): the lower half of a
 /// lava source.
@@ -72,6 +89,7 @@ pub fn block_boxes_for(
     area: &Aabb,
     out: &mut Vec<Aabb>,
     lava_bottom: Option<f64>,
+    snow: SnowCollision,
 ) {
     let min_x = floor(area.min_x - EPSILON) - 1;
     let max_x = floor(area.max_x + EPSILON) + 1;
@@ -116,6 +134,32 @@ pub fn block_boxes_for(
                     };
                     if shape.intersects(area) {
                         out.push(shape);
+                    }
+                    continue;
+                }
+                if snow != SnowCollision::None && state.block() == ids::POWDER_SNOW {
+                    let top = match snow {
+                        SnowCollision::Falling => Some(SNOW_FALLING_TOP),
+                        // `isAbove(Shapes.block(), pos, false)`.
+                        SnowCollision::Walker(bottom)
+                            if bottom > oy + 1.0 - f64::from(1.0e-5_f32) =>
+                        {
+                            Some(1.0)
+                        }
+                        _ => None,
+                    };
+                    if let Some(top) = top {
+                        let shape = Aabb {
+                            min_x: ox,
+                            min_y: oy,
+                            min_z: oz,
+                            max_x: ox + 1.0,
+                            max_y: oy + top,
+                            max_z: oz + 1.0,
+                        };
+                        if shape.intersects(area) {
+                            out.push(shape);
+                        }
                     }
                     continue;
                 }
@@ -245,13 +289,37 @@ pub fn collide_for(
     scratch: &mut Vec<Aabb>,
     on_lava: bool,
 ) -> Vec3 {
+    collide_in_context(
+        blocks,
+        aabb,
+        movement,
+        max_up_step,
+        on_ground,
+        scratch,
+        on_lava,
+        SnowCollision::None,
+    )
+}
+
+/// [`collide_for`] with the entity's powder snow collision.
+#[allow(clippy::too_many_arguments)]
+pub fn collide_in_context(
+    blocks: &dyn Blocks,
+    aabb: Aabb,
+    movement: Vec3,
+    max_up_step: f32,
+    on_ground: bool,
+    scratch: &mut Vec<Aabb>,
+    on_lava: bool,
+    snow: SnowCollision,
+) -> Vec3 {
     let lava_bottom = on_lava.then_some(aabb.min_y);
     let step = if movement.length_sqr() == 0.0 {
         movement
     } else {
         scratch.clear();
         let area = aabb.expand_towards(movement.x, movement.y, movement.z);
-        block_boxes_for(blocks, &area, scratch, lava_bottom);
+        block_boxes_for(blocks, &area, scratch, lava_bottom, snow);
         if let Some(border) = blocks.border() {
             border_boxes(border, &aabb, &area, scratch);
         }
@@ -272,7 +340,7 @@ pub fn collide_for(
             area = area.expand_towards(0.0, -1.0e-5, 0.0);
         }
         scratch.clear();
-        block_boxes_for(blocks, &area, scratch, lava_bottom);
+        block_boxes_for(blocks, &area, scratch, lava_bottom, snow);
         if let Some(border) = blocks.border() {
             border_boxes(border, &aabb, &area, scratch);
         }

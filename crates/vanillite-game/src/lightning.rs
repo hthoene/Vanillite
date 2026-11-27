@@ -549,8 +549,8 @@ pub fn thunder_hit(
         c.powered = true;
     }
     if kind == Kind::CopperGolem {
-        let uuid = ents.store.get(bolt).map_or(0, |e| e.uuid());
-        crate::mob::fam::mount::copper_golem::thunder_hit(ents, target, uuid);
+        let bolt = ents.store.get(bolt).map_or(0, |e| e.network_id().0);
+        crate::mob::fam::mount::copper_golem::thunder_hit(ents, target, bolt);
     }
 }
 

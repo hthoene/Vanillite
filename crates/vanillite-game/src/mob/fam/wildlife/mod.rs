@@ -474,7 +474,12 @@ impl FamilyHooks for Hooks {
     }
 
     fn ambient_sound_interval(kind: Kind) -> i32 {
-        if kind == Kind::Turtle { 200 } else { 120 }
+        match kind {
+            Kind::Turtle => 200,
+            // An `AmbientCreature`, no `Animal`.
+            Kind::Bat => 80,
+            _ => 120,
+        }
     }
 
     fn breathes_underwater(kind: Kind) -> bool {
@@ -776,6 +781,9 @@ impl FamilyHooks for Hooks {
             }
             Kind::Bee => {
                 m.nav.kind = NavKind::Flying;
+                m.nav.variant = crate::mob::nav::NavVariant::Bee;
+                let follow = m.attrs.follow_range;
+                m.nav.set_required_path_length(48.0, follow);
                 m.nav.can_open_doors = false;
                 m.nav.can_float = false;
                 m.move_ctl.kind = MoveKind::Flying {

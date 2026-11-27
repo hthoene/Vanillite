@@ -7,7 +7,7 @@ use vanillite_base::{BlockPos, ChunkPos, Direction};
 use vanillite_chunk::ProtoChunk;
 use vanillite_data::block::{BlockId, BlockState, ids};
 use vanillite_nbt::{Compound, Tag};
-use vanillite_worldgen::behaviour::{HorizontalAxis, PortalShape, StateExt};
+use vanillite_worldgen::behaviour::{HorizontalAxis, PortalShape, PosExt, StateExt};
 
 use super::BlockBehaviour;
 use crate::level::block_entity::BlockEntity;
@@ -24,7 +24,99 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         b.on_place = Some(fire_on_place);
     } else if block == ids::END_GATEWAY {
         b.trigger_event = Some(gateway_event);
+    } else if block == ids::NETHER_PORTAL {
+        b.random_tick = Some(nether_portal_random_tick);
     }
+}
+
+/// `NetherPortalBlock.randomTick`: now and then a zombified piglin spawns on the block below
+/// the portal, with a portal cooldown (`EntityType.spawn(level, pos.above(), STRUCTURE)`).
+fn nether_portal_random_tick(level: &mut Level, _state: BlockState, pos: BlockPos) {
+    use crate::mob::Kind;
+    use crate::survival::rules::Difficulty;
+    let difficulty = level.settings.difficulty;
+    if !level.settings.spawning_monsters
+        || difficulty == Difficulty::Peaceful
+        || !level.spawner_env.env.nether_portal_spawns_piglins
+        || level.random().next_int_bounded(2000) >= difficulty.id()
+        || !any_player_close_enough_for_spawning(level, pos.chunk())
+    {
+        return;
+    }
+    let mut pos = pos;
+    while level.block(pos).is(ids::NETHER_PORTAL) {
+        pos = pos.below();
+    }
+    let kind = Kind::ZombifiedPiglin;
+    if !crate::mob::spawn::is_valid_spawn(level, level.block(pos), kind.type_id()) {
+        return;
+    }
+    let at = pos.above();
+    let mut mob = crate::mob::MobData::new(kind, crate::mob::new_entity_seed());
+    let y_rot = vanillite_base::math::wrap_degrees_f(level.random().next_float() * 360.0);
+    let env = level.spawner_env.env;
+    let extra = crate::mob::spawn::with_level_random(level, |level, random| {
+        crate::mob::spawn::finalize(
+            level,
+            None,
+            &env,
+            &mut mob,
+            at,
+            difficulty,
+            0,
+            crate::mob::fam::SpawnReason::Structure,
+            random,
+        )
+    });
+    let position = vanillite_base::Vec3::new(
+        f64::from(at.x) + 0.5,
+        f64::from(at.y),
+        f64::from(at.z) + 0.5,
+    );
+    let id = crate::mob::spawn::add_mob_with(level, mob, position, y_rot, extra);
+    // `mob.playAmbientSound()`.
+    if let Some(m) = level.entities.mob_mut(id) {
+        let sound = crate::mob::kinds::ambient_sound(m);
+        let a = m.random.next_float();
+        let b = m.random.next_float();
+        let pitch = if m.baby {
+            (a - b) * 0.2 + 1.5
+        } else {
+            (a - b) * 0.2 + 1.0
+        };
+        let volume = crate::mob::fam::mob_sound_volume(m);
+        let silent = m.silent;
+        if let Some(sound) = sound.filter(|_| !silent) {
+            let p = position;
+            let sound = super::sound_id(sound.trim_start_matches("minecraft:"));
+            let source = crate::level::SOUND_HOSTILE;
+            level.play_sound(None, p.x, p.y, p.z, sound, source, volume, pitch);
+        }
+    }
+    // `setPortalCooldown` of the piglin and its vehicle.
+    let vehicle = level.entities.vehicle_of(id);
+    for e in std::iter::once(id).chain(vehicle) {
+        level.entities.portals.entry(e).or_default().cooldown = 300;
+    }
+}
+
+/// `ServerLevel.anyPlayerCloseEnoughForSpawning(chunk)`: a player within 5 chunks, or within 8
+/// chunks and 128 blocks of the chunk's centre (spectators do not count).
+fn any_player_close_enough_for_spawning(level: &Level, chunk: ChunkPos) -> bool {
+    level.entities.players.iter().any(|(id, p)| {
+        if p.game_mode == vanillite_config::GameMode::Spectator {
+            return false;
+        }
+        let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+            return false;
+        };
+        let own = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+        let d = (own.x - chunk.x).abs().max((own.z - chunk.z).abs());
+        d <= 5
+            || (d <= crate::mob::nearby::RADIUS
+                && crate::mob::nearby::chunk_center_distance_sqr(chunk, pos)
+                    < crate::mob::nearby::SPAWN_DISTANCE_SQR)
+    })
 }
 
 /// `BaseFireBlock.onPlace` (and `FireBlock.onPlace`'s fire tick): fire placed inside an empty

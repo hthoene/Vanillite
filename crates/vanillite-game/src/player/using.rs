@@ -108,7 +108,7 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
 
 /// `ItemStack.causeUseVibration`: `use_effects.interact_vibrations` of the stack (on by
 /// default, off for spears).
-fn use_vibrations(stack: &ItemStack) -> bool {
+pub(crate) fn use_vibrations(stack: &ItemStack) -> bool {
     match stack.component(vanillite_protocol::components::ids::USE_EFFECTS) {
         Some(data) => data.get(1).is_some_and(|b| *b != 0),
         None => !item::item_id(stack).name().ends_with("_spear"),

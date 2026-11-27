@@ -17,7 +17,7 @@ use crate::mob::projectile::ArrowData;
 use crate::player::PlayerData;
 
 /// The kind data of a `falling_block` (`FallingBlockEntity`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FallingBlockData {
     /// The falling block.
     pub state: BlockState,
@@ -27,6 +27,36 @@ pub struct FallingBlockData {
     pub drop_item: bool,
     /// Where it started falling (`DATA_START_POS`).
     pub start: BlockPos,
+    /// `hurtEntities`, `fallDamagePerDistance` and `fallDamageMax`: anvils and falling
+    /// stalactite tips hurt the entities they land on.
+    pub hurt_entities: bool,
+    pub fall_hurt_amount: f32,
+    pub fall_hurt_max: i32,
+    /// `cancelDrop`: an anvil broke on landing.
+    pub cancel_drop: bool,
+    /// `fallDistance`.
+    pub fall_distance: f64,
+    /// The seed of the entity's own random (`Entity.random`), drawn once by an anvil's chip
+    /// roll.
+    pub seed: i64,
+}
+
+impl FallingBlockData {
+    /// A falling block that hurts nobody (`new FallingBlockEntity(level, x, y, z, state)`).
+    pub fn new(state: BlockState, drop_item: bool, start: BlockPos, seed: i64) -> Self {
+        FallingBlockData {
+            state,
+            time: 0,
+            drop_item,
+            start,
+            hurt_entities: false,
+            fall_hurt_amount: 0.0,
+            fall_hurt_max: 40,
+            cancel_drop: false,
+            fall_distance: 0.0,
+            seed,
+        }
+    }
 }
 
 /// The kind data of a `tnt` entity (`PrimedTnt`).
@@ -41,6 +71,9 @@ pub struct PrimedTntData {
     /// `explosionPower`.
     pub explosion_power: f32,
 }
+
+/// The key of the plugins' persistent data in an entity's NBT (Paper's `BukkitValues`).
+pub const PERSISTENT_DATA: &str = "BukkitValues";
 
 /// All entities of a world. Kinds without own data yet only live in the core store.
 #[derive(Debug, Default)]
@@ -63,6 +96,9 @@ pub struct Entities {
     pub primed_tnts: Dense<PrimedTntData>,
     /// Entity tags (`Entity.tags`) of the entities that have any.
     tags: std::collections::HashMap<EntityId, Vec<String>>,
+    /// Plugins' persistent data (`BukkitValues`, as Paper saves it) of the entities that have
+    /// any.
+    persistent: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
     /// Area effect cloud kind data.
     pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
@@ -456,6 +492,31 @@ impl Entities {
         }
     }
 
+    /// The plugins' persistent data of an entity (`BukkitValues`), if it has any.
+    pub fn persistent_data(&self, id: EntityId) -> Option<&vanillite_nbt::Compound> {
+        self.persistent.get(&id).filter(|d| !d.is_empty())
+    }
+
+    /// The plugins' persistent data of a live entity, for changing (created empty).
+    pub fn persistent_data_mut(&mut self, id: EntityId) -> Option<&mut vanillite_nbt::Compound> {
+        if !self.store.contains(id) {
+            return None;
+        }
+        Some(self.persistent.entry(id).or_default())
+    }
+
+    /// Replaces the plugins' persistent data of an entity (loading, travelling).
+    pub fn set_persistent_data(&mut self, id: EntityId, data: Option<vanillite_nbt::Compound>) {
+        match data.filter(|d| !d.is_empty()) {
+            Some(data) if self.store.contains(id) => {
+                self.persistent.insert(id, data);
+            }
+            _ => {
+                self.persistent.remove(&id);
+            }
+        }
+    }
+
     /// `addTag`: false when the entity has it or already has 1024 tags.
     pub fn add_tag(&mut self, id: EntityId, tag: &str) -> bool {
         if !self.store.contains(id) {
@@ -592,6 +653,7 @@ impl Entities {
             self.portals.remove(&id);
         }
         self.tags.remove(&id);
+        self.persistent.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
             if removed.kind == ids::ENDER_DRAGON {
@@ -618,6 +680,7 @@ impl Entities {
         self.unlink(id);
         let removed = self.store.despawn(id)?;
         self.tags.remove(&id);
+        self.persistent.remove(&id);
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
         }

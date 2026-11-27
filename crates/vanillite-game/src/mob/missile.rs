@@ -434,8 +434,8 @@ pub fn tick(
     }
 }
 
-/// `Projectile.onHitBlock`: `onProjectileHit` of the block `projectile` hit at `at` (target
-/// blocks), applied with the world actions after the tick.
+/// `Projectile.onHitBlock`: `onProjectileHit` of the block `projectile` hit at `at`, applied
+/// with the world actions after the tick.
 pub fn hit_block(
     level: &Level,
     cx: &mut MobContext,
@@ -443,9 +443,27 @@ pub fn hit_block(
     block: vanillite_base::BlockPos,
     at: Vec3,
 ) {
-    if level.block(block).block() == vanillite_data::block::ids::TARGET {
+    hit_block_at_speed(level, cx, projectile, block, at, 0.0);
+}
+
+/// [`hit_block`] of a projectile that hit with `speed` (tridents break pointed dripstone).
+pub fn hit_block_at_speed(
+    level: &Level,
+    cx: &mut MobContext,
+    projectile: EntityId,
+    block: vanillite_base::BlockPos,
+    at: Vec3,
+    speed: f64,
+) {
+    let state = level.block(block);
+    if level
+        .behaviours()
+        .get(state.block())
+        .projectile_hit
+        .is_some()
+    {
         cx.actions.push(super::WorldAction::ProjectileHitBlock(
-            block, at, projectile,
+            block, at, projectile, speed,
         ));
     }
 }

@@ -171,6 +171,14 @@ impl Vec3 {
             z: v.z,
         }
     }
+
+    pub(crate) fn to_abi(self) -> abi::Vec3 {
+        abi::Vec3 {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+        }
+    }
 }
 
 /// A message: plain text or a JSON text component.
@@ -217,6 +225,334 @@ impl From<&str> for Text {
 impl From<String> for Text {
     fn from(s: String) -> Text {
         Text::Plain(s)
+    }
+}
+
+/// A game mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GameMode {
+    /// Survival.
+    Survival,
+    /// Creative.
+    Creative,
+    /// Adventure.
+    Adventure,
+    /// Spectator.
+    Spectator,
+}
+
+impl GameMode {
+    pub(crate) fn from_abi(v: u32) -> GameMode {
+        match v {
+            abi::game_mode::CREATIVE => GameMode::Creative,
+            abi::game_mode::ADVENTURE => GameMode::Adventure,
+            abi::game_mode::SPECTATOR => GameMode::Spectator,
+            _ => GameMode::Survival,
+        }
+    }
+
+    pub(crate) fn to_abi(self) -> u32 {
+        match self {
+            GameMode::Survival => abi::game_mode::SURVIVAL,
+            GameMode::Creative => abi::game_mode::CREATIVE,
+            GameMode::Adventure => abi::game_mode::ADVENTURE,
+            GameMode::Spectator => abi::game_mode::SPECTATOR,
+        }
+    }
+}
+
+/// A place in a world with a facing. Since ABI 1.5.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Location {
+    /// The world.
+    pub world: World,
+    /// The position.
+    pub pos: Vec3,
+    /// Yaw in degrees.
+    pub yaw: f32,
+    /// Pitch in degrees.
+    pub pitch: f32,
+}
+
+impl Location {
+    pub(crate) fn from_abi(l: abi::Location) -> Location {
+        Location {
+            world: World(l.world),
+            pos: Vec3::from_abi(l.pos),
+            yaw: l.yaw,
+            pitch: l.pitch,
+        }
+    }
+
+    pub(crate) fn to_abi(self) -> abi::Location {
+        abi::Location {
+            world: self.world.0,
+            pos: self.pos.to_abi(),
+            yaw: self.yaw,
+            pitch: self.pitch,
+        }
+    }
+}
+
+/// What the server knows about an online player ([`Server::player_info`](crate::Server::player_info)).
+/// Since ABI 1.5.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerInfo {
+    /// Its world.
+    pub world: World,
+    /// Its game mode.
+    pub game_mode: GameMode,
+    /// Its operator level, 0 for none.
+    pub op_level: u32,
+    /// Its latency in milliseconds.
+    pub ping: i32,
+}
+
+/// Tick statistics ([`Server::stats`](crate::Server::stats)). Since ABI 1.5.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ServerStats {
+    /// The tick count.
+    pub tick: u64,
+    /// Average milliseconds per tick over the last 100 ticks.
+    pub mspt: f64,
+    /// Ticks per second over the last 100 ticks.
+    pub tps: f64,
+    /// The tick rate.
+    pub tick_rate: f64,
+    /// Online players.
+    pub online: u32,
+    /// The player limit.
+    pub max_players: u32,
+}
+
+/// A sound for one player ([`Server::play_sound`](crate::Server::play_sound)). Since ABI 1.5.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sound {
+    /// The sound event, e.g. `minecraft:entity.experience_orb.pickup`.
+    pub sound: String,
+    /// The category, one of [`abi::sound_source`].
+    pub source: u32,
+    /// Where it plays.
+    pub pos: Vec3,
+    /// Volume (1 is normal).
+    pub volume: f32,
+    /// Pitch, 0.5 to 2.
+    pub pitch: f32,
+    /// Seed of the variant choice.
+    pub seed: i64,
+}
+
+impl Sound {
+    /// A sound of the `master` category at a position with volume and pitch 1.
+    pub fn new(sound: &str, pos: Vec3) -> Sound {
+        Sound {
+            sound: sound.to_owned(),
+            source: abi::sound_source::MASTER,
+            pos,
+            volume: 1.0,
+            pitch: 1.0,
+            seed: 0,
+        }
+    }
+}
+
+/// Particles for one player ([`Server::spawn_particle`](crate::Server::spawn_particle)). Since
+/// ABI 1.5.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Particle {
+    /// The particle as `/particle` takes it, e.g. `minecraft:flame` or
+    /// `minecraft:dust{color:[1.0,0.0,0.0],scale:1.0}`.
+    pub particle: String,
+    /// Where they appear.
+    pub pos: Vec3,
+    /// Spread on each axis.
+    pub delta: Vec3,
+    /// Speed.
+    pub speed: f32,
+    /// Count.
+    pub count: i32,
+    /// Visible up to 512 blocks away instead of 32.
+    pub force: bool,
+}
+
+impl Particle {
+    /// `count` particles without spread or speed.
+    pub fn new(particle: &str, pos: Vec3, count: i32) -> Particle {
+        Particle {
+            particle: particle.to_owned(),
+            pos,
+            delta: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            speed: 0.0,
+            count,
+            force: false,
+        }
+    }
+}
+
+/// The server's access lists. Since ABI 1.5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AccessList {
+    /// Operators.
+    Operator,
+    /// The whitelist.
+    Whitelist,
+    /// Banned players.
+    Ban,
+    /// Banned IP addresses.
+    IpBan,
+}
+
+impl AccessList {
+    pub(crate) fn to_abi(self) -> u32 {
+        match self {
+            AccessList::Operator => abi::access_list::OPERATOR,
+            AccessList::Whitelist => abi::access_list::WHITELIST,
+            AccessList::Ban => abi::access_list::BAN,
+            AccessList::IpBan => abi::access_list::IP_BAN,
+        }
+    }
+}
+
+/// Weather. Since ABI 1.5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Weather {
+    /// Clear.
+    Clear,
+    /// Rain.
+    Rain,
+    /// Thunder.
+    Thunder,
+}
+
+/// A status effect to give ([`Ctx::add_effect`](crate::Ctx::add_effect)). Since ABI 1.5.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Effect {
+    /// The effect, e.g. `minecraft:speed`.
+    pub effect: String,
+    /// Duration in ticks; -1 for infinite.
+    pub duration: i32,
+    /// Amplifier (0 is level I).
+    pub amplifier: i32,
+    /// Ambient (as from a beacon).
+    pub ambient: bool,
+    /// Shows particles.
+    pub particles: bool,
+    /// Shows the icon.
+    pub icon: bool,
+}
+
+impl Effect {
+    /// An effect with particles and icon.
+    pub fn new(effect: &str, duration: i32, amplifier: i32) -> Effect {
+        Effect {
+            effect: effect.to_owned(),
+            duration,
+            amplifier,
+            ambient: false,
+            particles: true,
+            icon: true,
+        }
+    }
+
+    pub(crate) fn flags(&self) -> u32 {
+        let mut flags = 0;
+        if self.ambient {
+            flags |= abi::effect_flag::AMBIENT;
+        }
+        if !self.particles {
+            flags |= abi::effect_flag::HIDE_PARTICLES;
+        }
+        if !self.icon {
+            flags |= abi::effect_flag::HIDE_ICON;
+        }
+        flags
+    }
+}
+
+/// A hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Hand {
+    /// The main hand.
+    Main,
+    /// The off hand.
+    Off,
+}
+
+/// A persistent data value ([`Ctx::entity_data`](crate::Ctx::entity_data)), stored as the NBT
+/// tag of the same name in the entity's `BukkitValues`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DataValue {
+    /// A byte.
+    Byte(i8),
+    /// A short.
+    Short(i16),
+    /// An int.
+    Int(i32),
+    /// A long.
+    Long(i64),
+    /// A float.
+    Float(f32),
+    /// A double.
+    Double(f64),
+    /// Bytes.
+    Bytes(Vec<u8>),
+    /// A string.
+    String(String),
+    /// Ints.
+    Ints(Vec<i32>),
+    /// Longs.
+    Longs(Vec<i64>),
+}
+
+impl DataValue {
+    /// The ABI type and bytes.
+    pub(crate) fn encode(&self) -> (u32, Vec<u8>) {
+        use abi::data_type as t;
+        match self {
+            DataValue::Byte(v) => (t::BYTE, v.to_le_bytes().to_vec()),
+            DataValue::Short(v) => (t::SHORT, v.to_le_bytes().to_vec()),
+            DataValue::Int(v) => (t::INT, v.to_le_bytes().to_vec()),
+            DataValue::Long(v) => (t::LONG, v.to_le_bytes().to_vec()),
+            DataValue::Float(v) => (t::FLOAT, v.to_le_bytes().to_vec()),
+            DataValue::Double(v) => (t::DOUBLE, v.to_le_bytes().to_vec()),
+            DataValue::Bytes(v) => (t::BYTE_ARRAY, v.clone()),
+            DataValue::String(v) => (t::STRING, v.as_bytes().to_vec()),
+            DataValue::Ints(v) => (
+                t::INT_ARRAY,
+                v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            ),
+            DataValue::Longs(v) => (
+                t::LONG_ARRAY,
+                v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            ),
+        }
+    }
+
+    /// From the ABI type and bytes; `None` for a malformed value.
+    pub(crate) fn decode(kind: u32, bytes: &[u8]) -> Option<DataValue> {
+        fn array<const N: usize, T>(bytes: &[u8], f: fn([u8; N]) -> T) -> Option<Vec<T>> {
+            let (chunks, rest) = bytes.as_chunks::<N>();
+            rest.is_empty()
+                .then(|| chunks.iter().map(|c| f(*c)).collect())
+        }
+        use abi::data_type as t;
+        Some(match kind {
+            t::BYTE => DataValue::Byte(i8::from_le_bytes(bytes.try_into().ok()?)),
+            t::SHORT => DataValue::Short(i16::from_le_bytes(bytes.try_into().ok()?)),
+            t::INT => DataValue::Int(i32::from_le_bytes(bytes.try_into().ok()?)),
+            t::LONG => DataValue::Long(i64::from_le_bytes(bytes.try_into().ok()?)),
+            t::FLOAT => DataValue::Float(f32::from_le_bytes(bytes.try_into().ok()?)),
+            t::DOUBLE => DataValue::Double(f64::from_le_bytes(bytes.try_into().ok()?)),
+            t::BYTE_ARRAY => DataValue::Bytes(bytes.to_vec()),
+            t::STRING => DataValue::String(String::from_utf8(bytes.to_vec()).ok()?),
+            t::INT_ARRAY => DataValue::Ints(array(bytes, i32::from_le_bytes)?),
+            t::LONG_ARRAY => DataValue::Longs(array(bytes, i64::from_le_bytes)?),
+            _ => return None,
+        })
     }
 }
 

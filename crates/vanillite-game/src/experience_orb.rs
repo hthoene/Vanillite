@@ -181,13 +181,15 @@ pub(crate) fn spawn(
     direction: Vec3,
     value: i32,
 ) -> EntityId {
-    // The constructor draws from the new orb's own random (`Entity.random`).
-    let mut r = LegacyRandom::new(crate::mob::new_entity_seed());
-    let y_rot = r.next_float() * 360.0;
-    let x = (r.next_double() * 0.2 - 0.1) * 2.0;
-    let y = r.next_double() * 0.2 * 2.0;
-    let z = (r.next_double() * 0.2 - 0.1) * 2.0;
-    let mut motion = Vec3::new(x, y, z);
+    // The orb's own random (seeded from the entity seed stream): the yaw, then the motion.
+    let (y_rot, mut motion) = {
+        let mut r = LegacyRandom::new(crate::mob::new_entity_seed());
+        let y_rot = r.next_float() * 360.0;
+        let x = (r.next_double() * 0.2 - 0.1) * 2.0;
+        let y = r.next_double() * 0.2 * 2.0;
+        let z = (r.next_double() * 0.2 - 0.1) * 2.0;
+        (y_rot, Vec3::new(x, y, z))
+    };
     let length_sqr = direction.length_sqr();
     let mut at = pos;
     if length_sqr > 0.0 {
@@ -306,8 +308,8 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         // `Block.updateEntityMovementAfterFallOn`.
         v.y = 0.0;
     }
-    // `getAirDrag` (a float), times the friction of the block below on the ground.
-    let mut friction = 0.98_f32;
+    // `getAirDrag()` (0.98F) times the block friction, in float.
+    let mut friction: f32 = 0.98;
     if below {
         let under = BlockPos::new(
             floor(new_pos.x),

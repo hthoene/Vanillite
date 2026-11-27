@@ -183,6 +183,13 @@ pub enum AdminRequest {
     EntityTagQuery { transaction_id: i32, entity_id: i32 },
     /// `teleport_to_entity`: the spectator menu teleport to the entity with this UUID.
     TeleportToEntity(u128),
+    /// `custom_payload` on a channel outside the `minecraft` namespace, for plugins.
+    PluginMessage {
+        /// The channel.
+        channel: String,
+        /// The payload.
+        data: Vec<u8>,
+    },
 }
 
 /// A player's chat state.
@@ -246,6 +253,8 @@ pub struct Connection {
     /// Attacks and interactions with entities since the last tick (`attack`, `interact`), in
     /// packet order; the world resolves them with the entities.
     pub entity_actions: Vec<EntityAction>,
+    /// `STOP_SLEEPING` (leave bed) arrived; the world wakes the player after its packets.
+    pub leave_bed: bool,
     /// `ServerPlayer.camera`: the entity a spectator watches through (`None`: itself).
     pub camera: Option<vanillite_world::entity::EntityId>,
     /// Vehicle input: the last `player_input`, `paddle_boat` and `move_vehicle`.
@@ -312,6 +321,7 @@ impl Connection {
             chunks: PlayerChunks::new(memory_connection),
             chat: PlayerChatState::new(chat, inbox),
             entity_actions: Vec::new(),
+            leave_bed: false,
             camera: None,
             vehicle: VehicleInput::default(),
             play: Digging::new(),
@@ -577,7 +587,7 @@ impl Connection {
                     match p.action {
                         PlayerAction::StartSprinting => state.sprinting = true,
                         PlayerAction::StopSprinting => state.sprinting = false,
-                        // Sleeping comes later.
+                        // Riding jumps' end comes later.
                         PlayerAction::StartRidingJump => {
                             self.vehicle.jump = Some(p.data);
                         }
@@ -591,7 +601,9 @@ impl Connection {
                                 self.entity_actions.push(EntityAction::StartFallFlying);
                             }
                         }
-                        PlayerAction::StopSleeping | PlayerAction::StopRidingJump => {}
+                        // `if (player.isSleeping()) player.stopSleepInBed(false, true)`.
+                        PlayerAction::StopSleeping => self.leave_bed = true,
+                        PlayerAction::StopRidingJump => {}
                     }
                 }
             }
@@ -794,6 +806,13 @@ impl Connection {
                     "multiplayer.disconnect.invalid_packet",
                     vec![],
                 ))));
+            }
+            // Payloads of other namespaces may be plugin messages; Vanilla ignores them.
+            ServerboundPlay::CustomPayload(p) if p.channel.namespace() != "minecraft" => {
+                self.admin(AdminRequest::PluginMessage {
+                    channel: p.channel.as_str().to_owned(),
+                    data: p.data.0,
+                });
             }
             // Keep-alives and ping requests are answered by the network task; cookies, custom
             // payloads, pongs and resource packs come later.
@@ -1293,6 +1312,7 @@ impl Connection {
         play.inventory.menu.suppress_remote = true;
         play.inventory
             .click(p.slot, p.button, p.input, ctx, play.drops);
+        super::play::flush_equips(play);
         let sounds = std::mem::take(&mut play.inventory.menu.sounds);
         play_bundle_sounds(play, sounds);
         play.inventory.flush_result_updates(sink);

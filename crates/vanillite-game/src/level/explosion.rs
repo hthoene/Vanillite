@@ -56,6 +56,8 @@ pub enum BlockResistance {
     /// `AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`: `#blocks_wind_charge_explosions` are
     /// immune.
     WindCharge,
+    /// `RespawnAnchorBlock.explode` in water: the anchor's position resists like water.
+    WaterAt(BlockPos),
 }
 
 /// An explosion for the clients (`ClientboundExplodePacket`), sent to players within 64 blocks.
@@ -89,6 +91,8 @@ pub struct ExplosionStyle {
     pub resistance: BlockResistance,
     /// `fire`: sets fire to some of the blown up positions (`createFire`).
     pub fire: bool,
+    /// The damage is `badRespawnPointExplosion` (beds and respawn anchors).
+    pub bad_respawn_point: bool,
 }
 
 impl Default for ExplosionStyle {
@@ -99,6 +103,7 @@ impl Default for ExplosionStyle {
             wind_sound: None,
             resistance: BlockResistance::Default,
             fire: false,
+            bad_respawn_point: false,
         }
     }
 }
@@ -123,6 +128,8 @@ pub struct ExplosionHurt {
     pub blocklike: bool,
     /// The source is a wind charge.
     pub wind: bool,
+    /// `badRespawnPointExplosion` instead of `explosion`.
+    pub bad_respawn_point: bool,
 }
 
 impl ExplosionHurt {
@@ -243,6 +250,9 @@ impl Level {
                             {
                                 power -= (3_600_000.0 + 0.3) * 0.3;
                             }
+                        } else if override_resistance == BlockResistance::WaterAt(pos) {
+                            let water = vanillite_data::block::ids::WATER.default_state();
+                            power -= (water.block().info().blast_resistance + 0.3) * 0.3;
                         } else if !(state.is_air() && fluid.is_empty()) {
                             let mut resistance = if rail_protected {
                                 0.0
@@ -402,6 +412,7 @@ impl Level {
                     center,
                     blocklike: destroys && !wind,
                     wind,
+                    bad_respawn_point: style.bad_respawn_point,
                 });
             }
             if decor || crate::decoration::is_decor_kind(kind) {
@@ -483,6 +494,15 @@ impl Level {
                     crate::block::beehive::exploded(self, pos, state, source);
                 }
                 loot.clear();
+                // `spawnAfterBreak` with experience only for a player's explosion.
+                let by_player = indirect.is_some_and(|i| self.entities.player(i).is_some());
+                crate::block::break_hooks::spawn_after_break(
+                    self,
+                    state,
+                    pos,
+                    &crate::item::ItemStack::EMPTY,
+                    by_player,
+                );
                 drops::explosion_loot(self, pos, state, decay, source, &mut loot);
                 for mut stack in loot.drain(..) {
                     for (_, collected) in &mut stacks {

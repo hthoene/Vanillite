@@ -1,12 +1,11 @@
 //! Scenario parity with Vanilla: every scenario runs serially and in parallel (verify mode) and
 //! its trace must equal the golden exactly.
 
-use vanillite_test::game_world::GameWorld;
 use vanillite_test::runner::check_tier;
 use vanillite_test::scenario::Tier;
 
-// The scenario world: a headless game level.
-const WORLD: vanillite_test::world::WorldFactory = GameWorld::factory;
+// The scenario world: a headless game level, or the server for scenarios across dimensions.
+const WORLD: vanillite_test::world::WorldFactory = vanillite_test::server_world::factory;
 
 #[test]
 fn fast_scenarios() {

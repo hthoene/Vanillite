@@ -173,7 +173,8 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             check_format(&egg)?;
             crate::write(&root.join(EGG_PATH), &egg)?;
             println!("wrote {EGG_PATH}");
-            Ok(())
+            // The configuration reference comes from the same schema.
+            crate::configdoc::run(root, &[])
         }
         ["--check"] => check(root),
         ["smoke"] => smoke(root, &default_image()),
@@ -182,8 +183,10 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     }
 }
 
-/// Fails if the committed egg differs from the generated one or breaks the egg format.
+/// Fails if the committed egg differs from the generated one or breaks the egg format, or if
+/// the configuration reference is stale.
 pub fn check(root: &Path) -> Result<()> {
+    crate::configdoc::check(root)?;
     let egg = render(root)?;
     check_format(&egg)?;
     let committed = crate::read(&root.join(EGG_PATH)).unwrap_or_default();

@@ -1,0 +1,35 @@
+{
+  "description": "Projectiles on blocks (onProjectileHit): an arrow rings a floor bell from its open side, burning arrows prime TNT, light a campfire and a candle, arrows break a chorus flower and a decorated pot (without drops), chime amethyst and tip a big dripleaf, and arrows in a wooden button and a wooden pressure plate press them (a stone button ignores its arrow).",
+  "tier": "fast",
+  "level_rng": true,
+  "rules": {"block_drops": "false"},
+  "region": [[0, -62, 0], [21, -56, 10]],
+  "ticks": 45,
+  "setup": [
+    {"op": "set", "pos": [2, -60, 2], "block": "minecraft:bell[attachment=floor,facing=north]"},
+    {"op": "set", "pos": [5, -60, 2], "block": "minecraft:tnt"},
+    {"op": "set", "pos": [8, -60, 2], "block": "minecraft:campfire[lit=false]"},
+    {"op": "set", "pos": [11, -60, 2], "block": "minecraft:candle[candles=1,lit=false]"},
+    {"op": "set", "pos": [14, -61, 2], "block": "minecraft:end_stone"},
+    {"op": "set", "pos": [14, -60, 2], "block": "minecraft:chorus_flower"},
+    {"op": "set", "pos": [17, -60, 2], "block": "minecraft:amethyst_block"},
+    {"op": "set", "pos": [20, -60, 2], "block": "minecraft:decorated_pot"},
+    {"op": "set", "pos": [6, -60, 8], "block": "minecraft:big_dripleaf[facing=north,tilt=none]"},
+    {"op": "set", "pos": [10, -60, 8], "block": "minecraft:oak_button[face=floor,facing=north]"},
+    {"op": "set", "pos": [14, -60, 8], "block": "minecraft:oak_pressure_plate"},
+    {"op": "set", "pos": [18, -60, 8], "block": "minecraft:stone_button[face=floor,facing=north]"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 2.5 -59.6 0.5 {Motion:[0.0,0.0,1.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 5.5 -59.6 0.5 {Motion:[0.0,0.0,1.0],Fire:100s}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 8.5 -59.75 0.5 {Motion:[0.0,0.0,1.0],Fire:100s}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 11.5 -58.5 2.5 {Motion:[0.0,-1.0,0.0],Fire:100s}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 14.5 -59.5 0.5 {Motion:[0.0,0.0,1.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 17.5 -59.5 0.5 {Motion:[0.0,0.0,1.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 20.5 -59.6 0.5 {Motion:[0.0,0.0,1.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 6.5 -59.15 6.5 {Motion:[0.0,0.0,1.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 10.5 -58.5 8.5 {Motion:[0.0,-1.0,0.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 14.5 -58.5 8.5 {Motion:[0.0,-1.0,0.0]}"},
+    {"tick": 1, "op": "command", "command": "summon minecraft:arrow 18.5 -58.5 8.5 {Motion:[0.0,-1.0,0.0]}"}
+  ]
+}

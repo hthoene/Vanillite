@@ -393,7 +393,7 @@ fn attempt_spread_vein(
     spread_all(level, false, state, pos) > 0
 }
 
-fn is_water(state: BlockState) -> bool {
+pub(super) fn is_water(state: BlockState) -> bool {
     crate::mob::is_water(state)
 }
 
@@ -659,7 +659,7 @@ fn is_pos_unreasonable(pos: BlockPos, origin: BlockPos) -> bool {
 }
 
 /// The serialized name of a direction.
-fn direction_name(direction: Direction) -> &'static str {
+pub(super) fn direction_name(direction: Direction) -> &'static str {
     match direction {
         Direction::Down => "down",
         Direction::Up => "up",
@@ -677,7 +677,7 @@ fn direction_by_name(name: &str) -> Option<Direction> {
 }
 
 /// `MultifaceBlock.hasFace`.
-fn has_face(state: BlockState, face: Direction) -> bool {
+pub(super) fn has_face(state: BlockState, face: Direction) -> bool {
     state.value(direction_name(face)) == Some("true")
 }
 
@@ -698,7 +698,7 @@ fn available_faces(state: BlockState) -> u8 {
 }
 
 /// `MultifaceBlock.canAttachTo(level, pos, direction)`.
-fn can_attach_to(level: &Level, pos: BlockPos, direction: Direction) -> bool {
+pub(super) fn can_attach_to(level: &Level, pos: BlockPos, direction: Direction) -> bool {
     let neighbour = level.block(pos.relative(direction));
     let face = direction.opposite();
     is_face_sturdy(neighbour, face)

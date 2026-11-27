@@ -86,6 +86,7 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         b.direct_signal = Some(components::attached_direct_signal);
         b.use_without_item = Some(components::button_use);
         b.tick = Some(components::button_tick);
+        b.entity_inside = Some(components::button_entity_inside);
     } else if block == ids::REDSTONE_BLOCK {
         b.signal = Some(components::full_signal);
     } else if block == ids::REDSTONE_LAMP {
@@ -162,6 +163,11 @@ impl BlockSet {
         } else {
             wood("wooden")
         }
+    }
+
+    /// `canButtonBeActivatedByArrows`: wooden sets.
+    pub(crate) fn can_button_be_activated_by_arrows(self) -> bool {
+        !matches!(self.family, "iron" | "copper" | "stone")
     }
 
     /// `canOpenByWindCharge`: everything but iron.

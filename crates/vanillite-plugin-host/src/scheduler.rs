@@ -19,6 +19,8 @@ struct Task {
     period: u64,
     /// The entity an entity task follows.
     entity: Option<u128>,
+    /// Runs on a background thread (waits on the global queue while delayed).
+    background: bool,
     run: abi::TaskFn,
     drop: Option<abi::DropFn>,
     user: SendPtr,
@@ -59,12 +61,19 @@ impl Tasks {
     ) -> Result<u64, Status> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let now = inner.tick.load(Ordering::Acquire);
+        let background = spec.owner.kind == abi::owner::BACKGROUND;
         let task = Task {
             id,
             plugin: plugin.local,
             due: now.saturating_add(spec.delay),
-            period: spec.period,
+            // Background tasks repeat since ABI 1.4; older plugins asked for one run.
+            period: if background && plugin.info.abi_minor < 4 {
+                0
+            } else {
+                spec.period
+            },
             entity: (spec.owner.kind == abi::owner::ENTITY).then(|| spec.owner.entity.to_u128()),
+            background,
             run: spec.run,
             drop: spec.drop,
             user: SendPtr(spec.user),
@@ -77,19 +86,12 @@ impl Tasks {
                 return Ok(id);
             }
             abi::owner::BACKGROUND | abi::owner::GLOBAL => {
+                // A delayed background task waits on the global queue, then moves off.
                 self.queues
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .global
-                    .push(Task {
-                        // A delayed background task waits on the global queue, then moves off.
-                        period: if spec.owner.kind == abi::owner::BACKGROUND {
-                            u64::MAX
-                        } else {
-                            task.period
-                        },
-                        ..task
-                    });
+                    .push(task);
             }
             abi::owner::WORLD | abi::owner::LOCATION | abi::owner::ENTITY => {
                 if let Some(server) = inner.server()
@@ -187,11 +189,10 @@ impl Tasks {
 
     pub(crate) fn run_global(&self, inner: &Inner, tick: u64) {
         for task in self.take_due(None, tick) {
-            if task.period == u64::MAX {
+            if task.background {
                 // A delayed background task: now off to a background thread.
                 if let (Some(server), Some(host)) = (inner.server(), inner.self_arc()) {
                     let host = HostRef(host);
-                    let task = Task { period: 0, ..task };
                     server.spawn_background(Box::new(move || run_background(&host.0, task)));
                 } else {
                     drop_task(inner, &task);
@@ -274,7 +275,7 @@ fn run(inner: &Inner, task: &Task, world: Option<&mut dyn WorldAccess>) -> Statu
     let Some(plugin) = inner.plugin(task.plugin) else {
         return status::NOT_FOUND;
     };
-    let mut ctx = CallCtx::new(world);
+    let mut ctx = CallCtx::new(world, &plugin);
     plugin.call("a scheduled task", || {
         // SAFETY: the plugin's task and user data live until its drop function runs.
         unsafe { (task.run)(task.user.0, ctx.as_raw()) }
@@ -284,9 +285,11 @@ fn run(inner: &Inner, task: &Task, world: Option<&mut dyn WorldAccess>) -> Statu
 /// A host reference for a background job.
 struct HostRef(Arc<Inner>);
 
+/// Runs a background task; a periodic one waits on the global queue for its next run.
 fn run_background(inner: &Inner, task: Task) {
-    run(inner, &task, None);
-    drop_task(inner, &task);
+    let ran = run(inner, &task, None);
+    let tick = inner.tick.load(Ordering::Acquire);
+    inner.tasks.finish(inner, task, None, tick, ran);
 }
 
 impl Inner {

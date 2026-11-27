@@ -719,22 +719,36 @@ pub(crate) fn summon(
         let data = vanillite_game::item_entity::ItemData::new(stack, 0, None);
         entities.spawn_item(network_id, uuid, pos, Vec3::new(0.0, 0.0, 0.0), 0.0, data)
     } else if kind == ids::FALLING_BLOCK {
-        let data = FallingBlockData {
-            state: block_state(
+        let mut data = FallingBlockData::new(
+            block_state(
                 "BlockState",
                 vanillite_data::block::ids::SAND.default_state(),
             ),
-            time: nbt
-                .get("Time")
-                .and_then(Tag::as_i64)
-                .and_then(|v| i32::try_from(v).ok())
-                .unwrap_or(0),
-            drop_item: nbt
-                .get("DropItem")
+            nbt.get("DropItem")
                 .and_then(Tag::as_i64)
                 .is_none_or(|v| v != 0),
-            start: BlockPos::new(0, 0, 0),
-        };
+            BlockPos::new(0, 0, 0),
+            vanillite_game::mob::new_entity_seed(),
+        );
+        data.time = nbt
+            .get("Time")
+            .and_then(Tag::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(0);
+        data.hurt_entities = nbt.get("HurtEntities").and_then(Tag::as_i64).map_or_else(
+            || vanillite_game::block::falling::is_anvil(data.state.block()),
+            |v| v != 0,
+        );
+        if let Some(Tag::Float(v)) = nbt.get("FallHurtAmount") {
+            data.fall_hurt_amount = *v;
+        }
+        if let Some(v) = nbt.get("FallHurtMax").and_then(Tag::as_i64) {
+            data.fall_hurt_max = i32::try_from(v).unwrap_or(40);
+        }
+        data.cancel_drop = nbt
+            .get("CancelDrop")
+            .and_then(Tag::as_i64)
+            .is_some_and(|v| v != 0);
         entities.spawn_falling_block(new, data)
     } else if kind == ids::TNT {
         let power = match nbt.get("explosion_power") {

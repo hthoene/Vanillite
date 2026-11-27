@@ -88,7 +88,15 @@ pub(crate) fn enforce_game_mode(
     target: &Target,
     mode: GameMode,
 ) -> bool {
-    if target.game_mode == mode {
+    if target.game_mode == mode
+        || !crate::plugins::game_mode_change(
+            global,
+            u32::from(target.world.0),
+            target.uuid,
+            target.game_mode,
+            mode,
+        )
+    {
         return false;
     }
     if target.entity.is_some() {
@@ -114,7 +122,15 @@ pub(crate) fn game_mode(
 ) -> i32 {
     let mut count = 0;
     for target in targets {
-        if target.game_mode == mode {
+        if target.game_mode == mode
+            || !crate::plugins::game_mode_change(
+                global,
+                u32::from(target.world.0),
+                target.uuid,
+                target.game_mode,
+                mode,
+            )
+        {
             continue;
         }
         if target.entity.is_some() {
@@ -175,7 +191,7 @@ pub(crate) fn game_mode(
 }
 
 /// `Level.isInSpawnableBounds`.
-fn in_spawnable_bounds(pos: Vec3) -> bool {
+pub(crate) fn in_spawnable_bounds(pos: Vec3) -> bool {
     let (x, y, z) = (pos.x.floor(), pos.y.floor(), pos.z.floor());
     (-30_000_000.0..30_000_000.0).contains(&x)
         && (-30_000_000.0..30_000_000.0).contains(&z)
@@ -196,7 +212,7 @@ fn wrap_degrees(v: f32) -> f32 {
 
 /// `TeleportCommand.performTeleport` for an entity in this world.
 pub(crate) fn teleport_local(
-    entities: &mut Entities,
+    level: &mut vanillite_game::level::Level,
     target: &Target,
     pos: Vec3,
     relatives: i32,
@@ -213,6 +229,15 @@ pub(crate) fn teleport_local(
     let Some(id) = target.entity else {
         return Ok(());
     };
+    // `ServerPlayer.teleportTo`: a sleeper leaves its bed first.
+    vanillite_game::survival::sleep::stop_sleep_in_bed(
+        level,
+        id,
+        true,
+        true,
+        &vanillite_game::hooks::NoHooks,
+    );
+    let entities = &mut level.entities;
     let Some(entity) = entities.store.get(id) else {
         return Ok(());
     };
@@ -456,7 +481,7 @@ pub(crate) fn teleport(
             };
             for target in &targets {
                 if target.entity.is_some() {
-                    teleport_local(&mut env.level.entities, target, pos, 0, y_rot, x_rot)?;
+                    teleport_local(env.level, target, pos, 0, y_rot, x_rot)?;
                 } else {
                     if !in_spawnable_bounds(pos) {
                         return Err(CommandError::new(
@@ -497,7 +522,7 @@ pub(crate) fn teleport(
                     Some(r) => r,
                     None => target.place.map_or((0.0, 0.0), |(_, y, x)| (y, x)),
                 };
-                teleport_local(&mut env.level.entities, target, pos, bits, y_rot, x_rot)?;
+                teleport_local(env.level, target, pos, bits, y_rot, x_rot)?;
             }
             let coords = [pos.x, pos.y, pos.z].map(|v| Arg::String(format_double(v)));
             let message = match targets.as_slice() {
@@ -799,7 +824,7 @@ pub(crate) fn deop(
 }
 
 /// `PlayerList.kickUnlistedPlayers` when `enforce-whitelist` is on.
-fn kick_unlisted(global: &Global) {
+pub(crate) fn kick_unlisted(global: &Global) {
     if !global.access.enforce_whitelist || !global.access.whitelist_enabled() {
         return;
     }

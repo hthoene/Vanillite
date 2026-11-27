@@ -293,6 +293,36 @@ pub(super) fn snow_random_tick(level: &mut Level, state: BlockState, pos: BlockP
     }
 }
 
+/// `RedStoneOreBlock.interact` (`attack`, `stepOn`, `useItemOn`): the particles draw from the
+/// level random for every side that is not a solid render block, then the ore lights up.
+pub fn redstone_ore_interact(level: &mut Level, state: BlockState, pos: BlockPos) {
+    use vanillite_base::Direction;
+    use vanillite_base::random::RandomSource;
+    for d in Direction::ALL {
+        if !level
+            .block(pos.relative(d))
+            .has(vanillite_data::block::flags::SOLID_RENDER)
+        {
+            // Two of `dx`, `dy`, `dz` are random (the axis of the side is fixed).
+            level.random().next_float();
+            level.random().next_float();
+        }
+    }
+    if !state.flag("lit") {
+        level.set_block_and_update(pos, state.set_flag("lit", true));
+    }
+}
+
+/// `RedStoneOreBlock.attack`.
+pub(super) fn redstone_ore_attack(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    _: vanillite_world::entity::EntityId,
+) {
+    redstone_ore_interact(level, state, pos);
+}
+
 /// `RedStoneOreBlock.randomTick`: lit ore goes dark again.
 pub(super) fn redstone_ore_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if state.flag("lit") {

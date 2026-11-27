@@ -66,6 +66,8 @@ pub struct Global {
     pub(crate) force_game_mode: bool,
     /// The plugins.
     pub(crate) plugins: vanillite_plugin_host::PluginHost,
+    /// A message of the day a plugin set, for the server list to take over.
+    pub(crate) motd: std::sync::Mutex<Option<vanillite_protocol::text::Component>>,
     /// This value itself, for work handed to other worlds.
     pub(crate) this: Weak<Global>,
 }

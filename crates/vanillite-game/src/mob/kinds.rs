@@ -462,6 +462,17 @@ pub fn max_head_x_rot(m: &MobData) -> f32 {
     }
 }
 
+/// `Mob.clampHeadRotationToBody`.
+pub fn clamp_head_rotation_to_body(t: &mut Tick<'_, '_>) {
+    let limit = max_head_y_rot(t.mob_ref());
+    let body = t.mob_ref().y_body_rot;
+    let mut rot = t.core().rot();
+    let delta = vanillite_base::math::wrap_degrees_f(body - rot.y_head_rot);
+    let target = delta.clamp(-limit, limit);
+    rot.y_head_rot = rot.y_head_rot + delta - target;
+    t.core_mut().set_rot(rot);
+}
+
 /// `getMaxHeadYRot`: how far the head turns from the body (`LookControl`,
 /// `BodyRotationControl`).
 pub fn max_head_y_rot(m: &MobData) -> f32 {
@@ -1071,6 +1082,9 @@ fn lay_egg(t: &mut Tick<'_, '_>) {
 pub fn ai_step(t: &mut Tick<'_, '_>) {
     let kind = t.mob_ref().kind;
     if kind == Kind::Chicken {
+        let delta = if t.on_ground() { -1.0 } else { 4.0 } * 0.3;
+        let c = fam::classic::chicken_mut(t.mob());
+        c.flap_speed = (c.flap_speed + delta).clamp(0.0, 1.0);
         let v = t.velocity();
         if !t.on_ground() && v.y < 0.0 {
             t.set_velocity(v.multiply(1.0, 0.6, 1.0));

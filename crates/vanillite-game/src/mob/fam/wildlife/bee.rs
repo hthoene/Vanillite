@@ -27,12 +27,10 @@ fn fam(g: Goal) -> MobGoal {
     MobGoal::Fam(FamGoal::Wildlife(g))
 }
 
-/// `BeeBecomeAngryTargetGoal`'s player filter: angry, not stung, angry at the player.
-fn angry_target(t: &crate::mob::Tick<'_, '_>, id: EntityId) -> bool {
+/// `BeeBecomeAngryTargetGoal.beeCanTarget`: angry and not stung.
+fn bee_can_target(t: &crate::mob::Tick<'_, '_>) -> bool {
     let m = t.mob_ref();
-    common::is_angry(m, t.env.game_time)
-        && st(m).bee_flags & FLAG_HAS_STUNG == 0
-        && common::angry_at(t, id)
+    common::is_angry(m, t.env.game_time) && st(m).bee_flags & FLAG_HAS_STUNG == 0
 }
 
 /// `Bee.registerGoals`. The constructors of `ValidateHiveGoal` and `ValidateFlowerGoal` roll
@@ -92,7 +90,9 @@ pub(super) fn register_goals(m: &mut MobData) {
     m.targets.add(1, MobGoal::hurt_by(true));
     m.targets.add(
         2,
-        MobGoal::Common(CommonGoal::nearest_player(true, angry_target)),
+        MobGoal::Common(
+            CommonGoal::nearest_player(true, common::angry_at).with_precheck(bee_can_target),
+        ),
     );
     m.targets.add(
         3,
@@ -684,8 +684,10 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 let d = (c - t.pos()).normalize();
                 (d.x, d.z)
             } else {
-                let rad = f64::from(t.core().rot().y_rot).to_radians();
-                (-rad.sin(), rad.cos())
+                // `getViewVector(0)`.
+                let rot = t.core().rot();
+                let d = randompos::view_vector(rot.x_rot, rot.y_head_rot);
+                (d.x, d.z)
             };
             let half = randompos::half_pi();
             #[allow(clippy::cast_possible_truncation)]
