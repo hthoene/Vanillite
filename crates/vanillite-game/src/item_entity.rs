@@ -900,7 +900,7 @@ pub fn tick(
     // last one (`isAffectedByBlocks`): `stepOn` of the block below, then `entityInside`.
     if !no_physics && out.on_ground {
         let on = on_pos_legacy(out.pos);
-        if crate::block::contact::has_step_on(block(on).block()) {
+        if crate::block::contact::has_step_on(block.state(on).block()) {
             burn.step_on = Some(on);
         }
     }
