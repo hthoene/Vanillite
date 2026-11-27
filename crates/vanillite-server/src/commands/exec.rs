@@ -250,7 +250,7 @@ pub(crate) fn teleport_local(
             return Ok(());
         };
         if let Some(world) = place.world {
-            if let Some(world) = plugin_world(world) {
+            if let Some(world) = plugin_world(global, world) {
                 move_to_world(
                     global,
                     target,
@@ -683,10 +683,10 @@ pub(crate) fn move_to_world(
 }
 
 /// The world of a plugin's world index, if there is one.
-pub(crate) fn plugin_world(index: u32) -> Option<WorldId> {
+pub(crate) fn plugin_world(global: &Global, index: u32) -> Option<WorldId> {
     u16::try_from(index)
         .ok()
-        .filter(|&i| usize::from(i) < crate::server::DIMENSIONS.len())
+        .filter(|&i| usize::from(i) < global.dimensions.len())
         .map(WorldId)
 }
 

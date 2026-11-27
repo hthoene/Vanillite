@@ -549,7 +549,11 @@ pub fn hurt_boat(
         .cause
         .and_then(|c| ents.player(c))
         .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
+    if cx.discarded.contains(&id) {
+        return true;
+    }
     let pos = ents.store.get(id).map(|e| e.pos());
+    crate::minecart::damage_game_event(ents, cx, id, source.cause);
     let Some(b) = ents.boat_mut(id) else {
         return false;
     };

@@ -20,7 +20,6 @@ use vanillite_protocol::text::Component;
 use crate::compute::Compute;
 use crate::global::Global;
 use crate::player_list::Uuid;
-use crate::server::DIMENSIONS;
 use crate::world::ServerWorld;
 
 mod entity_api;
@@ -95,12 +94,11 @@ pub(crate) fn parse_state(text: &str) -> Option<BlockState> {
 }
 
 /// The world index of a dimension key.
-fn world_index(dimension: &str) -> u32 {
-    DIMENSIONS
-        .iter()
-        .position(|d| *d == dimension)
-        .and_then(|i| u32::try_from(i).ok())
-        .unwrap_or(0)
+fn world_index(global: &Global, dimension: &str) -> u32 {
+    global
+        .dimensions
+        .world(dimension)
+        .map_or(0, |w| u32::from(w.0))
 }
 
 fn component(text: Text<'_>) -> Component {
@@ -130,7 +128,7 @@ impl Services {
                 rules.insert(info.key.to_owned(), v.to_string());
             }
         }
-        let world = config.world_rules(DIMENSIONS[0]);
+        let world = config.world_rules(crate::server::VANILLA_DIMENSIONS[0]);
         for info in vanillite_config::WorldRules::RULES {
             if let Some(v) = world.get(info.key) {
                 rules.insert(info.key.to_owned(), v.to_string());
@@ -227,9 +225,9 @@ impl ServerAccess for Services {
     }
 
     fn world_name(&self, world: u32) -> Option<String> {
-        DIMENSIONS
-            .get(usize::try_from(world).ok()?)
-            .map(|d| (*d).to_owned())
+        let global = self.global.upgrade()?;
+        let world = crate::world::WorldId(u16::try_from(world).ok()?);
+        global.dimensions.name(world).map(str::to_owned)
     }
 
     fn block_state_id(&self, state: &str) -> Option<u32> {
@@ -1075,10 +1073,10 @@ pub(crate) struct Hooks<'a> {
 
 impl<'a> Hooks<'a> {
     /// The hooks of the world with this dimension key.
-    pub(crate) fn of(host: &'a PluginHost, dimension: &str) -> Self {
+    pub(crate) fn of(global: &'a Global, dimension: &str) -> Self {
         Hooks {
-            host,
-            world: world_index(dimension),
+            host: &global.plugins,
+            world: world_index(global, dimension),
         }
     }
 }
@@ -1106,10 +1104,10 @@ pub(crate) struct WorldHooks {
 }
 
 impl WorldHooks {
-    pub(crate) fn new(host: &PluginHost, dimension: &str) -> Self {
+    pub(crate) fn new(global: &Global, dimension: &str) -> Self {
         WorldHooks {
-            host: host.clone(),
-            world: world_index(dimension),
+            host: global.plugins.clone(),
+            world: world_index(global, dimension),
         }
     }
 

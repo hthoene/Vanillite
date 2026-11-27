@@ -58,7 +58,8 @@ impl Weather {
         }
     }
 
-    fn of(name: &str) -> Weather {
+    /// The state of a `weather_state` name (`unaffected` when unknown).
+    pub fn of(name: &str) -> Weather {
         match name.strip_prefix("minecraft:").unwrap_or(name) {
             "exposed" => Weather::Exposed,
             "weathered" => Weather::Weathered,

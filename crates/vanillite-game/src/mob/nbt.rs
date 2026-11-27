@@ -403,6 +403,8 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
 /// state is read again from `tag`; what is not saved (its random, running goals, path) stays.
 pub fn apply_mob(m: &mut MobData, tag: &Compound) {
     read_mob(m, tag);
+    // `Entity.load` ends with `reapplyPosition`: the known speed starts over.
+    m.last_known_pos = None;
 }
 
 /// The saved state of a mob (`readAdditionalSaveData` of the entity classes) from `tag`.

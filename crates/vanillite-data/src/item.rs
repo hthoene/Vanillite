@@ -32,8 +32,31 @@ pub struct ItemInfo {
     pub weapon: Option<WeaponInfo>,
     /// The default `minecraft:food` component.
     pub food: Option<FoodInfo>,
-    /// Whether the item has a default `minecraft:blocks_attacks` component (shields).
-    pub blocks_attacks: bool,
+    /// The default `minecraft:consumable` component.
+    pub consumable: Option<&'static ConsumableInfo>,
+    /// The item id of the default `minecraft:use_remainder` component, empty without one.
+    pub use_remainder: &'static str,
+    /// The seconds of the default `minecraft:use_cooldown` component, 0 without one.
+    pub use_cooldown: f32,
+    /// `interact_vibrations` of the default `minecraft:use_effects` component.
+    pub use_vibrations: bool,
+    /// The default `minecraft:blocks_attacks` component (shields).
+    pub blocks_attacks: Option<&'static BlocksAttacksInfo>,
+    /// The default `minecraft:kinetic_weapon` component (spears).
+    pub kinetic_weapon: Option<&'static KineticWeaponInfo>,
+    /// The default `minecraft:piercing_weapon` component (spears).
+    pub piercing_weapon: Option<&'static PiercingWeaponInfo>,
+    /// The default `minecraft:attack_range` component: min reach, max reach, min creative
+    /// reach, max creative reach, hitbox margin, mob factor.
+    pub attack_range: Option<&'static [f32; 6]>,
+    /// The default `minecraft:minimum_attack_charge` component, 0 without one.
+    pub minimum_attack_charge: f32,
+    /// `duration` of the default `minecraft:attack_animation` component.
+    pub attack_animation_ticks: u16,
+    /// The default `minecraft:damage_type` component, empty without one.
+    pub damage_type: &'static str,
+    /// The `death_effects` of the default `minecraft:death_protection` component.
+    pub death_protection: Option<&'static [ConsumeEffectInfo]>,
     /// The `minecraft:context_int_provider` of the default `minecraft:compostable` component
     /// (its `layers`), empty if the item cannot be composted.
     pub compostable: &'static str,
@@ -80,6 +103,107 @@ pub struct FoodInfo {
     pub nutrition: i32,
     pub saturation: f32,
     pub can_always_eat: bool,
+}
+
+/// A `minecraft:consumable` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConsumableInfo {
+    pub consume_seconds: f32,
+    /// `ItemUseAnimation`: `eat`, `drink`, ...
+    pub animation: &'static str,
+    pub sound: &'static str,
+    pub has_consume_particles: bool,
+    pub on_consume_effects: &'static [ConsumeEffectInfo],
+}
+
+/// One `ConsumeEffect` of a `minecraft:consumable` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConsumeEffectInfo {
+    /// `apply_effects`.
+    ApplyEffects {
+        effects: &'static [EffectInstanceInfo],
+        probability: f32,
+    },
+    /// `remove_effects`: mob effect ids, or one tag with `#`.
+    RemoveEffects(&'static [&'static str]),
+    /// `clear_all_effects`.
+    ClearAllEffects,
+    /// `teleport_randomly` with its diameter.
+    TeleportRandomly(f32),
+    /// `play_sound`.
+    PlaySound(&'static str),
+}
+
+/// A `MobEffectInstance` of an item component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectInstanceInfo {
+    pub id: &'static str,
+    pub duration: i32,
+    pub amplifier: i32,
+    pub ambient: bool,
+    pub show_particles: bool,
+    pub show_icon: bool,
+}
+
+/// A `minecraft:kinetic_weapon` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KineticWeaponInfo {
+    pub contact_cooldown_ticks: i32,
+    pub delay_ticks: i32,
+    pub dismount_conditions: Option<KineticConditionInfo>,
+    pub knockback_conditions: Option<KineticConditionInfo>,
+    pub damage_conditions: Option<KineticConditionInfo>,
+    pub forward_movement: f32,
+    pub damage_multiplier: f32,
+    /// Empty without the sound.
+    pub sound: &'static str,
+    /// Empty without the sound.
+    pub hit_sound: &'static str,
+}
+
+/// A `KineticWeapon.Condition`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KineticConditionInfo {
+    pub max_duration_ticks: i32,
+    pub min_speed: f32,
+    pub min_relative_speed: f32,
+}
+
+/// A `minecraft:piercing_weapon` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PiercingWeaponInfo {
+    pub deals_knockback: bool,
+    pub dismounts: bool,
+    /// Empty without the sound.
+    pub sound: &'static str,
+    /// Empty without the sound.
+    pub hit_sound: &'static str,
+}
+
+/// A `minecraft:blocks_attacks` component.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlocksAttacksInfo {
+    pub block_delay_seconds: f32,
+    pub disable_cooldown_scale: f32,
+    pub damage_reductions: &'static [DamageReductionInfo],
+    /// `ItemDamageFunction`: threshold, base, factor.
+    pub item_damage: [f32; 3],
+    /// Damage type ids, or one tag with `#`; empty without the field.
+    pub bypassed_by: &'static [&'static str],
+    /// Empty without the sound.
+    pub block_sound: &'static str,
+    /// Empty without the sound.
+    pub disabled_sound: &'static str,
+}
+
+/// A `BlocksAttacks.DamageReduction`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DamageReductionInfo {
+    pub horizontal_blocking_angle: f32,
+    /// Damage type ids, or one tag with `#`; empty for every type.
+    pub types: &'static [&'static str],
+    pub base: f32,
+    pub factor: f32,
 }
 
 /// The blocks a tool rule applies to.
