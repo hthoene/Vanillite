@@ -24,21 +24,35 @@ const RECORDER: &[&str] = &[
     "ParityAgent",
 ];
 
-/// `cargo xtask parity replay <recording> [args]`: a local recording folder, or
+/// `cargo xtask parity replay <recording>... [args]`: local recording folders, or
 /// `<port>:<name>` / `<port>:latest` of the test server, fetched into `target/recordings/`.
-pub fn replay(root: &Path, recording: &str, args: &[&str]) -> Result<()> {
-    let dir = match recording.split_once(':') {
-        Some((port, name)) if port.parse::<u16>().is_ok() && !Path::new(recording).exists() => {
-            fetch_recording(root, port, name)?
-        }
-        _ => std::path::PathBuf::from(recording),
-    };
-    if !dir.join("packets.jsonl").is_file() {
-        return Err(format!("{} is no session recording", dir.display()));
+pub fn replay(root: &Path, args: &[&str]) -> Result<()> {
+    let split = args
+        .iter()
+        .position(|a| a.starts_with("--"))
+        .unwrap_or(args.len());
+    let (recordings, args) = args.split_at(split);
+    if recordings.is_empty() {
+        return Err("usage: cargo xtask parity replay <recording>... [--ticks N]".to_owned());
     }
-    let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let session = dir.to_string_lossy().into_owned();
-    let mut pass = vec!["--session", session.as_str()];
+    let mut sessions = Vec::new();
+    for recording in recordings {
+        let dir = match recording.split_once(':') {
+            Some((port, name)) if port.parse::<u16>().is_ok() && !Path::new(recording).exists() => {
+                fetch_recording(root, port, name)?
+            }
+            _ => std::path::PathBuf::from(recording),
+        };
+        if !dir.join("packets.jsonl").is_file() {
+            return Err(format!("{} is no session recording", dir.display()));
+        }
+        let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        sessions.push(dir.to_string_lossy().into_owned());
+    }
+    let mut pass = Vec::new();
+    for session in &sessions {
+        pass.extend(["--session", session.as_str()]);
+    }
     pass.extend_from_slice(args);
     driver(root, &pass)
 }

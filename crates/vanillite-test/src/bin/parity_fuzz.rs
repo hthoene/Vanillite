@@ -435,6 +435,8 @@ fn main() -> std::process::ExitCode {
     let mut found: BTreeMap<String, (String, Value, Outcome, u64)> = BTreeMap::new();
     let batch_size = (args.jobs * 3).max(4) as u64;
     let recorders = Recorders::new(args.jobs);
+    // One line per replayed session: name and result.
+    let mut sessions: Vec<(String, String)> = Vec::new();
     loop {
         let mut batch = Vec::new();
         if !args.replay.is_empty() || !args.sessions.is_empty() {
@@ -446,6 +448,7 @@ fn main() -> std::process::ExitCode {
                     Ok(j) => j,
                     Err(e) => {
                         eprintln!("parity-fuzz: {e}");
+                        sessions.push((dir.display().to_string(), format!("not replayed: {e}")));
                         continue;
                     }
                 };
@@ -462,11 +465,11 @@ fn main() -> std::process::ExitCode {
                     json["ticks"],
                     volume
                 );
-                if volume > vanillite_test::session::LARGE_REGION {
-                    println!(
-                        "{name}: the players went far; the region is large and the replay slow \
-                         (--ticks replays the start only)"
-                    );
+                if let Some(d) = json["description"]
+                    .as_str()
+                    .filter(|d| d.contains(", cut "))
+                {
+                    println!("{name}: {d}");
                 }
                 let sessions = args.out.join("sessions");
                 let _ = std::fs::create_dir_all(&sessions);
@@ -506,6 +509,19 @@ fn main() -> std::process::ExitCode {
         let outcomes = evaluate(&args, &recorders, &work, &inputs);
         ran += batch.len() as u64;
         for ((name, json, seed), outcome) in batch.into_iter().zip(outcomes) {
+            if name.starts_with("session_") {
+                let result = match &outcome {
+                    Outcome::Same => "replays equal".to_owned(),
+                    Outcome::VanillaError(e) => {
+                        format!("Vanilla rejects it: {}", e.lines().next().unwrap_or(""))
+                    }
+                    Outcome::Diverges(t, sig, _) => format!("diverges at tick {t}: {sig}"),
+                    Outcome::VanilliteError(e) => {
+                        format!("Vanillite fails: {}", e.lines().next().unwrap_or(""))
+                    }
+                };
+                sessions.push((name.clone(), result));
+            }
             match &outcome {
                 Outcome::Same => same += 1,
                 Outcome::VanillaError(e) => {
@@ -551,6 +567,14 @@ fn main() -> std::process::ExitCode {
         found.len(),
         started.elapsed().as_secs_f64()
     );
+    if !sessions.is_empty() {
+        summary.push_str("| session | result |\n|---|---|\n");
+        for (name, result) in &sessions {
+            let result = result.replace('|', "\\|");
+            summary.push_str(&format!("| {name} | {result} |\n"));
+        }
+        summary.push('\n');
+    }
     for (sig, (name, mut json, outcome, seed)) in found {
         let prefix = if name.starts_with("session_") {
             "session"

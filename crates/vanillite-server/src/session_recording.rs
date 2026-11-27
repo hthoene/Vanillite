@@ -18,10 +18,14 @@
 //!     `"target"` for packets that name an entity (`attack`, `interact`, `player_command`,
 //!     `pick_item_from_entity`, `spectator_action`): the anonymous id of a recorded player,
 //!     `uuid:<hex>` of another entity or `none`; their entity id (or UUID) in `data` is zeroed;
+//!   - `{"tick":5,"player":"p0","command":"fill ~ ~ ~ ~2 ~ ~2 stone"}`: a command the player
+//!     ran (without the slash), only of the game commands in [`COMMANDS`] (no chat text, no
+//!     administration), with the names of online players replaced by their anonymous ids
+//!     (`none` for players that are not recorded);
 //!   - `{"tick":9,"leave":"p0"}` (left the server or the overworld).
 //!
 //! Players get anonymous ids in join order (`p0`, `p1`, ..., a new one per join); names,
-//! addresses and UUIDs are not written. Left out: chat and commands, signs, books, plugin
+//! addresses and UUIDs are not written. Left out: chat and other commands, signs, books, plugin
 //! messages, cookies, and what the replay harness plays itself (keep-alives, pongs, chunk
 //! batch acknowledgements, teleport confirmations, `player_loaded`). `client_tick_end` stays: two
 //! moves in one server tick are valid only with the client's tick end between them.
@@ -32,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 use vanillite_game::entities::Entities;
 use vanillite_game::player::PlayerData;
+use vanillite_protocol::sets::ServerboundPlay;
 use vanillite_world::entity::EntityId;
 
 /// What a session snapshot records of the world besides its chunks.
@@ -88,6 +93,47 @@ const LEFT_OUT: &[&str] = &[
     "resource_pack",
     "seen_advancements",
     "unhandled",
+];
+
+/// Command roots a session keeps: game commands without chat text that name no offline
+/// player. `execute` is kept when everything it runs is one of them.
+const COMMANDS: &[&str] = &[
+    "advancement",
+    "attribute",
+    "clear",
+    "clone",
+    "damage",
+    "difficulty",
+    "effect",
+    "enchant",
+    "execute",
+    "experience",
+    "fill",
+    "fillbiome",
+    "gamemode",
+    "gamerule",
+    "give",
+    "item",
+    "kill",
+    "loot",
+    "particle",
+    "place",
+    "playsound",
+    "recipe",
+    "ride",
+    "rotate",
+    "setblock",
+    "setworldspawn",
+    "spawnpoint",
+    "spreadplayers",
+    "stopsound",
+    "summon",
+    "teleport",
+    "time",
+    "tp",
+    "weather",
+    "worldborder",
+    "xp",
 ];
 
 /// Packets whose body starts with the VarInt id of an entity.
@@ -204,6 +250,22 @@ impl SessionRecording {
             return;
         };
         for packet in packets.drain(..) {
+            let command = match &packet {
+                ServerboundPlay::ChatCommand(p) => Some(p.command.as_str()),
+                ServerboundPlay::ChatCommandSigned(p) => Some(p.command.as_str()),
+                _ => None,
+            };
+            if let Some(command) = command {
+                if let Some(command) = session.anonymous_command(command, entities) {
+                    let line = format!(
+                        "{{\"tick\":{},\"player\":\"{anonymous}\",\"command\":{}}}",
+                        session.tick,
+                        serde_json::Value::String(command)
+                    );
+                    session.write(&line);
+                }
+                continue;
+            }
             let name = packet.name();
             let name = name.strip_prefix("minecraft:").unwrap_or(name);
             if LEFT_OUT.contains(&name) {
@@ -327,6 +389,52 @@ impl Session {
         for line in gone {
             self.write(&line);
         }
+    }
+
+    /// `command` as a session keeps it ([`COMMANDS`], player names anonymous), or `None`.
+    fn anonymous_command(&self, command: &str, entities: &Entities) -> Option<String> {
+        let command = command.trim().trim_start_matches('/');
+        let words: Vec<&str> = command.split_whitespace().collect();
+        let kept = |root: Option<&&str>| root.is_some_and(|r| COMMANDS.contains(r));
+        if !kept(words.first()) {
+            return None;
+        }
+        for (i, word) in words.iter().enumerate() {
+            if *word == "run" && words[0] == "execute" && !kept(words.get(i + 1)) {
+                return None;
+            }
+        }
+        let names: Vec<(&str, String)> = entities
+            .players
+            .iter()
+            .map(|(id, p)| {
+                let anonymous = self
+                    .players
+                    .iter()
+                    .find(|r| r.0 == id)
+                    .map_or_else(|| "none".to_owned(), |r| r.2.clone());
+                (p.profile.name.as_str(), anonymous)
+            })
+            .collect();
+        let mut out = String::with_capacity(command.len());
+        let mut rest = command;
+        while !rest.is_empty() {
+            let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            let start = rest.chars().next().is_some_and(is_name);
+            let len = rest
+                .find(|c: char| is_name(c) != start)
+                .unwrap_or(rest.len());
+            let (part, tail) = rest.split_at(len);
+            match names
+                .iter()
+                .find(|n| start && n.0.eq_ignore_ascii_case(part))
+            {
+                Some((_, anonymous)) => out.push_str(anonymous),
+                None => out.push_str(part),
+            }
+            rest = tail;
+        }
+        Some(out)
     }
 
     /// The stable reference of the entity with `network_id`.

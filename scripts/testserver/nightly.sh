@@ -64,6 +64,10 @@ step worldgen-sweep 30 cargo xtask worldgen sweep --seed "$(($(date -u +%s) / 86
 step light-sweep 20 cargo xtask light sweep --seed "$(($(date -u +%s) / 86400 + 500000))" --seeds 4
 [ -f target/light-sweep/summary.md ] && cp target/light-sweep/summary.md "$out/light-sweep.md"
 
+# Session replays (#152, #257): the recordings of the players on vanillite-test 30001 that no
+# nightly replayed yet, against Vanilla.
+step session-replay 50 bash scripts/testserver/replay-recordings.sh "$HOME/recordings" "$out"
+
 # Soak parity runs (#166): game days against Vanilla, per-tick checksums; Vanilla's run is
 # recorded once per golden key, so only a new jar, harness or scenario costs its recording.
 soak=$(($(minutes_left) / 2))
@@ -86,6 +90,9 @@ if [ -f "$out/worldgen-sweep.md" ]; then
 fi
 if [ -f "$out/light-sweep.md" ]; then
     { echo; echo "## light sweep"; sed '1d' "$out/light-sweep.md"; } >> "$out/summary.md"
+fi
+if [ -f "$out/session-replay/summary.md" ]; then
+    { echo; echo "## session replay"; sed '1d' "$out/session-replay/summary.md"; } >> "$out/summary.md"
 fi
 if [ -f "$out/parity-soak/summary.md" ]; then
     { echo; echo "## parity soak"; cat "$out/parity-soak/summary.md"; } >> "$out/summary.md"
