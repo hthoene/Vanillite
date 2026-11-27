@@ -106,6 +106,15 @@ pub fn teleport_randomly(
     else {
         return false;
     };
+    // The client keeps its motion (`DELTA`); a player the server moves itself starts from rest
+    // like Vanilla's (recorded in the `item_food` golden).
+    if ents
+        .player(player)
+        .is_some_and(|p| p.survival.simulate_movement)
+        && let Some(mut e) = ents.store.get_mut(player)
+    {
+        e.set_velocity(Vec3::ZERO);
+    }
     let network_id = ents.store.get(player).map_or(0, |e| e.network_id().0);
     // `broadcastEntityEvent(46)`: the teleport particles.
     env.out.push(crate::survival::Effect::Tracking {

@@ -1978,9 +1978,12 @@ impl Digging {
         }
         let player = ctx.actor.entity;
         let level = ctx.level.level_mut()?;
+        // `instanceof Spawner`: mob spawners and trial spawners.
         if !matches!(
             level.block_entity(pos),
-            Some(crate::level::BlockEntity::Spawner(_))
+            Some(
+                crate::level::BlockEntity::Spawner(_) | crate::level::BlockEntity::TrialSpawner(_)
+            )
         ) {
             return None;
         }
@@ -2007,6 +2010,12 @@ impl Digging {
             spawner.set_entity_id(entity, &mut random);
         }
         *level.random() = random;
+        if matches!(
+            level.block_entity(pos),
+            Some(crate::level::BlockEntity::TrialSpawner(_))
+        ) {
+            crate::block::trial_spawner::set_entity_id(level, pos, entity);
+        }
         level.block_entity_changed(pos);
         level.game_event_at(player, crate::level::game_event::events().block_change, pos);
         if !ctx.actor.creative() {
