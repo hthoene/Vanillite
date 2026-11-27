@@ -71,6 +71,8 @@ pub(crate) struct WorldSurvival {
     /// Players by chunk, rebuilt when effects are delivered.
     grid: FxHashMap<ChunkPos, Vec<EntityId>>,
     scratch: Vec<EntityId>,
+    /// The players of a tick (reused).
+    ticking: Vec<EntityId>,
 }
 
 /// `Level.isRainingAt` without the sky light test (the heightmap test covers it outside of
@@ -199,6 +201,7 @@ impl WorldSurvival {
             player_range: player_range.max(0),
             grid: FxHashMap::default(),
             scratch: Vec::new(),
+            ticking: Vec::new(),
         }
     }
 
@@ -407,6 +410,7 @@ impl WorldSurvival {
         let (weather, climate) = (self.weather, self.climate.clone());
         let raining = |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
         let mut removed = std::mem::take(&mut self.scratch);
+        let mut ids = std::mem::take(&mut self.ticking);
         {
             let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
@@ -436,18 +440,49 @@ impl WorldSurvival {
                 &teams,
             );
             env.border = Some(border);
-            let Entities { store, players, .. } = entities;
-            for (id, data) in players.iter_mut() {
-                if arrived.is_some_and(|a| a != id) {
-                    continue;
-                }
-                let Some(mut entity) = store.get_mut(id) else {
-                    continue;
+            ids.clear();
+            ids.extend(
+                entities
+                    .players
+                    .iter()
+                    .map(|(id, _)| id)
+                    .filter(|&id| arrived.is_none_or(|a| a == id)),
+            );
+            for &id in &ids {
+                // The base tick with the effects.
+                let base = {
+                    let Entities { store, players, .. } = &mut *entities;
+                    let Some(mut entity) = store.get_mut(id) else {
+                        continue;
+                    };
+                    let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                        continue;
+                    };
+                    if arrived.is_some() {
+                        std::ops::ControlFlow::Continue(player::base_tick_after_portal(
+                            &mut entity,
+                            data,
+                            &mut env,
+                        ))
+                    } else {
+                        player::do_tick_base(&mut entity, data, &mut env)
+                    }
                 };
-                let result = if arrived.is_some() {
-                    player::finish_tick_after_portal(&mut entity, data, &mut env)
-                } else {
-                    player::do_tick(&mut entity, data, &mut env)
+                let result = match base {
+                    std::ops::ControlFlow::Break(result) => result,
+                    std::ops::ControlFlow::Continue(result) => {
+                        // `updatingUsingItem`, then `aiStep` and the rest of the tick.
+                        vanillite_game::player::using::tick(entities, &mut env, id);
+                        let Entities { store, players, .. } = &mut *entities;
+                        let Some(mut entity) = store.get_mut(id) else {
+                            continue;
+                        };
+                        let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                            continue;
+                        };
+                        let result = player::do_tick_ai(&mut entity, data, &mut env, result);
+                        player::do_tick_end(&mut entity, data, &mut env, result)
+                    }
                 };
                 match result {
                     TickResult::Remove | TickResult::Credits => removed.push(id),
@@ -456,6 +491,7 @@ impl WorldSurvival {
                 }
             }
         }
+        self.ticking = ids;
         for id in removed.drain(..) {
             // `remove(KILLED)`: the entity leaves the others' view; the player itself stays
             // until it respawns.

@@ -84,7 +84,7 @@ pub trait PositionalRandomFactory {
 }
 
 /// Shared state of Vanilla's `MarsagliaPolarGaussian`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Gaussian {
     next: f64,
     has_next: bool,

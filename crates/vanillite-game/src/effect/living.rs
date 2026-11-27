@@ -104,7 +104,7 @@ impl EffectHost for PlayerHost<'_, '_, '_> {
     }
     fn play_sound(&mut self, sound: &str) {
         let pos = self.entity.as_ref().pos();
-        let seed = self.env.random.next_long();
+        let seed = crate::survival::sound_seed();
         play_sound(
             self.env.out,
             None,
@@ -215,7 +215,7 @@ impl EffectHost for MobHost<'_, '_, '_> {
     }
     fn play_sound(&mut self, sound: &str) {
         let pos = self.t.pos();
-        let seed = self.t.env.random.next_long();
+        let seed = crate::survival::sound_seed();
         play_sound(
             self.t.env.out,
             None,
@@ -881,8 +881,8 @@ pub fn apply_mob_effect(
     };
     let instance = if let Some(m) = ents.mob_mut(target) {
         draw(&mut m.random)
-    } else if ents.player(target).is_some() {
-        crate::experience_orb::with_entity_random(|r| draw(r))
+    } else if let Some(p) = ents.player_mut(target) {
+        draw(&mut p.survival.random)
     } else {
         None
     };

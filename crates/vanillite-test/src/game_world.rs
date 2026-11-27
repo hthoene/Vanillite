@@ -913,19 +913,33 @@ impl GameWorld {
         );
         self.with_env(|level, ents, env, cx| {
             for &id in &players {
-                // `LivingEntity.tick`: `updatingUsingItem` before `aiStep`.
+                let result = {
+                    let Entities { store, players, .. } = &mut *ents;
+                    let Some(mut entity) = store.get_mut(id) else {
+                        continue;
+                    };
+                    let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                        continue;
+                    };
+                    let std::ops::ControlFlow::Continue(result) =
+                        survival_player::do_tick_base(&mut entity, data, env)
+                    else {
+                        continue;
+                    };
+                    result
+                };
+                // `LivingEntity.tick`: `updatingUsingItem` after the base tick, before
+                // `aiStep`.
                 vanillite_game::player::using::tick(ents, env, id);
-                let Entities { store, players, .. } = &mut *ents;
-                let Some(mut entity) = store.get_mut(id) else {
-                    continue;
-                };
-                let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
-                    continue;
-                };
-                let std::ops::ControlFlow::Continue(result) =
-                    survival_player::do_tick_ai(&mut entity, data, env)
-                else {
-                    continue;
+                let result = {
+                    let Entities { store, players, .. } = &mut *ents;
+                    let Some(mut entity) = store.get_mut(id) else {
+                        continue;
+                    };
+                    let Some(data) = players.get_mut(entity.as_ref().kind_row()) else {
+                        continue;
+                    };
+                    survival_player::do_tick_ai(&mut entity, data, env, result)
                 };
                 // `pushEntities` and `touch` at the end of the player's `aiStep`.
                 vanillite_game::mob::living::player_push_entities(ents, id);
@@ -1031,6 +1045,10 @@ impl GameWorld {
         // Nobody moves the mock player: the server does, like Vanilla's.
         data.survival.simulate_movement = true;
         data.survival.y_body_rot = spec.rot[0];
+        // The recorder seeds the player's own random with its `seed` at the end of the
+        // `Entity` constructor; the `LivingEntity` constructor then draws the yaw.
+        data.survival.random = LegacyRandom::new(spec.seed);
+        data.survival.random.next_float();
         let id =
             self.level
                 .entities
@@ -1118,6 +1136,10 @@ pub(crate) fn spawn_mob(
     if let Some(baby) = spec.baby {
         m.baby = baby;
         m.age = if baby { -24000 } else { 0 };
+    }
+    if let Some(state) = &spec.weather_state {
+        use vanillite_game::mob::fam::mount::copper_golem;
+        copper_golem::golem_mut(&mut m).weather = copper_golem::Weather::of(state);
     }
     m.y_body_rot = spec.rot[0];
     let rot = Rotation {
@@ -1619,6 +1641,7 @@ fn apply_rules(
                 | "tnt_explodes"
                 | "tnt_explosion_drop_decay"
                 | "players_sleeping_percentage"
+                | "natural_health_regeneration"
         );
         let rule = Rule::by_name(name)
             .filter(|_| supported)
@@ -1917,11 +1940,11 @@ impl ScenarioWorld for GameWorld {
         use crate::scenario::UseMode;
         use vanillite_protocol::packets::play::serverbound::Hand;
         let player = self.named(&op.entity)?;
-        if let Some(item) = &op.item {
+        let stack_of = |item: &str, count: i32, components: Option<&str>| {
             let mut c = vanillite_nbt::Compound::new();
-            c.insert("id", vanillite_nbt::Tag::String(item.clone()));
-            c.insert("count", vanillite_nbt::Tag::Int(op.count));
-            if let Some(snbt) = &op.components {
+            c.insert("id", vanillite_nbt::Tag::String(item.to_owned()));
+            c.insert("count", vanillite_nbt::Tag::Int(count));
+            if let Some(snbt) = components {
                 let components =
                     vanillite_nbt::snbt::parse_compound(snbt).map_err(|e| e.to_string())?;
                 c.insert("components", vanillite_nbt::Tag::Compound(components));
@@ -1930,10 +1953,25 @@ impl ScenarioWorld for GameWorld {
             if stack.is_empty() {
                 return Err(format!("unknown item {item}"));
             }
+            Ok(stack)
+        };
+        if let Some(item) = &op.item {
+            let stack = stack_of(item, op.count, op.components.as_deref())?;
             if let Some(p) = self.level.entities.player_mut(player) {
                 let slot = p.inventory.selected;
                 p.inventory.set(slot, stack);
             }
+        }
+        for entry in &op.inventory {
+            let stack = stack_of(&entry.item, entry.count, entry.components.as_deref())?;
+            if let Some(p) = self.level.entities.player_mut(player) {
+                p.inventory.set(entry.slot, stack);
+            }
+        }
+        if let Some(food) = op.food
+            && let Some(p) = self.level.entities.player_mut(player)
+        {
+            p.survival.food.food_level = food;
         }
         if let Some(target) = &op.target {
             // `Player.interactOn` with the stack in the main hand.
@@ -2003,6 +2041,9 @@ impl ScenarioWorld for GameWorld {
                 );
             }
             (UseMode::Attack(_), None) => {}
+            (UseMode::Stab, _) => {
+                vanillite_game::spear::player_stab(level, ents, env, cx, player);
+            }
         });
         self.apply_actions();
         self.finish_removals();
@@ -2170,7 +2211,7 @@ fn touch_orb(
         return;
     }
     let n = i32::try_from(near.len()).unwrap_or(i32::MAX);
-    let pick = orbs::with_entity_random(|r| r.next_int_bounded(n));
+    let pick = player.survival.random.next_int_bounded(n);
     let Some(&orb) = usize::try_from(pick).ok().and_then(|i| near.get(i)) else {
         return;
     };
@@ -2181,15 +2222,14 @@ fn touch_orb(
     let Some(data) = vanillite_game::player::play::game_data() else {
         return;
     };
-    let points = orbs::with_entity_random(|r| {
-        orbs::take_one(
-            ents,
-            orb,
-            &mut player.inventory,
-            &data.enchanting,
-            &mut |n| r.next_int_bounded(n),
-        )
-    });
+    let random = &mut player.survival.random;
+    let points = orbs::take_one(
+        ents,
+        orb,
+        &mut player.inventory,
+        &data.enchanting,
+        &mut |n| random.next_int_bounded(n),
+    );
     let Some(points) = points else {
         return;
     };

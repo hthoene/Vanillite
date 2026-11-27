@@ -1,15 +1,16 @@
 //! Totems of undying (`death_protection`, `LivingEntity.checkTotemDeathProtection`): a living
 //! entity about to die from damage that does not bypass invulnerability uses up the first
 //! death protection item in its hands, keeps one health point, gets the item's death effects
-//! (the totem: no effects, then Regeneration II, Absorption II and Fire Resistance) and shows
+//! (the totem: no effects, then Regeneration II, Absorption II and Fire Resistance; from the
+//! stack's patch or the item's default component) and shows
 //! the totem animation (entity event 35).
 
 use vanillite_protocol::codec::Reader;
 use vanillite_protocol::packets::play::clientbound::EntityEvent;
 use vanillite_world::entity::EntityId;
 
+use crate::effect::EffectHost;
 use crate::effect::consume::ConsumeEffect;
-use crate::effect::{EffectHost, EffectInstance, MobEffect};
 use crate::item::{self, EquipmentSlot, ItemStack};
 use crate::survival::Effect;
 use crate::survival::damage::{DamageKind, DamageTypes, tag};
@@ -28,57 +29,15 @@ pub fn death_protection(stack: &ItemStack) -> Option<Vec<ConsumeEffect>> {
             return None;
         }
     }
-    (item::item_id(stack).name() == "minecraft:totem_of_undying").then(|| {
-        vec![
-            ConsumeEffect::ClearAll,
-            ConsumeEffect::Apply(
-                vec![
-                    EffectInstance::new(MobEffect::REGENERATION, 900, 1),
-                    EffectInstance::new(MobEffect::ABSORPTION, 100, 1),
-                    EffectInstance::new(MobEffect::FIRE_RESISTANCE, 800, 0),
-                ],
-                1.0,
-            ),
-        ]
-    })
+    item::item_id(stack)
+        .info()
+        .death_protection
+        .map(crate::consumable::default_effects)
 }
 
-/// `DeathProtection.STREAM_CODEC`: the consume effects the game applies (`clear_all_effects`,
-/// `apply_effects`); decoding stops at the first other one.
+/// `DeathProtection.STREAM_CODEC`: the list of consume effects.
 fn decode_effects(bytes: &[u8]) -> Vec<ConsumeEffect> {
-    let mut out = Vec::new();
-    let mut r = Reader::new(bytes);
-    let Ok(count) = r.varint() else {
-        return out;
-    };
-    let registry = &vanillite_data::registry::CONSUME_EFFECT_TYPE;
-    for _ in 0..count {
-        let Some(kind) = r
-            .varint()
-            .ok()
-            .and_then(|v| u16::try_from(v).ok())
-            .and_then(|v| registry.name(v))
-        else {
-            break;
-        };
-        match kind {
-            "minecraft:clear_all_effects" => out.push(ConsumeEffect::ClearAll),
-            "minecraft:apply_effects" => {
-                let Some(n) = r.varint().ok().and_then(|n| usize::try_from(n).ok()) else {
-                    break;
-                };
-                let list: Option<Vec<EffectInstance>> = (0..n.min(64))
-                    .map(|_| EffectInstance::decode(&mut r))
-                    .collect();
-                let (Some(list), Ok(probability)) = (list, r.f32()) else {
-                    break;
-                };
-                out.push(ConsumeEffect::Apply(list, probability));
-            }
-            _ => break,
-        }
-    }
-    out
+    crate::consumable::read_effects(&mut Reader::new(bytes)).unwrap_or_default()
 }
 
 /// Whether damage of `kind` may be survived with a totem.
@@ -96,7 +55,8 @@ pub fn protecting_hand(
         .or_else(|| death_protection(off).map(|e| (EquipmentSlot::OffHand, e)))
 }
 
-/// `DeathProtection.applyEffects` on an effect host (`random` rolls the probabilities).
+/// `DeathProtection.applyEffects` on an effect host (`random` rolls the probabilities): the
+/// effects that touch the status effects.
 pub fn apply_effects(
     effects: &[ConsumeEffect],
     kind: vanillite_data::entity::EntityTypeId,
@@ -104,24 +64,7 @@ pub fn apply_effects(
     random: &mut dyn FnMut() -> f32,
 ) {
     for effect in effects {
-        match effect {
-            ConsumeEffect::ClearAll => {
-                host.effects().clear();
-            }
-            ConsumeEffect::Apply(list, probability) => {
-                if random() >= *probability {
-                    continue;
-                }
-                for e in list {
-                    crate::effect::consume::add_effect(kind, e.clone(), host);
-                }
-            }
-            ConsumeEffect::Remove(list) => {
-                for &e in *list {
-                    host.effects().remove(e);
-                }
-            }
-        }
+        crate::effect::consume::apply_status(effect, kind, host, random);
     }
 }
 

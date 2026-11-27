@@ -410,15 +410,9 @@ fn follow_nearby_player(
     let delta = Vec3::new(at.x - pos.x, at.y + eye / 2.0 - pos.y, at.z - pos.z);
     let length_sqr = delta.length_sqr();
     let power = 1.0 - length_sqr.sqrt() / 8.0;
-    let length = length_sqr.sqrt();
-    if length >= 1.0e-5 {
-        let scale = power * power * 0.1 / length;
-        *v = Vec3::new(
-            v.x + delta.x * scale,
-            v.y + delta.y * scale,
-            v.z + delta.z * scale,
-        );
-    }
+    // `delta.normalize().scale(power * power * 0.1)`, in Vanilla's order of operations.
+    let pull = delta.normalize() * (power * power * 0.1);
+    *v = Vec3::new(v.x + pull.x, v.y + pull.y, v.z + pull.z);
     Some(player)
 }
 

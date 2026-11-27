@@ -776,6 +776,12 @@ impl ServerWorld {
             &self.dimension,
             &mut portals,
         );
+        self.mobs.tick_player_items(
+            &mut self.level,
+            &mut self.survival,
+            ctx.global,
+            &self.dimension,
+        );
         vanillite_game::raid::start_pending_raids(
             &mut self.level.entities,
             ctx.global
