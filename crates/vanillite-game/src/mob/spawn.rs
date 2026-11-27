@@ -1327,6 +1327,12 @@ fn add_mob_with_code(
     let mut spawned = Vec::with_capacity(extra.len());
     for e in extra {
         if let Relation::Existing(vehicle) = e.relation {
+            // `Zombie.finalizeSpawn`: `chicken.setChickenJockey(true)` before riding it.
+            if let Some(c) = level.entities.mob_mut(vehicle)
+                && c.kind == Kind::Chicken
+            {
+                super::fam::classic::chicken_mut(c).jockey = true;
+            }
             level.entities.riding.add(id, vehicle, false);
             spawned.push(vehicle);
             continue;
@@ -1565,6 +1571,23 @@ pub fn check_spawn_obstruction(level: &Level, env: &Environment, mob: &MobData, 
     }
 }
 
+/// `EntityType.immuneTo`: the block tag of the type's builder (`isBlockDangerous` is false
+/// for those blocks).
+fn immune_to(type_id: EntityTypeId, state: BlockState) -> bool {
+    use vanillite_data::entity::ids as e;
+    let tags = super::fam::wildlife::block_tags();
+    let tag = match type_id {
+        t if t == e::FOX => &tags.fox_immune_to,
+        t if t == e::POLAR_BEAR => &tags.polar_bear_immune_to,
+        t if t == e::SNOW_GOLEM => &tags.snow_golem_immune_to,
+        t if t == e::STRAY => &tags.stray_immune_to,
+        t if t == e::WITHER => &tags.wither_immune_to,
+        t if t == e::WITHER_SKELETON => &tags.wither_skeleton_immune_to,
+        _ => return false,
+    };
+    tag.contains(state)
+}
+
 /// `isValidEmptySpawnBlock` with an empty fluid state.
 fn valid_empty_spawn_block_ignoring_fluid(state: BlockState, type_id: EntityTypeId) -> bool {
     let name = state.block().name();
@@ -1582,7 +1605,7 @@ fn valid_empty_spawn_block_ignoring_fluid(state: BlockState, type_id: EntityType
         || state.block() == ids::SWEET_BERRY_BUSH
         || state.block() == ids::CACTUS
         || state.block() == ids::POWDER_SNOW;
-    !dangerous
+    !dangerous || immune_to(type_id, state)
 }
 
 /// `isValidPositionForMob`.
@@ -1740,7 +1763,7 @@ pub fn valid_empty_spawn_block(state: BlockState, type_id: EntityTypeId) -> bool
         || state.block() == ids::SWEET_BERRY_BUSH
         || state.block() == ids::CACTUS
         || state.block() == ids::POWDER_SNOW;
-    !dangerous
+    !dangerous || immune_to(type_id, state)
 }
 
 /// The spawn rules (`SpawnPlacements.checkSpawnRules`) of a kind.

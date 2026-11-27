@@ -954,7 +954,7 @@ fn run_entity_effect(
             };
             let source = ents.mob(target).map_or(
                 vanillite_protocol::packets::play::clientbound::SoundSource::Players,
-                |m| m.kind.sound_source(),
+                |m| m.sound_source(),
             );
             crate::survival::play_sound(
                 env.out,

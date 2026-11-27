@@ -1364,13 +1364,17 @@ fn sync_bar(t: &mut Tick<'_, '_>) {
     }
     let bar_id = state(t.mob_ref()).map_or(0, |s| s.bar_id);
     let invul = invulnerable_ticks(t);
-    let bar = t.cx.boss_bars.entry(id).or_insert_with(|| {
+    t.cx.boss_bars.entry(id).or_insert_with(|| {
         let mut bar = new_bar(bar_id);
         if invul > 0 {
             bar.set_progress(0.0, &mut Vec::new());
         }
         bar
     });
+    // `setCustomName` / `readAdditionalSaveData`: the bar shows `getDisplayName`.
+    let name = crate::mob::combat::mob_name(t.mob_ref());
+    let bar = t.cx.boss_bars.get_mut(&id).expect("inserted above");
+    bar.set_name(name, t.env.out);
     bar.sync_players(&wanted, t.env.out);
 }
 

@@ -456,6 +456,14 @@ pub fn teleport_somewhere(
         let Some(face) = find_attachable(level, &mut scratch, target, old) else {
             continue;
         };
+        // `#shulker_does_not_teleport_to` (bedrock): not onto those blocks.
+        let surface = level.block(relative(target, face));
+        if crate::mob::fam::wildlife::block_tags()
+            .shulker_does_not_teleport_to
+            .contains(surface)
+        {
+            continue;
+        }
         ents.riding.remove(id);
         if let Some(m) = ents.mob_mut(id) {
             let s = st_mut(m);
@@ -496,7 +504,14 @@ pub fn teleport_somewhere(
 /// `Shulker.hurtServer` before the damage: closed shells stop arrows.
 pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
     let closed = h.ents.mob(h.target).is_some_and(|m| st(m).peek == 0);
-    if closed && h.source.direct.is_some_and(|d| h.ents.arrow(d).is_some()) {
+    // `directEntity instanceof AbstractArrow`: arrows, spectral arrows and tridents.
+    let arrow = |d| {
+        h.ents.store.get(d).is_some_and(|e| {
+            crate::mob::projectile::is_arrow_kind(e.kind())
+                || e.kind() == vanillite_data::entity::ids::TRIDENT
+        })
+    };
+    if closed && h.source.direct.is_some_and(arrow) {
         return None;
     }
     Some(amount)

@@ -808,7 +808,7 @@ pub fn damage_entities(
 /// The sound source of an entity (`getSoundSource`).
 fn sound_source(ents: &Entities, id: EntityId) -> SoundSource {
     ents.mob(id)
-        .map_or(SoundSource::Players, |m| m.kind.sound_source())
+        .map_or(SoundSource::Players, |m| m.sound_source())
 }
 
 /// `makeSound(causer)` of the weapon components: heard by everyone but the causer.

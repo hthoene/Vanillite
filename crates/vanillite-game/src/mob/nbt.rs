@@ -433,7 +433,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     if let Some(h) = float(tag, "Health") {
         m.health = h.clamp(0.0, m.max_health());
     }
-    m.fire_ticks = int(tag, "Fire").unwrap_or(-1);
+    m.fire_ticks = int(tag, "Fire").unwrap_or(0);
     m.air = int(tag, "Air").unwrap_or(300);
     m.ticks_frozen = int(tag, "TicksFrozen").unwrap_or(0);
     m.fall_distance = match tag.get("fall_distance") {
@@ -810,10 +810,10 @@ pub fn save_boat(
 }
 
 /// A boat from entity NBT.
-pub fn load_boat(tag: &Compound) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
+pub fn load_boat(tag: &Compound, seed: i64) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
     let kind = crate::vehicle::BoatKind::of(type_of(tag)?)?;
     let e = load_entity(tag)?;
-    let mut b = crate::vehicle::BoatData::new(kind);
+    let mut b = crate::vehicle::BoatData::new(kind, seed);
     b.custom_name = tag.get("CustomName").and_then(tag_component);
     if kind.chest {
         b.loot_table = load_chest_vehicle(tag, &mut b.items);

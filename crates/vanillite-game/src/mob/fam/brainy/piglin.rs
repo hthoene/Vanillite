@@ -460,7 +460,7 @@ pub fn init(m: &mut MobData) {
 }
 
 /// The base movement speed with the baby modifier (`SPEED_MODIFIER_BABY`, +20 % of base).
-fn apply_baby_speed(m: &mut MobData) {
+pub(crate) fn apply_baby_speed(m: &mut MobData) {
     let base = crate::mob::Attrs::of(m.kind.type_id()).movement_speed;
     m.attrs.movement_speed = if m.baby { base * 1.2 } else { base };
 }

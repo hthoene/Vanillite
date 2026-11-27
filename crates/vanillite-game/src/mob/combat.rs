@@ -1157,7 +1157,7 @@ pub fn create_wither_rose(
 }
 
 /// `getDisplayName` of a mob without team: its custom name, else its type's name.
-fn mob_name(m: &super::MobData) -> vanillite_protocol::text::Component {
+pub(crate) fn mob_name(m: &super::MobData) -> vanillite_protocol::text::Component {
     if let Some(bytes) = &m.custom_name {
         let mut input = &bytes[..];
         let mut budget = vanillite_nbt::Budget::file();
@@ -1203,7 +1203,7 @@ pub fn mob_sound(ents: &mut Entities, env: &mut Env<'_>, id: EntityId, sound: &s
     if m.silent {
         return;
     }
-    let source = m.kind.sound_source();
+    let source = m.sound_source();
     let seed = crate::survival::sound_seed();
     play_sound(env.out, None, pos, sound, source, volume, pitch, seed);
 }

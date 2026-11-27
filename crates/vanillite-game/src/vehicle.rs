@@ -4,6 +4,7 @@
 //! those moves (see [`crate::riding`]).
 
 use vanillite_base::math::{ceil, floor};
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityFlags, EntityId, NetworkIds, NewEntity, Rotation};
@@ -99,11 +100,15 @@ pub struct BoatData {
     /// `LootTable` and `LootTableSeed` of a chest boat until the loot is rolled
     /// ([`crate::block::chest_loot::unpack_entity`]).
     pub loot_table: Option<(String, i64)>,
+    /// `paddlePositions`: the paddle angles for the paddle sounds.
+    pub paddle_positions: [f32; 2],
+    /// The boat's own random (`Entity.random`).
+    pub random: LegacyRandom,
 }
 
 impl BoatData {
-    /// A new boat.
-    pub fn new(kind: BoatKind) -> BoatData {
+    /// A new boat with its random seeded with `seed`.
+    pub fn new(kind: BoatKind, seed: i64) -> BoatData {
         BoatData {
             kind,
             status: Status::InAir,
@@ -126,6 +131,8 @@ impl BoatData {
                 Vec::new()
             },
             loot_table: None,
+            paddle_positions: [0.0; 2],
+            random: LegacyRandom::new(seed),
         }
     }
 }
@@ -433,8 +440,61 @@ pub fn tick_boat(
                 .push(crate::mob::WorldAction::EntityInside(pos, id));
         });
     }
+    paddle_sounds(level, ents, env, id);
     // Living entities pushed against a boat no player steers get in; the others are pushed.
     board_nearby(ents, env, id, !controlled);
+}
+
+/// `AbstractBoat.tick`'s paddle sounds: each paddle in use plays `getPaddleSound` (water or
+/// land) once per stroke beside the boat, then moves on by π/8.
+fn paddle_sounds(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    use std::f32::consts::PI;
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    // Boats keep no `Silent` flag.
+    let (pos, rot, aabb) = (e.pos(), e.rot(), e.aabb());
+    let Some(b) = ents.boat_mut(id) else {
+        return;
+    };
+    let paddles = [b.paddles.0, b.paddles.1];
+    for (i, &on) in paddles.iter().enumerate() {
+        if !on {
+            b.paddle_positions[i] = 0.0;
+            continue;
+        }
+        let p = b.paddle_positions[i];
+        if p % (PI * 2.0) <= PI / 4.0 && (p + PI / 8.0) % (PI * 2.0) >= PI / 4.0 {
+            // `getPaddleSound` asks `getStatus()` where the boat is now.
+            let sound = match status(level, &aabb, b) {
+                Status::InWater | Status::UnderWater | Status::UnderFlowingWater => {
+                    Some("minecraft:entity.boat.paddle_water")
+                }
+                Status::OnLand => Some("minecraft:entity.boat.paddle_land"),
+                Status::InAir => None,
+            };
+            if let Some(sound) = sound {
+                let view = crate::effect::living::view_vector(rot.x_rot, rot.y_rot);
+                let (dx, dz) = if i == 1 {
+                    (-view.z, view.x)
+                } else {
+                    (view.z, -view.x)
+                };
+                let pitch = 0.8 + 0.4 * b.random.next_float();
+                crate::survival::play_sound(
+                    env.out,
+                    None,
+                    Vec3::new(pos.x + dx, pos.y, pos.z + dz),
+                    sound,
+                    vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+                    1.0,
+                    pitch,
+                    crate::survival::sound_seed(),
+                );
+            }
+        }
+        b.paddle_positions[i] = p + PI / 8.0;
+    }
 }
 
 /// The pushable entities next to the boat: mobs board it when there is room (and
@@ -807,11 +867,11 @@ pub fn use_boat_item(
     if !physics::no_collision(&level.view(), &boat_box, &mut scratch) {
         return false;
     }
-    let mut data = BoatData::new(kind);
+    let mut data = BoatData::new(kind, crate::mob::new_entity_seed());
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
-    let uuid = crate::mob::new_entity_uuid();
+    let uuid = crate::mob::new_uuid();
     let id = spawn_boat(ents, network_ids, uuid, hit, rot.y_rot, data);
     if !ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0) {
         return false;
@@ -844,7 +904,7 @@ mod tests {
 
     #[test]
     fn two_passengers_sit_front_and_back() {
-        let b = BoatData::new(BoatKind::of(ids::OAK_BOAT).expect("boat"));
+        let b = BoatData::new(BoatKind::of(ids::OAK_BOAT).expect("boat"), 0);
         let front = passenger_offset(&b, 0.0, 2, 0, false);
         let back = passenger_offset(&b, 0.0, 2, 1, false);
         assert!((front.z - 0.2).abs() < 1e-6 && (back.z + 0.6).abs() < 1e-6);

@@ -916,9 +916,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             crate::mob::animal::use_item(ix.ents, ix.player, ix.hand);
             if let Some(m) = ix.ents.mob_mut(ix.target) {
                 // `ageUp(getSpeedUpSecondsWhenFeeding(-age), true)`.
-                let secs = (-m.age / 20) / 10;
-                m.age = (m.age + secs * 20).min(0);
-                m.forced_age_timer = 40;
+                let secs = crate::mob::animal::speed_up_seconds_when_feeding(-m.age);
+                crate::mob::animal::age_up(m, secs, true);
             }
             let pos = ix.ents.store.get(ix.target).map_or(Vec3::ZERO, |e| e.pos());
             let seed = crate::survival::sound_seed();

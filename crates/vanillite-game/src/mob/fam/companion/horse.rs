@@ -406,11 +406,8 @@ fn follow_mommy(t: &mut Tick<'_, '_>) {
     if llama && st(m).caravan_head.is_some() {
         return;
     }
-    let bred = has_flag(m, BRED);
-    if !(m.baby && (bred || llama) && !has_flag(m, EATING)) {
-        return;
-    }
-    if !llama && !bred {
+    // `Llama.followMommy` adds only the caravan and baby checks.
+    if !(has_flag(m, BRED) && m.baby && !has_flag(m, EATING)) {
         return;
     }
     let area = t.aabb().inflate(16.0, 16.0, 16.0);
@@ -425,13 +422,17 @@ fn follow_mommy(t: &mut Tick<'_, '_>) {
         let Some(o) = ents.mob(id) else {
             return;
         };
-        if !super::is_horse(o.kind) || !o.is_alive() {
+        // `MOMMY_TARGETING`: a bred horse within 16 blocks.
+        if !super::is_horse(o.kind) || !o.is_alive() || !has_flag(o, BRED) {
             return;
         }
         let Some(e) = ents.store.get(id) else {
             return;
         };
         let d = e.pos().distance_to_sqr(pos);
+        if d > 256.0 {
+            return;
+        }
         if best.is_none_or(|(_, b)| d < b) {
             best = Some((id, d));
         }
@@ -636,8 +637,7 @@ fn handle_eating(ix: &mut Interact<'_, '_>) -> bool {
         used = true;
     }
     if m.baby && age_up > 0 && !m.age_locked {
-        // `ageUp(seconds)`.
-        m.age = (m.age + age_up * 20).min(0);
+        crate::mob::animal::age_up(m, age_up, false);
         used = true;
     }
     let max = max_temper(m.kind);
@@ -664,8 +664,17 @@ fn handle_eating(ix: &mut Interact<'_, '_>) -> bool {
             });
             sound(ix, s, 1.0, pitch);
         }
-        let event = crate::level::game_event::events().eat;
-        crate::mob::animal::entity_game_event(ix.ents, ix.env, ix.target, event, Some(ix.target));
+        // `AbstractHorse.handleEating`'s EAT game event; `Llama.handleEating` sends none.
+        if !llama {
+            let event = crate::level::game_event::events().eat;
+            crate::mob::animal::entity_game_event(
+                ix.ents,
+                ix.env,
+                ix.target,
+                event,
+                Some(ix.target),
+            );
+        }
         dirty(ix);
     }
     used
@@ -686,7 +695,11 @@ pub fn accepts_body(kind: Kind, stack: &ItemStack) -> bool {
     let name = item_name(stack);
     match kind {
         Kind::Horse | Kind::ZombieHorse => name.ends_with("_horse_armor"),
-        Kind::Llama | Kind::TraderLlama => name.ends_with("_carpet"),
+        // The dyed carpets (`#wool_carpets`, their equippable); moss and pale moss carpets
+        // are no llama decor.
+        Kind::Llama | Kind::TraderLlama => {
+            name.ends_with("_carpet") && !name.ends_with("moss_carpet")
+        }
         _ => false,
     }
 }
@@ -1001,7 +1014,7 @@ pub fn breed_offspring(
     if matches!(child.kind, Kind::Horse | Kind::Donkey | Kind::Mule) && parent.kind != Kind::Mule {
         offspring_attributes(parent, partner, child, r);
     }
-    set_flag(child, BRED, true);
+    // Vanilla never sets `Bred` (only `Bred` from NBT does), so foals stay unbred.
 }
 
 // --- Data and storage ---------------------------------------------------------------------

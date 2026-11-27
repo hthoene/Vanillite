@@ -493,11 +493,10 @@ impl FamilyHooks for Hooks {
     fn experience_reward(m: &mut MobData) -> i32 {
         use vanillite_base::random::RandomSource;
         match m.kind {
-            // `xpReward` with the equipment bonus of `Mob.getBaseExperienceReward`.
-            Kind::Piglin | Kind::PiglinBrute => {
-                let base = if m.kind == Kind::Piglin { 5 } else { 20 };
-                base + equipment_xp(m)
-            }
+            // `Piglin.getBaseExperienceReward`: only `xpReward`; the brute has the equipment bonus
+            // of `Mob.getBaseExperienceReward`.
+            Kind::Piglin => 5,
+            Kind::PiglinBrute => crate::mob::fam::undead::zombies::equipment_experience(m, 20),
             Kind::Hoglin => {
                 if m.baby {
                     3
@@ -932,18 +931,6 @@ fn animal_group_baby(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         m.age = -24000;
         m.baby = true;
     }
-}
-
-/// The experience bonus of the equipment (`Mob.getBaseExperienceReward`): 1–3 per item.
-fn equipment_xp(m: &mut MobData) -> i32 {
-    use vanillite_base::random::RandomSource;
-    let mut xp = 0;
-    for slot in crate::mob::equipment::SLOTS {
-        if !m.equipment.get(slot).is_empty() && m.equipment.drop_chance(slot) <= 1.0 {
-            xp += 1 + m.random.next_int_bounded(3);
-        }
-    }
-    xp
 }
 
 /// `AgeableMob`/`Animal` NBT: `Age`, `ForcedAge`, `InLove`, `LoveCause`.

@@ -716,13 +716,13 @@ fn dispense_boat(level: &mut Level, source: Source, mut stack: ItemStack) -> Ite
     } else {
         0.0
     };
-    let mut data = crate::vehicle::BoatData::new(kind);
+    let mut data = crate::vehicle::BoatData::new(kind, crate::mob::new_entity_seed());
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
     #[allow(clippy::cast_precision_loss)]
     let yaw = ((crate::decoration::data_2d(source.facing) & 3) * 90) as f32;
-    let uuid = crate::mob::new_entity_uuid();
+    let uuid = crate::mob::new_uuid();
     let (ents, network_ids, _) = level.entity_parts();
     let id = crate::vehicle::spawn_boat(
         ents,

@@ -296,7 +296,7 @@ impl Level {
             new.rot = e.rot;
             return Some(Some(self.entities.spawn_missile(new, data)));
         }
-        if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt) {
+        if let Some((e, data)) = crate::mob::nbt::load_boat(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
             let id = crate::vehicle::spawn_boat(
                 &mut self.entities,
