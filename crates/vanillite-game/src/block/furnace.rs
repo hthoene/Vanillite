@@ -190,7 +190,7 @@ impl Furnace {
         out.insert("lit_time_remaining", Tag::Int(self.lit_time_remaining));
         out.insert("lit_total_time", Tag::Int(self.lit_total_time));
         out.insert("speed_multiplier", Tag::Float(self.speed));
-        super::container::save_items(&self.items, out);
+        super::container::save_items_always(&self.items, out);
         let mut used = Compound::new();
         for (id, count) in &self.recipes_used {
             used.insert(id, Tag::Int(*count));

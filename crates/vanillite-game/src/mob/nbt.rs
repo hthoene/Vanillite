@@ -827,7 +827,7 @@ fn save_chest_vehicle(
                 out.insert("LootTableSeed", *seed);
             }
         }
-        None => crate::block::container::save_items(items, out),
+        None => crate::block::container::save_items_always(items, out),
     }
 }
 

@@ -1471,12 +1471,17 @@ impl Container {
         }
     }
 
-    /// Saves the stored fields (`trySaveLootTable`, else `saveAllItems`).
-    pub fn save(&self, out: &mut Compound) {
+    /// Saves the stored fields (`trySaveLootTable`, else `saveAllItems`): `Items` also when
+    /// empty, except for shulker boxes (`also_when_empty` false).
+    pub fn save(&self, out: &mut Compound, also_when_empty: bool) {
         super::lock::save(&self.lock, out);
         save_name(&self.custom_name, out);
         if !super::chest_loot::save(self.loot_table.as_deref(), self.loot_seed, out) {
-            save_items(&self.items, out);
+            if also_when_empty {
+                save_items_always(&self.items, out);
+            } else {
+                save_items(&self.items, out);
+            }
         }
     }
 }
