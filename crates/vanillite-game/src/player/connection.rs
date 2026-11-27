@@ -615,7 +615,7 @@ impl Connection {
                     {
                         self.chat.requests.push(ChatRequest::ResolveLecternBook(at));
                     }
-                    if entity_item && self.entity_actions.len() < 16 {
+                    if entity_item && self.play.entity_item_use && self.entity_actions.len() < 16 {
                         self.entity_actions.push(EntityAction::UseItemOn {
                             hand: p.hand,
                             pos: vanillite_base::BlockPos::new(p.pos.x, p.pos.y, p.pos.z),
@@ -626,8 +626,10 @@ impl Connection {
             }
             ServerboundPlay::UseItem(p) => {
                 if self.movement.has_client_loaded() {
-                    self.play.use_item(p.sequence);
-                    if self.entity_actions.len() < 16 {
+                    let handled = self
+                        .play
+                        .use_item(play, p.hand, p.sequence, p.y_rot, p.x_rot);
+                    if !handled && self.entity_actions.len() < 16 {
                         self.entity_actions.push(EntityAction::UseItem(p.hand));
                     }
                 }

@@ -40,6 +40,14 @@ pub struct ItemInfo {
     /// The `minecraft:jukebox_song` of the default `minecraft:jukebox_playable` component,
     /// empty if the item is no music disc.
     pub jukebox_song: &'static str,
+    /// The `minecraft:block_transformer` of the default component (axes, shovels, hoes),
+    /// empty without one.
+    pub block_transformer: &'static str,
+    /// The equip sound of the default `minecraft:equippable` component.
+    pub equip_sound: &'static str,
+    /// Whether the default `minecraft:equippable` component is `swappable` by players (and
+    /// allows every entity).
+    pub equip_swappable: bool,
 }
 
 /// One entry of a `minecraft:attribute_modifiers` component.

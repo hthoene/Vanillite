@@ -341,6 +341,10 @@ impl PlayLevel for WorldLevel<'_> {
         Some(self.level)
     }
 
+    fn level(&self) -> Option<&Level> {
+        Some(self.level)
+    }
+
     fn dimension(&self) -> &str {
         self.dimension
     }

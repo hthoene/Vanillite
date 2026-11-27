@@ -643,6 +643,46 @@ fn own_interact(
         return super::fam::interact(&mut ix, kind);
     }
     match kind {
+        Kind::Creeper if super::fam::companion::in_tag(stack, "minecraft:creeper_igniters") => {
+            // `Creeper.mobInteract`: the igniter's sound (not for the player), then `ignite`.
+            let sound = if name == "minecraft:fire_charge" {
+                "minecraft:item.firecharge.use"
+            } else {
+                "minecraft:item.flintandsteel.use"
+            };
+            let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
+                return Interaction::Pass;
+            };
+            let pitch = ents
+                .mob_mut(target)
+                .map_or(1.0, |m| m.random.next_float() * 0.4 + 0.8);
+            let seed = crate::survival::sound_seed();
+            play_sound(
+                env.out,
+                Some(player),
+                pos,
+                sound,
+                SoundSource::Hostile,
+                1.0,
+                pitch,
+                seed,
+            );
+            if let Some(c) = ents
+                .mob_mut(target)
+                .and_then(super::fam::classic::try_creeper_mut)
+            {
+                c.ignited = true;
+            }
+            if item::is_damageable(stack) {
+                hurt_held(ents, env, player, hand, 1);
+            } else {
+                let i = hand_index(ents, player, hand);
+                if let Some(s) = ents.player_mut(player).and_then(|p| p.inventory.get_mut(i)) {
+                    s.shrink(1);
+                }
+            }
+            return Interaction::Success;
+        }
         Kind::Cow if name == "minecraft:bucket" && !ents.mob(target).is_some_and(|m| m.baby) => {
             // `AbstractCow.mobInteract`: the milk sound is the player's own.
             if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
@@ -1063,7 +1103,7 @@ pub fn use_spawn_egg_on(
 }
 
 /// `EntityType.getYOffset`: how far up from the block the new mob stands.
-fn spawn_y_offset(
+pub(crate) fn spawn_y_offset(
     level: &Level,
     spawn_pos: vanillite_base::BlockPos,
     moved_up: bool,

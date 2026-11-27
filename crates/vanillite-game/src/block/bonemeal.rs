@@ -35,6 +35,17 @@ pub fn grow_crop(level: &mut Level, pos: BlockPos, stack: &mut ItemStack) -> boo
 /// seagrass (and corals in warm oceans) around it. Takes one bone meal and returns `true` if
 /// `pos` is a full water block.
 pub fn grow_water_plant(level: &mut Level, pos: BlockPos, stack: &mut ItemStack) -> bool {
+    grow_water_plant_from(level, pos, None, stack)
+}
+
+/// `BoneMealItem.growWaterPlant` with the clicked face of a player's use: the first attempt
+/// against a horizontal face in a warm ocean grows a wall coral on it.
+pub fn grow_water_plant_from(
+    level: &mut Level,
+    pos: BlockPos,
+    clicked_face: Option<Direction>,
+    stack: &mut ItemStack,
+) -> bool {
     if !is_full_water(level, pos) {
         return false;
     }
@@ -51,11 +62,22 @@ pub fn grow_water_plant(level: &mut Level, pos: BlockPos, stack: &mut ItemStack)
                 continue 'attempts;
             }
         }
-        if produces_corals(level, test) && level.random().next_int_bounded(4) == 0 {
-            let options = underwater_bonemeals();
-            let index = level.random().next_int_bounded(options.len() as i32) as usize;
-            if let Some(&block) = options.get(index) {
-                grow = block.default_state();
+        if produces_corals(level, test) {
+            let horizontal = clicked_face
+                .filter(|f| !matches!(f, Direction::Up | Direction::Down))
+                .filter(|_| j == 0);
+            if let Some(face) = horizontal {
+                let options = WALL_CORALS;
+                let index = level.random().next_int_bounded(options.len() as i32) as usize;
+                if let Some(&block) = options.get(index) {
+                    grow = block.default_state().set_direction("facing", face);
+                }
+            } else if level.random().next_int_bounded(4) == 0 {
+                let options = underwater_bonemeals();
+                let index = level.random().next_int_bounded(options.len() as i32) as usize;
+                if let Some(&block) = options.get(index) {
+                    grow = block.default_state();
+                }
             }
         }
         if is_wall_coral(grow.block()) {
@@ -130,16 +152,18 @@ fn underwater_bonemeals() -> [BlockId; 16] {
     ]
 }
 
+/// `#minecraft:wall_corals` in tag order.
+const WALL_CORALS: [BlockId; 5] = [
+    ids::TUBE_CORAL_WALL_FAN,
+    ids::BRAIN_CORAL_WALL_FAN,
+    ids::BUBBLE_CORAL_WALL_FAN,
+    ids::FIRE_CORAL_WALL_FAN,
+    ids::HORN_CORAL_WALL_FAN,
+];
+
 /// `#minecraft:wall_corals`.
 fn is_wall_coral(block: BlockId) -> bool {
-    [
-        ids::TUBE_CORAL_WALL_FAN,
-        ids::BRAIN_CORAL_WALL_FAN,
-        ids::BUBBLE_CORAL_WALL_FAN,
-        ids::FIRE_CORAL_WALL_FAN,
-        ids::HORN_CORAL_WALL_FAN,
-    ]
-    .contains(&block)
+    WALL_CORALS.contains(&block)
 }
 
 /// `Mth.nextInt(random, min, max)`.

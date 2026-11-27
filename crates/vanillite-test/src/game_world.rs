@@ -1529,32 +1529,70 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
+        if let Some(target) = &op.target {
+            // `Player.interactOn` with the stack in the main hand.
+            let player = self.named(&op.entity)?;
+            let target = self.named(target)?;
+            let item = vanillite_data::item::ItemId::by_name(&op.item)
+                .ok_or_else(|| format!("unknown item {}", op.item))?;
+            if let Some(p) = self.level.entities.player_mut(player) {
+                let slot = p.inventory.selected;
+                p.inventory
+                    .set(slot, vanillite_game::item::ItemStack::new(item.0, op.count));
+            }
+            self.with_env(|level, ents, env, cx| {
+                mob::animal::interact_on(
+                    level,
+                    ents,
+                    env,
+                    cx,
+                    player,
+                    target,
+                    vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+                    false,
+                );
+            });
+            self.spawn_drops();
+            return Ok(());
+        }
+        if op.item != mob::fam::wildlife::ender_pearl::ITEM {
+            // Every other item goes through the real `use_item` packet handler.
+            return self.player_use(&crate::scenario::PlayerUse {
+                entity: op.entity.clone(),
+                attack: false,
+                air: true,
+                pos: BlockPos::new(0, 0, 0),
+                face: "up".to_owned(),
+                hit: None,
+                item: Some(op.item.clone()),
+                count: op.count,
+                components: None,
+                offhand: false,
+                sneak: false,
+                food: None,
+            });
+        }
         let player = self.named(&op.entity)?;
         let item = vanillite_data::item::ItemId::by_name(&op.item)
             .ok_or_else(|| format!("unknown item {}", op.item))?;
         let mut stack = vanillite_game::item::ItemStack::new(item.0, op.count);
         let network_ids = Arc::clone(&self.network_ids);
-        let used = self.with_env(|_, ents, env, _| {
-            if op.item == mob::fam::wildlife::ender_pearl::ITEM {
-                mob::fam::wildlife::ender_pearl::throw(
-                    ents,
-                    env,
-                    &network_ids,
-                    player,
-                    &mut stack,
-                    vanillite_protocol::packets::play::serverbound::Hand::MainHand,
-                );
-                Ok(())
-            } else {
-                Err(format!("using {} is not supported here", op.item))
-            }
+        self.with_env(|_, ents, env, _| {
+            mob::fam::wildlife::ender_pearl::throw(
+                ents,
+                env,
+                &network_ids,
+                player,
+                &mut stack,
+                vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+            );
         });
         if let Some(p) = self.level.entities.player_mut(player) {
             let slot = p.inventory.selected;
             p.inventory.set(slot, stack);
         }
         self.spawn_drops();
-        used
+        Ok(())
     }
 
     /// `ServerPlayerGameMode.useItemOn` (through `handleUseItemOn`) or `START_DESTROY_BLOCK`
@@ -1676,7 +1714,17 @@ impl ScenarioWorld for GameWorld {
                 y: at.y,
                 z: at.z,
             };
-            if click.attack {
+            if click.air {
+                let hand = if click.offhand {
+                    Hand::OffHand
+                } else {
+                    Hand::MainHand
+                };
+                player
+                    .connection
+                    .play
+                    .use_item(&mut ctx, hand, 0, rot.y_rot, rot.x_rot);
+            } else if click.attack {
                 player.connection.play.handle_action(
                     &mut ctx,
                     DigAction::StartDestroyBlock,

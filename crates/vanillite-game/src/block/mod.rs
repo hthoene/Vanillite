@@ -119,8 +119,6 @@ pub type AttackFn = fn(&mut Level, BlockState, BlockPos, EntityId);
 /// (the player's data is not part of the level).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerEffect {
-    /// `player.awardStat(stat, count)`.
-    Stat(crate::stats::Stat, i32),
     /// `player.getFoodData().eat(nutrition, saturation)`.
     Eat(i32, f32),
     /// `ItemUtils.createFilledResult` for a creative player: the stack goes into the inventory
