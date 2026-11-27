@@ -312,7 +312,12 @@ fn type_facts(packs: Option<&LoadedPacks>, kind: &str) -> (DimensionFacts, Optio
         logical_height: field("logical_height")
             .and_then(Value::as_i64)
             .and_then(|v| i32::try_from(v).ok())
-            .unwrap_or(256),
+            // Without the registry: the Vanilla dimension types' heights.
+            .unwrap_or(match kind {
+                "minecraft:the_nether" => 128,
+                "minecraft:the_end" => 256,
+                _ => 384,
+            }),
         has_ceiling: flag("has_ceiling"),
         has_ender_dragon_fight: flag("has_ender_dragon_fight"),
     };
