@@ -105,12 +105,24 @@ pub fn update_fall_flying(entity: &mut EntityMut<'_>, player: &mut PlayerData, e
     if ticks % 10 != 0 {
         return;
     }
-    if (ticks / 10) % 2 == 0
-        && let Some(&slot) = glider_slots(player).first()
-    {
+    if (ticks / 10) % 2 == 0 {
         // `Util.getRandom(slots, random)` draws from the player's own random.
-        hurt_slot(entity, player, env, slot);
+        let slots = glider_slots(player);
+        if !slots.is_empty() {
+            let n = i32::try_from(slots.len()).unwrap_or(i32::MAX);
+            let i = player.survival.random.next_int_bounded(n);
+            if let Some(&slot) = slots.get(usize::try_from(i).unwrap_or(0)) {
+                hurt_slot(entity, player, env, slot);
+            }
+        }
     }
+    let e = entity.as_ref();
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().elytra_glide,
+        e.pos(),
+        Some(e.id()),
+    );
 }
 
 /// `ItemStack.hurtAndBreak(1, player, slot)` of a worn glider: Unbreaking may save the point

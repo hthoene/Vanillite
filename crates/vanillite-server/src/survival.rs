@@ -1221,7 +1221,11 @@ fn spawn_drops(
                 x_rot: 0.0,
                 y_head_rot: *y_rot,
             };
-            let data = vanillite_game::mob::MobData::new(kind, seed);
+            let mut data = vanillite_game::mob::MobData::new(kind, seed);
+            if kind == vanillite_game::mob::Kind::Slime {
+                // Only Oozing spawns slimes this way: `setSize(2, true)`.
+                vanillite_game::mob::fam::undead::cubes::set_size(&mut data, 2, true);
+            }
             let id = vanillite_game::mob::spawn(entities, network_ids, uuid, *pos, rot, data);
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);

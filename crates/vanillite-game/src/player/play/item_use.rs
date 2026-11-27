@@ -1411,9 +1411,10 @@ fn bucket(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32, content
     let player = ctx.actor.entity;
     let stack = held(ctx, hand);
     let relative = pos.relative(face);
-    // `level.mayInteract` (spawn protection, world border) and `player.mayUseItemAt`.
+    // `level.mayInteract` (spawn protection, world border) and `player.mayUseItemAt`, which
+    // tests `can_place_on` against the clicked block.
     let may_build = ctx.actor.game_mode != vanillite_config::GameMode::Adventure
-        || can_place_on(ctx, &stack, relative);
+        || can_place_on(ctx, &stack, pos);
     if (ctx.spawn_protected)(pos) || !may_build || !ctx.level.is_loaded(pos) {
         return Used::Fail;
     }

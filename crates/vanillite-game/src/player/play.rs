@@ -1710,6 +1710,13 @@ impl Digging {
         };
         ctx.level
             .set_block(target, new_state, update::ALL_IMMEDIATE);
+        // `BLOCK_PLACE` at the clicked block for fire, `BLOCK_CHANGE` for a lit block.
+        let event = if lightable {
+            events_ids().block_change
+        } else {
+            events_ids().block_place
+        };
+        ctx.level.game_event(event, pos, ctx.actor.entity, None);
         if !lightable {
             // `PLACED_BLOCK` of the placed fire, before the damage.
             let stack = match hand {

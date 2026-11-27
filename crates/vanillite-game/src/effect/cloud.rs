@@ -240,17 +240,49 @@ fn affect_entities_around(
             };
             crate::mob::combat::hurt(level, ents, env, cx, id, source, 1.0);
         }
-        // `extinguishFire`.
-        if let Some(m) = ents.mob_mut(id)
+        // `extinguishFire`: `playEntityOnFireExtinguishedSound`, then `clearFire`.
+        use vanillite_base::random::RandomSource;
+        let extinguished = if let Some(m) = ents.mob_mut(id)
             && m.fire_ticks > 0
             && m.is_alive()
         {
             m.fire_ticks = 0;
+            let r = &mut m.random;
+            Some((m.kind.sound_source(), r.next_float() - r.next_float()))
         } else if let Some(p) = ents.player_mut(id)
             && p.survival.fire_ticks > 0
             && !p.survival.is_dead_or_dying()
         {
             p.survival.fire_ticks = 0;
+            let r = &mut p.survival.random;
+            Some((
+                vanillite_protocol::packets::play::clientbound::SoundSource::Players,
+                r.next_float() - r.next_float(),
+            ))
+        } else {
+            None
+        };
+        if let Some((source, d)) = extinguished {
+            crate::survival::play_sound(
+                env.out,
+                None,
+                pos,
+                "minecraft:entity.generic.extinguish_fire",
+                source,
+                0.7,
+                1.6 + d * 0.4,
+                crate::survival::sound_seed(),
+            );
+        }
+    }
+    // `#rehydrates_axolotls`: every axolotl in the box gets 1800 air (`rehydrate`).
+    let mut axolotls = Vec::new();
+    ents.store.for_each_in(&area, false, |id| axolotls.push(id));
+    for id in axolotls {
+        if let Some(m) = ents.mob_mut(id)
+            && m.kind == crate::mob::Kind::Axolotl
+        {
+            m.air = (m.air + 1800).min(6000);
         }
     }
 }

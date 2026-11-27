@@ -25,6 +25,8 @@ pub struct SpinAttack {
     pub ticks: i32,
     pub damage: f32,
     pub item: ItemStack,
+    /// The inventory slot of the trident (`autoSpinAttackItemStack` is that very stack).
+    pub index: usize,
     /// The box the player swept through in its last travel.
     pub swept: Aabb,
     /// `horizontalCollision` of that travel.
@@ -212,7 +214,7 @@ pub fn release(
             e.set_flags(EntityFlags::HURT_MARKED, true);
         }
     }
-    start_spin_attack(ents, env, player, 20, 8.0, stack.clone());
+    start_spin_attack(ents, env, player, 20, 8.0, stack.clone(), hand_index);
     if on_ground && simulated {
         // `move(SELF, (0, 1.2, 0))`.
         crate::survival::player::lift_player(ents, env, player, f64::from(1.199_999_9_f32));
@@ -271,6 +273,7 @@ pub fn start_spin_attack(
     ticks: i32,
     damage: f32,
     item: ItemStack,
+    index: usize,
 ) {
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(player) else {
@@ -284,6 +287,7 @@ pub fn start_spin_attack(
         ticks,
         damage,
         item,
+        index,
         swept,
         horizontal_collision: false,
     });
