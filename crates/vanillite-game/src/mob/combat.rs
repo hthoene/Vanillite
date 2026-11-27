@@ -156,6 +156,7 @@ pub fn hurt(
     let blocked_by_item = data.survival.blocked_by_item.take();
     // The killer's type while it is still there (`ENTITY_KILLED_BY`).
     if died {
+        let mut credit = None;
         for effect in env.out.iter_mut().rev() {
             if let Effect::Died {
                 victim,
@@ -166,8 +167,13 @@ pub fn hurt(
                 && *victim == target
             {
                 *killer_kind = killer.and_then(|k| ents.store.get(k)).map(|e| e.kind());
+                credit = *killer;
                 break;
             }
+        }
+        // `ServerPlayer.die` → `createWitherRose(killer)`.
+        if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+            create_wither_rose(level, ents, env, cx, pos, credit);
         }
     }
     view::resolve_combat(ents, env.types, target);
@@ -211,6 +217,11 @@ fn with_blocking_facts(ents: &Entities, mut source: DamageSource) -> DamageSourc
     // `getSecondsToDisableBlocking`: the `weapon` of the main hand item, unless the attacker
     // uses the item of its other hand (`getActiveItem`).
     let weapon = if let Some(m) = ents.mob(direct) {
+        if m.kind == Kind::Warden {
+            // `Warden.getSecondsToDisableBlocking`.
+            source.disable_shield_seconds = 5.0;
+            return source;
+        }
         Some(m.equipment.get(crate::item::EquipmentSlot::MainHand))
     } else {
         ents.player(direct).and_then(|p| {
@@ -429,7 +440,8 @@ fn hurt_mob_inner(
     // `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage`.
     if let Some(cause) = source.cause {
         let is_player = ents.player(cause).is_some();
-        let living = is_player || ents.mob(cause).is_some();
+        let living =
+            (is_player || ents.mob(cause).is_some()) && angers(ents, env.types, target, &source);
         // `resolvePlayerResponsibleForDamage`: a tame wolf's hit counts for its owner (none
         // without an owner).
         let wolf_owner = ents
@@ -768,10 +780,15 @@ fn actually_hurt(
 
 /// `resolveMobResponsibleForDamage` / `resolvePlayerResponsibleForDamage` without damage
 /// (`Creaking.blameSourceForDamage`): the responsible player, if any.
-pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Option<EntityId> {
+pub fn blame(
+    ents: &mut Entities,
+    types: &crate::survival::damage::DamageTypes,
+    target: EntityId,
+    source: &DamageSource,
+) -> Option<EntityId> {
     let cause = source.cause?;
     let is_player = ents.player(cause).is_some();
-    let living = is_player || ents.mob(cause).is_some();
+    let living = (is_player || ents.mob(cause).is_some()) && angers(ents, types, target, source);
     let m = ents.mob_mut(target)?;
     if living {
         m.last_hurt_by_mob = Some(cause);
@@ -782,6 +799,24 @@ pub fn blame(ents: &mut Entities, target: EntityId, source: &DamageSource) -> Op
         m.last_hurt_by_player_time = 100;
     }
     is_player.then_some(cause)
+}
+
+/// The conditions of `resolveMobResponsibleForDamage` on the damage: not `#no_anger`
+/// (`mob_attack_no_aggro`), and no wind charge damage to a `#no_anger_from_wind_charge` mob.
+fn angers(
+    ents: &Entities,
+    types: &crate::survival::damage::DamageTypes,
+    target: EntityId,
+    source: &DamageSource,
+) -> bool {
+    let id = types.get(source.kind).id.as_str();
+    if id == "minecraft:mob_attack_no_aggro" {
+        return false;
+    }
+    !(id == "minecraft:wind_charge"
+        && ents.store.get(target).is_some_and(|e| {
+            crate::effect::entity_in_tag(e.kind(), "minecraft:no_anger_from_wind_charge")
+        }))
 }
 
 /// `checkTotemDeathProtection` of a dying mob: a death protection item in a hand is used up
@@ -854,7 +889,7 @@ pub fn blame_and_die(
     target: EntityId,
     source: DamageSource,
 ) {
-    blame(ents, target, &source);
+    blame(ents, env.types, target, &source);
     die(level, ents, env, cx, target, source);
 }
 

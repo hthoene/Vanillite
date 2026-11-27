@@ -197,9 +197,29 @@ fn load_info(c: &Compound, entity: &impl Fn(u128) -> Option<EntityId>) -> Option
     })
 }
 
-/// The owner of a projectile entity (`VibrationInfo.getProjectileOwner`).
+/// The owner of a projectile entity (`VibrationInfo.getProjectileOwner`): arrows, tridents,
+/// thrown items, fireballs, wind charges, wither skulls, potions, ... (`Projectile`).
 pub fn projectile_owner(level: &Level, entity: Option<EntityId>) -> Option<EntityId> {
-    level.entities.arrow(entity?).and_then(|a| a.owner)
+    use crate::mob::boss::special::SpecialData;
+    use crate::mob::missile::MissileKind;
+    let ents = &level.entities;
+    let entity = entity?;
+    if let Some(a) = ents.arrow(entity) {
+        return a.owner;
+    }
+    if let Some(m) = ents.missile(entity) {
+        // Evoker fangs and eyes of ender are no `Projectile`.
+        return (!matches!(m.kind, MissileKind::EvokerFangs | MissileKind::EyeOfEnder))
+            .then_some(m.owner)
+            .flatten();
+    }
+    match ents.special(entity)? {
+        SpecialData::WitherSkull(s) => s.owner,
+        SpecialData::DragonFireball(f) => f.owner,
+        SpecialData::ThrownPotion(p) => p.owner,
+        _ => None,
+    }
+    .filter(|&o| ents.store.contains(o))
 }
 
 /// `VibrationSystem.User.isValidVibration` for a listener hearing `listenable`.

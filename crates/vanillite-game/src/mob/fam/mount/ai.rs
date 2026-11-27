@@ -497,7 +497,7 @@ pub fn breeze_brain(m: &mut MobData) {
             (
                 0,
                 Spec::of(B::StopAttackingIfTargetInvalid {
-                    stop_when: Some(|t, id| !sensing::is_attackable(t, id)),
+                    stop_when: Some(|t, id| !super::breeze::was_attackable_last_100(t, id)),
                     on_erased: None,
                     tired: true,
                 }),

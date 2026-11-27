@@ -1253,6 +1253,7 @@ impl WorldMobs {
             );
         }
         for hurt in hurts {
+            hurt.aim(&mut ents);
             // `damageSources().explosion(source, indirect)`.
             let mut source = match (hurt.source, hurt.indirect) {
                 // `badRespawnPointExplosion(center)`.

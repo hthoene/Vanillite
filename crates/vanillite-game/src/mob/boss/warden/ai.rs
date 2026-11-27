@@ -279,7 +279,7 @@ fn block_pos_of(t: &Tick<'_, '_>, e: EntityId) -> Option<BlockPos> {
 /// `checkExtraStartConditions`.
 pub fn behavior_check(t: &mut Tick<'_, '_>, b: &mut Behavior) -> bool {
     match b {
-        Behavior::ForceUnmount => false,
+        Behavior::ForceUnmount => t.ents.vehicle_of(t.id).is_some(),
         Behavior::Digging => {
             t.on_ground() || {
                 let f = t.mob_ref().fluids;
@@ -306,6 +306,10 @@ pub fn behavior_can_still_use(t: &mut Tick<'_, '_>, b: &mut Behavior, _now: i64)
 pub fn behavior_start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
     let id = t.id;
     match b {
+        Behavior::ForceUnmount => {
+            // `ForceUnmount.start`: `unRide`.
+            crate::riding::stop_riding(t.ents, t.env, id);
+        }
         Behavior::Emerging => {
             set_pose(t, Pose::Emerging);
             sound(t, "minecraft:entity.warden.emerge", 5.0, 1.0);

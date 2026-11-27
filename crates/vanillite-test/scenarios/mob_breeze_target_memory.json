@@ -1,0 +1,50 @@
+{
+  "description": "A breeze keeps its target for 100 checks after it was last attackable (Sensor.wasEntityAttackableLastNTicks, rememberPositives): a wall built between it and the player does not make it drop the target at once.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 140,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        12.5
+      ]
+    },
+    {
+      "name": "breeze",
+      "type": "minecraft:breeze",
+      "pos": [
+        7.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 40,
+      "op": "command",
+      "command": "fill 0 -60 8 15 -51 8 minecraft:stone"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

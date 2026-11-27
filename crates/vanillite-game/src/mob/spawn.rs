@@ -2065,6 +2065,9 @@ pub fn summon_seeded(
     seed: Option<i64>,
 ) -> EntityId {
     let seed = seed.unwrap_or_else(crate::mob::new_entity_seed);
+    if kind == Kind::EnderDragon {
+        crate::mob::boss::dragon::part_seeds();
+    }
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let env = Environment::default();

@@ -145,7 +145,7 @@ pub fn owner(level: &Level, projectile: EntityId) -> Option<EntityId> {
 /// `projectile.isOnFire()`.
 fn on_fire(level: &Level, projectile: EntityId) -> bool {
     let ents = &level.entities;
-    ents.arrow(projectile).is_some_and(|a| a.fire)
+    ents.arrow(projectile).is_some_and(|a| a.fire > 0)
         || ents
             .store
             .get(projectile)

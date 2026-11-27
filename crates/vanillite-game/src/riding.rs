@@ -133,7 +133,11 @@ pub fn start_riding(
         }
         up = ents.vehicle_of(v);
     }
-    if !force && !can_add_passenger(ents, vehicle) {
+    // `canRide`: the wither, the warden and the dragon never get on by themselves.
+    let cannot_ride = ents
+        .mob(passenger)
+        .is_some_and(|m| matches!(m.kind, Kind::Wither | Kind::Warden | Kind::EnderDragon));
+    if !force && (cannot_ride || !can_add_passenger(ents, vehicle)) {
         return false;
     }
     if !riding_event(

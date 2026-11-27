@@ -572,6 +572,10 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)>
             health: int(tag, "Health").unwrap_or(5),
             following: None,
             tick_count: 0,
+            fire_ticks: 0,
+            // A summon replaces it with the seed its constructor took.
+            random_state: vanillite_base::random::LegacyRandom::new(crate::mob::new_unique_seed())
+                .state(),
         },
     ))
 }
@@ -669,7 +673,15 @@ pub fn save_arrow(
     let mut out = Compound::new();
     save_entity(core, &mut out);
     out.insert("fall_distance", 0.0_f64);
-    out.insert("Fire", if a.fire { 2000_i16 } else { -1_i16 });
+    #[allow(clippy::cast_possible_truncation)]
+    out.insert(
+        "Fire",
+        if a.fire > 0 {
+            a.fire.min(i32::from(i16::MAX)) as i16
+        } else {
+            -1_i16
+        },
+    );
     out.insert("Air", 300_i16);
     #[allow(clippy::cast_possible_truncation)]
     {
@@ -749,7 +761,8 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
             random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
             knockback: 0.0,
-            fire: int(tag, "Fire").is_some_and(|f| f > 0),
+            fire: int(tag, "Fire").unwrap_or(0).max(0),
+            touching_water: false,
             item,
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),

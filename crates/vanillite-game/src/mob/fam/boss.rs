@@ -31,6 +31,19 @@ fn guardian(kind: Kind) -> bool {
 impl FamilyHooks for Hooks {
     type Goal = Goal;
 
+    fn finalize_spawn(m: &mut MobData, _ctx: &mut super::SpawnContext<'_>) {
+        // `Warden.finalizeSpawn`: every spawn waits 1200 ticks before it may dig back down.
+        if m.kind == Kind::Warden
+            && let Some(mem) = m.brain.as_deref_mut()
+        {
+            mem.set_with_expiry(
+                crate::mob::brain::MemoryType::DigCooldown,
+                crate::mob::brain::MemValue::Unit,
+                boss::warden::DIGGING_COOLDOWN,
+            );
+        }
+    }
+
     fn ambient_sound_interval(kind: Kind) -> i32 {
         if guardian(kind) { 160 } else { 80 }
     }

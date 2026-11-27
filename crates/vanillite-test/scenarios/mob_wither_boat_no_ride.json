@@ -1,0 +1,46 @@
+{
+  "description": "A wither (NoAI) next to an oak boat on land is not picked up by the boat (AbstractBoat.tick \u2192 startRiding; WitherBoss.canRide is false).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 7,
+  "entities": [
+    {
+      "name": "wither",
+      "type": "minecraft:wither",
+      "pos": [
+        4.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 81,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:wither,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:oak_boat 4.5 -60.0 7.9"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "description": "A player gets on a saddled horse on a platform high above a sculk sensor; the platform goes and the horse lands next to the sensor: its tendril clicking carries the horse as source, and SculkShriekerBlockEntity.tryGetPlayer takes its controlling passenger, so the shrieker shrieks.",
+  "tier": "fast",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -44,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "player_state": true,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        6
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        6
+      ],
+      "block": "minecraft:sculk_shrieker[can_summon=false,shrieking=false,waterlogged=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        6,
+        -49,
+        7
+      ],
+      "to": [
+        10,
+        -49,
+        11
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -48.0,
+        9.5
+      ],
+      "rot": [
+        -90,
+        0
+      ]
+    },
+    {
+      "name": "horse",
+      "type": "minecraft:horse",
+      "pos": [
+        8.5,
+        -48.0,
+        9.5
+      ],
+      "seed": 61,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:horse,limit=1] {Tame:1b,equipment:{saddle:{id:\"minecraft:saddle\",count:1}}}"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "target": "horse"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "fill 6 -49 7 10 -49 11 minecraft:air"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

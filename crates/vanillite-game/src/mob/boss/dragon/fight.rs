@@ -479,6 +479,7 @@ impl DragonFight {
     fn create_new_dragon(&mut self, level: &mut Level, _env: &mut Env<'_>) -> Option<EntityId> {
         let yaw = level.random().next_float() * 360.0;
         let seed = crate::mob::new_entity_seed();
+        super::part_seeds();
         let uuid = crate::mob::new_uuid();
         let mob = super::new_dragon(seed, self.origin);
         let pos = Vec3::new(
