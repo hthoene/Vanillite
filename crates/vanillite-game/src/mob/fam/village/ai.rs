@@ -769,7 +769,7 @@ pub fn sensor_tick(t: &mut Tick<'_, '_>, s: Sensor) {
         Sensor::SecondaryPois => {
             let center = t.block_pos();
             let prof = vs(t.mob_ref()).profession;
-            let dim: Box<str> = t.env.dimension.into();
+            let dim: std::sync::Arc<str> = t.env.dimension.into();
             let mut sites = Vec::new();
             for x in -4..=4 {
                 for y in -2..=2 {
@@ -2311,13 +2311,20 @@ pub fn behavior_trigger(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> boo
             let nearby: Vec<EntityId> = brain_ref(t).entities(M::NearestLivingEntities).to_vec();
             let mut winner = t.id;
             for id in nearby {
-                if id == t.id || !is_villager(t, id) || !bh::is_alive(t, id) {
+                if id == t.id {
                     continue;
                 }
-                let competes = other_global(t, id, M::JobSite).is_some_and(|g| g == job)
-                    && t.ents
-                        .mob(id)
-                        .is_some_and(|m| v::held_job_site(vs(m).profession, ty));
+                // A living villager with the same job site whose profession holds it.
+                let competes = t.ents.mob(id).is_some_and(|m| {
+                    m.kind == Kind::Villager
+                        && m.is_alive()
+                        && matches!(
+                            m.brain.as_deref().and_then(|b| b.get(M::JobSite)),
+                            Some(MemValue::GlobalPos(g))
+                                if g.pos == job.pos && g.dimension == job.dimension
+                        )
+                        && v::held_job_site(vs(m).profession, ty)
+                });
                 if !competes {
                     continue;
                 }
