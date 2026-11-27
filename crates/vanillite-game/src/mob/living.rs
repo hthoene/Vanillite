@@ -98,10 +98,6 @@ pub fn tick(t: &mut Tick<'_, '_>) {
             m.health = max;
         }
     }
-    super::tame::tick_leash(t);
-    if !t.exists() {
-        return;
-    }
     kinds::after_tick(t);
 }
 
@@ -136,6 +132,11 @@ fn base_tick(t: &mut Tick<'_, '_>) {
     }
     let on_fire = t.mob_ref().fire_ticks > 0;
     t.core_mut().set_flags(EntityFlags::ON_FIRE, on_fire);
+    if !t.exists() {
+        return;
+    }
+    // The end of `Entity.baseTick`: `Leashable.tickLeash`.
+    super::tame::tick_leash(t);
     if !t.exists() {
         return;
     }

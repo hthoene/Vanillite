@@ -1,0 +1,23 @@
+{
+  "description": "FenceBlock.useWithoutItem (LeadItem.bindPlayerMobs): a player leads a sheep and a cow, then right-clicks a fence with an empty hand: both get tied to a new knot (lead tied sound, block_attach). A second click with a stone block on another fence passes (no leashed mobs left), so the stone is placed on top.",
+  "tier": "fast",
+  "player_state": true,
+  "time": 6000,
+  "region": [[0, -61, 0], [15, -57, 15]],
+  "ticks": 40,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [5.5, -60.0, 5.5]},
+    {"name": "sheep", "type": "minecraft:sheep", "pos": [7.5, -60.0, 5.5], "seed": 3, "finalize": false},
+    {"name": "cow", "type": "minecraft:cow", "pos": [3.5, -60.0, 5.5], "seed": 5, "finalize": false}
+  ],
+  "setup": [
+    {"op": "set", "pos": [5, -60, 8], "block": "minecraft:oak_fence[east=false,north=false,south=false,waterlogged=false,west=false]"},
+    {"op": "set", "pos": [8, -60, 8], "block": "minecraft:nether_brick_fence[east=false,north=false,south=false,waterlogged=false,west=false]"}
+  ],
+  "actions": [
+    {"tick": 2, "op": "interact", "entity": "steve", "target": "sheep", "item": "minecraft:lead", "count": 2},
+    {"tick": 3, "op": "interact", "entity": "steve", "target": "cow"},
+    {"tick": 6, "op": "use", "entity": "steve", "pos": [5, -60, 8], "face": "up", "item": "minecraft:air"},
+    {"tick": 10, "op": "use", "entity": "steve", "pos": [8, -60, 8], "face": "up", "item": "minecraft:stone"}
+  ]
+}

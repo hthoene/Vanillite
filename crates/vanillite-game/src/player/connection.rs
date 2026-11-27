@@ -74,6 +74,8 @@ pub enum EntityAction {
         /// The clicked point (`BlockHitResult.getLocation`).
         location: Vec3,
     },
+    /// `FenceBlock.useWithoutItem`: the player's leashed mobs get tied to the fence.
+    BindToFence(vanillite_base::BlockPos),
     /// `player_action` `RELEASE_USE_ITEM`.
     ReleaseUseItem,
     /// `player_command` `OPEN_INVENTORY` while riding: the vehicle's inventory opens
@@ -734,6 +736,11 @@ impl Connection {
                         && crate::book::needs_resolving(&l.book)
                     {
                         self.chat.requests.push(ChatRequest::ResolveLecternBook(at));
+                    }
+                    if let Some(fence) = self.play.bind_fence.take()
+                        && self.entity_actions.len() < 16
+                    {
+                        self.entity_actions.push(EntityAction::BindToFence(fence));
                     }
                     if entity_item && self.play.entity_item_use && self.entity_actions.len() < 16 {
                         let pos = vanillite_base::BlockPos::new(p.pos.x, p.pos.y, p.pos.z);

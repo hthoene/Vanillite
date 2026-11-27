@@ -1,0 +1,184 @@
+{
+  "description": "PiglinAi.angerNearbyPiglins: a player in golden boots opens a chest; only the idle piglin that sees the player gets angry (onlyIfTheySeeThePlayer). Then the player breaks a gold block (Block.playerWillDestroy, #guarded_by_piglins): the piglin behind the wall gets angry too.",
+  "tier": "fast",
+  "player_state": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -57,
+      15
+    ]
+  ],
+  "ticks": 75,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        7.5
+      ],
+      "inventory": [
+        [
+          36,
+          "minecraft:golden_boots",
+          1
+        ]
+      ]
+    },
+    {
+      "name": "seeing",
+      "type": "minecraft:piglin",
+      "pos": [
+        7.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 11,
+      "finalize": false
+    },
+    {
+      "name": "hidden",
+      "type": "minecraft:piglin",
+      "pos": [
+        7.5,
+        -60.0,
+        13.5
+      ],
+      "seed": 12,
+      "finalize": false
+    }
+  ],
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -57,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -57,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -57,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -57,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        11
+      ],
+      "to": [
+        14,
+        -57,
+        11
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        7
+      ],
+      "block": "minecraft:chest[facing=west,type=single,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        9
+      ],
+      "block": "minecraft:gold_block"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "steve",
+      "effect": "minecraft:haste",
+      "duration": 1200,
+      "amplifier": 100
+    },
+    {
+      "tick": 40,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        9,
+        -60,
+        7
+      ],
+      "face": "west",
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 60,
+      "op": "attack",
+      "entity": "steve",
+      "pos": [
+        11,
+        -60,
+        9
+      ],
+      "face": "west",
+      "item": "minecraft:diamond_pickaxe",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:efficiency\":5}}"
+    }
+  ]
+}
