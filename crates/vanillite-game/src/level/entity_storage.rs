@@ -683,7 +683,8 @@ impl Level {
             });
         }
         if let Some(b) = ents.boat(id) {
-            return Some(crate::mob::nbt::save_boat(&entity, b, self.leash_of(id)));
+            let leash = self.leash_of(id).or(b.pending_leash);
+            return Some(crate::mob::nbt::save_boat(&entity, b, leash));
         }
         if let Some(m) = ents.minecart(id) {
             return Some(crate::mob::nbt::save_minecart(&entity, m));

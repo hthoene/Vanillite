@@ -1,0 +1,97 @@
+{
+  "description": "A wither below half health (powered) is immune to a player's wind charge (WitherBoss.hurtServer: AbstractArrow or WindCharge direct entities); when a wither kills a player, a wither rose grows where the player died (ServerPlayer.die \u2192 createWitherRose).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        11.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 4
+    },
+    {
+      "name": "weak",
+      "type": "minecraft:wither",
+      "pos": [
+        4.5,
+        -60.0,
+        9.5
+      ],
+      "seed": 41,
+      "finalize": false
+    },
+    {
+      "name": "strong",
+      "type": "minecraft:wither",
+      "pos": [
+        11.5,
+        -60.0,
+        9.5
+      ],
+      "seed": 42,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:wither,limit=1,sort=nearest,x=4.5,y=-60,z=9.5] {NoAI:1b,Health:100f}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:wither,limit=1,sort=nearest,x=11.5,y=-60,z=9.5] {NoAI:1b}"
+    },
+    {
+      "tick": 3,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:wind_charge"
+    },
+    {
+      "tick": 66,
+      "op": "hurt",
+      "entity": "alex",
+      "amount": 100,
+      "by": "strong"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

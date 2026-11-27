@@ -698,6 +698,10 @@ fn give_flower(t: &mut Tick<'_, '_>, id: EntityId) {
     if let Some(mut e) = t.ents.store.get_mut(id) {
         e.mark_data_dirty();
     }
+    // `detectEquipmentUpdates`.
+    if let Some(e) = crate::mob::equipment::tracking_update(t.ents, id) {
+        t.env.out.push(e);
+    }
 }
 
 /// `DefendVillageTargetGoal.canUse`: a player that a villager it sees thinks very badly of

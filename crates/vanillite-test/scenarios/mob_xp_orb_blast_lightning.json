@@ -1,0 +1,49 @@
+{
+  "description": "Experience orbs are destroyed by explosions (ServerExplosion.hurtEntities \u2192 ExperienceOrb.hurtServer) and by lightning (thunderHit: 5 damage), a far orb only takes part of the blast and survives.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 26,
+  "rules": {
+    "spawn_monsters": "false",
+    "mob_griefing": "false"
+  },
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 5.5 -60.0 5.5 {Value:3}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 9.0 -60.0 5.5 {Value:3}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 24.5 -60.0 8.5 {Value:3}"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "summon minecraft:tnt 4.5 -60.0 5.5 {fuse:1}"
+    },
+    {
+      "tick": 15,
+      "op": "command",
+      "command": "summon minecraft:lightning_bolt 24.5 -60.0 8.5"
+    }
+  ]
+}

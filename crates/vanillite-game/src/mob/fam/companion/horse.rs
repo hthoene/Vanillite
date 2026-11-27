@@ -106,6 +106,14 @@ fn set_flag(m: &mut MobData, bit: u8, on: bool) {
     }
 }
 
+/// `AbstractHorse.onElasticLeashPull`: a pulled horse stops eating (`setEating(false)`).
+pub fn stop_eating(t: &mut Tick<'_, '_>) {
+    if has_flag(t.mob_ref(), EATING) {
+        set_flag(t.mob(), EATING, false);
+        t.core_mut().mark_data_dirty();
+    }
+}
+
 fn has_flag(m: &MobData, bit: u8) -> bool {
     st(m).horse_flags & bit != 0
 }

@@ -533,15 +533,31 @@ pub fn take(t: &mut Tick<'_, '_>, item: EntityId, amount: i32) {
 
 /// `Mob.dropCustomDeathLoot`'s equipment part: each slot drops with its chance when a player
 /// killed the mob (preserved slots always), damaged unless preserved.
-pub fn death_drops(m: &mut MobData, killed_by_player: bool, out: &mut Vec<ItemStack>) {
+pub fn death_drops(
+    m: &mut MobData,
+    killed_by_player: bool,
+    looting: f32,
+    out: &mut Vec<ItemStack>,
+) {
+    let data = crate::player::play::game_data();
     for slot in SLOTS {
         let i = usize::from(slot.ordinal());
         let chance = m.equipment.drop_chances[i];
-        if chance == 0.0 || m.equipment.items[i].is_empty() {
+        if chance == 0.0 {
             continue;
         }
         let preserve = chance > 1.0;
-        if !(killed_by_player || preserve) || m.random.next_float() >= chance {
+        // `EnchantmentHelper.processEquipmentDropChance`: Looting of the killing player.
+        let chance = chance + looting;
+        // `PREVENT_EQUIPMENT_DROP` (Curse of Vanishing).
+        let vanishes = data.as_ref().is_some_and(|d| {
+            d.enchantment_level(&m.equipment.items[i], "minecraft:vanishing_curse") > 0
+        });
+        if m.equipment.items[i].is_empty()
+            || vanishes
+            || !(killed_by_player || preserve)
+            || m.random.next_float() >= chance
+        {
             continue;
         }
         let mut s = std::mem::take(&mut m.equipment.items[i]);
@@ -605,8 +621,16 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     }
     if let Some(Tag::Compound(c)) = tag.get("drop_chances") {
         for (i, name) in NAMES.iter().enumerate() {
-            if let Some(Tag::Float(v)) = c.get(name) {
-                m.equipment.drop_chances[i] = *v;
+            // `ExtraCodecs.NON_NEGATIVE_FLOAT`: any number (`2.0` in SNBT is a double).
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            let v = match c.get(name) {
+                Some(Tag::Float(v)) => Some(*v),
+                Some(Tag::Double(v)) => Some(*v as f32),
+                Some(Tag::Int(v)) => Some(*v as f32),
+                _ => None,
+            };
+            if let Some(v) = v.filter(|v| *v >= 0.0) {
+                m.equipment.drop_chances[i] = v;
             }
         }
     }

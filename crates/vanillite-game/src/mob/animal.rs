@@ -60,6 +60,29 @@ pub fn is_food(kind: Kind, item: u16) -> bool {
 }
 
 /// `isPanicking`: a panic goal runs.
+/// The target of `PanicGoal.canUse`: a burning mob runs to the nearest water
+/// (`lookForWater(level, mob, 5)`, the block's corner), else `DefaultRandomPos.getPos(5, 4)`.
+pub fn panic_pos(t: &mut super::Tick<'_, '_>) -> Option<Vec3> {
+    let fire_immune = t.core().kind().info().fire_immune;
+    if t.mob_ref().fire_ticks > 0 && !fire_immune {
+        let me = t.block_pos();
+        if t.level.block(me).collision_shape().is_empty() {
+            let mut found = None;
+            super::brain::behavior::for_manhattan(me, 5, 1, |p| {
+                if super::is_water(t.level.block(p)) {
+                    found = Some(p);
+                    return true;
+                }
+                false
+            });
+            if let Some(p) = found {
+                return Some(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)));
+            }
+        }
+    }
+    super::randompos::default_pos(t, 5, 4)
+}
+
 pub fn is_panicking(m: &MobData) -> bool {
     m.goals
         .slots
@@ -582,12 +605,19 @@ pub fn interact_on(
                 return Interaction::Pass;
             }
             crate::minecart::open_container(ents, env, cx, player, target);
+            // `PiglinAi.angerNearbyPiglins(player, true)`.
+            super::fam::brainy::piglin::anger_nearby_piglins(level, ents, env, cx, player, true);
             return Interaction::Success;
         }
         return Interaction::Pass;
     }
-    if ents.minecart(target).is_some() {
-        return crate::minecart::interact(ents, env, cx, player, target, hand, sneaking);
+    if let Some(kind) = ents.minecart(target).map(|m| m.kind) {
+        let r = crate::minecart::interact(ents, env, cx, player, target, hand, sneaking);
+        // `MinecartChest.interact`: `PiglinAi.angerNearbyPiglins(player, true)`.
+        if kind == crate::minecart::MinecartKind::Chest && r.consumes() {
+            super::fam::brainy::piglin::anger_nearby_piglins(level, ents, env, cx, player, true);
+        }
+        return r;
     }
     if !ents.mob(target).is_some_and(MobData::is_alive) {
         return Interaction::Pass;
@@ -643,6 +673,15 @@ fn mob_interact(
     stack: &ItemStack,
 ) -> Interaction {
     let name = item::item_id(stack).name();
+    // `CamelHusk.interact` and `AbstractNautilus.interact`: any interaction keeps it.
+    if let Some(m) = ents.mob_mut(target)
+        && matches!(
+            m.kind,
+            super::Kind::CamelHusk | super::Kind::Nautilus | super::Kind::ZombieNautilus
+        )
+    {
+        m.persistent = true;
+    }
     // `checkAndHandleImportantInteractions`.
     let interacted = |ents: &Entities, env: &mut Env<'_>| {
         let event = crate::level::game_event::events().entity_interact;
@@ -881,7 +920,8 @@ pub fn animal_interact(
     }
     let age = m.age;
     let uuid = ents.store.get(player).map(|e| e.uuid());
-    if age == 0 && m.in_love <= 0 {
+    // `canFallInLove`: the happy ghast never falls in love from food.
+    if age == 0 && m.in_love <= 0 && m.kind != Kind::HappyGhast {
         use_player_item(ents, env, player, target, hand, stack);
         if let Some(m) = ents.mob_mut(target) {
             m.in_love = 600;

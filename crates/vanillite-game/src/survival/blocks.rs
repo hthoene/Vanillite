@@ -87,6 +87,13 @@ pub enum Landing {
     PowderSnow,
 }
 
+/// [`BlockFacts::without_tags`], built once: water and lava for the entities that need no
+/// block tags (experience orbs, arrows, primed TNT).
+pub fn fluid_facts() -> &'static BlockFacts {
+    static FACTS: std::sync::OnceLock<BlockFacts> = std::sync::OnceLock::new();
+    FACTS.get_or_init(BlockFacts::without_tags)
+}
+
 impl BlockFacts {
     /// Facts from the ids of three block tags and the fluid registry ids of water and lava.
     pub fn new(

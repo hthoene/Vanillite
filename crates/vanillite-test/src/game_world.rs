@@ -928,8 +928,17 @@ impl GameWorld {
             }
             self.finish_removals();
         }
-        // `rideTick`: passengers follow their vehicles (as the server's mob tick).
+        // `rideTick`: passengers follow their vehicles (as the server's `WorldMobs`).
         vanillite_game::riding::ride_tick(&mut self.level.entities);
+        // Leads after the entities (`WorldMobs` of the server): orphaned leads, gone knots.
+        let discarded = self.with_env(|level, ents, env, _| {
+            let mut discarded = Vec::new();
+            vanillite_game::mob::tame::tick_leashes(level, ents, env, &mut discarded);
+            discarded
+        });
+        for d in discarded {
+            self.level.entities.despawn(d);
+        }
         // No chunk tickets or other worlds here: every chunk of the scenario is forced.
         self.mobs.travel.clear();
         self.mobs.gateways.clear();
@@ -985,6 +994,7 @@ impl GameWorld {
         self.with_env(|level, ents, env, cx| {
             vanillite_game::block::falling::apply_falling_hurts(level, ents, env, cx, falling);
             for hurt in hurts {
+                hurt.aim(ents);
                 let mut source = match (hurt.source, hurt.indirect) {
                     _ if hurt.bad_respawn_point => DamageSource::of(env.types.bad_respawn_point),
                     (Some(direct), Some(cause)) => {
@@ -1369,6 +1379,8 @@ pub(crate) fn spawn_mob(
         *level.random() = random;
     }
     if let Some(baby) = spec.baby {
+        // `setBaby`: zombies also change their speed modifier.
+        vanillite_game::mob::fam::undead::set_baby(&mut m, baby);
         m.baby = baby;
         m.age = if baby { -24000 } else { 0 };
     }
@@ -1698,6 +1710,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
             (inner, _) => common_name_of(inner),
         },
         ("Companion", "TamePanic") => "TamableAnimalPanicGoal",
+        ("Companion", "ClimbPowderSnow") => "ClimbOnTopOfPowderSnowGoal",
         ("Companion", _) => match (variant, word(2)) {
             ("Horse", "RunAround") => "RunAroundLikeCrazyGoal",
             ("Llama", "FollowCaravan") => "LlamaFollowCaravanGoal",
@@ -1726,7 +1739,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         },
         ("Mount", "Ghast") => match word(2) {
             "Float" => "HappyGhastFloatGoal",
-            "Tempt" => "TemptGoal",
+            "Tempt" => "ForNonPathfinders",
             _ => "RandomFloatAroundGoal",
         },
         ("Wildlife", "Swim") => match kind {

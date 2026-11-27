@@ -21,6 +21,8 @@ pub struct Creeper {
     pub explosion_radius: i32,
     pub powered: bool,
     pub ignited: bool,
+    /// `droppedSkulls`: a charged creeper's kill dropped its head.
+    pub dropped_skulls: bool,
 }
 
 impl Creeper {
@@ -32,6 +34,7 @@ impl Creeper {
         explosion_radius: 3,
         powered: false,
         ignited: false,
+        dropped_skulls: false,
     };
 }
 

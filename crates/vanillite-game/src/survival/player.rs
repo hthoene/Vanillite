@@ -282,6 +282,9 @@ pub struct Survival {
     pub using_item: Option<crate::player::using::UsingItem>,
     /// `recentKineticEnemies`: the entities the spear in use hit, with the game time.
     pub stabbed: Vec<(vanillite_world::entity::EntityId, i64)>,
+    /// A hit blocked by the item in use whose attacker reacts itself
+    /// ([`DamageSource::own_blocked_by_item`]): whether it was fully blocked.
+    pub blocked_by_item: Option<bool>,
     /// The player's own random (`Entity.random`).
     pub random: LegacyRandom,
     /// `cooldowns`.
@@ -403,6 +406,7 @@ impl Default for Survival {
             last_hurt_by_names: (None, None),
             using_item: None,
             stabbed: Vec::new(),
+            blocked_by_item: None,
             random: LegacyRandom::new(crate::mob::new_unique_seed()),
             cooldowns: crate::player::cooldowns::ItemCooldowns::default(),
             carried_maps: Vec::new(),
@@ -1260,7 +1264,8 @@ pub fn hurt_with(
     if let Some(v) = damage_stat(blocked_amount) {
         player.stats.award(custom::DAMAGE_BLOCKED_BY_SHIELD, v);
     }
-    true
+    // `success = !blocked || damage > 0`: a fully blocked hit did not hurt.
+    !blocked || damage > 0.0
 }
 
 /// `Player.playSound`: heard by everyone near except the player itself (its client plays it).
@@ -1605,7 +1610,9 @@ fn apply_item_blocking(
     // `blockUsingItem`: only a living entity that hit directly (no projectile).
     let melee = source.direct.is_some() && source.direct == source.cause;
     if blocked > 0.0 && !env.types.is(source.kind, tag::IS_PROJECTILE) && melee {
-        if blocked < damage
+        if source.own_blocked_by_item {
+            player.survival.blocked_by_item = Some(blocked >= damage);
+        } else if blocked < damage
             && let Some(at) = source.position
         {
             // `blockedByItem`: a hit that was not fully blocked pushes the defender back.
@@ -2201,7 +2208,8 @@ pub fn do_tick_end(
     crate::elytra::update_player_pose(entity, player.survival.spin_attack.is_some());
     player.survival.last_box = Some(entity.as_ref().aabb());
     // `Player.aiStep`: `handleShoulderEntities`.
-    super::shoulder::handle(entity, player, env, false);
+    let sleeping = player.survival.sleeping_pos.is_some();
+    super::shoulder::handle(entity, player, env, sleeping);
     // `FoodData.tick`.
     let s = &mut player.survival;
     let action = s.food.tick(

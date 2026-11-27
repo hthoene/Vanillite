@@ -419,6 +419,10 @@ pub fn copper_golem_brain(m: &mut MobData) {
             Spec::animal_panic(1.5),
             Spec::look_at_target_sink(45, 90),
             Spec::move_to_target_sink(),
+            Spec::of(crate::mob::brain::behavior::Behavior::InteractWithDoor {
+                last_node: None,
+                cooldown: 0,
+            }),
             Spec::count_down(M::GazeCooldownTicks),
             Spec::count_down(M::TransportItemsCooldownTicks),
         ],
@@ -493,7 +497,7 @@ pub fn breeze_brain(m: &mut MobData) {
             (
                 0,
                 Spec::of(B::StopAttackingIfTargetInvalid {
-                    stop_when: Some(|t, id| !sensing::is_attackable(t, id)),
+                    stop_when: Some(|t, id| !super::breeze::was_attackable_last_100(t, id)),
                     on_erased: None,
                     tired: true,
                 }),

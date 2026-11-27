@@ -190,6 +190,15 @@ pub fn register_goals(m: &mut MobData) {
     m.nav.can_float = false;
 }
 
+/// The melee goal of `reassessWeaponGoal` without a bow (the classic skeleton's start goal).
+pub fn melee_goal() -> goals::Goal {
+    goal(Goal::SkeletonMelee(Melee::new(
+        MeleeKind::Plain,
+        1.2,
+        false,
+    )))
+}
+
 /// `getHardAttackInterval` / `getAttackInterval`.
 fn attack_interval(kind: Kind, difficulty: Difficulty) -> i32 {
     let slow = matches!(kind, Kind::Bogged | Kind::Parched);
@@ -259,13 +268,18 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
 
 // --- Tick -------------------------------------------------------------------------------
 
-pub fn before_tick(t: &mut Tick<'_, '_>) {
+/// A due `reassessWeaponGoal` (after loading or a new weapon).
+pub fn reassess_if_due(t: &mut Tick<'_, '_>) {
     if ss(t.mob_ref()).is_some_and(|s| s.reassess) {
         let difficulty = t.env.difficulty;
         let m = t.mob();
         reassess_weapon_goal(m, difficulty);
         ss_mut(m).reassess = false;
     }
+}
+
+pub fn before_tick(t: &mut Tick<'_, '_>) {
+    reassess_if_due(t);
     // `LivingEntity.updatingUsingItem`: the drawn bow counts on.
     let m = t.mob();
     if m.using_item >= 0 {

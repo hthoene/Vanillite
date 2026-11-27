@@ -452,8 +452,10 @@ impl FamilyHooks for Hooks {
     }
 
     fn ai_step_start(t: &mut Tick<'_, '_>) {
-        if matches!(t.mob_ref().kind, Kind::Camel | Kind::CamelHusk) {
-            camel::ai_step_start(t);
+        match t.mob_ref().kind {
+            Kind::Camel | Kind::CamelHusk => camel::ai_step_start(t),
+            Kind::Creaking => creaking::ai_step(t),
+            _ => {}
         }
     }
 
@@ -462,7 +464,6 @@ impl FamilyHooks for Hooks {
             Kind::Camel | Kind::CamelHusk => camel::ai_step(t),
             Kind::HappyGhast => ghast::ai_step(t),
             Kind::Allay => allay::ai_step(t),
-            Kind::Creaking => creaking::ai_step(t),
             Kind::Nautilus => nautilus::ai_step(t),
             _ => {}
         }

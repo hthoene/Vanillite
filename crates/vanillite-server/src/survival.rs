@@ -783,7 +783,8 @@ impl WorldSurvival {
                 facts: &state.block_facts,
                 blocks: &blocks,
                 rules: &rules,
-                difficulty: state.difficulty(),
+                // The level's own (the server's, kept in sync every tick).
+                difficulty: level.settings.difficulty,
                 game_time: state.game_time(),
                 min_y: level.min_y(),
                 dimension,

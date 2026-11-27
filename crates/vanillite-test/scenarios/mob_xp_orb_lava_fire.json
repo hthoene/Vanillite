@@ -1,0 +1,58 @@
+{
+  "description": "Experience orbs burn: an orb falling into lava is set burning and hurt by 4 twice (lavaHurt, health 5), an orb in a fire block is hurt every tick (BaseFireBlock.entityInside) until it is gone.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        2
+      ],
+      "to": [
+        4,
+        -61,
+        4
+      ],
+      "block": "minecraft:lava"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        10
+      ],
+      "block": "minecraft:fire"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 3.5 -59.0 3.5 {Value:3}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:experience_orb 10.5 -59.8 10.5 {Value:3}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}
