@@ -926,6 +926,8 @@ impl GameWorld {
             }
             self.finish_removals();
         }
+        // `rideTick`: passengers follow their vehicles (as the server's `WorldMobs`).
+        vanillite_game::riding::ride_tick(&mut self.level.entities);
         // No chunk tickets or other worlds here: every chunk of the scenario is forced.
         self.mobs.travel.clear();
         self.mobs.gateways.clear();

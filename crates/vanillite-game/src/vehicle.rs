@@ -69,8 +69,10 @@ pub enum Status {
     UnderWater,
     UnderFlowingWater,
     OnLand,
-    #[default]
     InAir,
+    /// Not computed yet (`null` before the first tick).
+    #[default]
+    Unset,
 }
 
 /// The kind data of a boat.
@@ -99,6 +101,10 @@ pub struct BoatData {
     /// `LootTable` and `LootTableSeed` of a chest boat until the loot is rolled
     /// ([`crate::block::chest_loot::unpack_entity`]).
     pub loot_table: Option<(String, i64)>,
+    /// `DATA_ID_BUBBLE_TIME`, `isAboveBubbleColumn` and `bubbleColumnDirectionIsDown`.
+    pub bubble_time: i32,
+    pub above_bubble_column: bool,
+    pub bubble_column_down: bool,
 }
 
 impl BoatData {
@@ -106,8 +112,8 @@ impl BoatData {
     pub fn new(kind: BoatKind) -> BoatData {
         BoatData {
             kind,
-            status: Status::InAir,
-            old_status: Status::InAir,
+            status: Status::Unset,
+            old_status: Status::Unset,
             out_of_control_ticks: 0.0,
             delta_rotation: 0.0,
             water_level: 0.0,
@@ -126,6 +132,9 @@ impl BoatData {
                 Vec::new()
             },
             loot_table: None,
+            bubble_time: 0,
+            above_bubble_column: false,
+            bubble_column_down: false,
         }
     }
 }
@@ -409,8 +418,135 @@ pub fn tick_boat(
                 .push(crate::mob::WorldAction::EntityInside(pos, id));
         });
     }
+    // `applyEffectsFromBlocks()` twice (the second time along the whole way of the tick
+    // again): the bubble columns, then `tickBubbleColumn`.
+    for _ in 0..2 {
+        bubble_columns(level, ents, env, id);
+    }
+    tick_bubble_column(ents, env, id);
     // Living entities pushed against a boat no player steers get in; the others are pushed.
     board_nearby(ents, env, id, !controlled);
+}
+
+/// `BubbleColumnBlock.entityInside` (precise only) of the columns on the boat's way this tick:
+/// `AbstractBoat.onAboveBubbleColumn` at the top of a column, `onInsideBubbleColumn` below.
+fn bubble_columns(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    let way = [crate::survival::inside::Movement::plain(e.old_pos(), e.pos())];
+    let view = level.view();
+    let walker = crate::survival::inside::Walker {
+        blocks: &view,
+        facts: None,
+        dims: e.dims(),
+        fast_fall: false,
+    };
+    let mut columns: Vec<(BlockPos, bool)> = Vec::new();
+    walker.walk(&way, |cell| {
+        if cell.in_block && cell.precise && cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
+        {
+            columns.push((cell.pos, cell.state.value("drag") == Some("true")));
+        }
+        true
+    });
+    for (pos, down) in columns {
+        let above = level.block(BlockPos::new(pos.x, pos.y + 1, pos.z));
+        let nothing_above = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+        let controlled = player_controlled(ents, id);
+        let Some(b) = ents.boat_mut(id) else {
+            return;
+        };
+        if nothing_above {
+            b.above_bubble_column = true;
+            b.bubble_column_down = down;
+            let started = b.bubble_time == 0;
+            if started {
+                b.bubble_time = 60;
+            }
+            // The splash (sound and particle are the client's; the boat's own random).
+            let under = matches!(b.status, Status::UnderWater | Status::UnderFlowingWater);
+            if started && let Some(mut e) = ents.store.get_mut(id) {
+                e.mark_data_dirty();
+            }
+            if !under && crate::survival::sound_seed() % 100 == 0 {
+                let rider = ents.riding.passengers_of(id).first().copied();
+                if let Some(p) = ents.store.get(id).map(|e| e.pos()) {
+                    crate::survival::game_event(
+                        env.out,
+                        crate::level::game_event::events().splash,
+                        p,
+                        rider.filter(|_| controlled),
+                    );
+                }
+            }
+        } else {
+            b.fall_distance = 0.0;
+            if !controlled && let Some(mut e) = ents.store.get_mut(id) {
+                let v = e.as_ref().velocity();
+                let yd = if down {
+                    (v.y - 0.03).max(-0.3)
+                } else {
+                    (v.y + 0.06).min(0.7)
+                };
+                e.set_velocity(Vec3::new(v.x, yd, v.z));
+            }
+        }
+    }
+}
+
+/// `AbstractBoat.tickBubbleColumn` on the server: 60 ticks above a column, then a downward
+/// one throws the passengers off and sinks it (event 71), an upward one tosses it (72).
+fn tick_bubble_column(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    let Some(b) = ents.boat_mut(id) else {
+        return;
+    };
+    let before = b.bubble_time;
+    if !b.above_bubble_column {
+        b.bubble_time = 0;
+    }
+    let mut fire = None;
+    if b.bubble_time > 0 {
+        b.bubble_time -= 1;
+        let diff = 60 - b.bubble_time - 1;
+        if diff > 0 && b.bubble_time == 0 {
+            fire = Some(b.bubble_column_down);
+        }
+        b.above_bubble_column = false;
+    }
+    let changed = b.bubble_time != before;
+    if let Some(down) = fire {
+        if down {
+            crate::riding::eject_passengers(ents, env, id);
+        }
+        if let Some(e) = ents.store.get(id) {
+            let network_id = e.network_id().0;
+            env.out.push(Effect::Tracking {
+                entity: id,
+                with_self: false,
+                packet: vanillite_protocol::SharedPacket::of(
+                    &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                        entity_id: network_id,
+                        event: if down { 71 } else { 72 },
+                    },
+                ),
+            });
+        }
+        // `handleBubbleColumnEffect` (`canSimulateMovement`: no player steers it).
+        if !player_controlled(ents, id)
+            && let Some(mut e) = ents.store.get_mut(id)
+        {
+            let v = e.as_ref().velocity();
+            e.set_velocity(if down {
+                Vec3::new(v.x, v.y - 0.7, v.z)
+            } else {
+                Vec3::new(v.x, 0.6, v.z)
+            });
+        }
+    }
+    if changed && let Some(mut e) = ents.store.get_mut(id) {
+        e.mark_data_dirty();
+    }
 }
 
 /// The pushable entities next to the boat: mobs board it when there is room (and
@@ -531,10 +667,11 @@ fn float_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entit
             inv_friction = 0.9;
         }
         Status::UnderWater => {
-            buoyancy = 0.01;
+            // `0.01F`.
+            buoyancy = f64::from(0.01_f32);
             inv_friction = 0.45;
         }
-        Status::InAir => inv_friction = 0.9,
+        Status::InAir | Status::Unset => inv_friction = 0.9,
         Status::OnLand => inv_friction = b.land_friction,
     }
     let f = f64::from(inv_friction);
