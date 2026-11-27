@@ -5,7 +5,6 @@ mod health;
 mod logger;
 mod terminal;
 
-use std::io::BufRead as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -66,6 +65,8 @@ Options of health:
 
 Environment:
   VANILLITE_LOG=<level>   error, warn, info (default), debug or trace
+  VANILLITE_COLOR=<mode>  auto (default), always or never: console colours
+                          (NO_COLOR also turns them off)
   VANILLITE_<KEY>=<value> Overrides a key of vanillite.toml or server.properties
                           (e.g. VANILLITE_SERVER_PORT, VANILLITE_MOTD)";
 
@@ -138,7 +139,7 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             if let Err(e) = ctrlc::set_handler(move || signal_handle.stop()) {
                 log::warn!("Cannot handle Ctrl-C and SIGTERM: {e}");
             }
-            spawn_console(handle);
+            terminal::spawn_console(handle);
             server.run();
             true
         });
@@ -153,6 +154,7 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             false
         }
     };
+    terminal::finish();
     if started {
         ExitCode::SUCCESS
     } else {
@@ -268,23 +270,5 @@ fn export(mut args: impl Iterator<Item = String>) -> ExitCode {
             log::error!("Export failed: {e}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// Reads console commands from stdin. The thread ends with stdin (e.g. in Docker without a
-/// terminal); the server keeps running.
-fn spawn_console(handle: vanillite_server::ServerHandle) {
-    let spawned = std::thread::Builder::new()
-        .name("Server console handler".to_owned())
-        .spawn(move || {
-            for line in std::io::stdin().lock().lines() {
-                match line {
-                    Ok(line) => handle.console(line),
-                    Err(_) => return,
-                }
-            }
-        });
-    if let Err(e) = spawned {
-        log::warn!("Cannot start the console reader: {e}");
     }
 }

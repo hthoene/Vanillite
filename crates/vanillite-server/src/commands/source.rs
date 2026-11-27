@@ -506,7 +506,7 @@ impl CommandSource {
                     });
                 }
             }
-            SourceKind::Console => log::info!("{}", global.english(&message)),
+            SourceKind::Console => log::info!("{}", global.console_text(&message)),
             // `RconConsoleSource.sendSystemMessage`: appended without a separator.
             SourceKind::Rcon(buffer) => buffer
                 .lock()
@@ -594,7 +594,7 @@ impl CommandSource {
             }
         }
         if log_admin && !matches!(self.kind, SourceKind::Console) {
-            log::info!("{}", global.english(&broadcast));
+            log::info!("{}", global.console_text(&broadcast));
         }
     }
 

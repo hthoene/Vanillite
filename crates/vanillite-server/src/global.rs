@@ -126,6 +126,12 @@ impl Global {
         text.to_string_in(&|key| self.language.get(key).cloned())
     }
 
+    /// [`Self::english`] with colours as `§` codes, for the server console (the logger shows
+    /// them as terminal colours or strips them).
+    pub(crate) fn console_text(&self, text: &vanillite_protocol::text::Component) -> String {
+        text.to_legacy_in(&|key| self.language.get(key).cloned())
+    }
+
     /// Asks the server to stop after the current tick (`/stop`).
     pub fn stop(&self) {
         if let Some(handle) = self.handle.get() {

@@ -284,6 +284,86 @@ impl Style {
 
 /// Fills `%s`, `%<n>$s` and `%%` of a translation template (`decomposeTemplate`); `false` on
 /// another conversion or a missing argument.
+/// A translation argument that is not a component, as `getString` shows it.
+fn push_scalar_arg(arg: &Arg, out: &mut String) {
+    match arg {
+        Arg::Component(_) => {}
+        Arg::String(v) => out.push_str(v),
+        Arg::Byte(v) => out.push_str(&v.to_string()),
+        Arg::Short(v) => out.push_str(&v.to_string()),
+        Arg::Int(v) => out.push_str(&v.to_string()),
+        Arg::Long(v) => out.push_str(&v.to_string()),
+        Arg::Float(v) => out.push_str(&format!("{v:?}")),
+        Arg::Double(v) => out.push_str(&format!("{v:?}")),
+        Arg::Bool(v) => out.push_str(&v.to_string()),
+    }
+}
+
+/// The resolved colour and formats of a part, for [`Component::to_legacy_in`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Legacy {
+    color: Option<Color>,
+    bold: bool,
+    italic: bool,
+    underlined: bool,
+    strikethrough: bool,
+    obfuscated: bool,
+}
+
+impl Legacy {
+    /// The style of a child: what it sets, else the parent's.
+    fn inherit(self, style: &Style) -> Self {
+        Self {
+            color: style.color.or(self.color),
+            bold: style.bold.unwrap_or(self.bold),
+            italic: style.italic.unwrap_or(self.italic),
+            underlined: style.underlined.unwrap_or(self.underlined),
+            strikethrough: style.strikethrough.unwrap_or(self.strikethrough),
+            obfuscated: style.obfuscated.unwrap_or(self.obfuscated),
+        }
+    }
+
+    /// Writes the codes that switch from `last` to this style (nothing if it is the same).
+    fn switch(self, last: &mut Legacy, out: &mut String) {
+        if *last == self {
+            return;
+        }
+        *last = self;
+        out.push_str("§r");
+        match self.color {
+            Some(Color::Named(named)) => {
+                let index = NamedColor::ALL.iter().position(|c| *c == named);
+                if let Some(code) = index
+                    .and_then(|i| u32::try_from(i).ok())
+                    .and_then(|i| char::from_digit(i, 16))
+                {
+                    out.push('§');
+                    out.push(code);
+                }
+            }
+            Some(Color::Rgb(rgb)) => {
+                out.push_str("§x");
+                for digit in format!("{:06x}", rgb & 0xff_ffff).chars() {
+                    out.push('§');
+                    out.push(digit);
+                }
+            }
+            None => {}
+        }
+        for (on, code) in [
+            (self.obfuscated, "§k"),
+            (self.bold, "§l"),
+            (self.strikethrough, "§m"),
+            (self.underlined, "§n"),
+            (self.italic, "§o"),
+        ] {
+            if on {
+                out.push_str(code);
+            }
+        }
+    }
+}
+
 fn fill_template(
     format: &str,
     out: &mut String,
@@ -682,6 +762,69 @@ impl Component {
         out
     }
 
+    /// [`Self::to_string_in`] with the colours and formats as legacy `§` codes (`§c`, `§l`, hex
+    /// colours as `§x§r§r§g§g§b§b`), for a console that shows them: never sent to clients.
+    pub fn to_legacy_in(&self, language: &dyn Fn(&str) -> Option<String>) -> String {
+        let mut out = String::new();
+        let mut last = Legacy::default();
+        self.collect_legacy(language, &mut out, 0, Legacy::default(), &mut last);
+        out
+    }
+
+    fn collect_legacy(
+        &self,
+        language: &dyn Fn(&str) -> Option<String>,
+        out: &mut String,
+        depth: usize,
+        parent: Legacy,
+        last: &mut Legacy,
+    ) {
+        if depth > 64 {
+            return;
+        }
+        let depth = depth.saturating_add(1);
+        let own = parent.inherit(&self.style);
+        match &self.content {
+            Content::Translatable {
+                key,
+                fallback,
+                args,
+            } => {
+                let format = language(key)
+                    .or_else(|| fallback.clone())
+                    .unwrap_or_else(|| key.clone());
+                own.switch(last, out);
+                let arg = |i: usize, out: &mut String| -> bool {
+                    match args.get(i) {
+                        Some(Arg::Component(c)) => {
+                            c.collect_legacy(language, out, depth, own, last);
+                            own.switch(last, out);
+                        }
+                        Some(arg) => push_scalar_arg(arg, out),
+                        None => return false,
+                    }
+                    true
+                };
+                let mut filled = String::new();
+                if fill_template(&format, &mut filled, arg) {
+                    out.push_str(&filled);
+                } else {
+                    out.push_str(&format);
+                }
+            }
+            Content::Text(t) | Content::Keybind(t) | Content::Selector { pattern: t, .. } => {
+                if !t.is_empty() {
+                    own.switch(last, out);
+                    out.push_str(t);
+                }
+            }
+            Content::Score { .. } | Content::Nbt { .. } | Content::Object { .. } => {}
+        }
+        for e in &self.extra {
+            e.collect_legacy(language, out, depth, own, last);
+        }
+    }
+
     fn collect_string(
         &self,
         language: &dyn Fn(&str) -> Option<String>,
@@ -705,14 +848,7 @@ impl Component {
                 let arg = |i: usize, out: &mut String| -> bool {
                     match args.get(i) {
                         Some(Arg::Component(c)) => c.collect_string(language, out, depth),
-                        Some(Arg::String(v)) => out.push_str(v),
-                        Some(Arg::Byte(v)) => out.push_str(&v.to_string()),
-                        Some(Arg::Short(v)) => out.push_str(&v.to_string()),
-                        Some(Arg::Int(v)) => out.push_str(&v.to_string()),
-                        Some(Arg::Long(v)) => out.push_str(&v.to_string()),
-                        Some(Arg::Float(v)) => out.push_str(&format!("{v:?}")),
-                        Some(Arg::Double(v)) => out.push_str(&format!("{v:?}")),
-                        Some(Arg::Bool(v)) => out.push_str(&v.to_string()),
+                        Some(arg) => push_scalar_arg(arg, out),
                         None => return false,
                     }
                     true

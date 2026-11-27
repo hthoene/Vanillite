@@ -150,7 +150,7 @@ pub(crate) fn broadcast_chat(
     chat_type: &ChatTypeBound,
     log_key: &str,
 ) {
-    let content = message.decorated_content().plain();
+    let content = global.console_text(&message.decorated_content());
     let line = decorate_for_log(
         log_key,
         &chat_type.name.plain(),
