@@ -901,14 +901,31 @@ pub fn on_mob_killed(t: &mut Tick<'_, '_>) {
                 } else {
                     (cramming - nearby.min(cramming)).clamp(0, requested)
                 };
+                // `spawnSlimeOffspring`: a size-2 slime (`setSize(2, true)`) with the level
+                // random's yaw, added at once.
+                let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
                 for _ in 0..count {
+                    let seed = crate::mob::new_entity_seed();
+                    let mut slime = crate::mob::MobData::new(crate::mob::Kind::Slime, seed);
+                    crate::mob::fam::undead::cubes::set_size(&mut slime, 2, true);
+                    // `setSize` turns head and body to the constructor's yaw, `snapTo` only
+                    // the body's yaw to the level random's.
+                    let seed_yaw = crate::mob::constructor_y_rot(seed);
+                    slime.y_body_rot = seed_yaw;
                     let y_rot = t.env.random.next_float() * 360.0;
-                    t.env.out.push(Effect::SpawnMob {
-                        kind: ids::SLIME,
-                        pos: Vec3::new(pos.x, pos.y + 0.5, pos.z),
-                        y_rot,
-                        velocity: Vec3::ZERO,
-                    });
+                    let id = crate::mob::spawn(
+                        t.ents,
+                        &network_ids,
+                        crate::mob::new_uuid(),
+                        Vec3::new(pos.x, pos.y + 0.5, pos.z),
+                        vanillite_world::entity::Rotation {
+                            y_rot,
+                            x_rot: 0.0,
+                            y_head_rot: seed_yaw,
+                        },
+                        slime,
+                    );
+                    t.ents.spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
                 }
             }
             MobEffect::WEAVING if t.env.rules.bool(crate::survival::rules::Rule::MOB_GRIEFING) => {

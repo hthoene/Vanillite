@@ -77,8 +77,8 @@ pub fn can_open(level: &Level, pos: BlockPos, main_hand: &ItemStack) -> bool {
 }
 
 /// `LockCode.unlocksWith`: `ItemPredicate.test` of the stored predicate. Exact components
-/// are compared with the stack's added components (a value the item only has by default
-/// does not match); sub-predicates (`predicates`) are not evaluated and never match.
+/// are compared with the stack's components (defaults included); of the sub-predicates
+/// (`predicates`) `custom_data` is evaluated, the others never match.
 pub fn unlocks_with(lock: &Tag, stack: &ItemStack) -> bool {
     let Tag::Compound(p) = lock else {
         return false;
@@ -99,7 +99,7 @@ pub fn unlocks_with(lock: &Tag, stack: &ItemStack) -> bool {
         return false;
     }
     if let Some(Tag::Compound(c)) = p.get("predicates")
-        && !c.is_empty()
+        && !c.iter().all(|(k, v)| sub_predicate_matches(stack, k, v))
     {
         return false;
     }
@@ -137,17 +137,38 @@ fn count_matches(bounds: &Tag, count: i32) -> bool {
     }
 }
 
-/// `DataComponentExactPredicate`: the stack's added value of `key` equals `expected`.
+/// `DataComponentPredicates`: `custom_data` (`NbtUtils.compareNbt`, SNBT or a compound).
+fn sub_predicate_matches(stack: &ItemStack, key: &str, expected: &Tag) -> bool {
+    if qualify(key) != "minecraft:custom_data" {
+        return false;
+    }
+    let expected = match expected {
+        Tag::String(s) => match vanillite_nbt::snbt::parse_compound(s) {
+            Ok(c) => Tag::Compound(c),
+            Err(_) => return false,
+        },
+        other => other.clone(),
+    };
+    let custom_data = vanillite_protocol::components_nbt::type_by_name("minecraft:custom_data");
+    let actual = custom_data
+        .and_then(|t| Some((t, crate::item_nbt::effective_component(stack, t)?)))
+        .and_then(|(t, v)| crate::item_nbt::component_to_nbt(t, &v))
+        .unwrap_or_else(|| Tag::Compound(vanillite_nbt::Compound::new()));
+    crate::item_nbt::compare_nbt(&expected, &actual)
+}
+
+/// `DataComponentExactPredicate`: the stack's value of `key` (its default included) equals
+/// `expected`.
 fn component_matches(stack: &ItemStack, key: &str, expected: &Tag) -> bool {
     let Some(id) = vanillite_protocol::components_nbt::type_by_name(key) else {
         return false;
     };
-    let Some(actual) = stack.component(id) else {
+    let Some(actual) = crate::item_nbt::effective_component(stack, id) else {
         return false;
     };
     if id == ids::CUSTOM_NAME || id == ids::ITEM_NAME {
         // Text components compare as components (`"Key"` equals `{text: "Key"}`).
-        let actual = crate::item_nbt::component_to_nbt(id, actual);
+        let actual = crate::item_nbt::component_to_nbt(id, &actual);
         let text = vanillite_protocol::text::Component::try_from_nbt;
         return match (actual.as_ref().map(text), text(expected)) {
             (Some(Ok(a)), Ok(b)) => a == b,
@@ -163,5 +184,31 @@ fn qualify(name: &str) -> String {
         name.to_owned()
     } else {
         format!("minecraft:{name}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_data_predicate_unlocks() {
+        let lock = vanillite_nbt::snbt::parse_compound(
+            "{items:\"tripwire_hook\",predicates:{\"minecraft:custom_data\":\"{key:1b}\"}}",
+        )
+        .map(Tag::Compound)
+        .expect("lock");
+        let hook = vanillite_data::registry::ITEM
+            .id("minecraft:tripwire_hook")
+            .expect("hook");
+        let plain = ItemStack::new(hook, 1);
+        assert!(!unlocks_with(&lock, &plain));
+        let mut keyed = plain.clone();
+        let t = vanillite_protocol::components_nbt::type_by_name("minecraft:custom_data")
+            .expect("type");
+        let data = vanillite_nbt::snbt::parse_compound("{key:1b,other:2}").expect("data");
+        let wire = crate::item_nbt::component_from_nbt(t, &Tag::Compound(data)).expect("wire");
+        keyed.patch_mut().set(t, wire);
+        assert!(unlocks_with(&lock, &keyed));
     }
 }

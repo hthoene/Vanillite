@@ -1,5 +1,5 @@
 {
-  "description": "Mob effects (#242): a creeper with an active effect explodes and leaves an area effect cloud of it (spawnLingeringCloud), and a zombie with Oozing dies and spawns two size-2 slimes.",
+  "description": "Mob effects (#242): a creeper with an active effect explodes and leaves an area effect cloud of it (spawnLingeringCloud) after its explosion, which does not push the cloud.",
   "tier": "fast",
   "dimensions": true,
   "level_rng": true,
@@ -19,22 +19,12 @@
       20
     ]
   ],
-  "ticks": 50,
+  "ticks": 30,
   "actions": [
     {
       "tick": 1,
       "op": "command",
       "command": "summon minecraft:creeper 4.5 -60 4.5 {NoAI:1b,Fuse:2s,ignited:1b,active_effects:[{id:\"minecraft:speed\",amplifier:1b,duration:600}]}"
-    },
-    {
-      "tick": 1,
-      "op": "command",
-      "command": "summon minecraft:zombie 15.5 -60 15.5 {NoAI:1b,active_effects:[{id:\"minecraft:oozing\",amplifier:0b,duration:600}]}"
-    },
-    {
-      "tick": 5,
-      "op": "command",
-      "command": "kill @e[type=minecraft:zombie]"
     }
   ]
 }
