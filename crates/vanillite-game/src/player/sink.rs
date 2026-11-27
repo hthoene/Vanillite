@@ -54,6 +54,14 @@ pub trait PacketSink: Send + Sync {
         None
     }
 
+    /// Queues the play `login` packet (encoded body) that starts the game on the client. Before
+    /// it, a client has no level and fails on most play packets (`set_time` ends in "Network
+    /// Protocol Error"), and Vanilla lists a player only after sending `login`: implementations
+    /// for clients drop every packet but `disconnect` until this call. The default sends it.
+    fn send_login(&self, body: Vec<u8>) -> bool {
+        self.send_body(body)
+    }
+
     /// Flushes what is queued and closes the connection.
     fn close(&self);
     /// Whether the connection is closed.

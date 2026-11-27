@@ -137,7 +137,7 @@ pub fn send_login(
     rules: &crate::survival::rules::GameRules,
 ) {
     use crate::survival::rules::Rule;
-    sink.send(&Login {
+    sink.send_login(vanillite_protocol::frame::encode_body(&Login {
         entity_id,
         hardcore: level.hardcore,
         levels: level.levels.clone(),
@@ -150,7 +150,7 @@ pub fn send_login(
         spawn: spawn_info(level, player),
         online_mode: level.online_mode,
         enforces_secure_chat,
-    });
+    }));
 }
 
 /// `createCommonSpawnInfo`.
