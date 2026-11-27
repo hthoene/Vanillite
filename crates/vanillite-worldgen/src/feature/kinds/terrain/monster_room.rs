@@ -47,27 +47,31 @@ impl FeatureType for MonsterRoomFeature {
         let zr = random.next_int_bounded(2) + 2;
         let (min_z, max_z) = (-zr - 1, zr + 1);
 
+        // Vanilla reads every block of the box but only uses the floor and ceiling (all solid)
+        // and the openings of the wall ring at `dy == 0` (one to five), and every failure
+        // returns `false`: the same answer from those blocks alone, openings first.
         let mut hole_count = 0;
         for dx in min_x..=max_x {
-            for dy in -1..=4 {
-                for dz in min_z..=max_z {
-                    let pos = origin.offset(dx, dy, dz);
-                    let solid = is_solid(level.block(pos));
-                    if (dy == -1 || dy == 4) && !solid {
-                        return false;
-                    }
-                    if (dx == min_x || dx == max_x || dz == min_z || dz == max_z)
-                        && dy == 0
-                        && level.is_empty_block(pos)
-                        && level.is_empty_block(pos.relative(Direction::Up))
-                    {
-                        hole_count += 1;
-                    }
+            for dz in min_z..=max_z {
+                if (dx == min_x || dx == max_x || dz == min_z || dz == max_z)
+                    && level.is_empty_block(origin.offset(dx, 0, dz))
+                    && level.is_empty_block(origin.offset(dx, 1, dz))
+                {
+                    hole_count += 1;
                 }
             }
         }
         if !(1..=5).contains(&hole_count) {
             return false;
+        }
+        for dx in min_x..=max_x {
+            for dz in min_z..=max_z {
+                if !is_solid(level.block(origin.offset(dx, -1, dz)))
+                    || !is_solid(level.block(origin.offset(dx, 4, dz)))
+                {
+                    return false;
+                }
+            }
         }
 
         let cave_air = ids::CAVE_AIR.default_state();
