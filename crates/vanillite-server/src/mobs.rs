@@ -728,6 +728,7 @@ impl WorldMobs {
         let anger = std::mem::take(&mut level.output().piglin_anger);
         if !anger.is_empty() {
             let mut ents = std::mem::take(&mut level.entities);
+            let mut random = level.lend_random();
             {
                 let blocks = WorldBlocks(&level.chunks);
                 let raining = |_| false;
@@ -735,6 +736,7 @@ impl WorldMobs {
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
                 let mut env = survival.env(
+                    &mut random,
                     state,
                     &rules,
                     &blocks,
@@ -756,6 +758,7 @@ impl WorldMobs {
                     );
                 }
             }
+            level.restore_random(random);
             level.entities = ents;
         }
         // What spawner blocks read when the block entities tick after the entities.
