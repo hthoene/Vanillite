@@ -723,6 +723,10 @@ pub enum WorldAction {
     Level(boss::warden::LevelAction),
     /// `entityInside` of the block at the position for the entity (`applyEffectsFromBlocks`).
     EntityInside(BlockPos, EntityId),
+    /// `stepOn` of the block at the position for the entity standing on it.
+    StepOn(BlockPos, EntityId),
+    /// `onProjectileHit` of the block at the position, hit by the projectile at the point.
+    ProjectileHitBlock(BlockPos, Vec3, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
     /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
@@ -783,6 +787,14 @@ impl WorldAction {
                 if level.entities.store.contains(id) {
                     level.entity_inside(pos, id);
                 }
+            }
+            WorldAction::StepOn(pos, id) => {
+                if level.entities.store.contains(id) {
+                    crate::block::sculk::step_on_block(level, pos, id);
+                }
+            }
+            WorldAction::ProjectileHitBlock(pos, at, id) => {
+                crate::block::sensor::projectile_hit_block(level, pos, at, id);
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
             WorldAction::OutputSignal(pos) => {

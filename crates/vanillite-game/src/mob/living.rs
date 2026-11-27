@@ -1520,12 +1520,16 @@ fn trample_turtle_egg(t: &mut Tick<'_, '_>, randomness: i32) {
 
 /// `applyEffectsFromBlocks` / `checkInsideBlocks` for fire, lava, cobwebs and berry bushes.
 fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
-    // `stepOn` of the block below (turtle eggs; mobs are never careful).
-    if t.on_ground()
-        && t.level.block(on_pos(t, f64::from(0.2_f32))).block()
-            == vanillite_data::block::ids::TURTLE_EGG
-    {
-        trample_turtle_egg(t, 100);
+    // `stepOn` of the block below (turtle eggs, mobs are never careful; sculk sensors and
+    // shriekers).
+    if t.on_ground() {
+        let on = on_pos(t, f64::from(0.2_f32));
+        let block = t.level.block(on).block();
+        if block == vanillite_data::block::ids::TURTLE_EGG {
+            trample_turtle_egg(t, 100);
+        } else if crate::block::sculk::has_step_on(block) {
+            t.cx.actions.push(super::WorldAction::StepOn(on, t.id));
+        }
     }
     let inside = inside_blocks(t.env.blocks, t.env.facts, t.aabb());
     let fire_immune = t.core().kind().info().fire_immune;

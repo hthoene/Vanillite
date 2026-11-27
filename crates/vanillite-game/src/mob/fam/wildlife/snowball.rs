@@ -189,6 +189,9 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
         };
         crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
     }
+    if let Some(block) = block {
+        crate::mob::missile::hit_block(t.level, t.cx, t.id, block, at);
+    }
     crate::mob::missile::land_event(t.env.out, t.level, t.id, block, at);
     // `onHit`: the break particles (entity event 3) and gone.
     if let Some(e) = t.ents.store.get(t.id) {

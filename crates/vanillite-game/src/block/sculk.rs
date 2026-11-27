@@ -346,6 +346,24 @@ fn on_receive_vibration(
     activate(level, source, pos, state, power, frequency);
 }
 
+/// Whether `stepOn` of `block` does something: the sculk sensors and the shrieker.
+pub fn has_step_on(block: BlockId) -> bool {
+    block == ids::SCULK_SENSOR
+        || block == ids::CALIBRATED_SCULK_SENSOR
+        || block == ids::SCULK_SHRIEKER
+}
+
+/// `Block.stepOn` of the block at `pos` for an entity standing on it (`applyEffectsFromBlocks`
+/// of an entity on the ground, the block at `getOnPosLegacy`).
+pub fn step_on_block(level: &mut Level, pos: BlockPos, entity: EntityId) {
+    let block = level.block(pos).block();
+    if block == ids::SCULK_SHRIEKER {
+        super::sculk_shrieker::step_on(level, pos, entity);
+    } else if block == ids::SCULK_SENSOR || block == ids::CALIBRATED_SCULK_SENSOR {
+        step_on(level, pos, entity);
+    }
+}
+
 /// `SculkSensorBlock.stepOn`: an entity (not a warden) stepping on an inactive sensor triggers
 /// it directly. Called by entity movement.
 pub fn step_on(level: &mut Level, pos: BlockPos, entity: EntityId) {
@@ -368,4 +386,39 @@ pub fn step_on(level: &mut Level, pos: BlockPos, entity: EntityId) {
     }
     // `forceScheduleVibration`.
     schedule_vibration(level, pos, step, Some(entity), position, center(pos));
+}
+
+#[cfg(test)]
+mod tests {
+    use vanillite_world::entity::{EntityFlags, NewEntity};
+
+    use super::*;
+    use crate::level::tests::flat_level;
+
+    /// An entity standing on a sculk sensor schedules a `step` vibration through the block step
+    /// code; a warden does not (`SculkSensorBlock.stepOn`, #119).
+    #[test]
+    fn stepping_on_a_sensor_schedules_a_vibration() {
+        for (kind, heard) in [(entity_ids::EGG, true), (entity_ids::WARDEN, false)] {
+            let mut level = flat_level();
+            let pos = BlockPos::new(0, -60, 0);
+            assert!(level.set_block(pos, ids::SCULK_SENSOR.default_state(), update::ALL));
+            let network_id = level.network_ids().next();
+            let new = NewEntity::new(kind, network_id, 1, Vec3::new(0.5, -59.5, 0.5));
+            let id = level.entities.store.spawn(new, |_| 0);
+            if let Some(mut e) = level.entities.store.get_mut(id) {
+                e.set_flags(EntityFlags::ON_GROUND, true);
+            }
+            crate::block::plate::check_inside_blocks(&mut level, id);
+            let Some(BlockEntity::SculkSensor(sensor)) = level.block_entity(pos) else {
+                panic!("no sensor block entity");
+            };
+            let candidate = sensor.vibration.candidate.as_ref();
+            assert_eq!(candidate.is_some(), heard, "{}", kind.name());
+            if let Some((vibration, _)) = candidate {
+                assert_eq!(vibration.event, events().step);
+                assert_eq!(vibration.source, Some(id));
+            }
+        }
+    }
 }

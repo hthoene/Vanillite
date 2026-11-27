@@ -712,6 +712,19 @@ impl Digging {
             let prevents = ctx.actor.creative();
             crate::block::creaking_heart::player_will_destroy(level, pos, state, player, prevents);
         }
+        // `TripWireBlock.playerWillDestroy`: shears in the main hand disarm the string first.
+        if state.block() == vanillite_data::block::ids::TRIPWIRE
+            && let Some(level) = ctx.level.level_mut()
+        {
+            let shears = !tool.is_empty() && tool.item == vanillite_data::item::ids::SHEARS.0;
+            crate::block::tripwire::wire_player_will_destroy(
+                level,
+                pos,
+                state,
+                shears,
+                ctx.actor.entity,
+            );
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -1367,6 +1380,17 @@ impl Digging {
         if !place_ctx.replace_clicked && !place::can_be_replaced(existing, place_ctx) {
             return false;
         }
+        // `GameMasterBlockItem.getPlacementState`: no state without game master rights.
+        if vanillite_data::item::ItemId(stack.item)
+            .block()
+            .is_some_and(|b| is_game_master_block(b.default_state()))
+            && !crate::block::technical::can_use_game_master_blocks(
+                ctx.actor.creative(),
+                ctx.actor.permission_level,
+            )
+        {
+            return false;
+        }
         let Some(mut state) = place::state_for_placement(place_ctx, &LevelReader(&*ctx.level))
         else {
             return false;
@@ -1469,6 +1493,8 @@ impl Digging {
             ctx.level.placed_by(target, placed);
         }
         let sound = placed.block().sound();
+        // `SolidBucketItem`: its own place sound, the empty bucket stays in the hand.
+        let solid_bucket = stack.item == vanillite_data::item::ids::POWDER_SNOW_BUCKET.0;
         ctx.level.play_sound(
             Some(ctx.actor.network_id),
             Vec3::new(
@@ -1476,7 +1502,11 @@ impl Digging {
                 f64::from(target.y) + 0.5,
                 f64::from(target.z) + 0.5,
             ),
-            sound.place_sound,
+            if solid_bucket {
+                crate::block::sound_id("item.bucket.empty_powder_snow")
+            } else {
+                sound.place_sound
+            },
             SoundSource::Blocks,
             (sound.volume + 1.0) / 2.0,
             sound.pitch * 0.8,
@@ -1494,6 +1524,9 @@ impl Digging {
             };
             if let Some(slot) = slot {
                 slot.shrink(1);
+                if solid_bucket {
+                    *slot = ItemStack::new(vanillite_data::item::ids::BUCKET.0, 1);
+                }
             }
         }
         true
