@@ -139,10 +139,11 @@ impl Compute {
         self.scheduler.spawn_background(priority, Box::new(job));
     }
 
-    /// Runs `job(0)`, …, `job(n - 1)` on the workers and the calling thread and returns when
-    /// all are done. The indices are handed out one by one, so uneven jobs balance out.
+    /// Runs `job(0)`, …, `job(n - 1)` on [`Compute::phase_threads`] threads (the calling
+    /// thread included) and returns when all are done. The indices are handed out one by one,
+    /// so uneven jobs balance out.
     pub fn for_each(&self, n: usize, job: &(dyn Fn(usize) + Sync)) {
-        let workers = self.scheduler.workers();
+        let workers = self.phase_threads - 1;
         if n <= 1 || workers == 0 {
             for i in 0..n {
                 job(i);
