@@ -198,7 +198,7 @@ fn riding_event(ents: &Entities, kind: u32, passenger: EntityId, vehicle: Entity
         other_type: v.kind().name().to_owned(),
         ..crate::hooks::Event::new(kind)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     !ev.cancelled
 }
 

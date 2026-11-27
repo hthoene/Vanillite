@@ -141,6 +141,7 @@ fn with_tick<R>(
     let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
     let mut env = Env {
         hooks: &crate::hooks::NoHooks,
+        hook_world: crate::hooks::HookWorld::NONE,
         types: &types,
         facts: &facts,
         blocks: &NoBlocks,
@@ -240,6 +241,7 @@ fn skull_hit_withers_by_difficulty() {
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,
@@ -341,6 +343,7 @@ fn powered_wither_ignores_arrows() {
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types: &types,
             facts: &facts,
             blocks: &NoBlocks,

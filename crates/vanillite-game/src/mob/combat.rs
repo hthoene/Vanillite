@@ -326,6 +326,7 @@ pub fn hurt_mob(
     if let Some(e) = ents.store.get(target) {
         let uuid_of = |id: Option<EntityId>| id.and_then(|i| ents.store.get(i)).map(|e| e.uuid());
         match env.hooks.entity_damage(
+            crate::hooks::HookWorld::split(level, ents),
             e.uuid(),
             e.kind().name(),
             &types.get(kind).id,
@@ -792,7 +793,9 @@ fn mob_totem(
     };
     let kind_name = m.kind.type_id().name();
     if let Some(uuid) = ents.store.get(target).map(|e| e.uuid())
-        && !env.hooks.entity_resurrect(uuid, kind_name)
+        && !env
+            .hooks
+            .entity_resurrect(crate::hooks::HookWorld::split(level, ents), uuid, kind_name)
     {
         return false;
     }
@@ -1045,7 +1048,7 @@ fn die(
             to: crate::hooks::Place::at(pos),
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::split(level, ents), &mut ev);
         if let Some(new) = crate::hooks::drops_out(&ev) {
             drops = new;
         }

@@ -1174,9 +1174,10 @@ impl ServerWorld {
         self.players.save_all(&self.level);
         if !skip_chunks {
             if let Some(hooks) = self.level.hooks_for(vanillite_abi::event::WORLD_SAVE) {
-                hooks.event(&mut vanillite_game::hooks::Event::new(
-                    vanillite_abi::event::WORLD_SAVE,
-                ));
+                hooks.event(
+                    vanillite_game::hooks::HookWorld::NONE,
+                    &mut vanillite_game::hooks::Event::new(vanillite_abi::event::WORLD_SAVE),
+                );
             }
             if let Some(border) = self.level.border.take_dirty() {
                 self.data.write(crate::border::SAVED_DATA, border.to_nbt());

@@ -57,6 +57,7 @@ fn with_tick<R>(level: &mut Level, id: EntityId, f: impl FnOnce(&mut Tick<'_, '_
         let names = |name: &str, _| vanillite_protocol::text::Component::text(name);
         let mut env = Env {
             hooks: &crate::hooks::NoHooks,
+            hook_world: crate::hooks::HookWorld::NONE,
             types: &types,
             facts: &facts,
             blocks: &blocks,

@@ -293,7 +293,7 @@ impl ContainerView<'_> {
             text: self.menu.item_name.clone().unwrap_or_default(),
             ..crate::hooks::Event::new(vanillite_abi::event::ANVIL_PREPARE)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
         if let Some(result) = ev.item_out.as_deref().and_then(crate::hooks::parse_item) {
             self.set_local(2, result);
         }
@@ -1078,7 +1078,7 @@ impl ContainerView<'_> {
                 text: vanillite_nbt::snbt::to_string(&vanillite_nbt::Tag::Compound(chosen)),
                 ..crate::hooks::Event::new(vanillite_abi::event::ENCHANT_ITEM)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
             if ev.cancelled {
                 return false;
             }

@@ -1634,6 +1634,7 @@ mod tests {
                 random: &mut random,
                 out: &mut out,
                 hooks: &hooks,
+                hook_world: crate::hooks::HookWorld::NONE,
             };
             let mut cx = crate::mob::MobContext {
                 path_budget: u64::MAX,

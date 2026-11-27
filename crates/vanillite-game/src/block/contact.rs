@@ -110,6 +110,7 @@ pub fn physical_cancelled(level: &Level, pos: BlockPos, entity: EntityId) -> boo
         .and_then(|i| u32::try_from(i).ok())
         .unwrap_or(1);
     !hooks.player_interact(
+        crate::hooks::HookWorld::of(level),
         uuid,
         vanillite_abi::interact::PHYSICAL,
         vanillite_abi::hand::MAIN,

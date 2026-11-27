@@ -419,6 +419,7 @@ impl PluginHost {
     #[allow(clippy::too_many_arguments)]
     pub fn entity_damage(
         &self,
+        access: Option<&mut dyn WorldAccess>,
         world: u32,
         entity: u128,
         entity_type: &str,
@@ -433,7 +434,7 @@ impl PluginHost {
         let event = fire!(
             self,
             abi::event::ENTITY_DAMAGE,
-            None,
+            access,
             EntityDamageEvent {
                 world,
                 entity: abi::Uuid::from_u128(entity),
@@ -482,6 +483,7 @@ impl PluginHost {
     /// plugin cancelled it.
     pub fn block_change(
         &self,
+        access: Option<&mut dyn WorldAccess>,
         place: bool,
         world: u32,
         player: u128,
@@ -499,7 +501,7 @@ impl PluginHost {
         let event = fire!(
             self,
             kind,
-            None,
+            access,
             BlockEvent {
                 world,
                 player: abi::Uuid::from_u128(player),
@@ -900,8 +902,10 @@ impl PluginHost {
     /// A player uses `item` in `hand` (from [`abi::hand`]) on a block or in the air, hits a
     /// block or the air, or steps on a block; `action` is one of [`abi::interact`]. Returns
     /// `false` when a plugin cancelled it.
+    #[allow(clippy::too_many_arguments)]
     pub fn player_interact(
         &self,
+        access: Option<&mut dyn WorldAccess>,
         world: u32,
         player: u128,
         action: u32,
@@ -915,7 +919,7 @@ impl PluginHost {
         let event = fire!(
             self,
             abi::event::PLAYER_INTERACT,
-            None,
+            access,
             InteractEvent {
                 world,
                 player: abi::Uuid::from_u128(player),

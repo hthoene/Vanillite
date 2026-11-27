@@ -387,7 +387,10 @@ abi! {
             /// An explosion is about to happen ([`GameEvent`]: `entity` its source or
             /// [`Uuid::NIL`] for a block (`pos`, `state`: a bed or respawn anchor), `to` its
             /// centre, `amount` its radius (changeable), `flags` from [`explode_flag`]
-            /// (changeable)); cancellable. Since ABI 1.6.
+            /// (changeable)); cancellable. Since ABI 1.6. `text` names the blocks (not air) it
+            /// would blow up as `x,y,z;x,y,z`, and `text_out` in the same form replaces that
+            /// list: only the blocks named there are destroyed (servers before 0.1.0-beta.3 leave
+            /// `text` empty and ignore `text_out`).
             ENTITY_EXPLODE = 43,
             /// A projectile is launched ([`GameEvent`]: `entity` the projectile,
             /// `entity_type`, `other` its shooter); cancellable: it is removed. Since ABI 1.6.
@@ -468,7 +471,9 @@ abi! {
             /// ABI 1.6.
             STRUCTURE_GROW = 70,
             /// A piston extends (`cause` 1) or retracts (0) ([`GameEvent`]: `pos`, `state`,
-            /// `value` its facing as `Direction` index); cancellable. Since ABI 1.6.
+            /// `value` its facing as `Direction` index); cancellable. Since ABI 1.6. `text`
+            /// names the blocks it moves, then those it breaks, as `x,y,z;x,y,z` (empty when it
+            /// moves none; servers before 0.1.0-beta.3 leave it empty).
             BLOCK_PISTON = 71,
             /// A player changes a sign's text ([`GameEvent`]: `player`, `pos`, `flags` 1 for
             /// the front side, `text` the lines as a JSON array of strings, `text_out`

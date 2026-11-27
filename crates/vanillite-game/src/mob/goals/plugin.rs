@@ -482,7 +482,7 @@ pub fn change_target(
             cause: reason,
             ..crate::hooks::Event::new(event::ENTITY_TARGET)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
         if ev.cancelled {
             return false;
         }

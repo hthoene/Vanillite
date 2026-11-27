@@ -486,6 +486,8 @@ pub struct Env<'a> {
     pub out: &'a mut Vec<Effect>,
     /// Plugin hooks (damage).
     pub hooks: &'a dyn crate::hooks::GameHooks,
+    /// What plugins may read during these hooks.
+    pub hook_world: crate::hooks::HookWorld<'a>,
     /// `Player.getDisplayName` by name and UUID: the name in its team's format.
     pub display_name: &'a dyn Fn(&str, u128) -> Component,
     /// `Entity.getTeam` of an entity that is no player, by UUID: the name of its scoreboard
@@ -832,7 +834,7 @@ fn check_totem(
     };
     if !env
         .hooks
-        .entity_resurrect(entity.as_ref().uuid(), "minecraft:player")
+        .entity_resurrect(env.hook_world, entity.as_ref().uuid(), "minecraft:player")
     {
         return false;
     }
@@ -1013,6 +1015,7 @@ pub fn hurt_with(
     let uuid = entity.as_ref().uuid();
     let (attacker, direct) = attackers;
     match env.hooks.entity_damage(
+        env.hook_world,
         uuid,
         "minecraft:player",
         &types.get(kind).id,
@@ -1684,7 +1687,7 @@ pub fn die(
                 to: crate::hooks::Place::at(pos),
                 ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
             };
-            env.hooks.event(&mut ev);
+            env.hooks.event(env.hook_world, &mut ev);
             if let Some(new) = crate::hooks::drops_out(&ev) {
                 drops = new;
             }

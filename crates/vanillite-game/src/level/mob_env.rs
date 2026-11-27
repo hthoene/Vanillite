@@ -66,6 +66,11 @@ pub fn with_mob_env<R>(
             random: &mut random,
             out: &mut out,
             hooks,
+            // The entities are lent to `f`: plugins read only the level's blocks here.
+            hook_world: crate::hooks::HookWorld {
+                level: Some(level_ref),
+                entities: None,
+            },
             display_name: &names,
             entity_team: &|_| None,
         };
