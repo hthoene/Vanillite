@@ -1,3 +1,0 @@
-tick = 131
-cause = "Vanilla breaks the grass block at STOP_DESTROY_BLOCK (dirt drops), Vanillite keeps it: its progress is 3 ticks x 0.0556 (bare hand, on ground) = 0.167 < 0.7, which is what ServerPlayerGameMode reads too; why Vanilla reaches 0.7 is not found yet (#158)"
-owner = "gameplay-developer #132"

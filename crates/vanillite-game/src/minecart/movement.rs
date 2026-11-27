@@ -750,20 +750,11 @@ fn apply_effects_from_blocks(c: &mut Cart<'_, '_>) {
     let Some(e) = c.ents.store.get(c.id) else {
         return;
     };
-    let aabb = e.aabb();
-    let eps = 1.0e-5;
-    let min = BlockPos::containing(aabb.min_x + eps, aabb.min_y + eps, aabb.min_z + eps);
-    let max = BlockPos::containing(aabb.max_x - eps, aabb.max_y - eps, aabb.max_z - eps);
-    for z in min.z..=max.z {
-        for y in min.y..=max.y {
-            for x in min.x..=max.x {
-                let pos = BlockPos::new(x, y, z);
-                if c.level.has_entity_inside(c.level.block(pos)) {
-                    c.cx.actions.push(WorldAction::EntityInside(pos, c.id));
-                }
-            }
-        }
-    }
+    let still = [crate::survival::inside::Movement::still(e.pos())];
+    let (id, actions) = (c.id, &mut c.cx.actions);
+    crate::block::plate::for_each_inside(c.level, e.dims(), &still, |pos| {
+        actions.push(WorldAction::EntityInside(pos, id));
+    });
 }
 
 /// `OldMinecartBehavior.pushAndPickupEntities`: a moving minecart picks up the mobs it meets;

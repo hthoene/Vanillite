@@ -40,6 +40,11 @@ pub struct ItemData {
     pub random: i64,
     /// `wasTouchingWater`: the item touched water at its last fluid update (not saved).
     pub in_water: bool,
+    /// `stuckSpeedMultiplier`: a cobweb or powder snow slows the next move (not saved).
+    pub stuck: Vec3,
+    /// `finalMovementsThisTick`: the way of the last move, walked again while the item rests
+    /// (`applyEffectsFromBlocksForLastMovements`; not saved).
+    pub last_movement: Option<crate::survival::inside::Movement>,
 }
 
 impl ItemData {
@@ -63,6 +68,8 @@ impl ItemData {
             fire_ticks: 0,
             random,
             in_water: false,
+            stuck: Vec3::ZERO,
+            last_movement: None,
         }
     }
 
@@ -230,48 +237,76 @@ fn base_tick_fire(data: &mut ItemData, in_lava: bool, world: &FireWorld<'_>, bur
     data.fire_ticks -= 1;
 }
 
-/// `applyEffectsFromBlocks` of an item in the box `aabb`, after it moved: fire ignites and
-/// hurts it (`BaseFireBlock.entityInside`), lava ignites and hurts it (`lavaIgnite`,
-/// `lavaHurt`), water and rain put it out (`playEntityOnFireExtinguishedSound`). The pitches
-/// of the sounds come from the item's own random.
-fn inside_blocks_fire(data: &mut ItemData, aabb: Aabb, world: &FireWorld<'_>, burn: &mut Burn) {
-    let inside = crate::survival::blocks::inside_blocks(world.blocks, world.facts, aabb);
-    if inside.fire.is_none() && inside.lava_blocks == 0 && data.fire_ticks == 0 {
+/// `applyEffectsFromBlocks` of an item at `pos` on the way `movement`: cobwebs and powder
+/// snow slow its next move (`makeStuckInBlock`), fire ignites and hurts it
+/// (`BaseFireBlock.entityInside`), lava ignites and hurts it (`lavaIgnite`, `lavaHurt`), water
+/// and rain put it out (`playEntityOnFireExtinguishedSound`). The pitches of the sounds come
+/// from the item's own random.
+fn inside_blocks_fire(
+    data: &mut ItemData,
+    movement: crate::survival::inside::Movement,
+    pos: Vec3,
+    world: &FireWorld<'_>,
+    burn: &mut Burn,
+) {
+    let dims = vanillite_world::entity::Dimensions {
+        width: 0.25,
+        height: 0.25,
+    };
+    let inside = crate::survival::blocks::inside_blocks(
+        world.blocks,
+        world.facts,
+        dims,
+        false,
+        &[movement],
+        |_| {},
+    );
+    if inside.cobweb {
+        // `WebBlock.entityInside`.
+        data.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
+    }
+    if inside.powder_snow.is_some() {
+        // `PowderSnowBlock.entityInside`.
+        data.stuck = Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
+    }
+    if !inside.burns() && data.fire_ticks == 0 {
         return;
     }
     let immune = fire_immune(data, world.types);
     let previous = data.fire_ticks;
     let was_on_fire = !immune && previous > 0;
-    if let Some(damage) = inside.fire {
-        // `BaseFireBlock.fireIgnite`, then the block's fire damage.
-        if !immune {
-            if data.fire_ticks < 0 {
-                data.fire_ticks += 1;
+    for step in inside.steps() {
+        if let Some(damage) = step.fire {
+            // `BaseFireBlock.fireIgnite`, then the block's fire damage.
+            if !immune {
+                if data.fire_ticks < 0 {
+                    data.fire_ticks += 1;
+                }
+                if data.fire_ticks >= 0 {
+                    data.fire_ticks = data.fire_ticks.max(160);
+                }
             }
-            if data.fire_ticks >= 0 {
-                data.fire_ticks = data.fire_ticks.max(160);
+            hurt(data, world.types, world.types.in_fire, damage, burn);
+        }
+        if step.lava_blocks > 0 && !immune {
+            data.fire_ticks = data.fire_ticks.max(300);
+            let before = burn.hurts;
+            hurt(data, world.types, world.types.lava, 4.0, burn);
+            // `shouldPlayLavaHurtSound`: every tenth tick, and when the item is destroyed.
+            if burn.hurts > before && (data.health <= 0 || data.tick_count.is_multiple_of(10)) {
+                burn.lava_sound = Some(2.0 + data.next_float() * 0.4);
             }
         }
-        hurt(data, world.types, world.types.in_fire, damage, burn);
-    }
-    if inside.lava_blocks > 0 && !immune {
-        data.fire_ticks = data.fire_ticks.max(300);
-        let before = burn.hurts;
-        hurt(data, world.types, world.types.lava, 4.0, burn);
-        // `shouldPlayLavaHurtSound`: every tenth tick, and when the item is destroyed.
-        if burn.hurts > before && (data.health <= 0 || data.tick_count.is_multiple_of(10)) {
-            burn.lava_sound = Some(2.0 + data.next_float() * 0.4);
+        if step.extinguish && data.fire_ticks > 0 {
+            // `EXTINGUISH`: `clearFire`.
+            data.fire_ticks = 0;
         }
     }
     if data.fire_ticks > 0 {
-        // `EXTINGUISH` (water) and `isInRain`: `clearFire`.
-        let feet = BlockPos::new(
-            floor(aabb.min_x + 0.125),
-            floor(aabb.min_y),
-            floor(aabb.min_z + 0.125),
-        );
-        let top = BlockPos::new(feet.x, floor(aabb.max_y), feet.z);
-        if inside.water || (world.raining_at)(feet) || (world.raining_at)(top) {
+        // `isInRain`: `clearFire`.
+        let feet = BlockPos::new(floor(pos.x), floor(pos.y), floor(pos.z));
+        let top = BlockPos::new(feet.x, floor(pos.y + 0.25), feet.z);
+        if (world.raining_at)(feet) || (world.raining_at)(top) {
             data.fire_ticks = 0;
         }
     }
@@ -490,6 +525,8 @@ pub struct Moved {
     pub hit_x: bool,
     pub hit_y: bool,
     pub hit_z: bool,
+    /// The entity moved (`Entity.move` drops a tiny rest of a blocked movement).
+    pub applied: bool,
 }
 
 /// `Entity.collide` + `move` for an entity of `half_width` and `height` without step-up.
@@ -551,6 +588,7 @@ pub fn move_with_collisions(
         hit_x: !equal(movement.x, x),
         hit_y: y != movement.y,
         hit_z: !equal(movement.z, z),
+        applied: applies,
     }
 }
 
@@ -684,6 +722,7 @@ pub fn tick(
             .wrapping_add(u32::from_ne_bytes(input.network_id.to_ne_bytes()))
             .is_multiple_of(4);
     if !skip_move {
+        let mut delta = v;
         let moved = if no_physics {
             Moved {
                 pos: Vec3::new(old.x + v.x, old.y + v.y, old.z + v.z),
@@ -691,12 +730,30 @@ pub fn tick(
                 hit_x: false,
                 hit_y: false,
                 hit_z: false,
+                applied: true,
             }
         } else {
-            move_with_collisions(old, half, height, v, block, scratch)
+            if data.stuck.length_sqr() > 1.0e-7 {
+                // `stuckSpeedMultiplier`: the slowed move, then the item stands still.
+                delta = v.multiply(data.stuck.x, data.stuck.y, data.stuck.z);
+                data.stuck = Vec3::ZERO;
+                v = Vec3::ZERO;
+            }
+            let moved = move_with_collisions(old, half, height, delta, block, scratch);
+            // `Entity.move` records its way; without one the item is walked where it is.
+            data.last_movement = Some(if moved.applied {
+                crate::survival::inside::Movement {
+                    from: old,
+                    to: moved.pos,
+                    original: Some(delta),
+                }
+            } else {
+                crate::survival::inside::Movement::still(old)
+            });
+            moved
         };
         out.pos = moved.pos;
-        out.on_ground = moved.hit_y && v.y < 0.0;
+        out.on_ground = moved.hit_y && delta.y < 0.0;
         // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps Java's signed
         // zeros.
         if moved.hit_x {
@@ -725,9 +782,10 @@ pub fn tick(
             v.y *= -0.5;
         }
     }
-    // `applyEffectsFromBlocks` where the item is now (`isAffectedByBlocks`).
-    if !no_physics {
-        inside_blocks_fire(data, body_at(out.pos), fire, burn);
+    // `applyEffectsFromBlocks` on the way of the move, for a resting item on the way of its
+    // last one (`isAffectedByBlocks`).
+    if !no_physics && let Some(movement) = data.last_movement {
+        inside_blocks_fire(data, movement, out.pos, fire, burn);
     }
     out.moved_block = floor(old.x) != floor(out.pos.x)
         || floor(old.y) != floor(out.pos.y)

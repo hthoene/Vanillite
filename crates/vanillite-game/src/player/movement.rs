@@ -124,6 +124,9 @@ pub struct Movement {
     /// without one (`getKnownMovement`).
     pub known_movement: Vec3,
     received_movement_this_tick: bool,
+    /// `movementThisTick`: the moves `Entity.move` made since the player's last tick, for
+    /// the blocks on their way (`applyEffectsFromBlocks`).
+    pub path: Vec<crate::survival::inside::Movement>,
 }
 
 /// `Mth.wrapDegrees`.
@@ -179,6 +182,7 @@ impl Movement {
             passenger: false,
             known_movement: Vec3::ZERO,
             received_movement_this_tick: false,
+            path: Vec::new(),
         }
     }
 
@@ -231,6 +235,8 @@ impl Movement {
     /// next tick are handled.
     pub fn tick(&mut self, body: &Body) {
         self.reset_position(body.pos);
+        // The player's tick walked them (`applyEffectsFromBlocks`).
+        self.path.clear();
         self.tick_count = self.tick_count.wrapping_add(1);
         self.known_move_packets = self.received_move_packets;
         // TODO(milestone 3): the "floating too long" kick (`movement.flying-kick`) needs
@@ -289,6 +295,8 @@ impl Movement {
                 value
             }
         };
+        // `teleportSetPosition`: `clearMovementThisTick`.
+        self.path.clear();
         self.awaiting_teleport_time = self.tick_count;
         self.awaiting_teleport = self.awaiting_teleport.wrapping_add(1);
         if self.awaiting_teleport == i32::MAX {
@@ -494,7 +502,19 @@ impl Movement {
             target.z - self.last_good.z,
         );
         let moved_upwards = delta.y > 0.0;
-        if !self.collision_allows(body, target, delta, ctx) {
+        let (allowed, moved_to) = self.collision_allows(body, target, delta, ctx);
+        if let Some(to) = moved_to {
+            // `Entity.move(MoverType.PLAYER, delta)` records its way.
+            crate::survival::inside::record(
+                &mut self.path,
+                crate::survival::inside::Movement {
+                    from,
+                    to,
+                    original: Some(delta),
+                },
+            );
+        }
+        if !allowed {
             log::warn!("Player moved wrongly!");
             let (y, x) = (y_rot, x_rot);
             self.teleport(body, from, y, x, sink);
@@ -538,20 +558,24 @@ impl Movement {
     /// current position, then the move to `target` passes unless it ends more than 0.25
     /// blocks horizontally from the collided position ("moved wrongly", not for creative
     /// players) from a free box, or enters a block. A rejected move leaves the player where
-    /// the collision put it, with its `onGround`.
+    /// the collision put it, with its `onGround`. With the answer comes where `Entity.move`
+    /// took the player, if it moved it (the move as asked for where nothing checks it).
     fn collision_allows(
         &self,
         body: &mut Body,
         target: Vec3,
         delta: Vec3,
         ctx: MoveContext<'_>,
-    ) -> bool {
+    ) -> (bool, Option<Vec3>) {
         use crate::mob::physics;
+        if ctx.no_physics {
+            return (true, None);
+        }
         let Some(blocks) = ctx.blocks else {
-            return true;
+            return (true, Some(target));
         };
-        if ctx.no_physics || !ctx.rules.wrong_movement_check {
-            return true;
+        if !ctx.rules.wrong_movement_check {
+            return (true, Some(target));
         }
         let old_box = ctx.dims.bounding_box(body.pos);
         let mut scratch = Vec::new();
@@ -565,7 +589,8 @@ impl Movement {
             &mut scratch,
         );
         let length = movement.length_sqr();
-        let moved_to = if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
+        let moved = length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7;
+        let moved_to = if moved {
             Vec3::new(
                 body.pos.x + movement.x,
                 body.pos.y + movement.y,
@@ -584,7 +609,7 @@ impl Movement {
             // `setOnGroundWithMovement(verticalCollisionBelow, ...)` of the move.
             body.on_ground = delta.y != movement.y && delta.y < 0.0;
         }
-        allowed
+        (allowed, moved.then_some(moved_to))
     }
 }
 

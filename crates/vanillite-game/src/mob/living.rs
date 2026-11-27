@@ -753,6 +753,7 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         .passengers_of(t.id)
         .first()
         .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id));
+    t.cx.movements.clear();
     if effective_ai && !steered {
         let m = t.mob_ref();
         let input = Vec3::new(f64::from(m.xxa), f64::from(m.yya), f64::from(m.zza));
@@ -1245,6 +1246,14 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     let length = movement.length_sqr();
     if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
         let p = t.pos();
+        crate::survival::inside::record(
+            &mut t.cx.movements,
+            crate::survival::inside::Movement {
+                from: p,
+                to: p + movement,
+                original: Some(delta),
+            },
+        );
         t.core_mut().set_pos(p + movement);
     }
     let x_collision = !java_equal(delta.x, movement.x);
@@ -1785,8 +1794,72 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         return;
     }
     let was_freezing = t.mob_ref().ticks_frozen > 0;
-    let inside = inside_blocks(t.env.blocks, t.env.facts, t.aabb());
     let kind = t.mob_ref().kind;
+    // The moves of this tick, then the way to where the mob is now; a mob that did not
+    // move: where it stands, for a passenger the way its vehicle took it since the tick
+    // started (`applyEffectsFromBlocks`; a teleport starts anew, `snapTo`).
+    let mut path = std::mem::take(&mut t.cx.movements);
+    let pos = t.pos();
+    let old_pos = if t.ents.riding.vehicle_of(t.id).is_some() {
+        t.core().old_pos()
+    } else {
+        pos
+    };
+    crate::survival::inside::finish(&mut path, old_pos, pos);
+    let feet_in_snow = t.level.block(t.block_pos()).block() == ids::POWDER_SNOW;
+    let ravager_griefs = kind == super::Kind::Ravager && t.env.rules.bool(Rule::MOB_GRIEFING);
+    let mut stuck = None;
+    let mut honey = [BlockPos::new(0, 0, 0); 8];
+    let mut honey_count = 0;
+    let mut bubbles = [(BlockPos::new(0, 0, 0), false); 4];
+    let mut bubble_count = 0;
+    let dims = t.core().dims();
+    let fast_fall = t.mob_ref().fall_distance > 2.5;
+    let (id, actions) = (t.id, &mut t.cx.actions);
+    let inside = inside_blocks(t.env.blocks, t.env.facts, dims, fast_fall, &path, |cell| {
+        // `entityInside` of the blocks that slow, carry or react to the mob, in the
+        // order it meets them.
+        let (pos, block) = (cell.pos, cell.state.block());
+        if block == ids::BIG_DRIPLEAF {
+            // `BigDripleafBlock.entityInside`.
+            actions.push(super::WorldAction::EntityInside(pos, id));
+        }
+        if block == ids::COBWEB {
+            stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
+        } else if block == ids::SWEET_BERRY_BUSH {
+            if !matches!(kind, super::Kind::Fox | super::Kind::Bee) {
+                stuck = Some(Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32)));
+            }
+        } else if block == ids::POWDER_SNOW {
+            if feet_in_snow {
+                stuck = Some(Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32)));
+            }
+        } else if block == ids::HONEY_BLOCK {
+            if let Some(slot) = honey.get_mut(honey_count) {
+                *slot = pos;
+                honey_count += 1;
+            }
+        } else if block == ids::BUBBLE_COLUMN {
+            // `BubbleColumnBlock.entityInside`: only where the mob ends up.
+            if cell.precise
+                && let Some(slot) = bubbles.get_mut(bubble_count)
+            {
+                *slot = (pos, cell.state.value("drag") == Some("true"));
+                bubble_count += 1;
+            }
+        } else if ravager_griefs
+            && matches!(
+                vanillite_worldgen::behaviour::class_of_block(block),
+                vanillite_worldgen::behaviour::Class::Crop
+                    | vanillite_worldgen::behaviour::Class::PitcherCrop
+            )
+        {
+            // `CropBlock.entityInside` / `PitcherCropBlock.entityInside`.
+            actions.push(super::WorldAction::DestroyBlockBy(pos, true, id));
+        }
+    });
+    path.clear();
+    t.cx.movements = path;
     // The `entityInside` effects that act at once.
     if inside.cactus {
         let source = DamageSource::of(t.env.types.cactus);
@@ -1844,50 +1917,71 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
                 1.0,
             );
         }
-        // `InsideBlockEffectType.FREEZE`.
-        t.mob().in_powder_snow = true;
-        if can_freeze(t.mob_ref()) {
-            let m = t.mob();
-            m.ticks_frozen = (m.ticks_frozen + 1).min(TICKS_TO_FREEZE);
-            t.core_mut().mark_data_dirty();
-        }
     }
     let fire_immune = t.core().kind().info().fire_immune;
     let previous_fire = t.mob_ref().fire_ticks;
-    if let Some(damage) = inside.fire
-        && !fire_immune
-    {
-        let m = t.mob();
-        if m.fire_ticks < 0 {
-            m.fire_ticks += 1;
-        } else if m.fire_ticks == 0 {
-            m.fire_ticks = 160;
+    // The collected effects, step by step (`StepBasedCollector.applyAndClear`).
+    for step in inside.steps() {
+        if step.freeze {
+            // `InsideBlockEffectType.FREEZE`.
+            t.mob().in_powder_snow = true;
+            if can_freeze(t.mob_ref()) {
+                let m = t.mob();
+                m.ticks_frozen = (m.ticks_frozen + 1).min(TICKS_TO_FREEZE);
+                t.core_mut().mark_data_dirty();
+            }
         }
-        let source = DamageSource::of(t.env.types.in_fire);
-        hurt_self(t, source, damage);
-    }
-    if !t.exists() {
-        return;
-    }
-    if inside.lava_blocks > 0 && !fire_immune {
-        // `lavaIgnite` and `lavaHurt`.
-        let m = t.mob();
-        m.fire_ticks = m.fire_ticks.max(300);
-        let source = DamageSource::of(t.env.types.lava);
-        if hurt_self(t, source, 4.0) {
-            kinds::play_sound(t, "minecraft:entity.generic.burn", 0.4, 2.0);
+        if step.clear_freeze && t.mob_ref().ticks_frozen != 0 {
+            // `InsideBlockEffectType.CLEAR_FREEZE`.
+            t.mob().ticks_frozen = 0;
+            t.core_mut().mark_data_dirty();
         }
-    }
-    if !t.exists() {
-        return;
-    }
-    if let Some(snow) = inside.powder_snow
-        && t.mob_ref().fire_ticks > 0
-        && t.env.rules.bool(Rule::MOB_GRIEFING)
-    {
-        // `PowderSnowBlock.entityInside`'s `runBefore(EXTINGUISH)`: a burning mob melts it.
-        t.cx.actions
-            .push(super::WorldAction::DestroyBlock(snow, false));
+        if let Some(damage) = step.fire
+            && !fire_immune
+        {
+            let m = t.mob();
+            if m.fire_ticks < 0 {
+                m.fire_ticks += 1;
+            } else if m.fire_ticks == 0 {
+                m.fire_ticks = 160;
+            }
+            let source = DamageSource::of(t.env.types.in_fire);
+            hurt_self(t, source, damage);
+        }
+        if !t.exists() {
+            return;
+        }
+        if step.lava_blocks > 0 && !fire_immune {
+            // `lavaIgnite` and `lavaHurt`.
+            let m = t.mob();
+            m.fire_ticks = m.fire_ticks.max(300);
+            let source = DamageSource::of(t.env.types.lava);
+            if hurt_self(t, source, 4.0) {
+                kinds::play_sound(t, "minecraft:entity.generic.burn", 0.4, 2.0);
+            }
+        }
+        if !t.exists() {
+            return;
+        }
+        if let Some(snow) = step.melt_snow
+            && t.mob_ref().fire_ticks > 0
+            && t.env.rules.bool(Rule::MOB_GRIEFING)
+        {
+            // `PowderSnowBlock.entityInside`'s `runBefore(EXTINGUISH)`: a burning mob melts it.
+            t.cx.actions
+                .push(super::WorldAction::DestroyBlock(snow, false));
+        }
+        if let Some(cauldron) = step.cauldron
+            && t.mob_ref().fire_ticks > 0
+        {
+            t.cx.actions
+                .push(super::WorldAction::BurningInCauldron(cauldron));
+        }
+        let m = t.mob();
+        if step.extinguish && m.fire_ticks > 0 {
+            // `clearFire`.
+            m.fire_ticks = 0;
+        }
     }
     // `isInRain`: the feet's block or the column at the top of the box.
     let p = t.pos();
@@ -1898,14 +1992,8 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
             t.aabb().max_y,
             f64::from(feet.z),
         ));
-    if let Some(cauldron) = inside.cauldron
-        && t.mob_ref().fire_ticks > 0
-    {
-        t.cx.actions
-            .push(super::WorldAction::BurningInCauldron(cauldron));
-    }
     let m = t.mob();
-    if (inside.water || inside.powder_snow.is_some() || in_rain) && m.fire_ticks > 0 {
+    if in_rain && m.fire_ticks > 0 {
         // `clearFire`.
         m.fire_ticks = 0;
     }
@@ -1919,51 +2007,7 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         let pitch = 1.6 + (r.next_float() - r.next_float()) * 0.4;
         kinds::play_sound(t, "minecraft:entity.generic.extinguish_fire", 0.7, pitch);
     }
-    // Cobwebs, sweet berry bushes and powder snow slow the next move (`makeStuckInBlock`).
-    let b = t.aabb().inflate(-1.0e-5, -1.0e-5, -1.0e-5);
-    let (x0, y0, z0) = (floor(b.min_x), floor(b.min_y), floor(b.min_z));
-    let (x1, y1, z1) = (floor(b.max_x), floor(b.max_y), floor(b.max_z));
-    let feet_in_snow = t.level.block(t.block_pos()).block() == ids::POWDER_SNOW;
-    let ravager_griefs = kind == super::Kind::Ravager && t.env.rules.bool(Rule::MOB_GRIEFING);
-    let mut stuck = None;
-    let mut honey = Vec::new();
-    for x in x0..=x1 {
-        for y in y0..=y1 {
-            for z in z0..=z1 {
-                let pos = BlockPos::new(x, y, z);
-                let state = t.level.block(pos);
-                let block = state.block();
-                if block == ids::BIG_DRIPLEAF {
-                    // `BigDripleafBlock.entityInside`.
-                    t.cx.actions
-                        .push(super::WorldAction::EntityInside(pos, t.id));
-                }
-                if block == ids::COBWEB {
-                    stuck = Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25));
-                } else if block == ids::SWEET_BERRY_BUSH {
-                    if !matches!(kind, super::Kind::Fox | super::Kind::Bee) {
-                        stuck = Some(Vec3::new(f64::from(0.8_f32), 0.75, f64::from(0.8_f32)));
-                    }
-                } else if block == ids::POWDER_SNOW {
-                    if feet_in_snow {
-                        stuck = Some(Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32)));
-                    }
-                } else if block == ids::HONEY_BLOCK {
-                    honey.push(pos);
-                } else if ravager_griefs
-                    && matches!(
-                        vanillite_worldgen::behaviour::class_of_block(block),
-                        vanillite_worldgen::behaviour::Class::Crop
-                            | vanillite_worldgen::behaviour::Class::PitcherCrop
-                    )
-                {
-                    // `CropBlock.entityInside` / `PitcherCropBlock.entityInside`.
-                    t.cx.actions
-                        .push(super::WorldAction::DestroyBlockBy(pos, true, t.id));
-                }
-            }
-        }
-    }
+    // Cobwebs, sweet berry bushes and powder snow slow the next move (`makeStuckInBlock`);
     // `WitherBoss.makeStuckInBlock` does nothing.
     if let Some(s) = stuck
         && kind != super::Kind::Wither
@@ -1972,10 +2016,12 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         t.mob().stuck_speed = s;
     }
     // `HoneyBlock.entityInside` of each honey block touched.
-    for pos in honey {
+    for pos in honey.into_iter().take(honey_count) {
         honey_slide(t, pos);
     }
-    bubble_columns(t, x0..=x1, y0..=y1, z0..=z1);
+    for (pos, drag_down) in bubbles.into_iter().take(bubble_count) {
+        bubble_column(t, pos, drag_down);
+    }
 }
 
 /// `Entity.getTicksRequiredToFreeze`.
@@ -2103,39 +2149,21 @@ fn honey_slide(t: &mut Tick<'_, '_>, pos: BlockPos) {
 
 /// `BubbleColumnBlock.entityInside`: an upward or downward drag, stronger at the top
 /// (`onAboveBubbleColumn`) than inside (`onInsideBubbleColumn`).
-fn bubble_columns(
-    t: &mut Tick<'_, '_>,
-    xs: std::ops::RangeInclusive<i32>,
-    ys: std::ops::RangeInclusive<i32>,
-    zs: std::ops::RangeInclusive<i32>,
-) {
-    for x in xs {
-        for y in ys.clone() {
-            for z in zs.clone() {
-                let pos = BlockPos::new(x, y, z);
-                let state = t.level.block(pos);
-                if !t.env.facts.is_bubble_column(state) {
-                    continue;
-                }
-                let drag_down = state.value("drag") == Some("true");
-                let above = t.level.block(BlockPos::new(x, y + 1, z));
-                let nothing_above =
-                    above.collision_shape().is_empty() && above.fluid_state().is_empty();
-                let v = t.velocity();
-                let yd = match (nothing_above, drag_down) {
-                    (true, true) => (v.y - 0.03).max(-0.9),
-                    (true, false) => (v.y + 0.1).min(1.8),
-                    (false, true) => (v.y - 0.03).max(-0.3),
-                    (false, false) => (v.y + 0.06).min(0.7),
-                };
-                t.set_velocity(Vec3::new(v.x, yd, v.z));
-                if nothing_above {
-                    send_bubble_column_particles(t, pos);
-                } else {
-                    t.mob().fall_distance = 0.0;
-                }
-            }
-        }
+fn bubble_column(t: &mut Tick<'_, '_>, pos: BlockPos, drag_down: bool) {
+    let above = t.level.block(BlockPos::new(pos.x, pos.y + 1, pos.z));
+    let nothing_above = above.collision_shape().is_empty() && above.fluid_state().is_empty();
+    let v = t.velocity();
+    let yd = match (nothing_above, drag_down) {
+        (true, true) => (v.y - 0.03).max(-0.9),
+        (true, false) => (v.y + 0.1).min(1.8),
+        (false, true) => (v.y - 0.03).max(-0.3),
+        (false, false) => (v.y + 0.06).min(0.7),
+    };
+    t.set_velocity(Vec3::new(v.x, yd, v.z));
+    if nothing_above {
+        send_bubble_column_particles(t, pos);
+    } else {
+        t.mob().fall_distance = 0.0;
     }
 }
 
