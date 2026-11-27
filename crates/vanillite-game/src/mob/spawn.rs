@@ -1047,11 +1047,20 @@ fn spawn_category_for_chunk<R: Round>(
     }
     let start = BlockPos::new(x0, y, z0);
     #[allow(clippy::cast_sign_loss)]
-    let start_state = here
-        .as_deref()
-        .and_then(|c| c.chunk.block((x0 & 15) as u32, y, (z0 & 15) as u32))
-        .map_or_else(|| round.level().block(start), BlockState);
-    if start_state.has(flags::REDSTONE_CONDUCTOR) {
+    let conductor = match here.as_deref().and_then(|c| {
+        let sections = c.chunk.sections();
+        let index = usize::try_from((y >> 4) - c.chunk.min_section()).ok()?;
+        sections.get(index)
+    }) {
+        // A section of conductors only answers without reading its blocks.
+        Some(section) if section.summary().all_conductors() => true,
+        Some(section) => {
+            BlockState(section.block((x0 & 15) as u32, (y & 15) as u32, (z0 & 15) as u32))
+                .has(flags::REDSTONE_CONDUCTOR)
+        }
+        None => round.level().block(start).has(flags::REDSTONE_CONDUCTOR),
+    };
+    if conductor {
         return;
     }
     // `canSpawnEntitiesInChunk` of the chunks the positions fall into, and the spawn list of
