@@ -374,19 +374,43 @@ pub fn tick(
     }
 }
 
-/// `updateFluidInteraction`: whether the minecart touches water or lava now.
+/// `updateFluidInteraction`: whether the minecart touches water or lava now; falling into
+/// water splashes (`doWaterSplashEffect`, with draws from the minecart's random).
 fn update_fluids(ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
     let Some(e) = ents.store.get(id) else {
         return;
     };
-    let eye = e.pos() + Vec3::new(0.0, f64::from(e.kind().info().eye_height), 0.0);
+    let (pos, velocity) = (e.pos(), e.velocity());
+    let info = e.kind().info();
+    let eye = pos + Vec3::new(0.0, f64::from(info.eye_height), 0.0);
     let contact = crate::survival::blocks::fluid_contact(env.blocks, env.facts, e.aabb(), eye);
-    if let Some(m) = ents.minecart_mut(id) {
-        m.in_water = contact.in_water();
-        m.in_lava = contact.in_lava();
-        if m.in_water {
-            m.fall_distance = 0.0;
-        }
+    let Some(m) = ents.minecart_mut(id) else {
+        return;
+    };
+    let splash = (contact.in_water() && !m.in_water && !m.first_tick)
+        .then(|| crate::mob::living::water_splash_draws(&mut m.random, velocity, info.width, 0.2));
+    m.in_water = contact.in_water();
+    m.in_lava = contact.in_lava();
+    if m.in_water {
+        m.fall_distance = 0.0;
+    }
+    if let Some((volume, pitch)) = splash {
+        crate::survival::play_sound(
+            env.out,
+            None,
+            pos,
+            "minecraft:entity.generic.splash",
+            SoundSource::Neutral,
+            volume,
+            pitch,
+            crate::survival::sound_seed(),
+        );
+        crate::survival::game_event(
+            env.out,
+            crate::level::game_event::events().splash,
+            pos,
+            Some(id),
+        );
     }
 }
 

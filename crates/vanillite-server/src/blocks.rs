@@ -626,14 +626,15 @@ pub struct ItemScratch {
     gone: Vec<EntityId>,
 }
 
-/// `ItemEntity.tick` of one item entity: movement, fire and lava, merging with its
-/// neighbours, despawning. Draws from the item's own random. Returns what fire and
-/// lava did to it: unless that [`is_none`](item_entity::Burn::is_none), the caller passes it
-/// to [`item_entity::burn_effects`] (game events, sound, a destroyed item's removal).
+/// `ItemEntity.tick` of one item entity: movement, fluids, fire and lava, merging with its
+/// neighbours, despawning. Draws from the item's own random. `level` is the item's level
+/// (its entities are `entities`). Returns what fire, lava and water did to it: unless that
+/// [`is_none`](item_entity::Burn::is_none), the caller passes it to
+/// [`item_entity::burn_effects`] (game events, sounds, a destroyed item's removal).
 #[allow(clippy::too_many_arguments)]
 pub fn tick_item(
     entities: &mut Entities,
-    chunks: &Chunks,
+    level: &Level,
     id: EntityId,
     min_y: i32,
     settings: ItemSettings,
@@ -642,7 +643,16 @@ pub fn tick_item(
 ) -> item_entity::Burn {
     let mut burn = item_entity::Burn::default();
     let lifetime = settings.lifetime;
+    let chunks: &Chunks = &level.chunks;
     let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
+    let fluids = |aabb: Aabb| {
+        let eye = Vec3::new(
+            (aabb.min_x + aabb.max_x) / 2.0,
+            aabb.min_y + f64::from(0.2125_f32),
+            (aabb.min_z + aabb.max_z) / 2.0,
+        );
+        vanillite_game::mob::living::fluid_currents(level, fire.facts, aabb, eye)
+    };
     scratch.gone.clear();
     let Entities { store, items, .. } = entities;
     let Some(entity) = store.get(id) else {
@@ -659,34 +669,26 @@ pub fn tick_item(
         network_id: entity.network_id().0,
         min_y,
         lifetime,
+        fast_lava: level.settings.fast_lava,
     };
     let Some(data) = items.get_mut(row) else {
         return burn;
     };
-    if data.fire_ticks > 0 && !data.stack.is_empty() {
-        item_entity::base_tick_fire(data, entity.aabb(), fire, &mut burn);
-        if burn.destroyed {
-            return burn;
-        }
-    }
-    let ticked = item_entity::tick(data, input, &block, &mut scratch.boxes);
+    let ticked = item_entity::tick(
+        data,
+        input,
+        &block,
+        &fluids,
+        fire,
+        &mut scratch.boxes,
+        &mut burn,
+    );
     if ticked.discard {
         entities.despawn(id);
         return item_entity::Burn::default();
     }
     let rate = if ticked.moved_block { 2 } else { 40 };
     let merge = data.tick_count.is_multiple_of(rate) && data.is_mergable(lifetime);
-    // `applyEffectsFromBlocks` where the item is now.
-    let p = ticked.pos;
-    let aabb = vanillite_base::Aabb::new(
-        p.x - 0.125,
-        p.y,
-        p.z - 0.125,
-        p.x + 0.125,
-        p.y + 0.25,
-        p.z + 0.125,
-    );
-    item_entity::inside_blocks_fire(data, aabb, fire, &mut burn);
     let on_fire = data.fire_ticks > 0;
     if let Some(mut e) = store.get_mut(id) {
         e.set_pos(ticked.pos);
