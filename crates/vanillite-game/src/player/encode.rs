@@ -11,11 +11,11 @@ use vanillite_protocol::SharedPacket;
 use vanillite_protocol::codec::write_varint;
 use vanillite_protocol::packets::play::clientbound::{
     AddEntity, BundleDelimiter, EntityPositionSync, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
-    PositionPath, RemoveEntities, RotateHead, SetEntityData, SetEntityMotion, SetEquipment,
-    VecDelta,
+    PositionPath, ProjectilePower, RemoveEntities, RotateHead, SetEntityData, SetEntityMotion,
+    SetEquipment, VecDelta,
 };
 use vanillite_protocol::types::{self, LpVec3, RawBytes, Uuid, VarIntList};
-use vanillite_world::entity::{EntityRef, Pose};
+use vanillite_world::entity::{EntityId, EntityRef, Pose};
 use vanillite_world::tracking::{EntityUpdate, Message};
 
 use super::MainHand;
@@ -783,6 +783,28 @@ pub const EQUIPMENT_SLOTS: [EquipmentSlot; 6] = [
     EquipmentSlot::Head,
 ];
 
+/// `AbstractHurtingProjectile.accelerationPower` of fireballs, wither skulls, dragon fireballs
+/// and wind charges; `None` for other entities.
+fn hurting_projectile_power(entities: &Entities, entity: EntityId) -> Option<f64> {
+    use crate::mob::boss::special::SpecialData;
+    use crate::mob::missile::MissileKind;
+    if let Some(m) = entities.missile(entity) {
+        return matches!(
+            m.kind,
+            MissileKind::SmallFireball
+                | MissileKind::Fireball
+                | MissileKind::WindCharge
+                | MissileKind::BreezeWindCharge
+        )
+        .then_some(m.acceleration);
+    }
+    match entities.special(entity)? {
+        SpecialData::WitherSkull(s) => Some(s.acceleration_power),
+        SpecialData::DragonFireball(f) => Some(f.acceleration_power),
+        _ => None,
+    }
+}
+
 /// Encodes one tracker message. `None` skips it (the entity is gone and nothing is left to
 /// send).
 pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> {
@@ -931,6 +953,25 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
             entity_id: id,
             movement: LpVec3(wire_vec(velocity)),
         })),
+        EntityUpdate::TrackedMotion(velocity) => {
+            let motion = SharedPacket::of(&SetEntityMotion {
+                entity_id: id,
+                movement: LpVec3(wire_vec(velocity)),
+            });
+            // `ServerEntity.sendChanges`: hurting projectiles bundle their acceleration power.
+            match hurting_projectile_power(entities, message.entity) {
+                Some(power) => Some(vec![
+                    SharedPacket::of(&BundleDelimiter),
+                    motion,
+                    SharedPacket::of(&ProjectilePower {
+                        entity_id: id,
+                        power,
+                    }),
+                    SharedPacket::of(&BundleDelimiter),
+                ]),
+                None => one(motion),
+            }
+        }
         EntityUpdate::Data => {
             let entity = entities.store.get(message.entity)?;
             let items = entity_data(&entity, entities, true)?;

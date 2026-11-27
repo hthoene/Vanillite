@@ -4,8 +4,7 @@
 //! of the area plus two rings, `light_chunks` of the area plus one ring), replays the same block
 //! changes batch by batch as the world does (`set_block`, then one `relight` of the changed
 //! chunks; unloading drops the light the neighbours only kept because of the chunk and saves it
-//! with the storage codec, loading reads it back, resets its sky light sources and gives the
-//! neighbours their light sections back) and compares
+//! with the storage codec, loading reads it back) and compares
 //! the light a client receives: the layers as the light data of a chunk packet sends them, read
 //! as the client reads them (a missing sky layer continues the bottom row of the next one above,
 //! 15 above all; a missing block layer is dark).
@@ -402,32 +401,6 @@ fn forget_unkept(
     out
 }
 
-/// The light the neighbours of a loaded chunk keep again, as `Chunks::restore_kept_light`.
-fn restore_kept(
-    chunks: &FxHashMap<ChunkPos, Arc<ProtoChunk>>,
-    pos: ChunkPos,
-) -> Vec<(ChunkPos, ChunkLight)> {
-    let mut out = Vec::new();
-    for dz in -1..=1 {
-        for dx in -1..=1 {
-            let center = ChunkPos::new(pos.x + dx, pos.z + dz);
-            let Some(chunk) = chunks.get(&center).filter(|_| center != pos) else {
-                continue;
-            };
-            let area: [Option<&Chunk>; 9] = std::array::from_fn(|i| {
-                let at = ChunkPos::new(center.x + i as i32 % 3 - 1, center.z + i as i32 / 3 - 1);
-                chunks.get(&at).map(|c| &c.chunk)
-            });
-            let index = ((pos.z - center.z + 1) * 3 + (pos.x - center.x + 1)) as usize;
-            let mut light = chunk.chunk.light().clone();
-            if !vanillite_chunk::light::restore_kept_light(&mut light, &area, index).is_empty() {
-                out.push((center, light));
-            }
-        }
-    }
-    out
-}
-
 /// Runs one area; its report row and details.
 fn run_area(file: &Path) -> (String, Area) {
     let data = Compression::Gzip
@@ -560,16 +533,7 @@ fn run_area(file: &Path) -> (String, Area) {
                         saved.insert(pos, codec.write(&chunk).expect("save chunk"));
                     } else {
                         let root = saved.remove(&pos).expect("loaded chunk saved");
-                        let mut chunk = codec.read(pos, root).expect("load chunk");
-                        if has_sky {
-                            chunk.chunk.light_mut().reset_sky_sources();
-                        }
-                        chunks.insert(pos, Arc::new(chunk));
-                        for (at, light) in restore_kept(&chunks, pos) {
-                            *Arc::make_mut(chunks.get_mut(&at).unwrap())
-                                .chunk
-                                .light_mut() = light;
-                        }
+                        chunks.insert(pos, Arc::new(codec.read(pos, root).expect("load chunk")));
                     }
                 }
             }

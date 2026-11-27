@@ -90,9 +90,8 @@ Ctrl+C: both save the worlds.
 
 ### Docker
 
-The image `thoenehannes/vanillite` (linux/amd64 and linux/arm64) holds a static binary, plus
-`vanillite-gnu` that it starts instead when `plugins/` holds plugins. World, configuration,
-plugins and cache live in the volume `/data`.
+The image `thoenehannes/vanillite` (linux/amd64 and linux/arm64) holds one static binary.
+World, configuration and cache live in the volume `/data`.
 
 ```sh
 docker run -d --name vanillite -p 25565:25565 -v vanillite-data:/data \
@@ -162,23 +161,7 @@ of the server after a switch.
 - **Bedrock** players join on the server's port (UDP) unless *Bedrock: Port* names another
   allocation.
 
-- **Plugins:** upload Paper/Spigot plugin jars into `plugins/` with the panel's file manager and
-  restart (see "Paper and Spigot plugins").
-
 The eggs are generated from the configuration schema, so re-import them after an update.
-
-### Paper and Spigot plugins
-
-1. Put the plugin jars into `plugins/` of the server folder (Docker: `/data/plugins/`).
-2. Start (or restart) the server.
-
-That is all. When `plugins/` holds Paper or Spigot plugins, the server installs the Bukkit layer
-([vanillite-bukkit](https://github.com/hthoene/vanillite-bukkit), the release made for this
-Vanillite version) into `plugins/bukkit/` and, if there is no Java 25 runtime, Eclipse Temurin
-into `plugins/bukkit/runtime/`, both checked by SHA-256, and loads the plugins; the log says
-every step. Without such jars there is no Java and no cost. Offline servers set
-`plugins.bukkit.auto-setup = false`: the log then says which file to download and where to put
-it. See [docs/plugins.md](docs/plugins.md#paper-and-spigot-plugins).
 
 ## Configuration
 

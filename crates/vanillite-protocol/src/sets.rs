@@ -179,6 +179,7 @@ packet_set! {
         BlockEntityTagQuery(play::serverbound::BlockEntityTagQuery),
         EntityTagQuery(play::serverbound::EntityTagQuery),
         TeleportToEntity(play::serverbound::TeleportToEntity),
+        DebugSubscriptionRequest(play::serverbound::DebugSubscriptionRequest),
     }
     unhandled Unhandled
 }
@@ -219,6 +220,11 @@ packet_set! {
         CodeOfConduct(cfg::clientbound::CodeOfConduct),
         ResourcePackPush(cfg::clientbound::ResourcePackPush),
         ServerLinks(cfg::clientbound::ServerLinks),
+        CustomReportDetails(cfg::clientbound::CustomReportDetails),
+        PostEffects(cfg::clientbound::PostEffects),
+        ResourcePackPop(cfg::clientbound::ResourcePackPop),
+        ClearDialog(cfg::clientbound::ClearDialog),
+        ShowDialog(cfg::clientbound::ShowDialog),
     }
 }
 
@@ -300,6 +306,24 @@ packet_set! {
         Cooldown(play::clientbound::Cooldown),
         Waypoint(play::clientbound::Waypoint),
         ServerData(play::clientbound::ServerData),
+        ProjectilePower(play::clientbound::ProjectilePower),
+        DebugSample(play::clientbound::DebugSample),
+        DebugBlockValue(play::clientbound::DebugBlockValue),
+        DebugChunkValue(play::clientbound::DebugChunkValue),
+        DebugEntityValue(play::clientbound::DebugEntityValue),
+        DebugEvent(play::clientbound::DebugEvent),
+        CustomChatCompletions(play::clientbound::CustomChatCompletions),
+        DeleteChat(play::clientbound::DeleteChat),
+        LowDiskSpaceWarning(play::clientbound::LowDiskSpaceWarning),
+        MoveMinecartAlongTrack(play::clientbound::MoveMinecartAlongTrack),
+        CustomReportDetails(play::clientbound::CustomReportDetails),
+        SetChunkCacheRadius(play::clientbound::SetChunkCacheRadius),
+        SetSimulationDistance(play::clientbound::SetSimulationDistance),
+        StartConfiguration(play::clientbound::StartConfiguration),
+        Ping(play::clientbound::Ping),
+        StoreCookie(play::clientbound::StoreCookie),
+        CookieRequest(play::clientbound::CookieRequest),
+        ResourcePackPop(play::clientbound::ResourcePackPop),
     }
     unhandled Unhandled
 }

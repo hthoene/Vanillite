@@ -8,13 +8,6 @@ compile_error!("x86-64 without SSE2");
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{__m128, _mm_add_ps, _mm_mul_ps, _mm_set_ps, _mm_set1_ps, _mm_sub_ps};
 
-/// Whether the CPU supports AVX2 (checked once, then cached).
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub(crate) fn has_avx2() -> bool {
-    std::arch::is_x86_feature_detected!("avx2")
-}
-
 /// Four `f32` values.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct F32x4(
