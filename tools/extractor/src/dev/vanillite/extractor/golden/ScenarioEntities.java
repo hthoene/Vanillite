@@ -61,10 +61,21 @@ final class ScenarioEntities {
   /** Frames hold the players' food and hands ({@code "player_state": true}). */
   boolean playerState;
   /**
+   * The harness sends {@code client_tick_end} after each tick ({@code "client_tick_end"}, default
+   * true; session replays have the recorded ones among their packets).
+   */
+  boolean clientTickEnd = true;
+
+  /**
    * Frames hold the players' sleeping position, sleep timer, pose id and respawn point ({@code
    * "sleep_state": true}).
    */
   boolean sleepState;
+  /**
+   * Frames hold the players' completed advancement criteria and statistics ({@code
+   * "progress_state": true}).
+   */
+  boolean progressState;
 
   /** The players removed from the chunk system, given back by {@link #release()}. */
   private final List<ServerPlayer> players = new ArrayList<>();
@@ -126,7 +137,15 @@ final class ScenarioEntities {
     Connection connection = new Connection(PacketFlow.SERVERBOUND);
     new EmbeddedChannel(connection);
     server.getPlayerList().placeNewPlayer(connection, player, cookie);
-    player.setGameMode(GameType.SURVIVAL);
+    String mode = spec.has("game_mode") ? spec.get("game_mode").getAsString() : "survival";
+    player.setGameMode(
+        switch (mode) {
+          case "survival" -> GameType.SURVIVAL;
+          case "creative" -> GameType.CREATIVE;
+          case "adventure" -> GameType.ADVENTURE;
+          case "spectator" -> GameType.SPECTATOR;
+          default -> throw new IllegalArgumentException("unknown game mode " + mode);
+        });
     double[] p = vec(spec.getAsJsonArray("pos"));
     player.snapTo(p[0], p[1], p[2], rot(spec, 0), rot(spec, 1));
     player.setYHeadRot(rot(spec, 0));
@@ -211,9 +230,63 @@ final class ScenarioEntities {
                 player.connection,
                 "connection");
     if (!connection.isConnected()) {
+      net.minecraft.network.DisconnectionDetails details = connection.getDisconnectionDetails();
       throw new IllegalStateException(
-          "a client player left: " + player.getPlainTextName() + " after " + packet);
+          "a client player left: "
+              + player.getPlainTextName()
+              + " after "
+              + packet
+              + (details != null ? " (" + details.reason().getString() + ")" : ""));
     }
+  }
+
+  /** Statistics {@code progress_state} leaves out: the times and the distances. */
+  private static final java.util.Set<String> UNTRACED_STATS =
+      java.util.Set.of(
+          "minecraft.custom:minecraft.play_time",
+          "minecraft.custom:minecraft.total_world_time",
+          "minecraft.custom:minecraft.time_since_death",
+          "minecraft.custom:minecraft.time_since_rest",
+          "minecraft.custom:minecraft.crouch_time");
+
+  /**
+   * {@code ,"adv":[...],"stats":{...}}: the completed criteria as {@code advancement#criterion}
+   * (sorted) and the non-zero statistics by name (sorted).
+   */
+  @SuppressWarnings("unchecked")
+  private static void progress(ServerPlayer sp, StringBuilder sb) {
+    List<String> adv = new ArrayList<>();
+    for (net.minecraft.advancements.AdvancementHolder holder :
+        sp.level().getServer().getAdvancements().getAllAdvancements()) {
+      for (String criterion :
+          sp.getAdvancements().getOrStartProgress(holder).getCompletedCriteria()) {
+        adv.add(holder.id() + "#" + criterion);
+      }
+    }
+    java.util.Collections.sort(adv);
+    sb.append(",\"adv\":[");
+    for (int i = 0; i < adv.size(); i++) {
+      sb.append(i == 0 ? "" : ",").append('"').append(adv.get(i)).append('"');
+    }
+    sb.append("],\"stats\":{");
+    java.util.TreeMap<String, Integer> stats = new java.util.TreeMap<>();
+    for (it.unimi.dsi.fastutil.objects.Object2IntMap.Entry<net.minecraft.stats.Stat<?>> entry :
+        ((it.unimi.dsi.fastutil.objects.Object2IntMap<net.minecraft.stats.Stat<?>>)
+                field(net.minecraft.stats.StatsCounter.class, sp.getStats(), "stats"))
+            .object2IntEntrySet()) {
+      String name = entry.getKey().getName();
+      if (entry.getIntValue() != 0
+          && !UNTRACED_STATS.contains(name)
+          && !name.endsWith("_one_cm")) {
+        stats.put(name, entry.getIntValue());
+      }
+    }
+    boolean first = true;
+    for (Map.Entry<String, Integer> s : stats.entrySet()) {
+      sb.append(first ? "" : ",").append('"').append(s.getKey()).append("\":").append(s.getValue());
+      first = false;
+    }
+    sb.append('}');
   }
 
   private static Object field(Class<?> c, Object o, String name) {
@@ -250,6 +323,9 @@ final class ScenarioEntities {
 
   /** The end of a client tick: {@code client_tick_end} of every client. */
   void clientEnd() {
+    if (!clientTickEnd) {
+      return;
+    }
     for (ServerPlayer p : clients) {
       handle(p, net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
     }
@@ -262,8 +338,8 @@ final class ScenarioEntities {
    */
   void packet(JsonObject action) {
     ServerPlayer p = (ServerPlayer) byName.get(action.get("entity").getAsString());
-    if (p == null || !clients.contains(p)) {
-      throw new IllegalArgumentException("packets need a client player: " + action);
+    if (p == null) {
+      throw new IllegalArgumentException("packets need a player: " + action);
     }
     if (packetIds == null) {
       packetIds = new java.util.HashMap<>();
@@ -281,16 +357,40 @@ final class ScenarioEntities {
     io.netty.buffer.ByteBuf buf = io.netty.buffer.Unpooled.buffer();
     net.minecraft.network.VarInt.write(buf, id);
     if (action.has("target")) {
-      Entity target = byName.get(action.get("target").getAsString());
-      if (target == null) {
-        throw new IllegalArgumentException("no scenario entity " + action.get("target"));
+      // A scenario entity, `uuid:<hex>` (an entity of a snapshot world) or `none`; an entity
+      // that does not exist is the id -1.
+      String t = action.get("target").getAsString();
+      int targetId = -1;
+      UUID targetUuid = new UUID(0, 0);
+      if (t.startsWith("uuid:")) {
+        String digits = t.substring(5);
+        targetUuid =
+            new UUID(
+                Long.parseUnsignedLong(digits.substring(0, 16), 16),
+                Long.parseUnsignedLong(digits.substring(16), 16));
+        Entity target = level.getEntity(targetUuid);
+        if (target != null) {
+          targetId = target.getId();
+        }
+      } else if (!t.equals("none")) {
+        Entity target = byName.get(t);
+        if (target == null) {
+          throw new IllegalArgumentException("no scenario entity " + t);
+        }
+        targetId = target.getId();
+        targetUuid = target.getUUID();
       }
-      int skip = 0;
-      while ((body[skip] & 0x80) != 0) {
-        skip++;
+      if (name.equals("spectator_action")) {
+        buf.writeLong(targetUuid.getMostSignificantBits());
+        buf.writeLong(targetUuid.getLeastSignificantBits());
+      } else {
+        int skip = 0;
+        while ((body[skip] & 0x80) != 0) {
+          skip++;
+        }
+        net.minecraft.network.VarInt.write(buf, targetId);
+        buf.writeBytes(body, skip + 1, body.length - skip - 1);
       }
-      net.minecraft.network.VarInt.write(buf, target.getId());
-      buf.writeBytes(body, skip + 1, body.length - skip - 1);
     } else {
       buf.writeBytes(body);
     }
@@ -674,6 +774,9 @@ final class ScenarioEntities {
             .append(']');
       }
       sb.append(",\"timer\":").append(sp.getSleepTimer()).append('}');
+    }
+    if (progressState && e instanceof ServerPlayer sp) {
+      progress(sp, sb);
     }
     if (e instanceof AbstractMinecart cart) {
       sb.append(",\"rot\":[")

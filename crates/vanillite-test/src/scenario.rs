@@ -126,7 +126,12 @@
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
 //!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
-//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`). `"progress_state": true`
+//!   (with `dimensions`: only the server evaluates advancements) adds the players' completed
+//!   advancement criteria (`adv`: sorted `advancement#criterion`) and their non-zero statistics
+//!   (`stats`: `minecraft.used:minecraft.crossbow` and so on) without the time statistics
+//!   (`play_time`, `total_world_time`, `time_since_death`, `time_since_rest`, `crouch_time`) and
+//!   the distances (`*_one_cm`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` (SNBT
@@ -165,6 +170,21 @@
 //!   `attack`, `interact`, `player_command`, `pick_item_from_entity`) is replaced by the
 //!   network id of the scenario entity `target` when the packet is sent. `what` is a readable
 //!   form for people; nobody reads it.
+//!
+//! Session replays (`cargo xtask parity replay`, #152) run on a copy of a recorded world:
+//!
+//! - `world.snapshot`: a folder with the `region/` and `poi/` files (Anvil) of an overworld
+//!   instead of flat layers. Its chunks load from there; missing chunks are generated from the
+//!   seed by the normal overworld generator without structures on both sides. The snapshot's
+//!   entities are not loaded, and entities that chunk generation spawns are removed before
+//!   frame 0: their randoms and network ids cannot match between the two servers.
+//! - Players: `"game_mode"` (`survival` default, `creative`, `adventure`, `spectator`), and
+//!   `"join": tick` to join before the actions of that tick instead of at the start.
+//! - `"client_tick_end": false`: the harness sends no `client_tick_end` after each tick; the
+//!   recorded ones are among the `packet` actions, where the client sent them.
+//! - `target` of a `packet` action may also be `uuid:<32 hex digits>` (an entity of the
+//!   snapshot) or `none`; a target that does not exist is the id -1 (an unknown entity). For
+//!   `spectator_action` the target's UUID replaces the body.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -190,6 +210,8 @@ pub enum Tier {
 #[derive(Clone, Debug)]
 pub struct WorldSpec {
     pub seed: i64,
+    /// A recorded world (`world.snapshot`) instead of the flat layers.
+    pub snapshot: Option<std::path::PathBuf>,
     pub biome: String,
     /// Layers bottom up: block name and thickness.
     pub layers: Vec<(String, u32)>,
@@ -216,6 +238,9 @@ pub struct WorldSpec {
     pub level_rng: bool,
     /// Whether frames hold the players' food and hands.
     pub player_state: bool,
+    /// Whether the harness sends `client_tick_end` for every client after each tick's packets
+    /// (`"client_tick_end"`, default `true`).
+    pub client_tick_end: bool,
     /// Runs with all three dimensions in Vanilla's order (`"dimensions": true`).
     pub dimensions: bool,
     /// The dimension of the region.
@@ -226,6 +251,8 @@ pub struct WorldSpec {
     pub sleep_state: bool,
     /// The data pack in the world from the start (`datapacks/<name>/` of this crate).
     pub datapack: Option<String>,
+    /// Whether frames hold the players' completed advancement criteria and statistics.
+    pub progress_state: bool,
 }
 
 /// The overworld's dimension id.
@@ -295,11 +322,15 @@ pub struct PacketOp {
 }
 
 impl PacketOp {
-    /// The body with the network id of the target (if any) in place of its leading VarInt.
-    pub fn body(&self, target_id: Option<i32>) -> Result<Vec<u8>, String> {
-        let Some(id) = target_id else {
+    /// The body with the network id of the target (if any) in place of its leading VarInt
+    /// (`spectator_action`: the target's UUID as the body).
+    pub fn body(&self, target: Option<(i32, u128)>) -> Result<Vec<u8>, String> {
+        let Some((id, uuid)) = target else {
             return Ok(self.data.clone());
         };
+        if self.packet == "spectator_action" {
+            return Ok(uuid.to_be_bytes().to_vec());
+        }
         let skip = self
             .data
             .iter()
@@ -447,6 +478,10 @@ pub struct EntitySpec {
     pub inventory: Vec<(usize, String, i32)>,
     /// The player's food level at the start (`"food"`).
     pub food: Option<i32>,
+    /// The player's game mode (`"game_mode"`, default survival).
+    pub game_mode: Option<String>,
+    /// The tick before whose actions the player joins (`"join"`); `None` = at the start.
+    pub join: Option<u32>,
 }
 
 impl EntitySpec {
@@ -665,6 +700,13 @@ impl Scenario {
                     .to_owned(),
             );
         }
+        let progress_state = v
+            .get("progress_state")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if progress_state && !dimensions {
+            return Err("\"progress_state\" needs \"dimensions\"".to_owned());
+        }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -685,6 +727,10 @@ impl Scenario {
                     .and_then(|w| w.get("seed"))
                     .and_then(Value::as_i64)
                     .unwrap_or(0),
+                snapshot: world
+                    .and_then(|w| w.get("snapshot"))
+                    .and_then(Value::as_str)
+                    .map(std::path::PathBuf::from),
                 biome: world
                     .and_then(|w| w.get("biome"))
                     .and_then(Value::as_str)
@@ -714,6 +760,10 @@ impl Scenario {
                     .unwrap_or("clear")
                     .to_owned(),
                 level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
+                client_tick_end: v
+                    .get("client_tick_end")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
                 player_state: v
                     .get("player_state")
                     .and_then(Value::as_bool)
@@ -726,6 +776,7 @@ impl Scenario {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 datapack,
+                progress_state,
             },
             min,
             max,
@@ -861,6 +912,12 @@ fn entity(v: &Value) -> Result<EntitySpec, String> {
             .get("food")
             .and_then(Value::as_i64)
             .and_then(|f| i32::try_from(f).ok()),
+        game_mode: s("game_mode"),
+        join: match v.get("join").and_then(Value::as_u64) {
+            Some(t) if t >= 1 && kind == "minecraft:player" => u32::try_from(t).ok(),
+            Some(_) => return Err("join needs a player and a tick >= 1".to_owned()),
+            None => None,
+        },
         kind,
     })
 }

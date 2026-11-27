@@ -59,6 +59,11 @@ pub fn stream(
         return Ok(trace);
     }
     for tick in 1..=scenario.ticks {
+        for (i, spec) in scenario.entities.iter().enumerate() {
+            if spec.join == Some(tick) {
+                world.join(spec, i)?;
+            }
+        }
         world.client_begin()?;
         let mut acted = false;
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {

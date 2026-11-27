@@ -5,7 +5,7 @@ use vanillite_base::math::{ceil_f, floor, lerp, sin};
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_chunk::HeightmapKind;
-use vanillite_data::block::BlockState;
+use vanillite_data::block::{BLOCK_COUNT, BlockId, BlockState};
 
 use super::rule_test::BlockReplacement;
 use crate::Error;
@@ -20,6 +20,9 @@ struct OreConfig {
     targets: Vec<BlockReplacement>,
     size: i32,
     discard_chance_on_air_exposure: f32,
+    /// Per block id, when the block alone decides the test of every target (at most eight):
+    /// bit `i` is set where the test of `targets[i]` passes.
+    by_block: Option<Box<[u8]>>,
 }
 
 impl OreConfig {
@@ -35,11 +38,56 @@ impl OreConfig {
                 "discard_chance_on_air_exposure {discard} outside of [0, 1]"
             )));
         }
+        let targets = BlockReplacement::parse_list(json, parser)?;
+        let by_block = (targets.len() <= 8)
+            .then(|| {
+                (0..BLOCK_COUNT)
+                    .map(|block| {
+                        let block = BlockId(block as u16);
+                        targets.iter().enumerate().try_fold(0, |mask, (i, target)| {
+                            Some(mask | (u8::from(target.target.test_block(block)?) << i))
+                        })
+                    })
+                    .collect()
+            })
+            .flatten();
         Ok(Self {
-            targets: BlockReplacement::parse_list(json, parser)?,
+            targets,
             size,
             discard_chance_on_air_exposure: discard,
+            by_block,
         })
+    }
+
+    /// The first target that takes `state` at `pos`: `canPlaceOre` of the targets in order.
+    fn target_for<R: RandomSource>(
+        &self,
+        state: BlockState,
+        block_getter: impl Fn(BlockPos) -> BlockState + Copy,
+        random: &mut R,
+        pos: BlockPos,
+    ) -> Option<&BlockReplacement> {
+        let Some(by_block) = &self.by_block else {
+            return self
+                .targets
+                .iter()
+                .find(|target| self.can_place_ore(state, block_getter, random, target, pos));
+        };
+        let mut passing = by_block
+            .get(usize::from(state.block().0))
+            .copied()
+            .unwrap_or(0);
+        while passing != 0 {
+            let target = passing.trailing_zeros() as usize;
+            passing &= passing - 1;
+            // `canPlaceOre` after its test.
+            if should_skip_air_check(random, self.discard_chance_on_air_exposure)
+                || !is_adjacent_to_air(block_getter, pos)
+            {
+                return Some(&self.targets[target]);
+            }
+        }
+        None
     }
 
     /// `canPlaceOre(state, blockGetter, random, targetState, orePos)`.
@@ -183,6 +231,9 @@ impl OreFeature {
             }
         }
 
+        let FeatureContext { level, random, .. } = ctx;
+        // The chunk of the last block as `(x, z, slot if writable)`: a blob touches few chunks.
+        let mut chunk = (i32::MIN, i32::MIN, None);
         for &[xx, yy, zz, r] in &data[..size] {
             if r < 0.0 {
                 continue;
@@ -193,19 +244,21 @@ impl OreFeature {
             let x_max = floor(xx + r).max(x_min);
             let y_max = floor(yy + r).max(y_min);
             let z_max = floor(zz + r).max(z_min);
-            for x in x_min..=x_max {
+            for x in (0..x_max - x_min + 1).map(|offset| x_min + offset) {
                 let xd = (f64::from(x) + 0.5 - xx) / r;
-                if xd * xd >= 1.0 {
+                let xd_sqr = xd * xd;
+                if xd_sqr >= 1.0 {
                     continue;
                 }
-                for y in y_min..=y_max {
+                for y in (0..y_max - y_min + 1).map(|offset| y_min + offset) {
                     let yd = (f64::from(y) + 0.5 - yy) / r;
-                    if xd * xd + yd * yd >= 1.0 || ctx.level.is_outside_build_height(y) {
+                    let xyd_sqr = xd_sqr + yd * yd;
+                    if xyd_sqr >= 1.0 || level.is_outside_build_height(y) {
                         continue;
                     }
-                    for z in z_min..=z_max {
+                    for z in (0..z_max - z_min + 1).map(|offset| z_min + offset) {
                         let zd = (f64::from(z) + 0.5 - zz) / r;
-                        if xd * xd + yd * yd + zd * zd >= 1.0 {
+                        if xyd_sqr + zd * zd >= 1.0 {
                             continue;
                         }
                         let index = (x - start.x)
@@ -214,11 +267,25 @@ impl OreFeature {
                         if !tested.insert(index as usize) {
                             continue;
                         }
-                        let pos = BlockPos::new(x, y, z);
-                        if !ctx.level.ensure_can_write(pos) {
-                            continue;
+                        if (chunk.0, chunk.1) != (x >> 4, z >> 4) {
+                            // `ensureCanWrite(pos)`.
+                            chunk = (x >> 4, z >> 4, level.writable_chunk(x >> 4, z >> 4));
                         }
-                        if self.place_in_section(ctx, pos) {
+                        let Some(slot) = chunk.2 else {
+                            continue;
+                        };
+                        // The targets against the section's block; the first matching
+                        // replacement goes straight into the section.
+                        let pos = BlockPos::new(x, y, z);
+                        let state = level.chunk_at(slot).block(x, y, z);
+                        let shared = &**level;
+                        // `BulkSectionAccess.getBlockState`: air outside the build height.
+                        let block_getter = |p: BlockPos| shared.chunk(p).block(p.x, p.y, p.z);
+                        let target = self.config.target_for(state, block_getter, *random, pos);
+                        if let Some(replacement) = target.map(|target| target.state) {
+                            level
+                                .chunk_at_mut(slot)
+                                .set_block_in_section(x, y, z, replacement);
                             placed += 1;
                         }
                     }
@@ -226,26 +293,6 @@ impl OreFeature {
             }
         }
         placed > 0
-    }
-
-    /// The body of the innermost loop: tests the targets against the section's block and writes
-    /// the first matching replacement into the section.
-    fn place_in_section(&self, ctx: &mut FeatureContext<'_, '_>, pos: BlockPos) -> bool {
-        let level = &*ctx.level;
-        let state = level.chunk(pos).block(pos.x, pos.y, pos.z);
-        // `BulkSectionAccess.getBlockState`: air outside the build height.
-        let block_getter = |p: BlockPos| level.chunk(p).block(p.x, p.y, p.z);
-        let Some(target) = self.config.targets.iter().find(|target| {
-            self.config
-                .can_place_ore(state, block_getter, ctx.random, target, pos)
-        }) else {
-            return false;
-        };
-        let replacement = target.state;
-        ctx.level
-            .chunk_mut(pos)
-            .set_block_in_section(pos.x, pos.y, pos.z, replacement);
-        true
     }
 }
 
@@ -258,6 +305,7 @@ impl BitSet {
     }
 
     /// Sets a bit; whether it was clear before.
+    #[inline]
     fn insert(&mut self, index: usize) -> bool {
         let word = index / 64;
         if word >= self.0.len() {
@@ -293,12 +341,10 @@ impl FeatureType for ScatteredOreFeature {
             let pos = origin.offset(xd, yd, zd);
             let state = ctx.level.block(pos);
             let level = &*ctx.level;
-            let target = self.config.targets.iter().find(|target| {
-                self.config
-                    .can_place_ore(state, |p| level.block(p), ctx.random, target, pos)
-            });
-            if let Some(target) = target {
-                let replacement = target.state;
+            let target = self
+                .config
+                .target_for(state, |p| level.block(p), ctx.random, pos);
+            if let Some(replacement) = target.map(|target| target.state) {
                 ctx.level.set_block(pos, replacement, flags::CLIENTS);
             }
         }

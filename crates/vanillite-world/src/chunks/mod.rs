@@ -310,6 +310,9 @@ struct Holder {
     /// Inhabited ticks (`incrementInhabitedTime`) not yet folded into the shared chunk: they
     /// are written into it when the chunk is saved, so counting never copies a chunk.
     inhabited: i64,
+    /// Mirrors `Chunks::visibility` containing this position (the chunk is accessible), so
+    /// [`Chunks::accessible_block`] needs one map lookup.
+    accessible: bool,
 }
 
 impl Holder {
@@ -941,7 +944,11 @@ impl Chunks {
             if ticket > MAX_TICKET_LEVEL && !self.holders.contains_key(&pos) {
                 return;
             }
-            let holder = self.holders.entry(pos).or_default();
+            let visibility = &self.visibility;
+            let holder = self.holders.entry(pos).or_insert_with(|| Holder {
+                accessible: visibility.contains_key(&pos),
+                ..Holder::default()
+            });
             if holder.queued {
                 self.check.remove(&(holder.level, holder.rank, pos));
                 self.check.insert((new, holder.rank, pos));
@@ -1269,6 +1276,9 @@ impl Chunks {
                 self.visibility.insert(pos, new)
             }
             .unwrap_or(Visibility::Hidden);
+            if let Some(holder) = self.holders.get_mut(&pos) {
+                holder.accessible = new != Visibility::Hidden;
+            }
             if old != new {
                 self.visibility_changes
                     .push(VisibilityChange { pos, old, new });
@@ -1824,6 +1834,7 @@ impl Chunks {
             pos,
             Holder {
                 level,
+                accessible: self.visibility.contains_key(&pos),
                 ..Holder::default()
             },
         );
@@ -2514,6 +2525,27 @@ impl Chunks {
     pub fn block(&self, pos: BlockPos) -> Option<BlockStateId> {
         let chunk_pos = pos.chunk();
         let holder = self.holders.get(&chunk_pos)?;
+        let chunk = holder
+            .chunk
+            .as_ref()
+            .filter(|c| c.status == ChunkStatus::Full)?;
+        if holder.level <= FULL_LEVEL {
+            self.note_read(chunk_pos, true);
+        }
+        chunk
+            .chunk
+            .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+    }
+
+    /// [`Chunks::block`] of an accessible chunk ([`Chunks::is_accessible`]) with one map
+    /// lookup; `None` if the chunk is not accessible or `pos` is outside the build height.
+    #[inline]
+    pub fn accessible_block(&self, pos: BlockPos) -> Option<BlockStateId> {
+        let chunk_pos = pos.chunk();
+        let holder = self.holders.get(&chunk_pos)?;
+        if !holder.accessible {
+            return None;
+        }
         let chunk = holder
             .chunk
             .as_ref()

@@ -1015,6 +1015,17 @@ impl Level {
         }
     }
 
+    /// [`Level::block`] if the position is loaded ([`Level::is_loaded`]), with one chunk
+    /// lookup inside the build height.
+    #[inline]
+    pub fn loaded_block(&self, pos: BlockPos) -> Option<BlockState> {
+        if self.in_height(pos.y) {
+            self.chunks.accessible_block(pos).map(BlockState)
+        } else {
+            self.is_loaded(pos).then_some(block::VOID_AIR)
+        }
+    }
+
     /// The pure read view ([`view`]): reads without side effects for collision, path finding
     /// and code on other threads.
     #[inline]
@@ -1350,7 +1361,12 @@ impl Level {
             block::drops::drop_resources(self, pos, state, breaker);
         }
         let fluid = self.fluid(pos);
-        self.set_block_depth(pos, fluid.block_state(), update::ALL, limit)
+        let destroyed = self.set_block_depth(pos, fluid.block_state(), update::ALL, limit);
+        if destroyed {
+            let context = game_event::GameEventContext::with_state(breaker, state);
+            self.game_event_block(game_event::events().block_destroy, pos, context);
+        }
+        destroyed
     }
 
     /// `sendBlockUpdated`: the position goes to the clients that see its chunk.

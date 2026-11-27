@@ -242,6 +242,19 @@ rules! {
             /// single tester sees other players. Virtual connections need no authentication,
             /// so keep this at 0 outside test servers.
             test_bots: u8 = "test-bots", Setting, range = [0, 16], restart = true, vanilla = 0;
+            /// Records the players' sessions in the overworld for `cargo xtask parity replay`,
+            /// which plays them again in Vanilla and Vanillite and compares both tick by tick.
+            /// When the first player joins, the world is saved and the overworld's chunks are
+            /// copied (the overworld tick waits for the copy); then every tick the players'
+            /// serverbound play packets are written, until the last player has left. Chat,
+            /// commands, signs, books and plugin messages are left out, and players get
+            /// anonymous ids instead of their names, addresses and UUIDs. For test servers.
+            session_recording: bool = "session-recording", Setting, restart = true,
+                vanilla = false;
+            /// Folder of the session recordings, relative to the server folder: one folder per
+            /// session (`<start time>/` with `world/`, `meta.json`, `packets.jsonl`).
+            session_recording_dir: String = "session-recording-dir", Setting, restart = true,
+                vanilla = "recordings".to_owned();
         }
         /// Player info forwarding from a proxy in front of the server (Velocity "modern"
         /// forwarding, also used by `vanillite-proxy`).
@@ -580,6 +593,20 @@ rules! {
             /// hopper timing run differently.
             check_cooldown: u8 = "check-cooldown", Performance, range = [1, 64],
                 vanilla = 1, performance = 4;
+        }
+        /// Server-side checks of block breaking.
+        digging: DiggingRules = "anticheat.digging" {
+            /// Validates "stop digging" against the server's own break progress: the time since
+            /// the player started digging, the tool, Haste and Mining Fatigue, being in water and
+            /// on the ground. Vanilla breaks a block whose progress falls short on the next tick
+            /// once the player has been online for a while (it takes the start tick as the time
+            /// spent), so a client that starts and at once stops digging breaks any block. On, a
+            /// stop with too little progress waits for the progress to complete like a legit
+            /// dig with latency and is rejected (the block is sent again, nothing drops) when it
+            /// does not complete within the dig time seen so far plus one second. Instant
+            /// mining, creative and normal digging with lag are not affected.
+            fast_break_check: bool = "fast-break-check", Fix, vanilla = false, paper = true,
+                spigot = true, performance = true;
         }
         /// Anti-Xray: ores and other hidden blocks that touch no transparent block are kept from
         /// clients, so x-ray clients and texture packs cannot find them. Chunk packets stay
