@@ -884,8 +884,7 @@ impl WorldAccess for PluginWorld<'_> {
 
     fn block(&self, [x, y, z]: [i32; 3]) -> Option<String> {
         let pos = BlockPos::new(x, y, z);
-        let level = self.0.level();
-        level.is_loaded(pos).then(|| state_text(level.block(pos)))
+        self.0.level().loaded_block(pos).map(state_text)
     }
 
     fn set_block(&mut self, [x, y, z]: [i32; 3], state: &str) -> Result<(), i32> {
@@ -930,8 +929,10 @@ impl WorldAccess for PluginWorld<'_> {
 
     fn block_id(&self, [x, y, z]: [i32; 3]) -> Option<u32> {
         let pos = BlockPos::new(x, y, z);
-        let level = self.0.level();
-        level.is_loaded(pos).then(|| u32::from(level.block(pos).0))
+        self.0
+            .level()
+            .loaded_block(pos)
+            .map(|state| u32::from(state.0))
     }
 
     fn set_block_id(
@@ -1012,6 +1013,16 @@ impl WorldAccess for PluginWorld<'_> {
 
     fn entities_near(&self, center: [f64; 3], radius: f64, kind: Option<&str>) -> Vec<u128> {
         world_api::entities_near(self, center, radius, kind)
+    }
+
+    fn entities_in_box(
+        &self,
+        min: [f64; 3],
+        max: [f64; 3],
+        kind: Option<&str>,
+        found: &mut dyn FnMut(vanillite_plugin_host::EntityInfo),
+    ) {
+        world_api::entities_in_box(self, min, max, kind, found);
     }
 
     fn entity_nbt(&self, entity: u128) -> Result<vanillite_nbt::Compound, i32> {
@@ -1237,9 +1248,7 @@ fn any_entity(
     entities: &vanillite_game::entities::Entities,
     uuid: u128,
 ) -> Option<vanillite_world::entity::EntityId> {
-    entities
-        .player_by_uuid(uuid)
-        .or_else(|| crate::commands::find_uuid(entities, uuid))
+    entities.store.by_uuid(uuid)
 }
 
 /// A block state id from a plugin, if it is one.
