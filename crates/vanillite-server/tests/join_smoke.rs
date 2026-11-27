@@ -180,7 +180,17 @@ fn connect(opener: &VirtualOpener, name: &str) -> Player {
 /// Configuration and the join sequence; returns the teleport position.
 fn join(player: &mut Player) -> (f64, f64, f64) {
     player.client.configure().unwrap();
+    // Like Vanilla, no keepalive right after a protocol switch: the client answers it before
+    // its outbound protocol is switched and disconnects (#135).
+    assert!(
+        !player.client.received.contains(&"keep_alive"),
+        "keepalive during configuration"
+    );
     player.until("login", |p| {
+        assert!(
+            !matches!(p, ClientboundPlay::KeepAlive(_)),
+            "keepalive before login"
+        );
         matches!(p, ClientboundPlay::Login(_)).then_some(())
     });
     let mut roots = Vec::new();

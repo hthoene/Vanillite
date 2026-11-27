@@ -15,6 +15,7 @@ mod outbound;
 mod player;
 pub mod query;
 pub mod rcon;
+mod sent_log;
 pub mod services;
 mod status;
 pub mod velocity;
@@ -108,6 +109,7 @@ impl VirtualOpener {
         let (to_server, server_rx) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
         let (client_tx, from_server) = mpsc::channel(self.shared.config.max_inbound_packets.max(1));
         let (out, out_rx, queued) = Outbound::new(self.shared.config.max_outbound_bytes);
+        let sent = out.sent_log();
         let conn = conn::Conn::virtual_(
             Arc::clone(&self.shared),
             address,
@@ -117,7 +119,7 @@ impl VirtualOpener {
             memory,
         );
         self.runtime
-            .spawn(outbound::virtual_writer(client_tx, out_rx, queued));
+            .spawn(outbound::virtual_writer(client_tx, out_rx, queued, sent));
         self.runtime.spawn(conn.run());
         VirtualConnection {
             to_server,
@@ -274,6 +276,7 @@ async fn accept_loop(listener: tokio::net::TcpListener, shared: Arc<Shared>) {
             out_rx,
             queued,
             shared.config.compression_level,
+            out.sent_log(),
         ));
         tokio::spawn(conn::Conn::tcp(Arc::clone(&shared), addr, read, out, guard).run());
     }
