@@ -6,7 +6,13 @@
 //! `vanillite-loadtest-monitor` on the test server) and the bots' join latency, round trip and
 //! traffic, and how fast chunks reach the bots and the disk is read. Every step can move the
 //! bots differently (random walk or straight flight, see `tools/loadbot`). Output: one JSON file per server, a Markdown table and an SVG chart. Results are
-//! kept on the test server; the regression gate compares with the median of the last 5 runs.
+//! kept on the test server; the regression gate compares with the median of the last 5 runs
+//! on the same hardware and limits.
+//!
+//! Every server under test runs under a fixed hardware profile (`vanillite-bench limit`: pinned
+//! CPUs, CPU quota and memory limit), and every result records the test server's hardware
+//! (`hardware`) and the host load during the run (`load`), so numbers stay comparable when the
+//! machine changes and runs on an overloaded host are marked unreliable.
 
 use std::io::{BufRead, BufReader, Write as _};
 use std::path::Path;
@@ -24,6 +30,11 @@ const DEFAULT_STEPS: &[u64] = &[50, 100, 250, 500, 1000, 2000, 5000];
 /// The gate fails when a step is this much worse than the median of the history.
 const GATE_TOLERANCE: f64 = 1.10;
 const GATE_HISTORY: usize = 5;
+/// The hardware profile of every benchmark instance unless a scenario asks for another one:
+/// 4 pinned CPUs with a quota of 400 % and 8 GiB memory, no swap (`vanillite-bench limit`).
+pub(crate) const LIMITS: &str = "4c8g";
+/// A run is unreliable when the host's load per CPU was above this during it.
+const OVERLOAD_PER_CPU: f64 = 1.0;
 
 /// A server (or proxy) under test on the test server; the references take turns on 30900.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,8 +91,13 @@ pub(crate) struct Options {
     pub(crate) chat_interval: f64,
     pub(crate) view_distance: u8,
     pub(crate) profile: &'static str,
+    /// Hardware profile of the server under test (`vanillite-bench limit`).
+    pub(crate) limits: String,
     pub(crate) deploy: bool,
     pub(crate) gate: bool,
+    /// Rules of `vanillite.toml` set for this run (`key=value`), as environment variables of
+    /// the Vanillite instance.
+    pub(crate) rules: Vec<(String, String)>,
 }
 
 fn parse(args: &[&str]) -> Result<Options> {
@@ -96,8 +112,10 @@ fn parse(args: &[&str]) -> Result<Options> {
         chat_interval: 0.0,
         view_distance: 10,
         profile: "release-fast",
+        limits: LIMITS.to_owned(),
         deploy: true,
         gate: true,
+        rules: Vec::new(),
     };
     let mut movement = "random";
     let mut step_movements = vec![None; o.steps.len()];
@@ -131,14 +149,30 @@ fn parse(args: &[&str]) -> Result<Options> {
             }
             "--movement" => movement = value()?,
             "--hold" => o.hold = Duration::from_secs_f64(num(value()?)?),
+            "--settle" => o.settle = Duration::from_secs_f64(num(value()?)?),
             "--join-rate" => o.join_rate = num(value()?)?,
             "--chat" => o.chat_interval = num(value()?)?,
             "--view-distance" => {
                 o.view_distance = value()?.parse().map_err(|e| format!("{arg}: {e}"))?;
             }
             "--release" => o.profile = "release",
+            "--limits" => o.limits = value()?.to_owned(),
             "--no-deploy" => o.deploy = false,
             "--no-gate" => o.gate = false,
+            "--rule" => {
+                let (key, rule) = value()?.split_once('=').ok_or(
+                    "--rule needs <key>=<value>, e.g. performance.tick.parallel-dimensions=true",
+                )?;
+                let plain = |s: &str| {
+                    !s.is_empty()
+                        && s.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+                };
+                if !plain(key) || !plain(rule) {
+                    return Err(format!("--rule: unsupported characters in {key}={rule}"));
+                }
+                o.rules.push((key.to_owned(), rule.to_owned()));
+            }
             _ => return Err(crate::USAGE.to_owned()),
         }
     }
@@ -166,7 +200,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         build.extend(["-p", "vanillite"]);
     }
     crate::devenv::run(Command::new(&cargo).current_dir(root).args(&build))?;
-    let bin_dir = root.join("target").join(o.profile);
+    let bin_dir = crate::target_dir(root).join(o.profile);
     let mut specs = o.movements.clone();
     specs.dedup();
     for spec in &specs {
@@ -182,6 +216,12 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
     let out_dir = root.join("target/loadtest").join(&stamp);
 
     let _lock = Lock::take(&host, &format!("xtask loadtest from {}", root.display()))?;
+    let hw = hardware(&host)?;
+    println!(
+        "   hardware: {}; limits {}",
+        hw["baseline"].as_str().unwrap_or("?"),
+        o.limits
+    );
     let mut runs = Vec::new();
     let mut failures = Vec::new();
     for &target in &o.targets {
@@ -190,7 +230,12 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             target.name(),
             target.port()
         );
-        let result = deploy_or_restart(target, &o, &host, &bin_dir)
+        let before = load_sample(&host);
+        let limits = bench_json(&host, &["limit", target.name(), &o.limits]);
+        let result = limits
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|_| deploy_or_restart(target, &o, &host, &bin_dir))
             .and_then(|()| Session::open(&host, target, &bin_dir, &o, &[]))
             .and_then(|mut session| {
                 let steps = ramp(&o, &mut session);
@@ -205,6 +250,12 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         if let Err(e) = ssh(&host, &stop) {
             eprintln!("warning: cannot stop {}: {e}", target.unit());
         }
+        if target == Target::Vanillite
+            && !o.rules.is_empty()
+            && let Err(e) = set_rules(&host, &[])
+        {
+            eprintln!("warning: cannot remove {RULES_DROPIN}: {e}");
+        }
         let steps = match result {
             Ok(steps) => steps,
             Err(e) => {
@@ -212,6 +263,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
                 continue;
             }
         };
+        let load = load_window(&before, &load_sample(&host), &hw);
         let mut run = json!({
             "server": target.name(),
             "commit": commit,
@@ -224,24 +276,43 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
                 "chat_interval_s": o.chat_interval,
                 "view_distance": o.view_distance,
             },
+            "hardware": hw,
+            "limits": limits.unwrap_or_default(),
+            "load": load,
             "max_players_under_50ms": max_players_under(&steps, 50.0),
             "steps": steps,
         });
+        if load["unreliable"] == true {
+            println!(
+                "   host overloaded during the run (load {} on {} CPUs): unreliable",
+                load["host_load"], hw["host_cpus"]
+            );
+        }
         // Runs that only walk randomly keep the settings of the runs before movement modes.
         if o.movements.iter().any(|m| m != "random") {
             run["settings"]["movement"] = json!(o.movements);
+        }
+        // Runs with rules set are experiments: they neither gate nor become a baseline.
+        let with_rules = target == Target::Vanillite && !o.rules.is_empty();
+        if with_rules {
+            run["settings"]["rules"] = json!(
+                o.rules
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>()
+            );
         }
         let file = out_dir.join(format!("{}.json", target.name()));
         let text = serde_json::to_string_pretty(&run).map_err(|e| e.to_string())?;
         crate::write(&file, &text)?;
         println!("wrote {}", file.display());
-        if o.gate {
+        if o.gate && !with_rules {
             match gate(&host, &run) {
                 Ok(problems) => failures.extend(problems),
                 Err(e) => eprintln!("warning: regression gate skipped: {e}"),
             }
         }
-        if !dirty {
+        if !dirty && !with_rules {
             store(
                 &host,
                 &run,
@@ -316,7 +387,29 @@ impl Collected {
     }
 }
 
+/// The systemd drop-in with the rules of this run (`--rule`), gone again after the run.
+const RULES_DROPIN: &str = "/run/systemd/system/vanillite@30901.service.d/loadtest-rules.conf";
+
+/// Writes the run's rules as `VANILLITE_<KEY>` variables of the Vanillite instance (dots
+/// become `__`, dashes `_`), or removes the drop-in of an earlier run.
+fn set_rules(host: &str, rules: &[(String, String)]) -> Result<()> {
+    let mut script = format!("rm -f {RULES_DROPIN}");
+    if !rules.is_empty() {
+        let dir = RULES_DROPIN.rsplit_once('/').map_or("", |d| d.0);
+        script = format!("install -d {dir} && printf '[Service]\\n");
+        for (key, value) in rules {
+            let name = key.to_uppercase().replace('.', "__").replace('-', "_");
+            script.push_str(&format!("Environment=VANILLITE_{name}={value}\\n"));
+        }
+        script.push_str(&format!("' > {RULES_DROPIN}"));
+    }
+    ssh(host, &format!("{script} && systemctl daemon-reload"))
+}
+
 fn deploy_or_restart(target: Target, o: &Options, host: &str, bin_dir: &Path) -> Result<()> {
+    if target == Target::Vanillite {
+        set_rules(host, &o.rules)?;
+    }
     match target {
         Target::Vanillite if o.deploy => {
             let binary = bin_dir.join("vanillite");
@@ -340,11 +433,14 @@ pub(crate) struct Lock(Child);
 impl Lock {
     /// Waits for the lock; `owner` is shown to runs that wait for it.
     pub(crate) fn take(host: &str, owner: &str) -> Result<Self> {
+        Self::take_with(host, "vanillite-bench lock", owner)
+    }
+
+    /// Waits for a lock of the same protocol taken by the remote command `lock` (for example
+    /// `vanillite-lock` on vanillite-test2).
+    pub(crate) fn take_with(host: &str, lock: &str, owner: &str) -> Result<Self> {
         let mut child = Command::new("ssh")
-            .args([
-                host,
-                &format!("vanillite-bench lock '{}'", owner.replace('\'', "")),
-            ])
+            .args([host, &format!("{lock} '{}'", owner.replace('\'', ""))])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -352,14 +448,14 @@ impl Lock {
         let out = child.stdout.take().ok_or("no ssh output")?;
         for line in BufReader::new(out).lines().map_while(std::io::Result::ok) {
             if let Some(holder) = line.strip_prefix("busy") {
-                println!("waiting for the benchmark lock on the test server (held by{holder})");
+                println!("waiting for the lock on {host} (held by{holder})");
             } else if line == "locked" {
                 return Ok(Self(child));
             }
         }
         let _ = child.kill();
         let _ = child.wait();
-        Err("cannot take the benchmark lock on the test server".into())
+        Err(format!("cannot take the lock on {host}"))
     }
 }
 
@@ -822,8 +918,18 @@ fn gate(host: &str, run: &Value) -> Result<Vec<String>> {
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|h| h["settings"] == run["settings"])
+        // Only runs on the same hardware with the same limits, measured on a quiet host.
+        .filter(|h| {
+            h["hardware"]["baseline"] == run["hardware"]["baseline"]
+                && h["limits"]["profile"] == run["limits"]["profile"]
+                && h["load"]["unreliable"] != true
+        })
         .collect();
     let history = &history[history.len().saturating_sub(GATE_HISTORY)..];
+    if run["load"]["unreliable"] == true {
+        println!("   regression gate: skipped, the host was overloaded during the run");
+        return Ok(Vec::new());
+    }
     if history.is_empty() {
         println!("   regression gate: no earlier {server} runs with these settings");
         return Ok(Vec::new());
@@ -900,7 +1006,7 @@ fn markdown(runs: &[Value]) -> String {
     let first = &runs[0];
     s.push_str(&format!(
         "# Load test {}\n\nCommit `{}`{}; hold {} s per step, {} joins/s, view distance {}, chat {}.\n\
-         Server: test server (4 cores, 10 GiB), alone; bots: development container.\n",
+         Server: test server ({}), alone, limits {}; bots: development container.\n",
         first["date"].as_str().unwrap_or("?"),
         first["commit"].as_str().unwrap_or("?"),
         if first["dirty"].as_bool() == Some(true) { " (with local changes)" } else { "" },
@@ -911,6 +1017,8 @@ fn markdown(runs: &[Value]) -> String {
             Some(c) if c > 0.0 => format!("every {c} s per bot"),
             _ => "off".to_owned(),
         },
+        first["hardware"]["baseline"].as_str().unwrap_or("hardware not recorded"),
+        first["limits"]["profile"].as_str().unwrap_or("not recorded"),
     ));
     for run in runs {
         s.push_str(&format!(
@@ -923,6 +1031,12 @@ fn markdown(runs: &[Value]) -> String {
             run["steps"][0]["mspt"]["source"].as_str().unwrap_or("-"),
             run["max_players_under_50ms"],
         ));
+        if run["load"]["unreliable"] == true {
+            s.push_str(&format!(
+                "**Unreliable:** the host was overloaded during this run (load {} per CPU).\n\n",
+                run["load"]["host_load_per_cpu"]
+            ));
+        }
         for st in run["steps"].as_array().into_iter().flatten() {
             s.push_str(&format!(
                 "| {} / {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} / {} | {} / {} | {} | {} / {} |\n",
@@ -1166,6 +1280,89 @@ fn finish(child: &mut Child, grace: Duration) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// `vanillite-bench <args>` on the test server; its output.
+pub(crate) fn bench_cmd(host: &str, args: &[&str]) -> Result<String> {
+    let quoted: Vec<String> = args.iter().map(|a| sh_quote(a)).collect();
+    command_output(
+        Command::new("ssh").args([host, &format!("vanillite-bench {}", quoted.join(" "))]),
+    )
+}
+
+/// `vanillite-bench <args>` on the test server; the last line of its output as JSON.
+pub(crate) fn bench_json(host: &str, args: &[&str]) -> Result<Value> {
+    let out = bench_cmd(host, args)?;
+    let line = out.lines().last().unwrap_or_default();
+    serde_json::from_str(line)
+        .map_err(|e| format!("vanillite-bench {}: {e}: {out}", args.join(" ")))
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The test server's hardware (`vanillite-bench hw`), the machine the bots run on, and the
+/// `baseline`: what must stay the same for results to be compared.
+pub(crate) fn hardware(host: &str) -> Result<Value> {
+    let mut hw = bench_json(host, &["hw"])?;
+    let gib = |v: &Value| (v.as_f64().unwrap_or(0.0) / 1024.0).round();
+    hw["baseline"] = json!(format!(
+        "{}, {} CPUs and {} GiB RAM (host: {} CPUs, {} GiB)",
+        hw["cpu_model"].as_str().unwrap_or("?"),
+        hw["cpus"],
+        gib(&hw["mem_mib"]),
+        hw["host_cpus"],
+        gib(&hw["host_mem_mib"]),
+    ));
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    hw["bots"] = json!({
+        "cpu_model": cpuinfo
+            .lines()
+            .find_map(|l| l.strip_prefix("model name").and_then(|r| r.split_once(':')))
+            .map(|(_, m)| m.trim()),
+        "cpus": std::thread::available_parallelism().map(usize::from).ok(),
+        "cpu_list": std::fs::read_to_string("/sys/fs/cgroup/cpuset.cpus.effective")
+            .ok()
+            .map(|c| c.trim().to_owned()),
+    });
+    Ok(hw)
+}
+
+/// Host load averages and the test server's CPU pressure counter now (`Null` when unknown).
+pub(crate) fn load_sample(host: &str) -> Value {
+    bench_json(host, &["load"]).unwrap_or(Value::Null)
+}
+
+/// The load between two samples: the host's load (mean of the 1-minute averages at both ends
+/// and the 5-minute one at the end), the share of time the test server's tasks waited for a
+/// CPU, and whether the host was overloaded (load per host CPU above 1).
+pub(crate) fn load_window(before: &Value, after: &Value, hw: &Value) -> Value {
+    let (Some(t0), Some(t1)) = (before["t"].as_f64(), after["t"].as_f64()) else {
+        return Value::Null;
+    };
+    let loads: Vec<f64> = [&before["load1"], &after["load1"], &after["load5"]]
+        .iter()
+        .filter_map(|v| v.as_f64())
+        .collect();
+    let host_load = mean(&loads);
+    let pressure = match (
+        before["cpu_pressure_some_us"].as_f64(),
+        after["cpu_pressure_some_us"].as_f64(),
+    ) {
+        (Some(a), Some(b)) if t1 > t0 => Some((b - a) / ((t1 - t0) * 1e6) * 100.0),
+        _ => None,
+    };
+    let per_cpu = host_load
+        .zip(hw["host_cpus"].as_f64().filter(|n| *n > 0.0))
+        .map(|(l, n)| l / n);
+    json!({
+        "seconds": round(Some(t1 - t0)),
+        "host_load": round(host_load),
+        "host_load_per_cpu": round(per_cpu),
+        "cpu_pressure_percent": round(pressure),
+        "unreliable": per_cpu.is_some_and(|l| l > OVERLOAD_PER_CPU),
+    })
 }
 
 pub(crate) fn ssh(host: &str, command: &str) -> Result<()> {

@@ -19,6 +19,7 @@ use crate::structure::{
     GenerationContext, GenerationStub, PieceBase, PieceSettings, StructureParser, StructurePiece,
     StructureType, TemplatePiece,
 };
+use crate::template::TemplateRef;
 use crate::template::structure::RANDOMIZABLE_CONTAINERS;
 use crate::template::{BoundingBox, Rotation, StructureProcessor, StructureTemplate};
 
@@ -71,20 +72,15 @@ const FAT_TOWER_BRIDGES: [(Rotation, BlockPos); 4] = [
 #[derive(Debug)]
 pub struct EndCityStructure {
     /// The templates by name (without the `end_city/` prefix).
-    templates: FxHashMap<&'static str, Arc<StructureTemplate>>,
+    templates: FxHashMap<&'static str, TemplateRef>,
 }
 
 impl StructureType for EndCityStructure {
     fn parse(_json: &Value, parser: &mut StructureParser<'_>) -> Result<Self, Error> {
         let templates = TEMPLATES
             .iter()
-            .map(|&name| {
-                Ok((
-                    name,
-                    parser.template(&format!("minecraft:end_city/{name}"))?,
-                ))
-            })
-            .collect::<Result<_, Error>>()?;
+            .map(|&name| (name, parser.template(&format!("minecraft:end_city/{name}"))))
+            .collect();
         Ok(Self { templates })
     }
 
@@ -131,7 +127,7 @@ enum Section {
 /// The state of one city's generation: the templates, the structure random and the static
 /// `shipCreated` flag of `TOWER_BRIDGE_GENERATOR` (reset by `init()` for every city).
 struct CityGenerator<'a, R> {
-    templates: &'a FxHashMap<&'static str, Arc<StructureTemplate>>,
+    templates: &'a FxHashMap<&'static str, TemplateRef>,
     random: &'a mut R,
     ship_created: bool,
 }
@@ -145,7 +141,7 @@ impl<R: RandomSource> CityGenerator<'_, R> {
         rotation: Rotation,
         overwrite: bool,
     ) -> EndCityPiece {
-        let template = Arc::clone(&self.templates[name]);
+        let template = self.templates[name].get();
         EndCityPiece::new(name, template, position, rotation, overwrite)
     }
 

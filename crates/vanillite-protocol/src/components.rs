@@ -142,6 +142,8 @@ pub mod ids {
     pub const INSTRUMENT: u16 = find("minecraft:instrument");
     pub const OMINOUS_BOTTLE_AMPLIFIER: u16 = find("minecraft:ominous_bottle_amplifier");
     pub const USE_EFFECTS: u16 = find("minecraft:use_effects");
+    pub const FOOD: u16 = find("minecraft:food");
+    pub const USE_REMAINDER: u16 = find("minecraft:use_remainder");
     pub const USE_COOLDOWN: u16 = find("minecraft:use_cooldown");
     pub const RECIPES: u16 = find("minecraft:recipes");
     pub const LODESTONE_TRACKER: u16 = find("minecraft:lodestone_tracker");

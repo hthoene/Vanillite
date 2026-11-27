@@ -297,6 +297,19 @@ pub(crate) fn apply_entity_nbt(
     } else if let Some(m) = entities.minecart_mut(id) {
         vanillite_game::mob::nbt::apply_minecart(m, data);
     }
+    // `Entity.load`: head and body face the yaw.
+    let yaw = match data.get("Rotation") {
+        Some(Tag::List(List(r))) => match r.as_slice() {
+            [Tag::Float(y), Tag::Float(_)] => Some(*y),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(yaw) = yaw
+        && let Some(m) = entities.mob_mut(id)
+    {
+        m.y_body_rot = yaw;
+    }
     if let Some(mut e) = entities.store.get_mut(id) {
         if let Some(pos) = read_vec3(data.get("Pos"))
             .filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
@@ -313,6 +326,7 @@ pub(crate) fn apply_entity_nbt(
             let mut rot = e.as_ref().rot();
             rot.y_rot = *y;
             rot.x_rot = *x;
+            rot.y_head_rot = *y;
             e.set_rot(rot);
         }
         e.mark_data_dirty();

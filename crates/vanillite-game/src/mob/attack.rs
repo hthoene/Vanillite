@@ -838,6 +838,8 @@ fn run_entity_effect(
             // `Mth.randomBetween(entity.getRandom(), min, max)`.
             let roll = if let Some(m) = ents.mob_mut(target) {
                 m.random.next_float()
+            } else if let Some(p) = ents.player_mut(target) {
+                p.survival.random.next_float()
             } else {
                 crate::experience_orb::with_entity_random(|r| r.next_float())
             };

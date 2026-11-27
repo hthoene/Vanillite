@@ -172,6 +172,14 @@ impl Budget {
         }
     }
 
+    /// [`Budget::release_memory`] for a server nobody plays on: the program's own code and
+    /// constant tables leave memory as well. The system reads them from the program file
+    /// again when they are used, so this is not for a busy server.
+    pub fn release_idle_memory(&self) {
+        self.release_memory();
+        page_out_program();
+    }
+
     /// A tick starts.
     pub fn enter_tick(&self) {
         self.tick_start
@@ -278,6 +286,45 @@ impl Budget {
                 ""
             }
         )
+    }
+}
+
+/// Asks the kernel to drop the read-only file pages of the program and its libraries from
+/// memory (`MADV_PAGEOUT`). Their contents do not change: they are read from the files again
+/// on the next access. The kernel does it for files the process owns or may write; for others
+/// nothing happens.
+fn page_out_program() {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+            return;
+        };
+        for line in maps.lines() {
+            // `start-end perms offset dev inode path`
+            let mut fields = line.split_ascii_whitespace();
+            let (Some(range), Some(perms)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            let inode = fields.nth(2);
+            if !matches!(perms, "r-xp" | "r--p") || matches!(inode, None | Some("0")) {
+                continue;
+            }
+            let Some((Ok(start), Ok(end))) = range
+                .split_once('-')
+                .map(|(s, e)| (usize::from_str_radix(s, 16), usize::from_str_radix(e, 16)))
+            else {
+                continue;
+            };
+            // SAFETY: the range is a mapping of this process; `MADV_PAGEOUT` only reclaims
+            // its pages and keeps what they contain. A failure changes nothing.
+            unsafe {
+                libc::madvise(
+                    start as *mut libc::c_void,
+                    end.saturating_sub(start),
+                    libc::MADV_PAGEOUT,
+                );
+            }
+        }
     }
 }
 

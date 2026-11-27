@@ -28,6 +28,7 @@ use vanillite_world::entity::{EntityFlags, EntityId, NetworkId, Rotation};
 use vanillite_worldgen::behaviour::HorizontalAxis;
 
 use super::{ServerWorld, TickContext, WorldId};
+use crate::dimensions::Environment;
 use crate::global::Global;
 
 /// The overworld: where players respawn and where the End's exit portal leads.
@@ -38,6 +39,15 @@ const NETHER: WorldId = WorldId(1);
 const END: WorldId = WorldId(2);
 /// The End's dimension key (`Level.END`).
 const END_DIMENSION: &str = "minecraft:the_end";
+
+/// Whether nether portals of `world` lead to the overworld: the Nether, or an extra world of
+/// the nether environment (Bukkit's `getTypeKey() == LevelStem.NETHER`).
+fn is_nether(global: &Global, world: WorldId) -> bool {
+    global
+        .dimensions
+        .extra_environment(world)
+        .map_or(world == NETHER, |e| e == Environment::Nether)
+}
 
 /// `TicketType.PORTAL`: ticks a portal ticket keeps the chunks around an arrival loaded.
 const PORTAL_TICKET_TICKS: u64 = 300;
@@ -186,7 +196,8 @@ impl ServerWorld {
             return;
         }
         if let Some((target, route)) = self.portal_route(ctx.global, id, kind, entry) {
-            let Some(route) = self.portal_event(id, kind, target, route) else {
+            let Some((target, route)) = self.portal_event(ctx.global, id, kind, target, route)
+            else {
                 return;
             };
             // Vanilla handles a player's portal in its connection tick (`ServerPlayer.doTick`),
@@ -197,17 +208,18 @@ impl ServerWorld {
 
     /// The plugins' portal event (`vanillite_abi::event::ENTITY_PORTAL`) of `id` about to go
     /// through `kind` into `target` by `route`: `None` when a plugin cancelled it, else the
-    /// route, which a handler may point elsewhere in `target` (the exit portal search starts
-    /// there, or the entity lands there). Without listeners one branch.
+    /// world and route, which a handler may point elsewhere, also into another world (the exit
+    /// portal search starts there, or the entity lands there). Without listeners one branch.
     fn portal_event(
         &self,
+        global: &Global,
         id: EntityId,
         kind: PortalKind,
         target: WorldId,
         route: Route,
-    ) -> Option<Route> {
+    ) -> Option<(WorldId, Route)> {
         let Some(hooks) = self.level.hooks_for(vanillite_abi::event::ENTITY_PORTAL) else {
-            return Some(route);
+            return Some((target, route));
         };
         let entity = self.level.entities.store.get(id)?;
         let rot = entity.rot();
@@ -221,7 +233,7 @@ impl ServerWorld {
                 let p = containing(self.players.level.spawn.0);
                 Vec3::new(f64::from(p.x) + 0.5, f64::from(p.y), f64::from(p.z) + 0.5)
             }
-            _ => return Some(route),
+            _ => return Some((target, route)),
         };
         let code = match kind {
             PortalKind::Nether => vanillite_abi::portal_kind::NETHER,
@@ -243,34 +255,36 @@ impl ServerWorld {
         if ev.cancelled {
             return None;
         }
+        let new_target = match ev.to.world {
+            None => self.id,
+            Some(w) => crate::commands::exec::plugin_world(global, w).unwrap_or(target),
+        };
         let new = ev.to.vec();
-        if new == to || !valid_destination(new) {
-            return Some(route);
+        if (new == to && new_target == target) || !valid_destination(new) {
+            return Some((target, route));
         }
-        Some(match route {
-            Route::NetherPortal {
-                approx,
-                to_nether,
-                entry,
-                ..
-            } => Route::NetherPortal {
-                scaled: new,
-                approx,
-                to_nether,
-                entry,
+        Some((
+            new_target,
+            match route {
+                Route::NetherPortal { approx, entry, .. } => Route::NetherPortal {
+                    scaled: new,
+                    approx,
+                    to_nether: is_nether(global, new_target),
+                    entry,
+                },
+                _ if entity.kind() == vanillite_data::entity::ids::PLAYER => Route::Command {
+                    pos: new,
+                    y_rot: rot.y_rot,
+                    x_rot: rot.x_rot,
+                },
+                // Entities keep their motion and rotation (see `place_entity`).
+                _ => Route::Command {
+                    pos: new,
+                    y_rot: 0.0,
+                    x_rot: 0.0,
+                },
             },
-            _ if entity.kind() == vanillite_data::entity::ids::PLAYER => Route::Command {
-                pos: new,
-                y_rot: rot.y_rot,
-                x_rot: rot.x_rot,
-            },
-            // Entities keep their motion and rotation (see `place_entity`).
-            _ => Route::Command {
-                pos: new,
-                y_rot: 0.0,
-                x_rot: 0.0,
-            },
-        })
+        ))
     }
 
     /// Where the entity `id` goes through the nether or end portal `kind` at `entry`
@@ -284,7 +298,11 @@ impl ServerWorld {
     ) -> Option<(WorldId, Route)> {
         match kind {
             PortalKind::Nether => {
-                let target = if self.id == NETHER { OVERWORLD } else { NETHER };
+                let target = if is_nether(global, self.id) {
+                    OVERWORLD
+                } else {
+                    NETHER
+                };
                 // `isAllowedToEnterPortal`.
                 if target == NETHER
                     && !global
@@ -296,8 +314,8 @@ impl ServerWorld {
                 }
                 let entity = self.level.entities.store.get(id)?;
                 let (pos, (width, height)) = (entity.pos(), size(&entity.aabb()));
-                let types = &global.level.dimension_types;
-                let (from, to) = (types.get(self.id.index())?, types.get(target.index())?);
+                let types = &global.dimensions;
+                let (from, to) = (types.facts(self.id)?, types.facts(target)?);
                 // `DimensionType.getTeleportationScale`.
                 let scale = from.coordinate_scale / to.coordinate_scale;
                 let route = Route::NetherPortal {
@@ -309,8 +327,16 @@ impl ServerWorld {
                 Some((target, route))
             }
             // `EndPortalBlock.getPortalDestination`: out of the End to the respawn dimension,
-            // else into the End.
-            PortalKind::End if self.id == END => Some((OVERWORLD, Route::Spawn)),
+            // else into the End. Extra worlds lead to the default world's dimensions by their
+            // environment (Bukkit's `getTypeKey`).
+            PortalKind::End
+                if global
+                    .dimensions
+                    .extra_environment(self.id)
+                    .map_or(self.id == END, |e| e == Environment::TheEnd) =>
+            {
+                Some((OVERWORLD, Route::Spawn))
+            }
             PortalKind::End => Some((END, Route::EndPlatform)),
             PortalKind::Gateway => None,
         }
@@ -329,7 +355,7 @@ impl ServerWorld {
         let Some((target, route)) = self.portal_route(ctx.global, id, kind, entry) else {
             return;
         };
-        let Some(route) = self.portal_event(id, kind, target, route) else {
+        let Some((target, route)) = self.portal_event(ctx.global, id, kind, target, route) else {
             return;
         };
         let Some(entity) = self.level.entities.store.get(id) else {
@@ -566,13 +592,8 @@ impl ServerWorld {
             .survival
             .respawn
             .as_ref()
-            .and_then(|r| {
-                crate::server::DIMENSIONS
-                    .iter()
-                    .position(|d| *d == r.dimension)
-            })
-            .and_then(|i| u16::try_from(i).ok())
-            .map_or(OVERWORLD, WorldId);
+            .and_then(|r| ctx.global.dimensions.world(&r.dimension))
+            .unwrap_or(OVERWORLD);
         // `remove(KILLED)` → `triggerOnDeathMobEffects`: a dead player's Wind Charged bursts.
         let wind = !keep_all
             && player
@@ -652,7 +673,7 @@ impl ServerWorld {
                 };
                 target = match place.world {
                     None => self.id,
-                    Some(w) => crate::commands::exec::plugin_world(w).unwrap_or(target),
+                    Some(w) => crate::commands::exec::plugin_world(global, w).unwrap_or(target),
                 };
                 (pos, y_rot, x_rot) = (place.vec(), place.yaw, place.pitch);
             }
@@ -903,17 +924,13 @@ impl ServerWorld {
                 self.load_pearl(&tag);
                 continue;
             }
-            let Some(index) = crate::server::DIMENSIONS
-                .iter()
-                .position(|d| *d == dimension.as_str())
-                .and_then(|i| u16::try_from(i).ok())
-            else {
+            let Some(world) = global.dimensions.world(&dimension) else {
                 log::warn!(
                     "Trying to load ender pearl without level ({dimension}) being loaded, skipping"
                 );
                 continue;
             };
-            global.run_in_world(WorldId(index), move |world: &mut ServerWorld| {
+            global.run_in_world(world, move |world: &mut ServerWorld| {
                 world.load_pearl(&tag);
             });
         }
@@ -1053,12 +1070,11 @@ impl ServerWorld {
         if keep_all.is_none()
             && traveller.from != self.id
             && let (Some(from), Some(to)) = (
-                crate::server::DIMENSIONS.get(traveller.from.index()),
-                crate::server::DIMENSIONS.get(self.id.index()),
+                global.dimensions.name(traveller.from),
+                global.dimensions.name(self.id),
             )
         {
             use vanillite_game::advancements::trigger::{Event, TriggerKind};
-            let (from, to) = (*from, *to);
             let tracking = &mut data.survival.tracking;
             if from == "minecraft:overworld" && to == "minecraft:the_nether" {
                 tracking.entered_nether = Some(traveller.pos);
@@ -1253,13 +1269,17 @@ impl ServerWorld {
         }
         if finish_tick {
             self.survival.finish_portal_tick(
-                &mut self.level.entities,
-                &self.level.chunks,
-                &self.level.border,
-                &self.level.block_entities,
+                &mut self.level,
+                self.mobs.cx_mut(),
                 global,
                 &self.dimension,
                 id,
+            );
+            self.mobs.after_player_ticks(
+                &mut self.level,
+                &mut self.survival,
+                global,
+                &self.dimension,
             );
         }
         // Plugins see the player in its place: a respawn, or the arrival in another world.
@@ -1463,9 +1483,8 @@ impl ServerWorld {
                     return None;
                 }
                 let logical_height = global
-                    .level
-                    .dimension_types
-                    .get(self.id.index())
+                    .dimensions
+                    .facts(self.id)
                     .map_or(256, |t| t.logical_height);
                 let created =
                     portal::create_portal_by(level, approx, entry.axis, logical_height, entity);
@@ -1784,7 +1803,7 @@ impl ServerWorld {
     ) {
         let state = &global.level;
         let rules = state.rules().clone();
-        let hooks = crate::plugins::Hooks::of(&global.plugins, &self.dimension);
+        let hooks = crate::plugins::Hooks::of(global, &self.dimension);
         let chunks = &self.level.chunks;
         let blocks = crate::survival::WorldBlocks(chunks);
         let (weather, climate) = (self.survival.weather, self.survival.climate().cloned());

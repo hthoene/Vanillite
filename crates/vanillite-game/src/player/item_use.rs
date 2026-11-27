@@ -178,7 +178,9 @@ pub fn use_item(
             crate::fishing::use_rod(level, ents, env, cx, network_ids, player, &mut stack, hand);
         let _ = take_held(ents, player, hand);
         used
-    } else if let Some(slot) = crate::elytra::swappable_slot(&stack) {
+    } else if !crate::consumable::is_consumable(&stack)
+        && let Some(slot) = crate::elytra::swappable_slot(&stack)
+    {
         crate::elytra::swap_with_equipment(ents, env, player, &mut stack, slot)
     } else {
         put_back(ents, player, hand, stack);

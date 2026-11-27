@@ -10,7 +10,7 @@ use vanillite_data::block::{BlockId, BlockState};
 use vanillite_datapack::LoadedPacks;
 
 use super::context::MaterialRuleContext;
-use super::rule::{FoldedRules, YBoundsInput};
+use super::rule::{BelowSurface, FoldedRules, FoldedY, YBoundsInput};
 use super::rules::MaterialRules;
 use crate::Error;
 use crate::anchor::WorldGenerationContext;
@@ -107,6 +107,10 @@ pub struct MaterialSystem {
     pub(super) ore_random: AnyPositional,
     /// [`Program::interpolation_y_period`] of the program the ore veins are compiled into.
     pub(super) ore_y_period: i32,
+    /// Whether nothing but the ore vein functions reads their cache cells
+    /// ([`Program::cells_private_to`]): then a vein that provably places nothing in a chunk
+    /// need not be sampled there.
+    pub(super) ore_cells_private: bool,
     eroded_badlands: Option<BiomeId>,
     frozen_ocean: Option<BiomeId>,
     deep_frozen_ocean: Option<BiomeId>,
@@ -145,7 +149,7 @@ impl MaterialSystem {
             })
             .collect::<Result<Vec<_>, Error>>()?;
         let program = compiler.program();
-        let ore_vein_fns = ore_vein_fns
+        let ore_vein_fns: Vec<OreVeinFns> = ore_vein_fns
             .into_iter()
             .map(|fns| OreVeinFns {
                 y_range: program
@@ -155,6 +159,11 @@ impl MaterialSystem {
             })
             .collect();
         let ore_y_period = program.interpolation_y_period();
+        let ore_functions: Vec<FnId> = ore_vein_fns
+            .iter()
+            .flat_map(|fns| [fns.density, fns.richness, fns.filler_gap])
+            .collect();
+        let ore_cells_private = program.cells_private_to(&ore_functions);
         let preliminary_surface = compiler.compile(&settings.router.chunk_surface_level);
         let noise_random = *random_state.random();
         let noise = |id: &str| random_state.noise(id);
@@ -183,6 +192,7 @@ impl MaterialSystem {
                 .collect(),
             ore_vein_fns,
             ore_y_period,
+            ore_cells_private,
             ore_random: random_state.random_factory("minecraft:ore"),
             unfolded: FoldedRules::new(&rules, &rules.biome_folds(None), None),
             no_biome_folds: rules.biome_folds(None),
@@ -271,6 +281,17 @@ impl MaterialSystem {
             biome_folds,
         );
 
+        // What the rule tree does below a column's surface layers, per Y, as far as Y decides
+        // it: nothing for most stone blocks (above the deepslate, outside ore veins), one fixed
+        // block in others (deepslate). There the tree is not evaluated: it has no other effect.
+        let end_y = chunk.min_y();
+        let ore_present = context.ore_veins_present();
+        let below_surface: Vec<FoldedY> = (end_y..=max_y)
+            .map(|y| rules.fold_below_surface(&self.rules, &generation, ore_present, y))
+            .collect();
+        let mut column: Vec<BlockState> = Vec::new();
+        let mut kinds: Vec<u8> = Vec::new();
+
         for x in 0..16 {
             for z in 0..16 {
                 let block_x = min_block_x + x as i32;
@@ -288,36 +309,75 @@ impl MaterialSystem {
                 let mut stone_above_depth = 0;
                 let mut water_height = i32::MIN;
                 let mut next_ceiling_stone_y = i32::MAX;
-                let end_y = chunk.min_y();
+
+                // The column from one below the lowest block (air) up to `height`, as it is
+                // before the rules run: every block is read before the rule of its own Y
+                // replaces it, and the look-ahead only reads blocks below.
+                column.clear();
+                chunk.column_states(block_x, block_z, end_y - 1, height, &mut column);
+                kinds.clear();
+                let mut last = (BlockState::AIR, AIR);
+                kinds.extend(column.iter().map(|&state| {
+                    if state != last.0 {
+                        last = (state, kind_of(state));
+                    }
+                    last.1
+                }));
+                let kind_at = |y: i32| kinds[(y - (end_y - 1)) as usize];
+                // Set once skipping is allowed for this column (see `surface_level_is_free`).
+                let mut min_surface_level = None;
 
                 for y in (end_y..=height).rev() {
-                    let old = chunk.block(block_x, y, block_z);
-                    if old.is_air() {
-                        stone_above_depth = 0;
-                        water_height = i32::MIN;
-                    } else if !old.fluid_state().is_empty() {
-                        if water_height == i32::MIN {
-                            water_height = y + 1;
+                    match kind_at(y) {
+                        AIR => {
+                            stone_above_depth = 0;
+                            water_height = i32::MIN;
                         }
-                    } else {
-                        if next_ceiling_stone_y >= y {
-                            next_ceiling_stone_y = WAY_BELOW_MIN_Y;
-                            for lookahead_y in (end_y - 1..y).rev() {
-                                if !is_stone(chunk.block(block_x, lookahead_y, block_z)) {
-                                    next_ceiling_stone_y = lookahead_y + 1;
-                                    break;
-                                }
+                        FLUID => {
+                            if water_height == i32::MIN {
+                                water_height = y + 1;
                             }
                         }
+                        _ => {
+                            if next_ceiling_stone_y >= y {
+                                next_ceiling_stone_y = WAY_BELOW_MIN_Y;
+                                for lookahead_y in (end_y - 1..y).rev() {
+                                    if kind_at(lookahead_y) != STONE {
+                                        next_ceiling_stone_y = lookahead_y + 1;
+                                        break;
+                                    }
+                                }
+                            }
 
-                        stone_above_depth += 1;
-                        let stone_below_depth = y - next_ceiling_stone_y + 1;
-                        context.update_y(stone_above_depth, stone_below_depth, water_height, y);
-                        if y >= min_y
-                            && y <= max_y
-                            && let Some(state) = context.try_apply(block_x, y, block_z)
-                        {
-                            set_column_block(chunk, block_x, y, block_z, state);
+                            stone_above_depth += 1;
+                            if min_surface_level.is_none() && context.surface_level_is_free() {
+                                min_surface_level = Some(context.min_surface_level());
+                            }
+                            if min_surface_level.is_some_and(|level| y < level) {
+                                let folded = below_surface[(y - end_y) as usize];
+                                if folded.ores == 0 || !context.ore_may_place(folded.ores, y) {
+                                    match folded.outcome {
+                                        BelowSurface::Nothing => continue,
+                                        BelowSurface::Place(state) => {
+                                            let old = column[(y - (end_y - 1)) as usize];
+                                            if !chunk.replace_solid(block_x, y, block_z, old, state)
+                                            {
+                                                set_column_block(chunk, block_x, y, block_z, state);
+                                            }
+                                            continue;
+                                        }
+                                        BelowSurface::Unknown => {}
+                                    }
+                                }
+                            }
+                            let stone_below_depth = y - next_ceiling_stone_y + 1;
+                            context.update_y(stone_above_depth, stone_below_depth, water_height, y);
+                            if y >= min_y
+                                && y <= max_y
+                                && let Some(state) = context.try_apply(block_x, y, block_z)
+                            {
+                                set_column_block(chunk, block_x, y, block_z, state);
+                            }
                         }
                     }
                 }
@@ -598,9 +658,20 @@ fn surface_gradient_z(chunk: &ProtoChunk, x: usize, z: usize) -> i32 {
         - chunk.height_at(WgHeightmap::WorldSurface, x, z.saturating_sub(1))
 }
 
-/// `isStone`: neither air nor fluid.
-fn is_stone(state: BlockState) -> bool {
-    !state.is_air() && state.fluid_state().is_empty()
+/// What `buildSurface` distinguishes in a column: air, fluid, or anything else (`isStone`).
+const AIR: u8 = 0;
+const FLUID: u8 = 1;
+const STONE: u8 = 2;
+
+/// The kind of a block state (`AIR`, `FLUID` or `STONE`).
+fn kind_of(state: BlockState) -> u8 {
+    if state.is_air() {
+        AIR
+    } else if !state.fluid_state().is_empty() {
+        FLUID
+    } else {
+        STONE
+    }
 }
 
 /// The `BlockColumn.setBlock` of `buildSurface`: sets blocks inside the chunk's height and

@@ -148,6 +148,11 @@ impl SamplerContext {
         &mut self.cells[id]
     }
 
+    /// Whether the `beardifier` field is bound.
+    pub fn has_beardifier(&self) -> bool {
+        self.beardifier.is_some()
+    }
+
     /// Binds the `beardifier` field (`Beardifier.CONTEXT_KEY`) for the chunk being generated;
     /// `None` leaves the fallback (Vanilla's empty context, or `Beardifier.EMPTY`, which is
     /// zero everywhere as well).
@@ -215,7 +220,7 @@ fn distance(metric: DistanceMetric, dx: f32, dy: f32, dz: f32) -> f32 {
 
 /// `GradientSampler.compute(coordinate)`.
 #[inline]
-fn gradient(
+pub(super) fn gradient(
     tiling: GradientTiling,
     from: i32,
     from_value: f32,
@@ -302,16 +307,34 @@ fn needed(mask: Mask<'_>, index: usize) -> bool {
     mask.is_none_or(|mask| mask[index])
 }
 
-/// The needed points of `mask` where `values` satisfies `test`.
-fn refine(mask: Mask<'_>, values: &[f32], test: impl Fn(f32) -> bool) -> Vec<bool> {
-    match mask {
-        Some(mask) => mask
-            .iter()
-            .zip(values)
-            .map(|(&m, &x)| m && test(x))
-            .collect(),
-        None => values.iter().map(|&x| test(x)).collect(),
-    }
+/// The needed points of `mask` where `values` satisfies `test`, with their number and the
+/// number of needed points. Written without branches, so the loops vectorise.
+fn refine(mask: Mask<'_>, values: &[f32], test: impl Fn(f32) -> bool) -> (Vec<bool>, usize, usize) {
+    let mut chosen = vec![false; values.len()];
+    let needed = match mask {
+        Some(mask) => {
+            for ((chosen, &m), &x) in chosen.iter_mut().zip(mask).zip(values) {
+                *chosen = m & test(x);
+            }
+            mask.iter().map(|&m| usize::from(m)).sum()
+        }
+        None => {
+            for (chosen, &x) in chosen.iter_mut().zip(values) {
+                *chosen = test(x);
+            }
+            values.len()
+        }
+    };
+    let count = chosen.iter().map(|&c| usize::from(c)).sum();
+    (chosen, count, needed)
+}
+
+/// Whether enough of `values` satisfy `skipped` (an eighth) that sampling the other operand
+/// only at the remaining points is worth building their mask. Values outside the mask count
+/// like the others: this only chooses between two ways to the same result.
+fn worth_masking(values: &[f32], skipped: impl Fn(f32) -> bool) -> bool {
+    let count: usize = values.iter().map(|&x| usize::from(skipped(x))).sum();
+    count * 8 >= values.len()
 }
 
 /// The lerp of `LerpFunction`'s samplers with their `alpha == 0` / `alpha == 1` shortcuts.
@@ -1040,27 +1063,70 @@ impl Program {
             Op::Div { left, right } => {
                 self.binary_volume(ctx, left, right, out, v, mask, |l, r| l / r);
             }
-            Op::Min { left, right, .. } => {
-                self.binary_volume(
-                    ctx,
-                    left,
-                    right,
-                    out,
-                    v,
-                    mask,
-                    |l, r| if r < l { r } else { l },
-                );
+            Op::Min {
+                left,
+                right,
+                right_min,
+            } => {
+                if self.maskable[right as usize] && self.skippable[right as usize] {
+                    // `right` is never below `right_min`: where `left` is not above that,
+                    // the minimum is `left` and `right` is not sampled (as per point).
+                    self.volume_masked(ctx, left, out, v, mask);
+                    let mut right_buffer = ctx.acquire(out.len());
+                    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                    let above = |l: f32| !(l <= right_min);
+                    if worth_masking(out, |l| !above(l)) {
+                        self.volume_branch(ctx, right, &mut right_buffer, v, mask, out, above);
+                    } else {
+                        self.volume_masked(ctx, right, &mut right_buffer, v, mask);
+                    }
+                    for (l, &r) in out.iter_mut().zip(right_buffer.iter()) {
+                        *l = if above(*l) & (r < *l) { r } else { *l };
+                    }
+                    ctx.release(right_buffer);
+                } else {
+                    self.binary_volume(
+                        ctx,
+                        left,
+                        right,
+                        out,
+                        v,
+                        mask,
+                        |l, r| if r < l { r } else { l },
+                    );
+                }
             }
-            Op::Max { left, right, .. } => {
-                self.binary_volume(
-                    ctx,
-                    left,
-                    right,
-                    out,
-                    v,
-                    mask,
-                    |l, r| if r > l { r } else { l },
-                );
+            Op::Max {
+                left,
+                right,
+                right_max,
+            } => {
+                if self.maskable[right as usize] && self.skippable[right as usize] {
+                    // As for the minimum: `right` is never above `right_max`.
+                    self.volume_masked(ctx, left, out, v, mask);
+                    let mut right_buffer = ctx.acquire(out.len());
+                    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                    let below = |l: f32| !(l >= right_max);
+                    if worth_masking(out, |l| !below(l)) {
+                        self.volume_branch(ctx, right, &mut right_buffer, v, mask, out, below);
+                    } else {
+                        self.volume_masked(ctx, right, &mut right_buffer, v, mask);
+                    }
+                    for (l, &r) in out.iter_mut().zip(right_buffer.iter()) {
+                        *l = if below(*l) & (r > *l) { r } else { *l };
+                    }
+                    ctx.release(right_buffer);
+                } else {
+                    self.binary_volume(
+                        ctx,
+                        left,
+                        right,
+                        out,
+                        v,
+                        mask,
+                        |l, r| if r > l { r } else { l },
+                    );
+                }
             }
             Op::ConstAdd { input, value } => {
                 self.volume_masked(ctx, input, out, v, mask);
@@ -1306,7 +1372,7 @@ impl Program {
                     size_xz_inv: cell_size_xz_inv,
                     size_y_inv: cell_size_y_inv,
                 };
-                self.interpolated_volume(ctx, &cell, out, v);
+                self.interpolated_volume(ctx, &cell, out, v, mask);
             }
             Op::SliceX { input, x: sx } => {
                 if v.size_x == 1 && v.min_x == sx {
@@ -1449,16 +1515,11 @@ impl Program {
             }
             return;
         }
-        let chosen = refine(mask, values, test);
-        let count = chosen.iter().filter(|&&c| c).count();
+        let (chosen, count, needed) = refine(mask, values, test);
         if count == 0 {
             return;
         }
-        let all = match mask {
-            Some(mask) => count == mask.iter().filter(|&&m| m).count(),
-            None => count == chosen.len(),
-        };
-        if all {
+        if count == needed {
             self.volume_masked(ctx, op, out, v, mask);
         } else {
             self.volume_masked(ctx, op, out, v, Some(&chosen));
@@ -1609,13 +1670,15 @@ impl Program {
         }
     }
 
-    /// `InterpolatedFunction.Sampler.sampleVolume`.
+    /// `InterpolatedFunction.Sampler.sampleVolume`; only the points of `mask` (if any) must be
+    /// right.
     fn interpolated_volume(
         &self,
         ctx: &mut SamplerContext,
         cell: &InterpolationCell,
         out: &mut [f32],
         v: &DensityVolume,
+        mask: Mask<'_>,
     ) {
         let (xz, y) = (cell.size_xz, cell.size_y);
         if (v.step_x == xz || v.size_x == 1)
@@ -1625,9 +1688,9 @@ impl Program {
             && floor_mod(v.min_y, y) == 0
             && floor_mod(v.min_z, xz) == 0
         {
-            self.volume(ctx, cell.input, out, v);
+            self.volume_masked(ctx, cell.input, out, v, mask);
         } else if v.step_x == 1 && v.step_y == 1 && v.step_z == 1 {
-            self.interpolate_block_step(ctx, cell, out, v);
+            self.interpolate_block_step(ctx, cell, out, v, mask);
         } else {
             // `sampleWithNonBlockStep`: interpolate every block, then pick the volume's points.
             let block_volume = DensityVolume::new(
@@ -1639,7 +1702,7 @@ impl Program {
                 v.min_z,
             );
             let mut buffer = ctx.acquire(block_volume.len());
-            self.interpolate_block_step(ctx, cell, &mut buffer, &block_volume);
+            self.interpolate_block_step(ctx, cell, &mut buffer, &block_volume, None);
             for z in 0..v.size_z {
                 for x in 0..v.size_x {
                     for y in 0..v.size_y {
@@ -1653,13 +1716,15 @@ impl Program {
     }
 
     /// `InterpolatedFunction.Sampler.sampleWithBlockStep`: samples the cell corners covering
-    /// the volume, then fills each cell.
+    /// the volume, then fills each cell. With a mask, only the cells holding a needed point are
+    /// filled and only their corners are asked of the input.
     fn interpolate_block_step(
         &self,
         ctx: &mut SamplerContext,
         cell: &InterpolationCell,
         out: &mut [f32],
         v: &DensityVolume,
+        mask: Mask<'_>,
     ) {
         let (xz, cy) = (cell.size_xz, cell.size_y);
         let min_cell_x = floor_div(v.min_x, xz);
@@ -1689,8 +1754,75 @@ impl Program {
             cy,
             xz,
         );
+        let cell_index = |x: i32, y: i32, z: i32| ((z * count_x + x) * count_y + y) as usize;
+        // Per cell: whether it holds a needed point (`None`: every cell does).
+        let needed = mask.and_then(|mask| {
+            let mut needed = vec![false; (count_x * count_y * count_z) as usize];
+            // The part of the volume's Y axis inside each cell row.
+            let rows: Vec<(usize, usize)> = (0..count_y)
+                .map(|cell_y| {
+                    let out_y = cells.block_y(cell_y) - v.min_y;
+                    let from = out_y.max(0);
+                    let to = (out_y + cy).min(v.size_y);
+                    (from as usize, to.max(from) as usize)
+                })
+                .collect();
+            for z in 0..v.size_z {
+                let cell_z = floor_div(v.block_z(z), xz) - min_cell_z;
+                for x in 0..v.size_x {
+                    let cell_x = floor_div(v.block_x(x), xz) - min_cell_x;
+                    let start = v.index(x, 0, z);
+                    let column = &mask[start..start + v.size_y as usize];
+                    let cells = &mut needed[cell_index(cell_x, 0, cell_z)..][..count_y as usize];
+                    for (cell, &(from, to)) in cells.iter_mut().zip(&rows) {
+                        *cell |= match column[from..to].as_chunks::<8>() {
+                            // A whole cell row at once (bytes of 0 or 1).
+                            ([row], []) => u64::from_ne_bytes(row.map(u8::from)) != 0,
+                            _ => column[from..to].contains(&true),
+                        };
+                    }
+                }
+            }
+            (!needed.iter().all(|&n| n)).then_some(needed)
+        });
         let mut corners = ctx.acquire(cells.len());
-        self.volume(ctx, cell.input, &mut corners, &cells);
+        match &needed {
+            None => self.volume(ctx, cell.input, &mut corners, &cells),
+            Some(needed) if !needed.contains(&true) => {
+                // Nothing to fill; the input is still sampled if someone else may read what
+                // it leaves in its cache cells.
+                if !self.skippable[cell.input as usize] {
+                    self.volume(ctx, cell.input, &mut corners, &cells);
+                }
+                ctx.release(corners);
+                return;
+            }
+            Some(needed) => {
+                let mut corner_mask = vec![false; cells.len()];
+                for cell_z in 0..count_z {
+                    let next_z = (cell_z + 1).min(cells.size_z - 1);
+                    for cell_x in 0..count_x {
+                        let next_x = (cell_x + 1).min(cells.size_x - 1);
+                        for cell_y in 0..count_y {
+                            if !needed[cell_index(cell_x, cell_y, cell_z)] {
+                                continue;
+                            }
+                            let next_y = (cell_y + 1).min(cells.size_y - 1);
+                            for (x, z) in [
+                                (cell_x, cell_z),
+                                (next_x, cell_z),
+                                (cell_x, next_z),
+                                (next_x, next_z),
+                            ] {
+                                corner_mask[cells.index(x, cell_y, z)] = true;
+                                corner_mask[cells.index(x, next_y, z)] = true;
+                            }
+                        }
+                    }
+                }
+                self.volume_masked(ctx, cell.input, &mut corners, &cells, Some(&corner_mask));
+            }
+        }
         for cell_z in 0..count_z {
             let next_z = (cell_z + 1).min(cells.size_z - 1);
             for cell_x in 0..count_x {
@@ -1705,14 +1837,19 @@ impl Program {
                     let v110 = corners[cells.index(next_x, next_y, cell_z)];
                     let v011 = corners[cells.index(cell_x, next_y, next_z)];
                     let v111 = corners[cells.index(next_x, next_y, next_z)];
-                    fill_cell(
-                        cell,
-                        out,
-                        v,
-                        &cells,
-                        [cell_x, cell_y, cell_z],
-                        [v000, v100, v010, v110, v001, v101, v011, v111],
-                    );
+                    if needed
+                        .as_ref()
+                        .is_none_or(|needed| needed[cell_index(cell_x, cell_y, cell_z)])
+                    {
+                        fill_cell(
+                            cell,
+                            out,
+                            v,
+                            &cells,
+                            [cell_x, cell_y, cell_z],
+                            [v000, v100, v010, v110, v001, v101, v011, v111],
+                        );
+                    }
                     v000 = v010;
                     v100 = v110;
                     v001 = v011;
@@ -1752,6 +1889,11 @@ fn fill_cell(
     let x1 = cell.size_xz.min(v.size_x - out_x) - 1;
     let y1 = cell.size_y.min(v.size_y - out_y) - 1;
     let z1 = cell.size_xz.min(v.size_z - out_z) - 1;
+    if y1 < y0 {
+        return;
+    }
+    let rows = (y1 - y0 + 1) as usize;
+    let size_y = v.size_y as usize;
     for z in z0..=z1 {
         let output_z = out_z + z;
         let alpha_z = z as f32 * cell.size_xz_inv;
@@ -1759,20 +1901,50 @@ fn fill_cell(
         let v01 = lerp_f(alpha_z, v010, v011);
         let v10 = lerp_f(alpha_z, v100, v101);
         let v11 = lerp_f(alpha_z, v110, v111);
-        for x in x0..=x1 {
-            let output_x = out_x + x;
+        // The first value and the step of one column.
+        let column = |x: i32| {
             let alpha_x = x as f32 * cell.size_xz_inv;
             let v0 = lerp_f(alpha_x, v00, v10);
             let v1 = lerp_f(alpha_x, v01, v11);
             let step = (v1 - v0) * cell.size_y_inv;
-            let mut value = v0 + step * y0 as f32;
-            if y1 >= y0 {
-                let start = v.index(output_x, out_y + y0, output_z);
-                for slot in &mut out[start..=start + (y1 - y0) as usize] {
-                    *slot = value;
-                    value += step;
+            (v0 + step * y0 as f32, step)
+        };
+        let mut x = x0;
+        // Four neighbouring columns at a time: each column is its own chain of additions, so
+        // four chains advance together.
+        while x + 3 <= x1 {
+            let lanes = [column(x), column(x + 1), column(x + 2), column(x + 3)];
+            let mut values = lanes.map(|(value, _)| value);
+            let steps = lanes.map(|(_, step)| step);
+            let start = v.index(out_x + x, out_y + y0, output_z);
+            let mut columns = out[start..start + 3 * size_y + rows].chunks_mut(size_y);
+            let mut next = || columns.next().expect("four columns");
+            let (a, b, c, d) = (next(), next(), next(), next());
+            let (a, b, c, d) = (
+                &mut a[..rows],
+                &mut b[..rows],
+                &mut c[..rows],
+                &mut d[..rows],
+            );
+            for row in 0..rows {
+                a[row] = values[0];
+                b[row] = values[1];
+                c[row] = values[2];
+                d[row] = values[3];
+                for (value, step) in values.iter_mut().zip(steps) {
+                    *value += step;
                 }
             }
+            x += 4;
+        }
+        while x <= x1 {
+            let (mut value, step) = column(x);
+            let start = v.index(out_x + x, out_y + y0, output_z);
+            for slot in &mut out[start..start + rows] {
+                *slot = value;
+                value += step;
+            }
+            x += 1;
         }
     }
 }

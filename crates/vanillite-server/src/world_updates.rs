@@ -245,10 +245,7 @@ fn global_level_event(
             .sink
             .send_shared(&Arc::new(level_event_packet(event, at, data, true)));
     }
-    for index in 0..crate::server::DIMENSIONS.len() {
-        let Ok(index) = u16::try_from(index) else {
-            continue;
-        };
+    for index in global.dimensions.worlds().map(|w| w.0) {
         let other = crate::world::WorldId(index);
         if other == world {
             continue;

@@ -132,6 +132,72 @@ impl RTree {
         node < self.leaf_count
     }
 
+    /// The parameter space of leaf `leaf` (a value index).
+    #[inline]
+    pub(crate) fn leaf_space(&self, leaf: usize) -> &[Parameter; DIMENSIONS] {
+        &self.spaces[leaf]
+    }
+
+    /// Per leaf: its position in depth-first tree order, the order in which [`Self::search`]
+    /// prefers equally close leaves (see the module documentation).
+    pub(crate) fn depth_first_ranks(&self) -> Vec<u32> {
+        let mut ranks = vec![0; self.leaf_count];
+        let mut next = 0;
+        let mut stack = vec![self.root];
+        while let Some(node) = stack.pop() {
+            if self.is_leaf(node) {
+                ranks[node] = next;
+                next += 1;
+            } else {
+                let (start, len) = self.children[node];
+                let children = &self.child_list[start as usize..(start + len) as usize];
+                stack.extend(children.iter().rev().map(|&c| c as usize));
+            }
+        }
+        ranks
+    }
+
+    /// The leaf closest to `target` with its distance; of equally close leaves the one with
+    /// the lowest `ranks` entry (`ranks` is indexed by leaf).
+    pub(crate) fn search_lowest_rank(
+        &self,
+        target: &[i64; DIMENSIONS],
+        ranks: &[u32],
+    ) -> (usize, i64) {
+        if self.is_leaf(self.root) {
+            return (self.root, distance(&self.spaces[self.root], target));
+        }
+        let mut best = (0, i64::MAX, u32::MAX);
+        self.search_lowest_rank_in(self.root, target, ranks, &mut best);
+        (best.0, best.1)
+    }
+
+    fn search_lowest_rank_in(
+        &self,
+        node: usize,
+        target: &[i64; DIMENSIONS],
+        ranks: &[u32],
+        best: &mut (usize, i64, u32),
+    ) {
+        let (start, len) = self.children[node];
+        let range = start as usize..(start + len) as usize;
+        for (&child, space) in self.child_list[range.clone()]
+            .iter()
+            .zip(&self.child_spaces[range])
+        {
+            let child = child as usize;
+            let child_distance = distance(space, target);
+            if child_distance > best.1 {
+                continue;
+            }
+            if !self.is_leaf(child) {
+                self.search_lowest_rank_in(child, target, ranks, best);
+            } else if child_distance < best.1 || ranks[child] < best.2 {
+                *best = (child, child_distance, ranks[child]);
+            }
+        }
+    }
+
     /// `RTree.search(target)` with the previous result as candidate; returns the value index.
     #[inline]
     pub(crate) fn search(&self, target: &[i64; DIMENSIONS], candidate: Option<usize>) -> usize {

@@ -327,7 +327,18 @@ pub fn apply_entity_data_component(ents: &mut Entities, id: EntityId, stack: &It
     ) else {
         return;
     };
-    data.remove("id");
+    // `entity.getType() == entityData.type()`.
+    let kind = ents.store.get(id).map(|e| e.kind());
+    if let Some(Tag::String(t)) = data.remove("id")
+        && kind.map(|k| k.name()) != Some(t.as_str())
+        && kind.map(|k| k.name().trim_start_matches("minecraft:")) != Some(t.as_str())
+    {
+        return;
+    }
+    // Spawn eggs carry only the `id`: nothing to load.
+    if data.is_empty() {
+        return;
+    }
     let Some(mut tag) = save_any(ents, id) else {
         return;
     };
@@ -336,7 +347,14 @@ pub fn apply_entity_data_component(ents: &mut Entities, id: EntityId, stack: &It
     if let Some(u) = uuid {
         tag.insert("UUID", u);
     }
-    super::apply_nbt(ents, id, &tag);
+    if !super::apply_nbt(ents, id, &tag)
+        && let Some(m) = ents.mob_mut(id)
+    {
+        crate::mob::nbt::apply_mob(m, &tag);
+        if let Some(mut e) = ents.store.get_mut(id) {
+            e.mark_data_dirty();
+        }
+    }
 }
 
 /// `CompoundTag.merge`: compounds merge, other values replace.

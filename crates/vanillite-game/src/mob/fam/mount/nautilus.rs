@@ -40,7 +40,7 @@ fn nautilus(m: &MobData) -> Nautilus {
     }
 }
 
-fn nautilus_mut(m: &mut MobData) -> &mut Nautilus {
+pub(crate) fn nautilus_mut(m: &mut MobData) -> &mut Nautilus {
     let s = super::state_mut(m);
     if !matches!(s, State::Nautilus(_)) {
         *s = State::Nautilus(Nautilus::default());

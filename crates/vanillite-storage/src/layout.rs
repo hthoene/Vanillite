@@ -4,7 +4,8 @@
 //! Spigot and CraftBukkit 26.x keep the overworld there too, but give the nether and the end
 //! world folders of their own next to it: `<level>_nether/dimensions/minecraft/the_nether/` and
 //! `<level>_the_end/dimensions/minecraft/the_end/`, each with its own `level.dat`, `uid.dat` and
-//! `data/`, which Spigot creates itself when they are missing. Players, `level.dat` and the
+//! `data/`, which Spigot creates itself when they are missing; dimensions of data packs get
+//! `<level>_<namespace>_<path>/dimensions/<namespace>/<path>/`. Players, `level.dat` and the
 //! world-wide saved data stay in `<level>/` in both layouts.
 
 use std::fs;
@@ -25,11 +26,18 @@ pub enum WorldLayout {
 
 impl WorldLayout {
     /// The world folder holding the `dimensions/` tree of `dimension`.
+    /// Spigot names the world folder of a data pack dimension `<level>_<namespace>_<path>`.
     pub fn world_dir(self, server_dir: &Path, level_name: &str, dimension: &str) -> PathBuf {
         let suffix = match (self, dimension) {
-            (WorldLayout::Spigot, "minecraft:the_nether") => "_nether",
-            (WorldLayout::Spigot, "minecraft:the_end") => "_the_end",
-            _ => "",
+            (WorldLayout::Vanilla, _) | (WorldLayout::Spigot, "minecraft:overworld") => {
+                String::new()
+            }
+            (WorldLayout::Spigot, "minecraft:the_nether") => "_nether".to_owned(),
+            (WorldLayout::Spigot, "minecraft:the_end") => "_the_end".to_owned(),
+            (WorldLayout::Spigot, other) => {
+                let (namespace, path) = other.split_once(':').unwrap_or(("minecraft", other));
+                format!("_{namespace}_{path}")
+            }
         };
         server_dir.join(format!("{level_name}{suffix}"))
     }

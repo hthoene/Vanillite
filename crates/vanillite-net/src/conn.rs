@@ -23,9 +23,10 @@ use vanillite_protocol::sets::{
     ServerboundConfiguration, ServerboundHandshake, ServerboundLogin, ServerboundPlay,
     ServerboundStatus,
 };
+use vanillite_protocol::tap::{PacketTap, Peer, Verdict};
 use vanillite_protocol::text::{Component, JsonComponent};
 use vanillite_protocol::types::{GameProfile, Identifier, RawBytes, Uuid};
-use vanillite_protocol::{Error, State};
+use vanillite_protocol::{Bucket, Direction, Error, State};
 
 /// Why a connection ends.
 #[derive(Debug)]
@@ -126,6 +127,31 @@ pub(crate) struct Conn {
     packet_rate: PacketRate,
     /// When the connection entered play, and the player's name.
     joined: Option<(Instant, String)>,
+    /// This connection for the packet tap.
+    peer: Peer,
+}
+
+/// The packet tap's verdict on a received body: one load and branch without listeners.
+#[inline]
+fn tap_in(tap: &PacketTap, peer: Peer, state: State, body: &[u8]) -> Verdict<Vec<u8>> {
+    if tap.active(Direction::Serverbound) {
+        tap.serverbound(peer, state, body)
+    } else {
+        Verdict::Pass
+    }
+}
+
+/// Decodes a received body and returns it from `recv_packet`, unless a packet listener
+/// cancelled it; a listener's replacement is decoded and validated like the client's packet.
+macro_rules! deliver {
+    ($conn:ident, $decode:ident, $body:expr) => {{
+        let body: &[u8] = $body;
+        match tap_in(&$conn.shared.config.tap, $conn.peer, $conn.state, body) {
+            Verdict::Pass => return Ok($decode(body)?),
+            Verdict::Replace(replaced) => return Ok($decode(&replaced)?),
+            Verdict::Drop => {}
+        }
+    }};
 }
 
 /// A connection the client drops this soon after joining logs the last packets it was sent:
@@ -175,6 +201,7 @@ impl Conn {
     ) -> Self {
         let now = Instant::now();
         let rate = RateLimiter::new(shared.config.rate_limits);
+        let connection = out.connection();
         Self {
             deadline: now.checked_add(shared.config.status_timeout),
             shared,
@@ -200,6 +227,10 @@ impl Conn {
                 average: 0.0,
             },
             joined: None,
+            peer: Peer {
+                connection,
+                player: 0,
+            },
         }
     }
 
@@ -292,6 +323,7 @@ impl Conn {
 
     fn enter(&mut self, state: State, timeout: Option<Duration>) {
         self.state = state;
+        self.out.control(Out::State(state));
         self.source.set_state(state);
         self.out.sent_log().set_state(state);
         self.deadline = timeout.and_then(|t| Instant::now().checked_add(t));
@@ -354,6 +386,13 @@ impl Conn {
         Ok(())
     }
 
+    /// A packet listener cancelled a received packet: it still counts against the rate
+    /// limits (SEC-16), so cancelling cannot be used to flood the server.
+    fn cancelled(&mut self) -> Result<()> {
+        self.count_packet()?;
+        self.rate((Bucket::Default, 1))
+    }
+
     /// Receives and decodes the next packet, handling timeouts and keepalives while waiting.
     async fn recv_packet<T>(
         &mut self,
@@ -362,18 +401,22 @@ impl Conn {
         loop {
             // Packets the multi-version layer added to the last one come first.
             if let Some(t) = self.adapter.as_mut().and_then(|a| a.pending()) {
-                return Ok(decode(t)?);
+                deliver!(self, decode, t);
+                self.cancelled()?;
+                continue;
             }
             if let Source::Tcp { decoder, .. } = &mut self.source
                 && let Some(frame) = decoder.next_frame()?
             {
                 match &mut self.adapter {
-                    None => return Ok(decode(frame)?),
+                    None => deliver!(self, decode, frame),
                     Some(a) => match a.translate(frame)? {
-                        Some(t) => return Ok(decode(t)?),
+                        Some(t) => deliver!(self, decode, t),
                         None => continue,
                     },
                 }
+                self.cancelled()?;
+                continue;
             }
             let read_deadline = self.last_read.checked_add(self.shared.config.read_timeout);
             let mut wake = [self.deadline, read_deadline].into_iter().flatten().min();
@@ -397,11 +440,13 @@ impl Conn {
                                 return Err(Error::TooLong { what: "frame", len: f.len(), max }.into());
                             }
                             match &mut self.adapter {
-                                None => return Ok(decode(&f)?),
-                                Some(a) => if let Some(t) = a.translate(&f)? {
-                                    return Ok(decode(t)?);
+                                None => deliver!(self, decode, &f),
+                                Some(a) => match a.translate(&f)? {
+                                    Some(t) => deliver!(self, decode, t),
+                                    None => continue,
                                 },
                             }
+                            self.cancelled()?;
                         }
                     }
                 }
@@ -521,6 +566,8 @@ impl Conn {
                     )));
                 }
                 let profile = self.login().await?;
+                self.peer.player = profile.id.0;
+                self.out.control(Out::Player(profile.id.0));
                 let client_info = self.configure().await?;
                 self.play(profile, client_info).await
             }

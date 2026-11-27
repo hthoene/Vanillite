@@ -149,10 +149,13 @@ fn with_ctx(
 
 const FLOOR: BlockPos = BlockPos::new(1, -1, 0);
 
-/// Fast break (instant-mine hacks): a survival player that stops digging stone by hand at once
-/// does not break it; the block only goes after the real breaking time.
+/// A survival player that stops digging stone by hand at once does not break it with the stop
+/// (less than 70 % done). The delayed destroy that follows counts like Vanilla's, with the tick
+/// the dig started at instead of the ticks spent (`incrementDestroyProgress(state, pos,
+/// delayedTickStart)`): a dig from the game mode's first tick never finishes, a later one
+/// breaks the block on the next tick (#180).
 #[test]
-fn survival_stone_does_not_break_instantly() {
+fn stopped_dig_finishes_like_vanilla() {
     let mut level = TestLevel::default();
     let sink = Sink::default();
     let mut digging = Digging::new();
@@ -161,18 +164,27 @@ fn survival_stone_does_not_break_instantly() {
         digging.handle_action(ctx, DigAction::StopDestroyBlock, FLOOR, 1, 2, &sink);
     });
     assert!(level.block(FLOOR).is(blocks::STONE));
-    // Stone by hand: 1.5 hardness, wrong tool → 1 / 1.5 / 100 per tick, 150 ticks.
-    for _ in 0..140 {
+    // Stone by hand: 1.5 hardness, wrong tool → 1 / 1.5 / 100 per tick.
+    for _ in 0..160 {
         with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
             digging.tick(ctx, &sink);
         });
     }
-    assert!(level.block(FLOOR).is(blocks::STONE), "broken too early");
-    for _ in 0..20 {
+    assert!(level.block(FLOOR).is(blocks::STONE), "started at tick 0");
+    let mut digging = Digging::new();
+    for _ in 0..200 {
         with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
             digging.tick(ctx, &sink);
         });
     }
+    with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
+        digging.handle_action(ctx, DigAction::StartDestroyBlock, FLOOR, 1, 3, &sink);
+        digging.handle_action(ctx, DigAction::StopDestroyBlock, FLOOR, 1, 4, &sink);
+    });
+    assert!(level.block(FLOOR).is(blocks::STONE), "not with the stop");
+    with_ctx(&mut level, GameMode::Survival, ItemStack::EMPTY, |ctx| {
+        digging.tick(ctx, &sink);
+    });
     assert!(
         level.block(FLOOR).is_air(),
         "delayed destroy did not finish"

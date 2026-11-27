@@ -6,7 +6,7 @@
 use vanillite_base::math::floor;
 use vanillite_base::random::RandomSource;
 
-use super::gradient::{GradientNoise, dot_xz, grad_dot, smoothstep, wrap};
+use super::gradient::{GradientNoise, dot, dot_xz, smoothstep, wrap};
 use super::stack::Octave;
 use crate::interval::Interval;
 use crate::mth::lerp3_f;
@@ -35,27 +35,26 @@ impl CellColumn {
     fn new(noise: &GradientNoise, column: &Column, floor_y: i32) -> Self {
         let (x0, x1, floor_z) = (column.x0, column.x1, column.z.floor);
         let (rx, rz) = (column.x.relative, column.z.relative);
-        let xy00 = noise.permute(x0.wrapping_add(floor_y));
-        let xy01 = noise.permute(x0.wrapping_add(floor_y).wrapping_add(1));
-        let xy10 = noise.permute(x1.wrapping_add(floor_y));
-        let xy11 = noise.permute(x1.wrapping_add(floor_y).wrapping_add(1));
+        // (Each pair holds the permutations of an index and of the next one.)
+        let xy0 = noise.pair(x0.wrapping_add(floor_y));
+        let xy1 = noise.pair(x1.wrapping_add(floor_y));
         let rx1 = rx - 1.0;
         let rz1 = rz - 1.0;
+        // The corners with `y`, `y + 1` at `x` and at `x + 1`, each at `z` and `z + 1`.
         let corners = [
-            (xy00, 0, rx, rz),
-            (xy10, 0, rx1, rz),
-            (xy01, 0, rx, rz),
-            (xy11, 0, rx1, rz),
-            (xy00, 1, rx, rz1),
-            (xy10, 1, rx1, rz1),
-            (xy01, 1, rx, rz1),
-            (xy11, 1, rx1, rz1),
+            (xy0.first(), rx),
+            (xy1.first(), rx1),
+            (xy0.second(), rx),
+            (xy1.second(), rx1),
         ];
         let mut column = Self::default();
-        for (i, (xy, dz, cx, cz)) in corners.into_iter().enumerate() {
-            let g = noise.permute_to_grad(xy.wrapping_add(floor_z).wrapping_add(dz));
-            column.xz[i] = dot_xz(g, cx, cz);
+        for (i, (xy, cx)) in corners.into_iter().enumerate() {
+            let xyz = noise.pair(xy.wrapping_add(floor_z));
+            let (g, g1) = (xyz.first_grad(), xyz.second_grad());
+            column.xz[i] = dot_xz(g, cx, rz);
             column.gy[i] = g[1];
+            column.xz[i + 4] = dot_xz(g1, cx, rz1);
+            column.gy[i + 4] = g1[1];
         }
         column
     }
@@ -109,6 +108,60 @@ struct Column {
     z: Lattice,
     x0: i32,
     x1: i32,
+}
+
+/// The Y values of one row of a volume in `addToVolume`: the lattice cell, the position inside
+/// it the corner gradients are multiplied with, and the smoothstep. They are the same in every
+/// column, so each row computes them once per call.
+#[derive(Clone, Copy, Default)]
+struct Row {
+    known: bool,
+    floor: i32,
+    relative: f32,
+    alpha: f32,
+}
+
+/// The rows of a volume, computed when a column first needs them.
+struct Rows {
+    short: [Row; Self::SHORT],
+    long: Vec<Row>,
+}
+
+impl Rows {
+    /// Volumes up to this height keep their rows on the stack.
+    const SHORT: usize = 64;
+
+    #[inline(always)]
+    fn new(size_y: usize) -> Self {
+        Self {
+            short: [Row::default(); Self::SHORT],
+            long: if size_y > Self::SHORT {
+                vec![Row::default(); size_y]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    /// Row `index`, from `compute` at its first use.
+    #[inline(always)]
+    fn get(&mut self, index: usize, compute: impl FnOnce() -> (i32, f32, f32)) -> Row {
+        let row = if self.long.is_empty() {
+            &mut self.short[index]
+        } else {
+            &mut self.long[index]
+        };
+        if !row.known {
+            let (floor, relative, alpha) = compute();
+            *row = Row {
+                known: true,
+                floor,
+                relative,
+                alpha,
+            };
+        }
+        *row
+    }
 }
 
 /// The points of a volume `add_to_volume` computes: all, or those of a mask.
@@ -177,9 +230,10 @@ fn for_each_column(
                 f64::from(volume.block_x(index_x)) * xz_scale,
                 noise.offset_x,
             );
+            let xs = noise.pair(x.floor);
             let column = Column {
-                x0: noise.permute(x.floor),
-                x1: noise.permute(x.floor.wrapping_add(1)),
+                x0: xs.first(),
+                x1: xs.second(),
                 x,
                 z,
             };
@@ -210,21 +264,22 @@ impl PerlinNoise {
         original_ry: f32,
     ) -> f32 {
         let n = &self.base;
-        let x0 = n.permute(x);
-        let x1 = n.permute(x.wrapping_add(1));
-        let xy00 = n.permute(x0.wrapping_add(y));
-        let xy01 = n.permute(x0.wrapping_add(y).wrapping_add(1));
-        let xy10 = n.permute(x1.wrapping_add(y));
-        let xy11 = n.permute(x1.wrapping_add(y).wrapping_add(1));
-        let z1 = |xy: i32| xy.wrapping_add(z).wrapping_add(1);
-        let d000 = grad_dot(n.permute(xy00.wrapping_add(z)), rx, ry, rz);
-        let d100 = grad_dot(n.permute(xy10.wrapping_add(z)), rx - 1.0, ry, rz);
-        let d010 = grad_dot(n.permute(xy01.wrapping_add(z)), rx, ry - 1.0, rz);
-        let d110 = grad_dot(n.permute(xy11.wrapping_add(z)), rx - 1.0, ry - 1.0, rz);
-        let d001 = grad_dot(n.permute(z1(xy00)), rx, ry, rz - 1.0);
-        let d101 = grad_dot(n.permute(z1(xy10)), rx - 1.0, ry, rz - 1.0);
-        let d011 = grad_dot(n.permute(z1(xy01)), rx, ry - 1.0, rz - 1.0);
-        let d111 = grad_dot(n.permute(z1(xy11)), rx - 1.0, ry - 1.0, rz - 1.0);
+        // (Each pair holds the permutations of an index and of the next one.)
+        let xs = n.pair(x);
+        let xy0 = n.pair(xs.first().wrapping_add(y));
+        let xy1 = n.pair(xs.second().wrapping_add(y));
+        let c00 = n.pair(xy0.first().wrapping_add(z));
+        let c10 = n.pair(xy1.first().wrapping_add(z));
+        let c01 = n.pair(xy0.second().wrapping_add(z));
+        let c11 = n.pair(xy1.second().wrapping_add(z));
+        let d000 = dot(c00.first_grad(), rx, ry, rz);
+        let d100 = dot(c10.first_grad(), rx - 1.0, ry, rz);
+        let d010 = dot(c01.first_grad(), rx, ry - 1.0, rz);
+        let d110 = dot(c11.first_grad(), rx - 1.0, ry - 1.0, rz);
+        let d001 = dot(c00.second_grad(), rx, ry, rz - 1.0);
+        let d101 = dot(c10.second_grad(), rx - 1.0, ry, rz - 1.0);
+        let d011 = dot(c01.second_grad(), rx, ry - 1.0, rz - 1.0);
+        let d111 = dot(c11.second_grad(), rx - 1.0, ry - 1.0, rz - 1.0);
         let x_alpha = smoothstep(rx);
         let y_alpha = smoothstep(original_ry);
         let z_alpha = smoothstep(rz);
@@ -294,6 +349,7 @@ impl PerlinNoise {
         points: impl Points,
     ) {
         let n = &self.base;
+        let mut rows = Rows::new(volume.size_y as usize);
         for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
             let mut cell = CellColumn::default();
             let mut last_floor_y = i32::MIN;
@@ -301,15 +357,17 @@ impl PerlinNoise {
                 if !points.has(first + index_y as usize) {
                     continue;
                 }
-                let y = wrap(f64::from(volume.block_y(index_y)) * y_scale) + n.offset_y;
-                let floor_y = floor(y);
-                let ry = (y - f64::from(floor_y)) as f32;
-                let alpha_y = smoothstep(ry);
-                if last_floor_y != floor_y {
-                    cell = CellColumn::new(n, c, floor_y);
-                    last_floor_y = floor_y;
+                let row = rows.get(index_y as usize, || {
+                    let y = wrap(f64::from(volume.block_y(index_y)) * y_scale) + n.offset_y;
+                    let floor_y = floor(y);
+                    let ry = (y - f64::from(floor_y)) as f32;
+                    (floor_y, ry, smoothstep(ry))
+                });
+                if last_floor_y != row.floor {
+                    cell = CellColumn::new(n, c, row.floor);
+                    last_floor_y = row.floor;
                 }
-                *value += amplitude * cell.lerp(c.x.alpha, alpha_y, c.z.alpha, ry);
+                *value += amplitude * cell.lerp(c.x.alpha, row.alpha, c.z.alpha, row.relative);
             }
         });
     }
@@ -414,6 +472,7 @@ impl SmearedPerlinNoise {
         points: impl Points,
     ) {
         let n = &self.perlin.base;
+        let mut rows = Rows::new(volume.size_y as usize);
         for_each_column(n, buffer, volume, xz_scale, points, |out, c, first| {
             let mut cell = CellColumn::default();
             let mut last_floor_y = i32::MIN;
@@ -421,17 +480,19 @@ impl SmearedPerlinNoise {
                 if !points.has(first + index_y as usize) {
                     continue;
                 }
-                let original_y = f64::from(volume.block_y(index_y)) * y_scale;
-                let y = wrap(original_y) + n.offset_y;
-                let floor_y = floor(y);
-                let ry = y - f64::from(floor_y);
-                let alpha_y = smoothstep(ry as f32);
-                if last_floor_y != floor_y {
-                    cell = CellColumn::new(n, c, floor_y);
-                    last_floor_y = floor_y;
+                let row = rows.get(index_y as usize, || {
+                    let original_y = f64::from(volume.block_y(index_y)) * y_scale;
+                    let y = wrap(original_y) + n.offset_y;
+                    let floor_y = floor(y);
+                    let ry = y - f64::from(floor_y);
+                    let fudged_ry = (ry - self.compute_fudge_y(original_y, ry)) as f32;
+                    (floor_y, fudged_ry, smoothstep(ry as f32))
+                });
+                if last_floor_y != row.floor {
+                    cell = CellColumn::new(n, c, row.floor);
+                    last_floor_y = row.floor;
                 }
-                let fudged_ry = (ry - self.compute_fudge_y(original_y, ry)) as f32;
-                *value += amplitude * cell.lerp(c.x.alpha, alpha_y, c.z.alpha, fudged_ry);
+                *value += amplitude * cell.lerp(c.x.alpha, row.alpha, c.z.alpha, row.relative);
             }
         });
     }

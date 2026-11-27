@@ -73,8 +73,8 @@ pub fn entity_source(
     source
 }
 
-/// `hurtServer` of any living entity: players go through the survival logic, mobs through
-/// [`hurt_mob`]. Returns whether the damage was taken.
+/// `hurtServer` of any living entity, decoration or vehicle: players go through the survival
+/// logic, mobs through [`hurt_mob`]. Returns whether the damage was taken.
 pub fn hurt(
     level: &Level,
     ents: &mut Entities,
@@ -94,9 +94,17 @@ pub fn hurt(
     if ents.decor(target).is_some() {
         return crate::decoration::hurt(level, ents, env, cx, target, &source);
     }
+    // `VehicleEntity.hurtServer`.
+    if ents.minecart(target).is_some() {
+        return crate::minecart::hurt(ents, env, cx, target, source, amount);
+    }
+    if ents.boat(target).is_some() {
+        return crate::vehicle::hurt_boat(ents, env, cx, target, source, amount);
+    }
     if ents.player(target).is_none() {
         return false;
     }
+    let source = with_blocking_facts(ents, source);
     // `ServerPlayer.hurtServer`: a player-caused hit (also through projectiles, potions and
     // arrows of a player) fails `canHarmPlayer` without the pvp rule.
     if !env.rules.bool(Rule::PVP)
@@ -142,6 +150,41 @@ pub fn hurt(
         super::common::tell_neutral_mobs_player_died(ents, target);
     }
     hurt
+}
+
+/// What `applyItemBlocking` of a player needs of the entities: whether a piercing arrow hit
+/// and, for a mob's melee hit, `getSecondsToDisableBlocking` of its main hand weapon.
+fn with_blocking_facts(ents: &Entities, mut source: DamageSource) -> DamageSource {
+    let Some(direct) = source.direct else {
+        return source;
+    };
+    source.piercing_arrow = ents.arrow(direct).is_some_and(|a| a.pierce_level > 0);
+    if source.cause != Some(direct) {
+        return source;
+    }
+    // `getSecondsToDisableBlocking`: the `weapon` of the main hand item, unless the attacker
+    // uses the item of its other hand (`getActiveItem`).
+    let weapon = if let Some(m) = ents.mob(direct) {
+        Some(m.equipment.get(crate::item::EquipmentSlot::MainHand))
+    } else {
+        ents.player(direct).and_then(|p| {
+            let off_hand = p.survival.using_item.is_some_and(|u| {
+                u.hand == vanillite_protocol::packets::play::serverbound::Hand::OffHand
+            });
+            (!off_hand).then(|| p.inventory.selected_item())
+        })
+    };
+    if let Some(weapon) = weapon {
+        source.disable_shield_seconds = if weapon.is_empty() {
+            0.0
+        } else {
+            crate::item::item_id(weapon)
+                .info()
+                .weapon
+                .map_or(0.0, |w| w.disable_blocking_for_seconds)
+        };
+    }
+    source
 }
 
 /// The motion of a projectile that hits (arrows, tridents, fireballs, thrown items, …: every
@@ -838,8 +881,9 @@ fn die(
     }
     for stack in drops {
         // `spawnAtLocation`: an item entity with the default random motion.
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
+            random: item_random,
             uuid,
             pos,
             velocity,
@@ -927,8 +971,9 @@ pub fn create_wither_rose(
     let Some(item) = vanillite_data::registry::ITEM.id("minecraft:wither_rose") else {
         return;
     };
-    let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+    let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
     env.out.push(Effect::DropItem {
+        random: item_random,
         uuid,
         pos,
         velocity,

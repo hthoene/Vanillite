@@ -114,6 +114,12 @@ These apply to the whole server.
 | `cpu` | setting | yes | `0.0` | `0.0` | `0.0` | `0.0` | `0.0` | CPU cores the server may use. 0 = detect: the cgroup CPU quota (`cpu.max`, Docker `--cpus`, Pterodactyl's CPU limit) and the CPU affinity. Number from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__BUDGET__CPU`. |
 | `memory` | setting | yes | `0` | `0` | `0` | `0` | `0` | Memory in MiB the server should stay far below; caches are sized from it. 0 = detect: the cgroup memory limit (`memory.max`), none without a container. Integer from 0 to 16777216. Environment: `VANILLITE_PERFORMANCE__BUDGET__MEMORY`. |
 
+#### `[performance.memory]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `release-when-empty` | setting |  | `60` | `60` | `60` | `60` | `60` | Seconds without players after which the server frees what it can build again: the tables of the world generators, structure templates and caches. They come back in the background when a player joins (new chunks then start a moment later, chunks from disk do not wait). In-game behaviour does not change; disabled keeps everything in memory. Integer from 1 to 86400. Also accepts `"disabled"`. Environment: `VANILLITE_PERFORMANCE__MEMORY__RELEASE_WHEN_EMPTY`. |
+
 #### `[performance.autosave]`
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
@@ -297,7 +303,7 @@ view-distance = 8
 |---|---|---|---|---|---|---|---|---|
 | `too-fast-check` | security |  | `true` | `true` | `true` | `true` | `true` | Players that move faster than Vanilla allows are teleported back ("moved too quickly"). Vanilla's `playerMovementCheck` game rule. Environment: `VANILLITE_MOVEMENT__TOO_FAST_CHECK`. |
 | `elytra-too-fast-check` | security |  | `true` | `true` | `true` | `true` | `true` | The "moved too quickly" check also applies while gliding with an elytra. Vanilla's `elytraMovementCheck` game rule. Environment: `VANILLITE_MOVEMENT__ELYTRA_TOO_FAST_CHECK`. |
-| `wrong-movement-check` | security |  | `true` | `true` | `true` | `true` | `true` | Players whose movement does not match the server's collision result are teleported back ("moved wrongly"). Not enforced yet: it needs block collision (milestone 3). Environment: `VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK`. |
+| `wrong-movement-check` | security |  | `true` | `true` | `true` | `true` | `true` | Players whose movement does not match the server's collision result ("moved wrongly") or that move into a block are teleported back, like Vanilla's `handleMovePlayer`. Off accepts every move that passes the other checks. Environment: `VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK`. |
 | `flying-kick` | security |  | `true` | `true` | `true` | `true` | `true` | Players floating in the air longer than Vanilla allows are kicked unless `allow-flight` is on. Not enforced yet: it needs block collision (milestone 3). Environment: `VANILLITE_MOVEMENT__FLYING_KICK`. |
 
 #### `[performance.chunks]`
@@ -306,6 +312,13 @@ view-distance = 8
 |---|---|---|---|---|---|---|---|---|
 | `unload-delay` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks a chunk stays loaded after no player or ticket needs it, so walking back does not load it again. Integer from 0 to 6000. Environment: `VANILLITE_PERFORMANCE__CHUNKS__UNLOAD_DELAY`. |
 | `max-jobs` | performance |  | `64` | `64` | `64` | `64` | `64` | Background chunk jobs (loads, generation steps, light) in flight per world. Higher values load faster with many players at the cost of memory for queued work. Integer from 1 to 4096. Environment: `VANILLITE_PERFORMANCE__CHUNKS__MAX_JOBS`. |
+
+#### `[performance.region-threading]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `enabled` | performance |  | `false` | `false` | `false` | `false` | `false` | Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial order at no cost. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED`. |
+| `tile-size` | performance |  | `16` | `16` | `16` | `16` | `16` | Edge of a tile in chunks. Smaller tiles balance better over the cores, larger ones cost less bookkeeping. Integer from 8 to 32. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__TILE_SIZE`. |
 
 #### `[performance.simulation]`
 
@@ -375,3 +388,22 @@ view-distance = 8
 | `replacement-blocks` | limit |  | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | Blocks that "obfuscate" also replaces with random hidden blocks (block ids). Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__REPLACEMENT_BLOCKS`. |
 | `max-block-height` | limit |  | `64` | `64` | `64` | `64` | `64` | Blocks at and above this height are always sent as they are. Integer from -2048 to 2048. Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__MAX_BLOCK_HEIGHT`. |
 | `update-radius` | limit |  | `2` | `2` | `2` | `2` | `2` | Distance in blocks around a changed block (mined, exploded, moved) within which hidden blocks are sent with their real state. Integer from 1 to 4. Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__UPDATE_RADIUS`. |
+
+### Extra worlds
+
+Worlds besides `level-name`, each with its own folder, `level.dat`, seed and generator (see [Worlds](worlds.md#extra-worlds)), are loaded at startup from one section each. Their rules come from `[worlds."minecraft:<name>"]`.
+
+```toml
+[extra-worlds.lobby]
+environment = "normal"
+generator = "flat"
+seed = ""
+generate-structures = true
+```
+
+| Key | Default | Values | Description |
+|---|---|---|---|
+| `environment` | `normal` | `normal`, `nether`, `the_end` | Its dimension type. |
+| `generator` | `normal` | `normal`, `flat`, `void`, `amplified`, `large_biomes`, a dimension key | The terrain of a new world; a dimension key takes that dimension's generator. |
+| `seed` | (empty) | text | The seed of a new world, like `level-seed`; empty for a random one. |
+| `generate-structures` | `true` | `true`, `false` | Whether a new world gets structures. |

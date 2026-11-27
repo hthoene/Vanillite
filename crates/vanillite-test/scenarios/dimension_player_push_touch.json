@@ -1,0 +1,18 @@
+{
+  "description": "A player on the server path (all dimensions) between a sheep it pushes and a slime that touches it: pushEntities and touch run in the player's own tick as in Vanilla (#176).",
+  "dimensions": true,
+  "tier": "fast",
+  "difficulty": "normal",
+  "time": 6000,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [[-32, -62, -32], [47, -56, 47]],
+  "ticks": 120,
+  "entities": [
+    {"name": "p", "type": "minecraft:player", "pos": [8.5, -60.0, 8.5], "rot": [0.0, 0.0]},
+    {"name": "m0", "type": "minecraft:sheep", "pos": [8.9, -60, 8.2], "rot": [90.0, 0.0], "seed": 204275},
+    {"name": "m1", "type": "minecraft:slime", "pos": [8.5, -60, 10.2], "rot": [180.0, 0.0], "seed": 348128}
+  ],
+  "actions": []
+}

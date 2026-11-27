@@ -597,27 +597,8 @@ fn varint_value(v: i32) -> Box<[u8]> {
 
 /// `saveToBucketTag`: the custom name, `bucket_entity_data` and the kind's components.
 pub(super) fn bucket_stack(m: &MobData) -> ItemStack {
-    let mut stack = crate::mob::equipment::stack(bucket_item(m.kind));
-    if let (Some(name), Some(id)) = (m.custom_name.as_deref(), component("minecraft:custom_name")) {
-        stack.patch_mut().set(id, name.into());
-    }
-    let mut data = Compound::new();
-    if m.no_ai {
-        data.insert("NoAI", true);
-    }
-    if m.silent {
-        data.insert("Silent", true);
-    }
-    if m.persistent {
-        data.insert("PersistenceRequired", true);
-    }
-    data.insert("Health", m.health);
-    if let (Some(bytes), Some(id)) = (
-        crate::mob::nbt::tag_component(&Tag::Compound(data)),
-        component("minecraft:bucket_entity_data"),
-    ) {
-        stack.patch_mut().set(id, bytes);
-    }
+    let (mut stack, data) = crate::mob::fam::bucket_default(m, bucket_item(m.kind));
+    crate::mob::fam::set_bucket_data(&mut stack, data);
     let s = st(m);
     match m.kind {
         Kind::Salmon => {
@@ -707,29 +688,7 @@ pub(super) fn load(m: &mut MobData, tag: &Compound) {
     }
 }
 
-/// The variant components of a fish bucket (`salmon/size`, `tropical_fish/*`) and
 /// `setFromBucket(true)` of the released fish.
-pub(crate) fn from_bucket(m: &mut MobData, varint: &dyn Fn(&str) -> Option<i32>) {
-    let kind = m.kind;
-    let s = st_mut(m);
-    s.from_bucket = true;
-    match kind {
-        Kind::Salmon => {
-            if let Some(v) = varint("minecraft:salmon/size") {
-                s.variant = v.clamp(0, 2);
-            }
-        }
-        Kind::TropicalFish => {
-            let pattern = varint("minecraft:tropical_fish/pattern");
-            let base = varint("minecraft:tropical_fish/base_color");
-            let color = varint("minecraft:tropical_fish/pattern_color");
-            if pattern.is_some() || base.is_some() || color.is_some() {
-                let v = s.variant;
-                s.variant = (pattern.unwrap_or(v & 0xFFFF) & 0xFFFF)
-                    | (base.unwrap_or(v >> 16 & 0xFF) & 0xFF) << 16
-                    | (color.unwrap_or(v >> 24 & 0xFF) & 0xFF) << 24;
-            }
-        }
-        _ => {}
-    }
+pub(crate) fn from_bucket(m: &mut MobData) {
+    st_mut(m).from_bucket = true;
 }

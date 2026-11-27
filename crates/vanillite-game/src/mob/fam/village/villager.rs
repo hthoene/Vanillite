@@ -1460,8 +1460,9 @@ pub fn throw_item(t: &mut Tick<'_, '_>, stack: ItemStack, target: Vec3) {
     let d = Vec3::new(aim.x - p.x, aim.y - p.y, aim.z - p.z).normalize();
     let v = f64::from(0.3_f32);
     let velocity = Vec3::new(d.x * v, d.y * v, d.z * v);
-    let (uuid, y_rot, _) = crate::mob::new_item_entity();
+    let (uuid, y_rot, _, item_random) = crate::mob::new_item_entity();
     t.env.out.push(crate::survival::Effect::DropItem {
+        random: item_random,
         uuid,
         pos: start,
         velocity,

@@ -36,6 +36,8 @@ pub(super) struct MaterialRuleContext<'a> {
     pub(super) rules: &'a FoldedRules,
     /// Per ore vein: the prefilled density and richness buffers.
     ore_densities: Vec<OreBuffers>,
+    /// See [`Self::ore_veins_present`].
+    ore_present: u32,
     /// Per noise slot: update stamp and value.
     pub(super) noise_values: Vec<(u64, f64)>,
     pub(super) last_update_xz: u64,
@@ -66,7 +68,20 @@ pub(super) struct MaterialRuleContext<'a> {
 struct OreBuffers {
     volume: Option<DensityVolume>,
     values: Option<[Vec<f32>; 2]>,
+    /// The density is proven not to be positive anywhere in `volume` (then it is not
+    /// sampled, and reads as its constant outside the vein's Y range, which is not either).
+    absent: bool,
 }
+
+thread_local! {
+    /// The context the bounds of the ore vein densities are computed in.
+    static BOUNDS_CONTEXT: std::cell::RefCell<SamplerContext> =
+        std::cell::RefCell::new(SamplerContext::new(true));
+}
+
+/// What a vein's density reads as where it is proven not to be positive (any such value has
+/// the same effect: the vein places nothing).
+const ABSENT_DENSITY: f32 = -1.0;
 
 impl<'a> MaterialRuleContext<'a> {
     /// The context plus `ruleSource.compile(context)`: `rules` is the rule tree folded with
@@ -84,21 +99,46 @@ impl<'a> MaterialRuleContext<'a> {
         rules: &'a FoldedRules,
         biome_folds: Vec<Option<bool>>,
     ) -> Self {
-        let ore_densities = system
+        let ore_densities: Vec<OreBuffers> = system
             .ore_vein_fns
             .iter()
             .map(|fns| {
                 let volume = fns.prefill_volume(&expected_volume, system.ore_y_period);
-                let values = volume.map(|volume| {
+                // A vein whose density is proven not to be positive anywhere in the chunk
+                // places nothing: its density is never above zero and its richness never
+                // read, so neither is sampled (nothing else reads their cache cells).
+                let absent = system.ore_cells_private
+                    && volume.is_some_and(|volume| {
+                        BOUNDS_CONTEXT.with_borrow_mut(|scratch| {
+                            program.not_positive_in(scratch, fns.density, &volume)
+                        })
+                    });
+                let values = volume.filter(|_| !absent).map(|volume| {
                     let mut density = vec![0.0; volume.len()];
                     program.sample_volume(samplers, fns.density, &mut density, &volume);
                     let mut richness = vec![0.0; volume.len()];
                     program.sample_volume(samplers, fns.richness, &mut richness, &volume);
                     [density, richness]
                 });
-                OreBuffers { volume, values }
+                OreBuffers {
+                    volume,
+                    values,
+                    absent,
+                }
             })
             .collect();
+        let mut ore_present = 0;
+        for (vein, (buffers, fns)) in ore_densities.iter().zip(&system.ore_vein_fns).enumerate() {
+            let outside = fns.y_range.map_or(0.0, |r| r.2);
+            let inside = buffers.values.as_ref().is_some_and(|values| {
+                values[0]
+                    .iter()
+                    .fold(false, |any, &d| any | (d > 0.0) | d.is_nan())
+            });
+            if (inside || outside.is_nan() || outside > 0.0) && vein < 32 {
+                ore_present |= 1 << vein;
+            }
+        }
         Self {
             system,
             program,
@@ -119,6 +159,7 @@ impl<'a> MaterialRuleContext<'a> {
             biome_folds,
             rules,
             ore_densities,
+            ore_present,
             noise_values: vec![(0, 0.0); system.rules.noises.len()],
             last_update_xz: 0,
             last_update_y: 0,
@@ -256,6 +297,54 @@ impl<'a> MaterialRuleContext<'a> {
         }
     }
 
+    /// Whether [`Self::min_surface_level`] of the current column reads the sampled layer, so
+    /// calling it leaves the sampling context untouched.
+    #[inline]
+    pub(super) fn surface_level_is_free(&self) -> bool {
+        !self.preliminary_surface.is_empty() && self.column.is_some()
+    }
+
+    /// Bit `v` set: ore vein `v` has a density above zero somewhere in the expected volume (or
+    /// is not prefilled), so it may place a block in this chunk.
+    pub(super) fn ore_veins_present(&self) -> u32 {
+        self.ore_present
+    }
+
+    /// Whether one of the ore veins of `veins` (bit `v`: vein `v`) may place a block at `y` of
+    /// the current column: its density there is not known to be `<= 0`.
+    pub(super) fn ore_may_place(&self, veins: u32, y: i32) -> bool {
+        let expected = &self.expected_volume;
+        let Some(column) = self.column else {
+            return true;
+        };
+        if !(0..expected.size_y).contains(&y.wrapping_sub(expected.min_y)) {
+            // Sampled block by block there.
+            return true;
+        }
+        let mut veins = veins;
+        while veins != 0 {
+            let vein = veins.trailing_zeros() as usize;
+            veins &= veins - 1;
+            let buffers = &self.ore_densities[vein];
+            if buffers.absent {
+                continue;
+            }
+            let density = match (&buffers.volume, &buffers.values) {
+                (Some(volume), Some(values))
+                    if (0..volume.size_y).contains(&(y - volume.min_y)) =>
+                {
+                    values[0][(y - volume.min_y + column * volume.size_y) as usize]
+                }
+                _ => self.system.ore_vein_fns[vein].y_range.map_or(0.0, |r| r.2),
+            };
+            // As `ore_vein` tests it: a NaN density passes.
+            if density.is_nan() || density > 0.0 {
+                return true;
+            }
+        }
+        false
+    }
+
     /// `resolveAnchorY(anchor)`.
     pub(super) fn resolve_anchor_y(&self, anchor: VerticalAnchor) -> i32 {
         anchor.resolve_y(&self.generation)
@@ -269,6 +358,9 @@ impl<'a> MaterialRuleContext<'a> {
         match (self.block_index, self.column) {
             (Some(_), Some(column)) => {
                 let buffers = &self.ore_densities[vein];
+                if buffers.absent {
+                    return ABSENT_DENSITY;
+                }
                 if let (Some(volume), Some(values)) = (&buffers.volume, &buffers.values) {
                     let row = y - volume.min_y;
                     if (0..volume.size_y).contains(&row) {

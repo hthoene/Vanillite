@@ -417,6 +417,10 @@ pub trait ChunkGenerator: Send + Sync {
     /// `ensureStructuresGenerated` when a level loads). Runs once as a background job when the
     /// world starts; `generate` must work without it.
     fn prepare(&self) {}
+
+    /// Frees what the generator can make again when it is needed (tables, caches). Called
+    /// when the server has been empty for a while; what `generate` produces must not change.
+    fn release_memory(&self) {}
 }
 
 /// Creates the generator of each world.

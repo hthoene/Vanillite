@@ -107,7 +107,8 @@ pub struct Advancement {
     pub id: String,
     /// The parent's index; `None` for roots and advancements outside the tree.
     pub parent: Option<u32>,
-    pub display: Option<Display>,
+    /// Boxed: most advancements (the recipe ones) have none.
+    pub display: Option<Box<Display>>,
     pub rewards: Rewards,
     /// The criteria, sorted by name.
     pub criteria: Vec<Criterion>,
@@ -265,7 +266,11 @@ fn parse(id: &str, text: &str) -> Res<Advancement> {
     let root: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let o = object(&root)?;
     let parent_id = o.get("parent").map(string).transpose()?.map(qualify);
-    let display = o.get("display").map(parse_display).transpose()?;
+    let display = o
+        .get("display")
+        .map(parse_display)
+        .transpose()?
+        .map(Box::new);
     let criteria_json = object(o.get("criteria").ok_or("missing criteria")?)?;
     if criteria_json.is_empty() {
         return Err("Advancement criteria cannot be empty".into());
@@ -327,7 +332,7 @@ fn parse(id: &str, text: &str) -> Res<Advancement> {
     }
     let name = display
         .as_ref()
-        .map_or_else(|| Component::text(id), decorate_name);
+        .map_or_else(|| Component::text(id), |d| decorate_name(d));
     Ok(Advancement {
         id: id.to_owned(),
         parent: None,

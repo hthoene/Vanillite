@@ -21,7 +21,7 @@ use crate::player::encode::{DataWriter, serializer};
 
 /// `cat_variant` ids (alphabetical): all_black, black, british_shorthair, calico, jellie,
 /// persian, ragdoll, red, siamese, tabby, white.
-const CAT_VARIANTS: [&str; 11] = [
+pub(crate) const CAT_VARIANTS: [&str; 11] = [
     "all_black",
     "black",
     "british_shorthair",
@@ -36,7 +36,7 @@ const CAT_VARIANTS: [&str; 11] = [
 ];
 /// `CatVariants.DEFAULT` (black).
 pub const CAT_DEFAULT: i32 = 1;
-const CAT_SOUNDS: [&str; 2] = ["classic", "royal"];
+pub(crate) const CAT_SOUNDS: [&str; 2] = ["classic", "royal"];
 
 /// The feline goals.
 #[derive(Clone, Copy, Debug)]

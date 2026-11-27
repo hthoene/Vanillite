@@ -236,9 +236,18 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     let Some(entity) = level.entities.store.get(id) else {
         return;
     };
-    let (new_pos, new_aabb) = (entity.pos(), entity.aabb());
-    // `applyEffectsFromBlocks`.
-    apply_effects_from_blocks(level, id, new_aabb);
+    let (new_pos, dims) = (entity.pos(), entity.dims());
+    // `applyEffectsFromBlocks`: the blocks on the way of the move react.
+    let way = if new_pos == pos {
+        crate::survival::inside::Movement::still(pos)
+    } else {
+        crate::survival::inside::Movement {
+            from: pos,
+            to: new_pos,
+            original: Some(velocity),
+        }
+    };
+    super::plate::entity_inside_along(level, id, dims, &[way]);
     let Some(entity) = level.entities.store.get(id) else {
         return;
     };
@@ -411,25 +420,4 @@ fn block_bounciness(block: BlockId) -> f64 {
 /// `Mth.equal(a, b)`: `|b - a| < 1.0E-5F`.
 fn mth_equal(a: f64, b: f64) -> bool {
     (b - a).abs() < f64::from(1.0e-5_f32)
-}
-
-/// `applyEffectsFromBlocks` for an entity that stands still in its block: `entityInside` of
-/// every non-air block its box (shrunk by 1.0E-5) touches, X fastest, then Y, then Z.
-fn apply_effects_from_blocks(level: &mut Level, id: EntityId, aabb: Aabb) {
-    let e = 1.0e-5;
-    let min = BlockPos::containing(aabb.min_x + e, aabb.min_y + e, aabb.min_z + e);
-    let max = BlockPos::containing(aabb.max_x - e, aabb.max_y - e, aabb.max_z - e);
-    for z in min.z..=max.z {
-        for y in min.y..=max.y {
-            for x in min.x..=max.x {
-                let pos = BlockPos::new(x, y, z);
-                if !level.entities.store.contains(id) {
-                    return;
-                }
-                if !level.block(pos).is_air() {
-                    level.entity_inside(pos, id);
-                }
-            }
-        }
-    }
 }

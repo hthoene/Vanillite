@@ -179,8 +179,9 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
     }
     if d.ints[1] != 0 {
         // `new ItemEntity(level, x, y, z, item)`: its own random motion, no pickup delay.
-        let (uuid, y_rot, velocity) = crate::mob::new_item_entity();
+        let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         t.env.out.push(crate::survival::Effect::DropItem {
+            random: item_random,
             uuid,
             pos: new_pos,
             velocity,

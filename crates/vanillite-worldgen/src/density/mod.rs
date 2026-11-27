@@ -27,6 +27,7 @@
 //!
 //! [`DensityVolume`]: crate::volume::DensityVolume
 
+mod bounds;
 mod compile;
 mod exec;
 mod function;

@@ -220,11 +220,7 @@ fn biome_flower_features(
     let mut out = Vec::with_capacity(biomes.all().len());
     for biome in biomes.all() {
         let mut list = Vec::new();
-        let steps = biome
-            .json
-            .get("features")
-            .and_then(serde_json::Value::as_array);
-        for step in steps.into_iter().flatten() {
+        for step in &biome.features {
             let names: Vec<String> = match step {
                 serde_json::Value::Array(a) => a
                     .iter()

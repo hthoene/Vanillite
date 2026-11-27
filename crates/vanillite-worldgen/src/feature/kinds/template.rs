@@ -13,16 +13,15 @@ use crate::Error;
 use crate::carver::providers::WeightedList;
 use crate::feature::region::WorldGenRegion;
 use crate::feature::{FeatureContext, FeatureParser, FeatureType, field, int_field};
-use crate::template::{
-    BoundingBox, Mirror, ProcessorList, Rotation, StructurePlaceSettings, StructureTemplate,
-};
+use crate::template::TemplateRef;
+use crate::template::{BoundingBox, Mirror, ProcessorList, Rotation, StructurePlaceSettings};
 
 /// A list of template ids (`Identifier.CODEC.listOf()`, non-empty) loaded through the parser.
 fn template_list(
     json: &Value,
     name: &str,
     parser: &FeatureParser<'_>,
-) -> Result<Vec<Arc<StructureTemplate>>, Error> {
+) -> Result<Vec<TemplateRef>, Error> {
     let items = field(json, name)?
         .as_array()
         .ok_or_else(|| Error::new(format!("{name} is not a list")))?;
@@ -35,7 +34,7 @@ fn template_list(
             let id = id
                 .as_str()
                 .ok_or_else(|| Error::new(format!("{name}: invalid id {id}")))?;
-            parser.structure_template(id)
+            Ok(parser.structure_template(id))
         })
         .collect()
 }
@@ -44,7 +43,7 @@ fn template_list(
 #[derive(Debug)]
 pub struct FossilFeature {
     /// `fossilStructures` and `overlayStructures`, pairwise.
-    fossils: Vec<(Arc<StructureTemplate>, Arc<StructureTemplate>)>,
+    fossils: Vec<(TemplateRef, TemplateRef)>,
     fossil_processors: Arc<ProcessorList>,
     overlay_processors: Arc<ProcessorList>,
     max_empty_corners_allowed: i32,
@@ -77,6 +76,7 @@ impl FeatureType for FossilFeature {
         let rotation = Rotation::random(random);
         let index = random.next_int_bounded(self.fossils.len() as i32) as usize;
         let (fossil, overlay) = &self.fossils[index];
+        let (fossil, overlay) = (fossil.get(), overlay.get());
         let (chunk_x, chunk_z) = (origin.x >> 4, origin.z >> 4);
         let bounding_box = BoundingBox::new(
             (chunk_x << 4) - 16,
@@ -139,7 +139,7 @@ fn count_empty_corners(level: &WorldGenRegion<'_>, bounds: &BoundingBox) -> i32 
 /// `TemplateFeature.TemplateEntry`: a template and the rotations it may be placed with.
 #[derive(Debug)]
 struct TemplateEntry {
-    template: Arc<StructureTemplate>,
+    template: TemplateRef,
     rotations: Vec<Rotation>,
 }
 
@@ -174,7 +174,7 @@ impl FeatureType for TemplateFeature {
                 return Err(Error::new("template rotations must not be empty"));
             }
             Ok(TemplateEntry {
-                template: parser.structure_template(id)?,
+                template: parser.structure_template(id),
                 rotations,
             })
         })?;
@@ -193,7 +193,7 @@ impl FeatureType for TemplateFeature {
         let entry = self.templates.get_random(random);
         let rotation =
             entry.rotations[random.next_int_bounded(entry.rotations.len() as i32) as usize];
-        let template = &entry.template;
+        let template = entry.template.get();
         let size = template.size();
         // `getRotatedOffset`: the axis' negative direction, rotated, times half the size.
         let offset = |direction: Direction, half: i32| {

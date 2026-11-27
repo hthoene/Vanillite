@@ -60,7 +60,7 @@ pub(crate) fn parse_seed(text: &str) -> Option<i64> {
 }
 
 /// A seed for a new world without `level-seed` (`WorldOptions.randomSeed`).
-fn random_seed() -> i64 {
+pub(crate) fn random_seed() -> i64 {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
@@ -72,33 +72,122 @@ fn random_seed() -> i64 {
 /// Saved data id of Vanilla's `WorldGenSettings`.
 const WORLD_GEN_SETTINGS: &str = "minecraft:world_gen_settings";
 
-/// Vanilla's `WorldGenSettings` of a world: the seed and the generator of each dimension.
+/// Vanilla's `WorldGenSettings` of a world: the seed and the dimensions (`LevelStem`s) the server
+/// loads, with each one's dimension type and generator.
 #[derive(Debug, Clone)]
 pub(crate) struct WorldGen {
     /// World seed.
     pub(crate) seed: i64,
     /// `generate_structures`.
     generate_structures: bool,
-    /// The `generator` JSON of each dimension (`dimensions.<key>.generator`).
-    generators: serde_json::Map<String, serde_json::Value>,
+    /// The dimensions in Vanilla's order (`WorldDimensions.keysInOrder`).
+    stems: Vec<Stem>,
+}
+
+/// One dimension (`LevelStem`): its key, its dimension type and its generator JSON.
+#[derive(Debug, Clone)]
+struct Stem {
+    id: String,
+    kind: String,
+    generator: Option<serde_json::Value>,
+}
+
+impl Stem {
+    /// A stem from its JSON (`{"type": ..., "generator": ...}`); a type given inline is taken
+    /// as the dimension's own key.
+    fn from_json(id: &str, json: &serde_json::Value) -> Stem {
+        Stem {
+            id: id.to_owned(),
+            kind: json
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(id)
+                .to_owned(),
+            generator: json.get("generator").cloned(),
+        }
+    }
 }
 
 impl WorldGen {
     /// Reads the world's `data/minecraft/world_gen_settings.dat` (Paper keeps it in the
-    /// overworld's folder). A new world gets its seed from `level-seed` (else a random one) and
-    /// its generators from the world preset of `level-type`, and the file is written.
-    pub(crate) fn load_or_create(
-        level_dir: &Path,
-        properties: &vanillite_config::ServerProperties,
-        packs: Option<&LoadedPacks>,
-    ) -> Result<Self, StartError> {
+    /// overworld's folder); `None` if there is none.
+    pub(crate) fn load(level_dir: &Path) -> Result<Option<Self>, StartError> {
         let overworld = vanillite_storage::dimension_dir(level_dir, "minecraft:overworld");
         for dir in [level_dir, overworld.as_path()] {
             let data = vanillite_storage::read_saved_data(dir, WORLD_GEN_SETTINGS)
                 .map_err(|e| StartError::io(dir, e))?;
             if let Some(data) = data {
-                return Ok(Self::from_nbt(&data));
+                return Ok(Some(Self::from_nbt(&data)));
             }
+        }
+        Ok(None)
+    }
+
+    /// No saved settings: seed 0, no saved dimensions.
+    pub(crate) fn empty() -> Self {
+        Self {
+            seed: 0,
+            generate_structures: true,
+            stems: Vec::new(),
+        }
+    }
+
+    /// Adds the dimensions of the data packs (`minecraft:dimension`), which take precedence
+    /// over the saved ones, and orders them like `WorldDimensions.bake`: the overworld, the
+    /// nether and the end first (always present here), then the others by key.
+    pub(crate) fn bake(mut self, packs: Option<&LoadedPacks>) -> Self {
+        if let Some(registry) = packs.and_then(|p| p.registry("minecraft:dimension")) {
+            for entry in registry.entries() {
+                let Ok(json) = serde_json::from_str::<serde_json::Value>(entry.json.get()) else {
+                    log::warn!("dimension {}: invalid JSON, skipped", entry.id);
+                    continue;
+                };
+                let stem = Stem::from_json(&entry.id, &json);
+                match self.stems.iter_mut().find(|s| s.id == entry.id) {
+                    Some(old) => *old = stem,
+                    None => self.stems.push(stem),
+                }
+            }
+        }
+        for id in crate::server::VANILLA_DIMENSIONS {
+            if !self.stems.iter().any(|s| s.id == id) {
+                self.stems.push(Stem {
+                    id: id.to_owned(),
+                    kind: id.to_owned(),
+                    generator: None,
+                });
+            }
+        }
+        let rank = |id: &str| {
+            crate::server::VANILLA_DIMENSIONS
+                .iter()
+                .position(|d| *d == id)
+                .unwrap_or(crate::server::VANILLA_DIMENSIONS.len())
+        };
+        self.stems
+            .sort_by(|a, b| rank(&a.id).cmp(&rank(&b.id)).then_with(|| a.id.cmp(&b.id)));
+        self
+    }
+
+    /// The dimensions the server loads, in tick order.
+    pub(crate) fn dimensions(&self, packs: Option<&LoadedPacks>) -> crate::dimensions::Dimensions {
+        crate::dimensions::Dimensions::new(
+            self.stems
+                .iter()
+                .map(|s| (s.id.clone(), s.kind.clone()))
+                .collect(),
+            packs,
+            self.seed,
+        )
+    }
+
+    pub(crate) fn load_or_create(
+        level_dir: &Path,
+        properties: &vanillite_config::ServerProperties,
+        packs: Option<&LoadedPacks>,
+    ) -> Result<Self, StartError> {
+        if let Some(world_gen) = Self::load(level_dir)? {
+            return Ok(world_gen.bake(packs));
         }
         let seed = parse_seed(&properties.level_seed).unwrap_or_else(random_seed);
         let preset = match properties.level_type.trim().to_lowercase().as_str() {
@@ -116,8 +205,9 @@ impl WorldGen {
             return Ok(Self {
                 seed,
                 generate_structures: properties.generate_structures,
-                generators: serde_json::Map::new(),
-            });
+                stems: Vec::new(),
+            }
+            .bake(packs));
         };
         let mut stems = vanillite_nbt::Compound::new();
         for (key, stem) in &dimensions {
@@ -133,7 +223,56 @@ impl WorldGen {
         vanillite_storage::write_saved_data(level_dir, WORLD_GEN_SETTINGS, data.clone())
             .map_err(|e| StartError::io(level_dir, e))?;
         log::info!("New world: preset {preset}, seed {seed}");
+        Ok(Self::from_nbt(&data).bake(packs))
+    }
+
+    /// The settings of an extra world: one dimension `id` of type `kind` with `generator`
+    /// (`None`: the classic flat layers), written to `level_dir` like Vanilla's
+    /// `world_gen_settings.dat`.
+    pub(crate) fn create_single(
+        level_dir: &Path,
+        (id, kind): (&str, &str),
+        generator: Option<serde_json::Value>,
+        seed: i64,
+        generate_structures: bool,
+    ) -> Result<Self, StartError> {
+        let mut stem = vanillite_nbt::Compound::new().with("type", kind);
+        if let Some(generator) = &generator
+            && let vanillite_nbt::Tag::Compound(generator) = json_to_nbt(generator)
+        {
+            stem.insert("generator", generator);
+        }
+        let data = vanillite_nbt::Compound::new()
+            .with("generate_structures", generate_structures)
+            .with("bonus_chest", false)
+            .with("seed", seed)
+            .with("dimensions", vanillite_nbt::Compound::new().with(id, stem));
+        vanillite_storage::write_saved_data(level_dir, WORLD_GEN_SETTINGS, data.clone())
+            .map_err(|e| StartError::io(level_dir, e))?;
         Ok(Self::from_nbt(&data))
+    }
+
+    /// The dimension type of a saved dimension.
+    pub(crate) fn kind_of(&self, dimension: &str) -> Option<&str> {
+        self.stems
+            .iter()
+            .find(|s| s.id == dimension)
+            .map(|s| s.kind.as_str())
+    }
+
+    /// The saved dimension `from` under the key `to` (an extra world whose files another
+    /// server wrote under Vanilla's key).
+    pub(crate) fn renamed(mut self, from: &str, to: &str) -> Self {
+        self.stems.retain(|s| s.id == from);
+        for stem in &mut self.stems {
+            stem.id = to.to_owned();
+        }
+        self
+    }
+
+    /// The generator JSON of a dimension, if it has one.
+    pub(crate) fn generator_json(&self, dimension: &str) -> Option<serde_json::Value> {
+        self.generator(dimension).cloned()
     }
 
     fn from_nbt(data: &vanillite_nbt::Compound) -> Self {
@@ -141,15 +280,13 @@ impl WorldGen {
             .get("seed")
             .and_then(vanillite_nbt::Tag::as_i64)
             .unwrap_or(0);
-        let mut generators = serde_json::Map::new();
+        let mut stems = Vec::new();
         if let Some(dimensions) = data
             .get("dimensions")
             .and_then(vanillite_nbt::Tag::as_compound)
         {
             for (key, stem) in dimensions.iter() {
-                if let Some(generator) = stem.as_compound().and_then(|s| s.get("generator")) {
-                    generators.insert(key.to_owned(), nbt_to_json(generator));
-                }
+                stems.push(Stem::from_json(key, &nbt_to_json(stem)));
             }
         }
         // Vanilla reads a missing or non-byte value as `true`.
@@ -160,19 +297,28 @@ impl WorldGen {
         Self {
             seed,
             generate_structures,
-            generators,
+            stems,
         }
     }
 
     /// The generator JSON of a dimension.
     fn generator(&self, dimension: &str) -> Option<&serde_json::Value> {
-        self.generators.get(dimension)
+        self.stems
+            .iter()
+            .find(|s| s.id == dimension)?
+            .generator
+            .as_ref()
     }
 
     /// The total height of the overworld's flat layers (`FlatLevelSource.getSpawnHeight` takes
     /// it); `None` for other generators.
     pub(crate) fn flat_spawn_height(&self) -> Option<i32> {
-        let generator = self.generator("minecraft:overworld")?;
+        self.flat_spawn_height_of("minecraft:overworld")
+    }
+
+    /// The total height of a dimension's flat layers; `None` for other generators.
+    pub(crate) fn flat_spawn_height_of(&self, dimension: &str) -> Option<i32> {
+        let generator = self.generator(dimension)?;
         if generator.get("type").and_then(|t| t.as_str()) != Some("minecraft:flat") {
             return None;
         }
@@ -188,7 +334,12 @@ impl WorldGen {
 
     /// Whether the overworld uses the flat generator (`is_flat` of the login packet).
     pub(crate) fn is_flat(&self) -> bool {
-        self.generator("minecraft:overworld")
+        self.is_flat_of("minecraft:overworld")
+    }
+
+    /// Whether a dimension uses no noise generator (`is_flat` of the login packet).
+    pub(crate) fn is_flat_of(&self, dimension: &str) -> bool {
+        self.generator(dimension)
             .is_none_or(|g| g.get("type").and_then(|t| t.as_str()) != Some("minecraft:noise"))
     }
 }
@@ -251,7 +402,15 @@ pub(crate) struct BuiltInGenerators {
     pub(crate) world_gen: WorldGen,
     /// The noise generators made, by dimension, for the levels (`/locate`).
     pub(crate) created: GeneratorsByDimension,
+    /// The settings of the extra worlds, by dimension key.
+    pub(crate) extra: ExtraWorldGens,
+    /// The server's structure template cache.
+    pub(crate) templates: Arc<vanillite_worldgen::template::StructureTemplateManager>,
 }
+
+/// The generator settings of the extra worlds by dimension key, shared with the server.
+pub(crate) type ExtraWorldGens =
+    Arc<std::sync::Mutex<vanillite_base::hash::FxHashMap<String, WorldGen>>>;
 
 /// Terrain generators by dimension, shared with the levels.
 pub(crate) type GeneratorsByDimension = Arc<
@@ -260,14 +419,31 @@ pub(crate) type GeneratorsByDimension = Arc<
 
 impl ChunkGeneratorProvider for BuiltInGenerators {
     fn create(&self, world: &WorldInfo) -> Result<Arc<dyn ChunkGenerator>, String> {
-        let generator = self.world_gen.generator(&world.dimension);
+        let extra = self
+            .extra
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&world.dimension)
+            .cloned();
+        let world_gen = extra.as_ref().unwrap_or(&self.world_gen);
+        let generator = world_gen.generator(&world.dimension);
         let kind = generator
             .and_then(|g| g.get("type"))
             .and_then(|t| t.as_str());
+        match kind {
+            Some("minecraft:flat") => {
+                return Ok(Arc::new(flat_generator(
+                    world,
+                    generator.and_then(|g| g.get("settings")),
+                )));
+            }
+            Some("minecraft:debug") => return Ok(Arc::new(DebugGenerator::new(world))),
+            _ => {}
+        }
         let (Some(packs), Some(generator), Some("minecraft:noise")) =
-            (self.packs.as_deref(), generator, kind)
+            (self.packs.as_ref(), generator, kind)
         else {
-            if let Some(kind) = kind.filter(|k| *k != "minecraft:flat") {
+            if let Some(kind) = kind {
                 log::warn!(
                     "{}: generator {kind} is not supported, using flat",
                     world.dimension
@@ -278,25 +454,44 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
         let noise_settings = generator
             .get("settings")
             .and_then(|s| s.as_str())
-            .ok_or("inline noise settings are not supported")?;
-        let spec = DimensionSpec {
-            noise_settings,
-            biome_source: generator.get("biome_source").ok_or("no biome source")?,
-            min_y: world.min_y,
-            height: i32::try_from(world.height).map_err(|e| e.to_string())?,
-            has_sky_light: world.has_sky_light,
+            .ok_or("inline noise settings are not supported")?
+            .to_owned();
+        let biome_source = generator.get("biome_source").ok_or("no biome source")?;
+        let (min_y, has_sky_light) = (world.min_y, world.has_sky_light);
+        let height = i32::try_from(world.height).map_err(|e| e.to_string())?;
+        // Built now and again after an empty server released it (`performance.memory`).
+        let terrain = {
+            let (packs, biome_source) = (Arc::clone(packs), biome_source.clone());
+            let (seed, dimension) = (world_gen.seed, world.dimension.clone());
+            let templates = Arc::clone(&self.templates);
+            vanillite_worldgen::SharedTerrain::rebuildable(move || {
+                let started = std::time::Instant::now();
+                let spec = DimensionSpec {
+                    noise_settings: &noise_settings,
+                    biome_source: &biome_source,
+                    min_y,
+                    height,
+                    has_sky_light,
+                };
+                let terrain =
+                    TerrainGenerator::with_templates(&packs, spec, seed, Arc::clone(&templates));
+                log::debug!(
+                    "{dimension}: terrain generator built in {:.0?}",
+                    started.elapsed()
+                );
+                terrain
+            })
+            .map_err(|e| e.to_string())?
         };
-        let terrain =
-            TerrainGenerator::new(packs, spec, self.world_gen.seed).map_err(|e| e.to_string())?;
         let generator = VanillaChunkGenerator::new(terrain, world.clone())
-            .with_structures(self.world_gen.generate_structures);
+            .with_structures(world_gen.generate_structures);
         self.created
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
                 world.dimension.clone(),
                 vanillite_game::level::Generation {
-                    terrain: generator.shared(),
+                    shared: generator.shared(),
                     dimension: world.dimension.clone(),
                     structures: generator.generates_structures(),
                 },
@@ -305,22 +500,132 @@ impl ChunkGeneratorProvider for BuiltInGenerators {
     }
 }
 
+/// `FlatLevelSource` of `settings` (`FlatLevelGeneratorSettings`): its layers from the bottom of
+/// the world up and its biome. Without settings, Vanilla's default layers. Lakes, features and
+/// structures of flat settings are not generated.
+fn flat_generator(world: &WorldInfo, settings: Option<&serde_json::Value>) -> FlatGenerator {
+    let Some(settings) = settings else {
+        return FlatGenerator::classic(world);
+    };
+    let mut states = Vec::new();
+    for layer in settings
+        .get("layers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let block = layer
+            .get("block")
+            .and_then(serde_json::Value::as_str)
+            .and_then(vanillite_data::block::BlockId::by_name);
+        let height = layer
+            .get("height")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|h| usize::try_from(h).ok())
+            .unwrap_or(0);
+        match block {
+            Some(block) => states.extend(std::iter::repeat_n(block.default_state().0, height)),
+            None => log::warn!("{}: unknown flat layer block {layer}", world.dimension),
+        }
+    }
+    states.truncate(usize::try_from(world.height).unwrap_or(usize::MAX));
+    let mut info = world.clone();
+    if let Some(biome) = settings
+        .get("biome")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|b| world.biomes.iter().position(|id| id == b))
+        .and_then(|i| u16::try_from(i).ok())
+    {
+        info.default_biome = biome;
+    }
+    FlatGenerator::new(&info, &states)
+}
+
+/// `DebugLevelSource`: every block state in a grid at y 70 over a barrier floor at y 60.
+#[derive(Debug)]
+struct DebugGenerator {
+    world: WorldInfo,
+}
+
+impl DebugGenerator {
+    /// `DebugLevelSource.GRID_WIDTH` and `GRID_HEIGHT`.
+    fn grid() -> (i32, i32) {
+        let count = vanillite_data::block::STATE_COUNT;
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let width = (count as f32).sqrt().ceil() as i32;
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let height = (count as f32 / width as f32).ceil() as i32;
+        (width, height)
+    }
+
+    fn new(world: &WorldInfo) -> Self {
+        DebugGenerator {
+            world: world.clone(),
+        }
+    }
+
+    /// `DebugLevelSource.getBlockStateFor`.
+    fn state_at(x: i32, z: i32) -> Option<u16> {
+        if x <= 0 || z <= 0 || x % 2 == 0 || z % 2 == 0 {
+            return None;
+        }
+        let (x, z) = (x / 2, z / 2);
+        let (width, height) = Self::grid();
+        if x > width || z > height {
+            return None;
+        }
+        let index = usize::try_from(x.wrapping_mul(width).wrapping_add(z).unsigned_abs()).ok()?;
+        (index < vanillite_data::block::STATE_COUNT)
+            .then(|| u16::try_from(index).ok())
+            .flatten()
+    }
+}
+
+impl ChunkGenerator for DebugGenerator {
+    fn new_chunk(&self, pos: ChunkPos) -> vanillite_chunk::ProtoChunk {
+        let mut proto = vanillite_chunk::ProtoChunk::empty(pos, &self.world);
+        let barrier = vanillite_data::block::ids::BARRIER.default_state().0;
+        for z in 0..16u32 {
+            for x in 0..16u32 {
+                proto.chunk.set_block(x, 60, z, barrier);
+                let world_x = pos.x.wrapping_mul(16).wrapping_add_unsigned(x);
+                let world_z = pos.z.wrapping_mul(16).wrapping_add_unsigned(z);
+                if let Some(state) = Self::state_at(world_x, world_z) {
+                    proto.chunk.set_block(x, 70, z, state);
+                }
+            }
+        }
+        proto
+    }
+
+    fn generate(
+        &self,
+        _: vanillite_chunk::ChunkStatus,
+        _: &mut [vanillite_chunk::ProtoChunk],
+        _: &mut vanillite_chunk::slots::Neighbours<'_>,
+    ) {
+    }
+}
+
 /// The [`WorldInfo`] of a dimension stored in `dir`; its height and sky light come from its
-/// dimension type (Vanilla's overworld values without data packs).
+/// dimension type `kind` (Vanilla's overworld values without data packs).
 pub(crate) fn world_info(
     packs: Option<&LoadedPacks>,
     dir: PathBuf,
     dimension: &str,
+    kind: &str,
     seed: i64,
 ) -> Result<WorldInfo, StartError> {
     let json: serde_json::Value = match packs {
         Some(packs) => {
-            let kind = packs
+            let entry = packs
                 .registry("minecraft:dimension_type")
-                .and_then(|r| r.get(dimension))
-                .ok_or_else(|| StartError::Io(format!("unknown dimension type {dimension}")))?;
-            serde_json::from_str(kind.json.get())
-                .map_err(|e| StartError::Io(format!("dimension type {dimension}: {e}")))?
+                .and_then(|r| r.get(kind))
+                .ok_or_else(|| {
+                    StartError::Io(format!("{dimension}: unknown dimension type {kind}"))
+                })?;
+            serde_json::from_str(entry.json.get())
+                .map_err(|e| StartError::Io(format!("dimension type {kind}: {e}")))?
         }
         None => serde_json::json!({ "min_y": -64, "height": 384, "has_skylight": true }),
     };
@@ -385,6 +690,12 @@ pub(crate) struct ChunkPackets {
 }
 
 impl ChunkPackets {
+    /// Drops the encoded chunk packets; they are encoded again when a player needs them.
+    pub(crate) fn release_memory(&mut self) {
+        *self.cache.get_mut() = FxHashMap::default();
+        self.changes.shrink_to_fit();
+    }
+
     /// Applies the world's `anticheat.anti-xray` rules; changed rules drop every packet.
     pub(crate) fn set_anti_xray(
         &mut self,
@@ -576,20 +887,21 @@ impl ChunkSource for WorldChunkSource<'_> {
 pub(crate) fn level_settings(
     packs: Option<&LoadedPacks>,
     info: &WorldInfo,
+    kind: &str,
     rules: &vanillite_config::WorldRules,
     properties: &vanillite_config::ServerProperties,
 ) -> vanillite_game::level::LevelSettings {
     let attribute = |name: &str| {
         packs
             .and_then(|p| p.registry("minecraft:dimension_type"))
-            .and_then(|r| r.get(&info.dimension))
+            .and_then(|r| r.get(kind))
             .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
             .and_then(|json| json.get("attributes")?.get(name)?.as_bool())
             .unwrap_or(false)
     };
     let infiniburn = packs
         .and_then(|p| p.registry("minecraft:dimension_type"))
-        .and_then(|r| r.get(&info.dimension))
+        .and_then(|r| r.get(kind))
         .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
         .and_then(|json| Some(json.get("infiniburn")?.as_str()?.to_owned()))
         .map_or_else(Default::default, |tag| {
@@ -598,7 +910,7 @@ pub(crate) fn level_settings(
     let attribute_value = |name: &str| {
         packs
             .and_then(|p| p.registry("minecraft:dimension_type"))
-            .and_then(|r| r.get(&info.dimension))
+            .and_then(|r| r.get(kind))
             .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
             .and_then(|json| json.get("attributes")?.get(name).cloned())
     };

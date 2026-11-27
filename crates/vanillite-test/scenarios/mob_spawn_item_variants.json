@@ -1,0 +1,289 @@
+{
+  "description": "Spawn eggs, a tropical fish bucket and an axolotl bucket hand their variant components (pig variant and sound variant, cat and wolf variant and collar, wolf sound variant, horse colour, villager type, fox type, sheep colour, fish pattern and colours, axolotl variant) and entity_data to the mob they make; picking an axolotl up keeps its variant in the bucket. Gold blocks mark each mob that has its item's variant, and the axolotl's variant before it is bucketed and after it is released. Only the row of marks is observed: the mobs themselves are traced by the mob scenarios.",
+  "tier": "fast",
+  "region": [
+    [
+      0,
+      -57,
+      0
+    ],
+    [
+      15,
+      -57,
+      2
+    ]
+  ],
+  "ticks": 11,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        90
+      ],
+      "seed": 1
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        12.5,
+        -60,
+        12.5
+      ],
+      "rot": [
+        0,
+        90
+      ],
+      "seed": 2
+    },
+    {
+      "name": "ax",
+      "type": "minecraft:axolotl",
+      "pos": [
+        12.5,
+        -60,
+        10.5
+      ],
+      "seed": 3
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -61,
+        6
+      ],
+      "item": "minecraft:pig_spawn_egg",
+      "components": "{\"minecraft:pig/variant\":\"minecraft:cold\",\"minecraft:pig/sound_variant\":\"minecraft:big\"}"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -61,
+        6
+      ],
+      "item": "minecraft:cat_spawn_egg",
+      "components": "{\"minecraft:cat/variant\":\"minecraft:black\",\"minecraft:cat/collar\":\"lime\"}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:0}] run setblock 0 -57 2 minecraft:gold_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:1}] run setblock 1 -57 2 minecraft:gold_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:2}] run setblock 2 -57 2 minecraft:gold_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:3}] run setblock 3 -57 2 minecraft:gold_block"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:4}] run setblock 4 -57 2 minecraft:gold_block"
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -61,
+        6
+      ],
+      "item": "minecraft:wolf_spawn_egg",
+      "components": "{\"minecraft:wolf/variant\":\"minecraft:snowy\",\"minecraft:wolf/collar\":\"blue\",\"minecraft:wolf/sound_variant\":\"minecraft:angry\"}"
+    },
+    {
+      "tick": 3,
+      "op": "interact",
+      "entity": "alex",
+      "target": "ax",
+      "item": "minecraft:water_bucket"
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -61,
+        10
+      ],
+      "item": "minecraft:horse_spawn_egg",
+      "components": "{\"minecraft:horse/variant\":\"black\"}"
+    },
+    {
+      "tick": 5,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        8,
+        -61,
+        11
+      ],
+      "item": "minecraft:villager_spawn_egg",
+      "components": "{\"minecraft:villager/variant\":\"minecraft:snow\"}"
+    },
+    {
+      "tick": 5,
+      "op": "use_item",
+      "entity": "alex"
+    },
+    {
+      "tick": 6,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -61,
+        10
+      ],
+      "item": "minecraft:fox_spawn_egg",
+      "components": "{\"minecraft:fox/variant\":\"snow\"}"
+    },
+    {
+      "tick": 7,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        6,
+        -61,
+        8
+      ],
+      "item": "minecraft:sheep_spawn_egg",
+      "components": "{\"minecraft:sheep/color\":\"red\"}"
+    },
+    {
+      "tick": 8,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        11,
+        -61,
+        8
+      ],
+      "item": "minecraft:chicken_spawn_egg",
+      "components": "{\"minecraft:entity_data\":{id:\"minecraft:chicken\",variant:\"minecraft:warm\"}}"
+    },
+    {
+      "tick": 9,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:tropical_fish_bucket",
+      "components": "{\"minecraft:tropical_fish/pattern\":\"clayfish\",\"minecraft:tropical_fish/base_color\":\"red\",\"minecraft:tropical_fish/pattern_color\":\"blue\"}"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:pig,nbt={variant:\"minecraft:cold\",sound_variant:\"minecraft:big\"}] run setblock 1 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:cat,nbt={variant:\"minecraft:black\",CollarColor:5b}] run setblock 2 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:wolf,nbt={variant:\"minecraft:snowy\",CollarColor:11b,sound_variant:\"minecraft:angry\"}] run setblock 3 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:horse,nbt={Variant:4}] run setblock 4 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:horse,nbt={Variant:260}] run setblock 4 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:horse,nbt={Variant:516}] run setblock 4 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:horse,nbt={Variant:772}] run setblock 4 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:horse,nbt={Variant:1028}] run setblock 4 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:villager,nbt={VillagerData:{type:\"minecraft:snow\"}}] run setblock 5 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:fox,nbt={Type:\"snow\"}] run setblock 6 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:sheep,nbt={Color:14b}] run setblock 7 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:chicken,nbt={variant:\"minecraft:warm\"}] run setblock 8 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:tropical_fish,nbt={Variant:185468161}] run setblock 9 -57 1 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:0,FromBucket:1b}] run setblock 0 -57 0 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:1,FromBucket:1b}] run setblock 1 -57 0 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:2,FromBucket:1b}] run setblock 2 -57 0 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:3,FromBucket:1b}] run setblock 3 -57 0 minecraft:gold_block"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:4,FromBucket:1b}] run setblock 4 -57 0 minecraft:gold_block"
+    }
+  ]
+}
