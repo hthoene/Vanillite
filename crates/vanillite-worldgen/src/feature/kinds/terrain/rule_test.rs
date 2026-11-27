@@ -89,6 +89,27 @@ impl RuleTest {
         })
     }
 
+    /// The result of [`Self::test`] for every state of `block` at any position, when the block
+    /// alone decides it (then the test draws no random number either).
+    pub fn test_block(&self, block: BlockId) -> Option<bool> {
+        match self {
+            Self::AlwaysTrue => Some(true),
+            Self::BlockMatch(expected) => Some(block == *expected),
+            Self::TagMatch(tag) => Some(tag.contains(block.default_state())),
+            Self::AllOf(rules) => rules
+                .iter()
+                .try_fold(true, |all, rule| Some(all & rule.test_block(block)?)),
+            Self::AnyOf(rules) => rules
+                .iter()
+                .try_fold(false, |any, rule| Some(any | rule.test_block(block)?)),
+            Self::Not(rule) => rule.test_block(block).map(|value| !value),
+            Self::BlockStateMatch(_)
+            | Self::RandomBlockMatch(..)
+            | Self::RandomBlockStateMatch(..)
+            | Self::HeightMatch { .. } => None,
+        }
+    }
+
     /// `test(state, pos, random)`.
     pub fn test<R: RandomSource>(&self, state: BlockState, pos: BlockPos, random: &mut R) -> bool {
         match self {

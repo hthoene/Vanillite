@@ -404,6 +404,8 @@ pub(crate) struct WorldPlayers {
     chatting: Vec<EntityId>,
     /// Dead players that asked to respawn this tick.
     respawns: Vec<EntityId>,
+    /// `debug.session-recording` (overworld only).
+    pub(crate) recording: crate::session_recording::SessionRecording,
 }
 
 fn chunk_of(pos: Vec3) -> ChunkPos {
@@ -423,6 +425,7 @@ impl WorldPlayers {
             left: Vec::new(),
             chatting: Vec::new(),
             respawns: Vec::new(),
+            recording: crate::session_recording::SessionRecording::default(),
         }
     }
 
@@ -720,6 +723,7 @@ impl WorldPlayers {
         // The player kind data leaves the level while the packets are handled, so the block
         // handlers can change the level (`setBlock` with its updates) meanwhile. Nothing in
         // between adds or removes players.
+        self.recording.begin_tick(&mut level.entities);
         let mut players = std::mem::take(&mut level.entities.players);
         let spectators: FxHashSet<EntityId> = players
             .iter()
@@ -728,6 +732,7 @@ impl WorldPlayers {
             .collect();
         let mut swings: Vec<(EntityId, Hand)> = Vec::new();
         for (id, player) in players.iter_mut() {
+            player.connection.play.fast_break_check = rules.digging.fast_break_check;
             let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };
@@ -845,6 +850,7 @@ impl WorldPlayers {
                 }
                 handled
             };
+            self.recording.packets(id, player, &level.entities);
             swings.extend(hands.into_iter().map(|h| (id, h)));
             // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`; not while the end
             // credits show).
@@ -981,6 +987,7 @@ impl WorldPlayers {
         for (id, reason) in std::mem::take(&mut self.leaving) {
             self.leave(level, global, id, reason);
         }
+        self.recording.end_tick(&level.entities);
     }
 
     /// Spawn protection of this world for this tick (`isUnderSpawnProtection`).

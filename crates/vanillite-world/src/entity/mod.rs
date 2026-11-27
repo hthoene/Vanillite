@@ -574,6 +574,14 @@ impl EntityStore {
         self.for_each_in_subset(aabb, Subset::Others, f);
     }
 
+    /// Calls `f` for every player whose position is within `range` blocks of `pos` on the X
+    /// and Z axes, and for some farther ones (the caller measures), in no particular order,
+    /// until `f` returns `true`. For questions about positions without an order, like the
+    /// distance to the nearest player; not for bounding boxes, which reach past a position.
+    pub fn players_around(&self, pos: Vec3, range: f64, f: impl FnMut(EntityId) -> bool) {
+        self.sections.players_around(pos.x, pos.z, range, f);
+    }
+
     fn for_each_in_subset(&self, aabb: &Aabb, subset: Subset, mut f: impl FnMut(EntityId)) {
         self.sections.for_each_near(aabb, subset, |id| {
             if let Some(row) = self.row(id)

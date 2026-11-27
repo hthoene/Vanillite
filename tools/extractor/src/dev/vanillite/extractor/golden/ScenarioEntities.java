@@ -61,6 +61,12 @@ final class ScenarioEntities {
   /** Frames hold the players' food and hands ({@code "player_state": true}). */
   boolean playerState;
   /**
+   * The harness sends {@code client_tick_end} after each tick ({@code "client_tick_end"}, default
+   * true; session replays have the recorded ones among their packets).
+   */
+  boolean clientTickEnd = true;
+
+  /**
    * Frames hold the players' sleeping position, sleep timer, pose id and respawn point ({@code
    * "sleep_state": true}).
    */
@@ -131,7 +137,15 @@ final class ScenarioEntities {
     Connection connection = new Connection(PacketFlow.SERVERBOUND);
     new EmbeddedChannel(connection);
     server.getPlayerList().placeNewPlayer(connection, player, cookie);
-    player.setGameMode(GameType.SURVIVAL);
+    String mode = spec.has("game_mode") ? spec.get("game_mode").getAsString() : "survival";
+    player.setGameMode(
+        switch (mode) {
+          case "survival" -> GameType.SURVIVAL;
+          case "creative" -> GameType.CREATIVE;
+          case "adventure" -> GameType.ADVENTURE;
+          case "spectator" -> GameType.SPECTATOR;
+          default -> throw new IllegalArgumentException("unknown game mode " + mode);
+        });
     double[] p = vec(spec.getAsJsonArray("pos"));
     player.snapTo(p[0], p[1], p[2], rot(spec, 0), rot(spec, 1));
     player.setYHeadRot(rot(spec, 0));
@@ -216,8 +230,13 @@ final class ScenarioEntities {
                 player.connection,
                 "connection");
     if (!connection.isConnected()) {
+      net.minecraft.network.DisconnectionDetails details = connection.getDisconnectionDetails();
       throw new IllegalStateException(
-          "a client player left: " + player.getPlainTextName() + " after " + packet);
+          "a client player left: "
+              + player.getPlainTextName()
+              + " after "
+              + packet
+              + (details != null ? " (" + details.reason().getString() + ")" : ""));
     }
   }
 
@@ -304,6 +323,9 @@ final class ScenarioEntities {
 
   /** The end of a client tick: {@code client_tick_end} of every client. */
   void clientEnd() {
+    if (!clientTickEnd) {
+      return;
+    }
     for (ServerPlayer p : clients) {
       handle(p, net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
     }
@@ -335,16 +357,40 @@ final class ScenarioEntities {
     io.netty.buffer.ByteBuf buf = io.netty.buffer.Unpooled.buffer();
     net.minecraft.network.VarInt.write(buf, id);
     if (action.has("target")) {
-      Entity target = byName.get(action.get("target").getAsString());
-      if (target == null) {
-        throw new IllegalArgumentException("no scenario entity " + action.get("target"));
+      // A scenario entity, `uuid:<hex>` (an entity of a snapshot world) or `none`; an entity
+      // that does not exist is the id -1.
+      String t = action.get("target").getAsString();
+      int targetId = -1;
+      UUID targetUuid = new UUID(0, 0);
+      if (t.startsWith("uuid:")) {
+        String digits = t.substring(5);
+        targetUuid =
+            new UUID(
+                Long.parseUnsignedLong(digits.substring(0, 16), 16),
+                Long.parseUnsignedLong(digits.substring(16), 16));
+        Entity target = level.getEntity(targetUuid);
+        if (target != null) {
+          targetId = target.getId();
+        }
+      } else if (!t.equals("none")) {
+        Entity target = byName.get(t);
+        if (target == null) {
+          throw new IllegalArgumentException("no scenario entity " + t);
+        }
+        targetId = target.getId();
+        targetUuid = target.getUUID();
       }
-      int skip = 0;
-      while ((body[skip] & 0x80) != 0) {
-        skip++;
+      if (name.equals("spectator_action")) {
+        buf.writeLong(targetUuid.getMostSignificantBits());
+        buf.writeLong(targetUuid.getLeastSignificantBits());
+      } else {
+        int skip = 0;
+        while ((body[skip] & 0x80) != 0) {
+          skip++;
+        }
+        net.minecraft.network.VarInt.write(buf, targetId);
+        buf.writeBytes(body, skip + 1, body.length - skip - 1);
       }
-      net.minecraft.network.VarInt.write(buf, target.getId());
-      buf.writeBytes(body, skip + 1, body.length - skip - 1);
     } else {
       buf.writeBytes(body);
     }

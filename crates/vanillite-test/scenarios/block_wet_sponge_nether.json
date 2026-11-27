@@ -1,0 +1,4 @@
+{"description": "A wet sponge placed in the Nether dries at once (WetSpongeBlock.onPlace where water evaporates).", "tier": "fast", "level_rng": true, "dimensions": true, "dimension": "minecraft:the_nether", "rules": {"spawn_monsters": "false"}, "region": [[-2, 0, -2], [5, 10, 5]], "ticks": 4,
+ "actions": [
+  {"tick": 1, "op": "place", "pos": [2, 5, 2], "block": "minecraft:wet_sponge", "dimension": "minecraft:the_nether"},
+  {"tick": 2, "op": "place", "pos": [3, 5, 2], "block": "minecraft:sponge", "dimension": "minecraft:the_nether"}]}

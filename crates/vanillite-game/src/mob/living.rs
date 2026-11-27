@@ -2498,10 +2498,11 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
     let p = t.pos();
     let hard = t.cx.settings.hard_despawn_range.unwrap_or(despawn);
     let soft = t.cx.settings.soft_despawn_range;
-    let r = hard.max(128.0);
-    let area = Aabb::new(p.x - r, p.y - r, p.z - r, p.x + r, p.y + r, p.z + r);
+    // `getNearestPlayer(this, -1.0)`: the distance is only compared with the two ranges, so
+    // players farther than both on an axis need not be found.
+    let r = hard.max(soft).max(128.0);
     let mut nearest = f64::MAX;
-    t.ents.store.for_each_in(&area, true, |player| {
+    t.ents.store.players_around(p, r, |player| {
         if let Some(e) = t.ents.store.get(player) {
             let d = e.pos().distance_to_sqr(p);
             // `getNearestPlayer` skips spectators (looked up only for a closer player).
@@ -2514,6 +2515,7 @@ pub fn check_despawn(t: &mut Tick<'_, '_>) {
                 nearest = d;
             }
         }
+        false
     });
     let far_away_ok = super::fam::remove_when_far_away_mob(t.mob_ref(), nearest);
     if !persistent && nearest > hard * hard && far_away_ok {

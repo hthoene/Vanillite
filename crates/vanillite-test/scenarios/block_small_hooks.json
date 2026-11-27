@@ -1,0 +1,19 @@
+{"description": "Skulls follow the redstone signal with their powered state, a big dripleaf stem breaks from the bottom up when its support goes, and redstone ore lights up when a player uses an item on it (a block item is still placed against it).", "tier": "fast", "level_rng": true, "player_state": true, "region": [[0, -61, 0], [15, -54, 15]], "ticks": 14,
+ "setup": [
+  {"op": "set", "pos": [4, -60, 4], "block": "minecraft:dragon_head"},
+  {"op": "set", "pos": [4, -60, 6], "block": "minecraft:piglin_wall_head[facing=south]"},
+  {"op": "set", "pos": [4, -60, 5], "block": "minecraft:stone"},
+  {"op": "set", "pos": [12, -60, 12], "block": "minecraft:clay"},
+  {"op": "set", "pos": [12, -59, 12], "block": "minecraft:big_dripleaf_stem"},
+  {"op": "set", "pos": [12, -58, 12], "block": "minecraft:big_dripleaf_stem"},
+  {"op": "set", "pos": [12, -57, 12], "block": "minecraft:big_dripleaf"},
+  {"op": "set", "pos": [10, -60, 4], "block": "minecraft:redstone_ore"},
+  {"op": "set", "pos": [12, -60, 4], "block": "minecraft:deepslate_redstone_ore"}],
+ "entities": [{"name": "steve", "type": "minecraft:player", "pos": [11.5, -60, 6.5], "rot": [180, 0], "seed": 1}],
+ "actions": [
+  {"tick": 1, "op": "place", "pos": [3, -60, 4], "block": "minecraft:redstone_block"},
+  {"tick": 2, "op": "place", "pos": [4, -59, 5], "block": "minecraft:redstone_block"},
+  {"tick": 3, "op": "use", "entity": "steve", "pos": [10, -60, 4], "item": "minecraft:stick", "face": "south"},
+  {"tick": 4, "op": "use", "entity": "steve", "pos": [12, -60, 4], "item": "minecraft:stone", "face": "up"},
+  {"tick": 5, "op": "place", "pos": [12, -60, 12], "block": "minecraft:air"},
+  {"tick": 6, "op": "place", "pos": [3, -60, 4], "block": "minecraft:air"}]}

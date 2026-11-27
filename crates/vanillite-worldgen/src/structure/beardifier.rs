@@ -143,36 +143,109 @@ impl Beardifier {
     fn sample_unchecked(&self, x: i32, y: i32, z: i32) -> f32 {
         let mut value = 0.0_f32;
         for rigid in &self.rigids {
-            let bx = &rigid.bx;
-            let dx = 0.max((bx.min_x() - x).max(x - bx.max_x()));
-            let dz = 0.max((bx.min_z() - z).max(z - bx.max_z()));
-            let ground_y = bx.min_y() + rigid.ground_level_delta;
-            let dy_to_ground = y - ground_y;
-            let dy = match rigid.adjustment {
-                TerrainAdjustment::None => 0,
-                TerrainAdjustment::Bury | TerrainAdjustment::BeardThin => dy_to_ground,
-                TerrainAdjustment::BeardBox => 0.max((ground_y - y).max(y - bx.max_y())),
-                TerrainAdjustment::Encapsulate => 0.max((bx.min_y() - y).max(y - bx.max_y())),
-            };
-            value += match rigid.adjustment {
-                TerrainAdjustment::None => 0.0,
-                TerrainAdjustment::Bury => bury_contribution(dx as f32, dy as f32 / 2.0, dz as f32),
-                TerrainAdjustment::BeardThin | TerrainAdjustment::BeardBox => {
-                    beard_contribution(dx, dy, dz, dy_to_ground) * 0.8
-                }
-                TerrainAdjustment::Encapsulate => {
-                    bury_contribution(dx as f32 / 2.0, dy as f32 / 2.0, dz as f32 / 2.0) * 0.8
-                }
-            };
+            value += rigid.contribution(x, y, z);
         }
         for junction in &self.junctions {
-            let dx = x - junction.source_x;
-            let dy = y - junction.source_ground_y;
-            let dz = z - junction.source_z;
-            value += beard_contribution(dx, dy, dz, dy) * 0.4;
+            value += junction_contribution(junction, x, y, z);
         }
         value
     }
+}
+
+impl Rigid {
+    /// The piece's term of `sampleValueUnchecked` at a block.
+    #[inline]
+    fn contribution(&self, x: i32, y: i32, z: i32) -> f32 {
+        let bx = &self.bx;
+        let dx = 0.max((bx.min_x() - x).max(x - bx.max_x()));
+        let dz = 0.max((bx.min_z() - z).max(z - bx.max_z()));
+        let ground_y = bx.min_y() + self.ground_level_delta;
+        let dy_to_ground = y - ground_y;
+        let dy = match self.adjustment {
+            TerrainAdjustment::None => 0,
+            TerrainAdjustment::Bury | TerrainAdjustment::BeardThin => dy_to_ground,
+            TerrainAdjustment::BeardBox => 0.max((ground_y - y).max(y - bx.max_y())),
+            TerrainAdjustment::Encapsulate => 0.max((bx.min_y() - y).max(y - bx.max_y())),
+        };
+        match self.adjustment {
+            TerrainAdjustment::None => 0.0,
+            TerrainAdjustment::Bury => bury_contribution(dx as f32, dy as f32 / 2.0, dz as f32),
+            TerrainAdjustment::BeardThin | TerrainAdjustment::BeardBox => {
+                beard_contribution(dx, dy, dz, dy_to_ground) * 0.8
+            }
+            TerrainAdjustment::Encapsulate => {
+                bury_contribution(dx as f32 / 2.0, dy as f32 / 2.0, dz as f32 / 2.0) * 0.8
+            }
+        }
+    }
+
+    /// The blocks outside of which [`Self::contribution`] is `+0.0` (`None`: everywhere): every
+    /// kind is zero from [`KERNEL_RADIUS`] blocks beside the piece on, and from that far above
+    /// and below the heights its vertical distance is measured from (the beard kernel ends
+    /// there, and a bury distance of 6 is reached at half of it).
+    fn reach(&self) -> Option<BoundingBox> {
+        let bx = &self.bx;
+        let ground_y = bx.min_y() + self.ground_level_delta;
+        let (min_y, max_y) = match self.adjustment {
+            TerrainAdjustment::None => return None,
+            TerrainAdjustment::Bury | TerrainAdjustment::BeardThin => (ground_y, ground_y),
+            TerrainAdjustment::BeardBox => (ground_y, bx.max_y()),
+            TerrainAdjustment::Encapsulate => (bx.min_y(), bx.max_y()),
+        };
+        (min_y <= max_y + 2 * KERNEL_RADIUS).then(|| {
+            BoundingBox::new(
+                bx.min_x() - KERNEL_RADIUS,
+                min_y - KERNEL_RADIUS,
+                bx.min_z() - KERNEL_RADIUS,
+                bx.max_x() + KERNEL_RADIUS,
+                max_y + KERNEL_RADIUS,
+                bx.max_z() + KERNEL_RADIUS,
+            )
+        })
+    }
+}
+
+/// The junction's term of `sampleValueUnchecked` at a block: `+0.0` from [`KERNEL_RADIUS`]
+/// blocks off its source on.
+#[inline]
+fn junction_contribution(junction: &JigsawJunction, x: i32, y: i32, z: i32) -> f32 {
+    let dx = x - junction.source_x;
+    let dy = y - junction.source_ground_y;
+    let dz = z - junction.source_z;
+    beard_contribution(dx, dy, dz, dy) * 0.4
+}
+
+/// Adds `term` to the cells of `out` (a buffer over `v`) within the grid index ranges `cells`
+/// (x, y, z) whose blocks lie in `reach`.
+fn add_term(
+    out: &mut [f32],
+    v: &DensityVolume,
+    cells: [(i32, i32); 3],
+    reach: &BoundingBox,
+    term: impl Fn(i32, i32, i32) -> f32,
+) {
+    let xs = clip(cells[0], (reach.min_x(), reach.max_x()), v.min_x, v.step_x);
+    let ys = clip(cells[1], (reach.min_y(), reach.max_y()), v.min_y, v.step_y);
+    let zs = clip(cells[2], (reach.min_z(), reach.max_z()), v.min_z, v.step_z);
+    for z in zs {
+        let block_z = v.block_z(z);
+        for x in xs.clone() {
+            let block_x = v.block_x(x);
+            for y in ys.clone() {
+                out[v.index(x, y, z)] += term(block_x, v.block_y(y), block_z);
+            }
+        }
+    }
+}
+
+/// The grid indices of `first..=last` whose blocks (`min + index * step`) lie in `lo..=hi`.
+fn clip(
+    (first, last): (i32, i32),
+    (lo, hi): (i32, i32),
+    min: i32,
+    step: i32,
+) -> std::ops::RangeInclusive<i32> {
+    first.max((lo - min + step - 1).div_euclid(step))..=last.min((hi - min).div_euclid(step))
 }
 
 impl ContextSampler for Beardifier {
@@ -206,14 +279,32 @@ impl ContextSampler for Beardifier {
         let max_x = (v.size_x - 1).min((bx.max_x() - v.min_x).div_euclid(v.step_x));
         let max_y = (v.size_y - 1).min((bx.max_y() - v.min_y).div_euclid(v.step_y));
         let max_z = (v.size_z - 1).min((bx.max_z() - v.min_z).div_euclid(v.step_z));
-        for z in min_z..=max_z {
-            let block_z = v.block_z(z);
-            for x in min_x..=max_x {
-                let block_x = v.block_x(x);
-                for y in min_y..=max_y {
-                    out[v.index(x, y, z)] = self.sample_unchecked(block_x, v.block_y(y), block_z);
-                }
+        // Every cell of that range is the sum of `sample_unchecked`: the terms are added piece
+        // by piece, each only where it can be other than `+0.0`. Adding `+0.0` changes no sum
+        // (none is `-0.0`: they start at `+0.0`), and each cell still adds its terms in order.
+        let cells = [(min_x, max_x), (min_y, max_y), (min_z, max_z)];
+        for rigid in &self.rigids {
+            if let Some(reach) = rigid.reach() {
+                add_term(out, v, cells, &reach, |x, y, z| rigid.contribution(x, y, z));
             }
+        }
+        for junction in &self.junctions {
+            let (x, y, z) = (
+                junction.source_x,
+                junction.source_ground_y,
+                junction.source_z,
+            );
+            let reach = BoundingBox::new(
+                x - KERNEL_RADIUS,
+                y - KERNEL_RADIUS,
+                z - KERNEL_RADIUS,
+                x + KERNEL_RADIUS,
+                y + KERNEL_RADIUS,
+                z + KERNEL_RADIUS,
+            );
+            add_term(out, v, cells, &reach, |x, y, z| {
+                junction_contribution(junction, x, y, z)
+            });
         }
     }
 }

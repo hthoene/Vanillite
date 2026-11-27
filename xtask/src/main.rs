@@ -10,6 +10,7 @@
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
 //! cargo xtask golden bless <scenario>...
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
+//! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--host <host>] [--port <port>] [--release]
@@ -23,6 +24,7 @@
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
 //! cargo xtask bench list | report | publish <time|latest|results.json> | nightly [--no-push]
+//! cargo xtask bench commands <scenario>
 //! cargo xtask setup [--global] | regen
 //! ```
 
@@ -91,6 +93,12 @@ pub const USAGE: &str = "usage:
       and summary.md. --adopt copies the found scenarios into crates/vanillite-test/scenarios/
       and records their goldens (then add scenarios/divergences/<name>.toml with the cause).
       Also: --replay <scenario.json> runs given scenarios without generating.
+  cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N] [--jobs N]
+      Replay a recorded server session (debug.session-recording, #152) in Vanilla and
+      Vanillite on its world snapshot and compare them tick by tick; a divergence is shrunk
+      like a random one. `30001:latest` (or `30001:<name>`) fetches a recording of the test
+      server into target/recordings/ first. --ticks replays only the first N ticks. Writes
+      target/parity-fuzz/ (sessions/<name>.json, found/, summary.md).
   cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
       Soak parity runs (#166): the long scenarios of crates/vanillite-test/scenarios/soak/
       (game days with random ticks, mob spawning, day cycle and weather) against Vanilla.
@@ -192,8 +200,9 @@ pub const USAGE: &str = "usage:
       (vanillite@30901, deployed from this checkout; also with the paper rule profile), Paper,
       Vanilla and Pumpkin (taking turns on 30900), or the proxies Velocity and vanillite-proxy,
       with the same settings and a new world each (`vanillite-bench` on the test server). Player
-      load from tools/loadbot here; command-built scenarios (redstone, mobs, items, hoppers,
-      TNT, fluids, light) use console commands and one observer bot. A server that lacks a
+      load from tools/loadbot here; command-built scenarios (redstone, mobs, farm, monsters,
+      villagers, mobs-far, items, hoppers, TNT, fluids, light) use console commands and one
+      observer bot. A server that lacks a
       command is reported as n/a. Writes target/bench/<time>/results.json and keeps the raw
       results under /opt/vanillite/bench/suite on the test server; --publish also updates
       benchmarks/results/ (latest.json, history.json, runs/<time>.json) and regenerates
@@ -206,6 +215,9 @@ pub const USAGE: &str = "usage:
       /opt/vanillite/bench/suite/<time>/ on the test server (latest: the newest).
   cargo xtask bench report
       Regenerates benchmarks/README.md from benchmarks/results/.
+  cargo xtask bench commands <scenario>
+      Prints the console commands of a command-built scenario (the observer's teleport first),
+      to build it on a local server for profiling.
   cargo xtask bench nightly [--no-push]
       When origin/dev has code newer than the published results: runs `bench all --publish` in
       the worktree target/bench/tree and commits the results on the branch
@@ -234,6 +246,7 @@ fn main() -> ExitCode {
         ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
         ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
+        ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),

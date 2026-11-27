@@ -1,10 +1,12 @@
 //! `cargo xtask parity fuzz`: random parity scenarios against Vanilla (#132); `cargo xtask
-//! parity soak`: long scenarios against Vanilla (#166).
+//! parity replay`: recorded server sessions against Vanilla (#152); `cargo xtask parity
+//! soak`: long scenarios against Vanilla (#166).
 //!
 //! Compiles the Java recorder on the pinned jar (like `golden regen`) and runs the
-//! `parity_fuzz` binary of `vanillite-test` with its class path; that binary generates,
-//! records, compares and shrinks (see `crates/vanillite-test/src/bin/parity_fuzz.rs`).
-//! Results go to `target/parity-fuzz/` (`found/*.json`, `summary.md`).
+//! `parity_fuzz` binary of `vanillite-test` with its class path; that binary generates (or
+//! converts a session recording), records, compares and shrinks (see
+//! `crates/vanillite-test/src/bin/parity_fuzz.rs`). Results go to `target/parity-fuzz/`
+//! (`found/*.json`, `summary.md`).
 
 use std::path::Path;
 use std::process::Command;
@@ -21,6 +23,65 @@ const RECORDER: &[&str] = &[
     "ParityHooks",
     "ParityAgent",
 ];
+
+/// `cargo xtask parity replay <recording> [args]`: a local recording folder, or
+/// `<port>:<name>` / `<port>:latest` of the test server, fetched into `target/recordings/`.
+pub fn replay(root: &Path, recording: &str, args: &[&str]) -> Result<()> {
+    let dir = match recording.split_once(':') {
+        Some((port, name)) if port.parse::<u16>().is_ok() && !Path::new(recording).exists() => {
+            fetch_recording(root, port, name)?
+        }
+        _ => std::path::PathBuf::from(recording),
+    };
+    if !dir.join("packets.jsonl").is_file() {
+        return Err(format!("{} is no session recording", dir.display()));
+    }
+    let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let session = dir.to_string_lossy().into_owned();
+    let mut pass = vec!["--session", session.as_str()];
+    pass.extend_from_slice(args);
+    driver(root, &pass)
+}
+
+/// Copies a recording of the test server instance on `port` into `target/recordings/`.
+fn fetch_recording(root: &Path, port: &str, name: &str) -> Result<std::path::PathBuf> {
+    let host = crate::devenv::host();
+    let remote = format!("/opt/vanillite/{port}/recordings");
+    let name = if name == "latest" {
+        let out = Command::new("ssh")
+            .args([host.as_str(), &format!("ls -1 {remote} | sort | tail -n 1")])
+            .output()
+            .map_err(|e| format!("ssh: {e}"))?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if name.is_empty() {
+            return Err(format!("no recordings in {host}:{remote}"));
+        }
+        name
+    } else {
+        name.to_owned()
+    };
+    let local = root
+        .join("target/recordings")
+        .join(format!("{port}-{name}"));
+    if !local.exists() {
+        std::fs::create_dir_all(root.join("target/recordings")).map_err(|e| e.to_string())?;
+        println!("fetching {host}:{remote}/{name}");
+        run(Command::new("scp").args([
+            "-r",
+            "-q",
+            &format!("{host}:{remote}/{name}"),
+            &local.to_string_lossy(),
+        ]))?;
+    } else {
+        // A session that was still running when fetched has more packets now.
+        run(Command::new("scp").args([
+            "-q",
+            &format!("{host}:{remote}/{name}/packets.jsonl"),
+            &local.join("packets.jsonl").to_string_lossy(),
+        ]))?;
+    }
+    Ok(local)
+}
 
 /// The compiled recorder: its classes with the class path, the agent jar and the work dir.
 fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
@@ -80,6 +141,15 @@ pub fn soak(root: &Path, args: &[&str]) -> Result<()> {
 pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
     let adopt = args.contains(&"--adopt");
     let pass: Vec<&str> = args.iter().copied().filter(|a| *a != "--adopt").collect();
+    driver(root, &pass)?;
+    if !adopt {
+        return Ok(());
+    }
+    adopt_found(root)
+}
+
+/// Runs the `parity_fuzz` driver with the recorder's class path.
+fn driver(root: &Path, pass: &[&str]) -> Result<()> {
     let (classpath, agent, work_dir) = recorder(root)?;
     let out = root.join("target/parity-fuzz");
     remove_dir(&out)?;
@@ -105,12 +175,13 @@ pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
             .arg(&work_dir)
             .arg("--out")
             .arg(&out)
-            .args(&pass),
-    )?;
-    if !adopt {
-        return Ok(());
-    }
-    // The found scenarios become fixed ones with their Vanilla goldens.
+            .args(pass),
+    )
+}
+
+/// The found scenarios become fixed ones with their Vanilla goldens.
+fn adopt_found(root: &Path) -> Result<()> {
+    let out = root.join("target/parity-fuzz");
     let scenarios = root.join("crates/vanillite-test/scenarios");
     let mut names = Vec::new();
     let found = out.join("found");

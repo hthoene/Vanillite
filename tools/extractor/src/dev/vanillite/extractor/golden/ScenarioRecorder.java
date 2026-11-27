@@ -250,8 +250,13 @@ public final class ScenarioRecorder {
     JsonObject world = scenario.has("world") ? scenario.getAsJsonObject("world") : new JsonObject();
     long seed = world.has("seed") ? world.get("seed").getAsLong() : 0;
     String biome = world.has("biome") ? world.get("biome").getAsString() : "minecraft:plains";
-    List<ParityServer.Layer> layers = new ArrayList<>();
-    if (world.has("layers")) {
+    // A session replay (#152): the recorded world's chunks instead of flat layers; missing
+    // chunks come from the normal generator.
+    Path snapshot = world.has("snapshot") ? Path.of(world.get("snapshot").getAsString()) : null;
+    List<ParityServer.Layer> layers = snapshot != null ? null : new ArrayList<>();
+    if (snapshot != null) {
+      // No layers.
+    } else if (world.has("layers")) {
       for (JsonElement l : world.getAsJsonArray("layers")) {
         JsonArray a = l.getAsJsonArray();
         layers.add(new ParityServer.Layer(a.get(0).getAsString(), a.get(1).getAsInt()));
@@ -266,6 +271,12 @@ public final class ScenarioRecorder {
     Path dir = Files.createTempDirectory("vanillite-parity");
     // Across dimensions: the Nether and the End are flat too, and players load chunks.
     boolean dimensions = scenario.has("dimensions") && scenario.get("dimensions").getAsBoolean();
+    if (snapshot != null) {
+      Path overworld = dir.resolve("world").resolve("dimensions/minecraft/overworld");
+      for (String folder : new String[] {"region", "poi"}) {
+        copyTree(snapshot.resolve(folder), overworld.resolve(folder));
+      }
+    }
     Path datapack = null;
     if (scenario.has("datapack")) {
       if (!dimensions || scenarioDir == null) {
@@ -292,7 +303,28 @@ public final class ScenarioRecorder {
       JsonArray region = scenario.getAsJsonArray("region");
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
-      loadRegion(server, level, min, max);
+      if (snapshot != null) {
+        // Without game ticks: the snapshot's scheduled ticks keep their delays from game time
+        // 0, like in Vanillite's new level (a warm-up would move them later).
+        Area loading = new Area(min, max);
+        for (int cx = loading.minX; cx <= loading.maxX; cx++) {
+          for (int cz = loading.minZ; cz <= loading.maxZ; cz++) {
+            level.setChunkForced(cx, cz, true);
+          }
+        }
+        settle(server, level, loading);
+      } else {
+        loadRegion(server, level, min, max);
+      }
+      if (snapshot != null) {
+        // What chunk generation spawned: entity randoms and ids cannot match Vanillite's.
+        List<Entity> spawned = new ArrayList<>();
+        level.getAllEntities().forEach(spawned::add);
+        for (Entity e : spawned) {
+          e.discard();
+        }
+        server.drainEveryTask();
+      }
       List<View> views = new ArrayList<>();
       if (scenario.has("views")) {
         if (!dimensions) {
@@ -330,6 +362,8 @@ public final class ScenarioRecorder {
       timeAndDifficulty(server, level, scenario);
       entities = new ScenarioEntities(server, server.overworld());
       entities.loadingPlayers = dimensions;
+      entities.clientTickEnd =
+          !scenario.has("client_tick_end") || scenario.get("client_tick_end").getAsBoolean();
       entities.playerState =
           scenario.has("player_state") && scenario.get("player_state").getAsBoolean();
       entities.sleepState =
@@ -340,7 +374,7 @@ public final class ScenarioRecorder {
       // Players join first; then the level random starts from the world seed and the mobs come.
       for (int i = 0; i < specs.size(); i++) {
         JsonObject spec = specs.get(i).getAsJsonObject();
-        if (spec.get("type").getAsString().equals("minecraft:player")) {
+        if (spec.get("type").getAsString().equals("minecraft:player") && !spec.has("join")) {
           entities.player(spec, i);
         }
       }
@@ -365,6 +399,12 @@ public final class ScenarioRecorder {
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
       for (int tick = 1; tick <= ticks; tick++) {
+        for (int i = 0; i < specs.size(); i++) {
+          JsonObject spec = specs.get(i).getAsJsonObject();
+          if (spec.has("join") && spec.get("join").getAsInt() == tick) {
+            entities.player(spec, i);
+          }
+        }
         entities.clientBegin();
         if (actions != null) {
           boolean acted = false;
@@ -675,6 +715,20 @@ public final class ScenarioRecorder {
 
   private static <T extends Comparable<T>> String valueName(BlockState state, Property<T> p) {
     return p.getName(state.getValue(p));
+  }
+
+  private static void copyTree(Path from, Path to) throws IOException {
+    Files.createDirectories(to);
+    if (!Files.isDirectory(from)) {
+      return;
+    }
+    try (Stream<Path> files = Files.list(from)) {
+      for (Path f : files.toList()) {
+        if (Files.isRegularFile(f)) {
+          Files.copy(f, to.resolve(f.getFileName().toString()));
+        }
+      }
+    }
   }
 
   private static void deleteTree(Path dir) throws IOException {

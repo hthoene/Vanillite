@@ -1,0 +1,13 @@
+{"format":1,
+"region":[[-2,0,-2],[5,10,5]],
+"palette":[
+"minecraft:bedrock",
+"minecraft:netherrack",
+"minecraft:air",
+"minecraft:sponge"],
+"frames":[
+{"tick":0,"blocks":[64,0,192,1,448,2],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":25214903917},
+{"tick":1,"changes":[[2,5,2,3]],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":205749139540596},
+{"tick":2,"changes":[[3,5,2,3]],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":205749139540596},
+{"tick":3,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":205749139540596},
+{"tick":4,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[],"level_rng":205749139540596}]}

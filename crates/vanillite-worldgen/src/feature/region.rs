@@ -237,6 +237,24 @@ impl<'a> WorldGenRegion<'a> {
             && (chunk_z - self.center.z).abs() <= self.radius
     }
 
+    /// The slot ([`Self::chunk_at`]) of chunk `(chunk_x, chunk_z)` if blocks may be written
+    /// there (`ensureCanWrite`), for loops that touch many blocks of few chunks.
+    pub(crate) fn writable_chunk(&self, chunk_x: i32, chunk_z: i32) -> Option<usize> {
+        ((chunk_x - self.center.x).abs() <= self.write_radius
+            && (chunk_z - self.center.z).abs() <= self.write_radius)
+            .then(|| self.index(chunk_x, chunk_z))
+    }
+
+    /// The chunk in a slot of [`Self::writable_chunk`].
+    pub(crate) fn chunk_at(&self, slot: usize) -> &ProtoChunk {
+        self.chunks[slot]
+    }
+
+    /// The chunk in a slot of [`Self::writable_chunk`], mutable.
+    pub(crate) fn chunk_at_mut(&mut self, slot: usize) -> &mut ProtoChunk {
+        self.chunks[slot]
+    }
+
     /// The chunk containing a block.
     pub fn chunk(&self, pos: BlockPos) -> &ProtoChunk {
         self.chunks[self.index(pos.x >> 4, pos.z >> 4)]

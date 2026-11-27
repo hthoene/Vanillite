@@ -576,6 +576,9 @@ impl ServerWorld {
             .wants(vanillite_abi::event::PLAYERS_MOVED)
             .then(|| self.player_positions());
         let started = Instant::now();
+        if self.players.recording.wants_start(&self.level.entities) {
+            self.start_session_recording(ctx.global);
+        }
         self.players.handle_packets(
             &mut self.level,
             &self.rules,
@@ -1115,6 +1118,40 @@ impl ServerWorld {
     pub(crate) fn prepare_step(&mut self) -> usize {
         self.level.chunks.tick();
         self.level.chunks.pending_full()
+    }
+
+    /// Starts a session recording (`debug.session-recording`): saves the world and waits until
+    /// it is written, then the recording copies it.
+    fn start_session_recording(&mut self, global: &Global) {
+        self.save(true, false);
+        let day_time = global
+            .level
+            .clocks()
+            .clocks
+            .iter()
+            .find(|c| c.id == "minecraft:overworld")
+            .map_or(0, |c| c.total_ticks);
+        let weather = &self.survival.weather;
+        let start = crate::session_recording::SessionStart {
+            seed: self.level.chunks.info().seed,
+            day_time,
+            game_time: self.level.game_time(),
+            weather: if weather.thunder_level > 0.0 {
+                "thunder"
+            } else if weather.rain_level > 0.0 {
+                "rain"
+            } else {
+                "clear"
+            },
+            difficulty: match global.level.difficulty() {
+                vanillite_game::survival::rules::Difficulty::Peaceful => "peaceful",
+                vanillite_game::survival::rules::Difficulty::Easy => "easy",
+                vanillite_game::survival::rules::Difficulty::Normal => "normal",
+                vanillite_game::survival::rules::Difficulty::Hard => "hard",
+            },
+        };
+        let dir = self.level.chunks.info().dir.clone();
+        self.players.recording.start(&dir, &start);
     }
 
     /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
