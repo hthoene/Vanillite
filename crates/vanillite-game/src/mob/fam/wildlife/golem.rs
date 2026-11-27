@@ -102,11 +102,25 @@ pub(super) fn register_goals(m: &mut MobData) {
     );
 }
 
-/// `SnowGolem.aiStep`: a snow trail where it walks (with mob griefing).
-///
-/// `SNOW_GOLEM_MELTS` (hot biomes) is a biome attribute the tick cannot read yet; snow golems
-/// do not melt there.
+/// `EnvironmentAttributes.SNOW_GOLEM_MELTS` at `pos`: the biome's value, else the dimension's.
+fn snow_golem_melts(level: &crate::level::Level, pos: BlockPos) -> bool {
+    crate::mob::spawn::biome_at(level, pos)
+        .and_then(|b| b.snow_golem_melts)
+        .unwrap_or(level.settings.snow_golem_melts)
+}
+
+/// `SnowGolem.aiStep`: one fire damage per tick where snow golems melt (hot biomes, the
+/// Nether), then a snow trail where it walks (with mob griefing).
 pub(super) fn snow_ai_step(t: &mut Tick<'_, '_>) {
+    let at = t.pos();
+    if snow_golem_melts(t.level, BlockPos::containing(at.x, at.y, at.z)) {
+        let source = crate::survival::damage::DamageSource::of(t.env.types.on_fire);
+        let id = t.id;
+        crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, id, source, 1.0);
+        if !t.exists() {
+            return;
+        }
+    }
     if !t.env.rules.bool(Rule::MOB_GRIEFING) {
         return;
     }

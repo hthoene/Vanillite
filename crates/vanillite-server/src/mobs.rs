@@ -296,6 +296,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -305,6 +306,7 @@ impl WorldMobs {
             &mut no_gateway,
             &hooks,
             &names,
+            &teams,
         );
         if std::mem::take(&mut level.output().try_dragon_respawn) {
             fight.try_respawn(level);
@@ -348,6 +350,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -357,6 +360,7 @@ impl WorldMobs {
             &mut no_gateway,
             &hooks,
             &names,
+            &teams,
         );
         for event in events {
             fight.handle(level, &mut env, &mut self.cx, event);
@@ -422,6 +426,7 @@ impl WorldMobs {
             let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -431,6 +436,7 @@ impl WorldMobs {
                 &mut no_gateway,
                 &hooks,
                 &names,
+                &teams,
             );
             let level: &Level = level;
             for (player, action) in pending {
@@ -917,15 +923,32 @@ impl WorldMobs {
                     continue;
                 }
                 portal::tick_portal(level, &mut ents, id, in_end, &mut self.cx.travel);
-                crate::blocks::tick_item(
-                    &mut ents,
-                    &level.chunks,
-                    id,
-                    &mut || items.random.next_float(),
-                    level.min_y(),
-                    items.settings,
-                    &mut self.item_scratch,
-                );
+                let burn = {
+                    let chunks = &level.chunks;
+                    let (weather, climate) = (&survival.weather, survival.climate());
+                    let raining = |pos| raining_at(chunks, climate.map(|c| &**c), weather, pos);
+                    crate::blocks::tick_item(
+                        &mut ents,
+                        chunks,
+                        id,
+                        &mut || items.random.next_float(),
+                        level.min_y(),
+                        items.settings,
+                        &mut self.item_scratch,
+                        &vanillite_game::item_entity::FireWorld {
+                            blocks: &WorldBlocks(chunks),
+                            facts: &state.block_facts,
+                            types: &state.damage_types,
+                            raining_at: &raining,
+                        },
+                    )
+                };
+                if !burn.is_none() {
+                    // Rare: the item took fire or lava damage.
+                    level.entities = ents;
+                    vanillite_game::item_entity::burn_effects(level, id, burn);
+                    ents = std::mem::take(&mut level.entities);
+                }
                 portal::enter_gateway(level, &mut ents, id, &mut self.cx.gateways);
                 continue;
             }
@@ -1009,6 +1032,7 @@ impl WorldMobs {
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
                 let mut env = survival.env(
                     state,
                     &rules,
@@ -1018,6 +1042,7 @@ impl WorldMobs {
                     &mut no_gateway,
                     &hooks,
                     &names,
+                    &teams,
                 );
                 let level_ref: &Level = level;
                 if is_mob {
@@ -1079,6 +1104,7 @@ impl WorldMobs {
             let raining = |_| false;
             let mut no_gateway = |_| false;
             let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+            let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
             let mut env = survival.env(
                 state,
                 &rules,
@@ -1088,6 +1114,7 @@ impl WorldMobs {
                 &mut no_gateway,
                 &hooks,
                 &names,
+                &teams,
             );
             let mut discarded = Vec::new();
             vanillite_game::player::using::tick_all(&mut ents, &mut env);
@@ -1226,6 +1253,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -1235,6 +1263,7 @@ impl WorldMobs {
             &mut no_gateway,
             &hooks,
             &names,
+            &teams,
         );
         let mut ents = std::mem::take(&mut level.entities);
         for hurt in hurts {
@@ -1322,6 +1351,7 @@ impl WorldMobs {
         let raining = |_| false;
         let mut no_gateway = |_| false;
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = survival.env(
             state,
             &rules,
@@ -1331,6 +1361,7 @@ impl WorldMobs {
             &mut no_gateway,
             &hooks,
             &names,
+            &teams,
         );
         let mut ents = std::mem::take(&mut level.entities);
         for (target, amount) in hurts {
@@ -1372,6 +1403,7 @@ impl WorldMobs {
                 let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+                let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
                 let mut env = survival.env(
                     state,
                     &rules,
@@ -1381,9 +1413,10 @@ impl WorldMobs {
                     &mut no_gateway,
                     &hooks,
                     &names,
+                    &teams,
                 );
                 for &target in &hits {
-                    lightning::thunder_hit(level, &mut ents, &mut env, &mut self.cx, target);
+                    lightning::thunder_hit(level, &mut ents, &mut env, &mut self.cx, target, id);
                 }
             }
             level.entities = ents;

@@ -45,6 +45,29 @@ fn generating_at(
     })
 }
 
+/// `ServerLevel.findNearestMapStructure` for the structures `names` (the content of a
+/// structure tag) around `origin`: `None` in a world that generates no structures.
+pub fn nearest_named(
+    level: &crate::level::Level,
+    names: &[&str],
+    origin: BlockPos,
+    max_radius: i32,
+) -> Option<BlockPos> {
+    let g = level.generation.as_ref().filter(|g| g.structures)?;
+    let wanted: Vec<_> = names
+        .iter()
+        .filter_map(|id| g.terrain.structures().structure_id(id))
+        .collect();
+    let height = LevelHeight {
+        min_y: level.min_y(),
+        height: level
+            .max_y()
+            .saturating_sub(level.min_y())
+            .saturating_add(1),
+    };
+    nearest_structure(&g.terrain, &wanted, origin, height, max_radius).map(|(p, _)| p)
+}
+
 /// `ChunkGenerator.findNearestMapStructure(level, structures, pos, radius, false)`.
 pub fn nearest_structure(
     terrain: &TerrainGenerator,

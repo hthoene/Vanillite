@@ -182,6 +182,8 @@ pub enum Gate {
     Johnny,
     /// `ShulkerNearestAttackGoal`: never in peaceful.
     NotPeaceful,
+    /// `ShulkerDefenseAttackGoal`: only for a shulker in a scoreboard team.
+    InTeam,
 }
 
 /// A goal of the family.
@@ -887,6 +889,7 @@ impl FamilyHooks for Hooks {
                         st(t.mob_ref()).johnny
                     }
                     Gate::NotPeaceful => t.env.difficulty != Difficulty::Peaceful,
+                    Gate::InTeam => shulker::team_of(t, t.id).is_some(),
                 };
                 open && common::can_use(t, inner)
             }

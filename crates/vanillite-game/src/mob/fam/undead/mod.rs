@@ -368,6 +368,12 @@ pub fn convert_to(
         let e = t.core();
         (e.pos(), e.velocity(), e.rot(), e.flags())
     };
+    // `copyPosition` turns the new mob like the old one, but its head keeps the yaw of
+    // `LivingEntity`'s constructor.
+    let rot = Rotation {
+        y_head_rot: crate::mob::constructor_y_rot(seed),
+        ..rot
+    };
     let uuid = crate::mob::new_uuid();
     let vehicle = t.ents.vehicle_of(t.id);
     let id = crate::mob::spawn(t.ents, t.level.network_ids(), uuid, pos, rot, new);

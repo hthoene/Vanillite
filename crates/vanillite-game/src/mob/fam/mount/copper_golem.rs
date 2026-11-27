@@ -90,6 +90,8 @@ pub struct CopperGolem {
     pub transport_cooldown: i32,
     /// `openedChestPos` with the container whose lid it opened.
     pub opened_chest: Option<(BlockPos, crate::block::container::ContainerRef)>,
+    /// `lastLightningBoltUUID` (0: none).
+    pub last_lightning_bolt: u128,
 }
 
 pub fn golem(m: &MobData) -> CopperGolem {
@@ -110,6 +112,30 @@ pub fn golem_mut(m: &mut MobData) -> &mut CopperGolem {
     match s {
         State::CopperGolem(g) => g,
         _ => unreachable!("set above"),
+    }
+}
+
+/// `CopperGolem.thunderHit` after the plain hit: the first strike of the bolt with the UUID
+/// `bolt` takes one oxidation stage off and restarts the weathering timer.
+pub fn thunder_hit(
+    ents: &mut crate::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+    bolt: u128,
+) {
+    let Some(m) = ents.mob_mut(id) else {
+        return;
+    };
+    let g = golem_mut(m);
+    if g.last_lightning_bolt == bolt {
+        return;
+    }
+    g.last_lightning_bolt = bolt;
+    if g.weather != Weather::Unaffected {
+        g.next_weathering_tick = UNSET;
+        g.weather = g.weather.previous();
+        if let Some(mut e) = ents.store.get_mut(id) {
+            e.mark_data_dirty();
+        }
     }
 }
 

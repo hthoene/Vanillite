@@ -605,7 +605,8 @@ pub(crate) fn summon(
     if select::find_uuid(&env.level.entities, uuid).is_some() {
         return Err(duplicate());
     }
-    let network_id = env.global.network_ids.next();
+    // The level's allocator (the server's shared one).
+    let network_id = env.level.network_ids_arc().next();
     let new = NewEntity::new(kind, network_id, uuid, pos);
     let short = |key: &str, default: i32| {
         nbt.get(key)
@@ -624,7 +625,9 @@ pub(crate) fn summon(
         let table = env.global.systems.mob_spawns.get().map(Arc::as_ref);
         let difficulty = env.global.level.difficulty();
         let id = vanillite_game::mob::spawn::summon(env.level, table, mob, pos, difficulty);
-        let mut loaded = nbt.clone();
+        // The given tags on top of what the mob has (like `data merge`).
+        let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
+        super::data_cmd::merge_compound(&mut loaded, nbt);
         loaded.remove("Pos");
         data::apply_entity_nbt(&mut env.level.entities, id, &loaded)?;
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);

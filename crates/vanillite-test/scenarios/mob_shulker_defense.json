@@ -1,0 +1,60 @@
+{
+  "description": "A shulker in a scoreboard team defends itself (ShulkerDefenseAttackGoal): without players around it targets the zombie nearby, an Enemy outside its team, and shoots bullets at it.",
+  "tier": "fast",
+  "time": 18000,
+  "difficulty": "easy",
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 120,
+  "entities": [
+    {
+      "name": "shulker",
+      "type": "minecraft:shulker",
+      "pos": [
+        7.5,
+        -60.0,
+        3.5
+      ],
+      "seed": 11,
+      "finalize": false
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        7.5,
+        -60.0,
+        9.5
+      ],
+      "seed": 12,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "team add guards"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "team join guards @e[type=minecraft:shulker]"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:zombie,limit=1] {NoAI:1b}"
+    }
+  ]
+}

@@ -62,6 +62,15 @@ pub fn facts(ents: &Entities, id: EntityId) -> Option<EntityFacts> {
         sheep_color: sheep.map(|s| s.0),
         sheared: sheep.is_some_and(|s| s.1),
         villager_variant: None,
+        farm_variant: ents
+            .mob(id)
+            .filter(|m| {
+                matches!(
+                    m.kind,
+                    super::Kind::Chicken | super::Kind::Cow | super::Kind::Pig
+                )
+            })
+            .and_then(|m| u8::try_from(m.variant).ok()),
         // Creative flight is the client's: only gliding counts.
         flying: flags.contains(EntityFlags::FALL_FLYING),
         fall_distance: ents.player(id).map_or_else(

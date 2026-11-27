@@ -136,26 +136,12 @@ pub fn use_item(
 
 /// `findNearestMapStructure(#eye_of_ender_located, pos, 100, false)`.
 fn nearest_stronghold(level: &Level, pos: Vec3) -> Option<BlockPos> {
-    let g = level.generation.as_ref().filter(|g| g.structures)?;
-    let wanted: Vec<_> = ["minecraft:stronghold"]
-        .iter()
-        .filter_map(|id| g.terrain.structures().structure_id(id))
-        .collect();
-    let height = vanillite_worldgen::structure::LevelHeight {
-        min_y: level.min_y(),
-        height: level
-            .max_y()
-            .saturating_sub(level.min_y())
-            .saturating_add(1),
-    };
-    crate::level::locate::nearest_structure(
-        &g.terrain,
-        &wanted,
+    crate::level::locate::nearest_named(
+        level,
+        &["minecraft:stronghold"],
         BlockPos::containing(pos.x, pos.y, pos.z),
-        height,
         crate::level::locate::MAX_STRUCTURE_SEARCH_RADIUS,
     )
-    .map(|(p, _)| p)
 }
 
 /// `EyeOfEnder.tick`.

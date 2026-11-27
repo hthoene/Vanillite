@@ -380,13 +380,40 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         super::random_uuid(&mut r)
     });
     let mut m = MobData::new(kind, seed);
+    read_mob(&mut m, tag);
+    m.y_body_rot = y_rot;
+    // A fresh random per loaded mob, like `Entity.random`.
+    let _ = m.random.next_int();
+    Some(LoadedMob {
+        pos,
+        velocity,
+        rot: Rotation {
+            y_rot,
+            x_rot,
+            y_head_rot: y_rot,
+        },
+        uuid,
+        on_ground: boolean(tag, "OnGround"),
+        data: m,
+    })
+}
+
+/// `Entity.load` on a living mob (`/data merge entity`, `/data modify entity`): the saved
+/// state is read again from `tag`; what is not saved (its random, running goals, path) stays.
+pub fn apply_mob(m: &mut MobData, tag: &Compound) {
+    read_mob(m, tag);
+}
+
+/// The saved state of a mob (`readAdditionalSaveData` of the entity classes) from `tag`.
+fn read_mob(m: &mut MobData, tag: &Compound) {
+    let kind = m.kind;
     // Effects first: their modifiers (Health Boost) raise the maximum health.
     m.effects.load(tag.get("active_effects"));
     if !m.effects.is_empty() {
         let dirty = m.effects.modifiers.take_dirty();
-        crate::effect::living::apply_mob_modifiers(&mut m, &dirty);
+        crate::effect::living::apply_mob_modifiers(m, &dirty);
         m.absorption = float(tag, "AbsorptionAmount").unwrap_or(0.0).max(0.0);
-        crate::effect::living::apply_mob_modifiers(&mut m, &[]);
+        crate::effect::living::apply_mob_modifiers(m, &[]);
     }
     if let Some(h) = float(tag, "Health") {
         m.health = h.clamp(0.0, m.max_health());
@@ -405,9 +432,8 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         || kind == Kind::ElderGuardian && tag.get("PersistenceRequired").is_none();
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
-    m.y_body_rot = y_rot;
     m.custom_name = tag.get("CustomName").and_then(tag_component);
-    super::equipment::load(&mut m, tag);
+    super::equipment::load(m, tag);
     {
         use crate::item::EquipmentSlot;
         let saddle = m.equipment.get(EquipmentSlot::Saddle);
@@ -443,12 +469,12 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     };
     match kind {
         Kind::Zombie => {
-            super::fam::undead::set_baby(&mut m, boolean(tag, "IsBaby"));
-            super::movement::set_can_break_doors(&mut m, boolean(tag, "CanBreakDoors"));
-            super::fam::undead::zombies::load_conversion(&mut m, tag);
+            super::fam::undead::set_baby(m, boolean(tag, "IsBaby"));
+            super::movement::set_can_break_doors(m, boolean(tag, "CanBreakDoors"));
+            super::fam::undead::zombies::load_conversion(m, tag);
         }
         Kind::Creeper => {
-            let c = super::fam::classic::creeper_mut(&mut m);
+            let c = super::fam::classic::creeper_mut(m);
             c.max_swell = int(tag, "Fuse").unwrap_or(30);
             c.explosion_radius = int(tag, "ExplosionRadius").unwrap_or(3);
             c.powered = boolean(tag, "powered");
@@ -461,7 +487,7 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
             m.love_cause = uuid_key(tag, "LoveCause");
             m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
             if kind == Kind::Sheep {
-                super::fam::classic::sheep_mut(&mut m).color =
+                super::fam::classic::sheep_mut(m).color =
                     u8::try_from(int(tag, "Color").unwrap_or(0) & 15).unwrap_or(0);
                 m.sheared = boolean(tag, "Sheared");
             } else {
@@ -471,7 +497,7 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
                     _ => 1,
                 };
                 if kind == Kind::Chicken {
-                    let c = super::fam::classic::chicken_mut(&mut m);
+                    let c = super::fam::classic::chicken_mut(m);
                     if let Some(t) = int(tag, "EggLayTime") {
                         c.egg_time = t;
                     }
@@ -479,24 +505,10 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
                 }
             }
         }
-        Kind::Skeleton => super::fam::undead::skeletons::load_conversion(&mut m, tag),
+        Kind::Skeleton => super::fam::undead::skeletons::load_conversion(m, tag),
         Kind::Spider | Kind::Enderman => {}
-        _ => super::fam::load(&mut m, tag),
+        _ => super::fam::load(m, tag),
     }
-    // A fresh random per loaded mob, like `Entity.random`.
-    let _ = m.random.next_int();
-    Some(LoadedMob {
-        pos,
-        velocity,
-        rot: Rotation {
-            y_rot,
-            x_rot,
-            y_head_rot: y_rot,
-        },
-        uuid,
-        on_ground: boolean(tag, "OnGround"),
-        data: m,
-    })
 }
 
 /// An experience orb as entity NBT.
@@ -576,7 +588,8 @@ pub fn save_item(core: &EntityRef<'_>, d: &crate::item_entity::ItemData) -> Comp
     let mut out = Compound::new();
     save_entity(core, &mut out);
     out.insert("fall_distance", 0.0_f64);
-    out.insert("Fire", -1_i16);
+    #[allow(clippy::cast_possible_truncation)]
+    out.insert("Fire", d.fire_ticks.clamp(-32768, 32767) as i16);
     out.insert("Air", 300_i16);
     out.insert("Health", d.health);
     out.insert("Age", d.age);
@@ -609,6 +622,7 @@ pub fn load_item(tag: &Compound) -> Option<(LoadedEntity, crate::item_entity::It
         crate::item_entity::ItemData::new(stack, short("PickupDelay"), uuid_key(tag, "Thrower"));
     d.age = short("Age");
     d.health = int(tag, "Health").map_or(5, |v| i16::try_from(v).unwrap_or(5));
+    d.fire_ticks = int(tag, "Fire").unwrap_or(0).max(0);
     d.target = uuid_key(tag, "Owner");
     Some((e, d))
 }
@@ -796,19 +810,6 @@ fn load_chest_vehicle(
     None
 }
 
-/// The keys of the kind Vanillite does not simulate, kept as they were (`BaseSpawner.save`).
-const SPAWNER_KEYS: &[&str] = &[
-    "Delay",
-    "MinSpawnDelay",
-    "MaxSpawnDelay",
-    "SpawnCount",
-    "MaxNearbyEntities",
-    "RequiredPlayerRange",
-    "SpawnRange",
-    "SpawnData",
-    "SpawnPotentials",
-];
-
 /// A minecart as entity NBT (`AbstractMinecart.addAdditionalSaveData` and the kinds').
 pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) -> Compound {
     use crate::minecart::MinecartKind;
@@ -862,7 +863,12 @@ pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) ->
                 out.insert(key, value.clone());
             }
         }
-        MinecartKind::Plain | MinecartKind::Spawner => {}
+        MinecartKind::Spawner => {
+            if let Some(spawner) = &m.spawner {
+                spawner.save(&mut out, true);
+            }
+        }
+        MinecartKind::Plain => {}
     }
     for (key, value) in m.extra.iter() {
         if out.get(key).is_none() {
@@ -881,6 +887,14 @@ pub fn load_minecart(
     let kind = MinecartKind::of(type_of(tag)?)?;
     let e = load_entity(tag)?;
     let mut m = MinecartData::new(kind, seed);
+    apply_minecart(&mut m, tag);
+    Some((e, m))
+}
+
+/// `Entity.load` on a minecart (also `/data merge entity`): its saved state from `tag`.
+pub fn apply_minecart(m: &mut crate::minecart::MinecartData, tag: &Compound) {
+    use crate::minecart::MinecartKind;
+    let kind = m.kind;
     m.custom_name = tag.get("CustomName").and_then(tag_component);
     m.fall_distance = double(tag, "fall_distance").unwrap_or(0.0);
     if let Some(Tag::Compound(c)) = tag.get("DisplayState") {
@@ -917,13 +931,8 @@ pub fn load_minecart(
         }
         MinecartKind::CommandBlock => m.command.load(tag),
         MinecartKind::Spawner => {
-            for &key in SPAWNER_KEYS {
-                if let Some(v) = tag.get(key) {
-                    m.extra.insert(key, v.clone());
-                }
-            }
+            m.spawner = Some(Box::new(crate::block::spawner::MobSpawner::load(tag)));
         }
         MinecartKind::Plain => {}
     }
-    Some((e, m))
 }

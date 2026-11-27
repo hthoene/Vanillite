@@ -174,13 +174,19 @@ fn vec3_list(v: Vec3) -> Tag {
 /// data for players and items.
 pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> {
     let e = entities.store.get(id)?;
-    // Decorations, armor stands and mannequins with all their stored data.
-    let full = vanillite_game::decoration::save(entities, id).or_else(|| {
-        entities
-            .mob(id)
-            .filter(|m| vanillite_game::decoration::stand::is_stand(m.kind))
-            .map(|m| vanillite_game::mob::nbt::save_mob(&e, m))
-    });
+    // Decorations, mobs (armor stands and mannequins too) and minecarts with all their
+    // stored data.
+    let full = vanillite_game::decoration::save(entities, id)
+        .or_else(|| {
+            entities
+                .mob(id)
+                .map(|m| vanillite_game::mob::nbt::save_mob(&e, m))
+        })
+        .or_else(|| {
+            entities
+                .minecart(id)
+                .map(|m| vanillite_game::mob::nbt::save_minecart(&e, m))
+        });
     if let Some(mut full) = full {
         full.remove("id");
         let tags = entities.tags_of(id);
@@ -285,6 +291,12 @@ pub(crate) fn apply_entity_nbt(
     if vanillite_game::decoration::apply_nbt(entities, id, data) {
         return Ok(());
     }
+    // `readAdditionalSaveData` of mobs and minecarts.
+    if let Some(m) = entities.mob_mut(id) {
+        vanillite_game::mob::nbt::apply_mob(m, data);
+    } else if let Some(m) = entities.minecart_mut(id) {
+        vanillite_game::mob::nbt::apply_minecart(m, data);
+    }
     if let Some(mut e) = entities.store.get_mut(id) {
         if let Some(pos) = read_vec3(data.get("Pos"))
             .filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
@@ -303,6 +315,7 @@ pub(crate) fn apply_entity_nbt(
             rot.x_rot = *x;
             e.set_rot(rot);
         }
+        e.mark_data_dirty();
     }
     if e_kind_is_item(entities, id)
         && let Some(item) = entities.item_mut(id)

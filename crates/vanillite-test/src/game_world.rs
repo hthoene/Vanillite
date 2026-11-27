@@ -169,6 +169,10 @@ fn install() {
                 .map(|r| r.entries().iter().map(|e| e.id.clone()).collect())
                 .expect("Vanilla biome registry"),
         );
+        // The biomes' spawn settings and gameplay attributes, as the server installs them.
+        if let Some(table) = vanillite_server::spawn_table(Some(&packs)) {
+            vanillite_game::mob::spawn::install_table(Arc::new(table));
+        }
         // Loot tables and item tags (block drops), as the server installs them.
         vanillite_game::player::play::install_game_data(Arc::new(vanillite_server::game_data(
             Some(&packs),
@@ -176,12 +180,14 @@ fn install() {
     });
 }
 
+/// The server of [`command_server`], once a scenario ran a command.
+static COMMAND_SERVER: OnceLock<Arc<vanillite_server::Global>> = OnceLock::new();
+
 /// The server whose command tree, scoreboard and storage `command` actions use: started once
 /// without network in a temporary directory, with the Vanilla data pack of [`install`], and
 /// never run (the commands run on the scenario's level).
 fn command_server() -> &'static vanillite_server::Global {
-    static GLOBAL: OnceLock<Arc<vanillite_server::Global>> = OnceLock::new();
-    GLOBAL.get_or_init(|| {
+    COMMAND_SERVER.get_or_init(|| {
         install();
         let dir = std::env::temp_dir().join(format!("vanillite-scenario-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -582,6 +588,12 @@ impl GameWorld {
                 out: &mut self.effects,
                 hooks: &vanillite_game::hooks::NoHooks,
                 display_name: &names,
+                // Teams come from `team` commands, so only once the command server runs.
+                entity_team: &|uuid| {
+                    COMMAND_SERVER
+                        .get()
+                        .and_then(|g| vanillite_server::entity_team(g, uuid))
+                },
             };
             f(level, &mut ents, &mut env, &mut self.mobs)
         };
@@ -616,7 +628,7 @@ impl GameWorld {
                 if !hits.is_empty() {
                     self.with_env(|level, ents, env, cx| {
                         for &target in &hits {
-                            lightning::thunder_hit(level, ents, env, cx, target);
+                            lightning::thunder_hit(level, ents, env, cx, target, id);
                         }
                     });
                     self.finish_removals();
@@ -639,18 +651,33 @@ impl GameWorld {
             if kind == ids::ITEM {
                 let level = &mut self.level;
                 let random = &mut self.item_random;
-                vanillite_server::tick_item(
-                    &mut level.entities,
-                    &level.chunks,
-                    id,
-                    &mut || random.next_float(),
-                    MIN_Y,
-                    vanillite_server::ItemSettings {
-                        lifetime: ITEM_LIFETIME,
-                        merge_radius: 0.5,
-                    },
-                    &mut self.item_scratch,
-                );
+                let (types, facts) = PACK.get().expect("installed");
+                let mut ents = std::mem::take(&mut level.entities);
+                let burn = {
+                    let raining = |pos| level.is_raining_at(pos);
+                    vanillite_server::tick_item(
+                        &mut ents,
+                        &level.chunks,
+                        id,
+                        &mut || random.next_float(),
+                        MIN_Y,
+                        vanillite_server::ItemSettings {
+                            lifetime: ITEM_LIFETIME,
+                            merge_radius: 0.5,
+                        },
+                        &mut self.item_scratch,
+                        &vanillite_game::item_entity::FireWorld {
+                            blocks: &ChunkBlocks(&level.chunks),
+                            facts,
+                            types,
+                            raining_at: &raining,
+                        },
+                    )
+                };
+                level.entities = ents;
+                if !burn.is_none() {
+                    vanillite_game::item_entity::burn_effects(level, id, burn);
+                }
                 continue;
             }
             let is_mob = is_mob_kind(kind);
@@ -1264,6 +1291,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
             "WitchCanAttack" => "NearestAttackableWitchTargetGoal",
             "Johnny" => "VindicatorJohnnyAttackGoal",
             "NotPeaceful" => "ShulkerNearestAttackGoal",
+            "InTeam" => "ShulkerDefenseAttackGoal",
             _ => "NearestAttackableTargetGoal",
         },
         ("Illager", "WitchHeal") => "NearestHealableRaiderTargetGoal",

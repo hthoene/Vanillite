@@ -52,6 +52,7 @@ pub(crate) fn with_tick<R>(
             raining_at: &raining,
             border: None,
             display_name: &names,
+            entity_team: &|_| None,
             enter_gateway: &mut |_| false,
             random: &mut random,
             out: &mut out,

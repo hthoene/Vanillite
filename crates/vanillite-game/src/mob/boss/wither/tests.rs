@@ -153,6 +153,7 @@ fn with_tick<R>(
         border: None,
         enter_gateway: &mut no_gateway,
         display_name: &names,
+        entity_team: &|_| None,
         random: &mut random,
         out: &mut out,
     };
@@ -251,6 +252,7 @@ fn skull_hit_withers_by_difficulty() {
             border: None,
             enter_gateway: &mut no_gateway,
             display_name: &names,
+            entity_team: &|_| None,
             random: &mut random,
             out: &mut out,
         };
@@ -350,6 +352,7 @@ fn powered_wither_ignores_arrows() {
             border: None,
             enter_gateway: &mut no_gateway,
             display_name: &names,
+            entity_team: &|_| None,
             random: &mut random,
             out: &mut out,
         };

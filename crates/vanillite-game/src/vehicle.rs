@@ -96,8 +96,8 @@ pub struct BoatData {
     pub tick_count: i32,
     /// The 27 slots of a chest boat or raft (empty for the others).
     pub items: Vec<ItemStack>,
-    /// `LootTable` and `LootTableSeed` of a chest boat (kept; filling is not implemented for
-    /// any container).
+    /// `LootTable` and `LootTableSeed` of a chest boat until the loot is rolled
+    /// ([`crate::block::chest_loot::unpack_entity`]).
     pub loot_table: Option<(String, i64)>,
 }
 
@@ -564,6 +564,7 @@ pub fn hurt_boat(
     } else {
         Vec::new()
     };
+    let loot = if destroy { b.loot_table.take() } else { None };
     if let Some(mut e) = ents.store.get_mut(id) {
         e.mark_data_dirty();
         e.set_flags(EntityFlags::HURT_MARKED, true);
@@ -574,6 +575,31 @@ pub fn hurt_boat(
             e.set_flags(EntityFlags::HURT_MARKED, false);
         }
         cx.discarded.push(id);
+    }
+    if let (Some((table, seed)), Some(pos)) = (loot.filter(|_| !items.is_empty()), pos) {
+        // The loot is rolled first, which needs the world.
+        let entity_drops = env.rules.bool(Rule::ENTITY_DROPS);
+        let stack = drop.map(|item| {
+            let mut stack = ItemStack::new(item, 1);
+            if let Some(n) = name {
+                stack
+                    .patch_mut()
+                    .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
+            }
+            stack
+        });
+        cx.actions
+            .push(crate::mob::WorldAction::DestroyLootVehicle(Box::new(
+                crate::minecart::LootVehicleDrop {
+                    pos,
+                    table,
+                    seed,
+                    slots: items.len(),
+                    drop: stack,
+                    entity_drops,
+                },
+            )));
+        return true;
     }
     // `kill` → `remove(KILLED)`: a chest boat drops its contents first.
     if let Some(pos) = pos

@@ -1,7 +1,8 @@
 //! Container loot (`RandomizableContainer`): the loot table of a chest, barrel, shulker box,
 //! dispenser, dropper, hopper, crafter or decorated pot is rolled the first time the container
 //! is opened, read or broken (`unpackLootTable`); brushable blocks roll their archaeology
-//! table when brushed.
+//! table when brushed. Chest minecarts, hopper minecarts and chest boats (`ContainerEntity`)
+//! roll theirs the same way ([`unpack_entity`]).
 //!
 //! The roll uses `RandomSource.create(seed)` for a non-zero `LootTableSeed`, else the level
 //! random (Vanilla takes the table's random sequence there; there are no random sequences
@@ -109,6 +110,39 @@ pub fn unpack(level: &mut Level, pos: BlockPos, player: Option<EntityId>) {
         }
     }
     level.block_entities.touch(pos.chunk());
+}
+
+/// `ContainerEntity.unpackChestVehicleLootTable(player)`: fills the chest minecart, hopper
+/// minecart or chest boat `id` from its loot table (once; the table is cleared first).
+pub fn unpack_entity(level: &mut Level, id: EntityId, player: Option<EntityId>) {
+    let Some((table, seed)) = level.entities.container_loot_mut(id).and_then(Option::take) else {
+        return;
+    };
+    let Some(origin) = level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let Some(mut items) = level
+        .entities
+        .container_items(id)
+        .map(<[ItemStack]>::to_vec)
+    else {
+        return;
+    };
+    generated_loot(level, player, &table);
+    fill(level, &table, seed, origin, 0.0, player, &mut items);
+    if let Some(slots) = level.entities.container_items_mut(id) {
+        for (slot, stack) in slots.iter_mut().zip(items) {
+            *slot = stack;
+        }
+    }
+}
+
+/// Whether the container entity `id` still has a loot table to roll.
+pub fn entity_has_loot(level: &mut Level, id: EntityId) -> bool {
+    level
+        .entities
+        .container_loot_mut(id)
+        .is_some_and(|l| l.is_some())
 }
 
 /// `CriteriaTriggers.GENERATE_LOOT` when a player unpacks the loot table `table`.

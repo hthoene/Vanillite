@@ -626,8 +626,11 @@ pub struct ItemScratch {
     gone: Vec<EntityId>,
 }
 
-/// `ItemEntity.tick` of one item entity: movement, merging with its neighbours, despawning.
-/// `random_float` is the item's own random.
+/// `ItemEntity.tick` of one item entity: movement, fire and lava, merging with its
+/// neighbours, despawning. `random_float` is the item's own random. Returns what fire and
+/// lava did to it: unless that [`is_none`](item_entity::Burn::is_none), the caller passes it
+/// to [`item_entity::burn_effects`] (game events, sound, a destroyed item's removal).
+#[allow(clippy::too_many_arguments)]
 pub fn tick_item(
     entities: &mut Entities,
     chunks: &Chunks,
@@ -636,16 +639,18 @@ pub fn tick_item(
     min_y: i32,
     settings: ItemSettings,
     scratch: &mut ItemScratch,
-) {
+    fire: &item_entity::FireWorld<'_>,
+) -> item_entity::Burn {
+    let mut burn = item_entity::Burn::default();
     let lifetime = settings.lifetime;
     let block = |p: BlockPos| BlockState(chunks.block(p).unwrap_or(0));
     scratch.gone.clear();
     let Entities { store, items, .. } = entities;
     let Some(entity) = store.get(id) else {
-        return;
+        return burn;
     };
     if entity.kind() != entity_ids::ITEM {
-        return;
+        return burn;
     }
     let row = entity.kind_row();
     let input = item_entity::TickInput {
@@ -657,15 +662,33 @@ pub fn tick_item(
         lifetime,
     };
     let Some(data) = items.get_mut(row) else {
-        return;
+        return burn;
     };
+    if data.fire_ticks > 0 && !data.stack.is_empty() {
+        item_entity::base_tick_fire(data, entity.aabb(), fire, &mut burn);
+        if burn.destroyed {
+            return burn;
+        }
+    }
     let ticked = item_entity::tick(data, input, &block, random_float, &mut scratch.boxes);
     if ticked.discard {
         entities.despawn(id);
-        return;
+        return item_entity::Burn::default();
     }
     let rate = if ticked.moved_block { 2 } else { 40 };
     let merge = data.tick_count.is_multiple_of(rate) && data.is_mergable(lifetime);
+    // `applyEffectsFromBlocks` where the item is now.
+    let p = ticked.pos;
+    let aabb = vanillite_base::Aabb::new(
+        p.x - 0.125,
+        p.y,
+        p.z - 0.125,
+        p.x + 0.125,
+        p.y + 0.25,
+        p.z + 0.125,
+    );
+    item_entity::inside_blocks_fire(data, aabb, fire, random_float, &mut burn);
+    let on_fire = data.fire_ticks > 0;
     if let Some(mut e) = store.get_mut(id) {
         e.set_pos(ticked.pos);
         e.set_velocity(ticked.velocity);
@@ -673,6 +696,13 @@ pub fn tick_item(
         if ticked.needs_sync {
             e.set_flags(EntityFlags::HAS_IMPULSE, true);
         }
+        if e.as_ref().flags().contains(EntityFlags::ON_FIRE) != on_fire {
+            e.set_flags(EntityFlags::ON_FIRE, on_fire);
+            e.mark_data_dirty();
+        }
+    }
+    if burn.destroyed {
+        return burn;
     }
     if merge {
         merge_with_neighbours(
@@ -687,6 +717,7 @@ pub fn tick_item(
     for &gone in &scratch.gone {
         entities.despawn(gone);
     }
+    burn
 }
 
 /// `ItemEntity.mergeWithNeighbours` within `radius` (Vanilla 0.5) horizontally and `radius`

@@ -1,0 +1,122 @@
+{
+  "description": "A player feeds a dolphin raw cod (Dolphin.mobInteract): it has got fish, starts to swim to treasure (DolphinSwimToTreasureGoal), finds no ocean ruin or shipwreck in a world without structures, is stuck and forgets the fish.",
+  "tier": "fast",
+  "player_state": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -54,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -56,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -60,
+        1
+      ],
+      "to": [
+        14,
+        -57,
+        14
+      ],
+      "block": "minecraft:water"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -55.0,
+        0.5
+      ]
+    },
+    {
+      "name": "dolphin",
+      "type": "minecraft:dolphin",
+      "pos": [
+        7.5,
+        -58.5,
+        7.5
+      ],
+      "seed": 11
+    }
+  ],
+  "actions": [
+    {
+      "tick": 10,
+      "op": "interact",
+      "entity": "steve",
+      "target": "dolphin",
+      "item": "minecraft:cod",
+      "count": 2
+    }
+  ]
+}

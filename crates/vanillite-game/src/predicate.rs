@@ -77,6 +77,8 @@ pub struct EntityFacts {
     pub sheared: bool,
     /// A villager's or zombie villager's type (`minecraft:villager_type` id).
     pub villager_variant: Option<u16>,
+    /// The climate variant of a chicken, cow or pig: 0 cold, 1 temperate, 2 warm.
+    pub farm_variant: Option<u8>,
     /// `is_flying`: gliding or flying with the creative abilities.
     pub flying: bool,
     /// `movement.fall_distance`.
@@ -106,6 +108,9 @@ pub struct EntityPredicate {
     pub sheep_color: Option<u8>,
     /// `type_specific/sheep` `sheared`.
     pub sheared: Option<bool>,
+    /// `components` `minecraft:chicken/variant`, `minecraft:cow/variant` or
+    /// `minecraft:pig/variant`: 0 cold, 1 temperate, 2 warm.
+    pub farm_variant: Option<u8>,
     /// `predicates` `minecraft:villager/variant`: the villager types (`villager_type` ids).
     pub villager_variants: Option<Vec<u16>>,
     /// `flags.is_flying`.
@@ -158,15 +163,31 @@ impl EntityPredicate {
                         .is_some_and(|f| f.keys().any(|k| !known.contains(&k.as_str())));
                 }
                 "components" => {
-                    let known = v
-                        .as_object()
-                        .is_some_and(|c| c.keys().all(|k| k == "minecraft:sheep/color"));
+                    const FARM: [&str; 3] = [
+                        "minecraft:chicken/variant",
+                        "minecraft:cow/variant",
+                        "minecraft:pig/variant",
+                    ];
+                    let known = v.as_object().is_some_and(|c| {
+                        c.keys()
+                            .all(|k| k == "minecraft:sheep/color" || FARM.contains(&k.as_str()))
+                    });
                     p.sheep_color = v
                         .get("minecraft:sheep/color")
                         .and_then(Value::as_str)
                         .and_then(dye_id);
+                    let farm = FARM.iter().find_map(|k| v.get(*k));
+                    p.farm_variant = farm.and_then(Value::as_str).and_then(|name| {
+                        match name.strip_prefix("minecraft:").unwrap_or(name) {
+                            "cold" => Some(0),
+                            "temperate" => Some(1),
+                            "warm" => Some(2),
+                            _ => None,
+                        }
+                    });
                     p.unsupported |= !known
-                        || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none());
+                        || (v.get("minecraft:sheep/color").is_some() && p.sheep_color.is_none())
+                        || (farm.is_some() && p.farm_variant.is_none());
                 }
                 "movement" => {
                     // Only a lower bound of `fall_distance` (Wind Burst).
@@ -236,6 +257,9 @@ impl EntityPredicate {
             return false;
         }
         if self.sheep_color.is_some() && self.sheep_color != e.sheep_color {
+            return false;
+        }
+        if self.farm_variant.is_some() && self.farm_variant != e.farm_variant {
             return false;
         }
         if let Some(types) = &self.villager_variants

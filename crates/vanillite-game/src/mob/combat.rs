@@ -653,10 +653,12 @@ fn die(
     };
     let killed_by_player = m.last_hurt_by_player_time > 0;
     let baby = m.baby;
-    let mut reward = kinds::experience_reward(m);
-    if baby {
-        reward = 0;
-    }
+    // `getExperienceReward` (it draws from the mob's random) only where Vanilla asks for it:
+    // a sculk catalyst at the death, else `dropExperience` after the loot.
+    let reward_of = |ents: &mut Entities| {
+        let reward = ents.mob_mut(target).map_or(0, kinds::experience_reward);
+        if baby { 0 } else { reward }
+    };
     if let Some(cause) = source.cause
         && let Some(p) = ents.player_mut(cause)
     {
@@ -671,6 +673,7 @@ fn die(
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
+    let mut reward = if consumed { reward_of(ents) } else { 0 };
     if consumed && reward > 0 {
         // `CatalystListener.tryAwardItSpreadsAdvancement`: the player that hurt it last, with
         // the damage source before the killing blow (else a player attack).
@@ -754,8 +757,11 @@ fn die(
             });
         }
     }
-    if !consumed && (killed_by_player && env.rules.bool(Rule::MOB_DROPS)) && reward > 0 {
-        award_experience(env, pos, reward);
+    if !consumed && killed_by_player && !baby && env.rules.bool(Rule::MOB_DROPS) {
+        reward = reward_of(ents);
+        if reward > 0 {
+            award_experience(env, pos, reward);
+        }
     }
     // `getKillCredit().awardKillScore(this, source)`: the player that hurt it last, else the
     // last attacking mob.
