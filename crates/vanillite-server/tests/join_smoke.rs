@@ -927,3 +927,86 @@ fn sorted(tag: &vanillite_nbt::Tag) -> vanillite_nbt::Tag {
         other => other.clone(),
     }
 }
+
+/// Arrows, spectral arrows and tridents resting in a block send no synched data and no
+/// movement but Vanilla's forced position every 60 ticks: the client restarts the shake on
+/// every `IN_GROUND` it receives, so data sent each tick made resting arrows jitter (#198).
+#[test]
+fn resting_arrows_send_no_updates() {
+    let dir = std::env::temp_dir().join(format!("vanillite-arrows-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("server.properties"), "view-distance=2\n").unwrap();
+    std::fs::write(
+        dir.join("ops.json"),
+        format!(
+            r#"[{{"uuid":"{}","name":"Erin","level":4,"bypassesPlayerLimit":false}}]"#,
+            Uuid::offline("Erin")
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("eula.txt"), "eula=true\n").unwrap();
+    let mut builder = ServerBuilder::new(&dir);
+    builder.vanilla_pack(VanillaPack::None).network(false);
+    let server = builder.start().expect("server starts");
+    let opener = server.virtual_opener().expect("network");
+    let handle = server.handle();
+    let thread = std::thread::spawn(move || server.run());
+
+    let mut p = connect(&opener, "Erin");
+    join(&mut p);
+    let kinds = [ids::ARROW, ids::SPECTRAL_ARROW, ids::TRIDENT];
+    for (i, kind) in ["arrow", "spectral_arrow", "trident"].iter().enumerate() {
+        let z = 2 * i32::try_from(i).unwrap() - 2;
+        for command in [
+            format!("setblock ~3 ~ ~{z} minecraft:stone"),
+            format!("summon minecraft:{kind} ~3 ~3 ~{z} {{Motion:[0.0,-0.5,0.0]}}"),
+        ] {
+            p.send(&ChatCommand { command });
+        }
+    }
+    let mut network_ids = [None; 3];
+    p.until("arrows", |packet| {
+        if let ClientboundPlay::AddEntity(a) = packet
+            && let Some(i) = kinds.iter().position(|k| a.entity_type == i32::from(k.0))
+        {
+            network_ids[i] = Some(a.entity_id);
+        }
+        network_ids.iter().all(Option::is_some).then_some(())
+    });
+    let network_ids = network_ids.map(Option::unwrap);
+    // The time sync every 20 ticks is the clock: two for landing, six to watch them rest.
+    let mut syncs = 0;
+    let mut data = [0; 3];
+    let mut moves = [0; 3];
+    p.until("120 resting ticks", |packet| {
+        let (counter, id) = match packet {
+            ClientboundPlay::SetTime(_) => {
+                syncs += 1;
+                return (syncs == 8).then_some(());
+            }
+            ClientboundPlay::SetEntityData(d) => (&mut data, d.entity_id),
+            ClientboundPlay::MoveEntityPos(m) => (&mut moves, m.entity_id),
+            ClientboundPlay::MoveEntityPosRot(m) => (&mut moves, m.entity_id),
+            ClientboundPlay::MoveEntityRot(m) => (&mut moves, m.entity_id),
+            ClientboundPlay::EntityPositionSync(m) => (&mut moves, m.entity_id),
+            ClientboundPlay::SetEntityMotion(m) => (&mut moves, m.entity_id),
+            _ => return None,
+        };
+        if syncs >= 2
+            && let Some(i) = network_ids.iter().position(|&n| n == id)
+        {
+            counter[i] += 1;
+        }
+        None
+    });
+    assert_eq!(data, [0; 3], "synched data of resting arrows");
+    assert!(
+        moves.iter().all(|&m| m <= 2),
+        "movement of resting arrows: {moves:?}"
+    );
+
+    handle.stop();
+    thread.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
