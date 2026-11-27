@@ -11,10 +11,9 @@ use vanillite_world::entity::{EntityId, NetworkIds};
 use crate::entities::Entities;
 use crate::item::{self, ItemStack};
 use crate::level::Level;
-use crate::mob::{MobContext, animal, attack, combat, tame};
+use crate::mob::{MobContext, animal, attack, tame};
 use crate::survival::damage::DamageSource;
 use crate::survival::player::Env;
-use crate::survival::rules::Rule;
 
 /// The inventory index of a hand.
 pub fn hand_index(ents: &Entities, player: EntityId, hand: Hand) -> usize {
@@ -147,6 +146,7 @@ pub fn use_item(
             &mut stack,
             hand,
         ) {
+            award_used(ents, player, item);
             Used::Success
         } else {
             Used::Pass
@@ -187,8 +187,12 @@ pub fn use_item(
     {
         crate::elytra::swap_with_equipment(ents, env, player, &mut stack, slot)
     } else {
+        // A brush only starts from `useOn` (`BrushItem` keeps `Item.use`: `PASS`).
+        let brush = item::item_id(&stack) == vanillite_data::item::ids::BRUSH;
         put_back(ents, player, hand, stack);
-        crate::player::using::start(ents, env, network_ids, player, hand);
+        if !brush {
+            crate::player::using::start(ents, env, network_ids, player, hand);
+        }
         return;
     };
     put_back(ents, player, hand, stack);
@@ -320,33 +324,7 @@ pub fn attack_entity(
         tame::break_knot(ents, env, target, &mut cx.discarded);
         return;
     }
-    let crystal = matches!(
-        ents.special(target),
-        Some(crate::mob::boss::special::SpecialData::EndCrystal(_))
-    );
-    if ents.boat(target).is_some() || ents.minecart(target).is_some() || crystal {
-        let scale = attack::attack_strength_scale(ents, player, 0.5);
-        let base =
-            attack::player_attribute(ents, player, "minecraft:attack_damage", 1.0, 0.0, 2048.0);
-        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let damage = base as f32 * (0.2 + scale * scale * 0.8);
-        if let Some(p) = ents.player_mut(player) {
-            p.survival.attack_ticker = 0;
-        }
-        let mut source = combat::entity_source(ents, env.types.player_attack, player, player);
-        source.cause_is_mob = false;
-        if crystal {
-            // `EndCrystal.hurtServer`: any hit makes it explode.
-            combat::hurt(level, ents, env, cx, target, source, damage);
-        } else {
-            hurt_vehicle(ents, env, cx, target, source, damage);
-        }
-        return;
-    }
-    // `canHarmPlayer`: the pvp rule.
-    if ents.player(target).is_some() && !env.rules.bool(Rule::PVP) {
-        return;
-    }
+    // Vehicles, end crystals, projectiles and living entities (`canHarmPlayer` is the hurt's).
     attack::player_attack(level, ents, env, cx, player, target);
 }
 

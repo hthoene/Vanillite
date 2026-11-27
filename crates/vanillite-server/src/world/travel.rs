@@ -1407,6 +1407,16 @@ impl ServerWorld {
             );
         }
         player.inventory.send_all(sink.as_ref());
+        // A new client player (not after a dimension change, which keeps the attributes):
+        // the equipment's attribute modifiers again.
+        if keep_all != Some(true) {
+            player.survival.equipment_modifiers = Default::default();
+            if let Some(update) =
+                vanillite_game::effect::living::player_equipment_update(network_id.0, player, true)
+            {
+                sink.send(&update);
+            }
+        }
         sink.send(&SetHeldSlot {
             slot: i32::try_from(player.inventory.selected).unwrap_or(0),
         });
@@ -2004,7 +2014,7 @@ impl ServerWorld {
         let mut no_gateway = |_| false;
         let dimension = self.dimension.clone();
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
-        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
+        let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = self.survival.env(
             &mut random,
             state,

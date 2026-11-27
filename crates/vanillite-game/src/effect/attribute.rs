@@ -35,6 +35,7 @@ impl Attribute {
     pub const SAFE_FALL_DISTANCE: Attribute = Attribute(29);
     pub const SCALE: Attribute = Attribute(30);
     pub const WAYPOINT_TRANSMIT_RANGE: Attribute = Attribute(38);
+    pub const WAYPOINT_RECEIVE_RANGE: Attribute = Attribute(39);
 
     /// The registry name.
     pub fn name(self) -> &'static str {

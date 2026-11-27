@@ -70,8 +70,7 @@ pub fn register_goals(m: &mut MobData) {
 
 /// The scoreboard team of an entity that is no player (`getTeam`).
 pub(super) fn team_of(t: &Tick<'_, '_>, id: EntityId) -> Option<Box<str>> {
-    let uuid = t.ents.store.get(id)?.uuid();
-    (t.env.entity_team)(uuid)
+    crate::mob::attack::team_of(t.ents, t.env, id).map(|f| f.name)
 }
 
 /// `ShulkerDefenseAttackGoal`'s targets: an `Enemy` that is not in the shulker's team

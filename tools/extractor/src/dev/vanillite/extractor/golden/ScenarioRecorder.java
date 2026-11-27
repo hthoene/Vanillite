@@ -437,6 +437,8 @@ public final class ScenarioRecorder {
       }
       Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views, stream);
       trace.clientView = clientView;
+      entities.clientAttributes =
+          scenario.has("client_attributes") && scenario.get("client_attributes").getAsBoolean();
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;

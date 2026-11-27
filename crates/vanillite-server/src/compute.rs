@@ -52,6 +52,8 @@ pub trait Scheduler: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct Compute {
     scheduler: Arc<dyn Scheduler>,
+    /// Threads of a parallel tick phase, the calling thread included (at least 1).
+    phase_threads: usize,
 }
 
 impl fmt::Debug for Compute {
@@ -65,7 +67,56 @@ impl fmt::Debug for Compute {
 impl Compute {
     /// Wraps a scheduler.
     pub fn new(scheduler: Arc<dyn Scheduler>) -> Self {
-        Compute { scheduler }
+        let phase_threads = scheduler.workers() + 1;
+        Compute {
+            scheduler,
+            phase_threads,
+        }
+    }
+
+    /// Limits the threads of a parallel tick phase (`performance.threads.tick-phases`):
+    /// 0 = the workers plus the calling thread, 1 = the calling thread alone.
+    #[must_use]
+    pub fn with_phase_threads(mut self, threads: usize) -> Self {
+        let all = self.scheduler.workers() + 1;
+        self.phase_threads = if threads == 0 { all } else { threads.min(all) };
+        self
+    }
+
+    /// Threads of a parallel tick phase, the calling thread included (at least 1).
+    pub fn phase_threads(&self) -> usize {
+        self.phase_threads
+    }
+
+    /// A parallel tick phase over `items`: splits them into at most
+    /// [`Compute::phase_threads`] contiguous parts of at least `min_part` items and runs
+    /// `job(offset, part)` for each, the first on the calling thread; returns when all are
+    /// done. With one part (few items, one thread) it runs inline. Each part sees only its
+    /// own items, so the result does not depend on how they were split.
+    pub fn parts<T: Send>(
+        &self,
+        items: &mut [T],
+        min_part: usize,
+        job: impl Fn(usize, &mut [T]) + Sync,
+    ) {
+        let n = items.len();
+        let parts = self.phase_threads.min(n.div_ceil(min_part.max(1))).max(1);
+        if parts == 1 {
+            job(0, items);
+            return;
+        }
+        let per = n.div_ceil(parts);
+        let job = &job;
+        self.scope(|scope| {
+            let mut chunks = items.chunks_mut(per).enumerate();
+            let first = chunks.next();
+            for (i, part) in chunks {
+                scope.spawn(move || job(i * per, part));
+            }
+            if let Some((_, part)) = first {
+                job(0, part);
+            }
+        });
     }
 
     /// A scheduler that runs every job inline at submission, for deterministic tests.

@@ -121,7 +121,7 @@ pub fn attack_tick(t: &mut Tick<'_, '_>, a: &mut Attack) {
                 return;
             }
         }
-        t.mob().move_ctl.set_wanted_position(o.pos, 1.0);
+        t.move_ctl().set_wanted_position(o.pos, 1.0);
     } else if dist < follow * follow && sees {
         let half = f64::from(t.core().dims().height) * 0.5;
         let xd = o.pos.x - p.x;
@@ -169,6 +169,6 @@ pub fn attack_tick(t: &mut Tick<'_, '_>, a: &mut Attack) {
             .look
             .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), 10.0, 10.0);
     } else if a.last_seen < 5 {
-        t.mob().move_ctl.set_wanted_position(o.pos, 1.0);
+        t.move_ctl().set_wanted_position(o.pos, 1.0);
     }
 }

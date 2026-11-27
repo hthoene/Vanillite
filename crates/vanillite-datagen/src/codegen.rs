@@ -761,7 +761,7 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
         let spear = spear_fields(c).map_err(|e| format!("{name}: {e}"))?;
         let _ = writeln!(
             item_lines,
-            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, consumable: {consumable}, use_remainder: {:?}, use_cooldown: {}, use_vibrations: {}, blocks_attacks: {blocks_attacks}, {spear}, compostable: {:?}, jukebox_song: {:?}, block_transformer: {:?}, equip_sound: {:?}, equip_swappable: {}, damage_resistant: {:?} }},",
+            "    ItemInfo {{ name: {name:?}, max_stack_size: {}, max_damage: {}, rarity: Rarity::{rarity}, block: {block}, tool: {tool}, equip_slot: {equip}, modifiers: &[{}], weapon: {weapon}, food: {food}, consumable: {consumable}, use_remainder: {:?}, use_cooldown: {}, use_vibrations: {}, blocks_attacks: {blocks_attacks}, {spear}, compostable: {:?}, jukebox_song: {:?}, block_transformer: {:?}, equip_sound: {:?}, equip_swappable: {}, equip_damage_on_hurt: {}, damage_resistant: {:?} }},",
             c["minecraft:max_stack_size"].as_u64().unwrap_or(1),
             c["minecraft:max_damage"].as_u64().unwrap_or(0),
             modifiers.trim_end_matches(", "),
@@ -786,6 +786,9 @@ fn items(data: &Path, regs: &Value) -> Result<String> {
             c.get("minecraft:equippable").is_some()
                 && c["minecraft:equippable"]["swappable"].as_bool() != Some(false)
                 && c["minecraft:equippable"].get("allowed_entities").is_none(),
+            // `Equippable.damageOnHurt` (default true); false without `equippable`.
+            c.get("minecraft:equippable").is_some()
+                && c["minecraft:equippable"]["damage_on_hurt"].as_bool() != Some(false),
             // `DamageResistant.types`: a damage type tag.
             c["minecraft:damage_resistant"]["types"]
                 .as_str()

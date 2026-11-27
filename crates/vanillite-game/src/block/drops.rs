@@ -29,10 +29,11 @@ pub fn drop_resources(
         return;
     };
     let entity = level.block_entity(pos).cloned();
+    let kept = level.block_entities.kept_components(pos).cloned();
     let components = |id: u16| {
         entity
             .as_ref()
-            .and_then(|e| crate::level::block_entity::collect_component(e, id))
+            .and_then(|e| crate::level::block_entity::collect_component_with(e, kept.as_ref(), id))
     };
     let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let loot = BlockLootContext {

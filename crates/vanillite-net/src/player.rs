@@ -78,6 +78,8 @@ pub struct Joined {
     /// The server's login check admitted the player against its own rules
     /// ([`LoginCheck::admit`]).
     pub login_overridden: bool,
+    /// The handshake's intent was a transfer from another server (`cookie.transferred()`).
+    pub transferred: bool,
 }
 
 /// Feeds play packets into a connection as if its client sent them (a plugin's

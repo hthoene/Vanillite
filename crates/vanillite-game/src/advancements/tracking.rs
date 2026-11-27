@@ -6,8 +6,7 @@ use vanillite_base::Vec3;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_world::entity::EntityId;
 
-use super::trigger::{Event, TriggerKind};
-use super::view;
+use super::trigger::{Event, Snapshot, TriggerKind};
 use crate::entities::Entities;
 use crate::player::PlayerData;
 
@@ -22,9 +21,9 @@ pub struct Tracking {
     pub entered_nether: Option<Vec3>,
     /// `enteredLavaOnVehiclePosition`.
     pub lava_vehicle_from: Option<Vec3>,
-    /// `currentExplosionImpactPos` (saved as `last_explosion_impact_pos`) and
-    /// `currentExplosionCause`.
-    pub explosion: Option<(Vec3, Option<EntityId>)>,
+    /// `currentExplosionImpactPos` (saved as `last_explosion_impact_pos`); the cause is
+    /// [`super::PlayerAdvancements::explosion_cause`].
+    pub explosion: Option<Vec3>,
 }
 
 fn vec3_tag(v: Vec3) -> Tag {
@@ -54,7 +53,7 @@ impl Tracking {
     pub fn load(data: &Compound) -> Tracking {
         Tracking {
             entered_nether: vec3_of(data.get("entered_nether_pos")),
-            explosion: vec3_of(data.get("last_explosion_impact_pos")).map(|p| (p, None)),
+            explosion: vec3_of(data.get("last_explosion_impact_pos")),
             ..Tracking::default()
         }
     }
@@ -66,7 +65,7 @@ impl Tracking {
         if let Some(p) = self.entered_nether {
             out.insert("entered_nether_pos", vec3_tag(p));
         }
-        if let Some((p, _)) = self.explosion {
+        if let Some(p) = self.explosion {
             out.insert("last_explosion_impact_pos", vec3_tag(p));
         }
     }
@@ -95,9 +94,12 @@ pub fn reset_fall_distance(player: &mut PlayerData) {
     player.survival.fall_distance = 0.0;
 }
 
-/// `ServerPlayer.onExplosionHit`.
-pub fn explosion_hit(player: &mut PlayerData, pos: Vec3, cause: Option<EntityId>) {
-    player.survival.tracking.explosion = Some((pos, cause));
+/// `ServerPlayer.onExplosionHit`: where the explosion hit the player and the view of what
+/// caused it, kept as it is now (`currentExplosionCause` keeps the entity object, also after
+/// it is gone).
+pub fn explosion_hit(player: &mut PlayerData, pos: Vec3, cause: Option<Snapshot>) {
+    player.survival.tracking.explosion = Some(pos);
+    player.advancements.explosion_cause = cause;
 }
 
 /// `ServerPlayer.onEffectAdded` of Levitation.
@@ -115,11 +117,10 @@ pub fn tick(ents: &mut Entities, id: EntityId) {
     let vehicle_in_lava = vehicle
         .and_then(|v| ents.mob(v))
         .is_some_and(|m| m.fluids.in_lava());
-    let mut explosion_cause = None;
+    let Some(p) = ents.player_mut(id) else {
+        return;
+    };
     {
-        let Some(p) = ents.player_mut(id) else {
-            return;
-        };
         let s = &mut p.survival;
         let t = &mut s.tracking;
         if let Some((start, since)) = t.levitation {
@@ -131,10 +132,14 @@ pub fn tick(ents: &mut Entities, id: EntityId) {
         let t = &mut s.tracking;
         if s.fall_distance > 0.0 && t.falling_from.is_none() {
             t.falling_from = Some(pos);
-            if let Some((impact, cause)) = t.explosion.take()
+            let impact = t.explosion.take();
+            let cause = p.advancements.explosion_cause.take();
+            if let Some(impact) = impact
                 && impact.y <= pos.y
             {
-                explosion_cause = Some((impact, cause));
+                let kind = TriggerKind::FALL_AFTER_EXPLOSION;
+                p.advancements
+                    .trigger_with(kind, || Event::FallAfterExplosion(impact, cause));
             }
         }
         let t = &mut p.survival.tracking;
@@ -152,10 +157,5 @@ pub fn tick(ents: &mut Entities, id: EntityId) {
         if t.lava_vehicle_from.is_some() && !vehicle_in_lava {
             t.lava_vehicle_from = None;
         }
-    }
-    if let Some((impact, cause)) = explosion_cause {
-        view::fire(ents, id, TriggerKind::FALL_AFTER_EXPLOSION, |ents| {
-            Event::FallAfterExplosion(impact, cause.and_then(|c| view::snapshot(ents, c)))
-        });
     }
 }

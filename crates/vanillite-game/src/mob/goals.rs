@@ -437,6 +437,15 @@ impl Default for GoalSelector {
 }
 
 impl GoalSelector {
+    /// `setControlFlag(flag, enabled)` for every flag in `flags`.
+    pub fn set_control_flags(&mut self, flags: u8, enabled: bool) {
+        if enabled {
+            self.disabled &= !flags;
+        } else {
+            self.disabled |= flags;
+        }
+    }
+
     /// `addGoal`.
     pub fn add(&mut self, priority: u8, goal: Goal) {
         self.slots.push(Slot {
@@ -905,7 +914,30 @@ pub(super) fn within_melee_range(t: &Tick<'_, '_>, target: EntityId) -> bool {
         return false;
     };
     let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
-    t.aabb().inflate(reach, 0.0, reach).intersects(&o.aabb)
+    attack_bounding_box(t)
+        .inflate(reach, 0.0, reach)
+        .intersects(&o.aabb)
+}
+
+/// `Mob.getAttackBoundingBox`: a rider reaches as far as its mount does sideways.
+pub(super) fn attack_bounding_box(t: &Tick<'_, '_>) -> Aabb {
+    let own = t.aabb();
+    let Some(mount) = t
+        .ents
+        .vehicle_of(t.id)
+        .and_then(|v| t.ents.store.get(v))
+        .map(|e| e.aabb())
+    else {
+        return own;
+    };
+    Aabb::new(
+        own.min_x.min(mount.min_x),
+        own.min_y,
+        own.min_z.min(mount.min_z),
+        own.max_x.max(mount.max_x),
+        own.max_y,
+        own.max_z.max(mount.max_z),
+    )
 }
 
 fn is_creative_or_spectator(t: &Tick<'_, '_>, id: EntityId) -> bool {
@@ -1080,7 +1112,7 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             wanted,
             ..
         } => {
-            if t.mob_ref().no_action_time >= 100 {
+            if super::has_controlling_passenger(t.ents, t.id) || t.mob_ref().no_action_time >= 100 {
                 return false;
             }
             if random_int(t, reduced(*interval)) != 0 {
@@ -1145,6 +1177,9 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                 })
         }
         Goal::Leap { target, .. } => {
+            if super::has_controlling_passenger(t.ents, t.id) {
+                return false;
+            }
             *target = t.mob_ref().target;
             let Some(pos) = target.and_then(|id| other_pos(t, id)) else {
                 return false;
@@ -1335,9 +1370,10 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         Goal::Common(c) => super::common::can_continue(t, c),
         Goal::Wither(w) => super::boss::wither::goal_can_continue(t, w),
         Goal::Float | Goal::RestrictSun => can_use(t, g),
-        Goal::Panic { .. } | Goal::Stroll { .. } | Goal::FleeSun { .. } => {
-            !t.mob_ref().nav.is_done()
+        Goal::Stroll { .. } => {
+            !t.nav_ref().is_done() && !super::has_controlling_passenger(t.ents, t.id)
         }
+        Goal::Panic { .. } | Goal::FleeSun { .. } => !t.nav_ref().is_done(),
         Goal::LookAtPlayer {
             distance,
             look_at,
@@ -1368,13 +1404,13 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                 return false;
             }
             if !*follow_unseen {
-                return !t.mob_ref().nav.is_done();
+                return !t.nav_ref().is_done();
             }
             !is_creative_or_spectator(t, target)
         }
         Goal::Swell => can_use(t, g),
         Goal::Leap { .. } => !t.on_ground(),
-        Goal::Bow { .. } => t.mob_ref().target.is_some() || !t.mob_ref().nav.is_done(),
+        Goal::Bow { .. } => t.mob_ref().target.is_some() || !t.nav_ref().is_done(),
         Goal::EatBlock { tick } => *tick > 0,
         Goal::FollowParent { parent, .. } => {
             if t.mob_ref().age >= 0 {
@@ -1505,7 +1541,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *raise_arm = 0;
         }
         Goal::Swell => {
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::Leap { target, .. } => {
             let Some(pos) = target.and_then(|id| other_pos(t, id)) else {
@@ -1530,7 +1566,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             *tick = reduced(40);
             let id = t.id;
             living::entity_event(t, id, living::event::EAT_GRASS);
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::FollowParent { recalc, .. } => *recalc = 0,
         Goal::Breed { .. }
@@ -1538,7 +1574,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
         | Goal::EndermanLeaveBlock
         | Goal::EndermanTakeBlock => {}
         Goal::SitWhenOrdered => {
-            t.mob().nav.stop();
+            t.nav().stop();
             super::tame::set_in_sitting_pose(t, true);
         }
         Goal::FollowOwner { recalc, .. } => *recalc = 0,
@@ -1581,7 +1617,7 @@ pub(crate) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             state.unseen_ticks = 0;
         }
         Goal::EndermanFreeze { .. } => {
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::EndermanStare {
             aggro_time,
@@ -1647,7 +1683,7 @@ pub(crate) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
         Goal::Fam(f) => super::fam::goal_stop(t, f),
         Goal::Common(c) => super::common::stop(t, c),
         Goal::Wither(w) => super::boss::wither::goal_stop(t, w),
-        Goal::Stroll { .. } => t.mob().nav.stop(),
+        Goal::Stroll { .. } => t.nav().stop(),
         Goal::LookAtPlayer { look_at, .. } => *look_at = None,
         Goal::Melee { .. } => {
             if let Some(target) = t.mob_ref().target
@@ -1656,7 +1692,7 @@ pub(crate) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 set_target(t, None);
             }
             set_aggressive(t, false);
-            t.mob().nav.stop();
+            t.nav().stop();
         }
         Goal::Swell => {}
         Goal::RestrictSun => t.mob().nav.avoid_sun = false,
@@ -1681,11 +1717,11 @@ pub(crate) fn stop(t: &mut Tick<'_, '_>, g: &mut Goal) {
             player, calm_down, ..
         } => {
             *player = None;
-            t.mob().nav.stop();
+            t.nav().stop();
             *calm_down = reduced(100);
         }
         Goal::SitWhenOrdered => super::tame::set_in_sitting_pose(t, false),
-        Goal::FollowOwner { .. } => t.mob().nav.stop(),
+        Goal::FollowOwner { .. } => t.nav().stop(),
         Goal::OwnerHurtBy { state, .. } | Goal::OwnerHurt { state, .. } => {
             set_target(t, None);
             state.target_mob = None;
@@ -1800,7 +1836,7 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 .look
                 .set_look_at(Vec3::new(o.pos.x, o.eye_y, o.pos.z), y_max, x_max);
             if distance_sqr(t, o.pos) < 6.25 {
-                t.mob().nav.stop();
+                t.nav().stop();
             } else {
                 nav::move_to_entity(t, o.pos, 1, *speed);
             }
@@ -1948,7 +1984,7 @@ fn bow_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
     }
     let radius = f64::from(*radius_sqr);
     if d <= radius && *see_time >= 20 {
-        t.mob().nav.stop();
+        t.nav().stop();
         *strafing_time += 1;
     } else {
         nav::move_to_entity(t, o.pos, 1, *speed);
@@ -1971,7 +2007,7 @@ fn bow_tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         }
         let fwd = if *backwards { -0.5 } else { 0.5 };
         let right = if *clockwise { 0.5 } else { -0.5 };
-        t.mob().move_ctl.strafe(fwd, right);
+        t.move_ctl().strafe(fwd, right);
         kinds::look_at_entity(t, o, 30.0, 30.0);
     } else {
         t.mob()

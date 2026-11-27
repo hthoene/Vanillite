@@ -1,0 +1,197 @@
+{
+  "description": "Advancement predicates (#230): a music disc in a jukebox in a meadow (jukebox_playable and biomes: play_jukebox_in_meadows), a bottle on a smoked beehive (smokey: safely_harvest_honey), item sub-predicates and exact components on inventory_changed (potion_contents, custom_data, damage, enchantments, stored_enchantments, trim, jukebox_playable, AnyValue, banner_patterns and item_name), player predicates on tick (food, recipes, advancements, input, can_see_sky, light, fluid, structures), effects_changed with the source of /effect (kill_axolotl_target) and a spyglass looking at a parrot (looking_at: spyglass_at_parrot).",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_predicates",
+  "progress_state": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -56,
+      7
+    ]
+  ],
+  "ticks": 7,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        4
+      ],
+      "block": "minecraft:jukebox"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        2
+      ],
+      "block": "minecraft:campfire[lit=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -59,
+        2
+      ],
+      "block": "minecraft:beehive[facing=west,honey_level=5]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "axolotl",
+      "type": "minecraft:axolotl",
+      "pos": [
+        6.5,
+        -60.0,
+        6.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "fillbiome 0 -64 0 7 -48 7 minecraft:meadow"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:parrot 2.5 -58.8 6.5 {NoAI:1b,NoGravity:1b,Silent:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        2,
+        -60,
+        4
+      ],
+      "face": "up",
+      "item": "minecraft:music_disc_cat"
+    },
+    {
+      "tick": 3,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        5,
+        -59,
+        2
+      ],
+      "face": "west",
+      "item": "minecraft:glass_bottle"
+    },
+    {
+      "tick": 4,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:stick",
+      "inventory": [
+        {
+          "slot": 1,
+          "item": "minecraft:potion",
+          "count": 1,
+          "components": "{\"minecraft:potion_contents\":{potion:\"minecraft:healing\"}}"
+        },
+        {
+          "slot": 2,
+          "item": "minecraft:diamond_sword",
+          "count": 1,
+          "components": "{\"minecraft:damage\":10,\"minecraft:enchantments\":{\"minecraft:sharpness\":3},\"minecraft:custom_data\":{vt:1b,n:5}}"
+        },
+        {
+          "slot": 3,
+          "item": "minecraft:enchanted_book",
+          "count": 1,
+          "components": "{\"minecraft:stored_enchantments\":{\"minecraft:mending\":1}}"
+        },
+        {
+          "slot": 4,
+          "item": "minecraft:iron_chestplate",
+          "count": 1,
+          "components": "{\"minecraft:trim\":{material:\"minecraft:gold\",pattern:\"minecraft:sentry\"}}"
+        },
+        {
+          "slot": 5,
+          "item": "minecraft:white_banner",
+          "count": 1,
+          "components": "{\"minecraft:banner_patterns\":[{color:\"cyan\",pattern:\"minecraft:rhombus\"}],\"minecraft:item_name\":{translate:\"block.minecraft.ominous_banner\"}}"
+        },
+        {
+          "slot": 6,
+          "item": "minecraft:music_disc_13",
+          "count": 1
+        },
+        {
+          "slot": 7,
+          "item": "minecraft:apple",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "recipe give @a minecraft:diamond_block"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "advancement grant @a only minecraft:husbandry/root"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "execute as @e[type=minecraft:axolotl] run effect give @a minecraft:regeneration 5"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "execute as @a run effect give @s minecraft:speed 5"
+    },
+    {
+      "tick": 5,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:spyglass"
+    },
+    {
+      "tick": 6,
+      "op": "command",
+      "command": "setblock 2 -60 2 minecraft:water"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -369,7 +369,7 @@ fn place(p: [f64; 3]) -> Option<Vec3> {
 fn act(t: &mut Tick<'_, '_>, action: &GoalAction) {
     let a = action.actions;
     if a & goal_action::STOP != 0 {
-        t.mob().nav.stop();
+        t.nav().stop();
     }
     if a & goal_action::MOVE != 0
         && let Some(to) = place(action.move_to)

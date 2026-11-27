@@ -1,0 +1,63 @@
+{
+  "criteria": {
+    "chicken_and_rabbit": {
+      "trigger": "minecraft:killed_by_arrow",
+      "conditions": {
+        "victims": [
+          {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "minecraft:chicken"
+            }
+          },
+          {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "minecraft:rabbit"
+            }
+          }
+        ],
+        "fired_from_weapon": {
+          "items": "minecraft:crossbow"
+        }
+      }
+    },
+    "six_types": {
+      "trigger": "minecraft:killed_by_arrow",
+      "conditions": {
+        "unique_entity_types": {
+          "min": 6
+        }
+      }
+    },
+    "banner_victim": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:equipment": {
+              "head": {
+                "items": "minecraft:white_banner"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "chicken_and_rabbit"
+    ],
+    [
+      "six_types"
+    ],
+    [
+      "banner_victim"
+    ]
+  ]
+}

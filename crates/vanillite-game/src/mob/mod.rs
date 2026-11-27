@@ -159,6 +159,8 @@ pub struct MobData {
     pub stuck_speed: Vec3,
     /// The last damage and the game time it was taken (`lastDamageSource`, `lastDamageStamp`).
     pub last_damage: Option<(DamageKind, i64)>,
+    /// The causing entity of the last damage (`lastDamageSource.getEntity()`).
+    pub last_damage_cause: Option<EntityId>,
     pub last_hurt_by_player: Option<EntityId>,
     pub last_hurt_by_player_time: i32,
     pub last_hurt_by_mob: Option<EntityId>,
@@ -324,6 +326,7 @@ impl MobData {
             fluids: FluidContact::default(),
             stuck_speed: Vec3::ZERO,
             last_damage: None,
+            last_damage_cause: None,
             last_hurt_by_player: None,
             last_hurt_by_player_time: 0,
             last_hurt_by_mob: None,
@@ -861,6 +864,12 @@ pub enum WorldAction {
     TrampleFarmland(BlockPos, EntityId),
     /// `destroyBlock(pos, drop, breaker)` (ravagers in crops).
     DestroyBlockBy(BlockPos, bool, EntityId),
+    /// Frost Walker's `replace_disk` around a player's position.
+    FrostWalker {
+        pos: Vec3,
+        radius: i32,
+        source: EntityId,
+    },
 }
 
 impl WorldAction {
@@ -897,6 +906,13 @@ impl WorldAction {
             }
             WorldAction::DestroyBlockBy(pos, drop, id) => {
                 level.destroy_block(pos, drop, Some(id));
+            }
+            WorldAction::FrostWalker {
+                pos,
+                radius,
+                source,
+            } => {
+                crate::enchant::location::frost_walker(level, pos, radius, source);
             }
             WorldAction::ProjectileHitBlock(pos, at, id, speed) => {
                 crate::block::projectile_hit::projectile_hit_block(level, pos, at, id, speed);
@@ -1287,6 +1303,68 @@ impl Tick<'_, '_> {
             .expect("the ticking mob is in the mob store")
     }
 
+    /// The mob whose navigation and move control the ticking mob uses (`Mob.getNavigation`,
+    /// `getMoveControl`): the mob vehicle it steers, down the chain, else itself.
+    pub fn nav_owner(&self) -> EntityId {
+        nav_owner(self.ents, self.id)
+    }
+
+    /// `getNavigation()`: the navigation of [`Self::nav_owner`].
+    pub fn nav(&mut self) -> &mut nav::Navigation {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return &mut self.mob().nav;
+        }
+        &mut self
+            .ents
+            .mob_mut(owner)
+            .expect("the controlled vehicle is a mob")
+            .nav
+    }
+
+    /// `getNavigation()`, read only.
+    pub fn nav_ref(&self) -> &nav::Navigation {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return &self.mob_ref().nav;
+        }
+        &self
+            .ents
+            .mob(owner)
+            .expect("the controlled vehicle is a mob")
+            .nav
+    }
+
+    /// `getMoveControl()`: the move control of [`Self::nav_owner`].
+    pub fn move_ctl(&mut self) -> &mut nav::MoveControl {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return &mut self.mob().move_ctl;
+        }
+        &mut self
+            .ents
+            .mob_mut(owner)
+            .expect("the controlled vehicle is a mob")
+            .move_ctl
+    }
+
+    /// Runs `f` as the mob of [`Self::nav_owner`] (the navigation calls of a mob that steers
+    /// its vehicle path and move the vehicle).
+    pub fn as_nav_owner<R>(&mut self, f: impl FnOnce(&mut Tick<'_, '_>) -> R) -> R {
+        let owner = self.nav_owner();
+        if owner == self.id {
+            return f(self);
+        }
+        let mut v = Tick {
+            level: self.level,
+            ents: &mut *self.ents,
+            env: &mut *self.env,
+            cx: &mut *self.cx,
+            id: owner,
+        };
+        f(&mut v)
+    }
+
     /// Whether the ticking mob still exists.
     pub fn exists(&self) -> bool {
         self.ents.mob(self.id).is_some()
@@ -1393,6 +1471,54 @@ impl Tick<'_, '_> {
         }
         light_magic_value(self.level, &self.cx.env, pos)
     }
+}
+
+/// `Mob.getControllingPassenger` for mob riders: the first passenger of a mob with AI when it
+/// is a mob that can control vehicles (not in `#non_controlling_rider`). Player controllers
+/// (saddled horses, pigs, striders) are not mobs and never steer through the AI.
+pub fn controlling_mob_passenger(ents: &Entities, vehicle: EntityId) -> Option<EntityId> {
+    let &first = ents.riding.passengers_of(vehicle).first()?;
+    if ents.mob(vehicle)?.no_ai {
+        return None;
+    }
+    let rider = ents.mob(first)?;
+    (!matches!(rider.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube)).then_some(first)
+}
+
+/// `hasControllingPassenger`: a player steers `vehicle` or a mob rider does.
+pub fn has_controlling_passenger(ents: &Entities, vehicle: EntityId) -> bool {
+    ents.riding
+        .passengers_of(vehicle)
+        .first()
+        .is_some_and(|&p| crate::riding::controls(ents, p, vehicle))
+        || controlling_mob_passenger(ents, vehicle).is_some()
+}
+
+/// `getControlledVehicle() instanceof Mob`: the mob vehicle `id` steers.
+pub fn controlled_mob_vehicle(ents: &Entities, id: EntityId) -> Option<EntityId> {
+    let vehicle = ents.vehicle_of(id)?;
+    (controlling_mob_passenger(ents, vehicle) == Some(id)).then_some(vehicle)
+}
+
+/// `getRootVehicle`: the lowest vehicle under `id`, or `id` itself.
+pub fn root_vehicle(ents: &Entities, id: EntityId) -> EntityId {
+    let mut root = id;
+    while let Some(v) = ents.vehicle_of(root) {
+        root = v;
+    }
+    root
+}
+
+/// The end of the [`controlled_mob_vehicle`] chain from `id` (`getNavigation` recurses).
+pub fn nav_owner(ents: &Entities, id: EntityId) -> EntityId {
+    let mut owner = id;
+    while let Some(v) = controlled_mob_vehicle(ents, owner) {
+        if v == id {
+            break;
+        }
+        owner = v;
+    }
+    owner
 }
 
 /// Another living entity as a mob sees it.

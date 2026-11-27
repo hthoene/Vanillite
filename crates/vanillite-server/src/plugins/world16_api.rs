@@ -3,9 +3,6 @@
 //! (`/worldborder`), explosions, ray traces, plugin menus and item components.
 
 use super::ReadWorld;
-use std::collections::HashMap;
-use std::sync::OnceLock;
-
 use vanillite_abi::{self as abi, chunk_state, explode_flag, ray_hit, raytrace_flag, status};
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::{Aabb, BlockPos, ChunkPos, Vec3};
@@ -796,56 +793,7 @@ pub(super) fn close_menu(w: &mut PluginWorld<'_>, player: u128) -> Result<()> {
 
 // --- Item components ----------------------------------------------------------------------
 
-/// The default components of every item as Vanilla's data generator writes them
-/// (`items.json`, one item per line), read on first use.
-const ITEMS_JSON: &str = vanillite_data::raw::ITEMS_JSON;
-
-/// The `items.json` line of each item by name.
-fn item_lines() -> &'static HashMap<&'static str, &'static str> {
-    static LINES: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    LINES.get_or_init(|| {
-        ITEMS_JSON
-            .lines()
-            .filter_map(|line| {
-                let rest = line.strip_prefix("{\"name\":\"")?;
-                let name = &rest[..rest.find('"')?];
-                Some((name, line.trim_end_matches(',')))
-            })
-            .collect()
-    })
-}
-
-/// A JSON value as NBT (numbers as int, long or double; the component codecs read any).
-fn json_to_nbt(v: &serde_json::Value) -> Tag {
-    use serde_json::Value;
-    match v {
-        Value::Null => Tag::Compound(Compound::new()),
-        Value::Bool(b) => Tag::Byte(i8::from(*b)),
-        Value::Number(n) => match n.as_i64() {
-            Some(i) => i32::try_from(i).map_or(Tag::Long(i), Tag::Int),
-            None => Tag::Double(n.as_f64().unwrap_or(0.0)),
-        },
-        Value::String(s) => Tag::String(s.clone()),
-        Value::Array(a) => Tag::List(vanillite_nbt::List(a.iter().map(json_to_nbt).collect())),
-        Value::Object(o) => {
-            let mut c = Compound::new();
-            for (k, v) in o {
-                c.insert(k.clone(), json_to_nbt(v));
-            }
-            Tag::Compound(c)
-        }
-    }
-}
-
-/// The wire value of an item type's default component, if it has one.
-pub(crate) fn default_component(item: u16, type_id: u16) -> Option<Box<[u8]>> {
-    let name = vanillite_data::registry::ITEM.name(item)?;
-    let component = conv::type_name(type_id)?;
-    let line = item_lines().get(name)?;
-    let json: serde_json::Value = serde_json::from_str(line).ok()?;
-    let value = json.get("components")?.get(component)?;
-    vanillite_game::item_nbt::component_from_nbt(type_id, &json_to_nbt(value))
-}
+use vanillite_game::item_nbt::default_component;
 
 /// An item and a persistent component type from the plugin's arguments.
 fn item_and_type(item: &Compound, component: &str) -> Result<(ItemStack, u16)> {

@@ -1,0 +1,220 @@
+{
+  "description": "A wind charge jump (#230, I3-32): a client player throws a wind charge at its feet; the explosion (ServerPlayer.onExplosionHit) sets ignoreFallDamageFromCurrentImpulse with the impact position, so the 7 block fall back to the launch height that its client's moves report does no fall damage. A second client player makes the same moves without a wind charge and takes the fall damage.",
+  "tier": "fast",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -62,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 18,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        90
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        10.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        90
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 3,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:wind_charge",
+      "count": 4
+    },
+    {
+      "tick": 6,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04d000000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -58.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 6,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04d000000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -58.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 7,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04c000000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -56.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 7,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04c000000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -56.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 8,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04b400000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -54.5, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 8,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04b400000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -54.5, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 9,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04ac00000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -53.5, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 9,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04ac00000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -53.5, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 10,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04a800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -53.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 10,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04a800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -53.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 11,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04ac00000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -53.5, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 11,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04ac00000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -53.5, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 12,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04b800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -55.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 12,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04b800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -55.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 13,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04c800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -57.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 13,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04c800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -57.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 14,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04d800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 4.5, y: -59.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 14,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04d800000000000401200000000000000",
+      "what": "MovePlayerPos { x: 10.5, y: -59.0, z: 4.5, flags: MoveFlags { on_ground: false, horizontal_collision: false } }"
+    },
+    {
+      "tick": 15,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "move_player_pos",
+      "data": "4012000000000000c04e000000000000401200000000000001",
+      "what": "MovePlayerPos { x: 4.5, y: -60.0, z: 4.5, flags: MoveFlags { on_ground: true, horizontal_collision: false } }"
+    },
+    {
+      "tick": 15,
+      "op": "packet",
+      "entity": "alex",
+      "packet": "move_player_pos",
+      "data": "4025000000000000c04e000000000000401200000000000001",
+      "what": "MovePlayerPos { x: 10.5, y: -60.0, z: 4.5, flags: MoveFlags { on_ground: true, horizontal_collision: false } }"
+    }
+  ]
+}
