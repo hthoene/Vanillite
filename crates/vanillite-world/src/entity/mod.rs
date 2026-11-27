@@ -431,7 +431,8 @@ impl EntityStore {
         core.velocity.push(new.velocity);
         core.rot.push(new.rot);
         core.dims.push(dims);
-        core.aabb.push(dims.bounding_box(new.pos));
+        let aabb = dims.bounding_box(new.pos);
+        core.aabb.push(aabb);
         core.flags.push(new.flags);
         core.pose.push(Pose::Standing);
         core.section.push(section);
@@ -442,7 +443,7 @@ impl EntityStore {
             tick_order::NONE
         };
         self.order_slot.push(slot);
-        self.sections.insert(section, class_of(new.kind), id);
+        self.sections.insert(section, class_of(new.kind), id, aabb);
         match self.by_uuid.entry(new.uuid) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert(id);
@@ -624,6 +625,10 @@ impl EntityStore {
     }
 
     fn for_each_in_subset(&self, aabb: &Aabb, subset: Subset, mut f: impl FnMut(EntityId)) {
+        if subset == Subset::All {
+            self.sections.for_each_intersecting(aabb, f);
+            return;
+        }
         self.sections.for_each_near(aabb, subset, |id| {
             if let Some(row) = self.row(id)
                 && self.core.aabb[row].intersects(aabb)
@@ -757,15 +762,18 @@ impl EntityMut<'_> {
         let row = self.row;
         let core = &mut self.store.core;
         core.pos[row] = pos;
-        core.aabb[row] = core.dims[row].bounding_box(pos);
+        let aabb = core.dims[row].bounding_box(pos);
+        core.aabb[row] = aabb;
         let section = section_of(pos);
         let old = core.section[row];
-        if section != old {
+        let id = core.id[row];
+        if section == old {
+            self.store.sections.set_box(section, id, aabb);
+        } else {
             core.section[row] = section;
             let class = class_of(core.kind[row]);
-            let id = core.id[row];
             self.store.sections.remove(old, class, id);
-            self.store.sections.insert(section, class, id);
+            self.store.sections.insert(section, class, id, aabb);
             // `onMove`: ticking follows the status of the new section.
             let ticking = &self.store.ticking_chunks;
             let was = ticking.contains(&(old.x, old.z));
@@ -801,7 +809,10 @@ impl EntityMut<'_> {
     pub fn set_dims(&mut self, dims: Dimensions) {
         let core = &mut self.store.core;
         core.dims[self.row] = dims;
-        core.aabb[self.row] = dims.bounding_box(core.pos[self.row]);
+        let aabb = dims.bounding_box(core.pos[self.row]);
+        core.aabb[self.row] = aabb;
+        let (section, id) = (core.section[self.row], core.id[self.row]);
+        self.store.sections.set_box(section, id, aabb);
     }
 
     /// Sets a bounding box that is not centred on the position (`setBoundingBox` of
@@ -809,7 +820,10 @@ impl EntityMut<'_> {
     /// [`EntityMut::set_dims`] recomputes it from the dimensions.
     #[inline]
     pub fn set_aabb(&mut self, aabb: Aabb) {
-        self.store.core.aabb[self.row] = aabb;
+        let core = &mut self.store.core;
+        core.aabb[self.row] = aabb;
+        let (section, id) = (core.section[self.row], core.id[self.row]);
+        self.store.sections.set_box(section, id, aabb);
     }
 
     /// Sets or clears flags. Changing a shared flag marks the synched data dirty.
