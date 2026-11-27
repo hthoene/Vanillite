@@ -290,7 +290,7 @@ impl WorldMobs {
             return;
         };
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
@@ -344,7 +344,7 @@ impl WorldMobs {
             return;
         };
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let no_blocks = NoBlocks;
         let raining = |_| false;
@@ -415,7 +415,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let network_ids = std::sync::Arc::clone(level.network_ids_arc());
         let mut ents = std::mem::take(&mut level.entities);
@@ -864,7 +864,7 @@ impl WorldMobs {
             }
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         // `WitherSkullBlock.setPlacedBy` of the skulls players placed since the last tick.
         for pos in std::mem::take(&mut level.output().summon_checks) {
@@ -1264,7 +1264,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let hurts = std::mem::take(&mut level.output().explosion_hurts);
         let falling = std::mem::take(&mut level.output().falling_hurts);
@@ -1374,7 +1374,7 @@ impl WorldMobs {
             return;
         }
         let state = &global.level;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+        let hooks = crate::plugins::Hooks::of(global, dimension);
         let rules = state.rules().clone();
         let hurts = std::mem::take(&mut level.output().magic_hurts);
         let no_blocks = NoBlocks;
@@ -1430,7 +1430,7 @@ impl WorldMobs {
                 let (weather, climate) = (survival.weather, survival.climate().cloned());
                 let chunks = &level.chunks;
                 let raining = move |pos| raining_at(chunks, climate.as_deref(), &weather, pos);
-                let hooks = crate::plugins::Hooks::of(&global.plugins, dimension);
+                let hooks = crate::plugins::Hooks::of(global, dimension);
                 let mut no_gateway = |_| false;
                 let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
                 let teams = |uuid| crate::scoreboard::entity_team(global, uuid);

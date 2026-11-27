@@ -200,10 +200,7 @@ fn teleport_to_entity(level: &mut Level, global: &Global, id: EntityId, world: W
         return;
     }
     // UUIDs are unique: at most one other world has the entity.
-    for index in 0..crate::server::DIMENSIONS.len() {
-        let Ok(index) = u16::try_from(index) else {
-            continue;
-        };
+    for index in global.dimensions.worlds().map(|w| w.0) {
         let other = WorldId(index);
         if other == world {
             continue;

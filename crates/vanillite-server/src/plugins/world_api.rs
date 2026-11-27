@@ -26,7 +26,6 @@ use super::PluginWorld;
 use crate::commands::exec;
 use crate::commands::items::{self, EntitySlot};
 use crate::commands::{CommandSource, Env, SourceKind};
-use crate::server::DIMENSIONS;
 use crate::world::WorldId;
 
 type Result<T> = std::result::Result<T, i32>;
@@ -290,7 +289,7 @@ pub(super) fn teleport(w: &mut PluginWorld<'_>, entity: u128, to: Location) -> R
     }
     let destination = u16::try_from(to.world)
         .ok()
-        .filter(|&i| usize::from(i) < DIMENSIONS.len())
+        .filter(|&i| usize::from(i) < w.1.dimensions.len())
         .ok_or(status::INVALID_ARGUMENT)?;
     if !target.is_player() {
         return Err(status::UNSUPPORTED);

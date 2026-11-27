@@ -729,8 +729,7 @@ impl WorldPlayers {
                     actor: Some((id, aabb)),
                     dimension: dimension_name,
                 };
-                let hooks =
-                    crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+                let hooks = crate::plugins::Hooks::of(global, self.level.dimension.as_str());
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
@@ -861,7 +860,7 @@ impl WorldPlayers {
         level.entities.players = players;
         // The bed and anchor clicks, then `STOP_SLEEPING`.
         {
-            let hooks = crate::plugins::Hooks::of(&global.plugins, dimension_name);
+            let hooks = crate::plugins::Hooks::of(global, dimension_name);
             vanillite_game::survival::sleep::run_block_uses(level, &hooks);
             let leaving: Vec<EntityId> = level
                 .entities
@@ -1053,8 +1052,7 @@ impl WorldPlayers {
                 };
                 let mut drops = Vec::new();
                 let mut hands = Vec::new();
-                let hooks =
-                    crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+                let hooks = crate::plugins::Hooks::of(global, self.level.dimension.as_str());
                 let mut play = PlayContext {
                     level: &mut level,
                     inventory: &mut player.inventory,
@@ -1145,7 +1143,11 @@ impl WorldPlayers {
                     pos: actor.pos,
                     y_rot: actor.y_rot,
                     dimension: dimension_name,
-                    has_ceiling: dimension_name == "minecraft:the_nether",
+                    has_ceiling: global
+                        .dimensions
+                        .world(dimension_name)
+                        .and_then(|w| global.level.dimension_types.get(w.index()))
+                        .is_some_and(|t| t.has_ceiling),
                 };
                 vanillite_game::carried::tick(level, owner, player);
             }
@@ -1302,7 +1304,7 @@ impl WorldPlayers {
         reason: Option<Box<Component>>,
     ) {
         // `ServerPlayer.disconnect`: out of bed before the player is saved.
-        let hooks = crate::plugins::Hooks::of(&global.plugins, self.level.dimension.as_str());
+        let hooks = crate::plugins::Hooks::of(global, self.level.dimension.as_str());
         vanillite_game::survival::sleep::stop_sleep_in_bed(level, id, true, false, &hooks);
         let entities = &mut level.entities;
         let Some(entity) = entities.store.get(id) else {
@@ -1340,11 +1342,10 @@ impl WorldPlayers {
         // Vanilla's order: the message, the entity removal (sent by the tracker this tick),
         // then the tab list entry.
         let message = join::left_message(crate::scoreboard::display_name(global, &name, uuid));
-        let world = crate::server::DIMENSIONS
-            .iter()
-            .position(|d| *d == self.level.dimension.as_str())
-            .and_then(|i| u32::try_from(i).ok())
-            .unwrap_or(0);
+        let world = global
+            .dimensions
+            .world(self.level.dimension.as_str())
+            .map_or(0, |w| u32::from(w.0));
         let message = crate::plugins::player_message(global, message, |json| {
             global.plugins.player_leave(world, uuid, &name, json)
         });
@@ -1375,14 +1376,11 @@ impl WorldPlayers {
                 );
             }
         });
-        for (i, other) in crate::server::DIMENSIONS.iter().enumerate() {
-            if *other == dimension.as_str() {
+        for (world, other, _) in global.dimensions.iter() {
+            if other == dimension.as_str() {
                 continue;
             }
-            let Ok(index) = u16::try_from(i) else {
-                continue;
-            };
-            global.run_in_world(crate::world::WorldId(index), move |world| {
+            global.run_in_world(world, move |world| {
                 world.add_pearls_of(uuid);
             });
         }

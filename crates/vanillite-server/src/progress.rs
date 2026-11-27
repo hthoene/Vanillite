@@ -394,10 +394,7 @@ pub(crate) fn grant_rewards(env: &mut Env<'_>, id: EntityId) {
 /// `PlayerAdvancements.reload` of every online player after `/reload`: the progress kept for
 /// the advancements that still exist, sent again as a full update.
 pub(crate) fn reload_advancements(global: &Global) {
-    for index in 0..crate::server::DIMENSIONS.len() {
-        let Ok(index) = u16::try_from(index) else {
-            continue;
-        };
+    for index in global.dimensions.worlds().map(|w| w.0) {
         let Some(arc) = global.arc() else {
             return;
         };

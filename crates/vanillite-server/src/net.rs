@@ -16,7 +16,7 @@ use vanillite_protocol::types::Identifier;
 use vanillite_storage::player_data::PlayerDataStore;
 
 use crate::players::{Arrival, NetSink, WorldPlayers};
-use crate::server::{DIMENSIONS, StartError};
+use crate::server::StartError;
 
 /// Where the Vanilla data pack comes from.
 #[derive(Clone, Debug, Default)]
@@ -95,16 +95,20 @@ fn vanilla_root(pack: &VanillaPack, cache: &Path) -> Result<Option<PathBuf>, Sta
     })
 }
 
-/// Loads the Vanilla data pack alone (the Vanilla pack from the cache in `dir`, downloaded
-/// once).
-pub(crate) fn load_packs(
+/// The data packs enabled in the world `level_dir` (with `initial` for a new world), loaded,
+/// for the offline commands; `None` without the Vanilla data pack.
+pub(crate) fn load_world_packs(
     pack: &VanillaPack,
     dir: &Path,
+    level_dir: &Path,
+    initial: (&str, &str),
 ) -> Result<Option<LoadedPacks>, StartError> {
-    let Some(root) = vanilla_root(pack, &dir.join("cache"))? else {
+    let cache = dir.join("cache");
+    let Some(root) = vanilla_root(pack, &cache)? else {
         return Ok(None);
     };
-    let packs = vanillite_datapack::load(&[root.as_path()])
+    let selected = crate::packs::select(Some(root), level_dir, &cache, initial);
+    let packs = vanillite_datapack::load_opened(&selected.opened)
         .map_err(|e| StartError::Io(format!("data packs: {e}")))?;
     Ok(Some(packs))
 }
@@ -166,14 +170,15 @@ pub(crate) fn prepare(
     let is_flat = world_gen.is_flat();
     let (spawn, spawn_known) = world_spawn(level_dir, is_flat);
 
-    let levels: Vec<Identifier> = DIMENSIONS
-        .iter()
-        .map(|d| Identifier::vanilla(d.trim_start_matches("minecraft:")))
+    let dimensions = world_gen.dimensions();
+    let levels: Vec<Identifier> = dimensions
+        .names()
+        .map(|d| Identifier::new(d).unwrap_or_else(|_| Identifier::vanilla("overworld")))
         .collect();
-    let worlds = DIMENSIONS
+    let worlds = dimensions
         .iter()
         .zip(&levels)
-        .map(|(dimension, id)| {
+        .map(|((_, dimension, kind), id)| {
             let rules = config.world_rules(dimension);
             let view_distance = rules
                 .distances
@@ -189,7 +194,7 @@ pub(crate) fn prepare(
                 dimension_type: i32::try_from(registry_index(
                     packs.as_ref(),
                     "minecraft:dimension_type",
-                    dimension,
+                    kind,
                 ))
                 .unwrap_or(0),
                 hashed_seed: vanillite_worldgen::biome::obfuscate_seed(world_gen.seed),

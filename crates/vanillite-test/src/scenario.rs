@@ -50,6 +50,9 @@
 //!   `dim` in their detail, and a block op works in its `dimension` (default the overworld).
 //!   Scenario entities start in the overworld; the level random of every dimension starts
 //!   from the world seed.
+//! - `datapack`: with `dimensions`, the data pack `datapacks/<name>/` of this crate is in the
+//!   world's `datapacks/` folder from the start (enabled like a new pack), so its dimensions
+//!   are loaded too; a flat one generates its layers in both servers.
 //! - `actions`: before world tick `tick` (1-based): `place` (with neighbour and shape updates,
 //!   Vanilla `setBlock` flags 3), `set` (without updates), `fill` (with updates), `force` and
 //!   `unforce` (`"chunks": [[x, z], ...]`: adds or removes forced tickets like `/forceload`,
@@ -192,6 +195,8 @@ pub struct WorldSpec {
     pub views: Vec<View>,
     /// Whether frames hold the players' sleep state, pose and respawn point.
     pub sleep_state: bool,
+    /// The data pack in the world from the start (`datapacks/<name>/` of this crate).
+    pub datapack: Option<String>,
 }
 
 /// The overworld's dimension id.
@@ -536,8 +541,12 @@ impl Scenario {
             })
             .transpose()?
             .unwrap_or_default();
-        if !dimensions && (dimension != OVERWORLD || !views.is_empty()) {
-            return Err("a region in another dimension and views need \"dimensions\"".to_owned());
+        let datapack = v.get("datapack").and_then(Value::as_str).map(str::to_owned);
+        if !dimensions && (dimension != OVERWORLD || !views.is_empty() || datapack.is_some()) {
+            return Err(
+                "a region in another dimension, views and a data pack need \"dimensions\""
+                    .to_owned(),
+            );
         }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
@@ -599,6 +608,7 @@ impl Scenario {
                     .get("sleep_state")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                datapack,
             },
             min,
             max,

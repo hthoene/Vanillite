@@ -24,15 +24,11 @@ use super::select::{self, Target};
 use super::source::{CommandSource, SourceKind};
 use super::{Env, exec};
 use crate::global::Global;
-use crate::server::DIMENSIONS;
 use crate::tick_rate::SprintReport;
 use crate::world::WorldId;
 
-fn dimension_name(world: WorldId) -> &'static str {
-    DIMENSIONS
-        .get(world.index())
-        .copied()
-        .unwrap_or("minecraft:overworld")
+fn dimension_name(global: &Global, world: WorldId) -> &str {
+    global.dimensions.name_or_overworld(world)
 }
 
 fn text(s: impl Into<String>) -> Arg {
@@ -62,7 +58,7 @@ pub(super) fn force_load(
     env: &mut Env<'_>,
 ) -> Result<i32, CommandError> {
     this_world(source, env)?;
-    let dimension = dimension_name(env.world);
+    let dimension = dimension_name(env.global, env.world);
     let global = env.global;
     match op {
         ForceLoadOp::List => {
@@ -252,7 +248,7 @@ pub(super) fn set_world_spawn(
     let pos = spawn_pos(args, source)?;
     let (yaw, pitch) = rotation(args, source);
     let (yaw, pitch) = (wrap_degrees(yaw), pitch.clamp(-90.0, 90.0));
-    let dimension = dimension_name(source.world);
+    let dimension = dimension_name(env.global, source.world);
     let global = env.global;
     let spawn = Spawn {
         dimension: dimension.to_owned(),
@@ -268,10 +264,7 @@ pub(super) fn set_world_spawn(
             f64::from(pos.z) + 0.5,
         );
         global.systems.set_spawn(at);
-        for index in 0..DIMENSIONS.len() {
-            let Ok(index) = u16::try_from(index) else {
-                continue;
-            };
+        for index in global.dimensions.worlds().map(|w| w.0) {
             global.run_in_world(WorldId(index), move |w| w.players.level.spawn = (at, yaw));
         }
         if let Ok(dimension) = Identifier::new(dimension) {
@@ -320,7 +313,7 @@ pub(super) fn spawn_point(
     let pos = spawn_pos(args, source)?;
     let (yaw, pitch) = rotation(args, source);
     let config = RespawnConfig {
-        dimension: dimension_name(source.world).to_owned(),
+        dimension: dimension_name(env.global, source.world).to_owned(),
         pos,
         yaw: wrap_degrees(yaw),
         pitch: pitch.clamp(-90.0, 90.0),

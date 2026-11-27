@@ -198,9 +198,10 @@ impl ServerWorld {
         survival: crate::survival::WorldSurvival,
         mut mobs: crate::mobs::WorldMobs,
         data: vanillite_storage::saved_data::SavedDataStore,
+        dragon_fight: bool,
     ) -> ServerWorld {
         // `dimensionType().hasEnderDragonFight()`.
-        if dimension == "minecraft:the_end" {
+        if dragon_fight {
             mobs.init_dragon_fight(&data, &mut level);
         }
         mobs.init_raids(&data, &mut level);
@@ -764,7 +765,7 @@ impl ServerWorld {
         {
             // `Player.tick`'s sleep part; the sleeping player list follows joins, leaves and
             // game mode changes.
-            let hooks = crate::plugins::Hooks::of(&ctx.global.plugins, &self.dimension);
+            let hooks = crate::plugins::Hooks::of(ctx.global, &self.dimension);
             vanillite_game::survival::sleep::update_sleeping_player_list(&mut self.level);
             vanillite_game::survival::sleep::tick_players(&mut self.level, &hooks);
         }
@@ -870,7 +871,7 @@ impl ServerWorld {
     /// and rain stops (with `advance_weather`).
     fn skip_night(&mut self, global: &Global) {
         use vanillite_game::survival::rules::Rule;
-        let hooks = crate::plugins::Hooks::of(&global.plugins, &self.dimension);
+        let hooks = crate::plugins::Hooks::of(global, &self.dimension);
         if !vanillite_game::survival::sleep::skip_night(&mut self.level, &hooks) {
             return;
         }

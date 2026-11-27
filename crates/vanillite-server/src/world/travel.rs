@@ -449,13 +449,8 @@ impl ServerWorld {
             .survival
             .respawn
             .as_ref()
-            .and_then(|r| {
-                crate::server::DIMENSIONS
-                    .iter()
-                    .position(|d| *d == r.dimension)
-            })
-            .and_then(|i| u16::try_from(i).ok())
-            .map_or(OVERWORLD, WorldId);
+            .and_then(|r| ctx.global.dimensions.world(&r.dimension))
+            .unwrap_or(OVERWORLD);
         // `remove(KILLED)` → `triggerOnDeathMobEffects`: a dead player's Wind Charged bursts.
         let wind = !keep_all
             && player
@@ -744,17 +739,13 @@ impl ServerWorld {
                 self.load_pearl(&tag);
                 continue;
             }
-            let Some(index) = crate::server::DIMENSIONS
-                .iter()
-                .position(|d| *d == dimension.as_str())
-                .and_then(|i| u16::try_from(i).ok())
-            else {
+            let Some(world) = global.dimensions.world(&dimension) else {
                 log::warn!(
                     "Trying to load ender pearl without level ({dimension}) being loaded, skipping"
                 );
                 continue;
             };
-            global.run_in_world(WorldId(index), move |world: &mut ServerWorld| {
+            global.run_in_world(world, move |world: &mut ServerWorld| {
                 world.load_pearl(&tag);
             });
         }
@@ -894,12 +885,11 @@ impl ServerWorld {
         if keep_all.is_none()
             && traveller.from != self.id
             && let (Some(from), Some(to)) = (
-                crate::server::DIMENSIONS.get(traveller.from.index()),
-                crate::server::DIMENSIONS.get(self.id.index()),
+                global.dimensions.name(traveller.from),
+                global.dimensions.name(self.id),
             )
         {
             use vanillite_game::advancements::trigger::{Event, TriggerKind};
-            let (from, to) = (*from, *to);
             let tracking = &mut data.survival.tracking;
             if from == "minecraft:overworld" && to == "minecraft:the_nether" {
                 tracking.entered_nether = Some(traveller.pos);
@@ -1521,7 +1511,7 @@ impl ServerWorld {
     ) {
         let state = &global.level;
         let rules = state.rules().clone();
-        let hooks = crate::plugins::Hooks::of(&global.plugins, &self.dimension);
+        let hooks = crate::plugins::Hooks::of(global, &self.dimension);
         let chunks = &self.level.chunks;
         let blocks = crate::survival::WorldBlocks(chunks);
         let (weather, climate) = (self.survival.weather, self.survival.climate().cloned());
