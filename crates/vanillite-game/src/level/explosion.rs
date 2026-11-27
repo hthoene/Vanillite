@@ -642,7 +642,10 @@ impl Level {
             // and `Invulnerable` items take none.
             let mob_spared = !self.settings.mob_griefing
                 && indirect.is_some_and(|i| self.entities.mob(i).is_some());
-            let invulnerable = self.entities.item(id).is_some_and(|d| d.invulnerable);
+            let invulnerable = crate::mob::entity_nbt::is_invulnerable(&self.entities, id)
+                && !indirect
+                    .and_then(|i| self.entities.player(i))
+                    .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
             if kind == entity_ids::ITEM && style.damages_entities && !mob_spared && !invulnerable {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));

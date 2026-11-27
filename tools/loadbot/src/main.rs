@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! loadbot --host <host> --port <port> [--join-rate <per s>] [--join-concurrency <n>]
-//!         [--radius <blocks>] [--chat-interval <s>] [--view-distance <chunks>]
+//!         [--source-ips <n>] [--radius <blocks>] [--chat-interval <s>] [--view-distance <chunks>]
 //!         [--prefix <name>] [--seed <n>] [--movement <spec>] [--check]
 //! ```
 //!
@@ -42,6 +42,9 @@ pub struct Config {
     pub join_rate: f64,
     /// Bots logging in at the same time (servers limit pending connections per address).
     pub join_concurrency: usize,
+    /// Local addresses the bots spread over against a loopback host (0 = the system's
+    /// choice): players come from many addresses, the server limits pending logins per address.
+    pub source_ips: u32,
     /// Bots walk within this many blocks around their spawn point.
     pub radius: f64,
     /// Seconds between chat messages of one bot; 0 turns chat off.
@@ -226,7 +229,8 @@ fn parse_args() -> Result<(Config, bool), String> {
         host: "127.0.0.1".into(),
         port: 25565,
         join_rate: 20.0,
-        join_concurrency: 4,
+        join_concurrency: 32,
+        source_ips: 64,
         radius: 48.0,
         chat_interval: 0.0,
         view_distance: 10,
@@ -247,6 +251,7 @@ fn parse_args() -> Result<(Config, bool), String> {
             "--join-concurrency" => {
                 config.join_concurrency = value()?.parse().map_err(|e| bad(&e))?;
             }
+            "--source-ips" => config.source_ips = value()?.parse().map_err(|e| bad(&e))?,
             "--radius" => config.radius = value()?.parse().map_err(|e| bad(&e))?,
             "--chat-interval" => config.chat_interval = value()?.parse().map_err(|e| bad(&e))?,
             "--view-distance" => config.view_distance = value()?.parse().map_err(|e| bad(&e))?,

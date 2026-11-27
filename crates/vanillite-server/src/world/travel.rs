@@ -21,7 +21,7 @@ use vanillite_game::player::{Body, ChunkView, PlayerData, effective_view_distanc
 use vanillite_game::portal::{self, EntryPortal, PearlArrival, PortalKind, TravelRequest};
 use vanillite_game::survival::rules::Rule;
 use vanillite_protocol::packets::play::clientbound::{
-    Respawn, SetExperience, SetHeldSlot, relative,
+    Respawn, SetChunkCacheRadius, SetExperience, SetHeldSlot, SetSimulationDistance, relative,
 };
 use vanillite_world::chunks::{FULL_LEVEL, TicketId};
 use vanillite_world::entity::{EntityFlags, EntityId, NetworkId, Rotation};
@@ -75,6 +75,8 @@ pub(crate) struct Traveller {
     data: PlayerData,
     /// The world it left.
     from: WorldId,
+    /// The view and simulation distance of the world it left (what its client uses).
+    distances: (i32, i32),
     /// Where it was when it left.
     pos: Vec3,
     velocity: Vec3,
@@ -892,6 +894,10 @@ impl ServerWorld {
             network_id: removed.network_id,
             data,
             from: self.id,
+            distances: (
+                self.players.level.view_distance,
+                self.players.level.simulation_distance,
+            ),
             pos,
             velocity,
             y_rot: rot.y_rot,
@@ -1295,6 +1301,19 @@ impl ServerWorld {
             );
         }
         data.connection.movement.reset_position(body.pos);
+        // Worlds may have their own distances (`PlayerList.setViewDistance` and
+        // `setSimulationDistance` at runtime in Vanilla): the client learns the new ones.
+        let (view_distance, simulation_distance) = traveller.distances;
+        if view_distance != info.view_distance {
+            sink.send(&SetChunkCacheRadius {
+                radius: info.view_distance,
+            });
+        }
+        if simulation_distance != info.simulation_distance {
+            sink.send(&SetSimulationDistance {
+                distance: info.simulation_distance,
+            });
+        }
         join::send_abilities(sink.as_ref(), data.game_mode, data.survival.flying);
         let view = ChunkView {
             center: ChunkPos::new(

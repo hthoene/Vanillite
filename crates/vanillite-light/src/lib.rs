@@ -558,14 +558,24 @@ impl<'a> Grid<'a> {
                         _ => 0,
                     }
                 };
-                let neighbour_low = side(-1, 0).max(side(1, 0)).max(side(0, -1)).max(side(0, 1));
-                for y in low..self.height {
-                    let index = self.index(x, y, z);
-                    self.sky[index] = 15;
-                    if seeded && (y == low || y < neighbour_low) {
-                        self.sky_queue[15].push(index as u32);
-                    }
+                if !seeded {
+                    continue;
                 }
+                let neighbour_low = side(-1, 0).max(side(1, 0)).max(side(0, -1)).max(side(0, 1));
+                // Queued: the lowest source and those a neighbour column has none beside, bottom
+                // up (the order the levels are set in below does not matter).
+                for y in low..self.height.min(neighbour_low.max(low + 1)) {
+                    let index = self.index(x, y, z);
+                    self.sky_queue[15].push(index as u32);
+                }
+            }
+        }
+        // Every cell at or above its column's lowest source is 15, layer by layer.
+        let lowest: Vec<u32> = lowest.iter().map(|&low| low as u32).collect();
+        for (y, layer) in self.sky.chunks_exact_mut(width * width).enumerate() {
+            let y = y as u32;
+            for (cell, &low) in layer.iter_mut().zip(&lowest) {
+                *cell = if y >= low { 15 } else { *cell };
             }
         }
     }

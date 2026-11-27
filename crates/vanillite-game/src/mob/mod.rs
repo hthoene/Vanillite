@@ -14,6 +14,7 @@ pub mod boss;
 pub mod brain;
 pub mod combat;
 pub mod common;
+pub mod entity_nbt;
 pub mod equipment;
 pub mod fam;
 pub mod goals;
@@ -170,8 +171,6 @@ pub struct MobData {
     pub persistent: bool,
     pub no_ai: bool,
     pub silent: bool,
-    /// `Entity.invulnerable` (`Invulnerable`).
-    pub invulnerable: bool,
     pub ambient_sound_time: i32,
     pub target: Option<EntityId>,
     pub aggressive: bool,
@@ -338,7 +337,6 @@ impl MobData {
             persistent: false,
             no_ai: false,
             silent: false,
-            invulnerable: false,
             ambient_sound_time: 0,
             target: None,
             aggressive: false,

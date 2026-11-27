@@ -3,7 +3,7 @@
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
-use vanillite_nbt::{Compound, Tag};
+use vanillite_nbt::Compound;
 use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::{Goal, State, goal, sound, state, state_mut};
@@ -1707,11 +1707,8 @@ pub fn save(m: &MobData, out: &mut Compound) {
 }
 
 pub fn load(m: &mut MobData, tag: &Compound) {
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => None,
-    };
-    let boolean = |k: &str| matches!(tag.get(k), Some(Tag::Byte(b)) if *b != 0);
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
+    let boolean = |k: &str| crate::mob::entity_nbt::get_bool(tag, k).unwrap_or(false);
     let health = m.health;
     set_size(m, int("Size").unwrap_or(0) + 1, false);
     m.health = health.min(m.max_health());

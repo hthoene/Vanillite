@@ -47,8 +47,6 @@ pub struct ItemData {
     pub last_movement: Option<crate::survival::inside::Movement>,
     /// `fallDistance` (not saved).
     pub fall_distance: f64,
-    /// `Invulnerable`: only damage that bypasses invulnerability hurts it.
-    pub invulnerable: bool,
 }
 
 impl ItemData {
@@ -75,7 +73,6 @@ impl ItemData {
             stuck: Vec3::ZERO,
             last_movement: None,
             fall_distance: 0.0,
-            invulnerable: false,
         }
     }
 
@@ -144,6 +141,8 @@ pub struct Splash {
 /// world).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Burn {
+    /// The item has the `Invulnerable` tag (set before the tick): nothing here hurts it.
+    pub invulnerable: bool,
     /// The item fell into water in `baseTick`, before it moved.
     pub splash_before: Option<Splash>,
     /// How often the item was hurt (`ItemEntity.hurtServer`: one `ENTITY_DAMAGE` each).
@@ -243,10 +242,7 @@ fn water_splash(data: &mut ItemData, pos: Vec3, v: Vec3) -> Splash {
 /// `ItemEntity.hurtServer`: damage the stack does not resist (`canBeHurtBy`) wears the health
 /// down.
 fn hurt(data: &mut ItemData, types: &DamageTypes, kind: DamageKind, damage: f32, burn: &mut Burn) {
-    if burn.destroyed
-        || invulnerable_to(data, types, kind)
-        || !item::can_be_hurt_by(&data.stack, types, kind)
-    {
+    if burn.invulnerable || burn.destroyed || !item::can_be_hurt_by(&data.stack, types, kind) {
         return;
     }
     #[allow(clippy::cast_possible_truncation)]
@@ -254,12 +250,6 @@ fn hurt(data: &mut ItemData, types: &DamageTypes, kind: DamageKind, damage: f32,
     data.health = health;
     burn.hurts = burn.hurts.saturating_add(1);
     burn.destroyed = health <= 0;
-}
-
-/// `isInvulnerableToBase` of an item (an entity cause is never a creative player here):
-/// `Invulnerable` keeps off all damage that does not bypass invulnerability.
-pub fn invulnerable_to(data: &ItemData, types: &DamageTypes, kind: DamageKind) -> bool {
-    data.invulnerable && !types.is(kind, crate::survival::damage::tag::BYPASSES_INVULNERABILITY)
 }
 
 /// `ItemEntity.fireImmune`: the stack resists fire.

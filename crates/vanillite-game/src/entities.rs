@@ -80,6 +80,19 @@ pub struct PrimedTntData {
 /// The key of the plugins' persistent data in an entity's NBT (Paper's `BukkitValues`).
 pub const PERSISTENT_DATA: &str = "BukkitValues";
 
+/// Entity state few entities have, set by NBT.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EntityExtra {
+    /// `Entity.customData` (the `data` tag).
+    pub data: Option<vanillite_nbt::Compound>,
+    /// `Mob.lootTable` (`DeathLootTable`): drops instead of the type's table.
+    pub death_loot_table: Option<String>,
+    /// `Mob.lootTableSeed` (`DeathLootTableSeed`); 0 = the table's random sequence.
+    pub death_loot_seed: i64,
+    /// The `attributes` a mob was given by NBT or a base value change, which its save keeps.
+    pub attributes: crate::mob::entity_nbt::NbtAttributes,
+}
+
 /// How long [`Entities::departed_uuid`] knows a player that left: longer than the slowest
 /// boss bar player update (once a second).
 const DEPARTED_TICKS: i64 = 100;
@@ -117,8 +130,8 @@ pub struct Entities {
     /// `DATA_ARROW_COUNT_ID` and `removeArrowTime` of the mobs with arrows stuck in them
     /// (players keep theirs in their survival state).
     pub stuck_arrows: FxHashMap<EntityId, crate::mob::projectile::StuckArrows>,
-    /// `Entity.customData` (saved as `data`) of the entities that have any.
-    custom_data: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
+    /// Rare `Entity` and `Mob` NBT state of the entities that have any.
+    extras: std::collections::HashMap<EntityId, EntityExtra>,
     /// Area effect cloud kind data.
     pub clouds: Dense<crate::effect::cloud::CloudData>,
     /// Experience orb kind data.
@@ -664,20 +677,15 @@ impl Entities {
 
     /// `Entity.customData` of an entity (NBT `data`), if it has any.
     pub fn custom_data(&self, id: EntityId) -> Option<&vanillite_nbt::Compound> {
-        self.custom_data.get(&id).filter(|d| !d.is_empty())
+        self.extras.get(&id).and_then(|x| x.data.as_ref())
     }
 
     /// Replaces `Entity.customData` of an entity (loading, `custom_data` of the item it was
     /// made from).
     pub fn set_custom_data(&mut self, id: EntityId, data: Option<vanillite_nbt::Compound>) {
-        match data.filter(|d| !d.is_empty()) {
-            Some(data) if self.store.contains(id) => {
-                self.custom_data.insert(id, data);
-            }
-            _ => {
-                self.custom_data.remove(&id);
-            }
-        }
+        let mut extra = self.extra(id).cloned().unwrap_or_default();
+        extra.data = data.filter(|d| !d.is_empty());
+        self.set_extra(id, extra);
     }
 
     /// Replaces the plugins' persistent data of an entity (loading, travelling).
@@ -689,6 +697,25 @@ impl Entities {
             _ => {
                 self.persistent.remove(&id);
             }
+        }
+    }
+
+    /// The rare NBT state of an entity.
+    pub fn extra(&self, id: EntityId) -> Option<&EntityExtra> {
+        self.extras.get(&id)
+    }
+
+    /// The rare NBT state of an entity, mutably.
+    pub fn extra_mut(&mut self, id: EntityId) -> Option<&mut EntityExtra> {
+        self.extras.get_mut(&id)
+    }
+
+    /// Replaces the rare NBT state of an entity.
+    pub fn set_extra(&mut self, id: EntityId, extra: EntityExtra) {
+        if extra == EntityExtra::default() {
+            self.extras.remove(&id);
+        } else if self.store.contains(id) {
+            self.extras.insert(id, extra);
         }
     }
 
@@ -829,7 +856,7 @@ impl Entities {
         }
         self.tags.remove(&id);
         self.persistent.remove(&id);
-        self.custom_data.remove(&id);
+        self.extras.remove(&id);
         if !self.stuck_arrows.is_empty() {
             self.stuck_arrows.remove(&id);
         }
@@ -864,7 +891,7 @@ impl Entities {
         let removed = self.store.despawn(id)?;
         self.tags.remove(&id);
         self.persistent.remove(&id);
-        self.custom_data.remove(&id);
+        self.extras.remove(&id);
         if !self.stuck_arrows.is_empty() {
             self.stuck_arrows.remove(&id);
         }

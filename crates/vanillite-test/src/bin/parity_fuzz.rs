@@ -12,7 +12,11 @@
 //! parity-fuzz --java <java> --agent <agent.jar> --classpath <cp> --work-dir <dir> --out <dir>
 //!             [--seed N] [--count N] [--minutes N] [--jobs N] [--shrink-rounds N]
 //!             [--replay <scenario.json>...] [--session <recording dir>... [--ticks N]]
+//!             [--coverage <coverage.json>]
 //! ```
+//!
+//! `--coverage` weights the generated scenarios towards the behaviours, mobs, items and blocks
+//! whose Vanilla code the parity scenarios exercise least (`cargo xtask parity coverage`, #257).
 //!
 //! `--session` replays a recorded server session (`cargo xtask parity replay`, #152): the
 //! recording becomes a scenario on its world snapshot ([`vanillite_test::session`]), written
@@ -49,6 +53,8 @@ struct Args {
     replay: Vec<PathBuf>,
     sessions: Vec<PathBuf>,
     ticks: Option<u32>,
+    /// Weights from the coverage of Vanilla's code (`--coverage <coverage.json>`, #257).
+    bias: Option<fuzz::Bias>,
 }
 
 fn args() -> Result<Args, String> {
@@ -66,6 +72,7 @@ fn args() -> Result<Args, String> {
         replay: Vec::new(),
         sessions: Vec::new(),
         ticks: None,
+        bias: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -86,6 +93,13 @@ fn args() -> Result<Args, String> {
             "--replay" => a.replay.push(PathBuf::from(v()?)),
             "--session" => a.sessions.push(PathBuf::from(v()?)),
             "--ticks" => a.ticks = Some(v()?.parse().map_err(|e| format!("--ticks: {e}"))?),
+            "--coverage" => {
+                let path = v()?;
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+                let json: Value =
+                    serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+                a.bias = Some(fuzz::Bias::from_coverage(&json));
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -129,7 +143,7 @@ fn first_words(s: &str) -> String {
 /// scenarios it records.
 struct Recorder {
     child: std::process::Child,
-    input: std::process::ChildStdin,
+    input: Option<std::process::ChildStdin>,
     output: std::io::BufReader<std::process::ChildStdout>,
 }
 
@@ -151,7 +165,7 @@ impl Recorder {
         let output = std::io::BufReader::new(child.stdout.take().ok_or("no recorder stdout")?);
         Ok(Self {
             child,
-            input,
+            input: Some(input),
             output,
         })
     }
@@ -159,8 +173,9 @@ impl Recorder {
     /// Records one scenario; `Err` if the JVM is gone.
     fn record(&mut self, scenario: &Path, trace: &Path) -> Result<(), String> {
         use std::io::{BufRead, Write};
-        writeln!(self.input, "{}\t{}", scenario.display(), trace.display())
-            .and_then(|()| self.input.flush())
+        let input = self.input.as_mut().ok_or("recorder: no stdin")?;
+        writeln!(input, "{}\t{}", scenario.display(), trace.display())
+            .and_then(|()| input.flush())
             .map_err(|e| format!("recorder: {e}"))?;
         let mut line = String::new();
         loop {
@@ -181,6 +196,16 @@ impl Recorder {
 
 impl Drop for Recorder {
     fn drop(&mut self) {
+        // The end of its input ends the recorder normally, so a Java agent's shutdown hook
+        // (the coverage of `cargo xtask parity coverage`) still writes its data.
+        drop(self.input.take());
+        let end = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < end {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -494,7 +519,11 @@ fn main() -> std::process::ExitCode {
                 break;
             }
             for _ in 0..left {
-                batch.push((format!("fuzz_{seed}"), fuzz::generate(seed), seed));
+                batch.push((
+                    format!("fuzz_{seed}"),
+                    fuzz::generate_biased(seed, args.bias.as_ref()),
+                    seed,
+                ));
                 seed += 1;
             }
         }

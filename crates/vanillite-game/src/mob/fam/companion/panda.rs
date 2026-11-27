@@ -550,7 +550,6 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     let s = st_mut(m);
     s.main_gene = main;
     s.hidden_gene = hidden;
-    set_attributes(m);
 }
 
 /// `canPickUpAndEat`: food from the ground (`#panda_eats_from_ground`).

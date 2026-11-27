@@ -1,8 +1,9 @@
 {
   "description": "On Hard at night a zombie (loaded with spawn_reinforcements 1.0) hurt by a pig calls reinforcements on the open surface: Zombie.hurtServer checks the spawn rules with the real level (sky darkened); leaves and closed top trapdoors on two sides are no valid spawn floor (Blocks isValidSpawn).",
   "tier": "fast",
-  "time": 18000,
+  "time": 18001,
   "difficulty": "hard",
+  "level_rng": true,
   "region": [
     [
       -8,

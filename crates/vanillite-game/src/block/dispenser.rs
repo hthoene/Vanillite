@@ -1327,7 +1327,14 @@ fn place_shulker_box(level: &mut Level, source: Source, stack: &mut ItemStack) -
 /// `Entity.blocksBuilding` of a live entity that is no spectator: living entities (not marker
 /// armor stands), minecarts, boats, end crystals, falling blocks and primed TNT.
 pub fn blocks_building(level: &Level, id: vanillite_world::entity::EntityId) -> bool {
-    let ents = &level.entities;
+    entity_blocks_building(&level.entities, id)
+}
+
+/// [`blocks_building`] on the entities themselves (while they are taken out of the level).
+pub fn entity_blocks_building(
+    ents: &crate::entities::Entities,
+    id: vanillite_world::entity::EntityId,
+) -> bool {
     let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
         return false;
     };

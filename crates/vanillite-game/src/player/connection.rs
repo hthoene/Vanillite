@@ -9,7 +9,7 @@ use vanillite_protocol::chat::{
 };
 use vanillite_protocol::packets::common::ChatVisibility;
 use vanillite_protocol::packets::common::{ClientInfo, MainHand as WireMainHand};
-use vanillite_protocol::packets::play::clientbound::SystemChat;
+use vanillite_protocol::packets::play::clientbound::{SystemChat, debug_subscription};
 use vanillite_protocol::{Inbound, InboundReceiver};
 
 use crate::block::technical;
@@ -190,6 +190,8 @@ pub enum AdminRequest {
     EntityTagQuery { transaction_id: i32, entity_id: i32 },
     /// `teleport_to_entity`: the spectator menu teleport to the entity with this UUID.
     TeleportToEntity(u128),
+    /// `debug_subscription_request`: the requested `debug_subscription` ids as a bit mask.
+    DebugSubscriptions(u32),
     /// `custom_payload` on a channel outside the `minecraft` namespace, for plugins.
     PluginMessage {
         /// The channel.
@@ -988,6 +990,20 @@ impl Connection {
             ServerboundPlay::TeleportToEntity(p) => {
                 self.admin(AdminRequest::TeleportToEntity(p.uuid.0));
             }
+            // `handleDebugSubscriptionRequest`: unknown ids are a decode error in Vanilla.
+            ServerboundPlay::DebugSubscriptionRequest(p) => {
+                let mut mask = 0u32;
+                for id in p.subscriptions.0 {
+                    if !(0..debug_subscription::COUNT).contains(&id) {
+                        return Err(Kick(Box::new(Component::translatable(
+                            "multiplayer.disconnect.invalid_packet",
+                            vec![],
+                        ))));
+                    }
+                    mask |= 1u32.checked_shl(id.unsigned_abs()).unwrap_or(0);
+                }
+                self.admin(AdminRequest::DebugSubscriptions(mask));
+            }
             // The server never asks the client to reconfigure yet.
             ServerboundPlay::ConfigurationAcknowledged(_) => {
                 return Err(Kick(Box::new(Component::translatable(
@@ -1014,10 +1030,16 @@ impl Connection {
                     data: p.data.0,
                 });
             }
-            // Keep-alives and ping requests are answered by the network task; cookies, custom
-            // payloads and pongs come later.
-            ServerboundPlay::CookieResponse(_)
-            | ServerboundPlay::CustomClickAction(_)
+            // `handleCookieResponse`: the server never asks for cookies.
+            ServerboundPlay::CookieResponse(_) => {
+                return Err(Kick(Box::new(Component::translatable(
+                    "multiplayer.disconnect.unexpected_query_response",
+                    vec![],
+                ))));
+            }
+            // Keep-alives and ping requests are answered by the network task; custom payloads
+            // and pongs are no-ops in Vanilla (`handleCustomClickAction` only logs).
+            ServerboundPlay::CustomClickAction(_)
             | ServerboundPlay::CustomPayload(_)
             | ServerboundPlay::KeepAlive(_)
             | ServerboundPlay::PingRequest(_)

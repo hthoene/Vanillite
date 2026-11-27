@@ -9,7 +9,7 @@ use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_data::block::ids;
-use vanillite_nbt::{Compound, Tag};
+use vanillite_nbt::Compound;
 use vanillite_world::entity::{EntityFlags, EntityId};
 
 use super::super::super::kinds::Kind;
@@ -973,15 +973,8 @@ pub fn save(d: &MissileData, out: &mut Compound) {
 
 /// Reads the projectile's own NBT.
 pub fn load(d: &mut MissileData, tag: &Compound) {
-    let double = |k: &str| match tag.get(k) {
-        Some(Tag::Double(v)) if v.is_finite() => Some(*v),
-        _ => None,
-    };
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        Some(Tag::Byte(v)) => Some(i32::from(*v)),
-        _ => None,
-    };
+    let double = |k: &str| crate::mob::entity_nbt::get_double(tag, k);
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
     match d.kind {
         MissileKind::SmallFireball | MissileKind::Fireball => {
             d.acceleration = double("acceleration_power").unwrap_or(0.1);
