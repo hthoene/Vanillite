@@ -39,7 +39,7 @@ const WALK_SPEED: f64 = 0.1;
 const MAX_EXHAUSTION: f32 = 40.0;
 
 /// A player or another entity of this world by UUID.
-fn any_entity(entities: &Entities, uuid: u128) -> Result<EntityId> {
+pub(super) fn any_entity(entities: &Entities, uuid: u128) -> Result<EntityId> {
     entities
         .player_by_uuid(uuid)
         .or_else(|| crate::commands::find_uuid(entities, uuid))
@@ -52,7 +52,7 @@ fn player_id(entities: &Entities, uuid: u128) -> Result<EntityId> {
 }
 
 /// A namespaced id as Vanilla's `ResourceLocation` reads it: `zombie` is `minecraft:zombie`.
-fn qualified(id: &str) -> Cow<'_, str> {
+pub(super) fn qualified(id: &str) -> Cow<'_, str> {
     if id.contains(':') {
         Cow::Borrowed(id)
     } else {
@@ -61,7 +61,7 @@ fn qualified(id: &str) -> Cow<'_, str> {
 }
 
 /// A position with finite coordinates.
-fn position([x, y, z]: [f64; 3]) -> Result<Vec3> {
+pub(super) fn position([x, y, z]: [f64; 3]) -> Result<Vec3> {
     if x.is_finite() && y.is_finite() && z.is_finite() {
         Ok(Vec3::new(x, y, z))
     } else {
@@ -71,7 +71,7 @@ fn position([x, y, z]: [f64; 3]) -> Result<Vec3> {
 
 /// A whole number within `range`.
 #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-fn whole(value: f64, range: RangeInclusive<i32>) -> Result<i32> {
+pub(super) fn whole(value: f64, range: RangeInclusive<i32>) -> Result<i32> {
     let inside = value >= f64::from(*range.start()) && value <= f64::from(*range.end());
     if value.fract() == 0.0 && inside {
         Ok(value as i32)
@@ -82,7 +82,7 @@ fn whole(value: f64, range: RangeInclusive<i32>) -> Result<i32> {
 
 /// A float within `range`.
 #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-fn float(value: f64, range: RangeInclusive<f32>) -> Result<f32> {
+pub(super) fn float(value: f64, range: RangeInclusive<f32>) -> Result<f32> {
     let value = value as f32;
     if range.contains(&value) {
         Ok(value)

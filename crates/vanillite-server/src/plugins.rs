@@ -23,6 +23,7 @@ use crate::player_list::Uuid;
 use crate::server::DIMENSIONS;
 use crate::world::ServerWorld;
 
+mod entity_api;
 mod server_api;
 mod world_api;
 
@@ -818,6 +819,80 @@ impl WorldAccess for PluginWorld<'_> {
     fn advancement_done(&self, player: u128, advancement: &str) -> Result<bool, i32> {
         world_api::advancement_done(self, player, advancement)
     }
+
+    fn entity_get(&self, entity: u128, prop: u32) -> Result<f64, i32> {
+        entity_api::entity_get(self, entity, prop)
+    }
+
+    fn entity_set(&mut self, entity: u128, prop: u32, value: f64) -> Result<(), i32> {
+        entity_api::entity_set(self, entity, prop, value)
+    }
+
+    fn entity_name(&self, entity: u128) -> Result<Option<String>, i32> {
+        entity_api::entity_name(self, entity)
+    }
+
+    fn set_entity_name(&mut self, entity: u128, name: Option<Text<'_>>) -> Result<(), i32> {
+        entity_api::set_entity_name(self, entity, name)
+    }
+
+    fn passengers(&self, entity: u128) -> Result<Vec<u128>, i32> {
+        entity_api::passengers(self, entity)
+    }
+
+    fn vehicle(&self, entity: u128) -> Result<Option<u128>, i32> {
+        entity_api::vehicle(self, entity)
+    }
+
+    fn mount(&mut self, passenger: u128, vehicle: u128) -> Result<(), i32> {
+        entity_api::mount(self, passenger, vehicle)
+    }
+
+    fn dismount(&mut self, passenger: u128) -> Result<(), i32> {
+        entity_api::dismount(self, passenger)
+    }
+
+    fn attribute(&self, entity: u128, attribute: &str) -> Result<(f64, f64), i32> {
+        entity_api::attribute(self, entity, attribute)
+    }
+
+    fn set_attribute_base(&mut self, entity: u128, attribute: &str, value: f64) -> Result<(), i32> {
+        entity_api::set_attribute_base(self, entity, attribute, value)
+    }
+
+    fn attribute_modifier(
+        &mut self,
+        entity: u128,
+        attribute: &str,
+        id: &str,
+        change: Option<(f64, u32)>,
+    ) -> Result<(), i32> {
+        entity_api::attribute_modifier(self, entity, attribute, id, change)
+    }
+
+    fn mob_target(&self, mob: u128) -> Result<Option<u128>, i32> {
+        entity_api::mob_target(self, mob)
+    }
+
+    fn set_mob_target(&mut self, mob: u128, target: Option<u128>) -> Result<(), i32> {
+        entity_api::set_mob_target(self, mob, target)
+    }
+
+    fn navigate(&mut self, mob: u128, to: [f64; 3], speed: f64) -> Result<(), i32> {
+        entity_api::navigate(self, mob, to, speed)
+    }
+
+    fn add_goal(&mut self, mob: u128, goal: vanillite_plugin_host::PluginGoal) -> Result<u64, i32> {
+        entity_api::add_goal(self, mob, goal)
+    }
+
+    fn remove_goal(&mut self, mob: u128, goal: u64) -> Result<(), i32> {
+        entity_api::remove_goal(self, mob, goal)
+    }
+
+    fn clear_goals(&mut self, mob: u128, which: u32) -> Result<(), i32> {
+        entity_api::clear_goals(self, mob, which)
+    }
 }
 
 /// An entity of a world by UUID: players by their index, other entities by a scan.
@@ -948,7 +1023,8 @@ impl GameHooks for WorldHooks {
         killer: Option<u128>,
         death: &mut vanillite_game::hooks::Death,
     ) {
-        self.hooks().player_death(player, damage_type, killer, death);
+        self.hooks()
+            .player_death(player, damage_type, killer, death);
     }
 
     fn entity_death(

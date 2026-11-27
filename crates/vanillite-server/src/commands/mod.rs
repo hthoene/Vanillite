@@ -55,7 +55,7 @@ pub(crate) use advancement_cmd::perform_on as perform_advancement;
 pub(crate) use bans::ban_reason;
 pub(crate) use data::{apply_entity_nbt, entity_nbt};
 pub(crate) use data_cmd::merge_compound;
-pub(crate) use entities_cmd::kill_any;
+pub(crate) use entities_cmd::{dismount, kill_any, mount, mount_refusal};
 pub(crate) use exec::{find_player, permission_event};
 pub(crate) use execute::summon;
 pub(crate) use operator::handle as handle_admin;

@@ -482,6 +482,28 @@ pub fn apply_mob_modifiers(m: &mut crate::mob::MobData, dirty: &[Attribute]) -> 
     base
 }
 
+/// `AttributeInstance.getBaseValue` of an attribute a mob keeps a value of (`None` for the
+/// others: their base is the type's default).
+pub fn mob_attribute_base(m: &crate::mob::MobData, a: Attribute) -> Option<f64> {
+    attr_field_ref(m.base_attrs.as_deref().unwrap_or(&m.attrs), a)
+}
+
+/// `AttributeInstance.setBaseValue` of an attribute a mob keeps a value of; the value with
+/// the modifiers follows with the mob's next effect sync (`onAttributeUpdated`, the update to
+/// the trackers). Returns `false` for an attribute the mob keeps no value of.
+pub fn set_mob_attribute_base(m: &mut crate::mob::MobData, a: Attribute, value: f64) -> bool {
+    let base = match m.base_attrs.as_deref_mut() {
+        Some(b) => b,
+        None => &mut m.attrs,
+    };
+    let Some(field) = attr_field(base, a) else {
+        return false;
+    };
+    *field = value;
+    m.effects.modifiers.touch(a);
+    true
+}
+
 /// A player as the target of effects added outside its tick and without the world's
 /// environment (beacons, conduits, bosses): only effects that need no damage or food; the
 /// sound is queued for the player's next sync.
