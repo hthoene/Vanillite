@@ -828,6 +828,10 @@ fn summon_one(
             ),
             owner: None,
             explosion_power: power,
+            fall_distance: match nbt.get("fall_distance") {
+                Some(Tag::Double(v)) => *v,
+                _ => 0.0,
+            },
         };
         entities.spawn_primed_tnt(new, data)
     } else {

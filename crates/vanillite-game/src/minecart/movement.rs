@@ -651,7 +651,29 @@ fn move_cart(c: &mut Cart<'_, '_>, delta: Vec3) {
         let fall = m.fall_distance;
         m.fall_distance = 0.0;
         if fall > 0.0 {
-            super::fall_on(c.ents, c.env, c.cx, c.id, fall);
+            // `Block.fallOn` (farmland draws its trample chance first), then `HIT_GROUND`.
+            use crate::survival::blocks::Landing;
+            let distance = match c.env.facts.landing(effect_state) {
+                Landing::PowderSnow => None,
+                Landing::Stalagmite => Some(fall + 2.5),
+                Landing::Bed => Some(fall * f64::from(1.0_f32 - 0.5)),
+                Landing::Farmland => {
+                    let _ = vanillite_base::random::RandomSource::next_float(c.env.random);
+                    Some(fall)
+                }
+                _ => Some(fall),
+            };
+            if let Some(distance) = distance {
+                super::fall_on(c.ents, c.env, c.cx, c.id, distance);
+            }
+            c.env.out.push(crate::survival::Effect::GameEvent {
+                event: crate::level::game_event::events().hit_ground,
+                pos: new_pos,
+                context: crate::level::game_event::GameEventContext::with_state(
+                    Some(c.id),
+                    effect_state,
+                ),
+            });
             if !c.exists() {
                 return;
             }
@@ -747,6 +769,25 @@ fn bounciness(state: BlockState) -> f64 {
 /// `applyEffectsFromBlocks(position, position)`: the blocks the minecart's box touches react
 /// right after the tick (detector rails, pressure plates, tripwire).
 fn apply_effects_from_blocks(c: &mut Cart<'_, '_>) {
+    let Some(e) = c.ents.store.get(c.id) else {
+        return;
+    };
+    // `stepOn` of the block below (`getOnPosLegacy`).
+    if e.flags().contains(EntityFlags::ON_GROUND) {
+        let pos = e.pos();
+        let on = BlockPos::new(
+            floor(pos.x),
+            floor(pos.y - f64::from(0.2_f32)),
+            floor(pos.z),
+        );
+        let block = c.level.block(on).block();
+        if block == block_ids::SLIME_BLOCK {
+            let v = c.velocity();
+            c.set_velocity(crate::block::contact::slime_step_on(v));
+        } else if crate::block::contact::has_step_on(block) {
+            c.cx.actions.push(WorldAction::StepOn(on, c.id));
+        }
+    }
     let Some(e) = c.ents.store.get(c.id) else {
         return;
     };

@@ -344,6 +344,9 @@ pub struct ContainerView<'a> {
     pub player_pos: Vec3,
     /// The player's experience (anvil costs).
     pub xp: Option<&'a mut crate::survival::player::Experience>,
+    /// The player's own random (`Entity.random`: anvil wear, enchantment seed); `None`: the
+    /// level random.
+    pub random: Option<&'a mut vanillite_base::random::LegacyRandom>,
 }
 
 /// `getSlot(slot).getItem()` of an open container menu.
@@ -1431,7 +1434,7 @@ fn open_with(
         });
     }
     inv.container = Some(Box::new(menu));
-    with_view(inv, level, Vec3::default(), None, |view| {
+    with_view(inv, level, Vec3::default(), None, None, |view| {
         if view.menu.kind == MenuKind::Crafter {
             view.crafter_changed();
         }
@@ -1581,7 +1584,7 @@ pub fn with_open_menu<R>(
 ) -> Option<R> {
     with_player(level, player, |inv, level, _, pos, _, sink| {
         if inv.container.is_some() {
-            with_view(inv, level, pos, None, |view| f(view, sink))
+            with_view(inv, level, pos, None, None, |view| f(view, sink))
         } else {
             Some(f(inv, sink))
         }
@@ -1614,6 +1617,7 @@ pub fn with_view<R>(
     level: &mut Level,
     player_pos: Vec3,
     xp: Option<&mut crate::survival::player::Experience>,
+    random: Option<&mut vanillite_base::random::LegacyRandom>,
     f: impl FnOnce(&mut ContainerView<'_>) -> R,
 ) -> Option<R> {
     let mut menu = inv.container.take()?;
@@ -1624,6 +1628,7 @@ pub fn with_view<R>(
             level,
             player_pos,
             xp,
+            random,
         };
         f(&mut view)
     };

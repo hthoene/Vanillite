@@ -416,6 +416,10 @@ impl Level {
                 state,
                 owner: None,
                 explosion_power: power,
+                fall_distance: match nbt.get("fall_distance") {
+                    Some(Tag::Double(v)) => *v,
+                    _ => 0.0,
+                },
             };
             self.entities.spawn_primed_tnt(new, data)
         };
@@ -778,6 +782,7 @@ impl Level {
         } else {
             let data = self.entities.primed_tnt(id)?;
             nbt.insert("fuse", data.fuse as i16);
+            nbt.insert("fall_distance", Tag::Double(data.fall_distance));
             nbt.insert("block_state", write_block_state(data.state));
             if data.explosion_power != 4.0 {
                 nbt.insert("explosion_power", data.explosion_power);

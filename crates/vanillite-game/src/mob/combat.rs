@@ -944,6 +944,7 @@ fn die(
             super::boss::warden::LevelAction::SculkDeath {
                 pos,
                 experience: reward,
+                player: None,
             },
         ));
     }

@@ -458,6 +458,14 @@ impl ContainerView<'_> {
         self.set_local(2, result);
     }
 
+    /// `player.getRandom().nextFloat()`.
+    fn player_random_float(&mut self) -> f32 {
+        match self.random.as_deref_mut() {
+            Some(r) => r.next_float(),
+            None => self.level.random().next_float(),
+        }
+    }
+
     /// `AnvilMenu.onTake`.
     fn anvil_take(&mut self) {
         let cost = self.menu.data.first().copied().unwrap_or(0);
@@ -482,11 +490,11 @@ impl ContainerView<'_> {
         self.set_data(0, 0);
         self.set_local(0, ItemStack::EMPTY);
         self.workstation_changed();
-        // The anvil wears (12 %) unless the player is in creative.
+        // The anvil wears (12 %, the player's own random) unless the player is in creative.
         let pos = self.menu.pos;
         let state = self.level.block(pos);
         let is_anvil = state.block().info().kind == vanillite_data::block::BlockKind::AnvilBlock;
-        if !self.menu.state.creative && is_anvil && self.level.random().next_float() < 0.12 {
+        if !self.menu.state.creative && is_anvil && self.player_random_float() < 0.12 {
             let damaged = if state.block() == vanillite_data::block::ids::ANVIL {
                 Some(vanillite_data::block::ids::CHIPPED_ANVIL)
             } else if state.block() == vanillite_data::block::ids::CHIPPED_ANVIL {
@@ -1071,7 +1079,10 @@ impl ContainerView<'_> {
             }
         }
         // `onEnchantmentPerformed`: levels and a new seed.
-        let new_seed = self.level.random().next_int();
+        let new_seed = match self.random.as_deref_mut() {
+            Some(r) => r.next_int(),
+            None => self.level.random().next_int(),
+        };
         if let Some(xp) = self.xp.as_deref_mut() {
             xp.level -= cost;
             if xp.level < 0 {

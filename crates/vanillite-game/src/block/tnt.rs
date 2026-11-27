@@ -168,6 +168,7 @@ pub(crate) fn spawn_primed(
             state: ids::TNT.default_state(),
             owner,
             explosion_power: DEFAULT_POWER,
+            fall_distance: 0.0,
         },
     );
     let parent = owner
@@ -232,11 +233,41 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
         GRAVITY
     };
     velocity.y -= gravity;
+    // `wasTouchingWater` of the last `updateFluidInteraction`, which resets the fall distance.
+    let in_water = crate::experience_orb::touching_water(level, &aabb);
     let moved = move_self(level, id, pos, aabb, velocity, gravity);
     let Some(entity) = level.entities.store.get(id) else {
         return;
     };
     let (new_pos, dims) = (entity.pos(), entity.dims());
+    let on_ground = entity.flags().contains(EntityFlags::ON_GROUND);
+    // `checkFallDamage` in `move`.
+    let mut fall_distance = if in_water { 0.0 } else { data.fall_distance };
+    if !in_water && moved.movement_y < 0.0 {
+        #[allow(clippy::cast_possible_truncation)]
+        let ya = f64::from(moved.movement_y as f32);
+        fall_distance -= ya;
+    }
+    let landed = on_ground && fall_distance > 0.0;
+    if on_ground {
+        fall_distance = 0.0;
+    }
+    if let Some(d) = level.entities.primed_tnt_mut(id) {
+        d.fall_distance = fall_distance;
+    }
+    // `getOnPosLegacy()`.
+    let on = BlockPos::new(
+        floor(new_pos.x),
+        floor(new_pos.y - f64::from(0.2_f32)),
+        floor(new_pos.z),
+    );
+    if landed {
+        super::contact::non_living_land(level, id, new_pos, on);
+    }
+    // `applyEffectsFromBlocks`: `stepOn` of the block below, then the blocks on the way.
+    if on_ground && level.entities.store.contains(id) {
+        super::contact::non_living_step_on(level, on, id);
+    }
     // `applyEffectsFromBlocks`: the blocks on the way of the move react.
     let way = if new_pos == pos {
         crate::survival::inside::Movement::still(pos)
@@ -304,6 +335,8 @@ fn explode(level: &mut Level, id: EntityId, pos: Vec3, data: PrimedTntData) {
 struct Moved {
     horizontal: bool,
     vertical: bool,
+    /// The y of the collided movement.
+    movement_y: f64,
 }
 
 /// `Entity.move(MoverType.SELF, delta)` for an entity without step-up, movement emission or
@@ -399,6 +432,7 @@ fn move_self(
     Moved {
         horizontal,
         vertical,
+        movement_y: movement.y,
     }
 }
 
