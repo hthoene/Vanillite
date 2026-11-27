@@ -393,8 +393,28 @@ pub(super) fn propagule_random_tick(level: &mut Level, state: BlockState, pos: B
 /// `FarmlandBlock.tick`: turns to dirt if it cannot stay.
 pub(super) fn farmland_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if !level.can_survive(state, pos) {
-        he::set_block_and_update(level, BLOCK_FADE, pos, ids::DIRT.default_state());
+        turn_to_dirt(level, pos);
     }
+}
+
+/// `FarmlandBlock.turnToBaseBlock(null, ...)` of farmland and dirt paths: entities in the
+/// 1/16 gap pushed up, dirt, and a `block_change` game event.
+fn turn_to_dirt(level: &mut Level, pos: BlockPos) {
+    let dirt = ids::DIRT.default_state();
+    if !he::allows(level, BLOCK_FADE, pos, dirt) {
+        return;
+    }
+    super::contact::push_entities_up(level, pos, 15.0 / 16.0);
+    level.set_block_and_update(pos, dirt);
+    level.game_event_block(
+        crate::level::game_event::events().block_change,
+        pos,
+        crate::level::game_event::GameEventContext {
+            source: None,
+            affected: Some(dirt),
+            owner: None,
+        },
+    );
 }
 
 /// `FarmlandBlock.randomTick`: moisture from water within 4 blocks, dries out to dirt.
@@ -411,7 +431,7 @@ pub(super) fn farmland_random_tick(level: &mut Level, state: BlockState, pos: Bl
             .maintains_farmland
             .contains(level.block(pos.above()))
         {
-            he::set_block_and_update(level, BLOCK_FADE, pos, ids::DIRT.default_state());
+            turn_to_dirt(level, pos);
         }
     } else if moisture < 7 {
         level.set_block(pos, state.set_int("moisture", 7), update::CLIENTS);
@@ -432,9 +452,9 @@ fn near_water(level: &Level, pos: BlockPos) -> bool {
     false
 }
 
-/// `DirtPathBlock.tick`: becomes dirt.
+/// `DirtPathBlock.tick`: becomes dirt (`FarmlandBlock.turnToBaseBlock`).
 pub(super) fn path_tick(level: &mut Level, _state: BlockState, pos: BlockPos) {
-    level.set_block_and_update(pos, ids::DIRT.default_state());
+    turn_to_dirt(level, pos);
 }
 
 /// `BuddingAmethystBlock.randomTick`: buds grow on its faces.

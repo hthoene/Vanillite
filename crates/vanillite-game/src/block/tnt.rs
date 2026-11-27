@@ -498,7 +498,7 @@ fn move_self(
 
 /// `getBlockBounciness(block)` of a non-living entity: the block's bounce restitution times
 /// 0.8 (slime blocks 1.0, beds and shelf mushrooms 0.75).
-fn block_bounciness(block: BlockId) -> f64 {
+pub(crate) fn block_bounciness(block: BlockId) -> f64 {
     let restitution: f32 = if block == ids::SLIME_BLOCK {
         1.0
     } else if block == ids::SHELF_MUSHROOM

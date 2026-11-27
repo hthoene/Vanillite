@@ -51,6 +51,7 @@
 //!   Scenario entities start in the overworld; the level random of every dimension starts
 //!   from the world seed.
 //! - `client_view`: with `dimensions`, frames also hold what the players' clients received
+//!   (`"events"` instead of `true`: also their level and entity events)
 //!   during the tick, normalized (`view`, see [`crate::client_view`]): entities added and
 //!   removed, boss bars, login and respawn (dimension changes), block changes in view, game
 //!   events, abilities and inventory slots. Default `false`.
@@ -265,6 +266,8 @@ pub struct WorldSpec {
     pub progress_state: bool,
     /// Whether frames hold what the players' clients received (`"client_view": true`).
     pub client_view: bool,
+    /// Whether the client view also holds level and entity events (`"client_view": "events"`).
+    pub view_events: bool,
     /// Whether the End generates like a new Vanilla world (`"end": "normal"`).
     pub normal_end: bool,
 }
@@ -724,10 +727,11 @@ impl Scenario {
         if progress_state && !dimensions {
             return Err("\"progress_state\" needs \"dimensions\"".to_owned());
         }
-        let client_view = v
-            .get("client_view")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let view_events = v.get("client_view").and_then(Value::as_str) == Some("events");
+        let client_view = view_events
+            || v.get("client_view")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         let normal_end = match v.get("end").and_then(Value::as_str) {
             None | Some("flat") => false,
             Some("normal") => true,
@@ -808,6 +812,7 @@ impl Scenario {
                 datapack,
                 progress_state,
                 client_view,
+                view_events,
                 normal_end,
             },
             min,

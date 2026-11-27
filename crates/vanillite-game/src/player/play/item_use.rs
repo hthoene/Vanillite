@@ -374,9 +374,6 @@ fn update_from_neighbour_shapes(level: &mut Level, state: BlockState, pos: Block
 fn pop_resource_from_face(level: &mut Level, pos: BlockPos, face: Direction, stack: ItemStack) {
     use crate::block::place::util::DirExt;
     use vanillite_base::random::RandomSource;
-    if stack.is_empty() || !level.settings.block_drops {
-        return;
-    }
     let (sx, sy, sz) = (face.step_x(), face.step_y(), face.step_z());
     let half = 0.125;
     let mut between = |a: f64, b: f64| a + level.random().next_double() * (b - a);
@@ -417,6 +414,10 @@ fn pop_resource_from_face(level: &mut Level, pos: BlockPos, face: Direction, sta
     } else {
         f64::from(sz) * 0.1
     };
+    // `popResource`: the position and motion are drawn before the stack and the rule are seen.
+    if stack.is_empty() || !level.settings.block_drops {
+        return;
+    }
     crate::block::drops::spawn_item_with_motion(
         level,
         Vec3::new(x, y, z),
@@ -1475,7 +1476,8 @@ fn bucket(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32, content
     }
     if content == Content::Empty {
         let state = level.block(pos);
-        if let Some(filled) = crate::block::dispenser::pickup_block(level, pos) {
+        let creative = ctx.actor.creative();
+        if let Some(filled) = crate::block::dispenser::pickup_block(level, pos, creative) {
             let taken = ItemStack::new(filled.0, 1);
             used_stat(ctx, stack.item);
             let sound = pickup_sound(state);

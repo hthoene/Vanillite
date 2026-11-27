@@ -163,6 +163,13 @@ pub struct Burn {
     /// The tops of the bubble columns the item is above (`onAboveBubbleColumn`): their
     /// particles draw from the level random.
     pub bubble_tops: [Option<BlockPos>; 2],
+    /// The item bounced on a block (`bounce` game event).
+    pub bounced: bool,
+    /// The moving item is in powder snow at this block: the snowflake draws the level random.
+    pub snowflake: Option<BlockPos>,
+    /// The burning item melts this powder snow (with `mob_griefing`) or lowers this cauldron.
+    pub melt_snow: Option<BlockPos>,
+    pub cauldron_fire: Option<BlockPos>,
 }
 
 impl Burn {
@@ -173,6 +180,10 @@ impl Burn {
             && self.landed.is_none()
             && self.step_on.is_none()
             && self.bubble_tops[0].is_none()
+            && !self.bounced
+            && self.snowflake.is_none()
+            && self.melt_snow.is_none()
+            && self.cauldron_fire.is_none()
             && self.splash_before.is_none()
             && self.splash_after.is_none()
             && self.extinguished.is_none()
@@ -309,10 +320,13 @@ fn inside_blocks_fire(
         data.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
         data.fall_distance = 0.0;
     }
-    if inside.powder_snow.is_some() {
-        // `PowderSnowBlock.entityInside`.
+    if let Some(snow) = inside.powder_snow {
+        // `PowderSnowBlock.entityInside`, with the snowflake of a moving item.
         data.stuck = Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32));
         data.fall_distance = 0.0;
+        if v.x != 0.0 || v.z != 0.0 {
+            burn.snowflake = Some(snow);
+        }
     }
     if !inside.burns() && data.fire_ticks == 0 {
         return;
@@ -340,6 +354,16 @@ fn inside_blocks_fire(
             // `shouldPlayLavaHurtSound`: every tenth tick, and when the item is destroyed.
             if burn.hurts > before && (data.health <= 0 || data.tick_count.is_multiple_of(10)) {
                 burn.lava_sound = Some(2.0 + data.next_float() * 0.4);
+            }
+        }
+        if data.fire_ticks > 0 {
+            // `runBefore(EXTINGUISH)` of powder snow and cauldrons: a burning item melts the
+            // snow and lowers the cauldron.
+            if let Some(snow) = step.melt_snow {
+                burn.melt_snow.get_or_insert(snow);
+            }
+            if let Some(cauldron) = step.cauldron {
+                burn.cauldron_fire.get_or_insert(cauldron);
             }
         }
         if step.extinguish && data.fire_ticks > 0 {
@@ -419,6 +443,29 @@ pub fn burn_effects(level: &mut crate::level::Level, id: EntityId, burn: Burn) {
         return;
     };
     let pos = e.pos();
+    if let Some(snow) = burn.snowflake {
+        use vanillite_base::random::RandomSource;
+        let r = level.random();
+        if r.next_boolean() {
+            let vx = f64::from((r.next_float() * 2.0 - 1.0) * 0.083_333_336);
+            let vz = f64::from((r.next_float() * 2.0 - 1.0) * 0.083_333_336);
+            level.send_particles(
+                crate::level::particles::simple("minecraft:snowflake"),
+                Vec3::new(pos.x, f64::from(snow.y + 1), pos.z),
+                0,
+                Vec3::new(vx, f64::from(0.05_f32), vz),
+                1.0,
+            );
+        }
+    }
+    if let Some(snow) = burn.melt_snow
+        && level.settings.mob_griefing
+    {
+        level.destroy_block(snow, false, None);
+    }
+    if let Some(cauldron) = burn.cauldron_fire {
+        crate::block::cauldron::burning_inside(level, cauldron);
+    }
     // `entityInside` of pressure plates, tripwire and kin, in the order the item met them.
     for block in burn.inside.into_iter().flatten() {
         if !level.entities.store.contains(id) {
@@ -474,6 +521,13 @@ pub fn burn_effects(level: &mut crate::level::Level, id: EntityId, burn: Burn) {
             crate::level::game_event::events().hit_ground,
             at,
             crate::level::game_event::GameEventContext::with_state(Some(id), on_state),
+        );
+    }
+    if burn.bounced {
+        level.game_event(
+            crate::level::game_event::events().bounce,
+            pos,
+            crate::level::game_event::GameEventContext::of(Some(id)),
         );
     }
     if let Some(on) = burn.step_on
@@ -900,8 +954,9 @@ pub fn tick(
                 data.fall_distance = 0.0;
             }
         }
-        // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps Java's signed
-        // zeros.
+        // `restituteMovementAfterCollisions` without bounciness of its own: `-v * 0.0` keeps
+        // Java's signed zeros; landing fast on a bouncy block (slime, beds, shelf mushrooms)
+        // bounces it with 0.8 of the block's restitution.
         if moved.hit_x {
             v.x = -v.x * 0.0;
         }
@@ -909,7 +964,31 @@ pub fn tick(
             v.z = -v.z * 0.0;
         }
         if moved.hit_y {
-            v.y = -v.y * 0.0;
+            let gravity = 0.04;
+            let effect = block.state(BlockPos::containing(
+                moved.pos.x,
+                moved.pos.y - f64::from(0.2_f32),
+                moved.pos.z,
+            ));
+            let restitution = if delta.y < 0.0
+                && -v.y > gravity
+                && !crate::block::block_tags()
+                    .suppresses_bounce
+                    .contains(effect)
+            {
+                crate::block::tnt::block_bounciness(effect.block())
+            } else {
+                0.0
+            };
+            v.y = if restitution > 0.0 {
+                let portion = moved.movement.y / v.y;
+                let drag = 1.0 + portion * (f64::from(0.98_f32) - 1.0);
+                burn.bounced = true;
+                (portion * gravity - v.y) * drag * restitution
+            } else {
+                // `(0 - y) * 1 * 0`: a resting 0.0 stays positive.
+                (0.0 - v.y) * 0.0
+            };
         }
         // `applyEffectsFromBlocks`: `SlimeBlock.stepOn` slows a resting item.
         if !no_physics

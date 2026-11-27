@@ -803,6 +803,7 @@ impl WorldPlayers {
                 &entity,
                 player.game_mode,
                 &player.survival.effects,
+                &player.inventory,
                 global,
                 &level.chunks,
             );
@@ -1168,6 +1169,7 @@ impl WorldPlayers {
                 &entity,
                 player.game_mode,
                 &player.survival.effects,
+                &player.inventory,
                 global,
                 &level.chunks,
             );
@@ -1875,11 +1877,19 @@ fn actor_of(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
     effects: &vanillite_game::effect::ActiveEffects,
+    inventory: &vanillite_game::inventory::PlayerInventory,
     global: &Global,
     chunks: &Chunks,
 ) -> Actor {
     let permission_level = crate::commands::permission_level(global, entity.uuid());
-    player_actor(entity, game_mode, effects, permission_level, chunks)
+    player_actor(
+        entity,
+        game_mode,
+        effects,
+        inventory,
+        permission_level,
+        chunks,
+    )
 }
 
 /// The player as the packet handlers see it: eye height of its pose, eyes in water, mining
@@ -1888,6 +1898,7 @@ pub fn player_actor(
     entity: &EntityRef<'_>,
     game_mode: GameMode,
     effects: &vanillite_game::effect::ActiveEffects,
+    inventory: &vanillite_game::inventory::PlayerInventory,
     permission_level: u8,
     chunks: &Chunks,
 ) -> Actor {
@@ -1901,17 +1912,32 @@ pub fn player_actor(
         _ => 1.62,
     });
     let pos = entity.pos();
+    // `Entity.updateFluidOnEyes`: the water at `getEyeY() - 0.11111111F` reaches above it
+    // (`FluidState.getHeight`: a full block below water).
+    let eye_y = pos.y + eye_height - f64::from(0.111_111_11_f32);
     let eye = BlockPos::new(
         vanillite_base::math::floor(pos.x),
-        vanillite_base::math::floor(pos.y + eye_height),
+        vanillite_base::math::floor(eye_y),
         vanillite_base::math::floor(pos.z),
     );
-    let fluid = chunks
-        .block(eye)
-        .map_or(vanillite_data::fluid::FluidState::EMPTY, |s| {
-            vanillite_data::block::BlockState(s).fluid_state()
-        });
-    let eyes_in_water = !fluid.is_empty() && matches!(fluid.info().fluid, 1 | 2);
+    let fluid_at = |p: BlockPos| {
+        chunks
+            .block(p)
+            .map_or(vanillite_data::fluid::FluidState::EMPTY, |s| {
+                vanillite_data::block::BlockState(s).fluid_state()
+            })
+    };
+    let water =
+        |f: vanillite_data::fluid::FluidState| !f.is_empty() && matches!(f.info().fluid, 1 | 2);
+    let fluid = fluid_at(eye);
+    let eyes_in_water = water(fluid) && {
+        let height = if water(fluid_at(BlockPos::new(eye.x, eye.y + 1, eye.z))) {
+            1.0
+        } else {
+            fluid.info().own_height
+        };
+        f64::from(eye.y) + f64::from(height) > eye_y
+    };
     let flags = entity.flags();
     Actor {
         entity: Some(entity.id()),
@@ -1932,6 +1958,7 @@ pub fn player_actor(
         mining_fatigue: effects.amplifier(vanillite_game::effect::MobEffect::MINING_FATIGUE),
         respawn_here: None,
         leads_mobs: false,
+        ranges: vanillite_game::player::play::interaction_ranges(inventory, game_mode),
     }
 }
 

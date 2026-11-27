@@ -817,6 +817,24 @@ pub fn open_inventory_screen(ix: &mut Interact<'_, '_>) {
     }
 }
 
+/// `AbstractChestedHorse.getSlot(499).set(chest)` of a dispenser: a tame, living chested
+/// horse without a chest takes it (no sound). Whether it did.
+pub fn dispense_chest(ents: &mut crate::entities::Entities, id: EntityId) -> bool {
+    let Some(m) = ents.mob_mut(id) else {
+        return false;
+    };
+    if !is_chested(m.kind) || !m.is_alive() || st(m).chest || !m.tame {
+        return false;
+    }
+    st_mut(m).chest = true;
+    let size = inventory_size(m);
+    st_mut(m).inventory.resize(size, ItemStack::default());
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.mark_data_dirty();
+    }
+    true
+}
+
 /// `equipChest`.
 fn equip_chest(ix: &mut Interact<'_, '_>) {
     let kind = ix.ents.mob(ix.target).map(|m| m.kind);

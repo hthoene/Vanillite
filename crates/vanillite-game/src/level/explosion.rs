@@ -724,19 +724,18 @@ impl Level {
                     by_player,
                 );
                 drops::explosion_loot(self, pos, state, decay, source, &mut loot);
-                for mut stack in loot.drain(..) {
+                // `addOrAppendStack`: an empty stack only starts a collector when there is none.
+                'stacks: for mut stack in loot.drain(..) {
                     for (_, collected) in &mut stacks {
                         if crate::item_entity::are_mergable(collected, &stack) {
                             *collected =
                                 crate::item_entity::merge_stacks_max(collected, &mut stack, 16);
                         }
                         if stack.is_empty() {
-                            break;
+                            continue 'stacks;
                         }
                     }
-                    if !stack.is_empty() {
-                        stacks.push((pos, stack));
-                    }
+                    stacks.push((pos, stack));
                 }
             }
             self.set_block(pos, BlockState::AIR, update::ALL);

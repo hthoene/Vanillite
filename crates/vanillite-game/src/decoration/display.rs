@@ -230,10 +230,11 @@ fn write_transformation(t: &Transformation) -> Tag {
 /// `Display.readAdditionalSaveData` and the kind's.
 pub fn load(kind: EntityTypeId, tag: &Compound) -> Option<Display> {
     let shown = if kind == ids::BLOCK_DISPLAY {
-        Shown::Block(match tag.get("block_state") {
-            Some(Tag::Compound(c)) => crate::level::block_entity::read_block_state(c),
-            _ => BlockState::AIR,
-        })
+        Shown::Block(
+            tag.get("block_state")
+                .and_then(crate::level::block_entity::read_state_codec)
+                .unwrap_or(BlockState::AIR),
+        )
     } else if kind == ids::ITEM_DISPLAY {
         Shown::Item {
             item: match tag.get("item") {
@@ -340,7 +341,7 @@ pub fn save(d: &Display, out: &mut Compound) {
         Shown::Block(state) => {
             out.insert(
                 "block_state",
-                crate::level::block_entity::write_block_state(*state),
+                crate::level::block_entity::write_state_codec(*state),
             );
         }
         Shown::Item { item, context } => {

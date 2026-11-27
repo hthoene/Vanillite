@@ -1,0 +1,63 @@
+{
+  "description": "Client view of breaking (#217): punching out fire sends the extinguish level event 1009 to everyone instead of the break event 2001 (BaseFireBlock.playerWillDestroy, E-11).",
+  "dimensions": true,
+  "client_view": "events",
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      2,
+      -62,
+      2
+    ],
+    [
+      14,
+      -56,
+      12
+    ]
+  ],
+  "ticks": 20,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        8.5,
+        -60.0,
+        6.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:fire"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "attack",
+      "entity": "steve",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "face": "east",
+      "item": "minecraft:air"
+    }
+  ]
+}

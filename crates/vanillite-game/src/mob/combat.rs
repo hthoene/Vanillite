@@ -282,7 +282,7 @@ pub fn hurt_mob(
     {
         return took;
     }
-    if invulnerable_to(ents, env, target, kind) {
+    if invulnerable_to(ents, env, target, kind) || immune_to_damage(ents, env, target, &source) {
         return false;
     }
     if ents.mob(target).is_some_and(|m| m.is_dead_or_dying()) {
@@ -643,6 +643,32 @@ fn mob_protection(
     combat
         .enchants
         .damage_protection(&equipment, &cx, env.random)
+}
+
+/// `EnchantmentHelper.isImmuneToDamage` of a mob's equipment (Frost Walker on magma).
+fn immune_to_damage(
+    ents: &Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+) -> bool {
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    let equipment: Vec<(crate::item::EquipmentSlot, &crate::item::ItemStack)> = (0..8)
+        .filter_map(crate::item::EquipmentSlot::from_ordinal)
+        .map(|s| (s, m.equipment.get(s)))
+        .filter(|(_, s)| !s.is_empty() && !crate::item::enchantments(s).is_empty())
+        .collect();
+    if equipment.is_empty() {
+        return false;
+    }
+    let combat = super::attack::combat_data();
+    let tags: &dyn crate::predicate::EntityTags = &*combat;
+    let cx = super::attack::damage_context(ents, env.types, tags, target, source);
+    combat
+        .enchants
+        .immune_to_damage(&equipment, &cx, env.random)
 }
 
 /// `LivingEntity.actuallyHurt` of a mob: armour, then health.

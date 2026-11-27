@@ -35,7 +35,7 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
             .filter_map(|i| u16::try_from(i).ok())
             .collect()
     };
-    let tools = ToolTable::new(&|tag| tag_ids("minecraft:block", tag));
+    let mut tools = ToolTable::new(&|tag| tag_ids("minecraft:block", tag));
     let loot = LootTables::load(packs.roots());
     log::info!("Loaded {} loot tables", loot.len());
     let enchantments = packs
@@ -69,6 +69,8 @@ pub fn game_data(packs: Option<&LoadedPacks>) -> GameData {
                 .collect()
         })
         .unwrap_or_default();
+    let block_tags = std::sync::Arc::new(block_tags);
+    tools.set_block_tags(std::sync::Arc::clone(&block_tags));
     let entity_tags: HashMap<String, Vec<u16>> = packs
         .tags("minecraft:entity_type")
         .map(|tags| {

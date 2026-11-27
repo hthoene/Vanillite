@@ -864,7 +864,7 @@ pub fn save_minecart(core: &EntityRef<'_>, m: &crate::minecart::MinecartData) ->
     if let Some(state) = m.display_state {
         out.insert(
             "DisplayState",
-            Tag::Compound(crate::level::block_entity::write_block_state(state)),
+            crate::level::block_entity::write_state_codec(state),
         );
     }
     if m.display_offset != m.kind.default_display_offset() {
@@ -935,8 +935,11 @@ pub fn apply_minecart(m: &mut crate::minecart::MinecartData, tag: &Compound) {
     let kind = m.kind;
     m.custom_name = tag.get("CustomName").and_then(tag_component);
     m.fall_distance = double(tag, "fall_distance").unwrap_or(0.0);
-    if let Some(Tag::Compound(c)) = tag.get("DisplayState") {
-        m.display_state = Some(crate::level::block_entity::read_block_state(c));
+    if let Some(state) = tag
+        .get("DisplayState")
+        .and_then(crate::level::block_entity::read_state_codec)
+    {
+        m.display_state = Some(state);
     }
     m.display_offset = int(tag, "DisplayOffset").unwrap_or(kind.default_display_offset());
     m.flipped = boolean(tag, "FlippedRotation");

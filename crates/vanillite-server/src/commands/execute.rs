@@ -643,9 +643,11 @@ fn summon_one(
             .and_then(|v| i16::try_from(v).ok())
             .map_or(default, i32::from)
     };
-    let block_state = |key: &str, default: BlockState| match nbt.get(key) {
-        Some(Tag::Compound(c)) => vanillite_game::level::block_entity::read_block_state(c),
-        _ => default,
+    // `BlockState.CODEC`: a block id or `{id, properties}` (`{Name, Properties}` too).
+    let block_state = |key: &str, default: BlockState| {
+        nbt.get(key)
+            .and_then(vanillite_game::level::block_entity::read_state_codec)
+            .unwrap_or(default)
     };
     if let Some(mob) = vanillite_game::mob::kinds::Kind::by_name(id)
         .filter(|k| k.family() != vanillite_game::mob::Family::Decor)

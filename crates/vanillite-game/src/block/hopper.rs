@@ -54,6 +54,48 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         b.neighbor_changed = Some(neighbor_changed);
         b.affect_neighbors_after_removal = Some(dispenser::container_removed);
         b.analog_output = Some(dispenser::container_signal);
+        b.entity_inside = Some(entity_inside);
+    }
+}
+
+/// `HopperBlockEntity.entityInside`: an item entity in the suck box is taken during its own
+/// tick (`tryMoveItems` with `addItem(hopper, itemEntity)`), also below a full block.
+fn entity_inside(
+    level: &mut Level,
+    state: BlockState,
+    pos: BlockPos,
+    entity: vanillite_world::entity::EntityId,
+) {
+    if level
+        .entities
+        .item(entity)
+        .is_none_or(|d| d.stack.is_empty())
+    {
+        return;
+    }
+    let Some(aabb) = level.entities.store.get(entity).map(|e| e.aabb()) else {
+        return;
+    };
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    let suck_box = Aabb::new(x, y + 11.0 / 16.0, z, x + 1.0, y + 2.0, z + 1.0);
+    if !aabb.intersects(&suck_box) {
+        return;
+    }
+    let Some(BlockEntity::Hopper(hopper)) = level.block_entity(pos) else {
+        return;
+    };
+    if hopper.cooldown_time > 0 || !state.flag("enabled") {
+        return;
+    }
+    let changed = transfer_with(level, pos, state, |level| {
+        add_item_entity(level, ContainerRef::Block(pos), entity)
+    });
+    if changed {
+        let speed = level.settings.hopper_transfer_cooldown;
+        if let Some(BlockEntity::Hopper(hopper)) = level.block_entity_mut(pos) {
+            hopper.cooldown_time = speed;
+        }
+        level.update_neighbour_for_output_signal(pos, state.block());
     }
 }
 
@@ -120,6 +162,16 @@ pub fn push_items_tick(level: &mut Level, pos: BlockPos, state: BlockState) {
 
 /// `ejectItems` and `suckInItems` of `tryMoveItems`: whether an item moved.
 pub fn transfer(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
+    transfer_with(level, pos, state, |level| suck_in_items(level, pos))
+}
+
+/// `tryMoveItems` with its `suckInItems` supplier `suck`: whether an item moved.
+fn transfer_with(
+    level: &mut Level,
+    pos: BlockPos,
+    state: BlockState,
+    suck: impl FnOnce(&mut Level) -> bool,
+) -> bool {
     let mut changed = false;
     // `isEmpty` unpacks the hopper's loot table.
     super::chest_loot::unpack(level, pos, None);
@@ -133,7 +185,7 @@ pub fn transfer(level: &mut Level, pos: BlockPos, state: BlockState) -> bool {
             .all(|s| !s.is_empty() && s.count == item::max_stack_size(s))
     });
     if !full {
-        changed |= suck_in_items(level, pos);
+        changed |= suck(level);
     }
     changed
 }

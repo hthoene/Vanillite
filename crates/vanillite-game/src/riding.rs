@@ -910,8 +910,9 @@ pub fn boost(
     let mut n = 0;
     for _ in 0..7 {
         #[allow(clippy::cast_precision_loss)]
-        let chance = 1.0 / (unbreaking.max(0) as f32 + 1.0);
-        if unbreaking <= 0 || env.random.next_float() < chance {
+        let level = unbreaking.max(0) as f32;
+        // `remove_binomial`: the draw removes the point below level / (level + 1).
+        if unbreaking <= 0 || env.random.next_float() >= level / (level + 1.0) {
             n += 1;
         }
     }
