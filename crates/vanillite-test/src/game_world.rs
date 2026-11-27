@@ -746,6 +746,7 @@ impl GameWorld {
                 random: &mut random,
                 out: &mut self.effects,
                 hooks: &vanillite_game::hooks::NoHooks,
+                hook_world: vanillite_game::hooks::HookWorld::NONE,
                 display_name: &names,
                 // Teams come from `team` commands, so only once the command server runs.
                 entity_team: &|holder| {

@@ -114,7 +114,7 @@ fn tick(level: &mut Level, state: BlockState, pos: BlockPos) {
             item: crate::hooks::item_snbt(&stack),
             ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_DISPENSE)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
         if ev.cancelled {
             return;
         }

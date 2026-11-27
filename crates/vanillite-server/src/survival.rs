@@ -443,6 +443,7 @@ impl WorldSurvival {
             random,
             out: &mut self.effects,
             hooks,
+            hook_world: vanillite_game::hooks::HookWorld::NONE,
             display_name,
             entity_team,
         }
@@ -775,6 +776,7 @@ impl WorldSurvival {
             let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
             let mut env = Env {
                 hooks: &hooks,
+                hook_world: vanillite_game::hooks::HookWorld::NONE,
                 display_name: &names,
                 entity_team: &teams,
                 types: &state.damage_types,
@@ -865,6 +867,7 @@ impl WorldSurvival {
         let teams = |holder: &str| crate::scoreboard::entity_team(global, holder);
         let mut env = Env {
             hooks: &hooks,
+            hook_world: vanillite_game::hooks::HookWorld::NONE,
             display_name: &names,
             entity_team: &teams,
             types: &level.damage_types,

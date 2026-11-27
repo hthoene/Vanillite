@@ -22,6 +22,11 @@ pub mod events {
 
 /// A world as gameplay code sees it.
 pub trait PlayLevel {
+    /// What plugins may read during the hooks of a play action (the level, when this is one).
+    fn hook_world(&self) -> crate::hooks::HookWorld<'_> {
+        crate::hooks::HookWorld::NONE
+    }
+
     /// The block state at `pos`; air outside loaded chunks and the build height.
     fn block(&self, pos: BlockPos) -> BlockState;
     /// Whether the chunk of `pos` is loaded (full).

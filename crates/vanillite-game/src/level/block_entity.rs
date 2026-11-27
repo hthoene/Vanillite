@@ -1172,7 +1172,7 @@ impl Level {
                     pos: BlockPos::new(chunk.x, 0, chunk.z),
                     ..crate::hooks::Event::new(vanillite_abi::event::CHUNK_UNLOAD)
                 };
-                hooks.event(&mut ev);
+                hooks.event(crate::hooks::HookWorld::of(self), &mut ev);
             }
         }
         for &chunk in &chunks {
@@ -1206,7 +1206,7 @@ impl Level {
                 flags: u32::from(self.chunks.generated_now(chunk)),
                 ..crate::hooks::Event::new(vanillite_abi::event::CHUNK_LOAD)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::of(self), &mut ev);
         }
     }
 

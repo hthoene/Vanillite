@@ -265,7 +265,7 @@ pub fn breed_event(
         value: i64::from(experience),
         ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_BREED)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     (!ev.cancelled).then(|| crate::hooks::experience_value(ev.value))
 }
 
@@ -1306,10 +1306,12 @@ fn dye_sheep(
     }
     let uuid = |ents: &Entities, id| ents.store.get(id).map_or(0, |e| e.uuid());
     let name = crate::block::sign::DYE_COLORS[usize::from(color)];
-    if !env
-        .hooks
-        .sheep_dye_wool(uuid(ents, target), name, uuid(ents, player))
-    {
+    if !env.hooks.sheep_dye_wool(
+        crate::hooks::HookWorld::entities(ents),
+        uuid(ents, target),
+        name,
+        uuid(ents, player),
+    ) {
         return Interaction::Pass;
     }
     // `level.playSound(player, sheep, ...)`: the player's own client plays it itself.

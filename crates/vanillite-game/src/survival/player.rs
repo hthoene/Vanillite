@@ -216,6 +216,9 @@ pub struct Survival {
     pub sleeping_pos: Option<BlockPos>,
     /// `sleepCounter` (`SleepTimer`): ticks asleep up to 100, then 100..110 after waking.
     pub sleep_timer: i32,
+    /// A plugin's `Player.setSleepingIgnored` (Bukkit's `fauxSleeping`): counts as sleeping
+    /// for the night skip while someone really sleeps. Not saved.
+    pub sleeping_ignored: bool,
     /// Something woke the player (`stopSleeping` from damage or death); the sleep pass of the
     /// world tick gets it out of bed.
     pub wake: bool,
@@ -368,6 +371,7 @@ impl Default for Survival {
             respawn: None,
             sleeping_pos: None,
             sleep_timer: 0,
+            sleeping_ignored: false,
             wake: false,
             combat: CombatTracker::default(),
             tick_count: 0,
@@ -500,6 +504,8 @@ pub struct Env<'a> {
     pub out: &'a mut Vec<Effect>,
     /// Plugin hooks (damage).
     pub hooks: &'a dyn crate::hooks::GameHooks,
+    /// What plugins may read during these hooks.
+    pub hook_world: crate::hooks::HookWorld<'a>,
     /// `Player.getDisplayName` by name and UUID: the name in its team's format.
     pub display_name: &'a dyn Fn(&str, u128) -> Component,
     /// `Entity.getTeam` by score holder (a player's name, another entity's UUID string): its
@@ -846,7 +852,7 @@ fn check_totem(
     };
     if !env
         .hooks
-        .entity_resurrect(entity.as_ref().uuid(), "minecraft:player")
+        .entity_resurrect(env.hook_world, entity.as_ref().uuid(), "minecraft:player")
     {
         return false;
     }
@@ -1055,6 +1061,7 @@ pub fn hurt_with(
     let uuid = entity.as_ref().uuid();
     let (attacker, direct) = attackers;
     match env.hooks.entity_damage(
+        env.hook_world,
         uuid,
         "minecraft:player",
         &types.get(kind).id,
@@ -1767,7 +1774,7 @@ pub fn die(
                 to: crate::hooks::Place::at(pos),
                 ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_DROPS)
             };
-            env.hooks.event(&mut ev);
+            env.hooks.event(env.hook_world, &mut ev);
             if let Some(new) = crate::hooks::drops_out(&ev) {
                 drops = new;
             }

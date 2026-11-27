@@ -123,7 +123,7 @@ pub(super) fn leaves_random_tick(level: &mut Level, state: BlockState, pos: Bloc
                 state: Some(state),
                 ..crate::hooks::Event::new(LEAVES_DECAY)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
             if ev.cancelled {
                 return;
             }

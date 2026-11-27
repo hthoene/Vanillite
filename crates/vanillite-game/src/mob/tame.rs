@@ -45,7 +45,7 @@ pub fn tame_event(ents: &Entities, animal: EntityId, owner: u128) -> bool {
         player: owner,
         ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TAME)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     !ev.cancelled
 }
 

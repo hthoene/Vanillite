@@ -9,6 +9,9 @@
 //! [`GameHooks::event`] and applies what the kind allows.
 
 use vanillite_base::BlockPos;
+
+use crate::entities::Entities;
+use crate::level::Level;
 use vanillite_data::block::BlockState;
 use vanillite_protocol::text::Component;
 
@@ -85,6 +88,83 @@ impl NewText {
         match self {
             NewText::Plain(s) | NewText::Json(s) => s,
         }
+    }
+}
+
+/// Block positions as an event text (`x,y,z;x,y,z`; explosions and pistons).
+pub fn positions_text<'a>(positions: impl Iterator<Item = &'a BlockPos>) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for p in positions {
+        if !out.is_empty() {
+            out.push(';');
+        }
+        let _ = write!(out, "{},{},{}", p.x, p.y, p.z);
+    }
+    out
+}
+
+/// The block positions of an event text written as [`positions_text`] does; malformed entries
+/// are skipped.
+pub fn parse_positions(text: &str) -> impl Iterator<Item = BlockPos> + '_ {
+    text.split(';').filter_map(|p| {
+        let mut it = p.split(',').map(|n| n.trim().parse::<i32>());
+        match (it.next(), it.next(), it.next(), it.next()) {
+            (Some(Ok(x)), Some(Ok(y)), Some(Ok(z)), None) => Some(BlockPos::new(x, y, z)),
+            _ => None,
+        }
+    })
+}
+
+/// What plugins may read of the event's world while a hook runs: its blocks and its entities,
+/// as far as the hook site can lend them (entities may be taken out of the level while mobs
+/// tick). The server answers plugin reads from it; writes wait as before.
+#[derive(Clone, Copy, Default)]
+pub struct HookWorld<'a> {
+    /// The level (blocks, block entities, biomes; its entities unless [`Self::entities`] is set).
+    pub level: Option<&'a Level>,
+    /// The entities, when they are not (only) in `level`.
+    pub entities: Option<&'a Entities>,
+}
+
+impl<'a> HookWorld<'a> {
+    /// Nothing to read.
+    pub const NONE: HookWorld<'static> = HookWorld {
+        level: None,
+        entities: None,
+    };
+
+    /// A whole level.
+    pub fn of(level: &'a Level) -> Self {
+        HookWorld {
+            level: Some(level),
+            entities: Some(&level.entities),
+        }
+    }
+
+    /// A level whose entities are lent out to `entities`.
+    pub fn split(level: &'a Level, entities: &'a Entities) -> Self {
+        HookWorld {
+            level: Some(level),
+            entities: Some(entities),
+        }
+    }
+
+    /// Only entities.
+    pub fn entities(entities: &'a Entities) -> Self {
+        HookWorld {
+            level: None,
+            entities: Some(entities),
+        }
+    }
+}
+
+impl std::fmt::Debug for HookWorld<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookWorld")
+            .field("level", &self.level.is_some())
+            .field("entities", &self.entities.is_some())
+            .finish()
     }
 }
 
@@ -298,22 +378,24 @@ pub trait GameHooks: Sync {
     }
 
     /// Fires an event of the kinds since ABI 1.6; the handlers' changes are written back.
-    fn event(&self, _event: &mut Event) {}
+    fn event(&self, _world: HookWorld<'_>, _event: &mut Event) {}
 
     /// Fires `event` when a plugin listens to its kind: whether it goes on (not cancelled).
-    fn cancellable(&self, mut event: Event) -> bool {
+    fn cancellable(&self, world: HookWorld<'_>, mut event: Event) -> bool {
         if !self.wants(event.kind) {
             return true;
         }
-        self.event(&mut event);
+        self.event(world, &mut event);
         !event.cancelled
     }
 
     /// An entity is about to take `amount` damage of `damage_type` (e.g. `minecraft:fall`)
     /// from `attacker` (the responsible entity) and `direct` (e.g. its projectile). Returns
     /// the damage to apply, or `None` to cancel it.
+    #[allow(clippy::too_many_arguments)]
     fn entity_damage(
         &self,
+        _world: HookWorld<'_>,
         _entity: u128,
         _entity_type: &str,
         _damage_type: &str,
@@ -325,41 +407,64 @@ pub trait GameHooks: Sync {
     }
 
     /// A player is about to break the block `state` at `pos`. `false` cancels it.
-    fn block_break(&self, _player: u128, _pos: BlockPos, _state: BlockState) -> bool {
+    fn block_break(
+        &self,
+        _world: HookWorld<'_>,
+        _player: u128,
+        _pos: BlockPos,
+        _state: BlockState,
+    ) -> bool {
         true
     }
 
     /// A player is about to place `state` at `pos`. `false` cancels it.
-    fn block_place(&self, _player: u128, _pos: BlockPos, _state: BlockState) -> bool {
+    fn block_place(
+        &self,
+        _world: HookWorld<'_>,
+        _player: u128,
+        _pos: BlockPos,
+        _state: BlockState,
+    ) -> bool {
         true
     }
 
     /// A player is about to throw or shoot a projectile of `projectile_type` (e.g.
     /// `minecraft:snowball`; Paper's `PlayerLaunchProjectileEvent`). `false` cancels it: the
     /// item stays.
-    fn projectile_launch(&self, shooter: u128, projectile_type: &str) -> bool {
-        self.cancellable(Event {
-            entity: shooter,
-            entity_type: "minecraft:player".to_owned(),
-            key: projectile_type.to_owned(),
-            ..Event::new(vanillite_abi::event::PLAYER_LAUNCH_PROJECTILE)
-        })
+    fn projectile_launch(
+        &self,
+        world: HookWorld<'_>,
+        shooter: u128,
+        projectile_type: &str,
+    ) -> bool {
+        self.cancellable(
+            world,
+            Event {
+                entity: shooter,
+                entity_type: "minecraft:player".to_owned(),
+                key: projectile_type.to_owned(),
+                ..Event::new(vanillite_abi::event::PLAYER_LAUNCH_PROJECTILE)
+            },
+        )
     }
 
     /// A totem of undying (`death_protection`) is about to save `entity` from death (Paper's
     /// `EntityResurrectEvent`). `false` lets it die.
-    fn entity_resurrect(&self, entity: u128, entity_type: &str) -> bool {
-        self.cancellable(Event {
-            entity,
-            entity_type: entity_type.to_owned(),
-            ..Event::new(vanillite_abi::event::ENTITY_RESURRECT)
-        })
+    fn entity_resurrect(&self, world: HookWorld<'_>, entity: u128, entity_type: &str) -> bool {
+        self.cancellable(
+            world,
+            Event {
+                entity,
+                entity_type: entity_type.to_owned(),
+                ..Event::new(vanillite_abi::event::ENTITY_RESURRECT)
+            },
+        )
     }
 
     /// A fishing rod action of `player` (Paper's `PlayerFishEvent`): `state` is `fishing`
     /// (the cast), `caught_entity`, `caught_fish`, `in_ground` or `reel_in`. `false` cancels
     /// it: no cast, or the bobber stays without pulling or loot.
-    fn player_fish(&self, player: u128, state: &str) -> bool {
+    fn player_fish(&self, world: HookWorld<'_>, player: u128, state: &str) -> bool {
         use vanillite_abi::fish_state;
         let cause = match state {
             "caught_entity" => fish_state::CAUGHT_ENTITY,
@@ -368,53 +473,78 @@ pub trait GameHooks: Sync {
             "reel_in" => fish_state::REEL_IN,
             _ => fish_state::FISHING,
         };
-        self.cancellable(Event {
-            entity: player,
-            entity_type: "minecraft:player".to_owned(),
-            cause,
-            ..Event::new(vanillite_abi::event::PLAYER_FISH)
-        })
+        self.cancellable(
+            world,
+            Event {
+                entity: player,
+                entity_type: "minecraft:player".to_owned(),
+                cause,
+                ..Event::new(vanillite_abi::event::PLAYER_FISH)
+            },
+        )
     }
 
     /// `player` is about to dye the sheep `sheep` with the dye colour `color` (e.g. `lime`;
     /// Paper's `SheepDyeWoolEvent`). `false` cancels it: the dye stays.
-    fn sheep_dye_wool(&self, sheep: u128, color: &str, player: u128) -> bool {
-        self.cancellable(Event {
-            entity: sheep,
-            entity_type: "minecraft:sheep".to_owned(),
-            player,
-            key: color.to_owned(),
-            ..Event::new(vanillite_abi::event::SHEEP_DYE_WOOL)
-        })
+    fn sheep_dye_wool(&self, world: HookWorld<'_>, sheep: u128, color: &str, player: u128) -> bool {
+        self.cancellable(
+            world,
+            Event {
+                entity: sheep,
+                entity_type: "minecraft:sheep".to_owned(),
+                player,
+                key: color.to_owned(),
+                ..Event::new(vanillite_abi::event::SHEEP_DYE_WOOL)
+            },
+        )
     }
 
     /// `entity` of `from_type` is about to turn into `to_type` (e.g. `minecraft:pig` into
     /// `minecraft:zombified_piglin`) for `reason` (`lightning`; Paper's
     /// `EntityTransformEvent`). `false` cancels it: the entity stays what it is.
-    fn entity_transform(&self, entity: u128, from_type: &str, to_type: &str, reason: &str) -> bool {
+    fn entity_transform(
+        &self,
+        world: HookWorld<'_>,
+        entity: u128,
+        from_type: &str,
+        to_type: &str,
+        reason: &str,
+    ) -> bool {
         use vanillite_abi::transform_reason;
         let cause = match reason {
             "lightning" => transform_reason::LIGHTNING,
             _ => transform_reason::UNKNOWN,
         };
-        self.cancellable(Event {
-            entity,
-            entity_type: from_type.to_owned(),
-            key: to_type.to_owned(),
-            cause,
-            ..Event::new(vanillite_abi::event::ENTITY_TRANSFORM)
-        })
+        self.cancellable(
+            world,
+            Event {
+                entity,
+                entity_type: from_type.to_owned(),
+                key: to_type.to_owned(),
+                cause,
+                ..Event::new(vanillite_abi::event::ENTITY_TRANSFORM)
+            },
+        )
     }
 
     /// `entity` of `entity_type` is about to drop `item` on its own (a chicken's egg; Paper's
     /// `EntityDropItemEvent`). `false` cancels it: nothing drops.
-    fn entity_drop_item(&self, entity: u128, entity_type: &str, item: &str) -> bool {
-        self.cancellable(Event {
-            entity,
-            entity_type: entity_type.to_owned(),
-            key: item.to_owned(),
-            ..Event::new(vanillite_abi::event::ENTITY_DROP_ITEM)
-        })
+    fn entity_drop_item(
+        &self,
+        world: HookWorld<'_>,
+        entity: u128,
+        entity_type: &str,
+        item: &str,
+    ) -> bool {
+        self.cancellable(
+            world,
+            Event {
+                entity,
+                entity_type: entity_type.to_owned(),
+                key: item.to_owned(),
+                ..Event::new(vanillite_abi::event::ENTITY_DROP_ITEM)
+            },
+        )
     }
 
     /// A player is about to fall asleep in the bed `state` whose head is at `pos`. `false`
@@ -459,6 +589,7 @@ pub trait GameHooks: Sync {
     /// too). `false` cancels it.
     fn player_interact(
         &self,
+        _world: HookWorld<'_>,
         _player: u128,
         _action: u32,
         _hand: u32,

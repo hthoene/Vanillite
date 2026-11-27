@@ -1,4 +1,4 @@
-abi 1.11
+abi 1.12
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -241,6 +241,7 @@ const player_prop::WALK_SPEED: u32 = 13
 const player_prop::SELECTED_SLOT: u32 = 14
 const player_prop::AIR: u32 = 15
 const player_prop::FIRE_TICKS: u32 = 16
+const player_prop::SLEEPING_IGNORED: u32 = 17
 const effect_flag::AMBIENT: u32 = 1
 const effect_flag::HIDE_PARTICLES: u32 = 2
 const effect_flag::HIDE_ICON: u32 = 4
@@ -400,6 +401,7 @@ const entity_prop::TICKS_LIVED: u32 = 18
 const entity_prop::PORTAL_COOLDOWN: u32 = 19
 const entity_prop::SNEAKING: u32 = 20
 const entity_prop::SPRINTING: u32 = 21
+const entity_prop::NETWORK_ID: u32 = 22
 const attribute_op::ADD_VALUE: u32 = 0
 const attribute_op::ADD_MULTIPLIED_BASE: u32 = 1
 const attribute_op::ADD_MULTIPLIED_TOTAL: u32 = 2

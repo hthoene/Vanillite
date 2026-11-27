@@ -462,7 +462,7 @@ fn may_flow(level: &Level, from: BlockPos, to: BlockPos, new: FluidState) -> boo
         state: Some(new.block_state()),
         ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_FLUID_FLOW)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
     !ev.cancelled
 }
 

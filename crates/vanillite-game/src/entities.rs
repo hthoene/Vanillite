@@ -272,7 +272,7 @@ impl Entities {
             to: crate::hooks::Place::looking(e.pos(), r.y_rot, r.x_rot),
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_SPAWN)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::entities(self), &mut ev);
         if ev.cancelled {
             self.despawn(id);
             return false;
@@ -304,7 +304,7 @@ impl Entities {
             to: crate::hooks::Place::at(e.pos()),
             ..crate::hooks::Event::new(vanillite_abi::event::PROJECTILE_LAUNCH)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::entities(self), &mut ev);
         if ev.cancelled {
             self.despawn(id);
             return false;
@@ -337,7 +337,7 @@ impl Entities {
             cause: reason,
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TRANSFORM)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::entities(self), &mut ev);
         !ev.cancelled
     }
 

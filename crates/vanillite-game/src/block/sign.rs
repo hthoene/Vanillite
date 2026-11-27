@@ -369,7 +369,7 @@ pub fn update_text(
             text: serde_json::to_string(&plain).unwrap_or_default(),
             ..crate::hooks::Event::new(vanillite_abi::event::SIGN_CHANGE)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(level), &mut ev);
         if ev.cancelled {
             // Bukkit's cancelled `SignChangeEvent`: the text stays; the client is corrected.
             if let Some(BlockEntity::Sign(sign)) = level.block_entity_mut(pos) {

@@ -570,7 +570,7 @@ pub fn hit_event(
             ev.to = crate::hooks::Place::at(at);
         }
     }
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::split(level, ents), &mut ev);
     !ev.cancelled
 }
 

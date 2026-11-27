@@ -1043,7 +1043,7 @@ pub(crate) fn target_event(
         cause: reason,
         ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_TARGET)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::entities(ents), &mut ev);
     !ev.cancelled
 }
 

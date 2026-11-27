@@ -259,7 +259,7 @@ impl ServerWorld {
             },
             ..vanillite_game::hooks::Event::new(vanillite_abi::event::ENTITY_PORTAL)
         };
-        hooks.event(&mut ev);
+        hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
         if ev.cancelled {
             return None;
         }
@@ -1851,7 +1851,7 @@ impl ServerWorld {
             to: vanillite_game::hooks::Place::at(to),
             ..vanillite_game::hooks::Event::new(vanillite_abi::event::ENTITY_PORTAL)
         };
-        hooks.event(&mut ev);
+        hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
         let new = ev.to.vec();
         if ev.cancelled {
             GatewayExit::Cancelled

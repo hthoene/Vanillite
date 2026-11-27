@@ -2181,7 +2181,7 @@ fn touch_orb(
                 value: i64::from(points),
                 ..vanillite_game::hooks::Event::new(vanillite_abi::event::PLAYER_EXP_CHANGE)
             };
-            hooks.event(&mut ev);
+            hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
             points = i32::try_from(ev.value.clamp(0, i64::from(i32::MAX))).unwrap_or(0);
         }
         if points <= 0 {

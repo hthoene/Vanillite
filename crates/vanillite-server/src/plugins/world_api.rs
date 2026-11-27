@@ -3,6 +3,7 @@
 //! Vanilla command that does the same (`/gamemode`, `/tp`, `/summon`, `/effect`, `/give`,
 //! `/item`, `/data`, `/advancement`) without its feedback.
 
+use super::ReadWorld;
 use std::borrow::Cow;
 use std::ops::RangeInclusive;
 
@@ -113,8 +114,8 @@ fn server_source(w: &PluginWorld<'_>, pos: Vec3) -> Result<CommandSource> {
     Ok(source)
 }
 
-pub(super) fn player_get(w: &PluginWorld<'_>, player: u128, prop: u32) -> Result<f64> {
-    let entities = w.0.entities();
+pub(super) fn player_get(w: &impl ReadWorld, player: u128, prop: u32) -> Result<f64> {
+    let entities = w.entities()?;
     let p = entities
         .player(player_id(entities, player)?)
         .ok_or(status::NOT_FOUND)?;
@@ -137,6 +138,7 @@ pub(super) fn player_get(w: &PluginWorld<'_>, player: u128, prop: u32) -> Result
         player_prop::SELECTED_SLOT => f64::from(u32::try_from(p.inventory.selected).unwrap_or(0)),
         player_prop::AIR => f64::from(s.air),
         player_prop::FIRE_TICKS => f64::from(s.fire_ticks),
+        player_prop::SLEEPING_IGNORED => flag(s.sleeping_ignored),
         _ => return Err(status::INVALID_ARGUMENT),
     })
 }
@@ -217,6 +219,7 @@ pub(super) fn player_set(
             data_changed = true;
         }
         player_prop::FIRE_TICKS => s.fire_ticks = whole(value, i32::MIN..=i32::MAX)?,
+        player_prop::SLEEPING_IGNORED => s.sleeping_ignored = whole(value, 0..=1)? == 1,
         _ => return Err(status::INVALID_ARGUMENT),
     }
     if data_changed && let Some(mut entity) = entities.store.get_mut(id) {
@@ -244,23 +247,23 @@ fn set_game_mode(w: &mut PluginWorld<'_>, id: EntityId, value: f64) -> Result<()
     }
 }
 
-pub(super) fn entity_location(w: &PluginWorld<'_>, entity: u128) -> Result<Location> {
-    let entities = w.0.entities();
+pub(super) fn entity_location(w: &impl ReadWorld, entity: u128) -> Result<Location> {
+    let entities = w.entities()?;
     let e = entities
         .store
         .get(any_entity(entities, entity)?)
         .ok_or(status::NOT_FOUND)?;
     let (pos, rot) = (e.pos(), e.rot());
     Ok(Location {
-        world: u32::from(w.0.id().0),
+        world: w.world_id(),
         pos: [pos.x, pos.y, pos.z],
         yaw: rot.y_rot,
         pitch: rot.x_rot,
     })
 }
 
-pub(super) fn entity_type(w: &PluginWorld<'_>, entity: u128) -> Result<String> {
-    let entities = w.0.entities();
+pub(super) fn entity_type(w: &impl ReadWorld, entity: u128) -> Result<String> {
+    let entities = w.entities()?;
     let e = entities
         .store
         .get(any_entity(entities, entity)?)
@@ -353,7 +356,7 @@ pub(super) fn remove_entity(w: &mut PluginWorld<'_>, entity: u128) -> Result<()>
 
 /// The entities whose bounding box intersects the box from `min` to `max`, in section order.
 pub(super) fn entities_in_box(
-    w: &PluginWorld<'_>,
+    w: &impl ReadWorld,
     min: [f64; 3],
     max: [f64; 3],
     kind: Option<&str>,
@@ -366,7 +369,10 @@ pub(super) fn entities_in_box(
         },
         None => None,
     };
-    let store = &w.0.entities().store;
+    let Ok(entities) = w.entities() else {
+        return;
+    };
+    let store = &entities.store;
     let area = vanillite_base::Aabb::new(min[0], min[1], min[2], max[0], max[1], max[2]);
     store.for_each_in(&area, false, |id| {
         if let Some(e) = store.get(id)
@@ -387,7 +393,7 @@ pub(super) fn entities_in_box(
 /// The entities whose position lies within `radius` of `center`, nearest first, through the
 /// section index; nothing for an unknown type or a radius that is no distance.
 pub(super) fn entities_near(
-    w: &PluginWorld<'_>,
+    w: &impl ReadWorld,
     center: [f64; 3],
     radius: f64,
     kind: Option<&str>,
@@ -405,7 +411,10 @@ pub(super) fn entities_near(
         },
         None => None,
     };
-    let store = &w.0.entities().store;
+    let Ok(entities) = w.entities() else {
+        return Vec::new();
+    };
+    let store = &entities.store;
     let area = vanillite_base::Aabb::new(
         center.x - radius,
         center.y - radius,
@@ -429,8 +438,8 @@ pub(super) fn entities_near(
     found.into_iter().map(|(_, uuid)| uuid).collect()
 }
 
-pub(super) fn entity_nbt(w: &PluginWorld<'_>, entity: u128) -> Result<Compound> {
-    let entities = w.0.entities();
+pub(super) fn entity_nbt(w: &impl ReadWorld, entity: u128) -> Result<Compound> {
+    let entities = w.entities()?;
     crate::commands::entity_nbt(entities, any_entity(entities, entity)?).ok_or(status::NOT_FOUND)
 }
 
@@ -604,8 +613,8 @@ pub(super) fn set_item(
     Ok(())
 }
 
-pub(super) fn block_entity_nbt(w: &PluginWorld<'_>, [x, y, z]: [i32; 3]) -> Result<Compound> {
-    w.0.level()
+pub(super) fn block_entity_nbt(w: &impl ReadWorld, [x, y, z]: [i32; 3]) -> Result<Compound> {
+    w.level()?
         .block_entity_nbt(BlockPos::new(x, y, z))
         .ok_or(status::NOT_FOUND)
 }

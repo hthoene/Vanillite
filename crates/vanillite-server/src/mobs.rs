@@ -1718,7 +1718,7 @@ fn player_entity_event(
             target_pos.z + at.z,
         ));
     }
-    hooks.event(&mut ev);
+    hooks.event(vanillite_game::hooks::HookWorld::NONE, &mut ev);
     ev.cancelled
 }
 

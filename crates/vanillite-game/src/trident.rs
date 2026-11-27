@@ -114,7 +114,11 @@ pub fn release(
     }
     if riptide == 0.0
         && let Some(uuid) = ents.store.get(player).map(|e| e.uuid())
-        && !env.hooks.projectile_launch(uuid, "minecraft:trident")
+        && !env.hooks.projectile_launch(
+            crate::hooks::HookWorld::entities(ents),
+            uuid,
+            "minecraft:trident",
+        )
     {
         return;
     }

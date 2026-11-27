@@ -529,6 +529,7 @@ fn example_plugin_runs_through_the_abi() {
         state: "minecraft:stone",
     };
     assert!(!host.player_interact(
+        None,
         0,
         PLAYER,
         vanillite_abi::interact::USE_ON_BLOCK,
@@ -537,6 +538,7 @@ fn example_plugin_runs_through_the_abi() {
         Some(block)
     ));
     assert!(host.player_interact(
+        None,
         0,
         PLAYER,
         vanillite_abi::interact::USE_ITEM,

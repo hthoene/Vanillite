@@ -122,7 +122,7 @@ impl Function {
                         .as_ref()
                         .ok_or_else(|| Box::new(Component::text("server stopped")))
                         .and_then(|s| {
-                            global.commands.parse_command(&command, s).map_err(|e| {
+                            global.commands().parse_command(&command, s).map_err(|e| {
                                 Box::new(Component::translatable_args(
                                     "commands.function.error.parse",
                                     vec![
@@ -360,12 +360,15 @@ fn compile(
                 entries.push(MacroEntry::Template { segments, vars });
             }
             _ => {
-                let parsed = global.commands.parse_command(&line, source).map_err(|e| {
-                    format!(
-                        "Whilst parsing command on line {number}: {}",
-                        error_text(&e, &line)
-                    )
-                })?;
+                let parsed = global
+                    .commands()
+                    .parse_command(&line, source)
+                    .map_err(|e| {
+                        format!(
+                            "Whilst parsing command on line {number}: {}",
+                            error_text(&e, &line)
+                        )
+                    })?;
                 let entry = Line {
                     parsed: Arc::new(parsed),
                     signed: None,

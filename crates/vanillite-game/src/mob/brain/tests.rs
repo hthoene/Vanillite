@@ -57,6 +57,7 @@ pub(crate) fn with_tick<R>(
             random: &mut random,
             out: &mut out,
             hooks: &hooks,
+            hook_world: crate::hooks::HookWorld::NONE,
         };
         let mut cx = MobContext {
             path_budget: u64::MAX,

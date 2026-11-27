@@ -223,17 +223,37 @@ impl Level {
         // The blocks of an earlier explosion nobody applied the damage of.
         self.finish_explosion();
         let (mut radius, mut interaction, mut style) = (radius, interaction, style);
+        let mut planned = None;
         if let Some(hooks) = self.hooks_for(vanillite_abi::event::ENTITY_EXPLODE) {
-            let Some((r, i, fire)) =
-                self.explode_event(&*hooks, source, center, radius, interaction, &style, block)
-            else {
+            // Bukkit's `EntityExplodeEvent` names the blocks: they are known before the event.
+            let mut targets = self.exploded_positions(center, radius, style.resistance);
+            let Some((r, i, fire, kept)) = self.explode_event(
+                &*hooks,
+                source,
+                center,
+                radius,
+                interaction,
+                &style,
+                block,
+                &targets,
+            ) else {
                 return 0;
             };
+            if r.to_bits() != radius.to_bits() {
+                targets = self.exploded_positions(center, r, style.resistance);
+            }
+            if let Some(kept) = kept {
+                targets.retain(|p| kept.contains(p) || self.block(*p).is_air());
+            }
             (radius, interaction, style.fire) = (r, i, fire);
+            planned = Some(targets);
         }
         let context = super::game_event::GameEventContext::of(source);
         self.game_event(super::game_event::events().explode, center, context);
-        let targets = self.exploded_positions(center, radius, style.resistance);
+        let targets = match planned {
+            Some(targets) => targets,
+            None => self.exploded_positions(center, radius, style.resistance),
+        };
         let destroys = matches!(
             interaction,
             BlockInteraction::Destroy | BlockInteraction::DestroyWithDecay
@@ -266,7 +286,8 @@ impl Level {
     }
 
     /// The plugins' explosion event (`vanillite_abi::event::ENTITY_EXPLODE`): `None` when a
-    /// plugin cancelled it, else the radius, block interaction and fire it may have changed.
+    /// plugin cancelled it, else the radius, block interaction and fire it may have changed,
+    /// and the blocks it left to blow up when it changed the list (`targets` without air).
     #[allow(clippy::too_many_arguments)]
     fn explode_event(
         &self,
@@ -277,7 +298,8 @@ impl Level {
         interaction: BlockInteraction,
         style: &ExplosionStyle,
         block: Option<(BlockPos, BlockState)>,
-    ) -> Option<(f32, BlockInteraction, bool)> {
+        targets: &[BlockPos],
+    ) -> Option<(f32, BlockInteraction, bool, Option<FxHashSet<BlockPos>>)> {
         use vanillite_abi::explode_flag;
         let destroys = matches!(
             interaction,
@@ -301,12 +323,19 @@ impl Level {
             to: crate::hooks::Place::at(center),
             amount: f64::from(radius),
             flags,
+            text: crate::hooks::positions_text(
+                targets.iter().filter(|p| !self.block(**p).is_air()),
+            ),
             ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_EXPLODE)
         };
-        hooks.event(&mut ev);
+        hooks.event(crate::hooks::HookWorld::of(self), &mut ev);
         if ev.cancelled {
             return None;
         }
+        let kept = ev
+            .text_out
+            .as_ref()
+            .map(|t| crate::hooks::parse_positions(t.as_str()).collect());
         #[allow(clippy::cast_possible_truncation)]
         let radius = if ev.amount.is_finite() {
             ev.amount.clamp(0.0, crate::hooks::MAX_EXPLOSION_RADIUS) as f32
@@ -319,7 +348,12 @@ impl Level {
             (false, true) => BlockInteraction::Destroy,
             _ => interaction,
         };
-        Some((radius, interaction, ev.flags & explode_flag::FIRE != 0))
+        Some((
+            radius,
+            interaction,
+            ev.flags & explode_flag::FIRE != 0,
+            kept,
+        ))
     }
 
     /// The block phase of the last explosion (`interactWithBlocks`, `createFire`), once the

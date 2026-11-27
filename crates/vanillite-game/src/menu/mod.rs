@@ -502,7 +502,7 @@ pub fn click_event<S: MenuSlots + ?Sized>(
             ..crate::hooks::Event::new(INVENTORY_CLICK)
         }
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
     if ev.cancelled && input == ContainerInput::QuickCraft {
         s.state().reset_quickcraft();
     }
@@ -557,7 +557,7 @@ pub fn craft_item_event(
         flags: info.flags,
         ..crate::hooks::Event::new(vanillite_abi::event::CRAFT_ITEM)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
     !ev.cancelled
 }
 
@@ -578,7 +578,7 @@ pub fn craft_prepare_event(
         item: crate::hooks::item_snbt(result),
         ..crate::hooks::Event::new(vanillite_abi::event::CRAFT_PREPARE)
     };
-    hooks.event(&mut ev);
+    hooks.event(crate::hooks::HookWorld::NONE, &mut ev);
     ev.item_out.as_deref().and_then(crate::hooks::parse_item)
 }
 

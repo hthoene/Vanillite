@@ -464,7 +464,7 @@ pub fn pick_up_items(
                 value: i64::from(data.stack.count),
                 ..crate::hooks::Event::new(vanillite_abi::event::ENTITY_PICKUP_ITEM)
             };
-            hooks.event(&mut ev);
+            hooks.event(crate::hooks::HookWorld::split(t.level, t.ents), &mut ev);
             if ev.cancelled {
                 continue;
             }

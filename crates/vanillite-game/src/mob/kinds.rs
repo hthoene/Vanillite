@@ -1208,10 +1208,12 @@ fn lay_egg(t: &mut Tick<'_, '_>) {
         let uuid = t.core().uuid();
         for stack in items {
             let item = crate::item::item_id(&stack).name();
-            if t.env
-                .hooks
-                .entity_drop_item(uuid, "minecraft:chicken", item)
-            {
+            if t.env.hooks.entity_drop_item(
+                crate::hooks::HookWorld::split(t.level, t.ents),
+                uuid,
+                "minecraft:chicken",
+                item,
+            ) {
                 super::equipment::spawn_at_location(t, stack, 0.0);
             }
         }
