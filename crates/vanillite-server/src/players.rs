@@ -210,7 +210,7 @@ impl FanOut {
         };
 
         // Jobs over ranges of runs with about the same number of pairs.
-        let workers = compute.scheduler().workers() + 1;
+        let workers = compute.phase_threads();
         let jobs = workers.min(pairs.div_ceil(FAN_OUT_PAIRS_PER_JOB)).max(1);
         let per_job = pairs.div_ceil(jobs);
         let mut ranges = Vec::with_capacity(jobs);
@@ -1094,6 +1094,7 @@ impl WorldPlayers {
         global: &Global,
         world: crate::world::WorldId,
         blocks: &mut WorldBlocks<'_>,
+        compute: &Compute,
     ) {
         crate::commands::answer_suggestions(&mut level.entities, global, world);
         for uuid in std::mem::take(&mut self.left) {
@@ -1106,7 +1107,7 @@ impl WorldPlayers {
             }
         }
         self.tick_players(level, global, blocks);
-        crate::progress::tick(level, global, world, self.level.dimension.as_str());
+        crate::progress::tick(level, global, world, self.level.dimension.as_str(), compute);
         let entities = &mut level.entities;
         let Entities { store, players, .. } = entities;
         for (id, player) in players.iter_mut() {

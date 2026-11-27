@@ -350,7 +350,8 @@ impl ServerBuilder {
             "Slot scheduler: {origin} ({} compute workers)",
             scheduler.workers()
         );
-        let compute = Compute::new(Arc::from(scheduler));
+        let compute = Compute::new(Arc::from(scheduler))
+            .with_phase_threads(usize::from(config.server.threads.tick_phases));
         let (tracker_provider, origin) = self
             .entity_tracker
             .take()

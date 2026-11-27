@@ -131,7 +131,13 @@ fn inside_blocks(level: &Level, e: &EntityRef<'_>, out: &mut Vec<Event>) {
 }
 
 /// The per-tick work of the players' statistics and advancements.
-pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension: &str) {
+pub(crate) fn tick(
+    level: &mut Level,
+    global: &Global,
+    world: WorldId,
+    dimension: &str,
+    compute: &crate::compute::Compute,
+) {
     let tags = global.systems.tags();
     let no_biomes = Vec::new();
     let biomes = global
@@ -156,64 +162,29 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         );
     }
     let mut players = std::mem::take(&mut level.entities.players);
+    {
+        // Each player's checks read the level and change only that player: in parallel parts
+        // when reads have no side effects (no `unknown` chunk ticket), else on this thread.
+        let shared = &*level;
+        let tags = &tags;
+        let mut rows: Vec<(EntityId, &mut PlayerData)> = players.iter_mut().collect();
+        let check = |_: usize, part: &mut [(EntityId, &mut PlayerData)]| {
+            for (id, player) in part.iter_mut() {
+                check_player(shared, global, dimension, tags, biomes, *id, player);
+            }
+        };
+        if shared.chunks.reads_are_pure() {
+            compute.parts(&mut rows, PLAYERS_PER_PART, check);
+        } else {
+            check(0, &mut rows);
+        }
+    }
     let mut scores = Vec::new();
     let mut order = Vec::new();
     for (id, player) in players.iter_mut() {
         let Some(entity) = level.entities.store.get(id) else {
             continue;
         };
-        for award in std::mem::take(&mut player.inventory.awards) {
-            award.apply(player);
-        }
-        // `ResultSlot.checkTakeAchievements`.
-        for crafted in std::mem::take(&mut player.inventory.crafted) {
-            if !crafted.stack.is_empty() {
-                let stat = Stat::of(StatType::Crafted, crafted.stack.item);
-                player.stats.award(stat, crafted.stack.count);
-            }
-            if let Some(recipe) = crafted.recipe {
-                let event = Event::RecipeCrafted(recipe, crafted.ingredients);
-                player.advancements.trigger(event);
-            }
-        }
-        player.advancements.check_inventory(&player.inventory);
-        let a = &player.advancements;
-        let mut extra = Vec::new();
-        if a.listens(TriggerKind::TICK) {
-            extra.push(Event::Tick);
-        }
-        if a.listens(TriggerKind::ENTER_BLOCK) {
-            inside_blocks(level, &entity, &mut extra);
-        }
-        if player.survival.tick_count % 20 == 0 && a.listens(TriggerKind::LOCATION) {
-            extra.push(Event::Location);
-        }
-        if !extra.is_empty() || a.has_events() {
-            let name = &player.profile.name;
-            let team = global
-                .systems
-                .scoreboard()
-                .team_of(name)
-                .map(|t| t.name.clone());
-            let PlayerData {
-                advancements,
-                inventory,
-                survival,
-                stats,
-                game_mode,
-                ..
-            } = player;
-            let view = player_view(
-                level, id, &entity, inventory, survival, stats, *game_mode, team,
-            );
-            let world = LevelWorld {
-                level,
-                dimension,
-                tags: &tags,
-                biomes,
-            };
-            advancements.process(extra, &TriggerContext::new(&world, &view, inventory));
-        }
         order.push(id);
         let mut changes = player.stats.take_score_changes();
         if !changes.is_empty() && global.plugins.wants(vanillite_abi::event::PLAYER_STATISTIC) {
@@ -250,6 +221,77 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         {
             player.connection.sink.send(&packet);
         }
+    }
+}
+
+/// Players per part of the parallel advancement checks at least.
+const PLAYERS_PER_PART: usize = 64;
+
+/// The advancement checks of [`tick`] for one player: the awards and crafts of the tick, the
+/// inventory, the tick, block and location triggers. Reads the level, changes only `player`.
+fn check_player(
+    level: &Level,
+    global: &Global,
+    dimension: &str,
+    tags: &RegistryTags,
+    biomes: &[String],
+    id: EntityId,
+    player: &mut PlayerData,
+) {
+    let Some(entity) = level.entities.store.get(id) else {
+        return;
+    };
+    for award in std::mem::take(&mut player.inventory.awards) {
+        award.apply(player);
+    }
+    // `ResultSlot.checkTakeAchievements`.
+    for crafted in std::mem::take(&mut player.inventory.crafted) {
+        if !crafted.stack.is_empty() {
+            let stat = Stat::of(StatType::Crafted, crafted.stack.item);
+            player.stats.award(stat, crafted.stack.count);
+        }
+        if let Some(recipe) = crafted.recipe {
+            let event = Event::RecipeCrafted(recipe, crafted.ingredients);
+            player.advancements.trigger(event);
+        }
+    }
+    player.advancements.check_inventory(&player.inventory);
+    let a = &player.advancements;
+    let mut extra = Vec::new();
+    if a.listens(TriggerKind::TICK) {
+        extra.push(Event::Tick);
+    }
+    if a.listens(TriggerKind::ENTER_BLOCK) {
+        inside_blocks(level, &entity, &mut extra);
+    }
+    if player.survival.tick_count % 20 == 0 && a.listens(TriggerKind::LOCATION) {
+        extra.push(Event::Location);
+    }
+    if !extra.is_empty() || a.has_events() {
+        let name = &player.profile.name;
+        let team = global
+            .systems
+            .scoreboard()
+            .team_of(name)
+            .map(|t| t.name.clone());
+        let PlayerData {
+            advancements,
+            inventory,
+            survival,
+            stats,
+            game_mode,
+            ..
+        } = player;
+        let view = player_view(
+            level, id, &entity, inventory, survival, stats, *game_mode, team,
+        );
+        let world = LevelWorld {
+            level,
+            dimension,
+            tags,
+            biomes,
+        };
+        advancements.process(extra, &TriggerContext::new(&world, &view, inventory));
     }
 }
 
