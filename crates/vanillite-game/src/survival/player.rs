@@ -2608,14 +2608,14 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
                 s.fire_ticks += env.random.next_int_between(1, 3);
             }
             if s.fire_ticks >= 0 {
-                ignite_for_ticks(s, 160);
+                ignite_for_ticks(player, 160);
             }
             let source = DamageSource::of(env.types.in_fire);
             hurt(entity, player, env, source, damage);
         }
         if step.lava_blocks > 0 && !player.survival.is_dead_or_dying() {
             // `lavaIgnite`, then `lavaHurt`.
-            ignite_for_ticks(&mut player.survival, 300);
+            ignite_for_ticks(player, 300);
             let source = DamageSource::of(env.types.lava);
             if hurt(entity, player, env, source, 4.0) {
                 let pitch = 2.0 + env.random.next_float() * 0.4;
@@ -2720,10 +2720,19 @@ fn tick_freezing(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut 
 }
 
 /// `igniteForTicks`.
-fn ignite_for_ticks(s: &mut Survival, ticks: i32) {
+fn ignite_for_ticks(player: &mut PlayerData, ticks: i32) {
+    let burning = crate::player::play::equipment_attribute(
+        &player.inventory,
+        "minecraft:burning_time",
+        1.0,
+    );
+    let ticks = crate::mob::attack::burning_ticks(ticks, burning);
+    let s = &mut player.survival;
     if s.fire_ticks < ticks {
         s.fire_ticks = ticks;
     }
+    // `clearFreeze`.
+    s.ticks_frozen = 0;
 }
 
 /// `Entity.thunderHit`: one more fire tick, eight seconds of fire when that reached zero, and
@@ -2732,7 +2741,7 @@ pub fn thunder_hit(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     let s = &mut player.survival;
     s.fire_ticks = s.fire_ticks.saturating_add(1);
     if s.fire_ticks == 0 {
-        ignite_for_ticks(s, 160);
+        ignite_for_ticks(player, 160);
     }
     let source = DamageSource::of(env.types.lightning_bolt);
     hurt(entity, player, env, source, 5.0);

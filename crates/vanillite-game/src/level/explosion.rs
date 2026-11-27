@@ -639,7 +639,19 @@ impl Level {
                 // Block-attached entities break when pushed; displays and markers do not move.
                 continue;
             }
-            let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
+            // `EXPLOSION_KNOCKBACK_RESISTANCE` of any living entity, with its equipment (Blast
+            // Protection).
+            let name = "minecraft:explosion_knockback_resistance";
+            let resistance = match mob {
+                Some(m) => crate::mob::equipment::attribute(
+                    m,
+                    name,
+                    m.attrs.explosion_knockback_resistance,
+                    0.0,
+                    1.0,
+                ),
+                None => crate::mob::attack::player_attribute(&self.entities, id, name, 0.0, 0.0, 1.0),
+            };
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
             // `onExplosionHit`: where the explosion hit the player and what caused it; a

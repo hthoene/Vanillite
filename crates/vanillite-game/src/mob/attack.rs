@@ -1634,14 +1634,40 @@ pub fn armor_effectiveness<'t>(
 /// `igniteForTicks`: burns at least `ticks` more ticks.
 pub fn ignite(ents: &mut Entities, id: EntityId, ticks: i32) {
     if let Some(m) = ents.mob_mut(id) {
-        if m.fire_ticks < ticks {
-            m.fire_ticks = ticks;
+        if ignite_mob(m, ticks)
+            && let Some(mut e) = ents.store.get_mut(id)
+        {
+            e.mark_data_dirty();
         }
-    } else if let Some(p) = ents.player_mut(id)
-        && p.survival.fire_ticks < ticks
-    {
-        p.survival.fire_ticks = ticks;
+    } else if ents.player(id).is_some() {
+        let burning = player_attribute(ents, id, "minecraft:burning_time", 1.0, 0.0, 1024.0);
+        let ticks = burning_ticks(ticks, burning);
+        if let Some(p) = ents.player_mut(id) {
+            if p.survival.fire_ticks < ticks {
+                p.survival.fire_ticks = ticks;
+            }
+            p.survival.ticks_frozen = 0;
+        }
     }
+}
+
+/// `LivingEntity.igniteForTicks`: `ceil(ticks * burning_time)` (Fire Protection shortens it).
+pub fn burning_ticks(ticks: i32, burning_time: f64) -> i32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let scaled = (f64::from(ticks) * burning_time).ceil() as i32;
+    scaled
+}
+
+/// `LivingEntity.igniteForTicks` of a mob: scaled by its `burning_time`, then
+/// `Entity.igniteForTicks` with `clearFreeze`. Returns whether the synched frozen ticks
+/// changed.
+pub fn ignite_mob(m: &mut crate::mob::MobData, ticks: i32) -> bool {
+    let burning = super::equipment::attribute(m, "minecraft:burning_time", 1.0, 0.0, 1024.0);
+    let ticks = burning_ticks(ticks, burning);
+    if m.fire_ticks < ticks {
+        m.fire_ticks = ticks;
+    }
+    std::mem::replace(&mut m.ticks_frozen, 0) != 0
 }
 
 /// `ItemStack.hurtEnemy` on a living target: a player's weapon (an item with the `weapon`

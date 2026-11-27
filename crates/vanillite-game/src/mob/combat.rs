@@ -1047,11 +1047,21 @@ fn die(
         // `dropCustomDeathLoot` / `dropEquipment`: the equipment, the saddle and the
         // enderman's block.
         // `LivingEntity.dropEquipment` drops nothing; `Mob` and the players drop theirs.
+        // Looting of a player killer (`equipment_drops`, `attacker` is a player).
+        let looting = source
+            .cause
+            .and_then(|c| ents.player(c))
+            .and_then(|p| {
+                crate::player::play::game_data().map(|d| {
+                    d.enchantment_level(p.inventory.selected_item(), "minecraft:looting")
+                })
+            })
+            .unwrap_or(0);
         if let Some(m) = ents
             .mob_mut(target)
             .filter(|m| m.kind.family() != super::Family::Decor)
         {
-            super::equipment::death_drops(m, killed_by_player, &mut loot);
+            super::equipment::death_drops(m, killed_by_player, looting, &mut loot);
             if m.saddled
                 && let Some(saddle) = vanillite_data::registry::ITEM.id("minecraft:saddle")
             {

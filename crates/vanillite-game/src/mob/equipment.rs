@@ -531,16 +531,34 @@ pub fn take(t: &mut Tick<'_, '_>, item: EntityId, amount: i32) {
     }
 }
 
+/// `EnchantmentHelper.has(stack, PREVENT_EQUIPMENT_DROP)`: Curse of Vanishing.
+pub fn prevents_drop(stack: &ItemStack) -> bool {
+    crate::player::play::game_data()
+        .is_some_and(|d| d.enchantment_level(stack, "minecraft:vanishing_curse") > 0)
+}
+
 /// `Mob.dropCustomDeathLoot`'s equipment part: each slot drops with its chance when a player
-/// killed the mob (preserved slots always), damaged unless preserved.
-pub fn death_drops(m: &mut MobData, killed_by_player: bool, out: &mut Vec<ItemStack>) {
+/// killed the mob (preserved slots always), damaged unless preserved. `looting` is the
+/// Looting level of a player killer (`processEquipmentDropChance`: +1 % per level); items
+/// with Curse of Vanishing stay.
+pub fn death_drops(
+    m: &mut MobData,
+    killed_by_player: bool,
+    looting: i32,
+    out: &mut Vec<ItemStack>,
+) {
     for slot in SLOTS {
         let i = usize::from(slot.ordinal());
-        let chance = m.equipment.drop_chances[i];
-        if chance == 0.0 || m.equipment.items[i].is_empty() {
+        let base = m.equipment.drop_chances[i];
+        if base == 0.0 {
             continue;
         }
-        let preserve = chance > 1.0;
+        let preserve = base > 1.0;
+        #[allow(clippy::cast_precision_loss)]
+        let chance = base + 0.01 * looting.max(0) as f32;
+        if m.equipment.items[i].is_empty() || prevents_drop(&m.equipment.items[i]) {
+            continue;
+        }
         if !(killed_by_player || preserve) || m.random.next_float() >= chance {
             continue;
         }
