@@ -422,6 +422,9 @@ pub struct Level {
     /// `soundSeedGenerator`: the seeds of sounds without an explicit seed; separate from the
     /// level random so sounds do not shift the simulation's random sequence.
     sound_seeds: LegacyRandom,
+    /// The seed of the next entity [`Level::load_entity`] creates instead of one from its UUID
+    /// (an entity arriving from another world, [`Level::load_travelled_entity`]).
+    next_entity_seed: Option<i64>,
     /// `randValue` of `getBlockRandomPos`.
     rand_value: i32,
     /// The server's named random sequences (loot tables).
@@ -518,6 +521,7 @@ impl Level {
             block_event_set: FxHashSet::default(),
             random: LegacyRandom::new(seed),
             sound_seeds: LegacyRandom::new(seed ^ 0x50_4E_44_53),
+            next_entity_seed: None,
             rand_value: LegacyRandom::new(seed ^ 0x5DEE_CE66).next_int(),
             random_sequences: Arc::new(std::sync::Mutex::new(
                 crate::random_sequences::RandomSequences::new(seed),

@@ -120,10 +120,28 @@ impl Level {
         self.load_with_passengers(nbt, &mut loaded, false).is_some()
     }
 
+    /// `teleportCrossDimension` into this level of an entity saved in another one, without its
+    /// passengers: `EntityType.create` (a new entity: its random takes the next entity seed)
+    /// and `restoreFrom` the stored data. Returns the new entity.
+    pub fn load_travelled_entity(&mut self, nbt: Compound) -> Option<EntityId> {
+        let uuid = uuid_of(&nbt, "UUID")?;
+        self.next_entity_seed = Some(crate::mob::new_entity_seed());
+        let loaded = self.load_entity(nbt);
+        self.next_entity_seed = None;
+        if !loaded {
+            return None;
+        }
+        let columns = self.entities.store.columns();
+        let row = columns.uuid.iter().rposition(|&u| u == uuid)?;
+        columns.id.get(row).copied()
+    }
+
     /// `EntityType.create` of a stored entity: `None` for kinds the game does not model,
     /// `Some(None)` for data that makes no entity (leash knots, empty items).
     fn create_entity(&mut self, nbt: Compound) -> Option<Option<EntityId>> {
-        let seed = uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time();
+        let seed = self.next_entity_seed.take().unwrap_or_else(|| {
+            uuid_of(&nbt, "UUID").map_or(0, |uuid| uuid as i64) ^ self.game_time()
+        });
         if let Some(loaded) = crate::mob::nbt::load_mob(&nbt, seed) {
             let network_ids = Arc::clone(self.network_ids_arc());
             let id = crate::mob::spawn(

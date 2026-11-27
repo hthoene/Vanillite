@@ -44,6 +44,8 @@ pub(super) enum Flight {
     Hit(Option<EntityId>, Option<vanillite_base::BlockPos>, Vec3),
     /// It is gone (below the world).
     Gone,
+    /// It went through a nether or end portal into another world: its tick ends here.
+    Away,
 }
 
 /// `ThrowableProjectile.tick` up to the hit (`hitTargetOrDeflectSelf` is the caller's): gravity
@@ -120,7 +122,7 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         e.set_pos(new_pos);
         e.set_rot(new_rot);
     }
-    crate::portal::enter_gateway(t.level, t.ents, t.id, &mut t.cx.gateways);
+    crate::portal::enter_portals(t.level, t.ents, t.id, &mut t.cx.gateways);
     // `Projectile.checkLeftOwner`, after the move.
     if !left {
         let Some(e) = t.ents.store.get(t.id) else {
@@ -136,7 +138,9 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
     }
     // `baseTick`: `handlePortal`, then `checkBelowWorld`.
     let in_end = t.env.dimension == "minecraft:the_end";
-    crate::portal::tick_portal(t.level, t.ents, t.id, in_end, &mut t.cx.travel);
+    if crate::portal::tick_portal(t.level, t.ents, t.id, in_end, &mut t.cx.travel) {
+        return Flight::Away;
+    }
     if t.core()
         .is_some_and(|e| e.pos().y < f64::from(t.level.min_y() - 64))
     {

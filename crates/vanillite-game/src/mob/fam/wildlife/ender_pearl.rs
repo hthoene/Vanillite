@@ -200,6 +200,8 @@ pub(super) fn tick(t: &mut MissileTick<'_, '_>) {
                 on_hit(t, owner);
             }
             Flight::Miss | Flight::Gone => {}
+            // Its new world moves it; no ticket stays here.
+            Flight::Away => return,
         }
     }
     // The ticket that keeps the pearl's chunks loaded for its owner.
@@ -383,6 +385,20 @@ pub fn take_owned(ents: &mut Entities, owner: u128, dimension: &str) -> Vec<Comp
         ents.despawn(id);
     }
     out
+}
+
+/// An ender pearl that came from another world (`teleportCrossDimension`): its owner `is_player`
+/// (`findOwnerIncludingDeadPlayer` finds players of every world).
+pub fn arrived(ents: &mut Entities, id: EntityId, is_player: impl FnOnce(u128) -> bool) {
+    let Some(d) = ents
+        .missile_mut(id)
+        .filter(|d| d.kind == missile::MissileKind::EnderPearl)
+    else {
+        return;
+    };
+    if d.owner_uuid.is_some_and(is_player) {
+        d.ints[1] = 1;
+    }
 }
 
 /// `loadAndSpawnEnderPearl` when its owner joins: the pearl back in this world. Returns its

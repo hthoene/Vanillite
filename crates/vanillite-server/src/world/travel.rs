@@ -105,6 +105,25 @@ enum Route {
     Command { pos: Vec3, y_rot: f32, x_rot: f32 },
 }
 
+/// An entity besides players on its way into a world through a portal
+/// (`teleportCrossDimension` without passengers).
+pub(crate) struct EntityTraveller {
+    /// Its stored data (`restoreFrom`), without passengers.
+    nbt: vanillite_nbt::Compound,
+    /// Its box size when it left.
+    width: f32,
+    height: f32,
+    /// `portalCooldown`, which `restoreFrom` takes over.
+    cooldown: i32,
+    route: Route,
+}
+
+/// An entity waiting for the chunks around its destination.
+pub(crate) struct EntityWaiting {
+    traveller: EntityTraveller,
+    area: Option<(ChunkPos, i32, TicketId)>,
+}
+
 /// A traveller waiting for the chunks around its destination.
 pub(crate) struct Waiting {
     traveller: Traveller,
@@ -148,29 +167,42 @@ impl ServerWorld {
         kind: PortalKind,
         entry: BlockPos,
     ) {
+        if kind == PortalKind::Gateway {
+            self.enter_gateway(id, entry);
+            return;
+        }
+        if let Some((target, route)) = self.portal_route(ctx.global, id, kind, entry) {
+            // Vanilla handles a player's portal in its connection tick (`ServerPlayer.doTick`),
+            // after every level ticked: it arrives after the world phase.
+            self.send_away(ctx, id, target, route, true);
+        }
+    }
+
+    /// Where the entity `id` goes through the nether or end portal `kind` at `entry`
+    /// (`getPortalDestination` up to the new world): `None` if it may not.
+    fn portal_route(
+        &self,
+        global: &Global,
+        id: EntityId,
+        kind: PortalKind,
+        entry: BlockPos,
+    ) -> Option<(WorldId, Route)> {
         match kind {
             PortalKind::Nether => {
                 let target = if self.id == NETHER { OVERWORLD } else { NETHER };
                 // `isAllowedToEnterPortal`.
                 if target == NETHER
-                    && !ctx
-                        .global
+                    && !global
                         .level
                         .rules()
                         .bool(Rule::ALLOW_ENTERING_NETHER_USING_PORTALS)
                 {
-                    return;
+                    return None;
                 }
-                let Some(entity) = self.level.entities.store.get(id) else {
-                    return;
-                };
+                let entity = self.level.entities.store.get(id)?;
                 let (pos, (width, height)) = (entity.pos(), size(&entity.aabb()));
-                let types = &ctx.global.level.dimension_types;
-                let (Some(from), Some(to)) =
-                    (types.get(self.id.index()), types.get(target.index()))
-                else {
-                    return;
-                };
+                let types = &global.level.dimension_types;
+                let (from, to) = (types.get(self.id.index())?, types.get(target.index())?);
                 // `DimensionType.getTeleportationScale`.
                 let scale = from.coordinate_scale / to.coordinate_scale;
                 let route = Route::NetherPortal {
@@ -179,19 +211,220 @@ impl ServerWorld {
                     to_nether: target == NETHER,
                     entry: portal::entry_portal(&self.level, entry, pos, width, height),
                 };
-                self.send_away(ctx, id, target, route);
+                Some((target, route))
             }
-            PortalKind::End => {
-                // `EndPortalBlock.getPortalDestination`: out of the End to the respawn
-                // dimension, else into the End.
-                let (target, route) = if self.id == END {
-                    (OVERWORLD, Route::Spawn)
-                } else {
-                    (END, Route::EndPlatform)
-                };
-                self.send_away(ctx, id, target, route);
+            // `EndPortalBlock.getPortalDestination`: out of the End to the respawn dimension,
+            // else into the End.
+            PortalKind::End if self.id == END => Some((OVERWORLD, Route::Spawn)),
+            PortalKind::End => Some((END, Route::EndPlatform)),
+            PortalKind::Gateway => None,
+        }
+    }
+
+    /// `handlePortal`'s teleport of an entity besides players through a nether or end portal
+    /// (`teleportCrossDimension`): it leaves this world with its stored data, without its
+    /// passengers, and arrives in the other one.
+    fn send_entity(
+        &mut self,
+        ctx: &mut TickContext<'_>,
+        id: EntityId,
+        kind: PortalKind,
+        entry: BlockPos,
+    ) {
+        let Some((target, route)) = self.portal_route(ctx.global, id, kind, entry) else {
+            return;
+        };
+        let Some(entity) = self.level.entities.store.get(id) else {
+            return;
+        };
+        let (width, height) = size(&entity.aabb());
+        let Some(mut nbt) = self.level.save_entity(id) else {
+            return;
+        };
+        nbt.remove("Passengers");
+        let cooldown = self
+            .level
+            .entities
+            .portals
+            .get(&id)
+            .map_or(0, |p| p.cooldown);
+        self.level.entities.despawn(id);
+        let traveller = EntityTraveller {
+            nbt,
+            width,
+            height,
+            cooldown,
+            route,
+        };
+        let Some(global) = ctx.global.arc() else {
+            return;
+        };
+        if target == self.id {
+            self.arrive_entity(&global, traveller);
+            return;
+        }
+        ctx.in_world(target, move |world: &mut ServerWorld| {
+            world.arrive_entity(&global, traveller);
+        });
+    }
+
+    /// An entity reached this world through a portal: it waits here until the chunks its
+    /// destination needs are loaded.
+    pub(crate) fn arrive_entity(&mut self, global: &Global, mut traveller: EntityTraveller) {
+        if let Route::NetherPortal { scaled, approx, .. } = &mut traveller.route {
+            *approx = self
+                .level
+                .border
+                .clamp_to_bounds(scaled.x, scaled.y, scaled.z);
+        }
+        let area = arrival_area(&traveller.route).map(|(center, radius)| {
+            let level = FULL_LEVEL.saturating_sub(u8::try_from(radius).unwrap_or(u8::MAX));
+            (center, radius, self.level.chunks.add_ticket(center, level))
+        });
+        self.entity_arrivals.push(EntityWaiting { traveller, area });
+        self.place_arrivals(global);
+    }
+
+    /// Finds or builds the destination of an entity and adds it there; it is lost when there
+    /// is no place for it (Vanilla's `teleport` returns `null`).
+    fn place_entity(&mut self, global: &Global, traveller: EntityTraveller) {
+        let EntityTraveller {
+            mut nbt,
+            width,
+            height,
+            cooldown,
+            route,
+        } = traveller;
+        let landing = match &route {
+            Route::NetherPortal {
+                approx,
+                to_nether,
+                entry,
+                ..
+            } => self.nether_landing(global, *approx, *to_nether, entry, width, height, false),
+            Route::EndPlatform => {
+                let spawn = portal::END_SPAWN_POINT;
+                portal::create_end_platform(&mut self.level, spawn.offset(0, -1, 0));
+                let pos = Vec3::new(
+                    f64::from(spawn.x) + 0.5,
+                    f64::from(spawn.y),
+                    f64::from(spawn.z) + 0.5,
+                );
+                Some(Landing {
+                    pos,
+                    // `Direction.WEST.toYRot()`.
+                    y_rot: 90.0,
+                    x_rot: 0.0,
+                    relatives: relative::DELTA_X
+                        | relative::DELTA_Y
+                        | relative::DELTA_Z
+                        | relative::X_ROT,
+                    sound: true,
+                    ticket: Some(containing(pos)),
+                })
             }
-            PortalKind::Gateway => self.enter_gateway(id, entry),
+            // `adjustSpawnLocation`: on top of the spawn column, turned by the spawn angle.
+            Route::Spawn => {
+                let (spawn, yaw) = self.players.level.spawn;
+                let block = containing(spawn);
+                let y = portal::height_at(
+                    &self.level,
+                    vanillite_chunk::HeightmapKind::MotionBlockingNoLeaves,
+                    block.x,
+                    block.z,
+                );
+                Some(Landing {
+                    pos: Vec3::new(
+                        f64::from(block.x) + 0.5,
+                        f64::from(y),
+                        f64::from(block.z) + 0.5,
+                    ),
+                    y_rot: yaw,
+                    x_rot: 0.0,
+                    relatives: KEEP_MOTION_AND_ROTATION,
+                    sound: true,
+                    ticket: Some(containing(spawn)),
+                })
+            }
+            _ => None,
+        };
+        let Some(landing) = landing else {
+            return;
+        };
+        use vanillite_nbt::{List, Tag};
+        let doubles = |list: Option<&Tag>| match list {
+            Some(Tag::List(List(v))) => v
+                .iter()
+                .map(|t| match t {
+                    Tag::Double(d) => *d,
+                    _ => 0.0,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let floats = |list: Option<&Tag>| match list {
+            Some(Tag::List(List(v))) => v
+                .iter()
+                .map(|t| match t {
+                    Tag::Float(f) => *f,
+                    _ => 0.0,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        // `teleportSetPosition` (`PositionMoveRotation.calculateAbsolute`).
+        let motion: Vec<f64> = doubles(nbt.get("Motion"));
+        let rotation: Vec<f32> = floats(nbt.get("Rotation"));
+        let keep = |flag: i32, i: usize| {
+            if landing.relatives & flag != 0 {
+                motion.get(i).copied().unwrap_or(0.0)
+            } else {
+                0.0
+            }
+        };
+        let motion = [
+            keep(relative::DELTA_X, 0),
+            keep(relative::DELTA_Y, 1),
+            keep(relative::DELTA_Z, 2),
+        ];
+        let turn = |flag: i32, i: usize, value: f32| {
+            if landing.relatives & flag != 0 {
+                rotation.get(i).copied().unwrap_or(0.0) + value
+            } else {
+                value
+            }
+        };
+        let (y_rot, x_rot) = (
+            turn(relative::Y_ROT, 0, landing.y_rot),
+            turn(relative::X_ROT, 1, landing.x_rot).clamp(-90.0, 90.0),
+        );
+        nbt.insert(
+            "Pos",
+            Tag::List(List(vec![
+                Tag::Double(landing.pos.x),
+                Tag::Double(landing.pos.y),
+                Tag::Double(landing.pos.z),
+            ])),
+        );
+        nbt.insert(
+            "Motion",
+            Tag::List(List(motion.iter().map(|&m| Tag::Double(m)).collect())),
+        );
+        nbt.insert(
+            "Rotation",
+            Tag::List(List(vec![Tag::Float(y_rot), Tag::Float(x_rot)])),
+        );
+        let Some(id) = self.level.load_travelled_entity(nbt) else {
+            return;
+        };
+        ender_pearl::arrived(&mut self.level.entities, id, |uuid| {
+            global.players.contains(Uuid(uuid))
+        });
+        if cooldown > 0 {
+            self.level.entities.portals.entry(id).or_default().cooldown = cooldown;
+        }
+        if let Some(pos) = landing.ticket {
+            self.place_portal_ticket(pos);
         }
     }
 
@@ -243,7 +476,7 @@ impl ServerWorld {
                 },
             );
         }
-        self.send_away(ctx, id, target, Route::Respawn { keep_all });
+        self.send_away(ctx, id, target, Route::Respawn { keep_all }, false);
     }
 
     /// `Entity.teleportTo(level, ...)` of `/tp` and `/teleport` into another world: a player
@@ -314,21 +547,19 @@ impl ServerWorld {
         });
     }
 
-    /// Removes the player `id` from this world and hands it to `target` (this world too).
+    /// Removes the player `id` from this world and hands it to `target` (this world too): at
+    /// once, or after the world phase (`after_worlds`).
     fn send_away(
         &mut self,
         ctx: &mut TickContext<'_>,
         id: EntityId,
         target: WorldId,
         route: Route,
+        after_worlds: bool,
     ) {
         let Some(traveller) = self.take_player(id, route) else {
             return;
         };
-        self.send(ctx, target, traveller);
-    }
-
-    fn send(&mut self, ctx: &mut TickContext<'_>, target: WorldId, traveller: Traveller) {
         if target == self.id {
             self.arrive(ctx.global, traveller);
             return;
@@ -337,9 +568,12 @@ impl ServerWorld {
         let Some(global) = ctx.global.arc() else {
             return;
         };
-        ctx.in_world(target, move |world: &mut ServerWorld| {
-            world.arrive(&global, traveller);
-        });
+        let arrive = move |world: &mut ServerWorld| world.arrive(&global, traveller);
+        if after_worlds {
+            ctx.after_world_phase(target, arrive);
+        } else {
+            ctx.in_world(target, arrive);
+        }
     }
 
     /// `removePlayerImmediately`: the player entity leaves; its data travels.
@@ -378,24 +612,7 @@ impl ServerWorld {
                 .border
                 .clamp_to_bounds(scaled.x, scaled.y, scaled.z);
         }
-        let area = match &traveller.route {
-            Route::NetherPortal {
-                approx, to_nether, ..
-            } => Some((approx.chunk(), portal::search_chunk_radius(*to_nether))),
-            Route::EndPlatform => Some((
-                portal::END_SPAWN_POINT.chunk(),
-                portal::PORTAL_TICKET_RADIUS,
-            )),
-            Route::Command { pos, .. } => Some((
-                ChunkPos::new(
-                    vanillite_base::math::floor(pos.x) >> 4,
-                    vanillite_base::math::floor(pos.z) >> 4,
-                ),
-                1,
-            )),
-            Route::Spawn | Route::Respawn { .. } | Route::Back | Route::Pearl(_) => None,
-        };
-        let area = area.map(|(center, radius)| {
+        let area = arrival_area(&traveller.route).map(|(center, radius)| {
             let level = FULL_LEVEL.saturating_sub(u8::try_from(radius).unwrap_or(u8::MAX));
             (center, radius, self.level.chunks.add_ticket(center, level))
         });
@@ -450,6 +667,11 @@ impl ServerWorld {
                 TravelRequest::PortalTicket(pos) => self.place_portal_ticket(pos),
                 TravelRequest::PearlTicket(chunk) => self.place_pearl_ticket(chunk),
                 TravelRequest::Gateway { entity, entry } => self.enter_gateway(entity, entry),
+                TravelRequest::Portal {
+                    entity,
+                    kind,
+                    entry,
+                } => self.send_entity(ctx, entity, kind, entry),
                 TravelRequest::PearlOwner { owner, arrival } => {
                     let Some(world) = ctx.global.players.world_of(Uuid(owner)) else {
                         continue;
@@ -460,12 +682,21 @@ impl ServerWorld {
                     let target = self.id;
                     if world == target {
                         // The owner came here meanwhile; it travels like from another world.
-                        self.follow_pearl(&global, owner, target, arrival);
+                        self.follow_pearl(&global, owner, target, arrival, None);
                         continue;
                     }
+                    // With the other worlds at hand (sequential), the owner's world hands the
+                    // player back at once and it lands in this tick, like Vanilla's; else its
+                    // world sends it over.
+                    let handed = Arc::new(HandOver::waiting());
+                    let back = Arc::clone(&handed);
+                    let global_owner = Arc::clone(&global);
                     ctx.in_world(world, move |w: &mut ServerWorld| {
-                        w.follow_pearl(&global, owner, target, arrival);
+                        w.follow_pearl(&global_owner, owner, target, arrival, Some(&back));
                     });
+                    if let Some(traveller) = handed.close() {
+                        self.arrive(&global, traveller);
+                    }
                 }
             }
         }
@@ -546,6 +777,16 @@ impl ServerWorld {
     }
 
     fn place_arrivals(&mut self, global: &Global) {
+        for wait in std::mem::take(&mut self.entity_arrivals) {
+            if let Some((center, radius, ticket)) = wait.area {
+                if !self.area_loaded(center, radius) {
+                    self.entity_arrivals.push(wait);
+                    continue;
+                }
+                self.level.chunks.remove_ticket(ticket);
+            }
+            self.place_entity(global, wait.traveller);
+        }
         if self.arrivals.is_empty() {
             return;
         }
@@ -860,61 +1101,15 @@ impl ServerWorld {
                 to_nether,
                 entry,
                 ..
-            } => {
-                let level = &mut self.level;
-                // `getExitPortal`.
-                let found =
-                    portal::find_closest_portal(level, *approx, portal::search_radius(*to_nether));
-                let (exit, ticket) = match found {
-                    Some(pos) => {
-                        let state = level.block(pos);
-                        let axis = HorizontalAxis::of(state)?;
-                        let rect = portal::largest_rectangle_around(pos, axis, |p| {
-                            level.block(p) == state
-                        });
-                        (rect, Some(pos))
-                    }
-                    None => {
-                        if traveller.data.game_mode == GameMode::Spectator {
-                            return None;
-                        }
-                        let logical_height = global
-                            .level
-                            .dimension_types
-                            .get(self.id.index())
-                            .map_or(256, |t| t.logical_height);
-                        let created =
-                            portal::create_portal(level, *approx, entry.axis, logical_height);
-                        let Some(created) = created else {
-                            log::error!(
-                                "Unable to create a portal, likely target out of worldborder"
-                            );
-                            return None;
-                        };
-                        (created, None)
-                    }
-                };
-                // `createDimensionTransition`.
-                let exit_axis =
-                    HorizontalAxis::of(level.block(exit.min_corner)).unwrap_or(HorizontalAxis::X);
-                let (pos, rotation) = portal::exit_position(
-                    &exit,
-                    exit_axis,
-                    entry,
-                    traveller.width,
-                    traveller.height,
-                );
-                let pos = free_position(level, pos, traveller.width, traveller.height);
-                Some(Landing {
-                    pos,
-                    y_rot: rotation,
-                    x_rot: 0.0,
-                    relatives: KEEP_MOTION_AND_ROTATION,
-                    sound: true,
-                    // A found exit keeps its own chunks loaded, a new one those at the player.
-                    ticket: Some(ticket.unwrap_or_else(|| containing(pos))),
-                })
-            }
+            } => self.nether_landing(
+                global,
+                *approx,
+                *to_nether,
+                entry,
+                traveller.width,
+                traveller.height,
+                traveller.data.game_mode == GameMode::Spectator,
+            ),
             Route::EndPlatform => {
                 let spawn = portal::END_SPAWN_POINT;
                 portal::create_end_platform(&mut self.level, spawn.offset(0, -1, 0));
@@ -991,6 +1186,62 @@ impl ServerWorld {
                 ticket: None,
             }),
         }
+    }
+
+    /// `NetherPortalBlock.getExitPortal` in this world: the closest portal to `approx`, else a
+    /// new one (not for spectators); the landing in it (`createDimensionTransition`).
+    #[allow(clippy::too_many_arguments)]
+    fn nether_landing(
+        &mut self,
+        global: &Global,
+        approx: BlockPos,
+        to_nether: bool,
+        entry: &EntryPortal,
+        width: f32,
+        height: f32,
+        spectator: bool,
+    ) -> Option<Landing> {
+        let level = &mut self.level;
+        // `getExitPortal`.
+        let found = portal::find_closest_portal(level, approx, portal::search_radius(to_nether));
+        let (exit, ticket) = match found {
+            Some(pos) => {
+                let state = level.block(pos);
+                let axis = HorizontalAxis::of(state)?;
+                let rect = portal::largest_rectangle_around(pos, axis, |p| level.block(p) == state);
+                (rect, Some(pos))
+            }
+            None => {
+                if spectator {
+                    return None;
+                }
+                let logical_height = global
+                    .level
+                    .dimension_types
+                    .get(self.id.index())
+                    .map_or(256, |t| t.logical_height);
+                let created = portal::create_portal(level, approx, entry.axis, logical_height);
+                let Some(created) = created else {
+                    log::error!("Unable to create a portal, likely target out of worldborder");
+                    return None;
+                };
+                (created, None)
+            }
+        };
+        // `createDimensionTransition`.
+        let exit_axis =
+            HorizontalAxis::of(level.block(exit.min_corner)).unwrap_or(HorizontalAxis::X);
+        let (pos, rotation) = portal::exit_position(&exit, exit_axis, entry, width, height);
+        let pos = free_position(level, pos, width, height);
+        Some(Landing {
+            pos,
+            y_rot: rotation,
+            x_rot: 0.0,
+            relatives: KEEP_MOTION_AND_ROTATION,
+            sound: true,
+            // A found exit keeps its own chunks loaded, a new one those at the player.
+            ticket: Some(ticket.unwrap_or_else(|| containing(pos))),
+        })
     }
 
     /// `placePortalTicket`: the chunks within 3 of `pos` stay loaded and ticking for 300
@@ -1137,6 +1388,7 @@ impl ServerWorld {
         uuid: u128,
         target: WorldId,
         arrival: PearlArrival,
+        handed: Option<&HandOver>,
     ) {
         let Some(id) = self.level.entities.player_by_uuid(uuid) else {
             return;
@@ -1157,6 +1409,13 @@ impl ServerWorld {
             return;
         }
         global.players.set_world(Uuid(traveller.uuid), target);
+        let traveller = match handed {
+            Some(h) => h.give(traveller),
+            None => Some(traveller),
+        };
+        let Some(traveller) = traveller else {
+            return;
+        };
         let global_arc = Arc::clone(global);
         global.run_in_world(target, move |world: &mut ServerWorld| {
             world.arrive(&global_arc, traveller);
@@ -1213,6 +1472,44 @@ impl ServerWorld {
     }
 }
 
+/// A player handed from one world to the world that asked for it while that world waits
+/// (sequential dimensions): [`TickContext::in_world`] ran the request at once.
+struct HandOver {
+    /// `None` once the asking world stopped waiting.
+    slot: std::sync::Mutex<Option<Option<Traveller>>>,
+}
+
+impl HandOver {
+    fn waiting() -> Self {
+        HandOver {
+            slot: std::sync::Mutex::new(Some(None)),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Option<Traveller>>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Gives the traveller to the waiting world; returns it if nobody waits any more.
+    fn give(&self, traveller: Traveller) -> Option<Traveller> {
+        let mut slot = self.lock();
+        match &mut *slot {
+            Some(waiting) => {
+                *waiting = Some(traveller);
+                None
+            }
+            None => Some(traveller),
+        }
+    }
+
+    /// Stops waiting: the traveller handed over meanwhile, if any.
+    fn close(&self) -> Option<Traveller> {
+        self.lock().take().flatten()
+    }
+}
+
 impl Traveller {
     fn route_is_back(&self) -> bool {
         matches!(self.route, Route::Back)
@@ -1265,4 +1562,26 @@ fn free_position(level: &vanillite_game::level::Level, pos: Vec3, width: f32, he
 /// `BlockPos.containing(pos)`.
 fn containing(pos: Vec3) -> BlockPos {
     BlockPos::containing(pos.x, pos.y, pos.z)
+}
+
+/// The chunks a traveller's destination needs before it can be placed: the exit portal search,
+/// the End platform, the place of a teleport command.
+fn arrival_area(route: &Route) -> Option<(ChunkPos, i32)> {
+    match route {
+        Route::NetherPortal {
+            approx, to_nether, ..
+        } => Some((approx.chunk(), portal::search_chunk_radius(*to_nether))),
+        Route::EndPlatform => Some((
+            portal::END_SPAWN_POINT.chunk(),
+            portal::PORTAL_TICKET_RADIUS,
+        )),
+        Route::Command { pos, .. } => Some((
+            ChunkPos::new(
+                vanillite_base::math::floor(pos.x) >> 4,
+                vanillite_base::math::floor(pos.z) >> 4,
+            ),
+            1,
+        )),
+        Route::Spawn | Route::Respawn { .. } | Route::Back | Route::Pearl(_) => None,
+    }
 }

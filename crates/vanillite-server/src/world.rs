@@ -123,6 +123,8 @@ pub struct ServerWorld {
     tickets_dirty: bool,
     /// Players arriving from other worlds or respawning, waiting for their destination.
     arrivals: Vec<travel::Waiting>,
+    /// Entities besides players arriving through portals, waiting for their destination.
+    entity_arrivals: Vec<travel::EntityWaiting>,
     /// Players in End gateways waiting for the exit's chunks.
     gateway_waits: Vec<travel::GatewayWait>,
     /// Portal tickets with the tick they expire.
@@ -230,6 +232,7 @@ impl ServerWorld {
             kept_tickets: Vec::new(),
             tickets_dirty: false,
             arrivals: Vec::new(),
+            entity_arrivals: Vec::new(),
             gateway_waits: Vec::new(),
             portal_tickets: Vec::new(),
             pearl_tickets: FxHashMap::default(),
@@ -941,6 +944,16 @@ impl<'a> TickContext<'a> {
     ) -> Self {
         self.others = Some(OtherWorlds { before, after });
         self
+    }
+
+    /// Runs `op` on another world after the world phase of this tick, in both modes: for what
+    /// Vanilla does after every level ticked (the players' connection tick).
+    pub fn after_world_phase(
+        &mut self,
+        target: WorldId,
+        op: impl FnOnce(&mut ServerWorld) + Send + 'static,
+    ) {
+        self.outbox.push((target, Box::new(op)));
     }
 
     /// Runs `op` on another world: immediately when that world is accessible (sequential

@@ -1,0 +1,14 @@
+{
+  "description": "An end gateway in the End with an exact exit: an item and an armor stand falling into it come out at the exit, and the gateway cools down between them.",
+  "dimensions": true,
+  "dimension": "minecraft:the_end",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[2, 58, 2], [12, 70, 12]],
+  "ticks": 20,
+  "actions": [
+    {"tick": 1, "op": "command", "command": "execute in minecraft:the_end run setblock 5 60 5 minecraft:end_gateway{exit_portal:[I;10,62,10],ExactTeleport:1b}"},
+    {"tick": 1, "op": "command", "command": "execute in minecraft:the_end run fill 9 61 9 11 61 11 minecraft:obsidian"},
+    {"tick": 2, "op": "command", "command": "execute in minecraft:the_end run summon minecraft:item 5.5 62.0 5.5 {Item:{id:\"minecraft:cobblestone\",count:1}}"},
+    {"tick": 5, "op": "command", "command": "execute in minecraft:the_end run summon minecraft:armor_stand 5.5 62.0 5.5"}
+  ]
+}

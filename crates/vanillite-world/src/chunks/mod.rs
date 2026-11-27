@@ -167,6 +167,10 @@ pub struct ChunkSettings {
     pub max_relights: usize,
     /// Saving.
     pub save: SaveSettings,
+    /// Every ticket's full chunks are loaded before [`Chunks::add_ticket`] returns, like the
+    /// synchronous `getChunk` with which Vanilla loads the destination of a teleport. Only
+    /// for the parity harness (the exact Vanilla order): it blocks the tick.
+    pub blocking_tickets: bool,
 }
 
 /// Tuning of saving (`storage.*`).
@@ -211,6 +215,7 @@ impl Default for ChunkSettings {
             simulation_distance: 10,
             max_relights: 1024,
             save: SaveSettings::default(),
+            blocking_tickets: false,
         }
     }
 }
@@ -690,6 +695,19 @@ impl Chunks {
     /// Adds a ticket: chunks within `33 - level` of `pos` become full, one ring further at
     /// least lit; what is missing is generated (forced chunks: level 31, Vanilla's `ChunkLevel.byStatus(ENTITY_TICKING)`).
     pub fn add_ticket(&mut self, pos: ChunkPos, level: u8) -> TicketId {
+        let id = self.insert_ticket(pos, level);
+        if self.settings.blocking_tickets && level <= FULL_LEVEL {
+            let radius = i32::from(FULL_LEVEL - level);
+            self.run_blocking(|c| {
+                (-radius..=radius).all(|dx| {
+                    (-radius..=radius).all(|dz| c.is_full_at(ChunkPos::new(pos.x + dx, pos.z + dz)))
+                })
+            });
+        }
+        id
+    }
+
+    fn insert_ticket(&mut self, pos: ChunkPos, level: u8) -> TicketId {
         let id = TicketId(self.next_ticket);
         self.next_ticket += 1;
         self.tickets.insert(id, (pos, level));
@@ -1019,10 +1037,26 @@ impl Chunks {
         match self.unknown.get(&pos) {
             Some((_, left)) => left.set(1),
             None => {
-                let id = self.add_ticket(pos, FULL_LEVEL);
+                let id = self.insert_ticket(pos, FULL_LEVEL);
                 self.unknown.insert(pos, (id, Cell::new(1)));
             }
         }
+        if !self.run_blocking(|c| c.is_full_at(pos)) {
+            log::error!(
+                "Couldn't load chunk {}, {} in {} synchronously",
+                pos.x,
+                pos.z,
+                self.info.dimension
+            );
+        }
+        self.note_read(pos, false);
+    }
+
+    /// Runs the chunk runtime on this thread until `done` (false if nothing can make progress
+    /// any more), then applies the visibility changes and clears the chunk cache: the tickets
+    /// changed levels.
+    #[cold]
+    fn run_blocking(&mut self, done: impl Fn(&Self) -> bool) -> bool {
         // What waits for the next tick is wanted now.
         for (at, chunk, entities) in std::mem::take(&mut self.loaded_between_ticks) {
             self.apply_loaded(at, Ok(Some(chunk)), entities);
@@ -1030,35 +1064,29 @@ impl Chunks {
         for at in std::mem::take(&mut self.due_next_tick) {
             self.enqueue(at);
         }
-        loop {
+        let done = loop {
             let mut progress = self.drain_done();
             self.apply_level_changes();
-            if self.is_full_at(pos) {
-                break;
+            if done(self) {
+                break true;
             }
             progress |= self.dispatch();
             if progress {
                 continue;
             }
             if self.in_flight == 0 && self.check.is_empty() {
-                log::error!(
-                    "Couldn't load chunk {}, {} in {} synchronously",
-                    pos.x,
-                    pos.z,
-                    self.info.dimension
-                );
-                break;
+                break false;
             }
             match self.done_rx.recv_timeout(Duration::from_millis(1)) {
                 Ok(job) => self.apply_done(job),
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => break false,
             }
-        }
+        };
         self.check_visibility();
-        // The ticket changed levels, which cleared the cache; the chunk goes in.
+        // The tickets changed levels, which cleared the cache.
         self.chunk_cache.set([NO_CHUNK; 4]);
-        self.note_read(pos, false);
+        done
     }
 
     /// `TicketStorage.purgeStaleTickets` for the `unknown` tickets of synchronous loads: each
