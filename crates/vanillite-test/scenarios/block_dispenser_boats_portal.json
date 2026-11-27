@@ -1,0 +1,169 @@
+{
+  "description": "BoatDispenseItemBehavior and FlintAndSteelDispenseItemBehavior (#214): a dispenser over open water puts an oak boat just outside it on the water, one facing into water puts a chest boat one block higher, one facing grass drops its raft as an item (the nested default dispense: sound and smoke twice); flint and steel lights a nether portal in the obsidian frame in front (BaseFireBlock.isPortal).",
+  "tier": "fast",
+  "level_rng": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      16
+    ]
+  ],
+  "ticks": 30,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        1,
+        -61,
+        6
+      ],
+      "to": [
+        9,
+        -61,
+        10
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        5
+      ],
+      "block": "minecraft:dispenser[facing=south,triggered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -61,
+        5
+      ],
+      "block": "minecraft:dispenser[facing=south,triggered=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        13,
+        -60,
+        5
+      ],
+      "block": "minecraft:dispenser[facing=south,triggered=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -61,
+        14
+      ],
+      "to": [
+        5,
+        -61,
+        14
+      ],
+      "block": "minecraft:obsidian"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -57,
+        14
+      ],
+      "to": [
+        5,
+        -57,
+        14
+      ],
+      "block": "minecraft:obsidian"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        14
+      ],
+      "to": [
+        2,
+        -58,
+        14
+      ],
+      "block": "minecraft:obsidian"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        14
+      ],
+      "to": [
+        5,
+        -58,
+        14
+      ],
+      "block": "minecraft:obsidian"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        13
+      ],
+      "block": "minecraft:dispenser[facing=south,triggered=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 2 -60 5 {Items:[{Slot:0b,id:\"minecraft:oak_boat\",count:1}]}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 2 -60 4 minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 6 -61 5 {Items:[{Slot:0b,id:\"minecraft:birch_chest_boat\",count:1}]}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 6 -61 4 minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 13 -60 5 {Items:[{Slot:0b,id:\"minecraft:bamboo_raft\",count:1}]}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 13 -60 4 minecraft:redstone_block"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge block 3 -60 13 {Items:[{Slot:0b,id:\"minecraft:flint_and_steel\",count:1}]}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "setblock 3 -60 12 minecraft:redstone_block"
+    }
+  ]
+}

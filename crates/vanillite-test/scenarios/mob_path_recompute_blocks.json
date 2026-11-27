@@ -1,0 +1,60 @@
+{
+  "description": "ServerLevel.sendBlockUpdated for navigating mobs (#214, G-01): a hurt pig panics along a path to a random spot; a ring of stone placed around it a few ticks later changes collision shapes near its remaining path, so it recomputes the path at once (shouldRecomputePath, recomputePath) instead of walking into the wall.",
+  "tier": "fast",
+  "level_rng": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      16,
+      -57,
+      16
+    ]
+  ],
+  "ticks": 50,
+  "entities": [
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 3,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "hurt",
+      "entity": "pig",
+      "amount": 1
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "fill 4 -60 4 12 -60 4 minecraft:stone"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "fill 4 -60 12 12 -60 12 minecraft:stone"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "fill 4 -60 5 4 -60 11 minecraft:stone"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "fill 12 -60 5 12 -60 11 minecraft:stone"
+    }
+  ]
+}

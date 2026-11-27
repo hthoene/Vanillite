@@ -228,7 +228,7 @@ thread_local! {
 
 /// Whether the box collides with a block (`!noCollision(box)`).
 fn collides(level: &Level, b: &Aabb) -> bool {
-    SCRATCH.with_borrow_mut(|scratch| crate::item_entity::collides(b, &|p| level.block(p), scratch))
+    SCRATCH.with_borrow_mut(|scratch| crate::item_entity::collides(b, level, scratch))
 }
 
 /// `ExperienceOrb.tick`.
@@ -279,7 +279,7 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
                     pos,
                     (aabb.min_y + aabb.max_y) / 2.0,
                     v,
-                    &|p| level.block(p),
+                    level,
                     &mut || r.next_float(),
                 )
             });

@@ -1102,6 +1102,15 @@ fn spawn_category_for_chunk<R: Round>(
                     random,
                 )
             });
+            // `AbstractCubeMob.onSyncedDataUpdated(ID_SIZE)`: a cube whose spawn size changed
+            // turns (and its body) to its head yaw, the constructor's.
+            let y_rot = if matches!(kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube)
+                && super::fam::undead::cubes::size(&mob) != 1
+            {
+                super::constructor_y_rot(seed)
+            } else {
+                y_rot
+            };
             group_index += 1;
             cluster += 1;
             group_size += 1;

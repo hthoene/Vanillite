@@ -471,7 +471,14 @@ pub fn merge_stacks_max(to: &ItemStack, from: &mut ItemStack, max: i32) -> ItemS
 
 /// The collision boxes of the blocks around `area` (`Level.getBlockCollisions`, without the
 /// world border and entity shapes).
-fn block_boxes(area: &Aabb, block: &dyn Fn(BlockPos) -> BlockState, out: &mut Vec<Aabb>) {
+/// `bottom` is the entity's feet (its collision context, see
+/// [`crate::mob::physics::context_shape`]).
+fn block_boxes(
+    area: &Aabb,
+    bottom: f64,
+    block: &dyn crate::mob::physics::Blocks,
+    out: &mut Vec<Aabb>,
+) {
     out.clear();
     let x0 = floor(area.min_x - 1.0e-7) - 1;
     let x1 = floor(area.max_x + 1.0e-7) + 1;
@@ -483,12 +490,32 @@ fn block_boxes(area: &Aabb, block: &dyn Fn(BlockPos) -> BlockState, out: &mut Ve
         for z in z0..=z1 {
             for y in y0..=y1 {
                 let pos = BlockPos::new(x, y, z);
-                let state = block(pos);
+                let state = block.state(pos);
                 if state.is_air() {
                     continue;
                 }
                 let (dx, dy, dz) = (f64::from(x), f64::from(y), f64::from(z));
-                for b in state.collision_shape() {
+                if state.block() == vanillite_data::block::ids::MOVING_PISTON {
+                    let mut moving = Vec::new();
+                    block.moving_piston_boxes(pos, &mut moving);
+                    for b in moving {
+                        let shape = Aabb::new(
+                            b[0] + dx,
+                            b[1] + dy,
+                            b[2] + dz,
+                            b[3] + dx,
+                            b[4] + dy,
+                            b[5] + dz,
+                        );
+                        if shape.intersects(&area.inflate(1.0e-7, 1.0e-7, 1.0e-7))
+                            || touches(&shape, area)
+                        {
+                            out.push(shape);
+                        }
+                    }
+                    continue;
+                }
+                for b in crate::mob::physics::context_shape(state, dy, Some(bottom)) {
                     let shape = Aabb::new(
                         b[0] + dx,
                         b[1] + dy,
@@ -563,7 +590,7 @@ pub fn move_with_collisions(
     half_width: f64,
     height: f64,
     movement: Vec3,
-    block: &dyn Fn(BlockPos) -> BlockState,
+    block: &dyn crate::mob::physics::Blocks,
     scratch: &mut Vec<Aabb>,
 ) -> Moved {
     let mut b = Aabb::new(
@@ -576,7 +603,7 @@ pub fn move_with_collisions(
     );
     let (mut x, mut y, mut z) = (movement.x, movement.y, movement.z);
     if x * x + y * y + z * z > 0.0 {
-        block_boxes(&b.expand_towards(x, y, z), block, scratch);
+        block_boxes(&b.expand_towards(x, y, z), b.min_y, block, scratch);
         if y != 0.0 {
             y = collide_axis(1, &b, scratch, y);
             if y != 0.0 {
@@ -621,8 +648,12 @@ pub fn move_with_collisions(
 }
 
 /// Whether the box collides with any block (`noCollision` negated).
-pub fn collides(b: &Aabb, block: &dyn Fn(BlockPos) -> BlockState, scratch: &mut Vec<Aabb>) -> bool {
-    block_boxes(b, block, scratch);
+pub fn collides(
+    b: &Aabb,
+    block: &dyn crate::mob::physics::Blocks,
+    scratch: &mut Vec<Aabb>,
+) -> bool {
+    block_boxes(b, b.min_y, block, scratch);
     scratch.iter().any(|s| s.intersects(b))
 }
 
@@ -675,7 +706,7 @@ fn body_at(pos: Vec3) -> Aabb {
 pub fn tick(
     data: &mut ItemData,
     input: TickInput,
-    block: &dyn Fn(BlockPos) -> BlockState,
+    block: &dyn crate::mob::physics::Blocks,
     fluids: &dyn Fn(Aabb) -> Fluids,
     fire: &FireWorld<'_>,
     scratch: &mut Vec<Aabb>,
@@ -797,7 +828,7 @@ pub fn tick(
         let air_drag = 0.98_f32;
         let mut ground = air_drag;
         if out.on_ground {
-            let below = block(BlockPos::new(
+            let below = block.state(BlockPos::new(
                 floor(out.pos.x),
                 floor(out.pos.y - 0.999_999),
                 floor(out.pos.z),
@@ -846,7 +877,7 @@ pub(crate) fn move_towards_closest_space(
     pos: Vec3,
     y: f64,
     velocity: Vec3,
-    block: &dyn Fn(BlockPos) -> BlockState,
+    block: &dyn crate::mob::physics::Blocks,
     random_float: &mut dyn FnMut() -> f32,
 ) -> Vec3 {
     let base = BlockPos::new(floor(pos.x), floor(y), floor(pos.z));
@@ -871,7 +902,7 @@ pub(crate) fn move_towards_closest_space(
             base.y.wrapping_add(dy),
             base.z.wrapping_add(dz),
         );
-        if !block(n).has(block_flags::COLLISION_FULL_BLOCK) {
+        if !block.state(n).has(block_flags::COLLISION_FULL_BLOCK) {
             let axis_delta = delta.get(axis).copied().unwrap_or(0.0);
             let distance = if positive {
                 1.0 - axis_delta

@@ -300,8 +300,8 @@ pub(super) fn destroy_extra(
 ) {
     use BlockKind as K;
     match state.kind() {
-        // `DoorBlock.playerWillDestroy` → `DoublePlantBlock.preventDropFromBottomPart`. Vanilla
-        // also does this in survival without the correct tool; `creative` stands for both.
+        // `DoorBlock.playerWillDestroy` → `DoublePlantBlock.preventDropFromBottomPart`;
+        // `creative` is `preventsBlockDrops() || !hasCorrectToolForDrops(state)`.
         K::DoorBlock | K::WeatheringCopperDoorBlock => {
             if creative && state.get("half") == Some("upper") {
                 let bottom_pos = below(pos);

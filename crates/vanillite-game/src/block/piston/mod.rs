@@ -27,7 +27,9 @@ use vanillite_worldgen::behaviour::{PosExt, StateExt};
 use super::{BlockBehaviour, Interaction, UseContext, sound_id};
 use crate::level::game_event::{GameEventContext, events};
 use crate::level::{BlockEntity, Level, SOUND_BLOCKS, UPDATE_LIMIT, update};
-pub use moving::{MovingPiston, final_tick, moving_piston_tick};
+pub use moving::{
+    MovingPiston, collision_boxes, collision_boxes_at, final_tick, moving_piston_tick,
+};
 use resolver::{Resolver, Structure, offset};
 
 /// Block event types of `PistonBaseBlock`.
@@ -50,6 +52,11 @@ pub struct Scratch {
     entities: Vec<EntityId>,
     /// Depth of running `finalTick`s (their landing removes a `moving_piston` legitimately).
     in_final_tick: u32,
+    /// `Entity.pistonDeltas` of the entities pistons moved in game tick `deltas_time`.
+    deltas: vanillite_base::hash::FxHashMap<EntityId, [f64; 3]>,
+    deltas_time: i64,
+    /// Collision boxes of a pushed entity's move.
+    boxes: Vec<vanillite_base::Aabb>,
 }
 
 /// Fills the piston behaviours of `block`.

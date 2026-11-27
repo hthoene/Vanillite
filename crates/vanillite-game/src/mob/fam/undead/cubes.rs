@@ -967,17 +967,10 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         .map_or(0.0, |e| f64::from(e.dims().height));
     if name == "minecraft:shears" && has_body_item(m) {
         // `shear`: the block pops out at the passenger point.
-        let Some(m) = ix.ents.mob_mut(ix.target) else {
-            return Interaction::Pass;
-        };
-        let block =
-            std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Body.ordinal())]);
-        cs_mut(m).pickup_timer = 100;
         let sheared = crate::advancements::trigger::TriggerKind::PLAYER_SHEARED_EQUIPMENT;
-        let award =
-            crate::advancements::view::listens(ix.ents, ix.player, sheared).then(|| block.clone());
-        super::drop_item(ix.env, pos + Vec3::new(0.0, height, 0.0), block);
-        play(ix, pos, "minecraft:entity.sulfur_cube.eject");
+        let award = crate::advancements::view::listens(ix.ents, ix.player, sheared)
+            .then(|| m.equipment.get(EquipmentSlot::Body).clone());
+        shear(ix.ents, ix.env, ix.target);
         crate::mob::animal::entity_game_event(
             ix.ents,
             ix.env,
@@ -1020,6 +1013,39 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return bucket(ix, pos);
     }
     Interaction::Pass
+}
+
+/// `SulfurCube.shear`: the swallowed block pops out at the passenger point, then the eject
+/// sound; no pickup for 100 ticks.
+pub(crate) fn shear(
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    target: vanillite_world::entity::EntityId,
+) {
+    let Some((pos, height)) = ents
+        .store
+        .get(target)
+        .map(|e| (e.pos(), f64::from(e.dims().height)))
+    else {
+        return;
+    };
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
+    let block = std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Body.ordinal())]);
+    cs_mut(m).pickup_timer = 100;
+    super::drop_item(env, pos + Vec3::new(0.0, height, 0.0), block);
+    let seed = crate::survival::sound_seed();
+    crate::survival::play_sound(
+        env.out,
+        None,
+        pos,
+        "minecraft:entity.sulfur_cube.eject",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+        1.0,
+        1.0,
+        seed,
+    );
 }
 
 fn play(ix: &mut Interact<'_, '_>, pos: Vec3, s: &str) {

@@ -212,6 +212,8 @@ pub enum Behaviour {
     Equipment,
     /// `MinecartDispenseItemBehavior`.
     Minecart,
+    /// `BoatDispenseItemBehavior`.
+    Boat,
 }
 
 /// `DispenserBlock.getDispenseMethod`: the registered behaviour of the stack's item, else
@@ -284,11 +286,10 @@ fn registered(id: ItemId) -> Option<Behaviour> {
     if shot.contains(&id) {
         return Some(B::Projectile);
     }
-    let spawns_entity = projectiles.contains(&id)
-        || id == items::ARMOR_STAND
-        || name.ends_with("_boat")
-        || name.ends_with("_raft");
-    Some(if spawns_entity {
+    let spawns_entity = projectiles.contains(&id) || id == items::ARMOR_STAND;
+    Some(if name.ends_with("_boat") || name.ends_with("_raft") {
+        B::Boat
+    } else if spawns_entity {
         B::Entity
     } else if id == items::WATER_BUCKET || id == items::LAVA_BUCKET || mob_buckets.contains(&id) {
         B::FilledBucket
@@ -414,6 +415,7 @@ fn execute(
                 dispense(level, source, stack, B::Default)
             }
         }
+        B::Boat => dispense_boat(level, source, stack),
         B::SpawnEgg => {
             let Some(kind) = crate::mob::animal::spawn_egg_kind(&stack) else {
                 return stack;
@@ -480,7 +482,7 @@ fn execute(
             None => default_execute(level, source, stack),
         },
         B::FlintAndSteel => {
-            *success = flint_and_steel(level, target);
+            *success = flint_and_steel(level, target, source.facing);
             if *success {
                 hurt_and_break(level, &mut stack, 1);
             }
@@ -586,8 +588,7 @@ fn execute(
             stack
         }
         B::Shears => {
-            // No shearable mob or leash knot exists: only beehives can be sheared.
-            *success = shear_beehive(level, target);
+            *success = shear_beehive(level, target) || shear_entity(level, target);
             if *success {
                 hurt_and_break(level, &mut stack, 1);
             }
@@ -650,6 +651,52 @@ fn execute(
             consume_with_remainder(level, source, stack, bottle)
         }
     }
+}
+
+/// `BoatDispenseItemBehavior.execute`: a boat just outside the dispenser on or above the water
+/// in front (yawed like the dispenser), else the nested default dispense.
+fn dispense_boat(level: &mut Level, source: Source, mut stack: ItemStack) -> ItemStack {
+    let entity = vanillite_data::registry::ENTITY_TYPE
+        .id(item::item_id(&stack).name())
+        .map(vanillite_data::entity::EntityTypeId)
+        .and_then(crate::vehicle::BoatKind::of);
+    let Some(kind) = entity else {
+        return dispense(level, source, stack, Behaviour::Default);
+    };
+    let [sx, sy, sz] = source.facing.normal();
+    let just_outside = 0.5625 + f64::from(kind.kind.info().width) / 2.0;
+    let x = f64::from(source.pos.x) + 0.5 + f64::from(sx) * just_outside;
+    let y = f64::from(source.pos.y) + 0.5 + f64::from(sy) * 1.125;
+    let z = f64::from(source.pos.z) + 0.5 + f64::from(sz) * just_outside;
+    let front = source.target();
+    let water = crate::mob::is_water;
+    let y_offset = if water(level.block(front)) {
+        1.0
+    } else if !level.block(front).is_air() || !water(level.block(front.below())) {
+        return dispense(level, source, stack, Behaviour::Default);
+    } else {
+        0.0
+    };
+    let mut data = crate::vehicle::BoatData::new(kind);
+    data.custom_name = stack
+        .component(vanillite_protocol::components::ids::CUSTOM_NAME)
+        .map(Into::into);
+    #[allow(clippy::cast_precision_loss)]
+    let yaw = ((crate::decoration::data_2d(source.facing) & 3) * 90) as f32;
+    let uuid = crate::mob::new_entity_uuid();
+    let (ents, network_ids, _) = level.entity_parts();
+    let id = crate::vehicle::spawn_boat(
+        ents,
+        network_ids,
+        uuid,
+        Vec3::new(x, y + y_offset, z),
+        yaw,
+        data,
+    );
+    if ents.spawned(id, vanillite_abi::spawn_reason::DISPENSER, 0) {
+        stack.shrink(1);
+    }
+    stack
 }
 
 /// `DefaultDispenseItemBehavior.execute`: one item drops from the dispenser's face.
@@ -962,11 +1009,16 @@ pub(crate) fn pickup_block(level: &mut Level, pos: BlockPos) -> Option<ItemId> {
 // --- Flint and steel, shears, honeycomb, bottles ---------------------------------------------
 
 /// `FlintAndSteelDispenseItemBehavior.execute` without the durability: whether it succeeded.
-fn flint_and_steel(level: &mut Level, target: BlockPos) -> bool {
+fn flint_and_steel(level: &mut Level, target: BlockPos, facing: Direction) -> bool {
+    // `tryIgniteExplosiveEntities`: sulfur cubes have no explosion data here (their swallowed
+    // block archetypes are not simulated), so none can explode.
     let state = level.block(target);
     let fire = super::place::base_fire_state(level, target);
-    // `BaseFireBlock.canBePlacedAt` (nether portals are not lit by dispensers here).
-    if state.is_air() && level.can_survive(fire, target) {
+    // `BaseFireBlock.canBePlacedAt`.
+    if state.is_air()
+        && (level.can_survive(fire, target)
+            || super::portal::lights_portal_any(level, target, facing))
+    {
         level.set_block_and_update(target, fire);
         level.game_event_at(None, events().block_place, target);
         return true;
@@ -1037,6 +1089,76 @@ fn shear_beehive(level: &mut Level, pos: BlockPos) -> bool {
     reset_honey_level(level, pos, state);
     level.game_event_at(None, events().shear, pos);
     true
+}
+
+/// `ShearsDispenseItemBehavior.tryShearEntity`: the first non-spectator entity in the block
+/// that loses a lead (`shearOffAllLeashConnections`) or is an alive `Shearable` ready for
+/// shearing gets sheared (sounds in `BLOCKS`), then `SHEAR` at the block.
+fn shear_entity(level: &mut Level, pos: BlockPos) -> bool {
+    use crate::mob::Kind;
+    use crate::mob::fam::{mount, undead, wildlife};
+    let aabb = Aabb::new(
+        f64::from(pos.x),
+        f64::from(pos.y),
+        f64::from(pos.z),
+        f64::from(pos.x) + 1.0,
+        f64::from(pos.y) + 1.0,
+        f64::from(pos.z) + 1.0,
+    );
+    let mut candidates: Vec<EntityId> = Vec::new();
+    level
+        .entities
+        .store
+        .for_each_in(&aabb, false, |id| candidates.push(id));
+    candidates.retain(|&id| {
+        level
+            .entities
+            .player(id)
+            .is_none_or(|p| p.game_mode != vanillite_config::GameMode::Spectator)
+    });
+    if candidates.is_empty() {
+        return false;
+    }
+    let sheared = crate::level::mob_env::with_mob_env(level, |level, ents, env, cx| {
+        let blocks = vanillite_protocol::packets::play::clientbound::SoundSource::Blocks;
+        for id in candidates {
+            if crate::mob::tame::shear_off_all_leash_connections(ents, env, id) {
+                return Some(false);
+            }
+            let Some(m) = ents.mob(id) else {
+                continue;
+            };
+            if !m.is_alive() {
+                continue;
+            }
+            let ready = match m.kind {
+                Kind::Sheep => !m.sheared && !m.baby,
+                Kind::SnowGolem => wildlife::st(m).pumpkin,
+                Kind::Mooshroom => !m.baby,
+                Kind::Bogged => undead::skeletons::ready_for_shearing(m),
+                Kind::CopperGolem => mount::copper_golem::ready_for_shearing(m),
+                Kind::SulfurCube => undead::cubes::has_body_item(m),
+                _ => false,
+            };
+            if !ready {
+                continue;
+            }
+            match m.kind {
+                Kind::Sheep => crate::mob::animal::shear_sheep(level, ents, env, cx, id, blocks),
+                Kind::SnowGolem => wildlife::golem::snow_shear(ents, env, id, blocks),
+                Kind::Mooshroom => wildlife::mooshroom::shear(level, ents, env, cx, id, blocks),
+                Kind::Bogged => undead::skeletons::shear(level, ents, env, id, blocks),
+                Kind::CopperGolem => mount::copper_golem::shear(ents, env, id, blocks),
+                _ => undead::cubes::shear(ents, env, id),
+            }
+            return Some(true);
+        }
+        None
+    });
+    if sheared == Some(true) {
+        level.game_event_at(None, events().shear, pos);
+    }
+    sheared.is_some()
 }
 
 /// `HoneycombItem.getWaxed`: the waxed block of a copper block with the same properties.
@@ -1202,9 +1324,10 @@ fn player_slot(stack: &ItemStack) -> Option<EquipmentSlot> {
 }
 
 /// `EquipmentDispenseItemBehavior.dispenseEquipment`: the first living entity in the block in
-/// front that can wear the item gets one (only players are living entities here).
+/// front that can wear the item (`canEquipWithDispenser`) gets one; a mob drops it for sure
+/// and no longer despawns.
 fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) -> bool {
-    let Some(slot) = player_slot(stack) else {
+    let Some(slot) = EquipmentSlot::from_ordinal(item::item_id(stack).info().equip_slot) else {
         return false;
     };
     let target = source.target();
@@ -1223,18 +1346,25 @@ fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) 
         .for_each_in(&aabb, false, |id| candidates.push(id));
     let Some(id) = candidates.into_iter().find(|&id| {
         level.entities.player(id).is_some_and(|p| {
-            !p.survival.is_dead_or_dying()
+            player_slot(stack).is_some()
+                && !p.survival.is_dead_or_dying()
                 && p.game_mode != vanillite_config::GameMode::Spectator
                 && p.inventory.equipment(slot).is_empty()
-        }) || level
-            .entities
-            .mob(id)
-            .and_then(|m| crate::decoration::stand::can_dispenser_equip(m, stack))
-            .is_some()
+        }) || level.entities.mob(id).is_some_and(|m| {
+            crate::decoration::stand::can_dispenser_equip(m, stack).is_some()
+                || mob_can_equip(m, stack, slot)
+        })
     }) else {
         return false;
     };
+    if let Some(m) = level.entities.mob(id)
+        && m.kind != crate::mob::Kind::ArmorStand
+    {
+        equip_mob(level, id, slot, stack.split(1));
+        return true;
+    }
     if level.entities.mob(id).is_some() {
+        let slot = player_slot(stack).unwrap_or(slot);
         // An armor stand: `setItemSlot`, the equip sound and the equipment packet.
         let equip = stack.split(1);
         let sound = sound_id(equip_sound(&equip));
@@ -1298,6 +1428,117 @@ fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) 
         level.game_event(events().equip, at, GameEventContext::of(Some(id)));
     }
     true
+}
+
+/// `LivingEntity.canEquipWithDispenser` of a mob (not an armor stand): alive, the slot of the
+/// item's `equippable` usable and empty, the item allows the mob's type and
+/// `canDispenserEquipIntoSlot`.
+fn mob_can_equip(m: &crate::mob::MobData, stack: &ItemStack, slot: EquipmentSlot) -> bool {
+    use crate::mob::Kind as K;
+    use crate::predicate::EntityTags;
+    if m.kind == K::ArmorStand || !m.is_alive() || !crate::mob::animal::can_use_slot(m, slot) {
+        return false;
+    }
+    let name = item::item_id(stack).name();
+    let in_tag = |tag: &str| {
+        crate::player::play::game_data().is_some_and(|d| d.entity_in_tag(m.kind.type_id(), tag))
+    };
+    // `Equippable.allowedEntities` of the default components.
+    let allowed = if name == "minecraft:saddle" {
+        in_tag("minecraft:can_equip_saddle")
+    } else if name.ends_with("_harness") {
+        in_tag("minecraft:can_equip_harness")
+    } else if name.ends_with("_horse_armor") {
+        in_tag("minecraft:can_wear_horse_armor")
+    } else if name.ends_with("_nautilus_armor") {
+        in_tag("minecraft:can_wear_nautilus_armor")
+    } else if name == "minecraft:wolf_armor" {
+        m.kind == K::Wolf
+    } else if name.ends_with("_carpet") {
+        matches!(m.kind, K::Llama | K::TraderLlama)
+    } else {
+        true
+    };
+    if !allowed {
+        return false;
+    }
+    let empty = if m.kind == K::Pig && slot == EquipmentSlot::Saddle {
+        !m.saddled
+    } else {
+        m.equipment.get(slot).is_empty()
+    };
+    if !empty {
+        return false;
+    }
+    // `canDispenserEquipIntoSlot`.
+    let loot = m.can_pick_up_loot;
+    let mount_slot = matches!(slot, EquipmentSlot::Body | EquipmentSlot::Saddle);
+    match m.kind {
+        K::Allay => false,
+        K::Panda | K::Fox | K::Dolphin => slot == EquipmentSlot::MainHand && loot,
+        K::HappyGhast | K::SulfurCube => slot == EquipmentSlot::Body,
+        K::Pig | K::Strider => slot == EquipmentSlot::Saddle || loot,
+        K::Nautilus | K::ZombieNautilus => mount_slot || loot,
+        K::Horse
+        | K::Donkey
+        | K::Mule
+        | K::SkeletonHorse
+        | K::ZombieHorse
+        | K::Llama
+        | K::TraderLlama => mount_slot && m.tame || loot,
+        K::Camel | K::CamelHusk => mount_slot || loot,
+        _ => loot,
+    }
+}
+
+/// `setItemSlot` with `onEquipItem` (the equip sound from the mob's random, `EQUIP`), then
+/// `setGuaranteedDrop` and `setPersistenceRequired`.
+fn equip_mob(level: &mut Level, id: EntityId, slot: EquipmentSlot, equip: ItemStack) {
+    use crate::mob::Kind as K;
+    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    let Some(m) = level.entities.mob_mut(id) else {
+        return;
+    };
+    let saddle = slot == EquipmentSlot::Saddle;
+    let sound = match m.kind {
+        K::Pig if saddle => "minecraft:entity.pig.saddle",
+        K::Strider if saddle => "minecraft:entity.strider.saddle",
+        K::Camel if saddle => "minecraft:entity.camel.saddle",
+        K::CamelHusk if saddle => "minecraft:entity.camel_husk.saddle",
+        K::Nautilus | K::ZombieNautilus if saddle && m.fluids.eye_in_water => {
+            "minecraft:item.nautilus_saddle_underwater_equip"
+        }
+        K::Nautilus | K::ZombieNautilus if saddle => "minecraft:item.nautilus_saddle_equip",
+        _ => item::item_id(&equip).info().equip_sound,
+    };
+    if m.kind == K::Pig && saddle {
+        // The pig keeps its saddle as a flag.
+        m.saddled = true;
+    } else {
+        m.equipment.set(slot, equip);
+        m.equipment.set_guaranteed_drop(slot);
+    }
+    m.persistent = true;
+    let source = m.kind.sound_source();
+    let seed = (!m.silent).then(|| m.random.next_long());
+    if let Some(seed) = seed {
+        let sound = sound_id(sound.strip_prefix("minecraft:").unwrap_or(sound));
+        level.play_seeded_sound(
+            None,
+            pos.x,
+            pos.y,
+            pos.z,
+            sound,
+            source as u8,
+            1.0,
+            1.0,
+            seed,
+        );
+    }
+    level.game_event(events().equip, pos, GameEventContext::of(Some(id)));
+    level.entities.equipment_updates.push(id);
 }
 
 /// `equippable.equipSound()` of the items players can wear.

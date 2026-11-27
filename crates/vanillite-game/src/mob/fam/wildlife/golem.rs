@@ -179,30 +179,7 @@ pub(super) fn snow_interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if !ix.ents.mob(ix.target).is_some_and(|m| st(m).pumpkin) {
         return Interaction::Pass;
     }
-    sound_at(
-        ix.ents,
-        ix.env,
-        ix.target,
-        "minecraft:entity.snow_golem.shear",
-        SoundSource::Players,
-        1.0,
-    );
-    let eye = ix.ents.mob(ix.target).map_or(1.7, crate::mob::eye_height);
-    if let Some(m) = ix.ents.mob_mut(ix.target) {
-        st_mut(m).pumpkin = false;
-    }
-    if let Some(mut e) = ix.ents.store.get_mut(ix.target) {
-        e.mark_data_dirty();
-    }
-    // `shearing/snow_golem`: the carved pumpkin, dropped at the eyes.
-    if let Some(pos) = ix.ents.store.get(ix.target).map(|e| e.pos()) {
-        drop_at(
-            ix,
-            pos + Vec3::new(0.0, eye, 0.0),
-            "minecraft:carved_pumpkin",
-            1,
-        );
-    }
+    snow_shear(ix.ents, ix.env, ix.target, SoundSource::Players);
     crate::mob::animal::entity_game_event(
         ix.ents,
         ix.env,
@@ -214,14 +191,52 @@ pub(super) fn snow_interact(ix: &mut Interact<'_, '_>) -> Interaction {
     Interaction::Success
 }
 
+/// `SnowGolem.shear`: the sound, no pumpkin any more, and `shearing/snow_golem` (the carved
+/// pumpkin) dropped at the eyes.
+pub(crate) fn snow_shear(
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    target: EntityId,
+    source: SoundSource,
+) {
+    sound_at(
+        ents,
+        env,
+        target,
+        "minecraft:entity.snow_golem.shear",
+        source,
+        1.0,
+    );
+    let eye = ents.mob(target).map_or(1.7, crate::mob::eye_height);
+    if let Some(m) = ents.mob_mut(target) {
+        st_mut(m).pumpkin = false;
+    }
+    if let Some(mut e) = ents.store.get_mut(target) {
+        e.mark_data_dirty();
+    }
+    if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+        drop_at(
+            env,
+            pos + Vec3::new(0.0, eye, 0.0),
+            "minecraft:carved_pumpkin",
+            1,
+        );
+    }
+}
+
 /// `spawnAtLocation`: an item entity with the default motion.
-pub(super) fn drop_at(ix: &mut Interact<'_, '_>, pos: Vec3, item: &str, count: i32) {
+pub(super) fn drop_at(
+    env: &mut crate::survival::player::Env<'_>,
+    pos: Vec3,
+    item: &str,
+    count: i32,
+) {
     let stack = crate::mob::equipment::stack(item).with_count(count);
     if stack.is_empty() {
         return;
     }
     let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
-    ix.env.out.push(crate::survival::Effect::DropItem {
+    env.out.push(crate::survival::Effect::DropItem {
         random: item_random,
         uuid,
         pos,

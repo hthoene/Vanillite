@@ -426,33 +426,13 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if ss(m).is_some_and(|s| s.sheared) {
         return Interaction::Pass;
     }
-    let Some(e) = ix.ents.store.get(ix.target) else {
-        return Interaction::Pass;
-    };
-    let pos = e.pos();
-    let height = f64::from(e.dims().height);
-    let seed = crate::survival::sound_seed();
-    crate::survival::play_sound(
-        ix.env.out,
-        None,
-        pos,
-        "minecraft:entity.bogged.shear",
+    shear(
+        ix.level,
+        ix.ents,
+        ix.env,
+        ix.target,
         vanillite_protocol::packets::play::clientbound::SoundSource::Players,
-        1.0,
-        1.0,
-        seed,
     );
-    let drops = super::simple_table_loot(ix.level, "minecraft:shearing/bogged", ix.env.random);
-    let Some(m) = ix.ents.mob_mut(ix.target) else {
-        return Interaction::Success;
-    };
-    ss_mut(m).sheared = true;
-    for stack in drops {
-        super::drop_item(ix.env, pos + Vec3::new(0.0, height, 0.0), stack);
-    }
-    if let Some(mut e) = ix.ents.store.get_mut(ix.target) {
-        e.mark_data_dirty();
-    }
     crate::mob::animal::entity_game_event(
         ix.ents,
         ix.env,
@@ -462,6 +442,48 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     );
     crate::mob::animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
     Interaction::Success
+}
+
+/// `Bogged.readyForShearing`.
+pub(crate) fn ready_for_shearing(m: &MobData) -> bool {
+    m.kind == Kind::Bogged && !ss(m).is_some_and(|s| s.sheared)
+}
+
+/// `Bogged.shear`: the sound, `shearing/bogged` dropped at the top, then sheared.
+pub(crate) fn shear(
+    level: &crate::level::Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    target: vanillite_world::entity::EntityId,
+    source: vanillite_protocol::packets::play::clientbound::SoundSource,
+) {
+    let Some(e) = ents.store.get(target) else {
+        return;
+    };
+    let pos = e.pos();
+    let height = f64::from(e.dims().height);
+    let seed = crate::survival::sound_seed();
+    crate::survival::play_sound(
+        env.out,
+        None,
+        pos,
+        "minecraft:entity.bogged.shear",
+        source,
+        1.0,
+        1.0,
+        seed,
+    );
+    let drops = super::simple_table_loot(level, "minecraft:shearing/bogged", env.random);
+    let Some(m) = ents.mob_mut(target) else {
+        return;
+    };
+    ss_mut(m).sheared = true;
+    for stack in drops {
+        super::drop_item(env, pos + Vec3::new(0.0, height, 0.0), stack);
+    }
+    if let Some(mut e) = ents.store.get_mut(target) {
+        e.mark_data_dirty();
+    }
 }
 
 pub fn pick_up_items(t: &mut Tick<'_, '_>) {

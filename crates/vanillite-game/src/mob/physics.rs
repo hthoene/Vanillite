@@ -4,7 +4,7 @@
 
 use vanillite_base::math::{floor, frac};
 use vanillite_base::{Aabb, BlockPos, Vec3};
-use vanillite_data::block::{BlockState, flags, ids};
+use vanillite_data::block::{BlockState, Shape, flags, ids};
 
 use vanillite_worldgen::behaviour::StateExt;
 
@@ -22,6 +22,10 @@ pub trait Blocks {
     fn border(&self) -> Option<&WorldBorder> {
         None
     }
+    /// The collision boxes of the `moving_piston` at `pos` relative to it
+    /// (`MovingPistonBlock.getCollisionShape` from its block entity); none without access to
+    /// block entities.
+    fn moving_piston_boxes(&self, _pos: BlockPos, _out: &mut Vec<[f64; 6]>) {}
 }
 
 impl Blocks for Level {
@@ -33,6 +37,10 @@ impl Blocks for Level {
     #[inline]
     fn border(&self) -> Option<&WorldBorder> {
         Some(&self.border)
+    }
+
+    fn moving_piston_boxes(&self, pos: BlockPos, out: &mut Vec<[f64; 6]>) {
+        crate::block::piston::collision_boxes_at(&self.block_entities, pos, out);
     }
 }
 
@@ -57,7 +65,28 @@ pub fn border_boxes(border: &WorldBorder, entity: &Aabb, area: &Aabb, out: &mut 
 /// `BlockCollisions`: the cells the box touches plus a ring around it, where ring cells only
 /// count with a large collision shape (fences, walls) and edge cells only for moving pistons.
 pub fn block_boxes(blocks: &dyn Blocks, area: &Aabb, out: &mut Vec<Aabb>) {
-    block_boxes_for(blocks, area, out, None, SnowCollision::None);
+    block_boxes_for(blocks, area, out, None, SnowCollision::None, None);
+}
+
+/// The collision shape of `state` at height `oy` for an entity with its feet at `bottom`
+/// that does not descend (`EntityCollisionContext`; `None`: the empty context): scaffolding
+/// holds such an entity only on its top (`SHAPE_STABLE`) or, for an unstable bottom piece, on
+/// its bottom plate (`ScaffoldingBlock.getCollisionShape`).
+pub fn context_shape(state: BlockState, oy: f64, bottom: Option<f64>) -> Shape {
+    let Some(bottom) = bottom else {
+        return state.collision_shape();
+    };
+    if state.block() != ids::SCAFFOLDING {
+        return state.collision_shape();
+    }
+    let eps = f64::from(1.0e-5_f32);
+    if bottom > oy + 1.0 - eps {
+        state.collision_shape()
+    } else if state.int("distance") != Some(0) && state.flag("bottom") && bottom > oy - eps {
+        &[[0.0, 0.0, 0.0, 1.0, 0.125, 1.0]]
+    } else {
+        &[]
+    }
 }
 
 /// How powder snow collides with an entity (`PowderSnowBlock.getCollisionShape` with the
@@ -90,6 +119,7 @@ pub fn block_boxes_for(
     out: &mut Vec<Aabb>,
     lava_bottom: Option<f64>,
     snow: SnowCollision,
+    entity_bottom: Option<f64>,
 ) {
     let min_x = floor(area.min_x - EPSILON) - 1;
     let max_x = floor(area.max_x + EPSILON) + 1;
@@ -163,7 +193,25 @@ pub fn block_boxes_for(
                     }
                     continue;
                 }
-                for b in state.collision_shape() {
+                if state.block() == ids::MOVING_PISTON {
+                    let mut moving = Vec::new();
+                    blocks.moving_piston_boxes(pos, &mut moving);
+                    for b in moving {
+                        let shape = Aabb {
+                            min_x: ox + b[0],
+                            min_y: oy + b[1],
+                            min_z: oz + b[2],
+                            max_x: ox + b[3],
+                            max_y: oy + b[4],
+                            max_z: oz + b[5],
+                        };
+                        if shape.intersects(area) {
+                            out.push(shape);
+                        }
+                    }
+                    continue;
+                }
+                for b in context_shape(state, oy, entity_bottom) {
                     let shape = Aabb {
                         min_x: ox + b[0],
                         min_y: oy + b[1],
@@ -298,6 +346,7 @@ pub fn collide_for(
         scratch,
         on_lava,
         SnowCollision::None,
+        false,
     )
 }
 
@@ -312,14 +361,16 @@ pub fn collide_in_context(
     scratch: &mut Vec<Aabb>,
     on_lava: bool,
     snow: SnowCollision,
+    entity: bool,
 ) -> Vec3 {
     let lava_bottom = on_lava.then_some(aabb.min_y);
+    let entity_bottom = entity.then_some(aabb.min_y);
     let step = if movement.length_sqr() == 0.0 {
         movement
     } else {
         scratch.clear();
         let area = aabb.expand_towards(movement.x, movement.y, movement.z);
-        block_boxes_for(blocks, &area, scratch, lava_bottom, snow);
+        block_boxes_for(blocks, &area, scratch, lava_bottom, snow, entity_bottom);
         if let Some(border) = blocks.border() {
             border_boxes(border, &aabb, &area, scratch);
         }
@@ -340,7 +391,7 @@ pub fn collide_in_context(
             area = area.expand_towards(0.0, -1.0e-5, 0.0);
         }
         scratch.clear();
-        block_boxes_for(blocks, &area, scratch, lava_bottom, snow);
+        block_boxes_for(blocks, &area, scratch, lava_bottom, snow, entity_bottom);
         if let Some(border) = blocks.border() {
             border_boxes(border, &aabb, &area, scratch);
         }

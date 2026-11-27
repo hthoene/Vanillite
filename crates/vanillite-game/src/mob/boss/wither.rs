@@ -332,10 +332,11 @@ pub fn check_spawn(
             f64::from(spawn.y) + 0.55,
             f64::from(spawn.z) + 0.5,
         ),
+        // `snapTo` turns the wither only: the head keeps the constructor's yaw.
         Rotation {
             y_rot: yaw,
             x_rot: 0.0,
-            y_head_rot: yaw,
+            y_head_rot: crate::mob::constructor_y_rot(seed),
         },
         m,
     );
@@ -975,9 +976,33 @@ pub fn ai_step_before(t: &mut Tick<'_, '_>) {
     }
 }
 
-/// The parts of `aiStep` after `super.aiStep()` are client side (heads, particles).
+/// The parts of `aiStep` after `super.aiStep()`: the head turns are for clients, and the
+/// particles (`addParticle` does nothing on the server) still draw their numbers: three
+/// gaussians from the wither's random per head, while powered a `nextInt(4)` from the level
+/// random with three more gaussians on 0, and while invulnerable three times a gaussian, a
+/// float and a gaussian.
 pub fn ai_step(t: &mut Tick<'_, '_>) {
-    let _ = t;
+    let powered = is_powered(t.mob_ref());
+    for _ in 0..3 {
+        let r = &mut t.mob().random;
+        r.next_gaussian();
+        r.next_gaussian();
+        r.next_gaussian();
+        if powered && t.env.random.next_int_bounded(4) == 0 {
+            let r = &mut t.mob().random;
+            r.next_gaussian();
+            r.next_gaussian();
+            r.next_gaussian();
+        }
+    }
+    if state(t.mob_ref()).is_some_and(|s| s.invulnerable_ticks > 0) {
+        let r = &mut t.mob().random;
+        for _ in 0..3 {
+            r.next_gaussian();
+            r.next_float();
+            r.next_gaussian();
+        }
+    }
 }
 
 /// `getHeadX/Y/Z(index)`.

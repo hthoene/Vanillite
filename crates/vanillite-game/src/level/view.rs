@@ -29,6 +29,7 @@ use crate::survival::blocks::BlockAccess;
 pub struct LevelView<'a> {
     chunks: ChunkView<'a>,
     border: &'a WorldBorder,
+    block_entities: &'a super::block_entity::BlockEntities,
     min_y: i32,
     max_y: i32,
 }
@@ -42,12 +43,14 @@ impl<'a> LevelView<'a> {
     pub(super) fn new(
         chunks: ChunkView<'a>,
         border: &'a WorldBorder,
+        block_entities: &'a super::block_entity::BlockEntities,
         min_y: i32,
         max_y: i32,
     ) -> LevelView<'a> {
         LevelView {
             chunks,
             border,
+            block_entities,
             min_y,
             max_y,
         }
@@ -92,6 +95,10 @@ impl Blocks for LevelView<'_> {
     #[inline]
     fn border(&self) -> Option<&WorldBorder> {
         Some(self.border)
+    }
+
+    fn moving_piston_boxes(&self, pos: BlockPos, out: &mut Vec<[f64; 6]>) {
+        crate::block::piston::collision_boxes_at(self.block_entities, pos, out);
     }
 }
 

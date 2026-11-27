@@ -771,7 +771,7 @@ fn own_interact(
                 .mob(target)
                 .is_some_and(|m| m.is_alive() && !m.sheared && !m.baby);
             if ready {
-                shear_sheep(level, ents, env, _cx, target);
+                shear_sheep(level, ents, env, _cx, target, SoundSource::Players);
                 let event = crate::level::game_event::events().shear;
                 entity_game_event(ents, env, target, event, Some(player));
                 hurt_held(ents, env, player, hand, 1);
@@ -898,19 +898,20 @@ pub fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
 
 /// `Sheep.shear`: the wool of the loot table `shearing/sheep` (1 to 3 of its colour) pops
 /// out, one item each, pushed by the sheep's random.
-fn shear_sheep(
+pub(crate) fn shear_sheep(
     level: &Level,
     ents: &mut Entities,
     env: &mut Env<'_>,
     cx: &mut MobContext,
     target: EntityId,
+    source: SoundSource,
 ) {
     sound_at(
         ents,
         env,
         target,
         "minecraft:entity.sheep.shear",
-        SoundSource::Players,
+        source,
         1.0,
     );
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
@@ -1145,7 +1146,7 @@ fn item_interact(
 }
 
 /// `LivingEntity.canUseSlot` of the kinds that restrict their saddle or body slot.
-fn can_use_slot(m: &MobData, slot: item::EquipmentSlot) -> bool {
+pub(crate) fn can_use_slot(m: &MobData, slot: item::EquipmentSlot) -> bool {
     use item::EquipmentSlot::{Body, Saddle};
     let adult = m.is_alive() && !m.baby;
     match (m.kind, slot) {

@@ -1,0 +1,161 @@
+{
+  "description": "PistonMovingBlockEntity.moveEntityByPiston (#214): entity.move(MoverType.PISTON) clips the push against blocks, so an item and a pig pushed by a piston head against glass stay in front of it instead of ending inside it; an item pushed onto a stone pressure plate presses it during the push (applyEffectsFromBlocks).",
+  "tier": "fast",
+  "level_rng": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -57,
+      10
+    ]
+  ],
+  "ticks": 20,
+  "entities": [
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        3.5,
+        -60.0,
+        5.5
+      ],
+      "seed": 3,
+      "finalize": false
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        5
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        8
+      ],
+      "block": "minecraft:piston[extended=false,facing=east]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        2
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        5
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        8
+      ],
+      "block": "minecraft:stone_pressure_plate[powered=false]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -60,
+        4
+      ],
+      "to": [
+        4,
+        -59,
+        4
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -60,
+        6
+      ],
+      "to": [
+        4,
+        -59,
+        6
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -59,
+        5
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -59,
+        5
+      ],
+      "block": "minecraft:glass"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 3.5 -60.0 2.5 {Item:{id:\"minecraft:stone\",count:1},PickupDelay:100}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 3.5 -60.0 8.5 {Item:{id:\"minecraft:dirt\",count:1},PickupDelay:100}"
+    },
+    {
+      "tick": 6,
+      "op": "command",
+      "command": "setblock 1 -60 2 minecraft:redstone_block"
+    },
+    {
+      "tick": 6,
+      "op": "command",
+      "command": "setblock 1 -60 5 minecraft:redstone_block"
+    },
+    {
+      "tick": 6,
+      "op": "command",
+      "command": "setblock 1 -60 8 minecraft:redstone_block"
+    }
+  ]
+}

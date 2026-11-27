@@ -1,0 +1,114 @@
+{
+  "description": "ScaffoldingBlock.getCollisionShape with an entity context (#214): an item and a chicken inside the unstable bottom pieces of a scaffolding overhang land on their bottom plate (SHAPE_UNSTABLE_BOTTOM) instead of falling through; an item dropped above the column rests on its top (SHAPE_STABLE). A player places scaffolding into the block it stands in (a placement context collides with nothing).",
+  "tier": "fast",
+  "level_rng": true,
+  "player_state": true,
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      12,
+      -55,
+      8
+    ]
+  ],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        10.5,
+        -60.0,
+        4.5
+      ]
+    },
+    {
+      "name": "chicken",
+      "type": "minecraft:chicken",
+      "pos": [
+        5.5,
+        -57.5,
+        4.5
+      ],
+      "seed": 3,
+      "finalize": false
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -59,
+        4
+      ],
+      "block": "minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -58,
+        4
+      ],
+      "block": "minecraft:scaffolding[bottom=false,distance=0,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -58,
+        4
+      ],
+      "block": "minecraft:scaffolding[bottom=true,distance=1,waterlogged=false]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -58,
+        4
+      ],
+      "block": "minecraft:scaffolding[bottom=true,distance=2,waterlogged=false]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 6.5 -57.6 4.5 {Item:{id:\"minecraft:stone\",count:1}}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:item 4.5 -56.5 4.5 {Item:{id:\"minecraft:dirt\",count:1}}"
+    },
+    {
+      "tick": 4,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        10,
+        -61,
+        4
+      ],
+      "face": "up",
+      "item": "minecraft:scaffolding",
+      "count": 4
+    }
+  ]
+}
