@@ -7,7 +7,8 @@ use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_protocol::SharedPacket;
-use vanillite_protocol::packets::play::clientbound::Animate;
+use vanillite_protocol::packets::play::clientbound::SwingAnimation;
+use vanillite_protocol::packets::play::serverbound::Hand;
 use vanillite_world::entity::EntityId;
 
 use super::memory::MemoryStatus as S;
@@ -1343,8 +1344,49 @@ pub fn living_from_uuid(t: &mut Tick<'_, '_>, uuid: u128) -> Option<EntityId> {
     found
 }
 
-/// `swing(MAIN_HAND)`.
+/// `Mob.swing(hand, SwingAnimation.DEFAULT)`: a whack of 6 ticks.
 pub fn swing(t: &mut Tick<'_, '_>, off_hand: bool) {
+    let hand = if off_hand {
+        Hand::OffHand
+    } else {
+        Hand::MainHand
+    };
+    send_swing(t, hand, SWING_WHACK, DEFAULT_SWING_TICKS);
+}
+
+/// `Mob.swingForAttack(MAIN_HAND)`: the main hand item's `attack_animation` (spears stab),
+/// `SwingAnimation.DEFAULT` without one.
+pub fn swing_for_attack(t: &mut Tick<'_, '_>) {
+    let held = t
+        .mob_ref()
+        .equipment
+        .get(crate::item::EquipmentSlot::MainHand);
+    let (kind, ticks) = if held.is_empty() {
+        (SWING_WHACK, DEFAULT_SWING_TICKS)
+    } else {
+        let info = crate::item::item_id(held).info();
+        // Only spears have an `attack_animation` component: a stab.
+        let kind = if info.piercing_weapon.is_some() {
+            SWING_STAB
+        } else {
+            SWING_WHACK
+        };
+        (kind, i32::from(info.attack_animation_ticks))
+    };
+    send_swing(t, Hand::MainHand, kind, ticks);
+}
+
+/// `SwingAnimationType.WHACK`.
+const SWING_WHACK: i32 = 1;
+/// `SwingAnimationType.STAB`.
+const SWING_STAB: i32 = 2;
+/// `SwingAnimation.DEFAULT.duration`.
+const DEFAULT_SWING_TICKS: i32 = 6;
+
+/// `LivingEntity.swing`: `swing_animation` to the players tracking the mob. Never `animate`:
+/// its action 0 is `WAKE_UP`, which a 26.3 client applies to a player and disconnects with
+/// "Network Protocol Error" on any other entity (#243).
+fn send_swing(t: &mut Tick<'_, '_>, hand: Hand, kind: i32, duration: i32) {
     let Some(e) = t.ents.store.get(t.id) else {
         return;
     };
@@ -1353,9 +1395,11 @@ pub fn swing(t: &mut Tick<'_, '_>, off_hand: bool) {
     t.env.out.push(Effect::Tracking {
         entity: id,
         with_self: false,
-        packet: SharedPacket::of(&Animate {
+        packet: SharedPacket::of(&SwingAnimation {
             entity_id,
-            action: if off_hand { 3 } else { 0 },
+            hand,
+            kind,
+            duration,
         }),
     });
 }
@@ -2023,7 +2067,7 @@ fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
                 return false;
             }
             brain(t).set(M::LookTarget, MemValue::Look(Tracker::entity(target, true)));
-            swing(t, false);
+            swing_for_attack(t);
             crate::mob::combat::mob_attack(t, target);
             if alive(t) {
                 brain(t).set_with_expiry(
@@ -2632,3 +2676,46 @@ pub fn same_variant(a: &Behavior, b: &Behavior) -> bool {
 /// Unused-binding guard for readers of [`Brain`].
 #[allow(dead_code)]
 fn _brain(_: &Brain) {}
+
+#[cfg(test)]
+mod tests {
+    use vanillite_base::Vec3;
+    use vanillite_protocol::Packet as _;
+    use vanillite_protocol::codec::Reader;
+    use vanillite_protocol::packets::play::clientbound::{Animate, SwingAnimation};
+
+    use crate::mob::fam::SpawnReason;
+    use crate::mob::{Kind, MobData, Tick};
+    use crate::survival::Effect;
+
+    /// A mob's swing is `swing_animation`: `animate` 0 (`WAKE_UP`) on an axolotl made the
+    /// 26.3 client fail with a `ClassCastException` and drop the connection (#243).
+    #[test]
+    fn mob_swings_send_swing_animation_not_animate() {
+        let mut level = crate::level::tests::flat_level();
+        let mob = MobData::new(Kind::Axolotl, 1);
+        let at = Vec3::new(0.5, -60.0, 0.5);
+        let id = crate::mob::spawn::add_mob(&mut level, mob, at, 0.0, SpawnReason::Natural);
+        let ids = crate::level::mob_env::with_mob_env(&mut level, |level, ents, env, cx| {
+            let mut t = Tick {
+                level,
+                ents,
+                env,
+                cx,
+                id,
+            };
+            super::swing_for_attack(&mut t);
+            super::swing(&mut t, true);
+            t.env
+                .out
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::Tracking { packet, .. } => Reader::new(packet.body()).varint().ok(),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(ids, vec![SwingAnimation::ID, SwingAnimation::ID]);
+        assert!(!ids.contains(&Animate::ID));
+    }
+}

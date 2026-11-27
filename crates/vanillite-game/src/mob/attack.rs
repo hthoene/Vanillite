@@ -347,7 +347,7 @@ pub fn player_attack(
     let network_id = ents.store.get(target).map_or(0, |e| e.network_id().0);
     if crit {
         player_sound(env, ppos, "minecraft:entity.player.attack.crit");
-        animate(env, target, network_id, 4);
+        animate(env, target, network_id, CRITICAL_HIT);
     }
     if !crit && !sweep {
         player_sound(
@@ -361,7 +361,7 @@ pub fn player_attack(
         );
     }
     if magic_boost > 0.0 {
-        animate(env, target, network_id, 5);
+        animate(env, target, network_id, MAGIC_CRITICAL_HIT);
     }
     if let Some(p) = ents.player_mut(attacker) {
         p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
@@ -412,6 +412,11 @@ fn living_health(ents: &Entities, id: EntityId) -> Option<f32> {
         .map(|m| m.health)
         .or_else(|| ents.player(id).map(|p| p.survival.health))
 }
+
+/// `ClientboundAnimatePacket.CRITICAL_HIT`.
+const CRITICAL_HIT: u8 = 1;
+/// `ClientboundAnimatePacket.MAGIC_CRITICAL_HIT`.
+const MAGIC_CRITICAL_HIT: u8 = 2;
 
 /// `sendToTrackingPlayersAndSelf(new ClientboundAnimatePacket(entity, action))`.
 fn animate(env: &mut Env<'_>, target: EntityId, network_id: i32, action: u8) {
