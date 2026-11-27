@@ -244,6 +244,11 @@ impl StatsCounter {
         self.dirty.insert(stat);
     }
 
+    /// Every statistic with its value (also zeros), in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (Stat, i32)> + '_ {
+        self.values.iter().map(|(s, v)| (*s, *v))
+    }
+
     /// `ServerPlayer.awardStat`: adds `count` (saturating) and to the scores of its criterion.
     pub fn award(&mut self, stat: Stat, count: i32) {
         let value = i64::from(self.get(stat))

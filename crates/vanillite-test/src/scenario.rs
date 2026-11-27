@@ -126,7 +126,12 @@
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
 //!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
-//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`). `"progress_state": true`
+//!   (with `dimensions`: only the server evaluates advancements) adds the players' completed
+//!   advancement criteria (`adv`: sorted `advancement#criterion`) and their non-zero statistics
+//!   (`stats`: `minecraft.used:minecraft.crossbow` and so on) without the time statistics
+//!   (`play_time`, `total_world_time`, `time_since_death`, `time_since_rest`, `crouch_time`) and
+//!   the distances (`*_one_cm`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` (SNBT
@@ -246,6 +251,8 @@ pub struct WorldSpec {
     pub sleep_state: bool,
     /// The data pack in the world from the start (`datapacks/<name>/` of this crate).
     pub datapack: Option<String>,
+    /// Whether frames hold the players' completed advancement criteria and statistics.
+    pub progress_state: bool,
 }
 
 /// The overworld's dimension id.
@@ -693,6 +700,13 @@ impl Scenario {
                     .to_owned(),
             );
         }
+        let progress_state = v
+            .get("progress_state")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if progress_state && !dimensions {
+            return Err("\"progress_state\" needs \"dimensions\"".to_owned());
+        }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -762,6 +776,7 @@ impl Scenario {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 datapack,
+                progress_state,
             },
             min,
             max,

@@ -1,0 +1,25 @@
+{
+  "criteria": {
+    "flint_and_steel": {
+      "trigger": "minecraft:item_durability_changed",
+      "conditions": {
+        "item": {
+          "items": "minecraft:flint_and_steel"
+        },
+        "delta": 1
+      }
+    },
+    "crossbow": {
+      "trigger": "minecraft:item_durability_changed",
+      "conditions": {
+        "item": {
+          "items": "minecraft:crossbow"
+        }
+      }
+    }
+  },
+  "requirements": [
+    ["flint_and_steel"],
+    ["crossbow"]
+  ]
+}
