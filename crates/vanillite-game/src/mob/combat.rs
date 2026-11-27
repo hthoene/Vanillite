@@ -282,7 +282,12 @@ fn with_projectile_motion(ents: &Entities, mut source: DamageSource) -> DamageSo
 
 /// `isInvulnerableTo` of a mob: also the `Invulnerable` flag, unless the damage bypasses it
 /// or comes from a creative player (`isCreativePlayer`).
-fn invulnerable_to(ents: &Entities, env: &Env<'_>, target: EntityId, source: &DamageSource) -> bool {
+fn invulnerable_to(
+    ents: &Entities,
+    env: &Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+) -> bool {
     let types = env.types;
     let kind = source.kind;
     let Some(e) = ents.store.get(target) else {

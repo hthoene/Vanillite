@@ -463,7 +463,10 @@ fn bubble_columns(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: Ent
     let Some(e) = ents.store.get(id) else {
         return;
     };
-    let way = [crate::survival::inside::Movement::plain(e.old_pos(), e.pos())];
+    let way = [crate::survival::inside::Movement::plain(
+        e.old_pos(),
+        e.pos(),
+    )];
     let view = level.view();
     let walker = crate::survival::inside::Walker {
         blocks: &view,
@@ -473,7 +476,9 @@ fn bubble_columns(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: Ent
     };
     let mut columns: Vec<(BlockPos, bool)> = Vec::new();
     walker.walk(&way, |cell| {
-        if cell.in_block && cell.precise && cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
+        if cell.in_block
+            && cell.precise
+            && cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
         {
             columns.push((cell.pos, cell.state.value("drag") == Some("true")));
         }

@@ -1645,7 +1645,10 @@ fn teleport_to(
 /// `#entities_can_teleport_to` (`#blocks_motion`).
 fn can_teleport_onto(state: BlockState) -> bool {
     match crate::player::play::game_data() {
-        Some(d) if d.block_tags.contains_key("minecraft:entities_can_teleport_to") => {
+        Some(d)
+            if d.block_tags
+                .contains_key("minecraft:entities_can_teleport_to") =>
+        {
             d.block_in_tag(state.block().0, "minecraft:entities_can_teleport_to")
         }
         _ => blocks_motion(state),
