@@ -170,7 +170,8 @@ players='[
   {"uuid": "d97211d5-1155-4faa-95db-7ddec775418c", "name": "de_hannes"},
   {"uuid": "997ddb16-a31a-43b1-8f10-dac13d1f6af6", "name": "Looxtastisch", "creative": true},
   {"uuid": "759689da-4bf5-4370-8f27-08382b24bb63", "name": "Tiegertropfen119", "creative": true},
-  {"uuid": "57c2aa2f-d04a-4e8f-9e49-9e85adb3cef3", "name": "MobilGame06"}
+  {"uuid": "57c2aa2f-d04a-4e8f-9e49-9e85adb3cef3", "name": "MobilGame06"},
+  {"uuid": "00000000-0000-0000-0009-01f0d0488531", "name": ".Hannes7589"}
 ]'
 install -d /etc/vanillite-test
 echo "$players" | jq '[.[] | select(.creative) | {uuid, name}]' \
