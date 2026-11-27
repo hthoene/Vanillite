@@ -79,6 +79,30 @@ impl Nbt {
         self.0.push(0);
     }
 
+    fn byte_array(&mut self, name: &str, v: &[u8]) {
+        self.head(7, name);
+        self.0
+            .extend_from_slice(&i32::try_from(v.len()).unwrap_or(0).to_le_bytes());
+        self.0.extend_from_slice(v);
+    }
+
+    fn compound(&mut self, name: &str, c: &Nbt) {
+        self.head(10, name);
+        self.0.extend_from_slice(&c.0);
+        self.0.push(0);
+    }
+
+    fn compounds(&mut self, name: &str, list: &[Nbt]) {
+        self.head(9, name);
+        self.0.push(10);
+        self.0
+            .extend_from_slice(&i32::try_from(list.len()).unwrap_or(0).to_le_bytes());
+        for c in list {
+            self.0.extend_from_slice(&c.0);
+            self.0.push(0);
+        }
+    }
+
     /// `pages`: a list of `{photoname: "", text}` compounds.
     fn pages<'a>(&mut self, pages: impl ExactSizeIterator<Item = String> + 'a) {
         self.head(9, "pages");
@@ -216,6 +240,7 @@ fn creative_components(
     data: &[u8],
     enchantments: &Enchantments,
 ) -> Option<()> {
+    use vanillite_nbt::{Compound, Tag};
     use vanillite_protocol::codec::write_varint;
     use vanillite_protocol::components_nbt::RegistryNames;
     let mut v = Vec::with_capacity(8);
@@ -244,10 +269,56 @@ fn creative_components(
             }
             ids::STORED_ENCHANTMENTS
         }
+        3 if data.len() > 1 => {
+            // Flight, explosion count, explosions.
+            let mut rest = data.get(2..)?;
+            let explosions = (0..*data.get(1)?)
+                .map(|_| java_explosion(&mut rest))
+                .collect::<Option<Vec<_>>>()?;
+            let tag = Tag::Compound(
+                Compound::new()
+                    .with("flight_duration", i8::try_from(first).ok()?)
+                    .with("explosions", vanillite_nbt::List(explosions)),
+            );
+            return set_java(stack, ids::FIREWORKS, &tag);
+        }
         3 => {
             write_varint(&mut v, first);
             v.push(0);
             ids::FIREWORKS
+        }
+        6 => {
+            let tag = java_explosion(&mut &data[..])?;
+            return set_java(stack, ids::FIREWORK_EXPLOSION, &tag);
+        }
+        7 => {
+            let (effect, duration) = *STEW_EFFECTS.get(usize::try_from(first).ok()?)?;
+            let entry = Compound::new()
+                .with("id", format!("minecraft:{effect}"))
+                .with("duration", duration);
+            let tag = Tag::List(vanillite_nbt::List(vec![Tag::Compound(entry)]));
+            return set_java(stack, ids::SUSPICIOUS_STEW_EFFECTS, &tag);
+        }
+        8 => {
+            // The ominous banner (`Raid.getBannerComponentPatch`).
+            let layers = OMINOUS_LAYERS
+                .iter()
+                .map(|(pattern, colour)| {
+                    Tag::Compound(
+                        Compound::new()
+                            .with("pattern", format!("minecraft:{pattern}"))
+                            .with("color", *colour),
+                    )
+                })
+                .collect();
+            set_java(
+                stack,
+                ids::BANNER_PATTERNS,
+                &Tag::List(vanillite_nbt::List(layers)),
+            )?;
+            let name = Compound::new().with("translate", "block.minecraft.ominous_banner");
+            set_java(stack, ids::ITEM_NAME, &Tag::Compound(name))?;
+            return set_java(stack, ids::RARITY, &Tag::from("uncommon"));
         }
         4 => {
             let name = GOAT_HORNS.get(usize::try_from(first).ok()?)?;
@@ -262,8 +333,82 @@ fn creative_components(
         }
         _ => return None,
     };
-    stack.patch_mut().set(component, v.into_boxed_slice());
+    stack.set_component(component, v.into_boxed_slice());
     Some(())
+}
+
+/// Java effects and durations of the Bedrock suspicious stews (by metadata: the flower's
+/// `suspiciousStewEffect` and seconds × 20).
+const STEW_EFFECTS: [(&str, i32); 13] = [
+    ("night_vision", 100),
+    ("jump_boost", 100),
+    ("weakness", 140),
+    ("blindness", 220),
+    ("poison", 220),
+    ("saturation", 7),
+    ("saturation", 7),
+    ("wither", 140),
+    ("regeneration", 140),
+    ("fire_resistance", 60),
+    ("night_vision", 100),
+    ("blindness", 220),
+    ("nausea", 140),
+];
+
+/// The layers of the ominous banner.
+const OMINOUS_LAYERS: [(&str, &str); 8] = [
+    ("rhombus", "cyan"),
+    ("stripe_bottom", "light_gray"),
+    ("stripe_center", "gray"),
+    ("border", "light_gray"),
+    ("stripe_middle", "black"),
+    ("half_horizontal", "light_gray"),
+    ("circle", "light_gray"),
+    ("border", "black"),
+];
+
+/// Sets a component of `stack` from its Java NBT form.
+fn set_java(stack: &mut ItemStack, component: u16, tag: &vanillite_nbt::Tag) -> Option<()> {
+    let wire = vanillite_protocol::components_nbt::from_nbt(
+        component,
+        tag,
+        &vanillite_protocol::item::InstalledRegistries,
+    )
+    .ok()?;
+    stack.patch_mut().set(component, wire);
+    Some(())
+}
+
+/// A firework explosion of `creative_java.bin` (shape, flags: 1 trail, 2 twinkle, then colour
+/// and fade counts with Bedrock dye indices) as Java NBT.
+fn java_explosion(data: &mut &[u8]) -> Option<vanillite_nbt::Tag> {
+    use vanillite_nbt::{Compound, Tag};
+    fn next(data: &mut &[u8]) -> Option<u8> {
+        let (&b, rest) = data.split_first()?;
+        *data = rest;
+        Some(b)
+    }
+    fn colours(data: &mut &[u8]) -> Option<Vec<i32>> {
+        let n = next(data)?;
+        (0..n)
+            .map(|_| {
+                let rgb = *FIREWORK_COLOURS.get(usize::from(next(data)?))?;
+                i32::try_from(rgb).ok()
+            })
+            .collect()
+    }
+    let shape = *SHAPES.get(usize::from(next(data)?))?;
+    let flags = next(data)?;
+    let main = colours(data)?;
+    let fades = colours(data)?;
+    Some(Tag::Compound(
+        Compound::new()
+            .with("shape", shape)
+            .with("colors", main)
+            .with("fade_colors", fades)
+            .with("has_trail", i8::from(flags & 1 != 0))
+            .with("has_twinkle", i8::from(flags & 2 != 0)),
+    ))
 }
 
 /// The Bedrock goat horn metadata of a stack's `instrument`.
@@ -340,6 +485,226 @@ fn potion(stack: &ItemStack) -> Option<u16> {
         .strip_prefix("minecraft:")?;
     let i = BEDROCK_POTIONS.iter().position(|&n| n == name)?;
     u16::try_from(i).ok()
+}
+
+/// Java `DyeColor.getFireworkColor` in Bedrock dye order (black, red, ..., white): Bedrock
+/// firework colours are dye indices.
+const FIREWORK_COLOURS: [u32; 16] = [
+    0x1E_1B1B, 0xB3_312C, 0x3B_511A, 0x51_301A, 0x25_3192, 0x7B_2FBE, 0x28_7697, 0xAB_ABAB,
+    0x43_4343, 0xD8_8198, 0x41_CD34, 0xDE_CF2A, 0x66_89D3, 0xC3_54CD, 0xEB_8844, 0xF0_F0F0,
+];
+
+/// Firework explosion shapes in id order (Java and Bedrock agree).
+const SHAPES: [&str; 5] = ["small_ball", "large_ball", "star", "creeper", "burst"];
+
+/// Bedrock suspicious stew metadata (the flower) by Java effect.
+const STEWS: [(&str, u16); 10] = [
+    ("night_vision", 0),
+    ("jump_boost", 1),
+    ("weakness", 2),
+    ("blindness", 3),
+    ("poison", 4),
+    ("saturation", 5),
+    ("wither", 7),
+    ("regeneration", 8),
+    ("fire_resistance", 9),
+    ("nausea", 12),
+];
+
+/// The Bedrock dye index of the firework colour nearest to `rgb`.
+fn firework_colour(rgb: u32) -> u8 {
+    u8::try_from(crate::num::nearest_colour(rgb, &FIREWORK_COLOURS)).unwrap_or(15)
+}
+
+/// A component of a stack as Java NBT (as `/data` shows it).
+fn java_nbt(stack: &ItemStack, component: u16) -> Option<vanillite_nbt::Tag> {
+    vanillite_protocol::components_nbt::to_nbt(
+        component,
+        stack.component(component)?,
+        &vanillite_protocol::item::InstalledRegistries,
+    )
+    .ok()
+}
+
+fn ints(tag: Option<&vanillite_nbt::Tag>) -> Vec<u32> {
+    use vanillite_nbt::Tag;
+    let as_u32 = |v: i32| u32::from_ne_bytes(v.to_ne_bytes());
+    match tag {
+        Some(Tag::IntArray(v)) => v.iter().take(64).map(|&v| as_u32(v)).collect(),
+        Some(Tag::List(l)) => {
+            l.0.iter()
+                .take(64)
+                .filter_map(|t| t.as_i64().and_then(|v| i32::try_from(v).ok()))
+                .map(as_u32)
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A `FireworkExplosion` as Bedrock explosion compound, and its colours.
+fn explosion(tag: &vanillite_nbt::Tag) -> Option<(Nbt, Vec<u32>)> {
+    let c = tag.as_compound()?;
+    let shape = c
+        .get("shape")
+        .and_then(vanillite_nbt::Tag::as_str)
+        .unwrap_or("small_ball");
+    let shape = SHAPES.iter().position(|&s| s == shape).unwrap_or(0);
+    let colours = ints(c.get("colors"));
+    let fades = ints(c.get("fade_colors"));
+    let flag = |k: &str| {
+        c.get(k)
+            .and_then(vanillite_nbt::Tag::as_i64)
+            .is_some_and(|v| v != 0)
+    };
+    let mut e = Nbt::default();
+    e.byte("FireworkType", u8::try_from(shape).unwrap_or(0));
+    e.byte_array(
+        "FireworkColor",
+        &colours
+            .iter()
+            .map(|&c| firework_colour(c))
+            .collect::<Vec<_>>(),
+    );
+    e.byte_array(
+        "FireworkFade",
+        &fades
+            .iter()
+            .map(|&c| firework_colour(c))
+            .collect::<Vec<_>>(),
+    );
+    e.byte("FireworkFlicker", u8::from(flag("has_twinkle")));
+    e.byte("FireworkTrail", u8::from(flag("has_trail")));
+    Some((e, colours))
+}
+
+/// Bedrock banner pattern layers (`Patterns`) of a stack's `banner_patterns`.
+fn banner_layers(stack: &ItemStack) -> Vec<Nbt> {
+    use vanillite_nbt::Tag;
+    let Some(Tag::List(list)) = java_nbt(stack, ids::BANNER_PATTERNS) else {
+        return Vec::new();
+    };
+    list.0
+        .iter()
+        .filter_map(Tag::as_compound)
+        .take(16)
+        .filter_map(|layer| {
+            let pattern = match layer.get("pattern")? {
+                Tag::String(name) => name.as_str(),
+                Tag::Compound(inline) => inline.get("asset_id").and_then(Tag::as_str)?,
+                _ => return None,
+            };
+            let code = crate::blockentity::bedrock_pattern(pattern)?;
+            let colour = crate::blockentity::dye(layer.get("color").and_then(Tag::as_str)?)?;
+            let mut l = Nbt::default();
+            l.string("Pattern", code);
+            l.int("Color", 15i32.saturating_sub(i32::try_from(colour).ok()?));
+            Some(l)
+        })
+        .collect()
+}
+
+/// Fireworks, firework stars, banner patterns (banners and shields), armour trims.
+fn decoration_tags(nbt: &mut Nbt, stack: &ItemStack, shield: bool) {
+    use vanillite_nbt::Tag;
+    if let Some(Tag::Compound(f)) = java_nbt(stack, ids::FIREWORKS) {
+        let flight = f.get("flight_duration").and_then(Tag::as_i64).unwrap_or(0);
+        let explosions: Vec<Nbt> = match f.get("explosions") {
+            Some(Tag::List(l)) => {
+                l.0.iter()
+                    .take(256)
+                    .filter_map(|e| Some(explosion(e)?.0))
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let mut fireworks = Nbt::default();
+        fireworks.compounds("Explosions", &explosions);
+        fireworks.byte("Flight", u8::try_from(flight.clamp(0, 255)).unwrap_or(1));
+        nbt.compound("Fireworks", &fireworks);
+    }
+    if let Some((e, colours)) = java_nbt(stack, ids::FIREWORK_EXPLOSION)
+        .as_ref()
+        .and_then(explosion)
+    {
+        nbt.compound("FireworksItem", &e);
+        if !colours.is_empty() {
+            // The star's tint: the average colour (`FireworkStarItem` on Java).
+            let n = u32::try_from(colours.len()).unwrap_or(1);
+            let avg = |s: u32| {
+                colours
+                    .iter()
+                    .map(|c| c >> s & 0xFF)
+                    .fold(0u32, u32::saturating_add)
+                    .checked_div(n)
+                    .unwrap_or(0)
+            };
+            let rgb = avg(16) << 16 | avg(8) << 8 | avg(0);
+            nbt.int(
+                "customColor",
+                i32::from_ne_bytes((rgb | 0xFF00_0000).to_ne_bytes()),
+            );
+        }
+    }
+    let ominous = matches!(
+        java_nbt(stack, ids::ITEM_NAME),
+        Some(Tag::Compound(c)) if c.get("translate").and_then(Tag::as_str) == Some("block.minecraft.ominous_banner")
+    );
+    if ominous {
+        nbt.int("Type", 1);
+    } else {
+        let layers = banner_layers(stack);
+        if !layers.is_empty() {
+            nbt.compounds("Patterns", &layers);
+        }
+    }
+    if shield
+        && let Some(base) = java_nbt(stack, ids::BASE_COLOR)
+            .as_ref()
+            .and_then(Tag::as_str)
+            .and_then(crate::blockentity::dye)
+    {
+        nbt.int(
+            "Base",
+            15i32.saturating_sub(i32::try_from(base).unwrap_or(0)),
+        );
+    }
+    if let Some(Tag::Compound(t)) = java_nbt(stack, ids::TRIM) {
+        let name = |k: &str| match t.get(k) {
+            Some(Tag::String(s)) => Some(s.strip_prefix("minecraft:").unwrap_or(s).to_owned()),
+            Some(Tag::Compound(c)) => c
+                .get("asset_name")
+                .or_else(|| c.get("asset_id"))
+                .or_else(|| c.get("palette_id"))
+                .and_then(Tag::as_str)
+                .map(|s| s.rsplit(['/', ':']).next().unwrap_or(s).to_owned()),
+            _ => None,
+        };
+        if let (Some(material), Some(pattern)) = (name("material"), name("pattern")) {
+            let mut trim = Nbt::default();
+            trim.string("Material", &material);
+            trim.string("Pattern", &pattern);
+            nbt.compound("Trim", &trim);
+        }
+    }
+}
+
+/// The Bedrock metadata of a suspicious stew (the flower of its first effect).
+fn stew(stack: &ItemStack) -> Option<u16> {
+    use vanillite_nbt::Tag;
+    let Some(Tag::List(effects)) = java_nbt(stack, ids::SUSPICIOUS_STEW_EFFECTS) else {
+        return None;
+    };
+    let first = effects.0.first()?.as_compound()?.get("id")?.as_str()?;
+    let name = first.strip_prefix("minecraft:").unwrap_or(first);
+    STEWS.iter().find(|(e, _)| *e == name).map(|(_, m)| *m)
+}
+
+/// The Bedrock metadata of a firework star (the dye of its first colour).
+fn star(stack: &ItemStack) -> Option<u16> {
+    let tag = java_nbt(stack, ids::FIREWORK_EXPLOSION)?;
+    let first = *ints(tag.as_compound()?.get("colors")).first()?;
+    Some(u16::from(firework_colour(first)))
 }
 
 /// Most enchantments written per item.
@@ -649,6 +1014,7 @@ impl Items {
         book_tags(&mut nbt, stack);
         display_tags(&mut nbt, stack, self.lore_component);
         enchantment_tags(&mut nbt, stack, enchantments);
+        decoration_tags(&mut nbt, stack, shield);
         if let Some(cost) = stack
             .component(ids::REPAIR_COST)
             .and_then(|v| vanillite_protocol::codec::Reader::new(v).varint().ok())
@@ -713,6 +1079,10 @@ impl Items {
                 .varint()
                 .unwrap_or(0);
             meta = u16::try_from(amplifier.clamp(0, 4)).unwrap_or(0);
+        } else if stack.item == vanillite_data::item::ids::SUSPICIOUS_STEW.0 {
+            meta = stew(stack).unwrap_or(meta);
+        } else if stack.item == vanillite_data::item::ids::FIREWORK_STAR.0 {
+            meta = star(stack).unwrap_or(meta);
         }
         let block = self
             .block
@@ -820,7 +1190,7 @@ mod tests {
         let potion_id = |n: &str| vanillite_data::registry::POTION.id(n).unwrap();
         let with = |item: &str, component: u16, value: Vec<u8>| {
             let mut s = ItemStack::new(java(item), 1);
-            s.patch_mut().set(component, value.into_boxed_slice());
+            s.set_component(component, value.into_boxed_slice());
             s
         };
         // potion_contents: present, the potion id, no colour, no effects, no name.
@@ -863,6 +1233,35 @@ mod tests {
         items.write_instance(&mut out, &boots, 1, &ench);
         let tag = out.windows(11).position(|w| w == b"customColor").unwrap();
         assert_eq!(out[tag + 11..tag + 15], [0x56, 0x34, 0x12, 0xff]);
+    }
+
+    #[test]
+    fn fireworks_stars_and_stews_reach_bedrock() {
+        let items = crate::Version::latest().palette.items();
+        let ench = Enchantments::default();
+        // A red star with a blue fade and a trail, as the creative entry builds it.
+        let mut star = ItemStack::new(java("minecraft:firework_star"), 1);
+        let data = [2, 1, 1, 1, 1, 4];
+        assert!(creative_components(&mut star, 6, &data, &ench).is_some());
+        assert_eq!(items.parts(&star).map(|p| p.1), Some(1));
+        let mut out = Vec::new();
+        items.write_instance(&mut out, &star, 1, &ench);
+        assert!(out.windows(13).any(|w| w == b"FireworksItem"));
+        let at = out.windows(13).position(|w| w == b"FireworkColor").unwrap();
+        assert_eq!(out[at + 13..at + 18], [1, 0, 0, 0, 1]);
+
+        let mut rocket = ItemStack::new(java("minecraft:firework_rocket"), 1);
+        let data = [3, 1, 0, 0, 1, 15, 0];
+        assert!(creative_components(&mut rocket, 3, &data, &ench).is_some());
+        let mut out = Vec::new();
+        items.write_instance(&mut out, &rocket, 1, &ench);
+        let at = out.windows(6).position(|w| w == b"Flight").unwrap();
+        assert_eq!(out[at + 6], 3);
+        assert!(out.windows(10).any(|w| w == b"Explosions"));
+
+        let mut stew = ItemStack::new(java("minecraft:suspicious_stew"), 1);
+        assert!(creative_components(&mut stew, 7, &[8], &ench).is_some());
+        assert_eq!(items.parts(&stew).map(|p| p.1), Some(8));
     }
 
     #[test]

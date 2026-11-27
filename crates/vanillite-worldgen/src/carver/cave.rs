@@ -6,7 +6,7 @@ use vanillite_base::math::{cos, sin};
 use vanillite_base::random::{LegacyRandom, RandomSource};
 
 use super::providers::{FloatProvider, HeightProvider, IntProvider, WorldGenerationContext};
-use super::{CarvingMask, RANGE, block_x, block_z, can_reach, carve_ellipsoid, probability};
+use super::{Cuts, RANGE, Skip, block_x, block_z, probability};
 use crate::Error;
 
 /// `CaveWorldCarver` with its configuration (`cave` carver type).
@@ -54,14 +54,13 @@ impl CaveCarver {
         })
     }
 
-    /// `carve(context, random, chunkPos, sourceChunkPos, output)`.
+    /// `carve(context, random, chunkPos, sourceChunkPos, output)`: the ellipsoids go to `cuts`.
     pub(super) fn carve<R: RandomSource>(
         &self,
         context: &WorldGenerationContext,
         random: &mut R,
-        chunk: ChunkPos,
         source: ChunkPos,
-        output: &mut CarvingMask,
+        cuts: &mut impl Cuts,
     ) {
         let max_distance = (RANGE * 2 - 1) << 4;
         let cave_count = self.count.sample(random);
@@ -77,7 +76,6 @@ impl CaveCarver {
                 f64::from(self.start_vertical_radius_multiplier.sample(random));
             let floor_level = f64::from(self.floor_level.sample(random));
             let tunnel = Tunnel {
-                chunk,
                 horizontal_radius_multiplier,
                 vertical_radius_multiplier,
                 floor_level,
@@ -86,7 +84,7 @@ impl CaveCarver {
             if random.next_int_bounded(4) == 0 {
                 let y_scale = f64::from(self.room_vertical_radius_multiplier.sample(random));
                 let thickness = 1.0 + random.next_float() * 6.0;
-                tunnel.create_room(x, y, z, thickness, y_scale, output);
+                tunnel.create_room(x, y, z, thickness, y_scale, cuts);
                 tunnels += random.next_int_bounded(4);
             }
             for _ in 0..tunnels {
@@ -105,7 +103,7 @@ impl CaveCarver {
                     0,
                     distance,
                     start_vertical_radius_multiplier,
-                    output,
+                    cuts,
                 );
             }
         }
@@ -123,7 +121,6 @@ impl CaveCarver {
 
 /// The per-cave constants of `createRoom`/`createTunnel`.
 struct Tunnel {
-    chunk: ChunkPos,
     horizontal_radius_multiplier: f64,
     vertical_radius_multiplier: f64,
     floor_level: f64,
@@ -131,8 +128,10 @@ struct Tunnel {
 
 impl Tunnel {
     /// `CaveWorldCarver.shouldSkip(xd, yd, zd, floorLevel)`.
-    fn should_skip(&self, xd: f64, yd: f64, zd: f64) -> bool {
-        yd <= self.floor_level || xd * xd + yd * yd + zd * zd >= 1.0
+    fn skip(&self) -> Skip<'static> {
+        Skip::Cave {
+            floor_level: self.floor_level,
+        }
     }
 
     /// `createRoom(…)`.
@@ -143,20 +142,18 @@ impl Tunnel {
         z: f64,
         thickness: f32,
         y_scale: f64,
-        output: &mut CarvingMask,
+        cuts: &mut impl Cuts,
     ) {
         let horizontal_radius =
             1.5 + f64::from(sin(f64::from(std::f64::consts::FRAC_PI_2 as f32)) * thickness);
         let vertical_radius = horizontal_radius * y_scale;
-        carve_ellipsoid(
-            self.chunk,
+        cuts.room(
             x + 1.0,
             y,
             z,
             horizontal_radius,
             vertical_radius,
-            output,
-            |xd, yd, zd, _| self.should_skip(xd, yd, zd),
+            self.skip(),
         );
     }
 
@@ -174,8 +171,9 @@ impl Tunnel {
         step: i32,
         dist: i32,
         y_scale: f64,
-        output: &mut CarvingMask,
+        cuts: &mut impl Cuts,
     ) {
+        let start = cuts.mark();
         // `RandomSource.createThreadLocalInstance(seed)`: a `SingleThreadedRandomSource`, the
         // same LCG as the legacy source.
         let mut random = LegacyRandom::new(tunnel_seed);
@@ -203,6 +201,7 @@ impl Tunnel {
             x_rota += (random.next_float() - random.next_float()) * random.next_float() * 2.0;
             y_rota += (random.next_float() - random.next_float()) * random.next_float() * 4.0;
             if current_step == split_point && thickness > 1.0 {
+                let own_end = cuts.mark();
                 for side in [-1.0_f32, 1.0] {
                     let branch_seed = random.next_long();
                     let branch_thickness = random.next_float() * 0.5 + 0.5;
@@ -217,26 +216,27 @@ impl Tunnel {
                         current_step,
                         dist,
                         1.0,
-                        output,
+                        cuts,
                     );
                 }
+                cuts.close(start, own_end);
                 return;
             }
-            if random.next_int_bounded(4) != 0 {
-                if !can_reach(self.chunk, x, z, current_step, dist, thickness) {
-                    return;
-                }
-                carve_ellipsoid(
-                    self.chunk,
+            if random.next_int_bounded(4) != 0
+                && !cuts.step(
+                    (current_step, dist, thickness),
                     x,
                     y,
                     z,
                     horizontal_radius * self.horizontal_radius_multiplier,
                     vertical_radius * self.vertical_radius_multiplier,
-                    output,
-                    |xd, yd, zd, _| self.should_skip(xd, yd, zd),
-                );
+                    self.skip(),
+                )
+            {
+                return;
             }
         }
+        let end = cuts.mark();
+        cuts.close(start, end);
     }
 }

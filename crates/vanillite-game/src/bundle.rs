@@ -125,9 +125,7 @@ pub fn set_items(stack: &mut ItemStack, items: &[ItemStack]) {
     for s in items {
         s.encode_template(&mut out);
     }
-    stack
-        .patch_mut()
-        .set(ids::BUNDLE_CONTENTS, out.into_boxed_slice());
+    stack.set_component(ids::BUNDLE_CONTENTS, out.into_boxed_slice());
 }
 
 /// `BundleContents.getWeight(item)`; `None` for an error (an excessive nested weight).

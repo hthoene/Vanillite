@@ -208,8 +208,7 @@ pub fn equip_from_table(
             continue;
         }
         // `resolveSlot`: the `equippable` slot, else the main hand; each slot once.
-        let own = EquipmentSlot::from_ordinal(crate::item::item_id(&stack).info().equip_slot)
-            .unwrap_or(EquipmentSlot::MainHand);
+        let own = crate::item::equippable_slot(&stack).unwrap_or(EquipmentSlot::MainHand);
         if inserted.contains(&own) {
             continue;
         }

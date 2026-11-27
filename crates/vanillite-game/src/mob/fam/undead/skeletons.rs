@@ -3,7 +3,7 @@
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, Vec3};
-use vanillite_nbt::{Compound, Tag};
+use vanillite_nbt::Compound;
 use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::{Goal, Melee, State, goal, level_event, state, state_mut};
@@ -386,10 +386,7 @@ pub fn save_conversion(m: &MobData, out: &mut Compound) {
 
 /// Reads the conversion data of the classic skeleton.
 pub fn load_conversion(m: &mut MobData, tag: &Compound) {
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => None,
-    };
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
     let s = ss_mut(m);
     s.freeze_time = int("FreezingTime").unwrap_or(0);
     match int("StrayConversionTime") {
@@ -478,16 +475,15 @@ pub(crate) fn shear(
     };
     let pos = e.pos();
     let height = f64::from(e.dims().height);
-    let seed = crate::survival::sound_seed();
-    crate::survival::play_sound(
+    crate::survival::play_entity_sound(
         env.out,
+        ents,
         None,
-        pos,
+        target,
         "minecraft:entity.bogged.shear",
         source,
         1.0,
         1.0,
-        seed,
     );
     let drops = super::simple_table_loot(level, "minecraft:shearing/bogged", env.random);
     let Some(m) = ents.mob_mut(target) else {
@@ -544,7 +540,7 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     let s = ss_mut(m);
     s.reassess = true;
     if m.kind == Kind::Bogged {
-        ss_mut(m).sheared = matches!(tag.get("sheared"), Some(Tag::Byte(b)) if *b != 0);
+        ss_mut(m).sheared = crate::mob::entity_nbt::get_bool(tag, "sheared").unwrap_or(false);
     }
 }
 

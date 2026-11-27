@@ -433,6 +433,8 @@ pub(crate) struct Arrival {
     pub(crate) inbox: Arc<Mutex<ChatInbox>>,
     /// Transferred from another server: no `server_data` at join.
     pub(crate) transferred: bool,
+    /// Protocol, brand and packet counts of a network connection.
+    pub(crate) details: Option<Arc<vanillite_net::ClientDetails>>,
 }
 
 /// The players' side of a world.
@@ -1145,7 +1147,8 @@ impl WorldPlayers {
             player.connection.chat.chat_spam.tick();
             player.connection.chat.command_spam.tick();
         }
-        self.waypoints.tick(entities, global);
+        self.waypoints
+            .tick(entities, global, compute, global.plugins.packet_tap());
         // `PlayerList.tick`: latencies for the tab list. The first world sends them for all.
         if tick.is_multiple_of(LATENCY_UPDATE_TICKS)
             && self.level.dimension.as_str() == "minecraft:overworld"

@@ -312,6 +312,17 @@ impl Session {
         at: Option<([i32; 3], i64)>,
         title: String,
     ) {
+        if kind == Kind::Lectern && std::mem::take(&mut self.taking_book) {
+            // The player hit the lectern to take its book.
+            self.java_send(&psb::ContainerButtonClick {
+                container_id: container,
+                button_id: 3,
+            });
+            self.java_send(&psb::ContainerClose {
+                container_id: container,
+            });
+            return;
+        }
         self.next_window = if self.next_window >= 99 {
             1
         } else {

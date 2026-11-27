@@ -516,7 +516,11 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
             level.entity_inside(block, id);
         }
         // `CactusBlock.entityInside` -> `ExperienceOrb.hurtServer`.
+        let invulnerable = crate::mob::entity_nbt::is_invulnerable(&level.entities, id);
         for _ in 0..cacti {
+            if invulnerable {
+                break;
+            }
             let Some(d) = level.entities.experience_orb_mut(id) else {
                 return;
             };
@@ -949,7 +953,7 @@ mod tests {
             &|_| Vec::new(),
         );
         let mut pick = ItemStack::new(items::DIAMOND_PICKAXE.0, 1);
-        pick.patch_mut().set(
+        pick.set_component(
             vanillite_protocol::components::ids::ENCHANTMENTS,
             crate::enchant::write(&[(0, 1)]),
         );

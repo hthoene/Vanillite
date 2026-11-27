@@ -205,16 +205,9 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
                     .types
                     .is(k, crate::survival::damage::tag::PANIC_CAUSES)
             } else {
-                matches!(
-                    t.env.types.get(k).id.as_str(),
-                    "minecraft:cactus"
-                        | "minecraft:freeze"
-                        | "minecraft:hot_floor"
-                        | "minecraft:in_fire"
-                        | "minecraft:lava"
-                        | "minecraft:lightning_bolt"
-                        | "minecraft:on_fire"
-                )
+                t.env
+                    .types
+                    .is(k, crate::survival::damage::tag::PANIC_ENVIRONMENTAL_CAUSES)
             };
             if !panics {
                 return false;

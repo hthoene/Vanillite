@@ -17,7 +17,6 @@ use crate::inventory::Drop;
 use crate::item::{self, EquipmentSlot, ItemStack};
 use crate::mob::kinds::Kind;
 use crate::mob::{MobData, fam::companion};
-use crate::predicate::EntityTags;
 
 /// `SLOT_SADDLE`, `SLOT_BODY_ARMOR`, `SLOT_INVENTORY_START`.
 const SADDLE: usize = 0;
@@ -102,30 +101,9 @@ fn can_use_slot(m: &MobData, slot: EquipmentSlot) -> bool {
 /// `isEquippableInSlot(stack, slot)`: the item's `equippable` slot, the mount can use it and
 /// the item allows the mount's type.
 pub fn is_equippable(m: &MobData, stack: &ItemStack, slot: EquipmentSlot) -> bool {
-    if stack.is_empty() || item::item_id(stack).info().equip_slot != slot.ordinal() {
-        return false;
-    }
-    if !can_use_slot(m, slot) {
-        return false;
-    }
-    let name = item::item_id(stack).name();
-    let in_tag = |tag: &str| {
-        crate::player::play::game_data().is_some_and(|d| d.entity_in_tag(m.kind.type_id(), tag))
-    };
-    match slot {
-        EquipmentSlot::Saddle => name == "minecraft:saddle" && in_tag("minecraft:can_equip_saddle"),
-        EquipmentSlot::Body if name.ends_with("_horse_armor") => {
-            in_tag("minecraft:can_wear_horse_armor")
-        }
-        EquipmentSlot::Body if name.ends_with("_nautilus_armor") => {
-            in_tag("minecraft:can_wear_nautilus_armor")
-        }
-        // `Equippable.llamaSwag`: the wool carpets.
-        EquipmentSlot::Body if name.ends_with("_carpet") => {
-            matches!(m.kind, Kind::Llama | Kind::TraderLlama)
-        }
-        _ => false,
-    }
+    item::equippable(stack).is_some_and(|e| {
+        e.slot == slot && can_use_slot(m, slot) && e.can_be_equipped_by(m.kind.type_id().0)
+    })
 }
 
 /// The equipment slot of a mount menu slot.
@@ -178,11 +156,22 @@ fn on_equip(
     let Some(m) = level.entities.mob_mut(id) else {
         return;
     };
-    let equippable = !new.is_empty() && item::item_id(new).info().equip_slot == slot.ordinal();
-    let sound = (equippable && !m.silent).then(|| {
+    let equippable = item::equippable(new).filter(|e| e.slot == slot);
+    let sound = equippable.as_ref().filter(|_| !m.silent).map(|e| {
         let seed = m.random.next_long();
-        (crate::block::sound_id(equip_sound(m, slot, new)), seed)
+        let sound = if matches!(
+            item::patched(new, vanillite_protocol::components::ids::EQUIPPABLE),
+            item::Patched::Value(_)
+        ) {
+            vanillite_data::registry::SOUND_EVENT
+                .id(&e.equip_sound)
+                .unwrap_or(0)
+        } else {
+            crate::block::sound_id(equip_sound(m, slot, new))
+        };
+        (sound, seed)
     });
+    let equippable = equippable.is_some();
     if let Some((sound, seed)) = sound {
         level.play_seeded_sound(
             None,

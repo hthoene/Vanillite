@@ -304,7 +304,7 @@ pub fn skeleton_shoot(t: &mut Tick<'_, '_>, target: EntityId, power: f32) {
             {
                 let mut contents = crate::effect::potion::PotionContents::of_stack(&item);
                 contents.custom_effects.push(e);
-                item.patch_mut().set(
+                item.set_component(
                     vanillite_protocol::components::ids::POTION_CONTENTS,
                     contents.encode(),
                 );
@@ -405,7 +405,7 @@ pub(crate) fn mob_arrow(effect: Option<crate::effect::EffectInstance>) -> crate:
             custom_effects: vec![e],
             ..PotionContents::default()
         };
-        item.patch_mut().set(
+        item.set_component(
             vanillite_protocol::components::ids::POTION_CONTENTS,
             contents.encode(),
         );
@@ -720,6 +720,19 @@ pub fn tick_arrow(
             {
                 s.hit_part = Some(i);
             }
+            // `owner.setLastHurtMob(entity)`: mobs and players (their wolves join in).
+            if let Some(owner) = a.owner {
+                if let Some(m) = ents.mob_mut(owner) {
+                    m.last_hurt_mob = Some(target);
+                } else if let Some(p) = ents.player_mut(owner) {
+                    p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
+                }
+            }
+            // A burning arrow sets the target on fire for 5 seconds before the hurt.
+            let fire_before = fire_ticks(ents, target);
+            if a.fire > 0 {
+                super::attack::ignite(ents, target, 100);
+            }
             #[allow(clippy::cast_precision_loss)]
             let hurt = combat::hurt(level, ents, env, cx, target, source, damage as f32);
             // A perched dragon sets the arrow burning (`AbstractDragonSittingPhase.onHurt`).
@@ -746,18 +759,13 @@ pub fn tick_arrow(
                     break;
                 }
             } else if hurt {
-                if a.fire > 0
-                    && ents
-                        .mob(target)
-                        .is_none_or(|m| m.kind != super::Kind::Enderman)
-                {
-                    super::attack::ignite(ents, target, 100);
+                // `setArrowCount(+1)` of a non-piercing hit: the arrows stuck in the body.
+                if a.pierce_level == 0 {
+                    add_stuck_arrow(ents, target);
                 }
                 // `doKnockback`: Punch pushes along the arrow's flight.
                 if a.knockback > 0.0 {
-                    let resist = ents
-                        .mob(target)
-                        .map_or(0.0, |m| m.attrs.knockback_resistance);
+                    let resist = super::attack::knockback_resistance(ents, target);
                     let flat = Vec3::new(velocity.x, 0.0, velocity.z);
                     if flat.length_sqr() > 0.0 {
                         let push = flat.normalize()
@@ -844,13 +852,21 @@ pub fn tick_arrow(
                         },
                     );
                 }
-                // `owner.setLastHurtMob(entity)`: mobs and players (their wolves join in).
-                if let Some(owner) = a.owner {
-                    if let Some(m) = ents.mob_mut(owner) {
-                        m.last_hurt_mob = Some(target);
-                    } else if let Some(p) = ents.player_mut(owner) {
-                        p.survival.last_hurt_mob = Some((target, p.survival.tick_count));
-                    }
+                // `PLAY_ARROW_HIT_SOUND` to a player who shot another player.
+                if let Some(owner) = a.owner
+                    && owner != target
+                    && ents.player(target).is_some()
+                    && ents.player(owner).is_some()
+                {
+                    env.out.push(crate::survival::Effect::To {
+                        player: owner,
+                        packet: vanillite_protocol::SharedPacket::of(
+                            &vanillite_protocol::packets::play::clientbound::GameEvent {
+                                event: 6,
+                                param: 0.0,
+                            },
+                        ),
+                    });
                 }
                 let pitch = 1.2 / (random.next_float() * 0.2 + 0.9);
                 let seed = crate::survival::sound_seed();
@@ -873,8 +889,15 @@ pub fn tick_arrow(
                 .is_some_and(|m| m.kind == super::Kind::Enderman)
             {
                 // `projectileReceivesSideEffectsOnHit(false)` (an enderman's is false: the arrow
-                // flies on). Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back
+                // flies on): the target's fire is put back. Deflected (`deflect(ProjectileDeflection.REVERSE, ..., 0.2)`): back
                 // at half the power, turned by 170° to 190°.
+                if let Some(before) = fire_before {
+                    if let Some(m) = ents.mob_mut(target) {
+                        m.fire_ticks = before;
+                    } else if let Some(p) = ents.player_mut(target) {
+                        p.survival.fire_ticks = before;
+                    }
+                }
                 let turn = 170.0 + random.next_float() * 20.0;
                 velocity = velocity * -0.1;
                 rot.y_rot += turn;
@@ -955,7 +978,8 @@ pub fn tick_arrow(
             velocity = velocity * f64::from(0.99_f32);
         }
         if !a.in_ground {
-            velocity.y -= 0.05;
+            // `applyGravity`: `movement.add(0, -gravity, 0)` (turns -0.0 into 0.0).
+            velocity = velocity + Vec3::new(0.0, -0.05, 0.0);
         }
         // `super.tick()` → `baseTick`: the water contact (`updateFluidInteraction`), then the
         // fire burns down while the arrow flies.
@@ -1013,6 +1037,55 @@ pub fn tick_arrow(
     if let Some(d) = ents.arrow_mut(id) {
         *d = a;
     }
+}
+
+/// `DATA_ARROW_COUNT_ID` and `removeArrowTime`: the arrows stuck in a living entity's body.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StuckArrows {
+    pub count: u16,
+    /// At most `20 * 30` ticks.
+    pub remove_time: i16,
+}
+
+impl StuckArrows {
+    /// The countdown of `LivingEntity.tick`: one arrow falls out after `20 * (30 - count)`
+    /// ticks. Returns whether the count changed.
+    pub fn tick(&mut self) -> bool {
+        if self.count == 0 {
+            return false;
+        }
+        if self.remove_time <= 0 {
+            self.remove_time = 20 * (30 - i16::try_from(self.count).unwrap_or(i16::MAX).min(30));
+        }
+        self.remove_time -= 1;
+        if self.remove_time <= 0 {
+            self.count -= 1;
+            return true;
+        }
+        false
+    }
+}
+
+/// `setArrowCount(getArrowCount() + 1)` of a living entity.
+fn add_stuck_arrow(ents: &mut Entities, id: EntityId) {
+    if ents.mob(id).is_some() {
+        let a = ents.stuck_arrows.entry(id).or_default();
+        a.count = a.count.saturating_add(1);
+    } else if let Some(p) = ents.player_mut(id) {
+        p.survival.arrows.count = p.survival.arrows.count.saturating_add(1);
+    } else {
+        return;
+    }
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.mark_data_dirty();
+    }
+}
+
+/// `getRemainingFireTicks` of a living entity.
+fn fire_ticks(ents: &Entities, id: EntityId) -> Option<i32> {
+    ents.mob(id)
+        .map(|m| m.fire_ticks)
+        .or_else(|| ents.player(id).map(|p| p.survival.fire_ticks))
 }
 
 /// `Entity.applyEffectsFromBlocks(from, to)` of a projectile whose box was `start_box` at

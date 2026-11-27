@@ -134,6 +134,8 @@ pub(crate) struct Conn {
     peer: Peer,
     /// Packets plugins feed in as if the client sent them (play only).
     injected: Option<Arc<Injected>>,
+    /// Protocol, brand and packet counts for `/vanillite debug`.
+    details: Arc<crate::player::ClientDetails>,
 }
 
 /// The packet tap's verdict on a received body: one load and branch without listeners.
@@ -217,6 +219,7 @@ impl Conn {
         let now = Instant::now();
         let rate = RateLimiter::new(shared.config.rate_limits);
         let connection = out.connection();
+        let details = Arc::new(crate::player::ClientDetails::new(out.sent_log()));
         Self {
             deadline: now.checked_add(shared.config.status_timeout),
             shared,
@@ -248,6 +251,7 @@ impl Conn {
                 player: 0,
             },
             injected: None,
+            details,
         }
     }
 
@@ -375,6 +379,7 @@ impl Conn {
     /// Receives and decodes the next packet and counts it for `rate-limit`.
     async fn recv<T>(&mut self, decode: fn(&[u8]) -> vanillite_protocol::Result<T>) -> Result<T> {
         let packet = self.recv_packet(decode).await?;
+        self.details.count_received();
         self.count_packet()?;
         Ok(packet)
     }
@@ -590,6 +595,7 @@ impl Conn {
             Intent::Status => self.status(hs.protocol_version).await,
             Intent::Login | Intent::Transfer => {
                 self.enter(State::Login, Some(self.shared.config.login_timeout));
+                self.details.set_protocol(hs.protocol_version);
                 if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION
                     && let Some(adapter) = self
                         .shared
@@ -659,8 +665,9 @@ impl Conn {
 
     /// The login state; the profile and whether the server admitted it against its rules.
     async fn login(&mut self) -> Result<(GameProfile, bool)> {
-        let ServerboundLogin::Hello(hello) = self.recv(ServerboundLogin::decode).await? else {
-            return Err(Error::Invalid("expected login hello").into());
+        let hello = match self.recv(ServerboundLogin::decode).await? {
+            ServerboundLogin::Hello(hello) => hello,
+            other => return Err(unexpected_login(&other, "expected login hello")),
         };
         // Cheap checks before any RSA or network work (SEC-18).
         if !is_valid_player_name(&hello.name) {
@@ -688,8 +695,9 @@ impl Conn {
                 challenge: RawBytes(challenge.to_vec()),
                 should_authenticate: true,
             });
-            let ServerboundLogin::Key(key) = self.recv(ServerboundLogin::decode).await? else {
-                return Err(Error::Invalid("expected key").into());
+            let key = match self.recv(ServerboundLogin::decode).await? {
+                ServerboundLogin::Key(key) => key,
+                other => return Err(unexpected_login(&other, "expected key")),
             };
             let secret: [u8; 16] = keys
                 .decrypt(&key.shared_secret.0)
@@ -726,10 +734,10 @@ impl Conn {
             session_id: self.shared.session_id,
         });
         // Answers to requests we never send are protocol errors, like in Vanilla.
-        let ServerboundLogin::LoginAcknowledged(_) = self.recv(ServerboundLogin::decode).await?
-        else {
-            return Err(Error::Invalid("unexpected login packet").into());
-        };
+        match self.recv(ServerboundLogin::decode).await? {
+            ServerboundLogin::LoginAcknowledged(_) => {}
+            other => return Err(unexpected_login(&other, "unexpected login packet")),
+        }
         if self.shared.config.log_ips {
             log::info!(
                 "{} ({}) logged in from {}",
@@ -804,10 +812,9 @@ impl Conn {
         });
         let mut answers = [None, None];
         for (slot, id) in answers.iter_mut().zip([transaction_id, link_id]) {
-            let ServerboundLogin::CustomQueryAnswer(answer) =
-                self.recv(ServerboundLogin::decode).await?
-            else {
-                return Err(Error::Invalid("expected forwarding answer").into());
+            let answer = match self.recv(ServerboundLogin::decode).await? {
+                ServerboundLogin::CustomQueryAnswer(answer) => answer,
+                other => return Err(unexpected_login(&other, "expected forwarding answer")),
             };
             if answer.transaction_id != id {
                 return Err(Error::Invalid("forwarding transaction").into());
@@ -922,9 +929,17 @@ impl Conn {
                     return Ok(info);
                 }
                 ServerboundConfiguration::KeepAlive(k) => self.keepalive_answer(k.id)?,
-                ServerboundConfiguration::CustomPayload(_)
-                | ServerboundConfiguration::Pong(_)
-                | ServerboundConfiguration::CookieResponse(_)
+                ServerboundConfiguration::CustomPayload(p) => {
+                    if p.channel.as_str() == "minecraft:brand"
+                        && let Ok(brand) =
+                            vanillite_protocol::codec::Reader::new(&p.data.0).string(128)
+                    {
+                        self.details.set_brand(brand);
+                    }
+                }
+                // `handleCookieResponse`: the server never asks for cookies.
+                ServerboundConfiguration::CookieResponse(_) => return Err(unexpected_query()),
+                ServerboundConfiguration::Pong(_)
                 | ServerboundConfiguration::CustomClickAction(_) => {}
                 ServerboundConfiguration::SelectKnownPacks(_)
                 | ServerboundConfiguration::AcceptCodeOfConduct(_)
@@ -1012,6 +1027,7 @@ impl Conn {
             inbound: rx,
             outbound: self.out.clone(),
             latency: self.keepalive.latency.clone(),
+            details: Arc::clone(&self.details),
             injector: injected.injector(),
             login_overridden,
             transferred,
@@ -1084,6 +1100,24 @@ fn is_terminal(action: ResourcePackAction) -> bool {
 
 fn kick(reason: Component) -> End {
     End::Kick(Box::new(reason))
+}
+
+/// `DISCONNECT_UNEXPECTED_QUERY`: the answer to a cookie request the server never sent.
+pub fn unexpected_query() -> End {
+    kick(Component::translatable(
+        "multiplayer.disconnect.unexpected_query_response",
+        vec![],
+    ))
+}
+
+/// The end for login packet `packet` arriving where another was expected: a cookie answer
+/// kicks like Vanilla's `handleCookieResponse`, anything else is a protocol error.
+fn unexpected_login(packet: &ServerboundLogin, what: &'static str) -> End {
+    if matches!(packet, ServerboundLogin::CookieResponse(_)) {
+        unexpected_query()
+    } else {
+        Error::Invalid(what).into()
+    }
 }
 
 /// Random bytes from the OS.

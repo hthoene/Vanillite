@@ -104,7 +104,7 @@ fn enchant_piercing(m: &mut MobData) {
         Some(x) => x.1 = x.1.max(1),
         None => list.push((piercing, 1)),
     }
-    s.patch_mut().set(id, crate::enchant::write(&list));
+    s.set_component(id, crate::enchant::write(&list));
     m.equipment.set(EquipmentSlot::MainHand, s);
 }
 

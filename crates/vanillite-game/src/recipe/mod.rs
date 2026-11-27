@@ -775,8 +775,7 @@ impl Recipes {
                     let id = POTION
                         .id(potion)
                         .ok_or_else(|| format!("unknown potion {potion}"))?;
-                    out.patch_mut()
-                        .set(components::POTION_CONTENTS, potion_contents(id));
+                    out.set_component(components::POTION_CONTENTS, potion_contents(id));
                 }
                 self.brewing.push(Brewing {
                     id: id.to_owned(),
@@ -1442,7 +1441,7 @@ impl Crafting {
             Crafting::Imbue { result, .. } => {
                 let mut out = result.clone();
                 if let Some(potion) = input.get(1, 1).component(components::POTION_CONTENTS) {
-                    out.patch_mut().set(
+                    out.set_component(
                         components::POTION_CONTENTS,
                         potion.to_vec().into_boxed_slice(),
                     );
@@ -1460,8 +1459,7 @@ impl Crafting {
                         .with_count(1)
                         .encode_template_optional(&mut bytes);
                 }
-                out.patch_mut()
-                    .set(components::POT_DECORATIONS, bytes.into_boxed_slice());
+                out.set_component(components::POT_DECORATIONS, bytes.into_boxed_slice());
                 out
             }
             Crafting::RepairItem => {
@@ -1476,10 +1474,26 @@ impl Crafting {
                 if durability != item::max_damage(&out) {
                     let mut bytes = Vec::new();
                     write_varint(&mut bytes, durability);
-                    out.patch_mut()
-                        .set(components::MAX_DAMAGE, bytes.into_boxed_slice());
+                    out.set_component(components::MAX_DAMAGE, bytes.into_boxed_slice());
                 }
                 item::set_damage(&mut out, (durability - remaining).max(0));
+                // The curses of both (`#minecraft:curse`) at the higher level.
+                if let Some(d) = crate::player::play::game_data() {
+                    use crate::menu::workstation::{
+                        crafting_enchantments, set_crafting_enchantments,
+                    };
+                    let (a, b) = (crafting_enchantments(first), crafting_enchantments(second));
+                    let level = |l: &[(u32, i32)], id: u32| {
+                        l.iter().find(|(e, _)| *e == id).map_or(0, |(_, v)| *v)
+                    };
+                    let mut list: Vec<(u32, i32)> = Vec::new();
+                    for &(id, _) in a.iter().chain(&b) {
+                        if d.enchanting.is_curse(id) && list.iter().all(|(e, _)| *e != id) {
+                            list.push((id, level(&a, id).max(level(&b, id))));
+                        }
+                    }
+                    set_crafting_enchantments(&mut out, &list);
+                }
                 out
             }
             Crafting::BookCloning { result, .. } => {
@@ -1503,9 +1517,18 @@ impl Crafting {
                 let Some(copy) = book_copy(content) else {
                     return ItemStack::EMPTY;
                 };
-                let mut out = result.with_count(copies);
-                out.patch_mut()
-                    .set(components::WRITTEN_BOOK_CONTENT, copy.into_boxed_slice());
+                // `TransmuteRecipe.createWithOriginalComponents(result, source, copies - 1)`:
+                // the source's other components (name, lore, …) come along.
+                let mut out = result.with_count(result.count.saturating_add(copies - 1));
+                if let Some(patch) = source.patch() {
+                    for (t, v) in &patch.added {
+                        out.set_component(*t, v.clone());
+                    }
+                    for t in &patch.removed {
+                        out.remove_component(*t);
+                    }
+                }
+                out.set_component(components::WRITTEN_BOOK_CONTENT, copy.into_boxed_slice());
                 out
             }
             Crafting::Dye {
@@ -1536,8 +1559,7 @@ impl Crafting {
                     .and_then(|v| vanillite_protocol::codec::Reader::new(v).i32().ok());
                 let rgb = apply_dyes(current, &dyes);
                 let mut out = transmute(result, found, 0);
-                out.patch_mut()
-                    .set(components::DYED_COLOR, Box::new(rgb.to_be_bytes()));
+                out.set_component(components::DYED_COLOR, Box::new(rgb.to_be_bytes()));
                 out
             }
             Crafting::BannerDuplicate { result, .. } => input
@@ -1563,14 +1585,12 @@ impl Crafting {
                 let mut out = transmute(result, found, 0);
                 match patterns {
                     Some(p) => out
-                        .patch_mut()
-                        .set(components::BANNER_PATTERNS, p.to_vec().into_boxed_slice()),
+                        .set_component(components::BANNER_PATTERNS, p.to_vec().into_boxed_slice()),
                     None => out.patch_mut().unset(components::BANNER_PATTERNS),
                 }
                 let mut color = Vec::with_capacity(1);
                 write_varint(&mut color, base);
-                out.patch_mut()
-                    .set(components::BASE_COLOR, color.into_boxed_slice());
+                out.set_component(components::BASE_COLOR, color.into_boxed_slice());
                 out
             }
             Crafting::MapExtending { result, .. } => {
@@ -1607,8 +1627,7 @@ impl Crafting {
                 let mut out = result.clone();
                 let mut bytes = Vec::new();
                 write_explosion(&mut bytes, shape, &colors, &[], has_trail, has_twinkle);
-                out.patch_mut()
-                    .set(components::FIREWORK_EXPLOSION, bytes.into_boxed_slice());
+                out.set_component(components::FIREWORK_EXPLOSION, bytes.into_boxed_slice());
                 out
             }
             Crafting::FireworkStarFade {
@@ -1641,8 +1660,7 @@ impl Crafting {
                     }
                     None => write_explosion(&mut bytes, 0, &[], &colors, false, false),
                 }
-                out.patch_mut()
-                    .set(components::FIREWORK_EXPLOSION, bytes.into_boxed_slice());
+                out.set_component(components::FIREWORK_EXPLOSION, bytes.into_boxed_slice());
                 out
             }
             Crafting::FireworkRocket {
@@ -1666,8 +1684,7 @@ impl Crafting {
                     bytes.extend_from_slice(e);
                 }
                 let mut out = result.clone();
-                out.patch_mut()
-                    .set(components::FIREWORKS, bytes.into_boxed_slice());
+                out.set_component(components::FIREWORKS, bytes.into_boxed_slice());
                 out
             }
         }
@@ -1696,8 +1713,7 @@ pub(crate) fn celebration_rocket(dye: i32, flight: i32) -> ItemStack {
     write_varint(&mut bytes, 1);
     write_explosion(&mut bytes, 4, &[firework_color(dye)], &[], false, false);
     let mut out = ItemStack::new(vanillite_data::item::ids::FIREWORK_ROCKET.0, 1);
-    out.patch_mut()
-        .set(components::FIREWORKS, bytes.into_boxed_slice());
+    out.set_component(components::FIREWORKS, bytes.into_boxed_slice());
     out
 }
 
@@ -1854,7 +1870,8 @@ fn book_copy(content: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// `RepairItemRecipe.getItemsToCombine`: two damageable stacks of one item.
+/// `RepairItemRecipe.getItemsToCombine`: two single stacks of one item with `max_damage` (and
+/// `damage`; unbreakable ones too).
 fn repair_pair(input: &CraftingInput) -> Option<(&ItemStack, &ItemStack)> {
     if input.ingredient_count != 2 {
         return None;
@@ -1862,7 +1879,7 @@ fn repair_pair(input: &CraftingInput) -> Option<(&ItemStack, &ItemStack)> {
     let mut it = input.non_empty();
     let first = it.next()?;
     let second = it.next()?;
-    let combinable = |s: &ItemStack| s.count == 1 && item::is_damageable(s);
+    let combinable = |s: &ItemStack| s.count == 1 && item::max_damage(s) > 0;
     (first.item == second.item && combinable(first) && combinable(second))
         .then_some((first, second))
 }
@@ -1982,7 +1999,7 @@ fn result(v: &Value) -> Result<ItemStack, String> {
                             .unwrap_or(160);
                         write_varint(&mut bytes, duration);
                     }
-                    stack.patch_mut().set(
+                    stack.set_component(
                         components::SUSPICIOUS_STEW_EFFECTS,
                         bytes.into_boxed_slice(),
                     );

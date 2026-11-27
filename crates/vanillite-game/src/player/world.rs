@@ -120,8 +120,12 @@ pub trait PlayLevel {
         let _ = (pos, state);
     }
     /// `EndCrystalItem.useOn` on the block at `on`: places an end crystal; whether it did.
-    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
-        let _ = on;
+    fn use_end_crystal(
+        &mut self,
+        on: BlockPos,
+        player: Option<vanillite_world::entity::EntityId>,
+    ) -> bool {
+        let _ = (on, player);
         false
     }
 }

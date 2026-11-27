@@ -98,7 +98,7 @@ pub fn apply_status(
         ConsumeEffect::ClearAll => {
             host.effects().clear();
         }
-        ConsumeEffect::Teleport(_) | ConsumeEffect::PlaySound(_) => {}
+        ConsumeEffect::Teleport(..) | ConsumeEffect::PlaySound(_) => {}
     }
 }
 
@@ -202,7 +202,7 @@ mod tests {
         let swiftness = vanillite_data::registry::POTION
             .id("minecraft:strong_swiftness")
             .unwrap_or(0);
-        potion.patch_mut().set(
+        potion.set_component(
             vanillite_protocol::components::ids::POTION_CONTENTS,
             PotionContents::of(swiftness).encode(),
         );

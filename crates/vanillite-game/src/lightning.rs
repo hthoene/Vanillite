@@ -518,9 +518,45 @@ pub fn thunder_hit(
         return;
     }
     let source = DamageSource::of(env.types.lightning_bolt);
+    let invulnerable = crate::mob::entity_nbt::is_invulnerable(ents, target);
     if let Some(d) = ents.item_mut(target) {
+        // One more fire tick; a fresh item (-1 in Vanilla, kept as 0 here) burns 8 seconds.
+        if d.fire_ticks <= 0 {
+            d.fire_ticks = 160;
+        } else {
+            d.fire_ticks += 1;
+        }
+        // `hurtServer(lightningBolt, 5)`: `Invulnerable` and `damage_resistant` keep it off.
+        if invulnerable
+            || !crate::item::can_be_hurt_by(&d.stack, env.types, env.types.lightning_bolt)
+        {
+            return;
+        }
         d.health -= 5;
-        if d.health <= 0 {
+        let destroyed = d.health <= 0;
+        let contents = if destroyed {
+            crate::item_entity::take_destroyed_contents(&mut d.stack)
+        } else {
+            Vec::new()
+        };
+        let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
+            return;
+        };
+        crate::survival::game_event(env.out, events().entity_damage, pos, None);
+        if destroyed {
+            // `Item.onDestroyed`: a bundle's or a shulker box's contents drop.
+            for stack in contents {
+                let (uuid, y_rot, velocity, random) = crate::mob::new_item_entity();
+                env.out.push(crate::survival::Effect::DropItem {
+                    random,
+                    uuid,
+                    pos,
+                    velocity,
+                    y_rot,
+                    pickup_delay: 0,
+                    stack,
+                });
+            }
             cx.discarded.push(target);
         }
         return;

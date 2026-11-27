@@ -507,19 +507,16 @@ pub fn reverse(
     rot: Rotation,
     random: &mut impl vanillite_base::random::RandomSource,
 ) -> (Vec3, Rotation) {
-    if let Some(e) = ents.store.get(deflector) {
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
-            env.out,
-            None,
-            e.pos(),
-            "minecraft:entity.breeze.deflect",
-            vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
-            1.0,
-            1.0,
-            seed,
-        );
-    }
+    crate::survival::play_entity_sound(
+        env.out,
+        ents,
+        None,
+        deflector,
+        "minecraft:entity.breeze.deflect",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+        1.0,
+        1.0,
+    );
     let turn = 170.0 + random.next_float() * 20.0;
     (
         velocity * -0.5,
@@ -705,8 +702,8 @@ pub fn load(tag: &Compound) -> Option<(super::nbt::LoadedEntity, MissileData)> {
     let e = super::nbt::load_entity_base(tag)?;
     let mut d = MissileData::new(kind);
     d.owner_uuid = super::nbt::uuid_key_of(tag, "Owner");
-    d.left_owner = matches!(tag.get("LeftOwner"), Some(Tag::Byte(b)) if *b != 0);
-    d.has_been_shot = matches!(tag.get("HasBeenShot"), Some(Tag::Byte(b)) if *b != 0);
+    d.left_owner = crate::mob::entity_nbt::get_bool(tag, "LeftOwner").unwrap_or(false);
+    d.has_been_shot = crate::mob::entity_nbt::get_bool(tag, "HasBeenShot").unwrap_or(false);
     if let Some(Tag::Compound(c)) = tag.get("Item") {
         d.item = crate::inventory::stack_from_nbt(c);
     }

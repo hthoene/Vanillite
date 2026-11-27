@@ -56,10 +56,12 @@ pub struct Global {
     pub(crate) templates: Arc<vanillite_worldgen::template::StructureTemplateManager>,
     /// `/tick`'s state; the server loop reads it once per tick.
     pub(crate) tick_rate: std::sync::Mutex<crate::tick_rate::TickRateManager>,
-    /// The durations of the last ticks (`/tick query`).
+    /// The durations of the last ticks (`/tick query`, `/vanillite tps`).
     pub(crate) tick_times: std::sync::Mutex<crate::tick_rate::TickTimes>,
+    /// Uptime, CPU samples and the profiler of `/vanillite`.
+    pub(crate) diagnostics: crate::diagnostics::Diagnostics,
     /// Vanilla's English translations, for texts of the console and RCON.
-    pub(crate) language: std::collections::HashMap<String, String>,
+    pub(crate) language: Arc<std::collections::HashMap<String, String>>,
     /// `broadcast-console-to-ops`.
     pub(crate) broadcast_console_to_ops: bool,
     /// `broadcast-rcon-to-ops`.
@@ -124,6 +126,12 @@ impl Global {
     /// `Component.getString` in English, as the console and RCON show texts.
     pub(crate) fn english(&self, text: &vanillite_protocol::text::Component) -> String {
         text.to_string_in(&|key| self.language.get(key).cloned())
+    }
+
+    /// [`Self::english`] with colours as `§` codes, for the server console (the logger shows
+    /// them as terminal colours or strips them).
+    pub(crate) fn console_text(&self, text: &vanillite_protocol::text::Component) -> String {
+        text.to_legacy_in(&|key| self.language.get(key).cloned())
     }
 
     /// Asks the server to stop after the current tick (`/stop`).

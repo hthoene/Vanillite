@@ -27,7 +27,7 @@ use crate::aquifer::{Aquifer, AquiferFunctions, GlobalFluidPicker, SurfaceLevelC
 use crate::biome::climate::{ClimateCache, ClimateSampler};
 use crate::biome::{BiomeManager, BiomeRegistry, BiomeSource};
 use crate::blocks::BlockSet;
-use crate::carver::{CarverId, CarverRegistry, carve_chunk};
+use crate::carver::{CarverId, CarverPlans, CarverRegistry, carve_chunk};
 use crate::density::{ContextSampler, DensityCompiler, FnId, Program, SamplerContext};
 use crate::feature::{FeatureSet, WorldGenRegion};
 use crate::material::MaterialSystem;
@@ -227,6 +227,8 @@ pub struct TerrainGenerator {
     biome_source: BiomeSource,
     biome_manager: BiomeManager,
     carvers: CarverRegistry,
+    /// The carvers' ellipsoids per source chunk, shared by the chunks they carve.
+    carver_plans: CarverPlans,
     /// Carvers per biome id.
     biome_carvers: Vec<Vec<CarverId>>,
     /// Climates of the columns the carvers look up their biomes at.
@@ -622,6 +624,7 @@ impl TerrainGenerator {
             biomes,
             biome_source,
             carvers,
+            carver_plans: CarverPlans::default(),
             biome_carvers,
             carver_climates: ClimateCache::new(),
             uncarvable: BlockSet::from_tag(packs, "minecraft:uncarvable"),
@@ -1355,7 +1358,14 @@ impl TerrainGenerator {
             let dz = (source.z - pos.z + RANGE) as usize;
             source_carvers[dx * side + dz]
         };
-        let mask = carve_chunk(&self.carvers, &lookup, self.seed, pos, &context);
+        let mask = carve_chunk(
+            &self.carvers,
+            &lookup,
+            self.seed,
+            pos,
+            &context,
+            Some(&self.carver_plans),
+        );
         if mask.is_empty() {
             return;
         }

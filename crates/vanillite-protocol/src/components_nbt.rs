@@ -101,6 +101,9 @@ enum S {
     VarInt,
     /// Fixed int; int.
     Int,
+    /// Fixed int; int, or `[r, g, b]` floats read as an opaque colour
+    /// (`ExtraCodecs.RGB_COLOR_CODEC`).
+    Rgb,
     /// Float; float.
     Float,
     /// Double; double.
@@ -509,7 +512,7 @@ fn schema(name: &str) -> Option<S> {
         "enchantable" => const { S::Record(&[req("value", S::VarInt)]) },
         "enchantment_glint_override" => const { S::Bool },
         "minimum_attack_charge" | "potion_duration_scale" => const { S::Float },
-        "dyed_color" => const { S::Int },
+        "dyed_color" => const { S::Rgb },
         "custom_name" | "item_name" => const { S::Tag },
         "item_model" | "tooltip_style" | "note_block_sound" => const { S::Id },
         "lore" => const { S::List(&S::Tag) },
@@ -525,7 +528,7 @@ fn schema(name: &str) -> Option<S> {
                     def("floats", S::List(&S::Float), D::EmptyList),
                     def("flags", S::List(&S::Bool), D::EmptyList),
                     def("strings", S::List(&S::Str), D::EmptyList),
-                    def("colors", S::List(&S::Int), D::EmptyList),
+                    def("colors", S::List(&S::Rgb), D::EmptyList),
                 ])
             }
         }
@@ -886,6 +889,27 @@ fn int(tag: &Tag) -> Result<i32> {
         .ok_or(Error::Invalid("expected int"))
 }
 
+/// `ExtraCodecs.RGB_COLOR_CODEC`: an int, or `[r, g, b]` channels from 0 to 1 made an opaque
+/// colour (`ARGB.colorFromFloat(1, r, g, b)`).
+#[allow(clippy::as_conversions)]
+fn rgb(tag: &Tag) -> Result<i32> {
+    if let Ok(v) = int(tag) {
+        return Ok(v);
+    }
+    let channels = elements(tag)?;
+    let [r, g, b] = channels.as_slice() else {
+        return Err(Error::Invalid("expected int or 3 floats"));
+    };
+    // `ARGB.as8BitChannel`: `Mth.floor(v * 255)`, then the low 8 bits.
+    let channel = |t: &Tag| float(t).map(|v| (v * 255.0).floor() as i32 as u8);
+    Ok(i32::from_be_bytes([
+        0xFF,
+        channel(r)?,
+        channel(g)?,
+        channel(b)?,
+    ]))
+}
+
 fn long(tag: &Tag) -> Result<i64> {
     tag.as_i64().ok_or(Error::Invalid("expected long"))
 }
@@ -1108,7 +1132,7 @@ impl Conv<'_> {
         Ok(match s {
             S::Unit => Tag::Compound(Compound::new()),
             S::VarInt => Tag::Int(r.varint()?),
-            S::Int => Tag::Int(r.i32()?),
+            S::Int | S::Rgb => Tag::Int(r.i32()?),
             S::Float => Tag::Float(r.f32()?),
             S::Double => Tag::Double(r.f64()?),
             S::Bool => Tag::Byte(i8::from(r.u8()? != 0)),
@@ -1478,6 +1502,7 @@ impl Conv<'_> {
             }
             S::VarInt => write_varint(out, int(tag)?),
             S::Int => out.extend_from_slice(&int(tag)?.to_be_bytes()),
+            S::Rgb => out.extend_from_slice(&rgb(tag)?.to_be_bytes()),
             S::Float => out.extend_from_slice(&float(tag)?.to_be_bytes()),
             S::Double => out.extend_from_slice(&double(tag)?.to_be_bytes()),
             S::Bool => write_bool(out, long(tag)? != 0),

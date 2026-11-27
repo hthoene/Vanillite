@@ -27,8 +27,8 @@ pub enum ConsumeEffect {
     Remove(Vec<MobEffect>),
     /// `clear_all_effects`.
     ClearAll,
-    /// `teleport_randomly` with its diameter.
-    Teleport(f32),
+    /// `teleport_randomly` with its diameter and `directional_particles`.
+    Teleport(f32, bool),
     /// `play_sound`.
     PlaySound(Sound),
 }
@@ -110,7 +110,8 @@ pub(crate) fn read_optional_sound(r: &mut Reader<'_>) -> Option<Option<Sound>> {
 }
 
 /// What `ByteBufCodecs.holderSet` holds.
-pub(crate) enum HolderSet {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HolderSet {
     /// A tag id (without `#`).
     Tag(String),
     /// Registry ids.
@@ -152,11 +153,22 @@ pub fn read_effects(r: &mut Reader<'_>) -> Option<Vec<ConsumeEffect>> {
                     .into_iter()
                     .filter_map(|id| MobEffect::from_id(i32::from(id)))
                     .collect(),
-                // There are no mob effect tags in the data the game keeps.
-                HolderSet::Tag(_) => Vec::new(),
+                // A `#minecraft:mob_effect` tag of the loaded data packs.
+                HolderSet::Tag(tag) => crate::player::play::game_data()
+                    .and_then(|d| {
+                        d.registry_tags
+                            .get("minecraft:mob_effect")
+                            .and_then(|t| t.get(&tag))
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(|&id| MobEffect::from_id(i32::try_from(id).ok()?))
+                                    .collect()
+                            })
+                    })
+                    .unwrap_or_default(),
             }),
             "minecraft:clear_all_effects" => ConsumeEffect::ClearAll,
-            "minecraft:teleport_randomly" => ConsumeEffect::Teleport(r.f32().ok()?),
+            "minecraft:teleport_randomly" => ConsumeEffect::Teleport(r.f32().ok()?, read_bool(r)?),
             "minecraft:play_sound" => ConsumeEffect::PlaySound(read_sound(r)?),
             _ => return None,
         });
@@ -194,7 +206,9 @@ pub(crate) fn default_effects(effects: &[ConsumeEffectInfo]) -> Vec<ConsumeEffec
                     .collect(),
             ),
             ConsumeEffectInfo::ClearAllEffects => ConsumeEffect::ClearAll,
-            ConsumeEffectInfo::TeleportRandomly(diameter) => ConsumeEffect::Teleport(diameter),
+            ConsumeEffectInfo::TeleportRandomly(diameter) => {
+                ConsumeEffect::Teleport(diameter, true)
+            }
             ConsumeEffectInfo::PlaySound(sound) => ConsumeEffect::PlaySound(Cow::Borrowed(sound)),
         })
         .collect()
@@ -326,7 +340,7 @@ mod tests {
         );
         assert_eq!(
             consumable(&stack("minecraft:chorus_fruit")).map(|c| c.effects),
-            Some(vec![ConsumeEffect::Teleport(16.0)])
+            Some(vec![ConsumeEffect::Teleport(16.0, true)])
         );
         // The fish buckets carry `food` without `consumable`.
         assert!(consumable(&stack("minecraft:cod_bucket")).is_none());
@@ -350,10 +364,27 @@ mod tests {
             .id("minecraft:clear_all_effects")
             .unwrap_or(0);
         v.extend_from_slice(&[2, 1, 0, 1, u8::try_from(clear).unwrap_or(0)]);
-        s.patch_mut().set(ids::CONSUMABLE, v.into());
+        s.set_component(ids::CONSUMABLE, v.into());
         let c = consumable(&s).expect("patched");
         assert_eq!(c.consume_ticks(), 10);
         assert!(c.drink && !c.has_consume_particles);
         assert_eq!(c.effects, vec![ConsumeEffect::ClearAll]);
+    }
+
+    #[test]
+    fn teleport_randomly_reads_its_particles_flag() {
+        let reg = &vanillite_data::registry::CONSUME_EFFECT_TYPE;
+        let id = |n: &str| u8::try_from(reg.id(n).unwrap_or(0)).unwrap_or(0);
+        // `teleport_randomly` (8.0, no particles) followed by `clear_all_effects`.
+        let mut v = vec![2, id("minecraft:teleport_randomly")];
+        v.extend_from_slice(&8.0_f32.to_be_bytes());
+        v.extend_from_slice(&[0, id("minecraft:clear_all_effects")]);
+        assert_eq!(
+            read_effects(&mut Reader::new(&v)),
+            Some(vec![
+                ConsumeEffect::Teleport(8.0, false),
+                ConsumeEffect::ClearAll
+            ])
+        );
     }
 }

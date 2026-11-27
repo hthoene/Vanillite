@@ -126,7 +126,14 @@ block_tags!(
     blocks_dolphin_jump,
     mooshrooms_spawnable_on,
     sand,
+    shulker_does_not_teleport_to,
     strider_warm_blocks,
+    fox_immune_to,
+    polar_bear_immune_to,
+    snow_golem_immune_to,
+    stray_immune_to,
+    wither_immune_to,
+    wither_skeleton_immune_to,
 );
 
 /// A set of fluids (a resolved fluid tag), one bit per `minecraft:fluid` id.

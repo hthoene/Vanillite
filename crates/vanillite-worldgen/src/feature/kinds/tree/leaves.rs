@@ -4,8 +4,8 @@
 
 use vanillite_base::{BlockPos, Direction};
 
-use super::{JavaHashSet, TREE_UPDATE_FLAGS, TreeBlocks, try_set_int};
-use crate::behaviour;
+use super::{JavaHashSet, TREE_UPDATE_FLAGS, TreeBlocks};
+use crate::behaviour::{self, IntProperty};
 use crate::feature::region::WorldGenRegion;
 
 /// `LeavesBlock.DECAY_DISTANCE`: the largest leaves distance.
@@ -146,7 +146,9 @@ fn optional_distance(
     if blocks.prevents_nearby_leaf_decay.contains(state) {
         return Some(0);
     }
-    state.value("distance").and_then(|v| v.parse().ok())
+    IntProperty::distance()
+        .get(state)
+        .and_then(|distance| usize::try_from(distance).ok())
 }
 
 /// `TreeFeature.updateLeaves`: gives leaves within `bounds` their distance to the nearest log
@@ -191,7 +193,7 @@ pub fn update_leaves(
                 let state = level.block(pos);
                 level.set_block(
                     pos,
-                    try_set_int(state, "distance", smallest as i32),
+                    IntProperty::distance().set(state, smallest as i32),
                     TREE_UPDATE_FLAGS,
                 );
             }

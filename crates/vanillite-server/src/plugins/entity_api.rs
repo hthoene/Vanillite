@@ -529,11 +529,14 @@ pub(super) fn set_attribute_base(
         return Err(status::INVALID_ARGUMENT);
     }
     let m = entities.mob_mut(id).ok_or(status::UNSUPPORTED)?;
-    if vanillite_game::effect::living::set_mob_attribute_base(m, a, value) {
-        Ok(())
-    } else {
-        Err(status::UNSUPPORTED)
+    if !vanillite_game::effect::living::set_mob_attribute_base(m, a, value) {
+        return Err(status::UNSUPPORTED);
     }
+    // The save keeps the base value.
+    let mut extra = entities.extra(id).cloned().unwrap_or_default();
+    extra.attributes.entry(a, value).base = value;
+    entities.set_extra(id, extra);
+    Ok(())
 }
 
 /// `/attribute ... modifier add` (`INVALID_ARGUMENT` when the id is already there) and

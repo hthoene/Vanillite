@@ -1,7 +1,8 @@
 //! Java block entities as Bedrock block actor data: sign texts, bed and banner colours (one
 //! Bedrock block for all colours, the colour lives in the block actor), banner patterns, the
 //! halves of double chests, skull rotations and the plants of flower pots (Bedrock keeps them in
-//! the block actor; Java pots are blocks without a block entity).
+//! the block actor; Java pots are blocks without a block entity), shulker box facings, piston
+//! arms, decorated pot sherds, campfire items, spawner mobs and the book of lecterns.
 
 use vanillite_data::block::BlockState;
 use vanillite_nbt::{Compound as JCompound, Tag};
@@ -113,6 +114,12 @@ fn is_pot(block: &str) -> bool {
     block == "minecraft:flower_pot" || block.starts_with("minecraft:potted_")
 }
 
+/// The Bedrock pattern code (`cre`) of a Java banner pattern (`minecraft:creeper`).
+pub(crate) fn bedrock_pattern(java: &str) -> Option<&'static str> {
+    let name = java.strip_prefix("minecraft:").unwrap_or(java);
+    PATTERNS.iter().find(|(j, _)| *j == name).map(|(_, b)| *b)
+}
+
 /// The Java banner pattern (`minecraft:creeper`) of a Bedrock pattern code (`cre`).
 pub fn java_pattern(code: &str) -> Option<String> {
     PATTERNS
@@ -130,7 +137,7 @@ pub fn dye_of_item(item: &str) -> Option<usize> {
 /// Most banner layers sent.
 const MAX_LAYERS: usize = 16;
 
-fn dye(name: &str) -> Option<usize> {
+pub(crate) fn dye(name: &str) -> Option<usize> {
     DYES.iter().position(|d| *d == name)
 }
 
@@ -139,6 +146,34 @@ fn dye_prefix(block: &str) -> Option<usize> {
     let name = block.strip_prefix("minecraft:").unwrap_or(block);
     DYES.iter()
         .position(|d| name.starts_with(d) && name.as_bytes().get(d.len()) == Some(&b'_'))
+}
+
+/// A player head block (floor or wall).
+pub(crate) fn is_player_head(block: &str) -> bool {
+    block == "minecraft:player_head" || block == "minecraft:player_wall_head"
+}
+
+/// The `textures` property value of a skull block entity's `profile`.
+pub(crate) fn head_textures(nbt: &JCompound) -> Option<String> {
+    let profile = nbt.get("profile")?.as_compound()?;
+    let Some(Tag::List(properties)) = profile.get("properties") else {
+        return None;
+    };
+    properties
+        .0
+        .iter()
+        .filter_map(Tag::as_compound)
+        .find(|p| p.get("name").and_then(Tag::as_str) == Some("textures"))
+        .and_then(|p| p.get("value")?.as_str())
+        .map(str::to_owned)
+}
+
+/// The Bedrock facing (`Direction` 3D data value: down, up, north, south, west, east).
+fn facing_id(name: &str) -> Option<u8> {
+    ["down", "up", "north", "south", "west", "east"]
+        .iter()
+        .position(|d| *d == name)
+        .and_then(|i| u8::try_from(i).ok())
 }
 
 /// The plain text of a text component in NBT form.
@@ -318,6 +353,84 @@ pub fn translate(
         if let Some(plant) = palette.potted_plant(u32::from(state.0)) {
             c.raw_compound("PlantBlock", plant);
         }
+    } else if name.ends_with("shulker_box") {
+        let facing = state.value("facing").and_then(facing_id).unwrap_or(1);
+        c.string("id", "ShulkerBox").byte("facing", facing);
+    } else if name == "minecraft:piston" || name == "minecraft:sticky_piston" {
+        // A resting piston: its arm out or in (Bedrock draws the arm from the block actor).
+        let out = state.value("extended") == Some("true");
+        let (progress, s) = if out { (1.0, 2) } else { (0.0, 0) };
+        c.string("id", "PistonArm")
+            .float("Progress", progress)
+            .float("LastProgress", progress)
+            .byte("State", s)
+            .byte("NewState", s)
+            .byte("Sticky", u8::from(name == "minecraft:sticky_piston"));
+    } else if name == "minecraft:lectern" {
+        // Java sends the book only to the reader; any book shows on the stand.
+        let has_book = state.value("has_book") == Some("true");
+        c.string("id", "Lectern")
+            .byte("hasBook", u8::from(has_book));
+        if has_book {
+            let mut book = Compound::default();
+            book.string("Name", "minecraft:written_book")
+                .byte("Count", 1)
+                .short("Damage", 0);
+            c.compound("book", &book)
+                .int("page", 0)
+                .int("totalPages", 1);
+        }
+    } else if name == "minecraft:decorated_pot" {
+        let sherds: Vec<String> = match nbt.and_then(|n| n.get("sherds")) {
+            Some(Tag::List(list)) => list
+                .0
+                .iter()
+                .take(4)
+                .map(|t| t.as_str().unwrap_or("minecraft:brick").to_owned())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut all: Vec<&str> = sherds.iter().map(String::as_str).collect();
+        all.resize(4, "minecraft:brick");
+        c.string("id", "DecoratedPot").strings("sherds", &all);
+    } else if name.ends_with("campfire") {
+        c.string("id", "Campfire");
+        if let Some(Tag::List(items)) = nbt.and_then(|n| n.get("Items")) {
+            for item in items.0.iter().filter_map(Tag::as_compound).take(4) {
+                let slot = item.get("Slot").and_then(Tag::as_i64).unwrap_or(0);
+                let java = item
+                    .get("id")
+                    .and_then(Tag::as_str)
+                    .and_then(vanillite_data::item::ItemId::by_name);
+                let Some((bedrock, meta)) = java.and_then(|i| palette.items().name(i.0)) else {
+                    continue;
+                };
+                let mut stack = Compound::default();
+                stack
+                    .string("Name", bedrock)
+                    .byte("Count", 1)
+                    .short("Damage", i16::try_from(meta).unwrap_or(0));
+                let n = slot.clamp(0, 3).saturating_add(1);
+                c.compound(&format!("Item{n}"), &stack)
+                    .int(&format!("ItemTime{n}"), 0);
+            }
+        }
+    } else if name == "minecraft:spawner" {
+        let entity = nbt
+            .and_then(|n| n.get("SpawnData"))
+            .and_then(Tag::as_compound)
+            .and_then(|d| d.get("entity"))
+            .and_then(Tag::as_compound)
+            .and_then(|e| e.get("id"))
+            .and_then(Tag::as_str)
+            .and_then(crate::entity::bedrock_name);
+        c.string("id", "MobSpawner");
+        if let Some(entity) = entity {
+            c.string("EntityIdentifier", &entity)
+                .float("DisplayEntityScale", 1.0)
+                .float("DisplayEntityWidth", 1.0)
+                .float("DisplayEntityHeight", 1.0);
+        }
     } else {
         return None;
     }
@@ -332,8 +445,29 @@ pub fn needs_nbt(state: u32) -> bool {
         let s = BlockState(s);
         s.is_valid() && {
             let name = s.block().name();
-            name.ends_with("_sign") || name.ends_with("_banner") || name == "minecraft:beacon"
+            name.ends_with("_sign")
+                || name.ends_with("_banner")
+                || name.ends_with("campfire")
+                || is_player_head(name)
+                || matches!(
+                    name,
+                    "minecraft:beacon" | "minecraft:decorated_pot" | "minecraft:spawner"
+                )
         }
+    })
+}
+
+/// Whether a Java block state is an extended piston (Bedrock draws the arm from a block actor
+/// that Java has no block entity for).
+pub fn extended_piston(state: u32) -> bool {
+    u16::try_from(state).is_ok_and(|s| {
+        let s = BlockState(s);
+        s.is_valid()
+            && matches!(
+                s.block().name(),
+                "minecraft:piston" | "minecraft:sticky_piston"
+            )
+            && s.value("extended") == Some("true")
     })
 }
 
@@ -350,6 +484,11 @@ pub fn from_state(state: u32) -> bool {
     let name = s.block().name();
     name.ends_with("_bed")
         || name.ends_with("_banner")
+        || name.ends_with("shulker_box")
+        || matches!(
+            name,
+            "minecraft:piston" | "minecraft:sticky_piston" | "minecraft:lectern"
+        )
         || is_pot(name)
         || skull_type(name).is_some()
         || ((name == "minecraft:chest" || name == "minecraft:trapped_chest")
@@ -357,6 +496,12 @@ pub fn from_state(state: u32) -> bool {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 mod tests {
     use super::*;
 
@@ -380,6 +525,29 @@ mod tests {
         assert!(plant.windows(5).any(|w| w == b"poppy"));
         let actor = translate([0, 64, 0], pot, None, &crate::data::V26_60).unwrap_or_default();
         assert!(actor.windows(10).any(|w| w == b"PlantBlock"));
+    }
+
+    #[test]
+    fn shulker_piston_and_lectern_from_state() {
+        let state = |name: &str, props: &[(&str, &str)]| {
+            let block = vanillite_data::block::BlockId::by_name(name).unwrap();
+            let mut s = block.default_state();
+            for (k, v) in props {
+                s = s.with(k, v).unwrap();
+            }
+            u32::from(s.0)
+        };
+        let shulker = state("minecraft:red_shulker_box", &[("facing", "west")]);
+        assert!(from_state(shulker));
+        let actor = translate([0; 3], shulker, None, &crate::data::V26_60).unwrap();
+        let at = actor.windows(6).position(|w| w == b"facing").unwrap();
+        assert_eq!(actor[at + 6], 4);
+        let piston = state("minecraft:sticky_piston", &[("extended", "true")]);
+        let actor = translate([0; 3], piston, None, &crate::data::V26_60).unwrap();
+        assert!(actor.windows(9).any(|w| w == b"PistonArm"));
+        let lectern = state("minecraft:lectern", &[("has_book", "true")]);
+        let actor = translate([0; 3], lectern, None, &crate::data::V26_60).unwrap();
+        assert!(actor.windows(12).any(|w| w == b"written_book"));
     }
 
     #[test]

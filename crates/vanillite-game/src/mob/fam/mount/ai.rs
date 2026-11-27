@@ -888,17 +888,15 @@ pub fn behavior_start(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) {
                 brain::brain(t).set_with_expiry(M::BreezeJumpInhaling, MemValue::Unit, 10);
             }
             set_pose(t, Pose::Inhaling);
-            let pos = t.pos();
-            let seed = crate::survival::sound_seed();
-            crate::survival::play_sound(
+            crate::survival::play_entity_sound(
                 t.env.out,
+                t.ents,
                 None,
-                pos,
+                t.id,
                 "minecraft:entity.breeze.charge",
                 vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
                 1.0,
                 1.0,
-                seed,
             );
             if let Some(target) = brain_ref(t).pos(M::BreezeJumpTarget) {
                 look_at_eyes(
@@ -1082,17 +1080,16 @@ fn throw_to(t: &mut Tick<'_, '_>, target: Vec3) {
             3.75, 4.0,
         ];
         let i = usize::try_from(t.env.random.next_int_bounded(16)).unwrap_or(0);
-        let pos = t.pos();
-        let seed = crate::survival::sound_seed();
-        crate::survival::play_sound(
+        let pitch = PITCHES.get(i).copied().unwrap_or(1.0);
+        crate::survival::play_entity_sound(
             t.env.out,
+            t.ents,
             None,
-            pos,
+            id,
             "minecraft:entity.allay.item_thrown",
             vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
             1.0,
-            PITCHES[i],
-            seed,
+            pitch,
         );
     }
 }
@@ -1153,7 +1150,9 @@ fn charge_tick(t: &mut Tick<'_, '_>, velocity: Vec3, b: &mut Behavior, now: i64)
     let damage = t.mob_ref().attrs.attack_damage;
     let source = crate::mob::combat::entity_source(t.ents, t.env.types.mob_attack, me, me);
     #[allow(clippy::cast_possible_truncation)]
-    crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, victim, source, damage as f32);
+    if crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, victim, source, damage as f32) {
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, victim, &source);
+    }
     // `dealKnockBack`: the speed effects change the push.
     let effects = &t.mob_ref().effects;
     let level = |e| effects.amplifier(e).map_or(0, |a| a + 1);

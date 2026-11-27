@@ -463,11 +463,15 @@ impl PlayLevel for WorldLevel<'_> {
         self.level.game_event_block(event, pos, context);
     }
 
-    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+    fn use_end_crystal(
+        &mut self,
+        on: BlockPos,
+        player: Option<vanillite_world::entity::EntityId>,
+    ) -> bool {
         let seed = self.level.random().next_long();
         let uuid =
             vanillite_game::mob::random_uuid(&mut vanillite_base::random::LegacyRandom::new(seed));
-        vanillite_game::mob::boss::dragon::fight::use_end_crystal(self.level, uuid, on)
+        vanillite_game::mob::boss::dragon::fight::use_end_crystal(self.level, uuid, on, player)
     }
 
     fn is_unobstructed(&self, state: BlockState, pos: BlockPos) -> bool {
@@ -678,6 +682,7 @@ pub fn tick_item(
         return burn;
     }
     let row = entity.kind_row();
+    burn.invulnerable = entity.flags().contains(EntityFlags::INVULNERABLE);
     let input = item_entity::TickInput {
         pos: entity.pos(),
         velocity: entity.velocity(),
@@ -686,6 +691,7 @@ pub fn tick_item(
         min_y,
         lifetime,
         fast_lava: level.settings.fast_lava,
+        no_gravity: entity.flags().contains(EntityFlags::NO_GRAVITY),
     };
     let Some(data) = items.get_mut(row) else {
         return burn;

@@ -145,10 +145,79 @@ impl ItemStack {
         self.patch.as_deref().and_then(|p| p.get(type_id))
     }
 
-    /// `ItemStack.isSameItemSameComponents`.
+    /// `ItemStack.isSameItemSameComponents`: same item and equal effective components (a value
+    /// equal to the item's default counts as unpatched; unordered maps compare as maps).
     #[inline]
     pub fn same_item_same_components(&self, other: &ItemStack) -> bool {
-        self.item == other.item && self.patch() == other.patch()
+        self.item == other.item && (self.patch() == other.patch() || self.effective_patch_eq(other))
+    }
+
+    /// Compares the effective values of every component either patch touches.
+    fn effective_patch_eq(&self, other: &ItemStack) -> bool {
+        use crate::item_defaults::values_equal;
+        let (a, b) = (self.patch(), other.patch());
+        let item = self.item;
+        touched(a)
+            .chain(touched(b))
+            .all(|t| match (effective(item, a, t), effective(item, b, t)) {
+                (None, None) => true,
+                (Some(x), Some(y)) => values_equal(t, &x, &y),
+                _ => false,
+            })
+    }
+
+    /// `PatchedDataComponentMap.set`: a value equal to the item's default leaves no patch
+    /// entry (and undoes a removal).
+    pub fn set_component(&mut self, type_id: u16, value: Box<[u8]>) {
+        let default = crate::item_defaults::default_component(self.item, type_id);
+        if default.is_some_and(|d| crate::item_defaults::values_equal(type_id, &d, &value)) {
+            if let Some(p) = self.patch.as_deref_mut() {
+                p.unset(type_id);
+                if let Ok(i) = p.removed.binary_search(&type_id) {
+                    p.removed.remove(i);
+                }
+            }
+            self.drop_empty_patch();
+        } else {
+            self.patch_mut().set(type_id, value);
+        }
+    }
+
+    /// `PatchedDataComponentMap.remove`: a removal is kept only where the item has a
+    /// default.
+    pub fn remove_component(&mut self, type_id: u16) {
+        if crate::item_defaults::has_default(self.item, type_id) {
+            let p = self.patch_mut();
+            p.unset(type_id);
+            if let Err(i) = p.removed.binary_search(&type_id) {
+                p.removed.insert(i, type_id);
+            }
+        } else if let Some(p) = self.patch.as_deref_mut() {
+            p.unset(type_id);
+            self.drop_empty_patch();
+        }
+    }
+
+    /// Normalises the patch as `PatchedDataComponentMap.applyPatch` does: values equal to the
+    /// default and removals of components the item does not have are dropped.
+    pub fn normalize(&mut self) {
+        let Some(p) = self.patch.as_deref_mut() else {
+            return;
+        };
+        let item = self.item;
+        p.added.retain(|(t, v)| {
+            !crate::item_defaults::default_component(item, *t)
+                .is_some_and(|d| crate::item_defaults::values_equal(*t, &d, v))
+        });
+        p.removed
+            .retain(|t| crate::item_defaults::has_default(item, *t));
+        self.drop_empty_patch();
+    }
+
+    fn drop_empty_patch(&mut self) {
+        if self.patch.as_deref().is_some_and(ComponentPatch::is_empty) {
+            self.patch = None;
+        }
     }
 
     /// A copy with another count (`copyWithCount`).
@@ -236,11 +305,13 @@ impl ItemStack {
                 patch.removed.insert(i, t);
             }
         }
-        Ok(ItemStack {
+        let mut stack = ItemStack {
             item,
             count,
             patch: (!patch.is_empty()).then(|| Box::new(patch)),
-        })
+        };
+        stack.normalize();
+        Ok(stack)
     }
 
     /// Encodes the untrusted (delimited) codec, as clients send it.
@@ -379,6 +450,33 @@ impl Encode for ItemStack {
     }
 }
 
+/// The component types a patch adds or removes.
+fn touched(p: Option<&ComponentPatch>) -> impl Iterator<Item = u16> + '_ {
+    p.into_iter().flat_map(|p| {
+        p.added
+            .iter()
+            .map(|(t, _)| *t)
+            .chain(p.removed.iter().copied())
+    })
+}
+
+/// `get(type)` of an item with patch `p`.
+fn effective<'a>(
+    item: u16,
+    p: Option<&'a ComponentPatch>,
+    t: u16,
+) -> Option<std::borrow::Cow<'a, [u8]>> {
+    if let Some(p) = p {
+        if let Some(v) = p.get(t) {
+            return Some(std::borrow::Cow::Borrowed(v));
+        }
+        if p.is_removed(t) {
+            return None;
+        }
+    }
+    crate::item_defaults::default_component(item, t)
+}
+
 /// A data component type id, checked against the registry.
 fn component_type(r: &mut Reader<'_>) -> Result<u16> {
     let t = r.varint()?;
@@ -409,6 +507,25 @@ struct Installed {
 }
 
 static INSTALLED: OnceLock<Installed> = OnceLock::new();
+
+/// The name of entry `id` of a static or installed dynamic registry.
+pub fn registry_entry_name(registry: &str, id: usize) -> Option<&'static str> {
+    if let Some(r) = vanillite_data::registry::Registry::by_name(registry) {
+        return r.name(u16::try_from(id).ok()?);
+    }
+    INSTALLED
+        .get()?
+        .info
+        .names
+        .get(registry)?
+        .get(id)
+        .map(String::as_str)
+}
+
+/// Whether [`install_registries`] ran.
+pub fn registries_installed() -> bool {
+    INSTALLED.get().is_some()
+}
 
 /// Installs the registry information. Later calls are ignored: registries are frozen for the
 /// lifetime of the process.

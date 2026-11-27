@@ -5,7 +5,7 @@
 //! 9–35 main inventory, 36–44 hotbar, 45 off hand. Inventory indices: 0–8 hotbar, 9–35 main,
 //! 36–39 armour (feet, legs, chest, head), 40 off hand.
 
-use vanillite_protocol::packets::play::clientbound::ContainerSetSlot;
+use vanillite_protocol::packets::play::clientbound::{ContainerSetSlot, SetPlayerInventory};
 use vanillite_protocol::packets::play::serverbound::{ContainerInput, HashedStack};
 
 use crate::item::{self, EquipmentSlot, ItemStack, ToolTable};
@@ -109,6 +109,9 @@ pub struct PlayerInventory {
     /// Result slots of the crafting grid to send (`slotChangedCraftingGrid` sends them right
     /// away, in this order).
     pub(crate) result_updates: Vec<ItemStack>,
+    /// Inventory slots [`Self::place_back`] filled, with their new stack, to send
+    /// (`ClientboundSetPlayerInventoryPacket`) before the next menu broadcast.
+    pub(crate) inventory_updates: Vec<(usize, ItemStack)>,
     /// Crafting results taken since the server last took them (statistics and triggers).
     pub crafted: Vec<Crafted>,
     /// The selected item of a bundle: its contents key and index ([`crate::bundle`]).
@@ -134,6 +137,7 @@ impl Default for PlayerInventory {
             container: None,
             container_counter: 0,
             result_updates: Vec::new(),
+            inventory_updates: Vec::new(),
             crafted: Vec::new(),
             bundle_selection: None,
             awards: Vec::new(),
@@ -332,8 +336,25 @@ impl PlayerInventory {
         }
     }
 
-    /// `placeItemBackInInventory`: what does not fit is dropped.
-    pub fn place_back(&mut self, mut stack: ItemStack, infinite: bool, drops: &mut Vec<Drop>) {
+    /// `placeItemBackInInventory`: what does not fit is dropped; every slot that took some is
+    /// sent (`ClientboundSetPlayerInventoryPacket`, with the next menu broadcast).
+    pub fn place_back(&mut self, stack: ItemStack, infinite: bool, drops: &mut Vec<Drop>) {
+        self.place_back_inner(stack, infinite, drops, true);
+    }
+
+    /// `placeItemBackInInventory(stack, false, ...)`: like [`Self::place_back`] without the
+    /// inventory slot packets (recipe placement).
+    pub fn place_back_unsent(&mut self, stack: ItemStack, infinite: bool, drops: &mut Vec<Drop>) {
+        self.place_back_inner(stack, infinite, drops, false);
+    }
+
+    fn place_back_inner(
+        &mut self,
+        mut stack: ItemStack,
+        infinite: bool,
+        drops: &mut Vec<Drop>,
+        send: bool,
+    ) {
         while !stack.is_empty() {
             let Some(slot) = self
                 .slot_with_remaining_space(&stack)
@@ -347,7 +368,10 @@ impl PlayerInventory {
             };
             let space = item::max_stack_size(&stack).saturating_sub(self.get(slot).count);
             let mut part = stack.split(space);
-            self.add(Some(slot), &mut part, infinite);
+            if self.add(Some(slot), &mut part, infinite) && send {
+                let item = self.get(slot).clone();
+                self.inventory_updates.push((slot, item));
+            }
         }
     }
 
@@ -511,9 +535,16 @@ impl PlayerInventory {
         }
     }
 
-    /// Sends the crafting results [`Self::craft_changed`] computed
-    /// (`ClientboundContainerSetSlotPacket` of slot 0).
+    /// Sends the inventory slots [`Self::place_back`] filled (`set_player_inventory`) and the
+    /// crafting results [`Self::craft_changed`] computed (`ClientboundContainerSetSlotPacket`
+    /// of slot 0).
     pub fn flush_result_updates(&mut self, sink: &dyn PacketSink) {
+        for (slot, contents) in std::mem::take(&mut self.inventory_updates) {
+            sink.send(&SetPlayerInventory {
+                slot: i32::try_from(slot).unwrap_or(0),
+                item: contents,
+            });
+        }
         for item in std::mem::take(&mut self.result_updates) {
             let state_id = self.menu.next_state_id();
             sink.send(&ContainerSetSlot {
@@ -714,7 +745,10 @@ impl MenuSlots for PlayerInventory {
 
     fn may_place(&self, slot: usize, stack: &ItemStack) -> bool {
         match armor_slot(slot) {
-            Some(eq) => item::equipment_slot(stack) == eq,
+            // `ArmorSlot.mayPlace`: `isEquippableInSlot` for the player.
+            Some(eq) => item::equippable(stack).is_some_and(|e| {
+                e.slot == eq && e.can_be_equipped_by(vanillite_data::entity::ids::PLAYER.0)
+            }),
             None => slot != 0,
         }
     }

@@ -168,18 +168,45 @@ pub fn may_interact(level: &Level, projectile: EntityId, pos: BlockPos) -> bool 
     }
 }
 
-/// `Projectile.mayBreak(level, pos)`: impact projectiles with `projectiles_can_break_blocks`;
-/// not for an adventure mode owner (the projectile's `can_break` is not kept).
-pub fn may_break(level: &Level, projectile: EntityId, _pos: BlockPos) -> bool {
+/// `Projectile.mayBreak(level, pos)`: impact projectiles with `projectiles_can_break_blocks`
+/// and `canBreakBlockInAdventureMode`.
+pub fn may_break(level: &Level, projectile: EntityId, pos: BlockPos) -> bool {
     let Some(kind) = level.entities.store.get(projectile).map(|e| e.kind()) else {
         return false;
     };
-    let adventure = owner(level, projectile)
-        .and_then(|o| level.entities.player(o))
-        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Adventure);
     crate::effect::entity_in_tag(kind, "minecraft:impact_projectiles")
         && level.settings.projectiles_can_break_blocks
-        && !adventure
+        && can_break_in_adventure_mode(level, projectile, pos)
+}
+
+/// `Projectile.canBreakBlockInAdventureMode`: a projectile with an owner that is not a player
+/// outside adventure mode needs its `can_break` (kept from the item it was made from) to match
+/// the block. (Ownerless projectiles on a server whose default game mode is adventure are not
+/// covered: the level does not know the default game mode.)
+fn can_break_in_adventure_mode(level: &Level, projectile: EntityId, pos: BlockPos) -> bool {
+    let Some(owner) = owner(level, projectile) else {
+        return true;
+    };
+    if level
+        .entities
+        .player(owner)
+        .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Adventure)
+    {
+        return true;
+    }
+    let item = level
+        .entities
+        .arrow(projectile)
+        .map(|a| &a.item)
+        .or_else(|| level.entities.missile(projectile).map(|m| &m.item));
+    let Some(component) =
+        item.and_then(|i| i.component(vanillite_protocol::components::ids::CAN_BREAK))
+    else {
+        return false;
+    };
+    crate::player::play::game_data().is_some_and(|data| {
+        crate::player::play::adventure_allows(&data, Some(level), Some(component), pos)
+    })
 }
 
 /// `TargetBlock.onProjectileHit`.

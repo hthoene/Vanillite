@@ -13,7 +13,6 @@ use crate::item::{self, ItemStack};
 use crate::level::Level;
 use crate::mob::MobContext;
 use crate::mob::missile::{MissileData, MissileKind};
-use crate::survival::play_sound;
 use crate::survival::player::Env;
 
 /// `TridentItem.THROW_THRESHOLD_TIME`.
@@ -25,6 +24,8 @@ pub struct SpinAttack {
     pub ticks: i32,
     pub damage: f32,
     pub item: ItemStack,
+    /// The inventory slot of the trident (`autoSpinAttackItemStack` is that very stack).
+    pub index: usize,
     /// The box the player swept through in its last travel.
     pub swept: Aabb,
     /// `horizontalCollision` of that travel.
@@ -173,16 +174,16 @@ pub fn release(
             1.0,
             data,
         );
-        if let Some(at) = id.and_then(|i| ents.store.get(i)).map(|e| e.pos()) {
-            play_sound(
+        if let Some(id) = id {
+            crate::survival::play_entity_sound(
                 env.out,
+                ents,
                 None,
-                at,
+                id,
                 &sound,
                 SoundSource::Players,
                 1.0,
                 1.0,
-                crate::survival::sound_seed(),
             );
         }
         return;
@@ -208,31 +209,27 @@ pub fn release(
         .player(player)
         .is_some_and(|p| p.survival.simulate_movement);
     if let Some(mut e) = ents.store.get_mut(player) {
-        // `push`: the motion grows and the client hears of it (`hasImpulse`).
+        // `push`: the motion grows and the players tracking it hear of it (`needsSync`); the
+        // riptiding player's client launches itself.
         let v = e.as_ref().velocity();
         e.set_velocity(v + push);
         e.set_flags(EntityFlags::HAS_IMPULSE, true);
-        if !simulated {
-            e.set_flags(EntityFlags::HURT_MARKED, true);
-        }
     }
-    start_spin_attack(ents, env, player, 20, 8.0, stack.clone());
+    start_spin_attack(ents, env, player, 20, 8.0, stack.clone(), hand_index);
     if on_ground && simulated {
         // `move(SELF, (0, 1.2, 0))`.
         crate::survival::player::lift_player(ents, env, player, f64::from(1.199_999_9_f32));
     }
-    if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
-        play_sound(
-            env.out,
-            None,
-            pos,
-            &sound,
-            SoundSource::Players,
-            1.0,
-            1.0,
-            crate::survival::sound_seed(),
-        );
-    }
+    crate::survival::play_entity_sound(
+        env.out,
+        ents,
+        None,
+        player,
+        &sound,
+        SoundSource::Players,
+        1.0,
+        1.0,
+    );
 }
 
 /// `ItemStack.hurtWithoutBreaking(1, player)`: one point, never the last one (Unbreaking may
@@ -275,6 +272,7 @@ pub fn start_spin_attack(
     ticks: i32,
     damage: f32,
     item: ItemStack,
+    index: usize,
 ) {
     let Entities { store, players, .. } = ents;
     let Some(mut entity) = store.get_mut(player) else {
@@ -288,6 +286,7 @@ pub fn start_spin_attack(
         ticks,
         damage,
         item,
+        index,
         swept,
         horizontal_collision: false,
     });

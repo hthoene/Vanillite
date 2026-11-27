@@ -9,7 +9,7 @@ use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_config::GameMode;
 use vanillite_data::block::ids;
-use vanillite_nbt::{Compound, Tag};
+use vanillite_nbt::Compound;
 use vanillite_world::entity::{EntityFlags, EntityId};
 
 use super::super::super::kinds::Kind;
@@ -295,11 +295,16 @@ fn fireball_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3
             if d.kind == MissileKind::SmallFireball {
                 let before = fire_ticks(t.ents, target);
                 super::super::super::attack::ignite(t.ents, target, 100);
-                if !combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 5.0) {
+                if combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 5.0) {
+                    crate::mob::attack::post_attack_effects(
+                        t.level, t.ents, t.env, t.cx, target, &src,
+                    );
+                } else {
                     set_fire_ticks(t.ents, target, before);
                 }
             } else {
                 combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 6.0);
+                crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &src);
             }
         }
         Hit::Block(pos, _, face) => {
@@ -567,6 +572,7 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
         Hit::Entity(target, _) => {
             let src = source(t.ents, t.env.types.mob_projectile, me, d);
             if combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 4.0) {
+                crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &src);
                 // `firstNonNull(owner, this)`.
                 let by = owner(t.ents, d).or(Some(me));
                 effects::living::add_to_entity_from(
@@ -743,7 +749,9 @@ fn fangs_bite(t: &mut MissileTick<'_, '_>, d: &MissileData) {
             }
             source(t.ents, t.env.types.indirect_magic, me, d)
         };
-        combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 6.0);
+        if combat::hurt(t.level, t.ents, t.env, t.cx, target, src, 6.0) && src.cause.is_some() {
+            crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &src);
+        }
     }
     t.cx.ids = ids;
 }
@@ -965,15 +973,8 @@ pub fn save(d: &MissileData, out: &mut Compound) {
 
 /// Reads the projectile's own NBT.
 pub fn load(d: &mut MissileData, tag: &Compound) {
-    let double = |k: &str| match tag.get(k) {
-        Some(Tag::Double(v)) if v.is_finite() => Some(*v),
-        _ => None,
-    };
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        Some(Tag::Byte(v)) => Some(i32::from(*v)),
-        _ => None,
-    };
+    let double = |k: &str| crate::mob::entity_nbt::get_double(tag, k);
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
     match d.kind {
         MissileKind::SmallFireball | MissileKind::Fireball => {
             d.acceleration = double("acceleration_power").unwrap_or(0.1);

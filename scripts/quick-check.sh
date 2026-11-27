@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The fast checks of .github/workflows/ci.yml that need no test run: formatting, clippy and the
-# generated-file checks (codegen, egg, parity goldens). Keep in sync with ci.yml.
+# The fast checks of .github/workflows/ci.yml: formatting, clippy, the generated-file checks
+# (codegen, egg, parity goldens) and the quick tier of the parity scenarios (#257; the full tier
+# runs in ci.yml). Keep in sync with ci.yml.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 status=0
@@ -11,4 +12,5 @@ step cargo xtask codegen --check
 step cargo xtask egg --check
 step cargo xtask golden check
 step cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+step cargo xtask parity quick
 exit $status

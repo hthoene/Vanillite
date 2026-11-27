@@ -514,7 +514,7 @@ pub fn sha1_file(path: &Path) -> Result<String> {
         .collect())
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub fn sha256_file(path: &Path) -> Result<String> {
     use sha2::Sha256;
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Sha256::digest(&bytes)

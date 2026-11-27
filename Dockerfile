@@ -8,6 +8,11 @@
 #
 # The build stage runs on the build machine and cross-compiles for each target platform with
 # cargo-zigbuild, so multi-arch builds (linux/amd64, linux/arm64) need no emulation.
+#
+# Plugins: a static binary cannot load libraries, so the image also has `vanillite-gnu` (the same
+# commit linked against glibc 2.28) and the glibc files it and a Java runtime need. The static
+# binary starts it in its place only when plugins/ holds plugins (crates/vanillite/src/runtime.rs);
+# without plugins nothing of it runs.
 
 ARG BINARY=build
 
@@ -19,7 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl xz-utils c
     && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-$(uname -m)-linux-${ZIG_VERSION}.tar.xz" \
        | tar -xJ -C /opt && ln -s /opt/zig-*/zig /usr/local/bin/zig \
     && cargo install --locked cargo-zigbuild --version "${ZIGBUILD_VERSION}" \
-    && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+    && rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+       x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 WORKDIR /src
 COPY . .
 ARG TARGETARCH
@@ -32,13 +38,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cache/vanillite,id=vanillite-data,sharing=locked \
     --mount=type=cache,target=/src/target,id=vanillite-target-${TARGETARCH} \
     case "${TARGETARCH}" in \
-      amd64) triple=x86_64-unknown-linux-musl ;; \
-      arm64) triple=aarch64-unknown-linux-musl ;; \
+      amd64) triple=x86_64-unknown-linux-musl gnu=x86_64-unknown-linux-gnu ;; \
+      arm64) triple=aarch64-unknown-linux-musl gnu=aarch64-unknown-linux-gnu ;; \
       *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
     && CFLAGS_x86_64_unknown_linux_musl=-mevex512 cargo zigbuild --release --locked -p vanillite --target "${triple}" \
     && mkdir -p /out && cp "target/${triple}/release/vanillite" /out/vanillite \
+    && CFLAGS_x86_64_unknown_linux_gnu=-mevex512 cargo zigbuild --release --locked -p vanillite --features mimalloc --target "${gnu}.2.28" \
+    && cp "target/${gnu}/release/vanillite" /out/vanillite-gnu \
     # amd64: also the x86-64-v3 build (AVX2), which the baseline binary starts where the CPU has it.
     && if [ "${TARGETARCH}" = amd64 ]; then \
          RUSTFLAGS="-C target-cpu=x86-64-v3" CFLAGS_x86_64_unknown_linux_musl=-mevex512 \
@@ -65,9 +73,27 @@ RUN mkdir -p /rootfs/data /rootfs/tmp /rootfs/bin && chown 10001:10001 /rootfs/d
 
 FROM busybox:stable-musl AS busybox
 
+# The glibc files vanillite-gnu and the Bukkit layer's Java runtime load, from Debian of the
+# target platform. Only copied, nothing runs, so no emulation.
+FROM debian:bookworm-slim AS debian
+FROM scratch AS glibc-amd64
+COPY --from=debian /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /lib64/
+COPY --from=debian /usr/lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libm.so.6 \
+     /usr/lib/x86_64-linux-gnu/libdl.so.2 /usr/lib/x86_64-linux-gnu/libpthread.so.0 \
+     /usr/lib/x86_64-linux-gnu/librt.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 \
+     /lib/x86_64-linux-gnu/
+FROM scratch AS glibc-arm64
+COPY --from=debian /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 /lib/
+COPY --from=debian /usr/lib/aarch64-linux-gnu/libc.so.6 /usr/lib/aarch64-linux-gnu/libm.so.6 \
+     /usr/lib/aarch64-linux-gnu/libdl.so.2 /usr/lib/aarch64-linux-gnu/libpthread.so.0 \
+     /usr/lib/aarch64-linux-gnu/librt.so.1 /usr/lib/aarch64-linux-gnu/libgcc_s.so.1 \
+     /lib/aarch64-linux-gnu/
+FROM glibc-${TARGETARCH} AS glibc
+
 FROM scratch
 COPY --from=data /rootfs/ /
 COPY --from=busybox /bin/busybox /bin/busybox
+COPY --from=glibc / /
 COPY --from=binary / /
 COPY --chmod=755 scripts/docker/entrypoint.sh /entrypoint.sh
 USER 10001:10001

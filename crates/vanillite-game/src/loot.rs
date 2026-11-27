@@ -2812,7 +2812,7 @@ impl<'t> Eval<'t, '_> {
                 if let Some(source) = self.ctx.block_entity {
                     for &id in include.iter() {
                         if let Some(value) = source(id) {
-                            stack.patch_mut().set(id, value);
+                            stack.set_component(id, value);
                         }
                     }
                 }
@@ -2870,9 +2870,7 @@ impl<'t> Eval<'t, '_> {
                         .and_then(|v| Reader::new(v).i32().ok());
                     let rgb = crate::recipe::apply_dyes(current, &dyes);
                     *stack = stack.with_count(1);
-                    stack
-                        .patch_mut()
-                        .set(ids::DYED_COLOR, Box::new(rgb.to_be_bytes()));
+                    stack.set_component(ids::DYED_COLOR, Box::new(rgb.to_be_bytes()));
                 }
             }
             FuncKind::SetRandomPotion(options) => {
@@ -2898,9 +2896,7 @@ impl<'t> Eval<'t, '_> {
                         i32::try_from(potion).unwrap_or(0),
                     );
                     out.extend_from_slice(&[0, 0, 0]);
-                    stack
-                        .patch_mut()
-                        .set(ids::POTION_CONTENTS, out.into_boxed_slice());
+                    stack.set_component(ids::POTION_CONTENTS, out.into_boxed_slice());
                 }
             }
             FuncKind::SetEnchantments { enchantments, add } => {
@@ -2922,9 +2918,7 @@ impl<'t> Eval<'t, '_> {
                         set_enchantment(&mut list, id, level.clamp(0, 255));
                     }
                 }
-                stack
-                    .patch_mut()
-                    .set(component, crate::enchant::write(&list));
+                stack.set_component(component, crate::enchant::write(&list));
             }
             FuncKind::SetDamage { damage, add } => {
                 if crate::item::is_damageable(stack) {
@@ -2949,7 +2943,7 @@ impl<'t> Eval<'t, '_> {
             }
             FuncKind::SetName { target, name } => {
                 if let Some(name) = name {
-                    stack.patch_mut().set(*target, name.clone());
+                    stack.set_component(*target, name.clone());
                 }
             }
             FuncKind::SetPotion(potion) => {
@@ -2960,9 +2954,7 @@ impl<'t> Eval<'t, '_> {
                     i32::try_from(*potion).unwrap_or(0),
                 );
                 out.extend_from_slice(&[0, 0, 0]);
-                stack
-                    .patch_mut()
-                    .set(ids::POTION_CONTENTS, out.into_boxed_slice());
+                stack.set_component(ids::POTION_CONTENTS, out.into_boxed_slice());
             }
             FuncKind::SetStewEffect(effects) => {
                 if stack.item != items::SUSPICIOUS_STEW.0 || effects.is_empty() {
@@ -2988,9 +2980,7 @@ impl<'t> Eval<'t, '_> {
                     );
                     vanillite_protocol::codec::write_varint(&mut out, duration);
                 }
-                stack
-                    .patch_mut()
-                    .set(ids::SUSPICIOUS_STEW_EFFECTS, out.into_boxed_slice());
+                stack.set_component(ids::SUSPICIOUS_STEW_EFFECTS, out.into_boxed_slice());
             }
             FuncKind::SetInstrument(options) => {
                 let instruments: Vec<u32> = options
@@ -3009,29 +2999,21 @@ impl<'t> Eval<'t, '_> {
                         &mut out,
                         i32::try_from(id).unwrap_or(-1).wrapping_add(1),
                     );
-                    stack
-                        .patch_mut()
-                        .set(ids::INSTRUMENT, out.into_boxed_slice());
+                    stack.set_component(ids::INSTRUMENT, out.into_boxed_slice());
                 }
             }
             FuncKind::SetOminousBottleAmplifier(amplifier) => {
                 let value = self.int(amplifier).clamp(0, 4);
                 let mut out = Vec::new();
                 vanillite_protocol::codec::write_varint(&mut out, value);
-                stack
-                    .patch_mut()
-                    .set(ids::OMINOUS_BOTTLE_AMPLIFIER, out.into_boxed_slice());
+                stack.set_component(ids::OMINOUS_BOTTLE_AMPLIFIER, out.into_boxed_slice());
             }
             FuncKind::SetComponents(components) => {
                 // `applyComponentsAndValidate`: a patch that leaves the stack invalid is undone.
                 let old = stack.patch.clone();
                 for (id, value) in components {
                     let Some(value) = value else {
-                        let patch = stack.patch_mut();
-                        patch.unset(*id);
-                        if let Err(i) = patch.removed.binary_search(id) {
-                            patch.removed.insert(i, *id);
-                        }
+                        stack.remove_component(*id);
                         continue;
                     };
                     match vanillite_protocol::components_nbt::from_nbt(
@@ -3039,7 +3021,7 @@ impl<'t> Eval<'t, '_> {
                         value,
                         &vanillite_protocol::item::InstalledRegistries,
                     ) {
-                        Ok(wire) => stack.patch_mut().set(*id, wire),
+                        Ok(wire) => stack.set_component(*id, wire),
                         Err(e) => log::debug!("set_components: component {id}: {e}"),
                     }
                 }
@@ -3084,7 +3066,7 @@ impl<'t> Eval<'t, '_> {
                             vanillite_protocol::components::ids::MAP_DECORATIONS,
                         ] {
                             if let Some(value) = map.component(id) {
-                                stack.patch_mut().set(id, value.into());
+                                stack.set_component(id, value.into());
                             }
                         }
                     }
@@ -3255,9 +3237,7 @@ fn upgrade_enchantment(stack: &mut ItemStack, id: u32, level: i32) {
     if level > current {
         set_enchantment(&mut list, id, level.min(255));
     }
-    stack
-        .patch_mut()
-        .set(component, crate::enchant::write(&list));
+    stack.set_component(component, crate::enchant::write(&list));
 }
 
 /// A `suspicious_stew_effects` value: `(mob effect id, duration)`.
@@ -3331,9 +3311,7 @@ fn copy_state(stack: &mut ItemStack, state: BlockState, properties: &[Box<str>])
         write_str(&mut buf, k);
         write_str(&mut buf, v);
     }
-    stack
-        .patch_mut()
-        .set(ids::BLOCK_STATE, buf.into_boxed_slice());
+    stack.set_component(ids::BLOCK_STATE, buf.into_boxed_slice());
 }
 
 /// Reads a `minecraft:block_state` component value (VarInt count, then key/value strings).
@@ -3358,7 +3336,7 @@ fn set_additional_trade_cost(stack: &mut ItemStack, cost: i32) {
     };
     let mut out = Vec::new();
     vanillite_protocol::codec::write_varint(&mut out, cost);
-    stack.patch_mut().set(id, out.into_boxed_slice());
+    stack.set_component(id, out.into_boxed_slice());
 }
 
 // --- Standalone loot parts (villager trades and other data that embeds them) ------------------
@@ -4182,7 +4160,7 @@ mod tests {
             assert!(plain.is_empty(), "{key}");
             let mut enchanted = ItemStack::new(items::BOOK.0, 1);
             // One entry: enchantment 0, level 1.
-            enchanted.patch_mut().set(component, Box::new([1, 0, 1]));
+            enchanted.set_component(component, Box::new([1, 0, 1]));
             tables
                 .modify(None, Some(&filter), &mut enchanted, &ctx, &mut rng)
                 .expect("modifier");

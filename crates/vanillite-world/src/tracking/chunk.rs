@@ -1,11 +1,11 @@
 //! The built-in tracker: Vanilla's `ChunkMap.TrackedEntity` and `ServerEntity` over
 //! chunk-indexed nearby-player sets.
 //!
-//! Scaling: every viewer is registered in the chunks of a square around it that covers the
-//! largest tracking range, updated incrementally when it changes chunk. An entity that
-//! changes section checks only the viewers registered in its chunk and those that see it; a
-//! viewer that changes section checks only the entities in its square and those it sees. No
-//! step iterates all pairs. The per-tick cost is one pass over the entities (Vanilla's
+//! Scaling: every viewer is registered in the cells of 4×4 chunks that overlap a square
+//! around it covering the largest tracking range, updated incrementally when that set of
+//! cells changes. An entity that changes section checks only the viewers registered in its
+//! chunk's cell and those that see it; a viewer that changes section checks only the entities
+//! in its square and those it sees. No step iterates all pairs. The per-tick cost is one pass over the entities (Vanilla's
 //! `sendChanges`) plus work proportional to the section changes.
 
 use rustc_hash::FxHashMap;
@@ -195,7 +195,7 @@ pub struct ChunkTracker {
     free_viewers: Vec<u32>,
     /// Entity indices of the tracked entities per chunk.
     by_chunk: FxHashMap<i64, Vec<u32>>,
-    /// Slots of the viewers whose square covers a chunk, sorted.
+    /// Slots of the viewers whose square overlaps a cell of chunks ([`cell_of`]), sorted.
     nearby: FxHashMap<i64, Vec<u32>>,
     /// Number of the current update.
     stamp: u32,
@@ -469,7 +469,7 @@ impl EntityTracker for ChunkTracker {
                 }
                 entry.section = Some(section);
                 candidates.clear();
-                if let Some(list) = nearby.get(&chunk.as_long()) {
+                if let Some(list) = nearby.get(&cell_of(chunk)) {
                     candidates.extend_from_slice(list);
                 }
                 // Viewers that see it but are no longer registered near its chunk.
@@ -815,7 +815,7 @@ fn send_changes(
                 let change = velocity.distance_to_sqr(sync.movement);
                 if change > 1.0e-7 || (change > 0.0 && velocity.length_sqr() == 0.0) {
                     sync.movement = velocity;
-                    broadcast(out, EntityUpdate::Motion(velocity));
+                    broadcast(out, EntityUpdate::TrackedMotion(velocity));
                 }
             }
             if let Some(packet) = packet {
@@ -871,8 +871,27 @@ fn for_square(center: ChunkPos, radius: i32, mut f: impl FnMut(ChunkPos)) {
     }
 }
 
-/// Moves a viewer's registration from the square around `old` to the one around `new`,
-/// touching only the chunks that differ. The lists stay sorted by slot: a removal is a
+/// Chunks per side of a cell of `nearby`, as a shift: a viewer registers in the cells its
+/// square overlaps, so a crowd moving between chunks rewrites few, rarely changing lists.
+const CELL_SHIFT: i32 = 2;
+
+/// The cells `[min x, min z, max x, max z]` the square around `center` overlaps.
+fn cells_of(center: ChunkPos, radius: i32) -> [i32; 4] {
+    [
+        (center.x - radius) >> CELL_SHIFT,
+        (center.z - radius) >> CELL_SHIFT,
+        (center.x + radius) >> CELL_SHIFT,
+        (center.z + radius) >> CELL_SHIFT,
+    ]
+}
+
+/// The key in `nearby` of the cell holding `chunk`.
+fn cell_of(chunk: ChunkPos) -> i64 {
+    ChunkPos::new(chunk.x >> CELL_SHIFT, chunk.z >> CELL_SHIFT).as_long()
+}
+
+/// Moves a viewer's registration from the cells of the square around `old` to those around
+/// `new`, touching only the cells that differ. The lists stay sorted by slot: a removal is a
 /// binary search in a list of every viewer of a crowd, and the pair checks visit the viewers
 /// in memory order.
 fn move_square(
@@ -882,29 +901,42 @@ fn move_square(
     new: Option<ChunkPos>,
     radius: i32,
 ) {
-    if let Some(old) = old {
-        for_square(old, radius, |chunk| {
-            if !new.is_some_and(|new| in_square(new, radius, chunk))
-                && let Some(list) = nearby.get_mut(&chunk.as_long())
-            {
-                if let Ok(index) = list.binary_search(&viewer) {
-                    list.remove(index);
-                }
-                if list.is_empty() {
-                    nearby.remove(&chunk.as_long());
-                }
-            }
-        });
+    let old = old.map(|center| cells_of(center, radius));
+    let new = new.map(|center| cells_of(center, radius));
+    if old == new {
+        return;
     }
-    if let Some(new) = new {
-        for_square(new, radius, |chunk| {
-            if !old.is_some_and(|old| in_square(old, radius, chunk)) {
-                let list = nearby.entry(chunk.as_long()).or_default();
-                if let Err(index) = list.binary_search(&viewer) {
-                    list.insert(index, viewer);
+    let inside = |cells: Option<[i32; 4]>, x: i32, z: i32| {
+        cells.is_some_and(|[x0, z0, x1, z1]| (x0..=x1).contains(&x) && (z0..=z1).contains(&z))
+    };
+    if let Some([x0, z0, x1, z1]) = old {
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                let key = ChunkPos::new(x, z).as_long();
+                if !inside(new, x, z)
+                    && let Some(list) = nearby.get_mut(&key)
+                {
+                    if let Ok(index) = list.binary_search(&viewer) {
+                        list.remove(index);
+                    }
+                    if list.is_empty() {
+                        nearby.remove(&key);
+                    }
                 }
             }
-        });
+        }
+    }
+    if let Some([x0, z0, x1, z1]) = new {
+        for x in x0..=x1 {
+            for z in z0..=z1 {
+                if !inside(old, x, z) {
+                    let list = nearby.entry(ChunkPos::new(x, z).as_long()).or_default();
+                    if let Err(index) = list.binary_search(&viewer) {
+                        list.insert(index, viewer);
+                    }
+                }
+            }
+        }
     }
 }
 

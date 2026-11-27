@@ -21,7 +21,7 @@ use vanillite_game::player::{Body, ChunkView, PlayerData, effective_view_distanc
 use vanillite_game::portal::{self, EntryPortal, PearlArrival, PortalKind, TravelRequest};
 use vanillite_game::survival::rules::Rule;
 use vanillite_protocol::packets::play::clientbound::{
-    Respawn, SetExperience, SetHeldSlot, relative,
+    Respawn, SetChunkCacheRadius, SetExperience, SetHeldSlot, SetSimulationDistance, relative,
 };
 use vanillite_world::chunks::{FULL_LEVEL, TicketId};
 use vanillite_world::entity::{EntityFlags, EntityId, NetworkId, Rotation};
@@ -75,6 +75,8 @@ pub(crate) struct Traveller {
     data: PlayerData,
     /// The world it left.
     from: WorldId,
+    /// The view and simulation distance of the world it left (what its client uses).
+    distances: (i32, i32),
     /// Where it was when it left.
     pos: Vec3,
     velocity: Vec3,
@@ -702,32 +704,11 @@ impl ServerWorld {
             .as_ref()
             .and_then(|r| ctx.global.dimensions.world(&r.dimension))
             .unwrap_or(OVERWORLD);
-        // `remove(KILLED)` → `triggerOnDeathMobEffects`: a dead player's Wind Charged bursts.
-        let wind = !keep_all
-            && player
-                .survival
-                .effects
-                .has(vanillite_game::effect::MobEffect::WIND_CHARGED);
-        if wind && let Some(e) = self.level.entities.store.get(id) {
-            let (pos, height) = (e.pos(), e.dims().height);
-            let (center, radius) = vanillite_game::experience_orb::with_entity_random(|r| {
-                vanillite_game::effect::living::wind_burst(pos, height, r)
-            });
-            self.level.explode_with(
-                Some(id),
-                None,
-                center,
-                radius,
-                vanillite_game::level::explosion::BlockInteraction::TriggerBlock,
-                vanillite_game::level::explosion::ExplosionStyle {
-                    damages_entities: false,
-                    knockback: vanillite_game::effect::living::WIND_CHARGED_KNOCKBACK,
-                    wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
-                    resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
-                    fire: false,
-                    bad_respawn_point: false,
-                },
-            );
+        // `removePlayerImmediately(KILLED)` → `triggerOnDeathMobEffects` of a player that
+        // respawns before `tickDeath` removed it.
+        if !keep_all && !player.survival.removed {
+            let cramming = ctx.global.level.rules().get(Rule::MAX_ENTITY_CRAMMING);
+            vanillite_game::effect::living::player_death_effects(&mut self.level, id, cramming);
         }
         // `Player.remove(KILLED)`: the open menu closes; the carried stack and the crafting grid
         // of the dead player drop (also with keepInventory).
@@ -913,6 +894,10 @@ impl ServerWorld {
             network_id: removed.network_id,
             data,
             from: self.id,
+            distances: (
+                self.players.level.view_distance,
+                self.players.level.simulation_distance,
+            ),
             pos,
             velocity,
             y_rot: rot.y_rot,
@@ -1316,6 +1301,19 @@ impl ServerWorld {
             );
         }
         data.connection.movement.reset_position(body.pos);
+        // Worlds may have their own distances (`PlayerList.setViewDistance` and
+        // `setSimulationDistance` at runtime in Vanilla): the client learns the new ones.
+        let (view_distance, simulation_distance) = traveller.distances;
+        if view_distance != info.view_distance {
+            sink.send(&SetChunkCacheRadius {
+                radius: info.view_distance,
+            });
+        }
+        if simulation_distance != info.simulation_distance {
+            sink.send(&SetSimulationDistance {
+                distance: info.simulation_distance,
+            });
+        }
         join::send_abilities(sink.as_ref(), data.game_mode, data.survival.flying);
         let view = ChunkView {
             center: ChunkPos::new(

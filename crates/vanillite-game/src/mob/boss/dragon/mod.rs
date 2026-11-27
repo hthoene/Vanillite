@@ -516,9 +516,16 @@ fn head_y_offset(t: &Tick<'_, '_>) -> f32 {
 fn update_fight(t: &mut Tick<'_, '_>) {
     let m = t.mob_ref();
     let progress = m.health / m.max_health();
+    let name = m
+        .custom_name
+        .is_some()
+        .then(|| crate::mob::combat::mob_name(m));
     let uuid = t.core().uuid();
-    t.cx.dragon_events
-        .push(DragonEvent::Update { uuid, progress });
+    t.cx.dragon_events.push(DragonEvent::Update {
+        uuid,
+        progress,
+        name,
+    });
 }
 
 /// `checkCrystals`: heals from the nearest crystal and looks for one every 10 ticks or so.
@@ -616,6 +623,7 @@ fn knock_back(t: &mut Tick<'_, '_>, area: Aabb) {
         if !sitting && !recently {
             let source = combat::entity_source(t.ents, t.env.types.mob_attack, me, me);
             combat::hurt(t.level, t.ents, t.env, t.cx, id, source, 5.0);
+            crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, id, &source);
             if !t.exists() {
                 return;
             }
@@ -638,6 +646,7 @@ fn hurt_touching(t: &mut Tick<'_, '_>, area: Aabb) {
         }
         let source = combat::entity_source(t.ents, t.env.types.mob_attack, me, me);
         combat::hurt(t.level, t.ents, t.env, t.cx, id, source, 10.0);
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, id, &source);
         if !t.exists() {
             return;
         }
@@ -767,6 +776,10 @@ pub fn kill(ents: &mut Entities, cx: &mut MobContext, id: EntityId) -> bool {
         return false;
     };
     let progress = m.health / m.max_health();
+    let name = m
+        .custom_name
+        .is_some()
+        .then(|| crate::mob::combat::mob_name(m));
     let Some(in_fight) = m.boss.dragon().map(|s| s.in_fight) else {
         return false;
     };
@@ -779,8 +792,11 @@ pub fn kill(ents: &mut Entities, cx: &mut MobContext, id: EntityId) -> bool {
             context: crate::level::game_event::GameEventContext::of(Some(id)),
         }));
     if in_fight {
-        cx.dragon_events
-            .push(DragonEvent::Update { uuid, progress });
+        cx.dragon_events.push(DragonEvent::Update {
+            uuid,
+            progress,
+            name,
+        });
         cx.dragon_events.push(DragonEvent::Killed { uuid });
     }
     true

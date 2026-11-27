@@ -4,7 +4,8 @@
 use crate::outbound::Outbound;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use tokio::sync::{Notify, oneshot};
 
@@ -73,6 +74,8 @@ pub struct Joined {
     pub outbound: Outbound,
     /// Smoothed keepalive round trip.
     pub latency: Latency,
+    /// Protocol version, brand and packet counts of the client.
+    pub details: Arc<ClientDetails>,
     /// Feeds packets into the connection as if the client sent them.
     pub injector: Injector,
     /// The server's login check admitted the player against its own rules
@@ -144,6 +147,60 @@ impl Injector {
         }
         injected.ready.notify_one();
         true
+    }
+}
+
+/// What `/vanillite debug` shows of a connection (#250): the client's protocol version and
+/// brand, set once, and the packets it sent and got, counted by the reader and the writer.
+#[derive(Debug)]
+pub struct ClientDetails {
+    protocol: AtomicI32,
+    brand: OnceLock<String>,
+    received: AtomicU64,
+    sent: Arc<crate::sent_log::SentLog>,
+}
+
+impl ClientDetails {
+    pub(crate) fn new(sent: Arc<crate::sent_log::SentLog>) -> Self {
+        ClientDetails {
+            protocol: AtomicI32::new(vanillite_protocol::PROTOCOL_VERSION),
+            brand: OnceLock::new(),
+            received: AtomicU64::new(0),
+            sent,
+        }
+    }
+
+    pub(crate) fn set_protocol(&self, protocol: i32) {
+        self.protocol.store(protocol, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_brand(&self, brand: &str) {
+        let _ = self.brand.set(brand.to_owned());
+    }
+
+    #[inline]
+    pub(crate) fn count_received(&self) {
+        self.received.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The protocol version of the client (older ones through the multi-version layer).
+    pub fn protocol(&self) -> i32 {
+        self.protocol.load(Ordering::Relaxed)
+    }
+
+    /// The brand the client sent in configuration (`minecraft:brand`).
+    pub fn brand(&self) -> Option<&str> {
+        self.brand.get().map(String::as_str)
+    }
+
+    /// Packets received from the client so far.
+    pub fn packets_received(&self) -> u64 {
+        self.received.load(Ordering::Relaxed)
+    }
+
+    /// Packets written to the client so far (a batch counts up to 32 of its frames).
+    pub fn packets_sent(&self) -> u64 {
+        u64::try_from(self.sent.written()).unwrap_or(u64::MAX)
     }
 }
 

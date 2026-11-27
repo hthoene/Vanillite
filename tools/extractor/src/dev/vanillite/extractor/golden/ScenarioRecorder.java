@@ -274,6 +274,7 @@ public final class ScenarioRecorder {
     // A session replay (#152): the recorded world's chunks instead of flat layers; missing
     // chunks come from the normal generator.
     Path snapshot = world.has("snapshot") ? Path.of(world.get("snapshot").getAsString()) : null;
+    boolean snapshotEntities = world.has("entities") && world.get("entities").getAsBoolean();
     List<ParityServer.Layer> layers = snapshot != null ? null : new ArrayList<>();
     if (snapshot != null) {
       // No layers.
@@ -294,8 +295,11 @@ public final class ScenarioRecorder {
     boolean dimensions = scenario.has("dimensions") && scenario.get("dimensions").getAsBoolean();
     if (snapshot != null) {
       Path overworld = dir.resolve("world").resolve("dimensions/minecraft/overworld");
-      for (String folder : new String[] {"region", "poi"}) {
-        copyTree(snapshot.resolve(folder), overworld.resolve(folder));
+      for (String folder : new String[] {"region", "poi", "entities"}) {
+        // `world.entities` (#244): the snapshot's entities load with its chunks.
+        if (!folder.equals("entities") || snapshotEntities) {
+          copyTree(snapshot.resolve(folder), overworld.resolve(folder));
+        }
       }
     }
     Path datapack = null;
@@ -348,7 +352,7 @@ public final class ScenarioRecorder {
       } else {
         loadRegion(server, level, min, max, warmUp);
       }
-      if (snapshot != null) {
+      if (snapshot != null && !snapshotEntities) {
         // What chunk generation spawned: entity randoms and ids cannot match Vanillite's.
         List<Entity> spawned = new ArrayList<>();
         level.getAllEntities().forEach(spawned::add);
@@ -440,6 +444,8 @@ public final class ScenarioRecorder {
       }
       Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views, stream);
       trace.clientView = clientView;
+      trace.blockEntities =
+          scenario.has("block_entities") && scenario.get("block_entities").getAsBoolean();
       entities.clientAttributes =
           scenario.has("client_attributes") && scenario.get("client_attributes").getAsBoolean();
       trace.frame(level, 0, true);
@@ -911,6 +917,8 @@ public final class ScenarioRecorder {
     private final List<View> views;
     /** Frames hold the raw packets of the players' clients ({@code "client_view"}). */
     boolean clientView;
+    /** Frames hold the block entities of the region ({@code "block_entities"}, #244). */
+    boolean blockEntities;
 
     Trace(
         BlockPos min,
@@ -1031,6 +1039,9 @@ public final class ScenarioRecorder {
       if (light) {
         light(sb, level);
       }
+      if (blockEntities) {
+        blockEntities(sb, level);
+      }
       if (names.hasEntities() || levelRng) {
         sb.append(",\"level_rng\":").append(ScenarioEntities.state(level.getRandom()));
       }
@@ -1045,6 +1056,130 @@ public final class ScenarioRecorder {
       } else {
         frames.add(sb.append('}').toString());
       }
+    }
+
+    /**
+     * The block entities of the region, sorted: {@code "x,y,z <nbt>"} with the canonical form
+     * of {@code saveWithFullMetadata} ({@link #canonical}).
+     */
+    private void blockEntities(StringBuilder sb, ServerLevel level) {
+      List<String> out = new ArrayList<>();
+      for (int cx = min.getX() >> 4; cx <= max.getX() >> 4; cx++) {
+        for (int cz = min.getZ() >> 4; cz <= max.getZ() >> 4; cz++) {
+          net.minecraft.world.level.chunk.LevelChunk chunk =
+              level.getChunkSource().getChunkNow(cx, cz);
+          if (chunk == null) {
+            continue;
+          }
+          for (var e : chunk.getBlockEntities().entrySet()) {
+            BlockPos p = e.getKey();
+            if (p.getX() < min.getX() || p.getY() < min.getY() || p.getZ() < min.getZ()
+                || p.getX() > max.getX() || p.getY() > max.getY() || p.getZ() > max.getZ()) {
+              continue;
+            }
+            StringBuilder b = new StringBuilder();
+            b.append(p.getX()).append(',').append(p.getY()).append(',').append(p.getZ()).append(' ');
+            canonical(b, e.getValue().saveWithFullMetadata(level.registryAccess()));
+            out.add(b.toString());
+          }
+        }
+      }
+      out.sort(null);
+      sb.append(",\"block_entities\":[");
+      for (int i = 0; i < out.size(); i++) {
+        sb.append(i == 0 ? "" : ",").append(new com.google.gson.JsonPrimitive(out.get(i)));
+      }
+      sb.append(']');
+    }
+
+    /**
+     * The canonical text of a tag, the same as {@code trace::canonical_nbt} on the Rust side:
+     * compound keys sorted, typed numbers ({@code 1b 2s 3 4L}), floats and doubles as
+     * {@code 1.0f}/{@code 1.0d} when integral and small, else as their bit pattern
+     * ({@code f:3fc00000}, {@code d:...}), strings quoted with {@code \\} and {@code "}
+     * escaped.
+     */
+    static void canonical(StringBuilder sb, net.minecraft.nbt.Tag tag) {
+      switch (tag) {
+        case net.minecraft.nbt.CompoundTag c -> {
+          List<String> keys = new ArrayList<>(c.keySet());
+          keys.sort(null);
+          sb.append('{');
+          for (int i = 0; i < keys.size(); i++) {
+            sb.append(i == 0 ? "" : ",");
+            quote(sb, keys.get(i));
+            sb.append(':');
+            canonical(sb, c.get(keys.get(i)));
+          }
+          sb.append('}');
+        }
+        case net.minecraft.nbt.ListTag l -> {
+          sb.append('[');
+          for (int i = 0; i < l.size(); i++) {
+            sb.append(i == 0 ? "" : ",");
+            canonical(sb, l.get(i));
+          }
+          sb.append(']');
+        }
+        case net.minecraft.nbt.ByteArrayTag a -> {
+          sb.append("[B;");
+          byte[] v = a.getAsByteArray();
+          for (int i = 0; i < v.length; i++) {
+            sb.append(i == 0 ? "" : ",").append(v[i]);
+          }
+          sb.append(']');
+        }
+        case net.minecraft.nbt.IntArrayTag a -> {
+          sb.append("[I;");
+          int[] v = a.getAsIntArray();
+          for (int i = 0; i < v.length; i++) {
+            sb.append(i == 0 ? "" : ",").append(v[i]);
+          }
+          sb.append(']');
+        }
+        case net.minecraft.nbt.LongArrayTag a -> {
+          sb.append("[L;");
+          long[] v = a.getAsLongArray();
+          for (int i = 0; i < v.length; i++) {
+            sb.append(i == 0 ? "" : ",").append(v[i]);
+          }
+          sb.append(']');
+        }
+        case net.minecraft.nbt.ByteTag b -> sb.append(b.value()).append('b');
+        case net.minecraft.nbt.ShortTag s -> sb.append(s.value()).append('s');
+        case net.minecraft.nbt.IntTag i -> sb.append(i.value());
+        case net.minecraft.nbt.LongTag l -> sb.append(l.value()).append('L');
+        case net.minecraft.nbt.FloatTag f -> {
+          float v = f.value();
+          if (v == Math.rint(v) && Math.abs(v) < 1.0e6f && Float.floatToRawIntBits(v) != 0x80000000) {
+            sb.append((long) v).append(".0f");
+          } else {
+            sb.append("f:").append(Integer.toHexString(Float.floatToRawIntBits(v)));
+          }
+        }
+        case net.minecraft.nbt.DoubleTag d -> {
+          double v = d.value();
+          if (v == Math.rint(v) && Math.abs(v) < 1.0e6 && Double.doubleToRawLongBits(v) != 0x8000000000000000L) {
+            sb.append((long) v).append(".0d");
+          } else {
+            sb.append("d:").append(Long.toHexString(Double.doubleToRawLongBits(v)));
+          }
+        }
+        case net.minecraft.nbt.StringTag s -> quote(sb, s.value());
+        default -> sb.append(tag);
+      }
+    }
+
+    private static void quote(StringBuilder sb, String s) {
+      sb.append('"');
+      for (int i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        if (c == '"' || c == '\\') {
+          sb.append('\\');
+        }
+        sb.append(c);
+      }
+      sb.append('"');
     }
 
     /**

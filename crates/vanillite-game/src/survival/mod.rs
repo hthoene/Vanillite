@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use vanillite_base::Vec3;
 use vanillite_protocol::SharedPacket;
-use vanillite_protocol::packets::play::clientbound::{Sound, SoundEvent, SoundSource};
+use vanillite_protocol::packets::play::clientbound::{Sound, SoundEntity, SoundEvent, SoundSource};
 use vanillite_protocol::text::Component;
 use vanillite_world::entity::EntityId;
 
@@ -159,6 +159,39 @@ pub fn play_sound(
         pitch,
         seed,
     );
+}
+
+/// `Level.playSound(except, sourceEntity, sound, source, volume, pitch)`: a sound that follows
+/// the entity on the client (`ClientboundSoundEntityPacket`), heard around the entity's position
+/// like [`play_sound`].
+#[allow(clippy::too_many_arguments)]
+pub fn play_entity_sound(
+    out: &mut Vec<Effect>,
+    ents: &crate::entities::Entities,
+    except: Option<EntityId>,
+    entity: EntityId,
+    sound: &str,
+    source: SoundSource,
+    volume: f32,
+    pitch: f32,
+) {
+    let Some((pos, entity_id)) = ents.store.get(entity).map(|e| (e.pos(), e.network_id().0)) else {
+        return;
+    };
+    let packet = SharedPacket::of(&SoundEntity {
+        sound: sound_event(sound),
+        source,
+        entity_id,
+        volume,
+        pitch,
+        seed: sound_seed(),
+    });
+    out.push(Effect::Nearby {
+        pos,
+        range: f64::from(if volume > 1.0 { 16.0 * volume } else { 16.0 }),
+        except,
+        packet,
+    });
 }
 
 /// [`play_sound`] of a sound event id.

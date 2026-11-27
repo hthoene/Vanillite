@@ -1653,6 +1653,12 @@ impl PluginHost {
     pub fn has_permission(&self, player: u128, node: &str, operator: bool) -> bool {
         api::has_permission(&self.inner, player, node, operator)
     }
+
+    /// The permission provider's explicit answer for a node, else the default a plugin
+    /// registered for it; `None` when nobody decides it (the caller's own default applies).
+    pub fn permission_answer(&self, player: u128, node: &str, operator: bool) -> Option<bool> {
+        api::permission_answer(&self.inner, player, node, operator)
+    }
 }
 
 impl Inner {

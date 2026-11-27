@@ -228,6 +228,21 @@ fn base_tick(t: &mut Tick<'_, '_>) {
             m.damage_cooldown -= 1;
         }
     }
+    // `LivingEntity.tick`: stuck arrows fall out one by one.
+    if !t.ents.stuck_arrows.is_empty() {
+        let id = t.id;
+        let changed = t
+            .ents
+            .stuck_arrows
+            .get_mut(&id)
+            .is_some_and(super::projectile::StuckArrows::tick);
+        if t.ents.stuck_arrows.get(&id).is_some_and(|a| a.count == 0) {
+            t.ents.stuck_arrows.remove(&id);
+        }
+        if changed {
+            t.core_mut().mark_data_dirty();
+        }
+    }
     if t.mob_ref().is_dead_or_dying() {
         tick_death(t);
         if t.mob_ref().removed {
@@ -867,8 +882,9 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         };
         let helmet = t.mob_ref().equipment.get(head).clone();
         if helmet.is_empty() {
-            let m = t.mob();
-            m.fire_ticks = m.fire_ticks.max(160);
+            if super::attack::ignite_mob(t.mob(), 160) {
+                t.core_mut().mark_data_dirty();
+            }
         } else if crate::item::is_damageable(&helmet) {
             let amount = t.mob().random.next_int_bounded(2);
             hurt_equipment(t, head, amount);
@@ -1866,7 +1882,7 @@ fn play_sound_event(
         return;
     }
     let pos = t.pos();
-    let source = t.mob_ref().kind.sound_source();
+    let source = t.mob_ref().sound_source();
     let seed = crate::survival::sound_seed();
     crate::survival::play_sound_event(t.env.out, None, pos, sound, source, volume, pitch, seed);
 }
@@ -2368,6 +2384,8 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
     }
     let fire_immune = t.core().kind().info().fire_immune;
     let previous_fire = t.mob_ref().fire_ticks;
+    // `wasOnFire = isOnFire()`.
+    let was_on_fire = !fire_immune && previous_fire > 0;
     // The collected effects, step by step (`StepBasedCollector.applyAndClear`).
     for step in inside.steps() {
         if step.freeze {
@@ -2387,11 +2405,13 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         if let Some(damage) = step.fire
             && !fire_immune
         {
+            // `BaseFireBlock.fireIgnite`.
             let m = t.mob();
             if m.fire_ticks < 0 {
                 m.fire_ticks += 1;
-            } else if m.fire_ticks == 0 {
-                m.fire_ticks = 160;
+            }
+            if m.fire_ticks >= 0 && super::attack::ignite_mob(m, 160) {
+                t.core_mut().mark_data_dirty();
             }
             let source = DamageSource::of(t.env.types.in_fire);
             hurt_self(t, source, damage);
@@ -2401,8 +2421,9 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         }
         if step.lava_blocks > 0 && !fire_immune {
             // `lavaIgnite` and `lavaHurt`.
-            let m = t.mob();
-            m.fire_ticks = m.fire_ticks.max(300);
+            if super::attack::ignite_mob(t.mob(), 300) {
+                t.core_mut().mark_data_dirty();
+            }
             let source = DamageSource::of(t.env.types.lava);
             if hurt_self(t, source, 4.0) {
                 kinds::play_sound(t, "minecraft:entity.generic.burn", 0.4, 2.0);
@@ -2445,12 +2466,12 @@ fn apply_effects_from_blocks(t: &mut Tick<'_, '_>) {
         // `clearFire`.
         m.fire_ticks = 0;
     }
-    // Not burning and not ignited this tick: `-getFireImmuneTicks()`.
-    if m.fire_ticks <= 0 && m.fire_ticks <= previous_fire {
-        m.fire_ticks = -1;
+    // Not burning and not ignited this tick: `-getFireImmuneTicks()`, 0 for mobs.
+    if !(m.fire_ticks > 0 && !fire_immune) && m.fire_ticks <= previous_fire {
+        m.fire_ticks = 0;
     }
-    // `playEntityOnFireExtinguishedSound` (the fire half is not simulated for mobs yet).
-    if was_freezing && m.ticks_frozen <= 0 {
+    // `playEntityOnFireExtinguishedSound`: the fire went out or the freezing ended.
+    if (was_on_fire && m.fire_ticks <= 0) || (was_freezing && m.ticks_frozen <= 0) {
         let r = &mut m.random;
         let pitch = 1.6 + (r.next_float() - r.next_float()) * 0.4;
         kinds::play_sound(t, "minecraft:entity.generic.extinguish_fire", 0.7, pitch);
@@ -2963,7 +2984,9 @@ fn is_sun_burn_tick(t: &mut Tick<'_, '_>) -> bool {
     let rounded = BlockPos::containing(p.x, t.eye_y(), p.z);
     let rain = (t.env.raining_at)(t.block_pos())
         || (t.env.raining_at)(BlockPos::containing(p.x, t.aabb().max_y, p.z));
-    let wet = t.mob_ref().fluids.in_water() || rain;
+    // `isInNonBurnableBlock`: water, rain or powder snow (this tick or the last).
+    let m = t.mob_ref();
+    let wet = m.fluids.in_water() || rain || m.in_powder_snow || m.was_in_powder_snow;
     // The roll is only drawn in bright light.
     br > 0.5
         && t.mob().random.next_float() * 30.0 < (br - 0.4) * 2.0

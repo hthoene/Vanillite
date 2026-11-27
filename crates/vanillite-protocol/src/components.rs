@@ -151,6 +151,16 @@ pub mod ids {
     pub const BEES: u16 = find("minecraft:bees");
     pub const CHARGED_PROJECTILES: u16 = find("minecraft:charged_projectiles");
     pub const INTANGIBLE_PROJECTILE: u16 = find("minecraft:intangible_projectile");
+    pub const CUSTOM_DATA: u16 = find("minecraft:custom_data");
+    pub const BUCKET_ENTITY_DATA: u16 = find("minecraft:bucket_entity_data");
+    pub const WEAPON: u16 = find("minecraft:weapon");
+    pub const DAMAGE_TYPE: u16 = find("minecraft:damage_type");
+    pub const ATTACK_ANIMATION: u16 = find("minecraft:attack_animation");
+    pub const ENCHANTABLE: u16 = find("minecraft:enchantable");
+    pub const REPAIRABLE: u16 = find("minecraft:repairable");
+    pub const GLIDER: u16 = find("minecraft:glider");
+    pub const PROVIDES_TRIM_MATERIAL: u16 = find("minecraft:provides_trim_material");
+    pub const BLOCK_TRANSFORMER: u16 = find("minecraft:block_transformer");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

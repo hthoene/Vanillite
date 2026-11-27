@@ -815,7 +815,7 @@ pub(super) fn item_component(item: &Compound, component: &str) -> Result<Option<
         return Ok(None);
     }
     let wire = match stack.component(type_id) {
-        Some(wire) => Some(Box::from(wire)),
+        Some(wire) => Some(std::borrow::Cow::Borrowed(wire)),
         None => default_component(stack.item, type_id),
     };
     Ok(wire.and_then(|w| vanillite_game::item_nbt::component_to_nbt(type_id, &w)))
@@ -829,32 +829,13 @@ pub(super) fn item_set_component(
     value: Option<&Tag>,
 ) -> Result<Compound> {
     let (mut stack, type_id) = item_and_type(item, component)?;
-    let default = default_component(stack.item, type_id);
-    let patch = stack.patch_mut();
     match value {
         Some(tag) => {
             let wire = vanillite_game::item_nbt::component_from_nbt(type_id, tag)
                 .ok_or(status::INVALID_ARGUMENT)?;
-            if default.as_deref() == Some(&*wire) {
-                patch.unset(type_id);
-                if let Ok(i) = patch.removed.binary_search(&type_id) {
-                    patch.removed.remove(i);
-                }
-            } else {
-                patch.set(type_id, wire);
-            }
+            stack.set_component(type_id, wire);
         }
-        None => {
-            patch.unset(type_id);
-            if default.is_some()
-                && let Err(i) = patch.removed.binary_search(&type_id)
-            {
-                patch.removed.insert(i, type_id);
-            }
-        }
-    }
-    if stack.patch().is_some_and(|p| p.is_empty()) {
-        stack.patch = None;
+        None => stack.remove_component(type_id),
     }
     Ok(vanillite_game::inventory::stack_to_nbt(&stack))
 }

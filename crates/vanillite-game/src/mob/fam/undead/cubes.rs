@@ -3,7 +3,7 @@
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
-use vanillite_nbt::{Compound, Tag};
+use vanillite_nbt::Compound;
 use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::{Goal, State, goal, sound, state, state_mut};
@@ -681,6 +681,7 @@ fn deal_damage(t: &mut Tick<'_, '_>, target: EntityId) {
         let r = &mut t.mob().random;
         let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
         sound(t, "minecraft:entity.slime.attack", 1.0, pitch);
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &source);
     }
 }
 
@@ -916,9 +917,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             crate::mob::animal::use_item(ix.ents, ix.player, ix.hand);
             if let Some(m) = ix.ents.mob_mut(ix.target) {
                 // `ageUp(getSpeedUpSecondsWhenFeeding(-age), true)`.
-                let secs = (-m.age / 20) / 10;
-                m.age = (m.age + secs * 20).min(0);
-                m.forced_age_timer = 40;
+                let secs = crate::mob::animal::speed_up_seconds_when_feeding(-m.age);
+                crate::mob::animal::age_up(m, secs, true);
             }
             let pos = ix.ents.store.get(ix.target).map_or(Vec3::ZERO, |e| e.pos());
             let seed = crate::survival::sound_seed();
@@ -1074,7 +1074,7 @@ fn bucket(ix: &mut Interact<'_, '_>, pos: Vec3) -> Interaction {
     {
         let mut bytes = Vec::new();
         body.encode_template(&mut bytes);
-        stack.patch_mut().set(id, bytes.into());
+        stack.set_component(id, bytes.into());
     }
     data.insert("age", m.age);
     data.insert("age_locked", m.age_locked);
@@ -1707,11 +1707,8 @@ pub fn save(m: &MobData, out: &mut Compound) {
 }
 
 pub fn load(m: &mut MobData, tag: &Compound) {
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => None,
-    };
-    let boolean = |k: &str| matches!(tag.get(k), Some(Tag::Byte(b)) if *b != 0);
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
+    let boolean = |k: &str| crate::mob::entity_nbt::get_bool(tag, k).unwrap_or(false);
     let health = m.health;
     set_size(m, int("Size").unwrap_or(0) + 1, false);
     m.health = health.min(m.max_health());
