@@ -18,6 +18,8 @@ use vanillite_protocol::codec::{Reader, write_varint};
 /// The components older clients get, sorted.
 pub(crate) const PORTABLE: &[&str] = &[
     "minecraft:base_color",
+    "minecraft:bundle_contents",
+    "minecraft:container",
     "minecraft:custom_model_data",
     "minecraft:custom_name",
     "minecraft:damage",
@@ -35,7 +37,13 @@ pub(crate) const PORTABLE: &[&str] = &[
     "minecraft:stored_enchantments",
     "minecraft:trim",
     "minecraft:unbreakable",
+    "minecraft:writable_book_content",
+    "minecraft:written_book_content",
 ];
+
+/// Most container and bundle levels a stack may be nested in (a shulker box in a bundle in a
+/// shulker box is two).
+const MAX_NESTING: u8 = 4;
 
 /// Whether older clients get a component.
 pub(crate) fn portable(name: &str) -> bool {
@@ -49,10 +57,12 @@ pub(crate) struct Items<'a> {
     pub regs: &'a Registries,
     /// Server to client (newer → older) or the reverse.
     pub clientbound: bool,
+    /// Stacks this one is nested in (containers, bundles).
+    pub depth: u8,
 }
 
 impl Items<'_> {
-    fn from(&self) -> i32 {
+    pub(crate) fn from(&self) -> i32 {
         if self.clientbound {
             self.t.next_protocol
         } else {
@@ -60,7 +70,7 @@ impl Items<'_> {
         }
     }
 
-    fn to(&self) -> i32 {
+    pub(crate) fn to(&self) -> i32 {
         if self.clientbound {
             self.t.protocol
         } else {
@@ -69,7 +79,7 @@ impl Items<'_> {
     }
 
     /// A static registry id in the target version.
-    fn id(&self, registry: &str, id: i32) -> Option<i32> {
+    pub(crate) fn id(&self, registry: &str, id: i32) -> Option<i32> {
         if self.clientbound {
             self.t.older(registry, id)
         } else {
@@ -78,7 +88,7 @@ impl Items<'_> {
     }
 
     /// A synchronised registry id in the target version.
-    fn dynamic(&self, registry: &str, id: i32) -> Option<i32> {
+    pub(crate) fn dynamic(&self, registry: &str, id: i32) -> Option<i32> {
         if self.clientbound {
             return self.regs.older(registry, id);
         }
@@ -115,7 +125,7 @@ impl Items<'_> {
     }
 
     /// The target id of a component type, if the target version has it.
-    fn component_type(&self, id: i32) -> Option<i32> {
+    pub(crate) fn component_type(&self, id: i32) -> Option<i32> {
         self.id("minecraft:data_component_type", id)
     }
 
@@ -318,7 +328,13 @@ impl Items<'_> {
                     .copied()
                     .ok_or(Error::Invalid("component type"))?;
                 let start = pr.rest();
-                skip_component(name, &mut pr, self.to())?;
+                skip_component(
+                    name,
+                    &mut pr,
+                    self.to(),
+                    self.t.new_data_component_types,
+                    MAX_NESTING.saturating_add(2),
+                )?;
                 let len = start.len().saturating_sub(pr.remaining());
                 write_varint(out, t);
                 io::write_len(out, len);
@@ -536,6 +552,82 @@ impl Items<'_> {
                     }
                 }
             }
+            "container" | "bundle_contents" if self.depth >= MAX_NESTING => {
+                return Err(Error::Invalid("item nesting"));
+            }
+            "container" => {
+                let nested = Items {
+                    depth: self.depth.saturating_add(1),
+                    ..*self
+                };
+                // Optional stacks: templates with a presence flag from 26.1 on.
+                let n = io::len(r, 256, 1)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    let present = if from >= V26_1 {
+                        r.u8()? != 0
+                    } else {
+                        let mut peek = r.clone();
+                        let present = peek.varint()? > 0;
+                        if !present {
+                            r.varint()?;
+                        }
+                        present
+                    };
+                    if !present {
+                        if to >= V26_1 {
+                            out.push(0);
+                        } else {
+                            write_varint(out, 0);
+                        }
+                        continue;
+                    }
+                    if to >= V26_1 {
+                        out.push(1);
+                    }
+                    nested.particle_item(r, out)?;
+                }
+            }
+            "bundle_contents" => {
+                let nested = Items {
+                    depth: self.depth.saturating_add(1),
+                    ..*self
+                };
+                let n = io::len(r, 1024, 3)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    nested.particle_item(r, out)?;
+                }
+            }
+            "writable_book_content" => {
+                let n = io::len(r, 1024, 2)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    io::string(r, out)?;
+                    if io::boolean(r, out)? {
+                        io::string(r, out)?;
+                    }
+                }
+            }
+            "written_book_content" => {
+                // Title (filterable), author, generation, pages (filterable components),
+                // resolved.
+                io::string(r, out)?;
+                if io::boolean(r, out)? {
+                    io::string(r, out)?;
+                }
+                io::string(r, out)?;
+                io::varint(r, out)?;
+                let n = io::len(r, 1024, 2)?;
+                io::write_len(out, n);
+                for _ in 0..n {
+                    io::nbt(r, out)?;
+                    if io::boolean(r, out)? {
+                        io::nbt(r, out)?;
+                    }
+                }
+                io::bytes(r, out, 1)?;
+            }
             "trim" => {
                 // Material and pattern holders: registry id + 1, or 0 and an inline value.
                 let mut ok = true;
@@ -574,8 +666,52 @@ fn effect_details(r: &mut Reader<'_>, out: &mut Vec<u8>, depth: u8) -> Result<()
     Ok(())
 }
 
-/// Skips one portable component value in the codec of protocol `proto`.
-fn skip_component(name: &str, r: &mut Reader<'_>, proto: i32) -> Result<()> {
+/// Skips a stack (`optional`: may be empty) in the codec of protocol `proto`, with portable
+/// components named by `names`.
+fn skip_stack(
+    r: &mut Reader<'_>,
+    proto: i32,
+    names: &[&str],
+    optional: bool,
+    depth: u8,
+) -> Result<()> {
+    if proto >= V26_1 {
+        if optional && r.u8()? == 0 {
+            return Ok(());
+        }
+        r.varint()?;
+        r.varint()?;
+    } else {
+        if r.varint()? <= 0 {
+            return Ok(());
+        }
+        r.varint()?;
+    }
+    let added = io::len(r, 256, 1)?;
+    let removed = io::len(r, 256, 1)?;
+    for _ in 0..added {
+        let t = r.varint()?;
+        let name = names
+            .get(usize::try_from(t).unwrap_or(usize::MAX))
+            .ok_or(Error::Invalid("component type"))?;
+        skip_component(name, r, proto, names, depth)?;
+    }
+    for _ in 0..removed {
+        r.varint()?;
+    }
+    Ok(())
+}
+
+/// Skips one portable component value in the codec of protocol `proto` (nested component
+/// types named by `names`).
+fn skip_component(
+    name: &str,
+    r: &mut Reader<'_>,
+    proto: i32,
+    names: &[&str],
+    depth: u8,
+) -> Result<()> {
+    let depth = depth.checked_sub(1).ok_or(Error::Invalid("item nesting"))?;
     let mut sink = Vec::new();
     let show = usize::from(proto < V1_21_5);
     match name.trim_start_matches("minecraft:") {
@@ -633,6 +769,39 @@ fn skip_component(name: &str, r: &mut Reader<'_>, proto: i32) -> Result<()> {
             r.varint()?;
             r.varint()?;
             r.skip(show)?;
+        }
+        "container" => {
+            for _ in 0..io::len(r, 256, 1)? {
+                skip_stack(r, proto, names, true, depth)?;
+            }
+        }
+        "bundle_contents" => {
+            for _ in 0..io::len(r, 1024, 3)? {
+                skip_stack(r, proto, names, false, depth)?;
+            }
+        }
+        "writable_book_content" => {
+            for _ in 0..io::len(r, 1024, 2)? {
+                r.string(io::MAX_STRING)?;
+                if r.u8()? != 0 {
+                    r.string(io::MAX_STRING)?;
+                }
+            }
+        }
+        "written_book_content" => {
+            r.string(io::MAX_STRING)?;
+            if r.u8()? != 0 {
+                r.string(io::MAX_STRING)?;
+            }
+            r.string(io::MAX_STRING)?;
+            r.varint()?;
+            for _ in 0..io::len(r, 1024, 2)? {
+                io::nbt(r, &mut sink)?;
+                if r.u8()? != 0 {
+                    io::nbt(r, &mut sink)?;
+                }
+            }
+            r.skip(1)?;
         }
         _ => return Err(Error::Invalid("data component")),
     }
