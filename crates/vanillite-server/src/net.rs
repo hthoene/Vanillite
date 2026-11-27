@@ -485,6 +485,7 @@ fn start_bedrock(
         max_packets_per_second: b.max_packets_per_second,
         max_view_distance: b.max_view_distance,
         chunk_cache_sections: usize::try_from(b.chunk_cache_sections).unwrap_or(0),
+        identity_file: Some("bedrock-identity.key".into()),
         ..vanillite_bedrock::BedrockConfig::default()
     };
     let frontend = vanillite_bedrock::Frontend::start(

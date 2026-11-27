@@ -304,6 +304,11 @@ impl RakConn {
         }
     }
 
+    /// The negotiated MTU.
+    pub fn mtu(&self) -> usize {
+        self.mtu
+    }
+
     /// Bytes waiting to be sent or acknowledged.
     pub fn backlog(&self) -> usize {
         self.queued_bytes

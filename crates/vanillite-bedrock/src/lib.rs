@@ -1,10 +1,11 @@
 //! Bedrock Edition frontend (architecture 14.2).
 //!
-//! Accepts Bedrock clients over RakNet (UDP), verifies their Xbox Live login, encrypts the
-//! connection and translates between Bedrock packets and Java packets of the current version.
-//! Each Bedrock player becomes a virtual connection (14.1) to the server, so the core stays
-//! Java-only and every translated packet passes the same validation as a Java client's. The
-//! frontend runs on its own small runtime and can run inside the server or a proxy.
+//! Accepts Bedrock clients over RakNet (UDP) or NetherNet (WebRTC on the same UDP port, signaling
+//! over TCP), verifies their Xbox Live login, encrypts the connection and translates between
+//! Bedrock packets and Java packets of the current version. Each Bedrock player becomes a
+//! virtual connection (14.1) to the server, so the core stays Java-only and every translated
+//! packet passes the same validation as a Java client's. The frontend runs on its own small
+//! runtime and can run inside the server or a proxy.
 //!
 //! Translated: join, chunks (blocks, water layer, biomes), movement, other players (Bedrock
 //! skins, Java skins from the texture server) and mobs with their flags, names, equipment and
@@ -29,6 +30,7 @@ mod io;
 mod items;
 mod login;
 mod nbt;
+mod nethernet;
 mod num;
 mod packets;
 mod png;
@@ -44,7 +46,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
-use tokio::net::UdpSocket;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
 use vanillite_net::VirtualConnection;
 use vanillite_protocol::types::GameProfile;
@@ -96,6 +98,9 @@ pub struct BedrockConfig {
     pub chunk_backlog: usize,
     /// RakNet limits.
     pub raknet: raknet::Limits,
+    /// Key file of the server's NetherNet identity (clients remember the key; `None`: a new
+    /// key every start).
+    pub identity_file: Option<std::path::PathBuf>,
 }
 
 impl Default for BedrockConfig {
@@ -119,6 +124,7 @@ impl Default for BedrockConfig {
             chunk_cache_sections: 16_384,
             chunk_backlog: 512 << 10,
             raknet: raknet::Limits::default(),
+            identity_file: None,
         }
     }
 }
@@ -170,6 +176,15 @@ impl Status {
         }
     }
 
+    /// Message of the day, online and maximum players.
+    fn values(&self) -> (String, u32, u32) {
+        (
+            self.motd.read().map(|m| m.clone()).unwrap_or_default(),
+            self.online.load(Ordering::Relaxed),
+            self.max.load(Ordering::Relaxed),
+        )
+    }
+
     fn pong_text(&self, guid: i64, port: u16) -> String {
         let clean = |s: &str| -> String {
             s.chars()
@@ -219,6 +234,22 @@ impl Frontend {
             .build()?;
         let socket = runtime.block_on(UdpSocket::bind(config.bind))?;
         let local_addr = socket.local_addr()?;
+        // NetherNet signaling on the same port over TCP (clients since 1.26.60 need it).
+        let signaling = match runtime.block_on(TcpListener::bind(local_addr)) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                log::warn!(
+                    "Bedrock NetherNet signaling cannot listen on TCP {local_addr}: {e}; Bedrock 1.26.60 and newer cannot join"
+                );
+                None
+            }
+        };
+        // A RakNet session's address, or `None` when a NetherNet session ended.
+        let (closed_tx, closed_rx) = mpsc::unbounded_channel::<Option<SocketAddr>>();
+        let hub = Arc::new(nethernet::Hub::new(
+            config.identity_file.as_deref(),
+            closed_tx.clone(),
+        ));
         let keys = Arc::new(login::TokenKeys::default());
         if config.online_mode {
             login::spawn_key_refresh(Arc::clone(&keys), runtime.handle());
@@ -231,7 +262,12 @@ impl Frontend {
             .map(|v| format!("{} (protocol {})", v.releases, v.protocol))
             .collect();
         log::info!(
-            "Bedrock listening on UDP {local_addr} for {}",
+            "Bedrock listening on UDP {local_addr}{} for {}",
+            if signaling.is_some() {
+                " and TCP (NetherNet)"
+            } else {
+                ""
+            },
             accepted.join(", ")
         );
         let entity_types = entity_types();
@@ -249,7 +285,16 @@ impl Frontend {
             java_skins: Mutex::new(FxHashMap::default()),
             forms: Arc::clone(&forms),
         });
-        runtime.spawn(listen(Arc::new(socket), shared));
+        let socket = Arc::new(socket);
+        if let Some(l) = signaling {
+            runtime.spawn(nethernet::serve(
+                l,
+                Arc::clone(&shared),
+                Arc::clone(&hub),
+                Arc::clone(&socket),
+            ));
+        }
+        runtime.spawn(listen(socket, shared, hub, closed_tx, closed_rx));
         Ok(Self {
             runtime,
             local_addr,
@@ -301,18 +346,24 @@ pub(crate) fn entity_types() -> rustc_hash::FxHashSet<String> {
     set
 }
 
-/// A connected peer as the listener sees it.
-struct Peer {
-    tx: mpsc::Sender<Vec<u8>>,
+/// A connected peer as the listener sees it: its session's datagram queue.
+enum Peer {
+    Rak(nethernet::Inbox),
+    Net(nethernet::Inbox),
 }
 
 /// The UDP loop: unconnected messages here, connected datagrams to their session task.
-async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
+async fn listen(
+    socket: Arc<UdpSocket>,
+    shared: Arc<session::Shared>,
+    hub: Arc<nethernet::Hub>,
+    closed_tx: mpsc::UnboundedSender<Option<SocketAddr>>,
+    mut closed_rx: mpsc::UnboundedReceiver<Option<SocketAddr>>,
+) {
     let mut buf = vec![0u8; 2048];
     let mut peers: FxHashMap<SocketAddr, Peer> = FxHashMap::default();
     let mut per_ip = raknet::PerIp::default();
     let mut cookies = raknet::Cookies::new(Instant::now());
-    let (closed_tx, mut closed_rx) = mpsc::unbounded_channel::<SocketAddr>();
     let guid = shared.guid;
     let port = socket.local_addr().map_or(0, |a| a.port());
     let mut pongs = (Instant::now(), 0u32);
@@ -335,9 +386,17 @@ async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
                     continue;
                 }
             },
-            Some(addr) = closed_rx.recv() => {
-                if peers.remove(&addr).is_some() {
-                    per_ip.release(addr.ip());
+            Some(closed) = closed_rx.recv() => {
+                match closed {
+                    Some(addr) => {
+                        if peers.remove(&addr).is_some() {
+                            per_ip.release(addr.ip());
+                        }
+                    }
+                    None => peers.retain(|_, p| match p {
+                        Peer::Net(tx) => !tx.is_closed(),
+                        Peer::Rak(_) => true,
+                    }),
                 }
                 continue;
             }
@@ -346,11 +405,22 @@ async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
         let Some(&kind) = data.first() else {
             continue;
         };
-        if let Some(peer) = peers.get(&from)
-            && kind & 0x80 != 0
-        {
-            // A full queue drops the datagram; RakNet recovers.
-            let _ = peer.tx.try_send(data.to_vec());
+        match peers.get(&from) {
+            // A full queue drops the datagram; RakNet and SCTP recover.
+            Some(Peer::Rak(tx)) if kind & 0x80 != 0 => {
+                let _ = tx.try_send((from, data.to_vec()));
+                continue;
+            }
+            Some(Peer::Net(tx)) => {
+                let _ = tx.try_send((from, data.to_vec()));
+                continue;
+            }
+            _ => {}
+        }
+        // The first STUN request of a NetherNet client names its session.
+        if let Some(tx) = hub.route(data) {
+            let _ = tx.try_send((from, data.to_vec()));
+            peers.insert(from, Peer::Net(tx));
             continue;
         }
         let now = Instant::now();
@@ -413,13 +483,19 @@ async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
                         continue;
                     }
                     let (tx, rx) = mpsc::channel(512);
-                    peers.insert(from, Peer { tx });
+                    peers.insert(from, Peer::Rak(tx));
                     let shared = Arc::clone(&shared);
                     let socket = Arc::clone(&socket);
                     let closed = closed_tx.clone();
+                    let link = session::Link::Rak(Box::new(raknet::RakConn::new(
+                        from,
+                        mtu,
+                        shared.config.raknet,
+                        Instant::now(),
+                    )));
                     tokio::spawn(async move {
-                        session::run(shared, socket, from, mtu, rx).await;
-                        let _ = closed.send(from);
+                        session::run(shared, socket, from, link, rx).await;
+                        let _ = closed.send(Some(from));
                     });
                 }
                 let _ = socket.try_send_to(&raknet::reply_2(guid, from, mtu), from);

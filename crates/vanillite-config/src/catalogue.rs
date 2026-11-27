@@ -303,7 +303,8 @@ rules! {
         bedrock: BedrockRules = "bedrock" {
             /// Accept Bedrock players.
             enabled: bool = "enabled", Setting, restart = true, vanilla = false;
-            /// UDP port. Bedrock's default is 19132.
+            /// UDP and TCP port (Bedrock 1.26.60 and newer join over NetherNet, which needs
+            /// both). Bedrock's default is 19132.
             port: u16 = "port", Setting, range = [1, 65535], restart = true, vanilla = 19132;
             /// Require an Xbox Live login. Off accepts any identity a client claims: only for
             /// tests on closed networks.

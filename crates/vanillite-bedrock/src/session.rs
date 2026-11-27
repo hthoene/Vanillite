@@ -244,11 +244,18 @@ fn reason_text(c: &vanillite_protocol::text::Component) -> String {
     }
 }
 
+/// The transport of a session.
+#[derive(Debug)]
+pub(crate) enum Link {
+    Rak(Box<RakConn>),
+    Net(Box<crate::nethernet::NetConn>),
+}
+
 /// One player.
 pub(crate) struct Session {
     shared: Arc<Shared>,
     peer: SocketAddr,
-    rak: RakConn,
+    link: Link,
     codec: Codec,
     /// The client's Bedrock version (known after `request_network_settings`).
     pub(super) version: &'static Version,
@@ -308,9 +315,8 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    pub(crate) fn new(shared: Arc<Shared>, peer: SocketAddr, mtu: u16, now: Instant) -> Self {
+    pub(crate) fn new(shared: Arc<Shared>, peer: SocketAddr, link: Link, now: Instant) -> Self {
         let c = &shared.config;
-        let rak = RakConn::new(peer, mtu, c.raknet, now);
         let codec = Codec::new(
             c.compression_threshold,
             c.compression_level,
@@ -323,7 +329,7 @@ impl Session {
         Self {
             shared,
             peer,
-            rak,
+            link,
             codec,
             version: Version::latest(),
             phase: Phase::NetworkSettings,
@@ -376,17 +382,25 @@ impl Session {
         }
         let payload = self.codec.encode(&self.batch);
         self.batch.clear();
-        self.rak.send_game(&payload);
+        match &mut self.link {
+            Link::Rak(rak) => rak.send_game(&payload),
+            Link::Net(net) => net.send_game(&payload),
+        }
     }
 
     /// Sends everything due on the socket.
     pub(crate) fn flush(&mut self, socket: &UdpSocket, now: Instant) {
         self.flush_batch();
         let peer = self.peer;
-        self.rak.flush(now, |d| {
-            // A full socket buffer drops the datagram; RakNet resends it.
-            let _ = socket.try_send_to(d, peer);
-        });
+        // A full socket buffer drops the datagram; RakNet and SCTP resend it.
+        match &mut self.link {
+            Link::Rak(rak) => rak.flush(now, |d| {
+                let _ = socket.try_send_to(d, peer);
+            }),
+            Link::Net(net) => net.flush(now, |to, d| {
+                let _ = socket.try_send_to(d, to);
+            }),
+        }
     }
 
     /// Disconnects with a message (shown by the client), then closes after a short delay.
@@ -405,7 +419,9 @@ impl Session {
         }
         self.send(id::DISCONNECT, &bp::disconnect(message));
         self.flush_batch();
-        self.rak.disconnect();
+        if let Link::Rak(rak) = &mut self.link {
+            rak.disconnect();
+        }
         self.java_tx = None;
         self.closing = Some(Instant::now());
     }
@@ -450,8 +466,19 @@ impl Session {
             return;
         }
         let c = &self.shared.config;
-        if now.saturating_duration_since(self.rak.last_receive) > c.idle_timeout {
+        let last_receive = match &self.link {
+            Link::Rak(rak) => rak.last_receive,
+            Link::Net(net) => net.last_receive,
+        };
+        if now.saturating_duration_since(last_receive) > c.idle_timeout {
             self.close_silently("timed out");
+            return;
+        }
+        if let Link::Net(net) = &self.link
+            && let Some(why) = net.closed()
+        {
+            let why = why.to_owned();
+            self.close_silently(&why);
             return;
         }
         if self.phase != Phase::Playing
@@ -460,13 +487,17 @@ impl Session {
             self.kick("Login timed out");
             return;
         }
-        if self.rak.overloaded() {
+        let (overloaded, backlog) = match &self.link {
+            Link::Rak(rak) => (rak.overloaded(), rak.backlog()),
+            Link::Net(net) => (net.overloaded(c.raknet.max_send_queue), net.backlog()),
+        };
+        if overloaded {
             self.kick("Connection too slow");
             return;
         }
         self.flush_book(now);
         // Chunk flow control: acknowledge a batch once RakNet has sent most of it.
-        let backlog_ok = self.rak.backlog() < self.shared.config.chunk_backlog;
+        let backlog_ok = backlog < self.shared.config.chunk_backlog;
         if let Some(w) = &mut self.world
             && w.batch_ack_due
             && backlog_ok
@@ -480,14 +511,20 @@ impl Session {
 
     // ---- Bedrock input ------------------------------------------------------------------
 
-    pub(crate) fn datagram(&mut self, data: &[u8], now: Instant) {
+    pub(crate) fn datagram(&mut self, from: SocketAddr, data: &[u8], now: Instant) {
         if self.closing.is_some() || self.done {
             return;
         }
-        let received = match self.rak.receive(data, now) {
+        let received = match &mut self.link {
+            Link::Rak(rak) => rak
+                .receive(data, now)
+                .map_err(|e| format!("RakNet error: {e}")),
+            Link::Net(net) => net.receive(from, data, now),
+        };
+        let received = match received {
             Ok(r) => r,
             Err(e) => {
-                self.close_silently(&format!("RakNet error: {e}"));
+                self.close_silently(&e);
                 return;
             }
         };
@@ -570,9 +607,7 @@ impl Session {
                 self.login(request);
             }
             (Phase::Handshake, id::CLIENT_TO_SERVER_HANDSHAKE) => {
-                self.send(id::PLAY_STATUS, &bp::play_status(status::LOGIN_SUCCESS));
-                self.send(id::RESOURCE_PACKS_INFO, &bp::resource_packs_info());
-                self.phase = Phase::Packs;
+                self.client_to_server_handshake();
             }
             (Phase::Packs, id::RESOURCE_PACK_CLIENT_RESPONSE) => {
                 match bp::read_pack_response(body)? {
@@ -706,6 +741,24 @@ impl Session {
         if let Some(skin) = Skin::from_client_data(&verified.client_data) {
             self.skin = Arc::new(skin);
         }
+        if let Link::Net(net) = &self.link {
+            // NetherNet: DTLS encrypts, and the login must be the one of the connection's key.
+            if net
+                .client_key
+                .is_some_and(|k| k != verified.identity.client_key)
+            {
+                log::info!(
+                    "Bedrock login from {} refused: the login key is not the connection's key",
+                    self.peer
+                );
+                self.kick("Login failed: identity mismatch");
+                return;
+            }
+            self.phase = Phase::Handshake;
+            self.log_login(&verified.identity.gamertag);
+            self.client_to_server_handshake();
+            return;
+        }
         let handshake = match login::handshake(&verified.identity.client_key) {
             Ok(h) => h,
             Err(e) => {
@@ -720,17 +773,31 @@ impl Session {
         self.flush_batch();
         self.codec.enable_encryption(handshake.key);
         self.phase = Phase::Handshake;
+        self.log_login(&verified.identity.gamertag);
+    }
+
+    fn log_login(&self, gamertag: &str) {
         log::info!(
-            "Bedrock player {} (XUID {}) logs in as {} ({})",
-            verified.identity.gamertag,
+            "Bedrock player {gamertag} (XUID {}) logs in as {} ({}){}",
             if self.xuid.is_empty() {
                 "none"
             } else {
                 &self.xuid
             },
             self.name,
-            Uuid(self.uuid)
+            Uuid(self.uuid),
+            if matches!(self.link, Link::Net(_)) {
+                " over NetherNet"
+            } else {
+                ""
+            }
         );
+    }
+
+    fn client_to_server_handshake(&mut self) {
+        self.send(id::PLAY_STATUS, &bp::play_status(status::LOGIN_SUCCESS));
+        self.send(id::RESOURCE_PACKS_INFO, &bp::resource_packs_info());
+        self.phase = Phase::Packs;
     }
 
     fn client_info(&self) -> ClientInfo {
@@ -1600,11 +1667,14 @@ pub(crate) async fn run(
     shared: Arc<Shared>,
     socket: Arc<UdpSocket>,
     peer: SocketAddr,
-    mtu: u16,
-    mut datagrams: mpsc::Receiver<Vec<u8>>,
+    link: Link,
+    mut datagrams: mpsc::Receiver<(SocketAddr, Vec<u8>)>,
 ) {
-    log::info!("Bedrock connection from {peer} (MTU {mtu})");
-    let mut s = Session::new(shared, peer, mtu, Instant::now());
+    match &link {
+        Link::Rak(rak) => log::info!("Bedrock connection from {peer} (MTU {})", rak.mtu()),
+        Link::Net(_) => log::info!("Bedrock connection from {peer} (NetherNet)"),
+    }
+    let mut s = Session::new(shared, peer, link, Instant::now());
     let mut java: Option<mpsc::Receiver<Vec<u8>>> = None;
     let mut events = s.events_rx.take();
     let mut tick = tokio::time::interval(Duration::from_millis(10));
@@ -1612,12 +1682,12 @@ pub(crate) async fn run(
     loop {
         tokio::select! {
             d = datagrams.recv() => {
-                let Some(d) = d else { break };
+                let Some((from, d)) = d else { break };
                 let now = Instant::now();
-                s.datagram(&d, now);
+                s.datagram(from, &d, now);
                 for _ in 0..64 {
                     match datagrams.try_recv() {
-                        Ok(d) => s.datagram(&d, now),
+                        Ok((from, d)) => s.datagram(from, &d, now),
                         Err(_) => break,
                     }
                 }
