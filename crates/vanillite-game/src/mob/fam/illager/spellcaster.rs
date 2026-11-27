@@ -280,7 +280,7 @@ fn summon_vexes(t: &mut Tick<'_, '_>) {
             f64::from(pos.y),
             f64::from(pos.z) + 0.5,
         );
-        super::super::super::spawn(
+        let id = super::super::super::spawn(
             t.ents,
             t.level.network_ids(),
             uuid,
@@ -291,6 +291,11 @@ fn summon_vexes(t: &mut Tick<'_, '_>) {
                 ..Rotation::default()
             },
             vex,
+        );
+        t.ents.spawned(
+            id,
+            vanillite_abi::spawn_reason::MOB_SUMMONED,
+            owner_uuid.unwrap_or(0),
         );
     }
 }

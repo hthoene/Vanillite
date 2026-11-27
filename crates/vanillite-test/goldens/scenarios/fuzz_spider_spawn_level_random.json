@@ -1,0 +1,16 @@
+{"format":1,
+"region":[[0,-62,0],[15,-36,15]],
+"palette":[
+"minecraft:dirt",
+"minecraft:grass_block[snowy=false]",
+"minecraft:air",
+"minecraft:vine[east=false,north=true,south=false,up=false,west=false]",
+"minecraft:snow[layers=3]",
+"minecraft:oak_log[axis=y]",
+"minecraft:oak_planks",
+"minecraft:oak_slab[type=bottom,waterlogged=false]",
+"minecraft:hay_block[axis=y]",
+"minecraft:oak_leaves[distance=7,persistent=false,waterlogged=false]"],
+"frames":[
+{"tick":0,"blocks":[256,0,256,1,39,2,1,3,29,2,1,4,18,2,1,0,1,5,47,2,1,3,1,6,56,2,1,0,3,2,1,7,25,2,1,5,21,2,1,8,97,2,1,5,48,2,1,6,56,2,1,0,77,2,1,9,71,2,1,5,48,2,1,6,56,2,1,0,198,2,1,6,56,2,1,0,198,2,1,6,56,2,1,0,255,2,1,0,255,2,1,0,255,2,1,0,255,2,1,0,255,2,1,0,255,2,1,0,255,2,1,0,3388,2],"block_ticks":[],"fluid_ticks":[],"entities":[["minecraft:player",4621537642612260864,-4590153182709022720,4617878467915022336,0,0,0,{"name":"p","inv":[[0,"minecraft:wooden_axe",1],[1,"minecraft:bow",1],[2,"minecraft:diamond_shovel",1],[3,"minecraft:minecart",1]],"food":[20,1084227584],"rot":[0,0,0],"hp":1101004800}],["minecraft:spider",4620130267728707584,-4589730970243956736,4617878467915022336,0,0,0,{"name":"m0","rot":[0,0,0,0],"hp":1098907648,"rng":258702230788082,"goals":[],"targets":[]}]],"level_rng":86990003003491},
+{"tick":1,"changes":[],"block_ticks":[],"fluid_ticks":[],"entities":[["minecraft:player",4621537642612260864,-4590153182709022720,4617878467915022336,0,0,0,{"name":"p","inv":[[0,"minecraft:wooden_axe",1],[1,"minecraft:bow",1],[2,"minecraft:diamond_shovel",1],[3,"minecraft:minecart",1]],"food":[20,1084227584],"rot":[-2147483648,1119092736,-2147483648],"hp":1101004800}],["minecraft:spider",4620130267728707584,-4589730970243956736,4617878467915022336,0,-4633058300709086167,0,{"name":"m0","rot":[0,0,0,0],"hp":1097859072,"rng":108427136408267,"target":"p","goals":[],"targets":["SpiderTargetGoal"]}]],"level_rng":86990003003491}]}

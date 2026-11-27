@@ -376,6 +376,12 @@ pub fn use_on(
         decor,
     );
     super::stand::apply_entity_data_component(&mut level.entities, id, stack);
+    if !level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+    {
+        return Placed::Fail;
+    }
     let pos = level
         .entities
         .store

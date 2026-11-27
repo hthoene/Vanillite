@@ -300,6 +300,12 @@ pub fn use_on(
         decor,
     );
     super::stand::apply_entity_data_component(&mut level.entities, id, stack);
+    if !level
+        .entities
+        .spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0)
+    {
+        return Placed::Fail;
+    }
     if in_fire(level, &aabb) {
         // `destroyIfInFire` right away: killed by `inFire`, dropped without a cause.
         let name = level.entities.decor(id).and_then(|d| d.name.clone());

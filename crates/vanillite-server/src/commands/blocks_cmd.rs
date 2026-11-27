@@ -627,11 +627,47 @@ pub(super) fn fill_biome(
             }
         })
         .collect();
+    let count = fill_biome_box(env.level, min, max, biome, &|b| {
+        accepted.get(usize::from(b)).copied().unwrap_or(false)
+    })?;
+    if count == 0 {
+        return Err(CommandError::new("commands.fillbiome.no_changes", vec![]));
+    }
+    source.send_success(
+        env.global,
+        Component::translatable_args(
+            "commands.fillbiome.success.count",
+            vec![
+                Arg::Int(count),
+                Arg::Int(min.x),
+                Arg::Int(min.y),
+                Arg::Int(min.z),
+                Arg::Int(max.x),
+                Arg::Int(max.y),
+                Arg::Int(max.z),
+            ],
+        ),
+        true,
+    );
+    Ok(count)
+}
+
+/// The loop of `FillBiomeCommand.fill` over quantized bounds: sets the biome of the quarts in
+/// `min..=max` whose biome `accepted` lets through and sends the changed chunks' biomes to
+/// their viewers. Returns the number of changed quarts; [`not_loaded`] when a chunk of the
+/// box is not loaded (nothing changed then).
+pub(crate) fn fill_biome_box(
+    level: &mut Level,
+    min: BlockPos,
+    max: BlockPos,
+    biome: vanillite_chunk::BiomeId,
+    accepted: &dyn Fn(vanillite_chunk::BiomeId) -> bool,
+) -> Result<i32, CommandError> {
     let mut chunks = Vec::new();
     for cz in (min.z >> 4)..=(max.z >> 4) {
         for cx in (min.x >> 4)..=(max.x >> 4) {
             let pos = ChunkPos::new(cx, cz);
-            if env.level.chunks.chunk(pos).is_none() {
+            if level.chunks.chunk(pos).is_none() {
                 return Err(not_loaded());
             }
             chunks.push(pos);
@@ -644,7 +680,7 @@ pub(super) fn fill_biome(
     let mut changed = Vec::new();
     for pos in chunks {
         let before = count;
-        env.level.chunks.modify_chunk(pos, |proto| {
+        level.chunks.modify_chunk(pos, |proto| {
             let chunk = &mut proto.chunk;
             let min_section = chunk.min_section();
             for index in 0..chunk.sections().len() {
@@ -666,7 +702,7 @@ pub(super) fn fill_biome(
                         (pos.z << 4).saturating_add(dz),
                     );
                     let current = section.biome(qx, qy, qz);
-                    let passes = accepted.get(usize::from(current)).copied().unwrap_or(false);
+                    let passes = accepted(current);
                     if inside(x, y, z) && passes {
                         if current != biome {
                             count = count.saturating_add(1);
@@ -680,26 +716,9 @@ pub(super) fn fill_biome(
             changed.push(pos);
         }
     }
-    if count == 0 {
-        return Err(CommandError::new("commands.fillbiome.no_changes", vec![]));
+    if !changed.is_empty() {
+        resend_biomes(level, &changed);
     }
-    resend_biomes(env.level, &changed);
-    source.send_success(
-        env.global,
-        Component::translatable_args(
-            "commands.fillbiome.success.count",
-            vec![
-                Arg::Int(count),
-                Arg::Int(min.x),
-                Arg::Int(min.y),
-                Arg::Int(min.z),
-                Arg::Int(max.x),
-                Arg::Int(max.y),
-                Arg::Int(max.z),
-            ],
-        ),
-        true,
-    );
     Ok(count)
 }
 

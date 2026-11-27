@@ -209,16 +209,21 @@ fn on_equip(
     );
 }
 
+/// The stack in a slot of a mount's inventory menu.
+pub(super) fn mount_item_in(level: &crate::level::Level, id: EntityId, i: usize) -> &ItemStack {
+    let empty = &ItemStack::EMPTY;
+    let Some(m) = level.entities.mob(id) else {
+        return empty;
+    };
+    match equipment_slot(i) {
+        Some(slot) => m.equipment.get(slot),
+        None => companion::st(m).inventory.get(i - CHEST).unwrap_or(empty),
+    }
+}
+
 impl ContainerView<'_> {
     pub(super) fn mount_item(&self, id: EntityId, i: usize) -> &ItemStack {
-        let empty = &ItemStack::EMPTY;
-        let Some(m) = self.level.entities.mob(id) else {
-            return empty;
-        };
-        match equipment_slot(i) {
-            Some(slot) => m.equipment.get(slot),
-            None => companion::st(m).inventory.get(i - CHEST).unwrap_or(empty),
-        }
+        mount_item_in(self.level, id, i)
     }
 
     pub(super) fn mount_item_mut(&mut self, id: EntityId, i: usize) -> Option<&mut ItemStack> {

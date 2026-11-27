@@ -9,6 +9,7 @@
 //! cargo xtask golden check
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
 //! cargo xtask golden bless <scenario>...
+//! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
@@ -33,6 +34,7 @@ mod loadtest;
 mod merge;
 mod multiversion;
 mod normalize;
+mod parity;
 mod vanilla;
 mod version;
 
@@ -79,6 +81,13 @@ pub const USAGE: &str = "usage:
       and unpacked if needed; needs a JDK 25). --all records every repository golden, --bulk
       also the bulk scenario goldens into $VANILLITE_GOLDENS (default target/goldens); names
       (part like ChunkGoldens or chunk, or scenario) record just those.
+  cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--jobs N] [--adopt]
+      Random parity scenarios (#132): generate scenarios with a packet-level player from
+      consecutive seeds (default: 20 from seed 1), record them in Vanilla and run them in
+      Vanillite, shrink every divergence to a small scenario. Writes target/parity-fuzz/found/
+      and summary.md. --adopt copies the found scenarios into crates/vanillite-test/scenarios/
+      and records their goldens (then add scenarios/divergences/<name>.toml with the cause).
+      Also: --replay <scenario.json> runs given scenarios without generating.
   cargo xtask golden bless <scenario>...|all
       Run the scenarios in Vanillite and store their traces as the expected goldens in
       crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
@@ -105,10 +114,11 @@ pub const USAGE: &str = "usage:
       over SSH. --push logs in as $VANILLITE_REGISTRY_USER (default deploy) with the password
       from $PRIVATE_DOCKER_REPO_KEY and pushes; without it the image is loaded into the engine.
   cargo xtask egg [--check]
-      Generate the Pterodactyl egg deploy/pterodactyl/egg-vanillite.json from the configuration
-      schema (server.properties keys and vanillite.toml rules) and check it against the egg
-      format, and the configuration reference (config-docs). --check fails if either committed
-      file is not current.
+      Generate the Pterodactyl eggs deploy/pterodactyl/egg-vanillite.json (every setting) and
+      egg-vanillite-simple.json (basic settings only) from the configuration schema
+      (server.properties keys and vanillite.toml rules) and check them against the egg format,
+      and the configuration reference (config-docs). --check fails if a committed file is not
+      current or the eggs differ in what they share.
   cargo xtask config-docs [--check]
       Generate the configuration reference docs/configuration.md from the configuration schema
       (server.properties keys and vanillite.toml rules with their value in every profile).
@@ -180,6 +190,7 @@ fn main() -> ExitCode {
         ["golden", "check"] => golden::check(&repo_root()),
         ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
         ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
+        ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),

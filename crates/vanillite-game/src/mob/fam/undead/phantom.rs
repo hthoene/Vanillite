@@ -404,8 +404,11 @@ pub fn goal_can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             players.sort_by(|a, b| b.1.total_cmp(&a.1));
             for (id, _) in players {
                 if crate::mob::common::test_combat(t, id, 64.0, false) && can_attack(t, id) {
-                    t.mob().target = Some(id);
-                    return true;
+                    return crate::mob::goals::set_target_why(
+                        t,
+                        Some(id),
+                        vanillite_abi::target_reason::CLOSEST_PLAYER,
+                    );
                 }
             }
             false
@@ -680,7 +683,7 @@ pub fn phantom_spawner_tick(
                 )
             });
             let p = Vec3::new(f64::from(at.x), f64::from(at.y), f64::from(at.z));
-            crate::mob::spawn::add_mob_with(level, mob, p, 0.0, extra);
+            crate::mob::spawn::add_mob_with(level, mob, p, 0.0, extra, SpawnReason::Event);
             spawned += 1;
         }
     }

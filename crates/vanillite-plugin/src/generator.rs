@@ -35,7 +35,17 @@ pub struct ChunkBlocks<'a> {
     blocks: &'a mut [u32],
 }
 
-impl ChunkBlocks<'_> {
+impl<'a> ChunkBlocks<'a> {
+    pub(crate) fn new(x: i32, z: i32, min_y: i32, height: u32, blocks: &'a mut [u32]) -> Self {
+        ChunkBlocks {
+            x,
+            z,
+            min_y,
+            height,
+            blocks,
+        }
+    }
+
     /// Chunk X.
     pub fn chunk_x(&self) -> i32 {
         self.x

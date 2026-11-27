@@ -37,10 +37,40 @@ pub fn can_trample(width: f32, height: f32) -> bool {
     width * width * height > 0.512
 }
 
+/// Bukkit's `PlayerInteractEvent` `PHYSICAL`: whether a plugin cancelled the step of
+/// `entity` on the block at `pos` (pressure plates, tripwire, farmland). Only players fire it.
+pub fn physical_cancelled(level: &Level, pos: BlockPos, entity: EntityId) -> bool {
+    let Some(hooks) = level.hooks_for(vanillite_abi::event::PLAYER_INTERACT) else {
+        return false;
+    };
+    if level.entities.player(entity).is_none() {
+        return false;
+    }
+    let Some(uuid) = level.entities.store.get(entity).map(|e| e.uuid()) else {
+        return false;
+    };
+    let up = vanillite_base::Direction::ALL
+        .iter()
+        .position(|&d| d == vanillite_base::Direction::Up)
+        .and_then(|i| u32::try_from(i).ok())
+        .unwrap_or(1);
+    !hooks.player_interact(
+        uuid,
+        vanillite_abi::interact::PHYSICAL,
+        vanillite_abi::hand::MAIN,
+        "",
+        Some((pos, up, level.block(pos))),
+    )
+}
+
 /// `FarmlandBlock.turnToBaseBlock(source, state, level, pos)`: dirt, entities on it pushed up
-/// by the 1/16 block the farmland lacked, and a `block_change` game event.
+/// by the 1/16 block the farmland lacked, and a `block_change` game event. A player's trample
+/// fires [`physical_cancelled`] first.
 pub fn trample_farmland(level: &mut Level, pos: BlockPos, source: Option<EntityId>) {
     if !level.block(pos).is(ids::FARMLAND) {
+        return;
+    }
+    if source.is_some_and(|s| physical_cancelled(level, pos, s)) {
         return;
     }
     let dirt = ids::DIRT.default_state();

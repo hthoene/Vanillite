@@ -196,7 +196,16 @@ fn teleport_to_entity(level: &mut Level, global: &Global, id: EntityId, world: W
         .map(|e| (e.pos(), e.rot()))
     {
         let (pos, rot) = place;
-        let _ = super::exec::teleport_local(level, &target, pos, 0, rot.y_rot, rot.x_rot);
+        let _ = super::exec::teleport_local(
+            level,
+            global,
+            &target,
+            pos,
+            0,
+            rot.y_rot,
+            rot.x_rot,
+            vanillite_abi::teleport_cause::SPECTATE,
+        );
         return;
     }
     // UUIDs are unique: at most one other world has the entity.
@@ -221,6 +230,7 @@ fn teleport_to_entity(level: &mut Level, global: &Global, id: EntityId, world: W
                 other,
                 pos,
                 Some((rot.y_rot, rot.x_rot)),
+                Some(vanillite_abi::teleport_cause::SPECTATE),
             );
         });
     }

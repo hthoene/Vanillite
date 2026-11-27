@@ -26,7 +26,13 @@ fn villager(level: &mut Level, profession: &str, lvl: i32) -> EntityId {
         .id("minecraft:plains")
         .expect("type");
     s.villager.level = lvl;
-    crate::mob::spawn::add_mob(level, m, Vec3::new(0.5, 1.0, 0.5), 0.0)
+    crate::mob::spawn::add_mob(
+        level,
+        m,
+        Vec3::new(0.5, 1.0, 0.5),
+        0.0,
+        crate::mob::fam::SpawnReason::Command,
+    )
 }
 
 #[test]

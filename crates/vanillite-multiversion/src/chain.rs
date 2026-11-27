@@ -37,9 +37,16 @@ pub(crate) struct Ctx<'a> {
     entities: &'a HashMap<i32, i32>,
     /// The steps between the server and this step (oldest first).
     newer: &'a [Box<dyn ClientboundStep>],
+    /// Packets the step sends after the translated one, in its older version.
+    extra: &'a std::cell::RefCell<Vec<Vec<u8>>>,
 }
 
 impl Ctx<'_> {
+    /// Sends `body` (in the step's older version) after the packet being translated.
+    pub(crate) fn emit(&self, body: Vec<u8>) {
+        self.extra.borrow_mut().push(body);
+    }
+
     /// The type of an entity the client knows, in the numbering of the step's newer version.
     pub(crate) fn entity_type(&self, entity: i32) -> Option<i32> {
         let mut t = *self.entities.get(&entity)?;
@@ -105,6 +112,9 @@ impl Adapter {
                 steps: cbs,
                 bufs: [Vec::new(), Vec::new()],
                 entities: HashMap::new(),
+                extra: std::cell::RefCell::new(Vec::new()),
+                pending: std::collections::VecDeque::new(),
+                held: Vec::new(),
             },
         }
     }
@@ -231,6 +241,12 @@ pub struct ClientboundHalf {
     bufs: [Vec<u8>; 2],
     /// Entity id → type (server's version) of the entities the client was sent.
     entities: HashMap<i32, i32>,
+    /// Packets steps sent in addition, with the index of the step that sent them.
+    extra: std::cell::RefCell<Vec<Vec<u8>>>,
+    /// Translated additional packets not yet taken ([`Self::pending`]).
+    pending: std::collections::VecDeque<Vec<u8>>,
+    /// The last packet [`Self::pending`] returned.
+    held: Vec<u8>,
 }
 
 impl ClientboundHalf {
@@ -240,9 +256,47 @@ impl ClientboundHalf {
     }
 
     /// Translates one packet body from the server into the client's version. `None` drops it.
+    /// Packets the client needs in addition follow from [`Self::pending`].
     pub fn translate<'s>(&'s mut self, body: &[u8]) -> Result<Option<&'s [u8]>> {
         self.track(body);
         self.run(body)
+    }
+
+    /// The next packet a translation produced in addition (after the translated one); call
+    /// until `None` after each translation.
+    pub fn pending(&mut self) -> Option<&[u8]> {
+        self.held = self.pending.pop_front()?;
+        Some(&self.held)
+    }
+
+    /// Runs packets steps sent in addition through the steps below the one that sent them.
+    fn run_extra(&mut self, state: State, mut queue: Vec<(usize, Vec<u8>)>) -> Result<()> {
+        while let Some((from, body)) = queue.pop() {
+            let mut input = body;
+            let mut kept = true;
+            for k in (0..from).rev() {
+                let (lower, newer) = self.steps.split_at_mut(k.saturating_add(1));
+                let Some(step) = lower.last_mut() else { break };
+                let ctx = Ctx {
+                    entities: &self.entities,
+                    newer,
+                    extra: &self.extra,
+                };
+                let mut output = Vec::with_capacity(input.len());
+                kept = step.translate(state, &input, &mut output, &ctx)?;
+                for e in self.extra.borrow_mut().drain(..).rev() {
+                    queue.push((k, e));
+                }
+                if !kept {
+                    break;
+                }
+                input = output;
+            }
+            if kept {
+                self.pending.push_back(input);
+            }
+        }
+        Ok(())
     }
 
     /// Follows the entity types the client knows.
@@ -295,24 +349,44 @@ impl ClientboundHalf {
                 (s, _) => s,
             };
         }
-        let [a, b] = &mut self.bufs;
-        let (mut input, mut output) = (a, b);
-        input.clear();
-        input.extend_from_slice(body);
-        for k in (0..self.steps.len()).rev() {
-            let (lower, newer) = self.steps.split_at_mut(k.saturating_add(1));
-            let Some(step) = lower.last_mut() else { break };
-            let ctx = Ctx {
-                entities: &self.entities,
-                newer,
-            };
-            output.clear();
-            if !step.translate(state, input, output, &ctx)? {
-                return Ok(None);
+        self.pending.clear();
+        let mut extra = Vec::new();
+        let mut kept = true;
+        // The translation is in `bufs[0]` after an even number of steps.
+        let mut in_a = true;
+        {
+            let [a, b] = &mut self.bufs;
+            let (mut input, mut output) = (a, b);
+            input.clear();
+            input.extend_from_slice(body);
+            for k in (0..self.steps.len()).rev() {
+                let (lower, newer) = self.steps.split_at_mut(k.saturating_add(1));
+                let Some(step) = lower.last_mut() else { break };
+                let ctx = Ctx {
+                    entities: &self.entities,
+                    newer,
+                    extra: &self.extra,
+                };
+                output.clear();
+                kept = step.translate(state, input, output, &ctx)?;
+                for e in self.extra.borrow_mut().drain(..).rev() {
+                    extra.push((k, e));
+                }
+                if !kept {
+                    break;
+                }
+                std::mem::swap(&mut input, &mut output);
+                in_a = !in_a;
             }
-            std::mem::swap(&mut input, &mut output);
         }
-        Ok(Some(input.as_slice()))
+        if !extra.is_empty() {
+            self.run_extra(state, extra)?;
+        }
+        let out = self
+            .bufs
+            .get(usize::from(!in_a))
+            .map_or(&[][..], Vec::as_slice);
+        Ok(kept.then_some(out))
     }
 
     /// Translates a shared packet: once for all receivers of this version when the translation

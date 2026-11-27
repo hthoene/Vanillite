@@ -690,7 +690,16 @@ fn move_entity(env: &mut Env<'_>, target: &Target, pos: Vec3) -> Result<(), Comm
     };
     if env.level.entities.player(id).is_some() {
         let (y_rot, x_rot) = target.place.map_or((0.0, 0.0), |(_, y, x)| (y, x));
-        return exec::teleport_local(env.level, target, pos, 0, y_rot, x_rot);
+        return exec::teleport_local(
+            env.level,
+            env.global,
+            target,
+            pos,
+            0,
+            y_rot,
+            x_rot,
+            vanillite_abi::teleport_cause::COMMAND,
+        );
     }
     let entities = &mut env.level.entities;
     if let Some(mut entity) = entities.store.get_mut(id) {

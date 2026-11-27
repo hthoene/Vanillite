@@ -16,6 +16,7 @@ use crate::common::{self, Registries};
 use crate::generated::{Cb, Sb};
 use crate::io;
 use crate::portable::Items;
+use crate::recipe::{self, OldBook};
 use crate::table::{PacketTable, Tables};
 use crate::{Result, State};
 use vanillite_protocol::Error;
@@ -45,6 +46,7 @@ pub(crate) fn open(t: &'static Tables) -> (Box<dyn ClientboundStep>, Box<dyn Ser
         Box::new(Clientbound {
             t,
             regs: Arc::clone(&shared),
+            book: OldBook::default(),
         }),
         Box::new(Serverbound {
             t,
@@ -96,6 +98,8 @@ struct Clientbound {
     t: &'static Tables,
     /// Shared with the serverbound half (creative items name synchronised entries).
     regs: Arc<Mutex<Registries>>,
+    /// The recipes of a client before 1.21.2 (step 1.21.1 ↔ 1.21.2 only).
+    book: OldBook,
 }
 
 impl ClientboundStep for Clientbound {
@@ -119,6 +123,7 @@ impl ClientboundStep for Clientbound {
             regs: &mut regs,
             ctx,
             state,
+            book: &mut self.book,
         };
         if state == State::Login {
             let Some(old) = table.older(id) else {
@@ -159,7 +164,17 @@ impl ClientboundStep for Clientbound {
         state == State::Play
             && !matches!(
                 self.t.clientbound(state, id),
-                Some(Cb::Login | Cb::Respawn | Cb::UpdateTags | Cb::StartConfiguration) | None
+                Some(
+                    Cb::Login
+                        | Cb::Respawn
+                        | Cb::UpdateTags
+                        | Cb::StartConfiguration
+                        | Cb::UpdateRecipes
+                        | Cb::RecipeBookAdd
+                        | Cb::RecipeBookRemove
+                        | Cb::RecipeBookSettings
+                        | Cb::PlaceGhostRecipe
+                ) | None
             )
     }
 
@@ -174,6 +189,7 @@ struct Cx<'a, 'c> {
     regs: &'a mut Registries,
     ctx: &'a Ctx<'c>,
     state: State,
+    book: &'a mut OldBook,
 }
 
 impl Cx<'_, '_> {
@@ -195,6 +211,7 @@ impl Cx<'_, '_> {
             t: self.t,
             regs: self.regs,
             clientbound: true,
+            depth: 0,
         }
     }
 
@@ -264,6 +281,41 @@ impl Cx<'_, '_> {
         out: &mut Vec<u8>,
     ) -> Result<Option<bool>> {
         match kind {
+            Cb::UpdateRecipes if self.at(V1_21_2) => {
+                write_varint(out, self.old_id(Cb::UpdateRecipes)?);
+                let items = Items {
+                    t: self.t,
+                    regs: self.regs,
+                    clientbound: true,
+                    depth: 0,
+                };
+                self.book.update_recipes(&items, r, out)?;
+            }
+            Cb::RecipeBookAdd if self.at(V1_21_2) => {
+                write_varint(out, self.old_id(Cb::UpdateRecipes)?);
+                let mut unlock = Vec::new();
+                write_varint(&mut unlock, self.old_id(Cb::Recipe)?);
+                let items = Items {
+                    t: self.t,
+                    regs: self.regs,
+                    clientbound: true,
+                    depth: 0,
+                };
+                self.book.add(&items, r, out, &mut unlock)?;
+                self.ctx.emit(unlock);
+            }
+            Cb::RecipeBookRemove if self.at(V1_21_2) => {
+                write_varint(out, self.old_id(Cb::Recipe)?);
+                self.book.remove(r, out)?;
+            }
+            Cb::RecipeBookSettings if self.at(V1_21_2) => {
+                write_varint(out, self.old_id(Cb::Recipe)?);
+                self.book.settings(r, out)?;
+            }
+            Cb::PlaceGhostRecipe if self.at(V1_21_2) => {
+                write_varint(out, self.old_id(Cb::PlaceGhostRecipe)?);
+                return self.book.ghost(r, out).map(Some);
+            }
             Cb::SetCursorItem if self.old() < V1_21_2 => {
                 // `container_set_slot` of container -1, slot -1.
                 write_varint(out, self.old_id(Cb::ContainerSetSlot)?);
@@ -699,13 +751,60 @@ impl Cx<'_, '_> {
             // 1.21.4 wrote the same doubles and floats through `Vec3.STREAM_CODEC`.
             Cb::MoveVehicle => out.extend_from_slice(r.take_rest()),
             Cb::ProjectilePower if self.at(V1_21) => return Ok(Some(false)),
-            Cb::UpdateAdvancements | Cb::UpdateRecipes | Cb::PlaceGhostRecipe => {
-                // The newest step translates them for its own version only.
-                return Ok(Some(false));
+            Cb::UpdateAdvancements => self.advancements(r, out)?,
+            Cb::UpdateRecipes if self.old() >= V1_21_2 => self.items().update_recipes(r, out)?,
+            Cb::UpdateRecipes => self.items().old_recipes(r, out)?,
+            Cb::RecipeBookAdd => self.items().recipe_book_add(r, out)?,
+            Cb::PlaceGhostRecipe if self.old() >= V1_21_2 => {
+                self.items().place_ghost_recipe(r, out)?;
             }
             _ => return Ok(None),
         }
         Ok(Some(true))
+    }
+
+    /// `update_advancements`: the display icon is a stack template from 26.1 on and a stack
+    /// before; 1.21.5 added whether to show the advancements screen.
+    fn advancements(&self, r: &mut Reader<'_>, out: &mut Vec<u8>) -> Result<()> {
+        io::bytes(r, out, 1)?;
+        let n = io::len(r, 1 << 16, 2)?;
+        io::write_len(out, n);
+        for _ in 0..n {
+            io::string(r, out)?;
+            if io::boolean(r, out)? {
+                io::string(r, out)?;
+            }
+            if io::boolean(r, out)? {
+                io::nbt(r, out)?;
+                io::nbt(r, out)?;
+                self.items().particle_item(r, out)?;
+                io::varint(r, out)?;
+                let flags = r.i32()?;
+                out.extend_from_slice(&flags.to_be_bytes());
+                if flags & 1 != 0 {
+                    io::string(r, out)?;
+                }
+                io::bytes(r, out, 8)?;
+            }
+            let groups = io::len(r, 1 << 16, 1)?;
+            io::write_len(out, groups);
+            for _ in 0..groups {
+                let k = io::len(r, 1 << 16, 1)?;
+                io::write_len(out, k);
+                for _ in 0..k {
+                    io::string(r, out)?;
+                }
+            }
+            io::bytes(r, out, 1)?;
+        }
+        let rest = r.take_rest();
+        if self.at(V1_21_5) {
+            let len = rest.len().checked_sub(1).ok_or(Error::UnexpectedEnd)?;
+            out.extend_from_slice(rest.get(..len).ok_or(Error::UnexpectedEnd)?);
+        } else {
+            out.extend_from_slice(rest);
+        }
+        Ok(())
     }
 
     /// Container ids: an unsigned (or, for slots, signed) byte before 1.21.2, a VarInt since.
@@ -1751,6 +1850,22 @@ impl Serverbound {
                 out.extend_from_slice(r.take_rest());
             }
             Sb::ContainerClick => self.container_click(r, out)?,
+            Sb::PlaceRecipe if self.at(V1_21_2) => {
+                // Container byte, recipe name, shift → container, display id, shift.
+                let container = r.u8()?;
+                let Some(id) = recipe::display_id(r.string(io::MAX_STRING)?) else {
+                    return Ok(Some(false));
+                };
+                write_varint(out, i32::from(container));
+                write_varint(out, id);
+                out.extend_from_slice(r.take_rest());
+            }
+            Sb::RecipeBookSeenRecipe if self.at(V1_21_2) => {
+                let Some(id) = recipe::display_id(r.string(io::MAX_STRING)?) else {
+                    return Ok(Some(false));
+                };
+                write_varint(out, id);
+            }
             Sb::ContainerClose if self.at(V1_21_2) => {
                 write_varint(out, i32::from(r.u8()?));
             }
@@ -1761,6 +1876,7 @@ impl Serverbound {
                     t,
                     regs: &regs,
                     clientbound: false,
+                    depth: 0,
                 };
                 if items.client_stack(r, out).is_err() {
                     return Ok(Some(false));
@@ -1821,6 +1937,7 @@ impl Serverbound {
             t: self.t,
             regs: &regs,
             clientbound: false,
+            depth: 0,
         };
         let stack = |r: &mut Reader<'_>, out: &mut Vec<u8>| -> Result<()> {
             if self.old() >= V1_21_5 {

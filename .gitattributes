@@ -5,7 +5,7 @@
 Cargo.lock merge=vanillite
 Cargo.toml merge=vanillite
 KEYS.toml merge=vanillite
-deploy/pterodactyl/egg-vanillite.json merge=vanillite
+deploy/pterodactyl/egg-vanillite*.json merge=vanillite
 # Only `mod`/`use` declarations and attributes are taken from both sides in these.
 lib.rs merge=vanillite
 mod.rs merge=vanillite

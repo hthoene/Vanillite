@@ -38,7 +38,7 @@ const WALK_SPEED: f64 = 0.1;
 const MAX_EXHAUSTION: f32 = 40.0;
 
 /// A player or another entity of this world by UUID.
-fn any_entity(entities: &Entities, uuid: u128) -> Result<EntityId> {
+pub(super) fn any_entity(entities: &Entities, uuid: u128) -> Result<EntityId> {
     entities
         .player_by_uuid(uuid)
         .or_else(|| crate::commands::find_uuid(entities, uuid))
@@ -51,7 +51,7 @@ fn player_id(entities: &Entities, uuid: u128) -> Result<EntityId> {
 }
 
 /// A namespaced id as Vanilla's `ResourceLocation` reads it: `zombie` is `minecraft:zombie`.
-fn qualified(id: &str) -> Cow<'_, str> {
+pub(super) fn qualified(id: &str) -> Cow<'_, str> {
     if id.contains(':') {
         Cow::Borrowed(id)
     } else {
@@ -60,7 +60,7 @@ fn qualified(id: &str) -> Cow<'_, str> {
 }
 
 /// A position with finite coordinates.
-fn position([x, y, z]: [f64; 3]) -> Result<Vec3> {
+pub(super) fn position([x, y, z]: [f64; 3]) -> Result<Vec3> {
     if x.is_finite() && y.is_finite() && z.is_finite() {
         Ok(Vec3::new(x, y, z))
     } else {
@@ -70,7 +70,7 @@ fn position([x, y, z]: [f64; 3]) -> Result<Vec3> {
 
 /// A whole number within `range`.
 #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-fn whole(value: f64, range: RangeInclusive<i32>) -> Result<i32> {
+pub(super) fn whole(value: f64, range: RangeInclusive<i32>) -> Result<i32> {
     let inside = value >= f64::from(*range.start()) && value <= f64::from(*range.end());
     if value.fract() == 0.0 && inside {
         Ok(value as i32)
@@ -81,7 +81,7 @@ fn whole(value: f64, range: RangeInclusive<i32>) -> Result<i32> {
 
 /// A float within `range`.
 #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-fn float(value: f64, range: RangeInclusive<f32>) -> Result<f32> {
+pub(super) fn float(value: f64, range: RangeInclusive<f32>) -> Result<f32> {
     let value = value as f32;
     if range.contains(&value) {
         Ok(value)
@@ -284,8 +284,17 @@ pub(super) fn teleport(w: &mut PluginWorld<'_>, entity: u128, to: Location) -> R
     let target =
         crate::commands::local_target(w.0.entities(), world, id).ok_or(status::NOT_FOUND)?;
     if to.world == u32::from(world.0) {
-        return exec::teleport_local(w.0.level_mut(), &target, pos, 0, to.yaw, to.pitch)
-            .map_err(|_| status::INVALID_ARGUMENT);
+        return exec::teleport_local(
+            w.0.level_mut(),
+            w.1,
+            &target,
+            pos,
+            0,
+            to.yaw,
+            to.pitch,
+            vanillite_abi::teleport_cause::PLUGIN,
+        )
+        .map_err(|_| status::INVALID_ARGUMENT);
     }
     let destination = u16::try_from(to.world)
         .ok()
@@ -300,6 +309,7 @@ pub(super) fn teleport(w: &mut PluginWorld<'_>, entity: u128, to: Location) -> R
         WorldId(destination),
         pos,
         Some((to.yaw, to.pitch)),
+        Some(vanillite_abi::teleport_cause::PLUGIN),
     );
     Ok(())
 }
@@ -324,9 +334,16 @@ pub(super) fn spawn_entity(
 ) -> Result<u128> {
     let pos = position(pos)?;
     let source = server_source(w, pos)?;
-    crate::commands::summon(&mut env(w), &source, &qualified(kind), pos, nbt)
-        .map(|target| target.uuid)
-        .map_err(|_| status::INVALID_ARGUMENT)
+    crate::commands::summon_for(
+        &mut env(w),
+        &source,
+        &qualified(kind),
+        pos,
+        nbt,
+        vanillite_abi::spawn_reason::PLUGIN,
+    )
+    .map(|target| target.uuid)
+    .map_err(|_| status::INVALID_ARGUMENT)
 }
 
 /// `Entity.discard`; players cannot be removed.

@@ -1,0 +1,3 @@
+tick = 18
+cause = "Vanillite accepts the move and the player ends inside the stone; Vanilla's collision (Entity.move in handlePlayerPositionChange) keeps it on top"
+owner = "network-developer #132"
