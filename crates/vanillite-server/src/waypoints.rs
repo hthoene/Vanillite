@@ -6,7 +6,7 @@
 //! Vanilla updates the connections whenever a player moves; here they are updated once per
 //! tick for the players that moved or changed, with the same connections and packets.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
@@ -21,6 +21,12 @@ use vanillite_protocol::packets::play::clientbound::{Waypoint, WaypointOperation
 use vanillite_protocol::types::{Identifier, Uuid};
 use vanillite_world::entity::{EntityId, Pose};
 
+use vanillite_protocol::compress::Codec;
+use vanillite_protocol::frame::encode_frame;
+use vanillite_protocol::tap::{BatchMark, PacketTap, Stage, Verdict};
+use vanillite_protocol::{Direction, Packet, SharedPacket, State};
+
+use crate::compute::Compute;
 use crate::global::Global;
 
 /// `WaypointTransmitter.REALLY_FAR_DISTANCE`.
@@ -96,12 +102,100 @@ enum Connection {
     Chunk(ChunkPos),
 }
 
-/// The locator bar state of one world.
+/// The locator bar state of one world. Players have slots; per pair of receiver and source
+/// only the kind of connection is kept (2 bits): the icon and the block or chunk a connection
+/// last sent are the source's of the last tick, since every connection of a source that
+/// changed is updated in the same tick. Only azimuths (players more than 332 blocks apart)
+/// keep their own angle.
 #[derive(Default)]
 pub(crate) struct Waypoints {
-    players: FxHashMap<EntityId, Snapshot>,
-    /// By (receiver, source), with the icon the receiver got.
-    connections: FxHashMap<(EntityId, EntityId), (Connection, Icon)>,
+    /// Slot by player.
+    slot_of: FxHashMap<EntityId, u32>,
+    /// The players by slot as of the last tick.
+    players: Vec<Option<(EntityId, Snapshot)>>,
+    free: Vec<u32>,
+    /// Per receiver slot: the connections to each source slot, 2 bits each ([`Kind`]).
+    kinds: Vec<Vec<u64>>,
+    /// Per receiver slot: the last angle of its azimuth connections by source slot.
+    angles: Vec<FxHashMap<u32, f32>>,
+}
+
+/// The kind of a connection in [`Waypoints::kinds`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum Kind {
+    None = 0,
+    Azimuth = 1,
+    Block = 2,
+    Chunk = 3,
+}
+
+fn kind_at(row: &[u64], slot: u32) -> Kind {
+    let bits = row
+        .get(slot as usize / 32)
+        .map_or(0, |w| (w >> (slot % 32 * 2)) & 3);
+    match bits {
+        1 => Kind::Azimuth,
+        2 => Kind::Block,
+        3 => Kind::Chunk,
+        _ => Kind::None,
+    }
+}
+
+fn set_kind(row: &mut Vec<u64>, slot: u32, kind: Kind) {
+    let word = slot as usize / 32;
+    if row.len() <= word {
+        if kind == Kind::None {
+            return;
+        }
+        row.resize(word + 1, 0);
+    }
+    let shift = slot % 32 * 2;
+    row[word] = (row[word] & !(3 << shift)) | (u64::from(kind as u8) << shift);
+}
+
+/// The packets of one source that are the same for every receiver, encoded on first use.
+#[derive(Default)]
+struct SourceFrames {
+    untrack: OnceLock<Vec<u8>>,
+    track_block: OnceLock<Vec<u8>>,
+    track_chunk: OnceLock<Vec<u8>>,
+    update_block: OnceLock<Vec<u8>>,
+    update_chunk: OnceLock<Vec<u8>>,
+}
+
+/// The frame in `cell`, made by `make` on first use.
+fn cached(cell: &OnceLock<Vec<u8>>, make: impl FnOnce() -> Vec<u8>) -> &[u8] {
+    cell.get_or_init(make)
+}
+
+/// How this tick's packets are framed and tapped.
+struct Framing<'a> {
+    threshold: Option<usize>,
+    tap: &'a PacketTap,
+    tapped: bool,
+}
+
+impl Framing<'_> {
+    /// The frame of `packet` after the broadcast stage of the packet listeners (empty when a
+    /// listener drops it).
+    fn frame(&self, packet: &Waypoint, codec: &mut Codec) -> Vec<u8> {
+        let shared = SharedPacket::of(packet);
+        let shared = if self.tapped {
+            match self.tap.shared(State::Play, &shared) {
+                Verdict::Pass => shared,
+                Verdict::Drop => return Vec::new(),
+                Verdict::Replace(other) => other,
+            }
+        } else {
+            shared
+        };
+        let mut out = Vec::new();
+        if encode_frame(shared.body(), self.threshold, codec, &mut out).is_err() {
+            out.clear();
+        }
+        out
+    }
 }
 
 /// `WaypointTransmitter.doesSourceIgnoreReceiver`.
@@ -229,133 +323,355 @@ fn transmit_range(player: &vanillite_game::player::PlayerData, crouching: bool) 
     player.survival.effects.attribute(attribute, value)
 }
 
+/// Receivers per part of the parallel pair updates.
+const RECEIVERS_PER_PART: usize = 64;
+
+/// What the pair updates of one tick read.
+struct PairCtx<'a> {
+    /// The players by slot now.
+    now: &'a [Option<(EntityId, Snapshot)>],
+    /// The players by slot as of the last tick.
+    before: &'a [Option<(EntityId, Snapshot)>],
+    changed: &'a [bool],
+    /// The slots of the players that changed, ascending.
+    changed_slots: &'a [u32],
+    frames: &'a [SourceFrames],
+    framing: Framing<'a>,
+}
+
 impl Waypoints {
     /// The tick's update: the players that left get their connections removed, then the
-    /// connections of the players that moved or changed are made, updated or broken.
-    pub(crate) fn tick(&mut self, entities: &Entities, global: &Global) {
+    /// connections of the players that moved or changed are made, updated or broken. Each
+    /// receiver gets its packets as one batch, built in parallel over the receivers.
+    pub(crate) fn tick(
+        &mut self,
+        entities: &Entities,
+        global: &Global,
+        compute: &Compute,
+        tap: &PacketTap,
+    ) {
         let enabled = global
             .level
             .rules()
             .bool(vanillite_game::survival::rules::Rule::LOCATOR_BAR);
         if !enabled {
             // `breakAllConnections`.
-            for ((receiver, source), _) in self.connections.drain() {
-                if let (Some(r), Some(s)) = (self.players.get(&receiver), self.players.get(&source))
-                {
-                    untrack(r.sink.as_ref(), s.uuid);
+            for (receiver, row) in self.players.iter().zip(&self.kinds) {
+                let Some((_, receiver)) = receiver else {
+                    continue;
+                };
+                for (slot, entry) in (0u32..).zip(&self.players) {
+                    if let Some((_, source)) = entry
+                        && kind_at(row, slot) != Kind::None
+                    {
+                        untrack(receiver.sink.as_ref(), source.uuid);
+                    }
                 }
             }
-            self.players.clear();
+            *self = Waypoints::default();
             return;
         }
-        let now = snapshots(entities, global);
+        let mut now_list = snapshots(entities, global);
         // `removePlayer`: the leaving player's own connections and those to it break.
-        let gone: Vec<EntityId> = self
+        let present: FxHashSet<EntityId> = now_list.iter().map(|(id, _)| *id).collect();
+        let gone: Vec<u32> = self
             .players
-            .keys()
-            .filter(|id| !now.contains_key(id))
-            .copied()
-            .collect();
-        if !gone.is_empty() {
-            let players = &self.players;
-            self.connections.retain(|(receiver, source), _| {
-                if !gone.contains(receiver) && !gone.contains(source) {
-                    return true;
-                }
-                if let (Some(r), Some(s)) = (players.get(receiver), players.get(source)) {
-                    untrack(r.sink.as_ref(), s.uuid);
-                }
-                false
-            });
-        }
-        let changed: Vec<EntityId> = now
             .iter()
-            .filter(|(id, snap)| {
-                self.players
-                    .get(id)
-                    .is_none_or(|before| snap.changed(before))
+            .enumerate()
+            .filter_map(|(slot, p)| {
+                p.as_ref()
+                    .filter(|(id, _)| !present.contains(id))
+                    .map(|_| u32::try_from(slot).unwrap_or(u32::MAX))
             })
-            .map(|(id, _)| *id)
             .collect();
-        self.players = now;
-        if changed.is_empty() {
+        for &g in &gone {
+            self.forget(g);
+        }
+
+        // Slots for the players of this tick; who changed.
+        let mut now: Vec<Option<(EntityId, Snapshot)>> = Vec::new();
+        now.resize_with(self.players.len(), || None);
+        for (id, snap) in now_list.drain(..) {
+            let slot = match self.slot_of.get(&id) {
+                Some(&slot) => slot,
+                None => {
+                    let slot = self
+                        .free
+                        .pop()
+                        .unwrap_or_else(|| u32::try_from(self.players.len()).unwrap_or(u32::MAX));
+                    self.slot_of.insert(id, slot);
+                    slot
+                }
+            };
+            let i = slot as usize;
+            if self.players.len() <= i {
+                self.players.resize_with(i + 1, || None);
+                self.kinds.resize_with(i + 1, Vec::new);
+                self.angles.resize_with(i + 1, FxHashMap::default);
+            }
+            if now.len() <= i {
+                now.resize_with(i + 1, || None);
+            }
+            now[i] = Some((id, snap));
+        }
+        let changed: Vec<bool> = now
+            .iter()
+            .zip(&self.players)
+            .map(|(now, before)| match (now, before) {
+                (Some((_, now)), Some((_, before))) => now.changed(before),
+                (Some(_), None) => true,
+                _ => false,
+            })
+            .collect();
+        let changed_slots: Vec<u32> = (0u32..)
+            .zip(&changed)
+            .filter(|(_, c)| **c)
+            .map(|(slot, _)| slot)
+            .collect();
+        if changed_slots.is_empty() {
+            self.players = now;
             return;
         }
-        let ids: Vec<EntityId> = self.players.keys().copied().collect();
-        let changed_set: FxHashSet<EntityId> = changed.iter().copied().collect();
-        for &moved in &changed {
-            for &other in &ids {
-                if other == moved {
-                    continue;
+
+        let threshold = entities
+            .players
+            .iter()
+            .next()
+            .and_then(|(_, player)| player.connection.sink.frame_threshold());
+        let tapped = tap.active(Direction::Clientbound);
+        let mut mark = tap.batch_mark();
+        if tapped
+            && tap.listens(Stage::Receiver)
+            && tap.wants_at(Stage::Receiver, State::Play, Waypoint::ID)
+        {
+            mark = BatchMark::UNKNOWN;
+        }
+        let mut frames = Vec::new();
+        frames.resize_with(now.len(), SourceFrames::default);
+        let ctx = PairCtx {
+            now: &now,
+            before: &self.players,
+            changed: &changed,
+            changed_slots: &changed_slots,
+            frames: &frames,
+            framing: Framing {
+                threshold,
+                tap,
+                tapped,
+            },
+        };
+        let mut rows: Vec<(u32, &mut Vec<u64>, &mut FxHashMap<u32, f32>)> = (0u32..)
+            .zip(self.kinds.iter_mut().zip(self.angles.iter_mut()))
+            .filter(|(slot, _)| now.get(*slot as usize).is_some_and(Option::is_some))
+            .map(|(slot, (kinds, angles))| (slot, kinds, angles))
+            .collect();
+        compute.parts(&mut rows, RECEIVERS_PER_PART, |_, part| {
+            let mut codec = Codec::default();
+            let mut batch = Vec::new();
+            for (receiver, kinds, angles) in part.iter_mut() {
+                ctx.receiver(*receiver, kinds, angles, &mut codec, &mut batch);
+                if !batch.is_empty()
+                    && let Some((_, r)) = &ctx.now[*receiver as usize]
+                {
+                    r.sink
+                        .send_batch(std::mem::take(&mut batch), threshold, mark);
                 }
-                // Both directions; a pair of two changed players is handled once.
-                if other < moved && changed_set.contains(&other) {
-                    continue;
+            }
+        });
+        drop(rows);
+        self.players = now;
+    }
+
+    /// Drops the player in `slot`: untracks its connections both ways and frees the slot.
+    fn forget(&mut self, slot: u32) {
+        let Some((id, gone)) = self.players.get_mut(slot as usize).and_then(Option::take) else {
+            return;
+        };
+        self.slot_of.remove(&id);
+        for (source, entry) in (0u32..).zip(&self.players) {
+            if let Some((_, other)) = entry {
+                if kind_at(&self.kinds[slot as usize], source) != Kind::None {
+                    untrack(gone.sink.as_ref(), other.uuid);
                 }
-                self.update_pair(moved, other);
-                self.update_pair(other, moved);
+                if let Some(row) = self.kinds.get_mut(source as usize) {
+                    if kind_at(row, slot) != Kind::None {
+                        untrack(other.sink.as_ref(), gone.uuid);
+                    }
+                    set_kind(row, slot, Kind::None);
+                }
+                if let Some(angles) = self.angles.get_mut(source as usize) {
+                    angles.remove(&slot);
+                }
+            }
+        }
+        self.kinds[slot as usize].clear();
+        self.angles[slot as usize].clear();
+        self.free.push(slot);
+    }
+}
+
+impl PairCtx<'_> {
+    /// `updateConnection` / `createConnection` of one receiver with every source it has to
+    /// look at: all if it changed, else the sources that changed. Its packets go into `batch`.
+    fn receiver(
+        &self,
+        r: u32,
+        kinds: &mut Vec<u64>,
+        angles: &mut FxHashMap<u32, f32>,
+        codec: &mut Codec,
+        batch: &mut Vec<u8>,
+    ) {
+        let Some((_, receiver)) = &self.now[r as usize] else {
+            return;
+        };
+        let mut pair = |s: u32| {
+            if s != r {
+                self.pair(receiver, s, kinds, angles, codec, batch);
+            }
+        };
+        if self.changed[r as usize] {
+            for s in 0..u32::try_from(self.now.len()).unwrap_or(u32::MAX) {
+                pair(s);
+            }
+        } else {
+            for &s in self.changed_slots {
+                pair(s);
             }
         }
     }
 
     /// `ServerWaypointManager.updateConnection` / `createConnection` for one pair.
-    fn update_pair(&mut self, receiver_id: EntityId, source_id: EntityId) {
-        let (Some(receiver), Some(source)) =
-            (self.players.get(&receiver_id), self.players.get(&source_id))
-        else {
+    #[allow(clippy::too_many_arguments)]
+    fn pair(
+        &self,
+        receiver: &Snapshot,
+        s: u32,
+        kinds: &mut Vec<u64>,
+        angles: &mut FxHashMap<u32, f32>,
+        codec: &mut Codec,
+        batch: &mut Vec<u8>,
+    ) {
+        let Some((source_id, source)) = &self.now[s as usize] else {
             return;
         };
-        let key = (receiver_id, source_id);
-        let sink = receiver.sink.as_ref();
+        let frames = &self.frames[s as usize];
+        let kind = kind_at(kinds, s);
         if !source.transmitting() {
             // `untrackWaypoint`.
-            if self.connections.remove(&key).is_some() {
-                untrack(sink, source.uuid);
+            if kind != Kind::None {
+                set_kind(kinds, s, Kind::None);
+                angles.remove(&s);
+                batch.extend_from_slice(cached(&frames.untrack, || {
+                    self.framing.frame(
+                        &packet(WaypointOperation::Untrack, source.uuid, None, None),
+                        codec,
+                    )
+                }));
             }
             return;
         }
-        let existing = self.connections.get(&key).cloned();
-        let remake = match &existing {
-            None => true,
-            Some((c, icon)) => *icon != source.icon || broken(*c, source_id, source, receiver),
-        };
-        if !remake {
-            if let Some((c, icon)) = existing {
-                let next = match c {
-                    Connection::Azimuth(last) => {
+        // An existing connection was made or updated last tick with the source as it was.
+        let before = self.before.get(s as usize).and_then(Option::as_ref);
+        if kind != Kind::None
+            && let Some((_, last)) = before
+        {
+            let existing = match kind {
+                Kind::Azimuth => Connection::Azimuth(angles.get(&s).copied().unwrap_or(0.0)),
+                Kind::Block => Connection::Block(last.block),
+                _ => Connection::Chunk(last.chunk),
+            };
+            let remake = last.icon != source.icon || broken(existing, *source_id, source, receiver);
+            if !remake {
+                match existing {
+                    Connection::Azimuth(angle) => {
                         let now = azimuth(source, receiver);
-                        ((now - last).abs() > 0.008_726_646).then_some(Connection::Azimuth(now))
+                        if (now - angle).abs() > 0.008_726_646 {
+                            angles.insert(s, now);
+                            let p = packet(
+                                WaypointOperation::Update,
+                                source.uuid,
+                                Some(&source.icon),
+                                Some(Connection::Azimuth(now)),
+                            );
+                            batch.extend_from_slice(&self.framing.frame(&p, codec));
+                        }
                     }
-                    Connection::Block(last) => (manhattan(last, source.block) > 0)
-                        .then_some(Connection::Block(source.block)),
-                    Connection::Chunk(last) => (chessboard(last, source.chunk) > 0)
-                        .then_some(Connection::Chunk(source.chunk)),
-                };
-                if let Some(next) = next {
-                    sink.send(&packet(
-                        WaypointOperation::Update,
+                    Connection::Block(last) => {
+                        if manhattan(last, source.block) > 0 {
+                            batch.extend_from_slice(cached(&frames.update_block, || {
+                                self.framing.frame(
+                                    &packet(
+                                        WaypointOperation::Update,
+                                        source.uuid,
+                                        Some(&source.icon),
+                                        Some(Connection::Block(source.block)),
+                                    ),
+                                    codec,
+                                )
+                            }));
+                        }
+                    }
+                    Connection::Chunk(last) => {
+                        if chessboard(last, source.chunk) > 0 {
+                            batch.extend_from_slice(cached(&frames.update_chunk, || {
+                                self.framing.frame(
+                                    &packet(
+                                        WaypointOperation::Update,
+                                        source.uuid,
+                                        Some(&source.icon),
+                                        Some(Connection::Chunk(source.chunk)),
+                                    ),
+                                    codec,
+                                )
+                            }));
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        match connect(*source_id, source, receiver) {
+            Some(c) => {
+                let track = |c| {
+                    packet(
+                        WaypointOperation::Track,
                         source.uuid,
-                        Some(&icon),
-                        Some(next),
-                    ));
-                    self.connections.insert(key, (next, icon));
+                        Some(&source.icon),
+                        Some(c),
+                    )
+                };
+                match c {
+                    Connection::Azimuth(angle) => {
+                        set_kind(kinds, s, Kind::Azimuth);
+                        angles.insert(s, angle);
+                        batch.extend_from_slice(&self.framing.frame(&track(c), codec));
+                    }
+                    Connection::Block(_) => {
+                        set_kind(kinds, s, Kind::Block);
+                        angles.remove(&s);
+                        batch.extend_from_slice(cached(&frames.track_block, || {
+                            self.framing.frame(&track(c), codec)
+                        }));
+                    }
+                    Connection::Chunk(_) => {
+                        set_kind(kinds, s, Kind::Chunk);
+                        angles.remove(&s);
+                        batch.extend_from_slice(cached(&frames.track_chunk, || {
+                            self.framing.frame(&track(c), codec)
+                        }));
+                    }
                 }
             }
-            return;
-        }
-        match connect(source_id, source, receiver) {
-            Some(c) => {
-                sink.send(&packet(
-                    WaypointOperation::Track,
-                    source.uuid,
-                    Some(&source.icon),
-                    Some(c),
-                ));
-                self.connections.insert(key, (c, source.icon.clone()));
-            }
             None => {
-                if self.connections.remove(&key).is_some() {
-                    untrack(sink, source.uuid);
+                if kind != Kind::None {
+                    set_kind(kinds, s, Kind::None);
+                    angles.remove(&s);
+                    batch.extend_from_slice(cached(&frames.untrack, || {
+                        self.framing.frame(
+                            &packet(WaypointOperation::Untrack, source.uuid, None, None),
+                            codec,
+                        )
+                    }));
                 }
             }
         }
@@ -363,11 +679,11 @@ impl Waypoints {
 }
 
 /// The players of the world as the locator bar sees them.
-fn snapshots(entities: &Entities, global: &Global) -> FxHashMap<EntityId, Snapshot> {
+fn snapshots(entities: &Entities, global: &Global) -> Vec<(EntityId, Snapshot)> {
     let icons = global.systems.waypoints().clone();
     let board = global.systems.scoreboard();
     let receive = Attribute::WAYPOINT_RECEIVE_RANGE.base_of(PLAYER);
-    let mut out = FxHashMap::default();
+    let mut out = Vec::with_capacity(entities.players.len());
     for (id, player) in entities.players.iter() {
         let Some(entity) = entities.store.get(id) else {
             continue;
@@ -394,7 +710,7 @@ fn snapshots(entities: &Entities, global: &Global) -> FxHashMap<EntityId, Snapsh
                 TEAM_RGB.get(usize::from(color)).copied()?
             })
         });
-        out.insert(
+        out.push((
             id,
             Snapshot {
                 uuid,
@@ -412,7 +728,7 @@ fn snapshots(entities: &Entities, global: &Global) -> FxHashMap<EntityId, Snapsh
                     color,
                 },
             },
-        );
+        ));
     }
     out
 }
