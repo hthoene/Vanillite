@@ -308,8 +308,8 @@ impl Conn {
             // A client that leaves closes the connection the same way as one that failed on
             // a packet ("Network Protocol Error"), so every close in play names the packets
             // the client got last; a failing one is among them (#243).
-            Some((at, name)) if matches!(end, End::Closed(None)) => log::info!(
-                "{name} ({}) closed the connection {:.0}s after joining; last packets sent: {}",
+            Some((at, name)) if matches!(end, End::Closed(_)) => log::info!(
+                "{name} ({}) dropped {:.0}s after joining: {why}; last packets sent: {}",
                 self.addr,
                 at.elapsed().as_secs_f32(),
                 self.out.sent_log().dump_last(LAST_PACKETS_ON_CLOSE)
