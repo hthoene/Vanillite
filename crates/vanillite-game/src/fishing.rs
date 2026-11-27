@@ -191,7 +191,7 @@ fn cast(ents: &mut Entities, network_ids: &NetworkIds, player: EntityId, luck: i
 
 /// `hurtAndBreak(damage, player, hand)` of the rod.
 fn hurt_rod(
-    ents: &Entities,
+    ents: &mut Entities,
     env: &mut Env<'_>,
     player: EntityId,
     rod: &mut ItemStack,
@@ -219,22 +219,26 @@ fn hurt_rod(
         return;
     }
     let d = item::damage(rod) + points;
-    if d >= item::max_damage(rod) {
-        rod.shrink(1);
-        if let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
-            play_sound(
-                env.out,
-                None,
-                pos,
-                "minecraft:entity.item.break",
-                SoundSource::Players,
-                0.8,
-                0.8 + env.random.next_float() * 0.4,
-                crate::survival::sound_seed(),
-            );
-        }
-    } else {
-        item::set_damage(rod, d);
+    let broke = match ents.player_mut(player) {
+        Some(p) => crate::advancements::view::apply_damage(
+            Some(&mut p.advancements),
+            Some(&mut p.stats),
+            rod,
+            d,
+        ),
+        None => crate::advancements::view::apply_damage(None, None, rod, d),
+    };
+    if broke && let Some(pos) = ents.store.get(player).map(|e| e.pos()) {
+        play_sound(
+            env.out,
+            None,
+            pos,
+            "minecraft:entity.item.break",
+            SoundSource::Players,
+            0.8,
+            0.8 + env.random.next_float() * 0.4,
+            crate::survival::sound_seed(),
+        );
     }
 }
 

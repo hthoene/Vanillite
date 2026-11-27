@@ -681,7 +681,8 @@ impl Raids {
 
     /// `createOrExtendRaid(player, raidPosition)`: the raid omen of `player` (its amplifier) at
     /// `pos` starts or grows a raid. `can_start` is `EnvironmentAttributes.CAN_START_RAID`
-    /// there. Returns the raid id.
+    /// there. Returns the raid id and whether the omen was absorbed before the first wave
+    /// (`RAID_TRIGGER` and `RAID_OMEN` for the player).
     #[allow(clippy::too_many_arguments)]
     pub fn create_or_extend_raid(
         &mut self,
@@ -692,7 +693,7 @@ impl Raids {
         raids_rule: bool,
         can_start: bool,
         difficulty: Difficulty,
-    ) -> Option<i32> {
+    ) -> Option<(i32, bool)> {
         let p = ents.player(player)?;
         if p.game_mode == vanillite_config::GameMode::Spectator || !raids_rule || !can_start {
             return None;
@@ -724,11 +725,12 @@ impl Raids {
             }
         };
         let raid = self.get_mut(id)?;
+        let mut triggered = false;
         if !raid.is_started() || raid.raid_omen_level < MAX_RAID_OMEN_LEVEL {
-            raid.absorb_raid_omen(amplifier);
+            triggered = raid.absorb_raid_omen(amplifier) && !raid.has_first_wave_spawned();
         }
         self.dirty = true;
-        Some(id)
+        Some((id, triggered))
     }
 
     /// `Raids.CODEC` written.
@@ -987,6 +989,12 @@ impl Raid {
                                 true,
                             ),
                         );
+                        if let Some(p) = level.entities.player_mut(pid) {
+                            p.stats.award(crate::stats::custom::RAID_WIN, 1);
+                            p.advancements.trigger_player(
+                                crate::advancements::trigger::TriggerKind::HERO_OF_THE_VILLAGE,
+                            );
+                        }
                     }
                 }
             }
@@ -1411,7 +1419,7 @@ pub fn start_pending_raids(
         .collect();
     for (player, pos, amplifier) in pending {
         let mut raids = std::mem::take(&mut ents.raids);
-        raids.create_or_extend_raid(
+        let started = raids.create_or_extend_raid(
             ents,
             player,
             pos,
@@ -1421,6 +1429,13 @@ pub fn start_pending_raids(
             difficulty,
         );
         ents.raids = raids;
+        if let Some((_, true)) = started
+            && let Some(p) = ents.player_mut(player)
+        {
+            p.stats.award(crate::stats::custom::RAID_TRIGGER, 1);
+            p.advancements
+                .trigger_player(crate::advancements::trigger::TriggerKind::VOLUNTARY_EXILE);
+        }
     }
 }
 

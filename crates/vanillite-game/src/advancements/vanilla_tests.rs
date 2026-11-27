@@ -359,4 +359,50 @@ fn vanilla_advancements_through_scripted_events() {
         looted,
         ["minecraft:nether/loot_bastion#loot_bastion_bridge"]
     );
+
+    // Villages, raids and weapons.
+    let villager = || entity("minecraft:villager", at);
+    let traded = run.fire(
+        at,
+        None,
+        Event::EntityItem(
+            TriggerKind::VILLAGER_TRADE,
+            Some(villager()),
+            stack("minecraft:emerald"),
+        ),
+    );
+    assert_eq!(traded, ["minecraft:adventure/trade#traded"]);
+    let cured = run.fire(
+        at,
+        None,
+        Event::CuredZombieVillager(entity("minecraft:zombie_villager", at), villager()),
+    );
+    assert_eq!(cured, ["minecraft:story/cure_zombie_villager#cured_zombie"]);
+    let struck = run.fire(at, None, Event::ChanneledLightning(vec![*villager()]));
+    assert_eq!(
+        struck,
+        ["minecraft:adventure/very_very_frightening#struck_villager"]
+    );
+    assert!(run.fire(at, None, Event::SpearMobs(4)).is_empty());
+    let speared = run.fire(at, None, Event::SpearMobs(5));
+    assert_eq!(
+        speared,
+        ["minecraft:adventure/spear_many_mobs#spear_many_mobs"]
+    );
+    let nest = BlockId::by_name("minecraft:bee_nest")
+        .unwrap()
+        .default_state();
+    let no_silk_touch = Event::BeeNestDestroyed(nest, stack("minecraft:iron_axe"), 3);
+    assert!(run.fire(at, None, no_silk_touch).is_empty());
+    let hero = run.fire(at, None, Event::Player(TriggerKind::HERO_OF_THE_VILLAGE));
+    assert_eq!(
+        hero,
+        ["minecraft:adventure/hero_of_the_village#hero_of_the_village"]
+    );
+    let shot = run.fire(
+        at,
+        None,
+        Event::Item(TriggerKind::SHOT_CROSSBOW, stack("minecraft:crossbow")),
+    );
+    assert!(shot.contains(&"minecraft:adventure/ol_betsy#shot_crossbow".to_owned()));
 }

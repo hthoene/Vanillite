@@ -158,7 +158,7 @@ impl ContainerView<'_> {
         };
         let mut a = self.m_local(PAYMENT_A);
         let mut b = self.m_local(PAYMENT_B);
-        let paid = {
+        let (paid, result) = {
             let Some(offer) = self
                 .level
                 .entities
@@ -168,13 +168,27 @@ impl ContainerView<'_> {
             else {
                 return;
             };
-            offer.take(&mut a, &mut b) || offer.take(&mut b, &mut a)
+            let paid = offer.take(&mut a, &mut b) || offer.take(&mut b, &mut a);
+            (paid, offer.result.clone())
         };
         if paid {
             let pos = self.player_pos;
             if merchant::notify_trade_in_level(self.level, id, active, pos) {
                 self.menu.merchant.send_offers = true;
             }
+            // `notifyTrade`: `TRADE` with the merchant and the offer's result, then
+            // `TRADED_WITH_VILLAGER`.
+            use crate::advancements::award::Award;
+            use crate::advancements::trigger::{Event, TriggerKind};
+            let merchant = crate::advancements::view::snapshot(&self.level.entities, id);
+            self.inv.awards.push(Award::Trigger(Event::EntityItem(
+                TriggerKind::VILLAGER_TRADE,
+                merchant,
+                result,
+            )));
+            self.inv
+                .awards
+                .push(Award::Stat(crate::stats::custom::TRADED_WITH_VILLAGER, 1));
             self.merchant_set_item(PAYMENT_A, a);
             self.merchant_set_item(PAYMENT_B, b);
         }

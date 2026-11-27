@@ -1495,6 +1495,14 @@ impl Digging {
         };
         ctx.level
             .set_block(target, new_state, update::ALL_IMMEDIATE);
+        if !lightable {
+            // `PLACED_BLOCK` of the placed fire, before the damage.
+            let stack = match hand {
+                Hand::MainHand => ctx.inventory.selected_item().clone(),
+                Hand::OffHand => ctx.inventory.offhand.clone(),
+            };
+            ctx.trigger(Event::PlacedBlock(target, stack));
+        }
         hurt_and_break(ctx, hand, 1);
         true
     }

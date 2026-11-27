@@ -1097,6 +1097,13 @@ impl ServerWorld {
             // `restoreFrom`: everything stays after the credits, else what death keeps.
             if keep_all {
                 data.survival.portal.won_game = false;
+                // `handleClientCommand(PERFORM_RESPAWN)` after the credits.
+                data.advancements.trigger(
+                    vanillite_game::advancements::trigger::Event::ChangedDimension(
+                        "minecraft:the_end".to_owned(),
+                        "minecraft:overworld".to_owned(),
+                    ),
+                );
             } else {
                 let keep_inventory = data
                     .survival

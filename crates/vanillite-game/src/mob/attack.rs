@@ -886,8 +886,11 @@ fn run_entity_effect(
         }
         EntityEffect::SummonLightning => {
             if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+                let cause = item
+                    .map(|(owner, _)| owner)
+                    .filter(|&o| ents.player(o).is_some());
                 cx.actions.push(super::WorldAction::Level(
-                    super::boss::warden::LevelAction::Lightning { pos },
+                    super::boss::warden::LevelAction::Lightning { pos, cause },
                 ));
             }
         }

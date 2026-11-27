@@ -2168,6 +2168,65 @@ fn enter_portals(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<
     false
 }
 
+/// `HoneyBlock.entityInside` of a player sliding down the side of a honey block:
+/// `HONEY_BLOCK_SLIDE` every 20 game ticks, the slide motion, the reset fall distance and the
+/// slide sound and particles.
+fn honey_slide(
+    entity: &mut EntityMut<'_>,
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    block: BlockPos,
+    state: vanillite_data::block::BlockState,
+) {
+    let old_dy = |dy: f64| dy / f64::from(0.98_f32) + 0.08;
+    let new_dy = |dy: f64| (dy - 0.08) * f64::from(0.98_f32);
+    let e = entity.as_ref();
+    let (p, v, id) = (e.pos(), e.velocity(), e.id());
+    // `isSlidingDown`.
+    if e.flags().contains(EntityFlags::ON_GROUND)
+        || p.y > f64::from(block.y) + 0.9375 - 1.0e-7
+        || old_dy(v.y) >= -0.08
+    {
+        return;
+    }
+    let dx = (f64::from(block.x) + 0.5 - p.x).abs();
+    let dz = (f64::from(block.z) + 0.5 - p.z).abs();
+    let overlap = 0.4375 + f64::from(e.dims().width / 2.0);
+    if !(dx + 1.0e-7 > overlap || dz + 1.0e-7 > overlap) {
+        return;
+    }
+    // `maybeDoSlideAchievement`.
+    if env.game_time % 20 == 0 {
+        player
+            .advancements
+            .trigger(crate::advancements::trigger::Event::SlideDownBlock(state));
+    }
+    // `doSlideMovement`.
+    let old = old_dy(v.y);
+    let velocity = if old < -0.13 {
+        let factor = -0.05 / old;
+        Vec3::new(v.x * factor, new_dy(-0.05), v.z * factor)
+    } else {
+        Vec3::new(v.x, new_dy(-0.05), v.z)
+    };
+    entity.set_velocity(velocity);
+    crate::advancements::tracking::reset_fall_distance(player);
+    // `maybeDoSlideEffects`.
+    if env.random.next_int_bounded(5) == 0 {
+        player_sound(env, id, p, "minecraft:block.honey_block.slide");
+    }
+    if env.random.next_int_bounded(5) == 0 {
+        env.out.push(Effect::Tracking {
+            entity: id,
+            with_self: true,
+            packet: SharedPacket::of(&EntityEvent {
+                entity_id: entity.as_ref().network_id().0,
+                event: 53,
+            }),
+        });
+    }
+}
+
 /// `Entity.applyEffectsFromBlocks` at the player's position: the floor it stands on (magma),
 /// fire and lava inside its box, water and rain putting the fire out.
 fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
@@ -2207,16 +2266,24 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     // where the player is now (`applyEffectsFromBlocks`).
     let mut path = std::mem::take(&mut player.connection.movement.path);
     crate::survival::inside::finish(&mut path, pos, pos);
+    let mut honey = Vec::new();
     let inside = blocks::inside_blocks(
         env.blocks,
         env.facts,
         dims,
         player.survival.fall_distance > 2.5,
         &path,
-        |_| {},
+        |cell| {
+            if cell.state.block() == vanillite_data::block::ids::HONEY_BLOCK {
+                honey.push((cell.pos, cell.state));
+            }
+        },
     );
     path.clear();
     player.connection.movement.path = path;
+    for (block, state) in honey {
+        honey_slide(entity, player, env, block, state);
+    }
     // The `entityInside` effects that act at once.
     if inside.cactus {
         let source = DamageSource::of(env.types.cactus);
