@@ -198,9 +198,10 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
                 let offset = Vec3::new(sign(velocity.x), sign(velocity.y), sign(velocity.z))
                     * f64::from(0.05_f32);
                 pos = at - offset;
+                let speed = velocity.length();
                 velocity = Vec3::ZERO;
                 d.ints[1] = i32::from(t.level.block(hit_pos).0) + 1;
-                crate::mob::missile::hit_block(t.level, t.cx, id, hit_pos, at);
+                crate::mob::missile::hit_block_at_speed(t.level, t.cx, id, hit_pos, at, speed);
                 d.in_ground = true;
                 let pitch = 1.2 / (t.env.random.next_float() * 0.2 + 0.9);
                 sound(t, pos, "minecraft:item.trident.hit_ground", 1.0, pitch);

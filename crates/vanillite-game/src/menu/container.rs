@@ -297,6 +297,11 @@ impl ContainerMenu {
     }
 
     /// The container positions whose viewers this menu counts.
+    /// The blocks whose viewer count this menu holds (`hasContainerOpen`).
+    pub fn storage_positions(&self) -> [Option<BlockPos>; 2] {
+        self.viewed()
+    }
+
     fn viewed(&self) -> [Option<BlockPos>; 2] {
         match self.storage {
             Storage::Block(p) | Storage::Ender(p) => [Some(p), None],

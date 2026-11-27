@@ -1,0 +1,266 @@
+{
+  "description": "Pigs fall six blocks onto farmland (trampled to dirt, pig pushed up), a slime block (bounce restitution), a bed (bounce, half fall distance), a honey block (slide sound, 0.2 damage), hay and powder snow (no damage); one pig slides down the side of a honey pillar.",
+  "tier": "fast",
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -52,
+      4
+    ]
+  ],
+  "ticks": 100,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        18,
+        -52,
+        4
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        2,
+        -52,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:farmland[moisture=7]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        2
+      ],
+      "to": [
+        5,
+        -52,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -61,
+        2
+      ],
+      "block": "minecraft:slime_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        8,
+        -60,
+        2
+      ],
+      "to": [
+        8,
+        -52,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -61,
+        2
+      ],
+      "block": "minecraft:red_bed[part=foot,facing=north]"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        2
+      ],
+      "to": [
+        11,
+        -52,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -61,
+        2
+      ],
+      "block": "minecraft:honey_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        14,
+        -60,
+        2
+      ],
+      "to": [
+        14,
+        -52,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -61,
+        2
+      ],
+      "block": "minecraft:hay_block"
+    },
+    {
+      "op": "fill",
+      "from": [
+        17,
+        -60,
+        2
+      ],
+      "to": [
+        17,
+        -52,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        17,
+        -61,
+        2
+      ],
+      "block": "minecraft:powder_snow"
+    },
+    {
+      "op": "fill",
+      "from": [
+        21,
+        -60,
+        2
+      ],
+      "to": [
+        21,
+        -53,
+        2
+      ],
+      "block": "minecraft:honey_block"
+    }
+  ],
+  "entities": [
+    {
+      "name": "fall_farmland",
+      "type": "minecraft:pig",
+      "pos": [
+        2.5,
+        -54.0,
+        2.5
+      ],
+      "seed": 40,
+      "finalize": false
+    },
+    {
+      "name": "fall_slime_block",
+      "type": "minecraft:pig",
+      "pos": [
+        5.5,
+        -54.0,
+        2.5
+      ],
+      "seed": 41,
+      "finalize": false
+    },
+    {
+      "name": "fall_red_bed",
+      "type": "minecraft:pig",
+      "pos": [
+        8.5,
+        -54.0,
+        2.5
+      ],
+      "seed": 42,
+      "finalize": false
+    },
+    {
+      "name": "fall_honey_block",
+      "type": "minecraft:pig",
+      "pos": [
+        11.5,
+        -54.0,
+        2.5
+      ],
+      "seed": 43,
+      "finalize": false
+    },
+    {
+      "name": "fall_hay_block",
+      "type": "minecraft:pig",
+      "pos": [
+        14.5,
+        -54.0,
+        2.5
+      ],
+      "seed": 44,
+      "finalize": false
+    },
+    {
+      "name": "fall_powder_snow",
+      "type": "minecraft:pig",
+      "pos": [
+        17.5,
+        -54.0,
+        2.5
+      ],
+      "seed": 45,
+      "finalize": false
+    },
+    {
+      "name": "slide",
+      "type": "minecraft:pig",
+      "pos": [
+        22.3975,
+        -54.0,
+        2.5
+      ],
+      "seed": 50,
+      "finalize": false
+    }
+  ]
+}

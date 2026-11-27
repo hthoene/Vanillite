@@ -1,0 +1,180 @@
+{
+  "description": "Eyeblossoms at night (EnvironmentAttributes.EYEBLOSSOM_OPEN of the day timeline): a closed blossom that gets a random tick opens with the long sound and a trail particle (level random draws) and schedules every closed blossom within 3x2x3 to follow 5-10 ticks per block of distance later (short sound); a potted closed eyeblossom opens on its own random tick; an open blossom stays open.",
+  "tier": "fast",
+  "world": {
+    "seed": 4711
+  },
+  "rules": {
+    "random_tick_speed": "40"
+  },
+  "time": 13000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -60,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        4
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        6
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        3
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        5
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        2
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        4
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        3
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        5
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        4
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        6
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -61,
+        4
+      ],
+      "block": "minecraft:pale_moss_block"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        4
+      ],
+      "block": "minecraft:potted_closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        11,
+        -60,
+        9
+      ],
+      "block": "minecraft:closed_eyeblossom"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        11
+      ],
+      "block": "minecraft:open_eyeblossom"
+    }
+  ]
+}

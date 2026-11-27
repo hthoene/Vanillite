@@ -25,6 +25,84 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
     } else if block == ids::FROGSPAWN {
         b.on_place = Some(frogspawn_on_place);
         b.tick = Some(frogspawn_tick);
+    } else if block == ids::DRIED_GHAST {
+        b.tick = Some(dried_ghast_tick);
+        b.random_tick = Some(dried_ghast_random_tick);
+    }
+}
+
+// --- Dried ghasts -----------------------------------------------------------------------
+
+/// `DriedGhastBlock.randomTick`: a wet or still hydrated block schedules its next hydration
+/// step in 5000 ticks.
+fn dried_ghast_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    if (state.flag("waterlogged") || state.int("hydration").unwrap_or(0) > 0)
+        && !level.chunks.has_block_tick(pos, ids::DRIED_GHAST.0)
+    {
+        level.schedule_block_tick(pos, ids::DRIED_GHAST, 5000);
+    }
+}
+
+/// `DriedGhastBlock.tick`: in water the block hydrates up to level 3, then hatches into a
+/// ghastling; out of water it dries out a level.
+fn dried_ghast_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let hydration = state.int("hydration").unwrap_or(0);
+    let context = GameEventContext::with_state(None, state);
+    if !state.flag("waterlogged") {
+        if hydration > 0 {
+            level.set_block(
+                pos,
+                state.set_int("hydration", hydration - 1),
+                update::CLIENTS,
+            );
+            level.game_event_block(events().block_change, pos, context);
+        }
+        return;
+    }
+    if hydration < 3 {
+        let sound = sound_id("block.dried_ghast.transition");
+        level.play_block_sound(None, pos, sound, SOUND_BLOCKS, 1.0, 1.0);
+        level.set_block(
+            pos,
+            state.set_int("hydration", hydration + 1),
+            update::CLIENTS,
+        );
+        level.game_event_block(events().block_change, pos, context);
+        return;
+    }
+    // `spawnGhastling`.
+    level.remove_block(pos, false);
+    let ghastling = crate::mob::fam::mount::ghast::new_ghastling(crate::mob::new_entity_seed());
+    let facing = state
+        .direction("facing")
+        .unwrap_or(vanillite_base::Direction::North);
+    let y_rot = facing_y_rot(facing);
+    let at = Vec3::new(
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y),
+        f64::from(pos.z) + 0.5,
+    );
+    let rot = Rotation {
+        y_rot,
+        x_rot: 0.0,
+        y_head_rot: y_rot,
+    };
+    let network_ids = std::sync::Arc::clone(level.network_ids_arc());
+    let uuid = crate::mob::new_uuid();
+    crate::mob::spawn(&mut level.entities, &network_ids, uuid, at, rot, ghastling);
+    let sound = sound_id("entity.ghastling.spawn");
+    level.play_sound(None, at.x, at.y, at.z, sound, SOUND_BLOCKS, 1.0, 1.0);
+}
+
+/// `Direction.getYRot(direction)`.
+fn facing_y_rot(facing: vanillite_base::Direction) -> f32 {
+    use vanillite_base::Direction as D;
+    match facing {
+        D::South => 0.0,
+        D::West => 90.0,
+        D::North => 180.0,
+        D::East => -90.0,
+        D::Up | D::Down => 0.0,
     }
 }
 

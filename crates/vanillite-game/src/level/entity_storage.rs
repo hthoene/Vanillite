@@ -302,11 +302,24 @@ impl Level {
                 Some(Tag::Compound(c)) => read_block_state(c),
                 _ => vanillite_data::block::ids::SAND.default_state(),
             };
-            let data = FallingBlockData {
+            let mut data = FallingBlockData::new(
                 state,
-                time: int(&nbt, "Time").unwrap_or(0),
-                drop_item: flag(&nbt, "DropItem").unwrap_or(true),
-                start: BlockPos::containing(base.pos.x, base.pos.y, base.pos.z),
+                flag(&nbt, "DropItem").unwrap_or(true),
+                BlockPos::containing(base.pos.x, base.pos.y, base.pos.z),
+                crate::mob::new_entity_seed(),
+            );
+            data.time = int(&nbt, "Time").unwrap_or(0);
+            data.hurt_entities = flag(&nbt, "HurtEntities")
+                .unwrap_or_else(|| crate::block::falling::is_anvil(state.block()));
+            data.fall_hurt_amount = match nbt.get("FallHurtAmount") {
+                Some(Tag::Float(v)) => *v,
+                _ => 0.0,
+            };
+            data.fall_hurt_max = int(&nbt, "FallHurtMax").unwrap_or(40);
+            data.cancel_drop = flag(&nbt, "CancelDrop").unwrap_or(false);
+            data.fall_distance = match nbt.get("fall_distance") {
+                Some(Tag::Double(v)) => *v,
+                _ => 0.0,
             };
             self.entities.spawn_falling_block(new, data)
         } else {
@@ -674,15 +687,11 @@ impl Level {
             nbt.insert("BlockState", write_block_state(data.state));
             nbt.insert("Time", data.time);
             nbt.insert("DropItem", data.drop_item);
-            // `#minecraft:anvil` hurts entities by default.
-            let anvil = matches!(
-                data.state.block().name(),
-                "minecraft:anvil" | "minecraft:chipped_anvil" | "minecraft:damaged_anvil"
-            );
-            or_default(&mut nbt, "HurtEntities", Tag::from(anvil));
-            or_default(&mut nbt, "FallHurtAmount", Tag::Float(0.0));
-            or_default(&mut nbt, "FallHurtMax", Tag::Int(40));
-            or_default(&mut nbt, "CancelDrop", Tag::Byte(0));
+            nbt.insert("HurtEntities", data.hurt_entities);
+            nbt.insert("FallHurtAmount", Tag::Float(data.fall_hurt_amount));
+            nbt.insert("FallHurtMax", Tag::Int(data.fall_hurt_max));
+            nbt.insert("CancelDrop", data.cancel_drop);
+            nbt.insert("fall_distance", Tag::Double(data.fall_distance));
         } else {
             let data = self.entities.primed_tnt(id)?;
             nbt.insert("fuse", data.fuse as i16);

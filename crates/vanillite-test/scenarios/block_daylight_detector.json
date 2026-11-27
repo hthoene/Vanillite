@@ -1,0 +1,77 @@
+{
+  "description": "Daylight detectors at day time 12500 (sky darkened by 3, the sun angle of the day timeline's cubic Bezier track): every 20 game ticks a detector takes the effective sky light scaled by the cosine of the sun angle, an inverted one 15 minus the effective sky light; one under leaves sees less sky. The wire next to them shows the power.",
+  "tier": "fast",
+  "world": {
+    "seed": 12500
+  },
+  "time": 12500,
+  "region": [
+    [
+      0,
+      -60,
+      0
+    ],
+    [
+      7,
+      -57,
+      7
+    ]
+  ],
+  "ticks": 45,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:daylight_detector[inverted=false,power=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        2
+      ],
+      "block": "minecraft:daylight_detector[inverted=true,power=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        5
+      ],
+      "block": "minecraft:daylight_detector[inverted=false,power=0]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -57,
+        5
+      ],
+      "block": "minecraft:oak_leaves[persistent=true]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        2
+      ],
+      "block": "minecraft:redstone_wire"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        2
+      ],
+      "block": "minecraft:redstone_wire"
+    }
+  ]
+}

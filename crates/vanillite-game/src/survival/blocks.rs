@@ -4,6 +4,7 @@
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::{BlockId, BlockState, flags};
 use vanillite_data::fluid::FluidState;
+use vanillite_worldgen::behaviour::StateExt;
 
 /// Block state access of a world. `None` outside loaded chunks.
 pub trait BlockAccess {
@@ -40,6 +41,22 @@ mod special {
         [ids::FARMLAND, ids::SOUL_SAND, ids::DIRT_PATH, ids::MUD];
 }
 
+/// `Block.getBounceRestitution`: slime blocks, beds and shelf mushrooms bounce entities that
+/// land on them.
+pub fn bounce_restitution(block: BlockId) -> f32 {
+    use vanillite_data::block::BlockKind;
+    if block == special::SLIME_BLOCK {
+        1.0
+    } else if matches!(
+        block.info().kind,
+        BlockKind::BedBlock | BlockKind::ShelfMushroomBlock
+    ) {
+        0.75
+    } else {
+        0.0
+    }
+}
+
 /// How a block reacts to an entity landing on it (`Block.fallOn`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Landing {
@@ -51,6 +68,12 @@ pub enum Landing {
     Honey,
     /// A pointed dripstone tip pointing up: `causeFallDamage(fallDistance + 2.5, 2.0, stalagmite)`.
     Stalagmite,
+    /// Beds and shelf mushrooms (`fallDistanceReduction` 0.5): half the fall distance.
+    Bed,
+    /// Farmland: living entities may trample it (`FarmlandBlock.fallOn`), then a normal fall.
+    Farmland,
+    /// Powder snow: no damage, only the fall sound of falls from 4 blocks.
+    PowderSnow,
 }
 
 impl BlockFacts {
@@ -145,6 +168,12 @@ impl BlockFacts {
             && state.value("thickness") == Some("tip")
         {
             Landing::Stalagmite
+        } else if block == vanillite_data::block::ids::FARMLAND {
+            Landing::Farmland
+        } else if block == vanillite_data::block::ids::POWDER_SNOW {
+            Landing::PowderSnow
+        } else if bounce_restitution(block) > 0.0 && block != special::SLIME_BLOCK {
+            Landing::Bed
         } else {
             Landing::Fall(1.0)
         }
@@ -359,6 +388,18 @@ pub struct Inside {
     /// The first water or powder snow cauldron touched: a burning entity takes a level of
     /// it before the fire goes out (`LayeredCauldronBlock.entityInside`).
     pub cauldron: Option<BlockPos>,
+    /// `CactusBlock.entityInside`.
+    pub cactus: bool,
+    /// `SweetBerryBushBlock.entityInside`: a bush touched, and whether one of them is grown
+    /// (`age != 0`, it hurts entities that move).
+    pub berry_bush: Option<bool>,
+    /// `CampfireBlock.entityInside`: the damage of the first lit campfire (soul campfires
+    /// hurt twice as much).
+    pub campfire: Option<f32>,
+    /// `WitherRoseBlock.entityInside`.
+    pub wither_rose: bool,
+    /// `PowderSnowBlock.entityInside`: the first powder snow block touched.
+    pub powder_snow: Option<BlockPos>,
 }
 
 /// The blocks inside the deflated box of an entity at its current position.
@@ -388,6 +429,26 @@ pub fn inside_blocks(blocks: &dyn BlockAccess, facts: &BlockFacts, aabb: Aabb) -
         {
             out.water = true;
             out.cauldron.get_or_insert(pos);
+        }
+        match block.info().kind {
+            vanillite_data::block::BlockKind::CactusBlock => out.cactus = true,
+            vanillite_data::block::BlockKind::SweetBerryBushBlock => {
+                let grown = state.int("age").unwrap_or(0) != 0;
+                out.berry_bush = Some(out.berry_bush.unwrap_or(false) || grown);
+            }
+            vanillite_data::block::BlockKind::CampfireBlock if state.flag("lit") => {
+                let damage = if block == vanillite_data::block::ids::SOUL_CAMPFIRE {
+                    2.0
+                } else {
+                    1.0
+                };
+                out.campfire.get_or_insert(damage);
+            }
+            vanillite_data::block::BlockKind::WitherRoseBlock => out.wither_rose = true,
+            vanillite_data::block::BlockKind::PowderSnowBlock => {
+                out.powder_snow.get_or_insert(pos);
+            }
+            _ => {}
         }
         if let Some(damage) = facts.fire_damage(state) {
             out.fire = Some(out.fire.map_or(damage, |d| d.max(damage)));

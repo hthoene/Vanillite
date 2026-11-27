@@ -159,6 +159,7 @@ impl ServerWorld {
     /// survival logic produced.
     fn post_player_game_events(&mut self) {
         let mut pending = Vec::new();
+        let mut actions = Vec::new();
         for (id, p) in self.level.entities.players.iter_mut() {
             pending.extend(
                 p.survival
@@ -166,6 +167,11 @@ impl ServerWorld {
                     .drain(..)
                     .map(|(event, pos, affected)| (id, event, pos, affected)),
             );
+            actions.append(&mut p.survival.world_actions);
+        }
+        // The players' contact with blocks: trampled farmland, redstone ore stepped on.
+        for action in actions {
+            action.apply_to_level(&mut self.level);
         }
         for (id, event, pos, affected) in pending {
             let context = vanillite_game::level::game_event::GameEventContext {

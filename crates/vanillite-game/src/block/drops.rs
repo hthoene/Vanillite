@@ -57,6 +57,7 @@ pub fn drop_resources(
     for stack in stacks {
         pop_resource(level, pos, stack);
     }
+    super::break_hooks::spawn_after_break(level, state, pos, &tool, true);
 }
 
 /// `BlockState.getDrops` of a block an explosion destroys (`onExplosionHit`): its loot without

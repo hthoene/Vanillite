@@ -1,0 +1,240 @@
+{
+  "description": "Falling anvils hurt the pig they land on (and break on its torch) (2 per block, falling_anvil) and chip with a chance of 5 % plus 5 % per block (anvil to chipped, chipped to damaged, a damaged anvil breaks: cancelDrop); a falling stalactite tip hurts the pig below (falling_stalactite; the pig has Resistance IV so it lives).",
+  "tier": "fast",
+  "time": 6000,
+  "level_rng": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      18,
+      -45,
+      4
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        18,
+        -45,
+        4
+      ],
+      "block": "minecraft:glass"
+    },
+    {
+      "op": "fill",
+      "from": [
+        2,
+        -60,
+        2
+      ],
+      "to": [
+        2,
+        -45,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        2
+      ],
+      "to": [
+        5,
+        -45,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        8,
+        -60,
+        2
+      ],
+      "to": [
+        8,
+        -45,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        11,
+        -60,
+        2
+      ],
+      "to": [
+        11,
+        -45,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        14,
+        -60,
+        2
+      ],
+      "to": [
+        14,
+        -45,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "fill",
+      "from": [
+        17,
+        -60,
+        2
+      ],
+      "to": [
+        17,
+        -45,
+        2
+      ],
+      "block": "minecraft:air"
+    },
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        2
+      ],
+      "block": "minecraft:torch"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -53,
+        2
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "set",
+      "pos": [
+        14,
+        -54,
+        2
+      ],
+      "block": "minecraft:pointed_dripstone[thickness=tip,vertical_direction=down]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "effect",
+      "entity": "drip_pig",
+      "effect": "minecraft:resistance",
+      "duration": 200,
+      "amplifier": 3
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        2,
+        -56,
+        2
+      ],
+      "block": "minecraft:anvil[facing=north]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        5,
+        -48,
+        2
+      ],
+      "block": "minecraft:anvil[facing=east]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        8,
+        -48,
+        2
+      ],
+      "block": "minecraft:chipped_anvil[facing=south]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        11,
+        -46,
+        2
+      ],
+      "block": "minecraft:damaged_anvil[facing=west]"
+    },
+    {
+      "tick": 1,
+      "op": "place",
+      "pos": [
+        17,
+        -46,
+        2
+      ],
+      "block": "minecraft:anvil[facing=north]"
+    },
+    {
+      "tick": 2,
+      "op": "place",
+      "pos": [
+        14,
+        -53,
+        2
+      ],
+      "block": "minecraft:air"
+    }
+  ],
+  "entities": [
+    {
+      "name": "anvil_pig",
+      "type": "minecraft:pig",
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 61,
+      "finalize": false
+    },
+    {
+      "name": "drip_pig",
+      "type": "minecraft:pig",
+      "pos": [
+        14.5,
+        -60.0,
+        2.5
+      ],
+      "seed": 62,
+      "finalize": false
+    }
+  ]
+}
