@@ -3,8 +3,8 @@
 //! search along the `attack_range` (`ProjectileUtil.getHitEntitiesAlong`), for players and
 //! mobs. Both end in `LivingEntity.stabAttack`.
 //!
-//! The components come from the stack's patch or, for the seven spears, from the item's
-//! defaults (`Item.Properties.spear`). A charge remembers the entities it hit with the game
+//! The components come from the stack's patch or from the item's default components in the
+//! generated item data (the seven spears). A charge remembers the entities it hit with the game
 //! time (`recentKineticEnemies`) so each is hit once per contact cool-down.
 //!
 //! Not ported: the Lunge enchantment (`post_piercing_attack` effects), the spear advancement
@@ -99,92 +99,6 @@ pub struct AttackRange {
     pub mob_factor: f32,
 }
 
-/// `Item.Properties.spear(material, attackDuration, damageMultiplier, delay, dismountTime,
-/// dismountThreshold, knockbackTime, knockbackThreshold, damageTime, damageThreshold)`.
-struct Spear {
-    name: &'static str,
-    wood: bool,
-    attack_duration: f32,
-    damage_multiplier: f32,
-    delay: f32,
-    dismount_time: f32,
-    dismount_threshold: f32,
-    knockback_time: f32,
-    knockback_threshold: f32,
-    damage_time: f32,
-    damage_threshold: f32,
-}
-
-const fn spear(name: &'static str, wood: bool, v: [f32; 9]) -> Spear {
-    Spear {
-        name,
-        wood,
-        attack_duration: v[0],
-        damage_multiplier: v[1],
-        delay: v[2],
-        dismount_time: v[3],
-        dismount_threshold: v[4],
-        knockback_time: v[5],
-        knockback_threshold: v[6],
-        damage_time: v[7],
-        damage_threshold: v[8],
-    }
-}
-
-/// The spears of `Items`.
-const SPEARS: [Spear; 7] = [
-    spear(
-        "minecraft:wooden_spear",
-        true,
-        [0.65, 0.7, 0.75, 5.0, 14.0, 10.0, 5.1, 15.0, 4.6],
-    ),
-    spear(
-        "minecraft:stone_spear",
-        false,
-        [0.75, 0.82, 0.7, 4.5, 13.0, 9.0, 5.1, 13.75, 4.6],
-    ),
-    spear(
-        "minecraft:copper_spear",
-        false,
-        [0.85, 0.82, 0.65, 4.0, 12.0, 8.25, 5.1, 12.5, 4.6],
-    ),
-    spear(
-        "minecraft:iron_spear",
-        false,
-        [0.95, 0.95, 0.6, 2.5, 11.0, 6.75, 5.1, 11.25, 4.6],
-    ),
-    spear(
-        "minecraft:golden_spear",
-        false,
-        [0.95, 0.7, 0.7, 3.5, 13.0, 8.5, 5.1, 13.75, 4.6],
-    ),
-    spear(
-        "minecraft:diamond_spear",
-        false,
-        [1.05, 1.075, 0.5, 3.0, 10.0, 6.5, 5.1, 10.0, 4.6],
-    ),
-    spear(
-        "minecraft:netherite_spear",
-        false,
-        [1.15, 1.2, 0.4, 2.5, 9.0, 5.5, 5.1, 8.75, 4.6],
-    ),
-];
-
-/// The spear defaults of the stack's item.
-fn spear_of(stack: &ItemStack) -> Option<&'static Spear> {
-    if stack.is_empty() {
-        return None;
-    }
-    let name = item::item_id(stack).name();
-    SPEARS.iter().find(|s| s.name == name)
-}
-
-/// `(int)(seconds * 20.0F)`.
-#[allow(clippy::cast_possible_truncation)]
-fn ticks(seconds: f32) -> i32 {
-    (seconds * 20.0) as i32
-}
-
 fn component_id(name: &str) -> Option<u16> {
     vanillite_data::registry::DATA_COMPONENT_TYPE.id(name)
 }
@@ -275,61 +189,64 @@ fn decode_range(v: &[u8]) -> Option<AttackRange> {
     })
 }
 
+fn default_sound(name: &'static str) -> Option<Sound> {
+    (!name.is_empty()).then_some(Cow::Borrowed(name))
+}
+
 /// The stack's `kinetic_weapon` component.
 pub fn kinetic_weapon(stack: &ItemStack) -> Option<KineticWeapon> {
+    if stack.is_empty() {
+        return None;
+    }
     if let Some(v) = patched(stack, "minecraft:kinetic_weapon") {
         return v.and_then(|v| decode_kinetic(&v));
     }
-    let s = spear_of(stack)?;
-    let sound = |wood, normal| Some(Cow::Borrowed(if s.wood { wood } else { normal }));
+    let k = item::item_id(stack).info().kinetic_weapon?;
+    let condition = |c: Option<vanillite_data::item::KineticConditionInfo>| {
+        c.map(|c| Condition {
+            max_duration_ticks: c.max_duration_ticks,
+            min_speed: c.min_speed,
+            min_relative_speed: c.min_relative_speed,
+        })
+    };
     Some(KineticWeapon {
-        contact_cooldown_ticks: 10,
-        delay_ticks: ticks(s.delay),
-        dismount: Some(Condition {
-            max_duration_ticks: ticks(s.dismount_time),
-            min_speed: s.dismount_threshold,
-            min_relative_speed: 0.0,
-        }),
-        knockback: Some(Condition {
-            max_duration_ticks: ticks(s.knockback_time),
-            min_speed: s.knockback_threshold,
-            min_relative_speed: 0.0,
-        }),
-        damage: Some(Condition {
-            max_duration_ticks: ticks(s.damage_time),
-            min_speed: 0.0,
-            min_relative_speed: s.damage_threshold,
-        }),
-        forward_movement: 0.38,
-        damage_multiplier: s.damage_multiplier,
-        sound: sound("minecraft:item.spear_wood.use", "minecraft:item.spear.use"),
-        hit_sound: sound("minecraft:item.spear_wood.hit", "minecraft:item.spear.hit"),
+        contact_cooldown_ticks: k.contact_cooldown_ticks,
+        delay_ticks: k.delay_ticks,
+        dismount: condition(k.dismount_conditions),
+        knockback: condition(k.knockback_conditions),
+        damage: condition(k.damage_conditions),
+        forward_movement: k.forward_movement,
+        damage_multiplier: k.damage_multiplier,
+        sound: default_sound(k.sound),
+        hit_sound: default_sound(k.hit_sound),
     })
 }
 
 /// Whether the stack has a `kinetic_weapon` component (it is used over time).
 pub fn is_kinetic(stack: &ItemStack) -> bool {
+    if stack.is_empty() {
+        return false;
+    }
     if let Some(v) = patched(stack, "minecraft:kinetic_weapon") {
         return v.is_some();
     }
-    spear_of(stack).is_some()
+    item::item_id(stack).info().kinetic_weapon.is_some()
 }
 
 /// The stack's `piercing_weapon` component.
 pub fn piercing_weapon(stack: &ItemStack) -> Option<PiercingWeapon> {
+    if stack.is_empty() {
+        return None;
+    }
     if let Some(v) = patched(stack, "minecraft:piercing_weapon") {
         return v.and_then(|v| decode_piercing(&v));
     }
-    let s = spear_of(stack)?;
-    let sound = |wood, normal| Some(Cow::Borrowed(if s.wood { wood } else { normal }));
+    let p = item::item_id(stack).info().piercing_weapon?;
     Some(PiercingWeapon {
-        deals_knockback: true,
-        dismounts: false,
-        sound: sound(
-            "minecraft:item.spear_wood.attack",
-            "minecraft:item.spear.attack",
-        ),
-        hit_sound: sound("minecraft:item.spear_wood.hit", "minecraft:item.spear.hit"),
+        deals_knockback: p.deals_knockback,
+        dismounts: p.dismounts,
+        sound: default_sound(p.sound),
+        hit_sound: default_sound(p.hit_sound),
     })
 }
 
@@ -340,14 +257,17 @@ pub fn attack_range(stack: &ItemStack, interaction_range: f32) -> AttackRange {
         if let Some(r) = v.and_then(|v| decode_range(&v)) {
             return r;
         }
-    } else if spear_of(stack).is_some() {
+    } else if !stack.is_empty()
+        && let Some(&[min, max, min_creative, max_creative, margin, mob]) =
+            item::item_id(stack).info().attack_range
+    {
         return AttackRange {
-            min_reach: 2.0,
-            max_reach: 4.5,
-            min_creative_reach: 2.0,
-            max_creative_reach: 6.5,
-            hitbox_margin: 0.125,
-            mob_factor: 0.5,
+            min_reach: min,
+            max_reach: max,
+            min_creative_reach: min_creative,
+            max_creative_reach: max_creative,
+            hitbox_margin: margin,
+            mob_factor: mob,
         };
     }
     AttackRange {
@@ -365,12 +285,18 @@ pub fn minimum_attack_charge(stack: &ItemStack) -> f32 {
     if let Some(v) = patched(stack, "minecraft:minimum_attack_charge") {
         return v.and_then(|v| Reader::new(&v).f32().ok()).unwrap_or(0.0);
     }
-    if spear_of(stack).is_some() { 1.0 } else { 0.0 }
+    if stack.is_empty() {
+        return 0.0;
+    }
+    item::item_id(stack).info().minimum_attack_charge
 }
 
-/// The ticks of the stab swing (`attack_animation`: `attackDuration * 20`).
+/// The ticks of the stab swing (`attack_animation.duration`).
 fn stab_swing_ticks(stack: &ItemStack) -> i32 {
-    spear_of(stack).map_or(6, |s| ticks(s.attack_duration))
+    if stack.is_empty() {
+        return 6;
+    }
+    i32::from(item::item_id(stack).info().attack_animation_ticks)
 }
 
 // --- The attacker -----------------------------------------------------------------------------
@@ -457,11 +383,11 @@ fn controlling_player(ents: &Entities, id: EntityId) -> Option<EntityId> {
         .filter(|&p| ents.player(p).is_some())
 }
 
-/// The movement of a player since the start of the tick (`lastKnownClientMovement`).
+/// `lastKnownClientMovement`: the player's last movement packet, kept until a client tick ends
+/// without one.
 fn player_movement(ents: &Entities, id: EntityId) -> Vec3 {
-    ents.store
-        .get(id)
-        .map_or(Vec3::ZERO, |e| e.pos() - e.old_pos())
+    ents.player(id)
+        .map_or(Vec3::ZERO, |p| p.connection.movement.known_movement)
 }
 
 /// `getKnownMovement`: a player's own movement, a mob's velocity (or the movement of the
@@ -612,8 +538,15 @@ fn weapon_source(
     weapon: &ItemStack,
 ) -> DamageSource {
     let player = ents.player(attacker).is_some();
-    let kind = spear_of(weapon)
-        .and_then(|_| env.types.kind("minecraft:spear"))
+    // `getItemDamageSource`: the stack's `damage_type`.
+    let own = if weapon.is_empty() {
+        ""
+    } else {
+        item::item_id(weapon).info().damage_type
+    };
+    let kind = Some(own)
+        .filter(|t| !t.is_empty())
+        .and_then(|t| env.types.kind(t))
         .unwrap_or(if player {
             env.types.player_attack
         } else {
@@ -969,7 +902,7 @@ fn piercing_attack(
 }
 
 /// `onUseTick` of the kinetic weapons players use (after
-/// [`crate::player::using::tick_all`]): every player charging with a spear damages what its
+/// [`crate::player::using::tick`]): every player charging with a spear damages what its
 /// reach touches.
 pub fn tick_players(level: &Level, ents: &mut Entities, env: &mut Env<'_>, cx: &mut MobContext) {
     let users: Vec<(EntityId, crate::player::using::UsingItem)> = ents

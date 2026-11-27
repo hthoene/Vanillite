@@ -288,8 +288,7 @@ fn copy_properties(block: BlockId, from: BlockState) -> BlockState {
 fn transform(ctx: &mut PlayContext<'_>, click: Click, name: &str) -> Used {
     // `playerHasBlockingItemUseIntent`: a shield in the off hand is raised instead.
     let offhand = &ctx.inventory.offhand;
-    let shield = item::item_id(offhand).info().blocks_attacks
-        || offhand.component(ids::BLOCKS_ATTACKS).is_some();
+    let shield = crate::blocking::has_blocks_attacks(offhand);
     if click.hand == Hand::MainHand && shield && !ctx.actor.sneaking {
         return Used::Pass;
     }

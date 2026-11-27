@@ -476,7 +476,8 @@ pub(crate) fn dismount(
     });
 }
 
-/// `hurtServer` of a player or a mob; non-living entities take no damage here.
+/// `hurtServer` of a player, a mob, a boss part, a decoration or a vehicle; other entities
+/// take no damage here.
 pub(crate) fn hurt_any(
     level: &mut vanillite_game::level::Level,
     global: &Global,
@@ -485,9 +486,9 @@ pub(crate) fn hurt_any(
     source: DamageSource,
     amount: f32,
 ) -> bool {
-    if level.entities.mob(id).is_some() {
+    if level.entities.player(id).is_none() {
         return WorldSurvival::with_entities(level, global, dimension, |level, ents, e, cx| {
-            vanillite_game::mob::combat::hurt_mob(level, ents, e, cx, id, source, amount)
+            vanillite_game::mob::combat::hurt(level, ents, e, cx, id, source, amount)
         });
     }
     let mut events = Vec::new();
@@ -750,9 +751,8 @@ fn rotate(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
     Ok(1)
 }
 
-/// `DamageCommand.damage`: `hurtServer` of players; other entities have no health yet and
-/// take no damage. Players of other worlds are hurt on their world's thread and count as
-/// hurt.
+/// `DamageCommand.damage`: `hurtServer` of the target. Targets of other worlds are hurt on
+/// their world's thread and count as hurt.
 fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32, CommandError> {
     let target = select::single(env, source, selector(args, "target")?)?;
     let amount = *args.float("amount").ok_or_else(|| missing("amount"))?;
@@ -792,11 +792,9 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
             .is_some_and(|t| vanillite_game::mob::Kind::by_name(t.kind.name()).is_some()),
         cause_name: None,
         disable_shield_seconds: 0.0,
+        piercing_arrow: false,
         projectile_motion: None,
     };
-    if !target.is_player() {
-        return Err(CommandError::new("commands.damage.invulnerable", vec![]));
-    }
     let hurt = match target.entity {
         Some(id) => {
             let dimension = env.global.dimensions.name_or_overworld(target.world);

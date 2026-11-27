@@ -90,6 +90,7 @@
 //!   like `/summon` makes it: created with its random seeded with `seed`, placed at `pos` with
 //!   `rot` (yaw, pitch; head and body face the yaw), `finalizeSpawn` (unless `"finalize":
 //!   false`), made a baby if `baby` says so. The `name` identifies the entity in the trace.
+//!   A copper golem takes the oxidation `weather_state` (`CopperGolem.setWeatherState`).
 //! - `entity_seed`: every entity created while the scenario runs (arrows, drops, orbs, babies,
 //!   spawned mobs) seeds its random with the next `nextLong()` of a legacy random seeded with
 //!   it, in creation order (default: the world seed). The Java recorder enforces this in
@@ -134,7 +135,11 @@
 //!   player stops using its item (`releaseUsingItem`, the `RELEASE_USE_ITEM` action).
 //!   `attack_entity`: the player, with the same optional stack, attacks the entity `target`
 //!   (`Player.attack`), with its `fall_distance` set first if given (as its client's moves
-//!   would; the server does not add up a player's fall itself).
+//!   would; the server does not add up a player's fall itself). `stab`: the player, with the
+//!   same optional stack, jabs with its piercing weapon (the `STAB` player action). With
+//!   `food` the player's food level is set first; `inventory` (`[{"slot": 40, "item": ...,
+//!   "count": ..., "components": ...}]`) puts stacks into inventory slots first (0-35 the
+//!   items, 36-39 the armour, 40 the off hand).
 //!   `interact`: like `use_item`, but on the entity `target` (`Player.interactOn`).
 //!
 //! Packet-level players (`"client": true` on a player entity) are driven by the serverbound
@@ -341,6 +346,20 @@ pub struct UseItemOp {
     pub fall_distance: Option<f64>,
     /// The entity an `interact` action clicks (`Player.interactOn`).
     pub target: Option<String>,
+    /// The player's food level set before the action.
+    pub food: Option<i32>,
+    /// Stacks put into inventory slots before the action.
+    pub inventory: Vec<SlotStack>,
+}
+
+/// A stack for an inventory slot of a [`UseItemOp`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlotStack {
+    pub slot: usize,
+    pub item: String,
+    pub count: i32,
+    /// SNBT components of the stack.
+    pub components: Option<String>,
 }
 
 /// What a [`UseItemOp`] does with the held stack.
@@ -352,6 +371,8 @@ pub enum UseMode {
     Release,
     /// `Player.attack` of the named entity.
     Attack(String),
+    /// The `STAB` player action (`PiercingWeapon.attack`).
+    Stab,
 }
 
 /// The potion of a `throw_potion` action.
@@ -417,6 +438,8 @@ pub struct EntitySpec {
     pub finalize: bool,
     /// Velocity set after spawning.
     pub motion: Option<[f64; 3]>,
+    /// The oxidation of a copper golem (`weather_state`), set after spawning.
+    pub weather_state: Option<String>,
     /// A player driven by client packets (`"client": true`).
     pub client: bool,
     /// The player's stacks at the start: inventory slot (Vanilla `Inventory` index), item,
@@ -801,6 +824,10 @@ fn entity(v: &Value) -> Result<EntitySpec, String> {
         baby: v.get("baby").and_then(Value::as_bool),
         finalize: v.get("finalize").and_then(Value::as_bool).unwrap_or(true),
         motion: v.get("motion").map(|m| vec3(Some(m))).transpose()?,
+        weather_state: v
+            .get("weather_state")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         client: v.get("client").and_then(Value::as_bool).unwrap_or(false),
         inventory: match v.get("inventory").and_then(Value::as_array) {
             Some(list) => list
@@ -837,7 +864,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("hurt") if action => OpKind::Hurt,
         Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
-        Some("use_item" | "release_item" | "attack_entity") if action => OpKind::UseItem,
+        Some("use_item" | "release_item" | "attack_entity" | "stab") if action => OpKind::UseItem,
         Some("interact") if action => OpKind::Interact,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
@@ -1026,12 +1053,46 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                 components: s("components"),
                 mode: match v.get("op").and_then(Value::as_str) {
                     Some("release_item") => UseMode::Release,
+                    Some("stab") => UseMode::Stab,
                     Some("attack_entity") => {
                         UseMode::Attack(s("target").ok_or("attack_entity needs a target")?)
                     }
                     _ => UseMode::Use,
                 },
                 fall_distance: v.get("fall_distance").and_then(Value::as_f64),
+                food: v
+                    .get("food")
+                    .and_then(Value::as_i64)
+                    .and_then(|f| i32::try_from(f).ok()),
+                inventory: v
+                    .get("inventory")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|e| {
+                        Ok(SlotStack {
+                            slot: e
+                                .get("slot")
+                                .and_then(Value::as_u64)
+                                .and_then(|s| usize::try_from(s).ok())
+                                .ok_or("an inventory entry needs a slot")?,
+                            item: e
+                                .get("item")
+                                .and_then(Value::as_str)
+                                .ok_or("an inventory entry needs an item")?
+                                .to_owned(),
+                            count: e
+                                .get("count")
+                                .and_then(Value::as_i64)
+                                .and_then(|n| i32::try_from(n).ok())
+                                .unwrap_or(1),
+                            components: e
+                                .get("components")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
                 target: if kind == OpKind::Interact {
                     Some(s("target").ok_or("interact needs a target")?)
                 } else {

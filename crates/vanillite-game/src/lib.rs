@@ -12,11 +12,13 @@
 
 pub mod advancements;
 pub mod block;
+pub mod blocking;
 pub mod book;
 pub mod boss_bar;
 pub mod bundle;
 pub mod carried;
 pub mod commands;
+pub mod consumable;
 pub mod crossbow;
 pub mod decoration;
 pub mod effect;

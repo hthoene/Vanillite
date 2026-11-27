@@ -797,6 +797,12 @@ impl ServerWorld {
             &self.dimension,
             &mut portals,
         );
+        self.mobs.tick_player_items(
+            &mut self.level,
+            &mut self.survival,
+            ctx.global,
+            &self.dimension,
+        );
         vanillite_game::raid::start_pending_raids(
             &mut self.level.entities,
             ctx.global
@@ -956,8 +962,7 @@ impl ServerWorld {
             value: skip,
             ..vanillite_game::hooks::Event::new(vanillite_abi::event::TIME_SKIP)
         };
-        let dimension = self.dimension.clone();
-        crate::plugins::Hooks::of(global, &dimension).event_in(
+        crate::plugins::Hooks::of(global, &self.dimension).event_in(
             Some(&mut crate::plugins::PluginWorld(self, global)),
             &mut ev,
         );

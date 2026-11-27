@@ -138,9 +138,15 @@ pub fn drop_from_player(
     let cos_x = vanillite_base::math::cos(f64::from(rot.x_rot * deg));
     let sin_y = vanillite_base::math::sin(f64::from(rot.y_rot * deg));
     let cos_y = vanillite_base::math::cos(f64::from(rot.y_rot * deg));
-    let dir = env.random.next_float() * std::f32::consts::TAU;
-    let pow2 = 0.02 * env.random.next_float();
-    let spread = env.random.next_float() - env.random.next_float();
+    // The throw draws from the player's own random.
+    let Some((dir, pow2, spread)) = ents.player_mut(player).map(|p| {
+        let r = &mut p.survival.random;
+        let dir = r.next_float() * std::f32::consts::TAU;
+        let pow2 = 0.02 * r.next_float();
+        (dir, pow2, r.next_float() - r.next_float())
+    }) else {
+        return;
+    };
     let velocity = Vec3::new(
         f64::from(-sin_y * cos_x * 0.3) + f64::from(dir).cos() * f64::from(pow2),
         f64::from(-sin_x * 0.3 + 0.1 + spread * 0.1),
