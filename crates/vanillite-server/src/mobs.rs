@@ -736,7 +736,7 @@ impl WorldMobs {
                     let raining = |pos| raining_at(chunks, climate.map(|c| &**c), weather, pos);
                     crate::blocks::tick_item(
                         &mut ents,
-                        chunks,
+                        level,
                         id,
                         level.min_y(),
                         items.settings,

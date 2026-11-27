@@ -1,0 +1,25 @@
+{
+  "description": "Item entities draw from their own random when they fall into water (Entity.doWaterSplashEffect: the pitch and the particles) and when water puts their fire out (playEntityOnFireExtinguishedSound), so the speed that later pushes them out of a block (moveTowardsClosestSpace) depends on it: a stick falls into a pool, a burning stick falls into a pool, an apple starts inside a pool (no splash in its first tick), dirt falls into flowing water that carries it along; then stone replaces the water around each of them.",
+  "tier": "fast",
+  "region": [[0, -62, 0], [15, -57, 15]],
+  "ticks": 60,
+  "setup": [
+    {"op": "set", "pos": [3, -61, 3], "block": "minecraft:water"},
+    {"op": "set", "pos": [12, -61, 3], "block": "minecraft:water"},
+    {"op": "set", "pos": [3, -61, 12], "block": "minecraft:water"},
+    {"op": "set", "pos": [9, -61, 12], "block": "minecraft:air"},
+    {"op": "set", "pos": [10, -61, 12], "block": "minecraft:air"},
+    {"op": "set", "pos": [11, -61, 12], "block": "minecraft:air"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "setblock 8 -61 12 minecraft:water"},
+    {"tick": 20, "op": "command", "command": "summon minecraft:item 3.5 -58.5 3.5 {Item:{id:\"minecraft:stick\",count:1}}"},
+    {"tick": 20, "op": "command", "command": "summon minecraft:item 12.5 -58.5 3.5 {Fire:200s,Item:{id:\"minecraft:stick\",count:2}}"},
+    {"tick": 20, "op": "command", "command": "summon minecraft:item 3.5 -60.8 12.5 {Item:{id:\"minecraft:apple\",count:3}}"},
+    {"tick": 20, "op": "command", "command": "summon minecraft:item 9.4 -58.5 12.5 {Item:{id:\"minecraft:dirt\",count:4}}"},
+    {"tick": 45, "op": "command", "command": "setblock 3 -61 3 minecraft:stone"},
+    {"tick": 45, "op": "command", "command": "setblock 12 -61 3 minecraft:stone"},
+    {"tick": 45, "op": "command", "command": "setblock 3 -61 12 minecraft:stone"},
+    {"tick": 45, "op": "command", "command": "fill 9 -61 12 11 -61 12 minecraft:stone"}
+  ]
+}

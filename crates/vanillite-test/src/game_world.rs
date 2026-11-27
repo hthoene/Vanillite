@@ -697,7 +697,7 @@ impl GameWorld {
                     let raining = |pos| level.is_raining_at(pos);
                     vanillite_server::tick_item(
                         &mut ents,
-                        &level.chunks,
+                        level,
                         id,
                         MIN_Y,
                         vanillite_server::ItemSettings {
