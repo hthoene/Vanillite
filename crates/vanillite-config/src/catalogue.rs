@@ -594,6 +594,20 @@ rules! {
             check_cooldown: u8 = "check-cooldown", Performance, range = [1, 64],
                 vanilla = 1, performance = 4;
         }
+        /// Server-side checks of block breaking.
+        digging: DiggingRules = "anticheat.digging" {
+            /// Validates "stop digging" against the server's own break progress: the time since
+            /// the player started digging, the tool, Haste and Mining Fatigue, being in water and
+            /// on the ground. Vanilla breaks a block whose progress falls short on the next tick
+            /// once the player has been online for a while (it takes the start tick as the time
+            /// spent), so a client that starts and at once stops digging breaks any block. On, a
+            /// stop with too little progress waits for the progress to complete like a legit
+            /// dig with latency and is rejected (the block is sent again, nothing drops) when it
+            /// does not complete within the dig time seen so far plus one second. Instant
+            /// mining, creative and normal digging with lag are not affected.
+            fast_break_check: bool = "fast-break-check", Fix, vanilla = false, paper = true,
+                spigot = true, performance = true;
+        }
         /// Anti-Xray: ores and other hidden blocks that touch no transparent block are kept from
         /// clients, so x-ray clients and texture packs cannot find them. Chunk packets stay
         /// shared by every player of the world; blocks around a changed block are sent with

@@ -381,6 +381,12 @@ view-distance = 8
 | `transfer-cooldown` | gameplay |  | `8` | `8` | `8` | `8` | `8` | Ticks a hopper waits after it moved an item (Vanilla 8). Higher values move items more slowly. Integer from 1 to 64. Environment: `VANILLITE_PERFORMANCE__HOPPERS__TRANSFER_COOLDOWN`. |
 | `check-cooldown` | performance |  | `1` | `1` | `1` | `1` | `4` | Ticks a hopper waits after it found nothing to move (Vanilla 1: it tries every tick). Saves the container and item lookups of idle hoppers. Deviation: a hopper notices new items up to this many ticks later; item sorters and clocks built on hopper timing run differently. Integer from 1 to 64. Environment: `VANILLITE_PERFORMANCE__HOPPERS__CHECK_COOLDOWN`. |
 
+#### `[anticheat.digging]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `fast-break-check` | fix |  | `false` | `false` | `true` | `true` | `true` | Validates "stop digging" against the server's own break progress: the time since the player started digging, the tool, Haste and Mining Fatigue, being in water and on the ground. Vanilla breaks a block whose progress falls short on the next tick once the player has been online for a while (it takes the start tick as the time spent), so a client that starts and at once stops digging breaks any block. On, a stop with too little progress waits for the progress to complete like a legit dig with latency and is rejected (the block is sent again, nothing drops) when it does not complete within the dig time seen so far plus one second. Instant mining, creative and normal digging with lag are not affected. Environment: `VANILLITE_ANTICHEAT__DIGGING__FAST_BREAK_CHECK`. |
+
 #### `[anticheat.anti-xray]`
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
