@@ -93,10 +93,74 @@ pub fn set(data: &mut [Word], bits: u8, index: usize, value: u32) {
     get_and_set(data, bits, index, value);
 }
 
+/// Calls `body!(BITS)` with `BITS` a constant equal to `bits` for the common widths (1 to 8:
+/// every paletted form), else `fallback`: loops over constant widths unroll per word.
+macro_rules! with_const_bits {
+    ($bits:expr, $body:ident, $fallback:expr) => {
+        match $bits {
+            1 => $body!(1),
+            2 => $body!(2),
+            3 => $body!(3),
+            4 => $body!(4),
+            5 => $body!(5),
+            6 => $body!(6),
+            7 => $body!(7),
+            8 => $body!(8),
+            _ => $fallback,
+        }
+    };
+}
+
 /// Packs `values` into fresh storage of `bits` bits.
 pub fn pack(entries: usize, bits: u8, mut value_at: impl FnMut(usize) -> u32) -> Box<[Word]> {
-    let per = per_word(bits);
     let mut data = zeroed(entries, bits);
+    macro_rules! fixed {
+        ($b:literal) => {
+            pack_words::<$b>(&mut data, entries, &mut value_at)
+        };
+    }
+    with_const_bits!(
+        bits,
+        fixed,
+        pack_words_any(&mut data, bits, entries, &mut value_at)
+    );
+    data
+}
+
+#[inline(always)]
+fn pack_words<const BITS: usize>(
+    data: &mut [Word],
+    entries: usize,
+    value_at: &mut impl FnMut(usize) -> u32,
+) {
+    let per = 64 / BITS;
+    let mask = (1u64 << BITS) - 1;
+    let full = entries / per;
+    for (word_index, word) in data[..full].iter_mut().enumerate() {
+        let start = word_index * per;
+        let mut acc = 0u64;
+        for slot in 0..per {
+            acc |= (u64::from(value_at(start + slot)) & mask) << (slot * BITS);
+        }
+        *word = acc.to_be_bytes();
+    }
+    if let Some(word) = data.get_mut(full) {
+        let start = full * per;
+        let mut acc = 0u64;
+        for slot in 0..entries - start {
+            acc |= (u64::from(value_at(start + slot)) & mask) << (slot * BITS);
+        }
+        *word = acc.to_be_bytes();
+    }
+}
+
+fn pack_words_any(
+    data: &mut [Word],
+    bits: u8,
+    entries: usize,
+    value_at: &mut impl FnMut(usize) -> u32,
+) {
+    let per = per_word(bits);
     for (word_index, word) in data.iter_mut().enumerate() {
         let start = word_index * per;
         let end = (start + per).min(entries);
@@ -106,12 +170,47 @@ pub fn pack(entries: usize, bits: u8, mut value_at: impl FnMut(usize) -> u32) ->
         }
         *word = acc.to_be_bytes();
     }
-    data
 }
 
 /// Calls `f` with every entry in index order.
 #[inline]
 pub fn for_each(data: &[Word], bits: u8, entries: usize, mut f: impl FnMut(usize, u32)) {
+    macro_rules! fixed {
+        ($b:literal) => {
+            for_each_fixed::<$b>(data, entries, &mut f)
+        };
+    }
+    with_const_bits!(bits, fixed, for_each_any(data, bits, entries, &mut f));
+}
+
+#[inline(always)]
+fn for_each_fixed<const BITS: usize>(
+    data: &[Word],
+    entries: usize,
+    f: &mut impl FnMut(usize, u32),
+) {
+    let per = 64 / BITS;
+    let mask = (1u64 << BITS) - 1;
+    let full = (entries / per).min(data.len());
+    for (word_index, word) in data[..full].iter().enumerate() {
+        let value = u64::from_be_bytes(*word);
+        let start = word_index * per;
+        for slot in 0..per {
+            f(start + slot, ((value >> (slot * BITS)) & mask) as u32);
+        }
+    }
+    let start = full * per;
+    if start < entries
+        && let Some(word) = data.get(full)
+    {
+        let value = u64::from_be_bytes(*word);
+        for slot in 0..(entries - start).min(per) {
+            f(start + slot, ((value >> (slot * BITS)) & mask) as u32);
+        }
+    }
+}
+
+fn for_each_any(data: &[Word], bits: u8, entries: usize, f: &mut impl FnMut(usize, u32)) {
     let per = per_word(bits);
     let mut index = 0;
     for word in data {
@@ -123,6 +222,43 @@ pub fn for_each(data: &[Word], bits: u8, entries: usize, mut f: impl FnMut(usize
             f(index, (value & mask(bits)) as u32);
             value >>= bits;
             index += 1;
+        }
+    }
+}
+
+/// Writes every entry, mapped by `map`, into `out` (one per entry, in index order): the
+/// unchecked bulk form of [`for_each`].
+#[inline]
+pub fn unpack(data: &[Word], bits: u8, out: &mut [u16], map: impl Fn(u32) -> u16) {
+    macro_rules! fixed {
+        ($b:literal) => {
+            unpack_fixed::<$b>(data, out, &map)
+        };
+    }
+    with_const_bits!(
+        bits,
+        fixed,
+        for_each_any(data, bits, out.len(), &mut |i, v| out[i] = map(v))
+    );
+}
+
+#[inline(always)]
+fn unpack_fixed<const BITS: usize>(data: &[Word], out: &mut [u16], map: &impl Fn(u32) -> u16) {
+    let per = 64 / BITS;
+    let mask = (1u64 << BITS) - 1;
+    let mut chunks = out.chunks_exact_mut(per);
+    let mut words = data.iter();
+    for (chunk, word) in (&mut chunks).zip(&mut words) {
+        let value = u64::from_be_bytes(*word);
+        for (slot, out) in chunk.iter_mut().enumerate() {
+            *out = map(((value >> (slot * BITS)) & mask) as u32);
+        }
+    }
+    let rest = chunks.into_remainder();
+    if let Some(word) = words.next() {
+        let value = u64::from_be_bytes(*word);
+        for (slot, out) in rest.iter_mut().enumerate() {
+            *out = map(((value >> (slot * BITS)) & mask) as u32);
         }
     }
 }
@@ -161,5 +297,31 @@ mod tests {
             seen += 1;
         });
         assert_eq!(seen, 4096);
+    }
+
+    #[test]
+    fn constant_widths_match_generic_loops() {
+        for entries in [4096, 64, 27] {
+            for bits in 1..=16u8 {
+                let value = |i: usize| ((i * 7919 + 13) % (1 << bits)) as u32;
+                let packed = pack(entries, bits, value);
+                let mut generic = zeroed(entries, bits);
+                pack_words_any(&mut generic, bits, entries, &mut |i| value(i));
+                assert_eq!(packed, generic, "bits {bits} entries {entries}");
+                let mut seen = Vec::new();
+                for_each(&packed, bits, entries, |i, v| seen.push((i, v)));
+                let mut expected = Vec::new();
+                for_each_any(&packed, bits, entries, &mut |i, v| expected.push((i, v)));
+                assert_eq!(seen, expected);
+                assert_eq!(seen.len(), entries);
+                let mut out = vec![0u16; entries];
+                unpack(&packed, bits, &mut out, |v| v as u16);
+                assert!(
+                    out.iter()
+                        .enumerate()
+                        .all(|(i, &v)| u32::from(v) == value(i))
+                );
+            }
+        }
     }
 }
