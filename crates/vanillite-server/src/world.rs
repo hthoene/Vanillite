@@ -730,6 +730,9 @@ impl ServerWorld {
                 Some(run) => level.tick_chunks_tiled(&mut self.scratch, run),
                 None => level.tick_chunks(&mut self.scratch),
             }
+        }
+        self.updates.chunk_source_tick(level);
+        if ctx.runs_normally {
             level.run_block_events();
         }
         level.set_handling_tick(false);
@@ -764,22 +767,15 @@ impl ServerWorld {
         // `entityManager.tick()`: entities of chunks that became visible this tick load now.
         self.level.tick_entity_manager();
         self.level.chunks.end_tick();
-        let light = self.updates.light_changes();
+        let (light, ready) = self.updates.light_and_ready();
         self.level.chunks.take_light_changes(light);
-        let mut changed = std::mem::take(&mut self.level.output().changed);
+        // Masked blocks revealed by the tick's changes go out with this tick's broadcast.
         self.packets
-            .invalidate(&mut self.level.chunks, light, &mut changed);
-        self.level.output().changed = changed;
+            .invalidate(&mut self.level.chunks, light, ready);
         for pos in &self.level.output().block_entity_updates {
             self.packets.invalidate_chunk(pos.chunk());
         }
         self.updates.broadcast(&mut self.level, ctx.global, self.id);
-        WorldPlayers::send_chunks(
-            &mut self.level.entities,
-            &self
-                .packets
-                .source(&self.level.chunks, &self.level.block_entities),
-        );
         self.track_entities();
         WorldPlayers::send_entity_updates(
             &self.level.entities,
@@ -787,6 +783,14 @@ impl ServerWorld {
             ctx.compute,
             &mut self.fan_out,
             ctx.global.plugins.packet_tap(),
+        );
+        // `sendNextChunks` runs after `ChunkMap.tick`: entities in the chunks sent now are
+        // still pending for this tick's tracking and become visible from the next one.
+        WorldPlayers::send_chunks(
+            &mut self.level.entities,
+            &self
+                .packets
+                .source(&self.level.chunks, &self.level.block_entities),
         );
         let mut portals = std::mem::take(&mut self.portal_requests);
         // The omen effects see the village and raids at the players (they tick without the

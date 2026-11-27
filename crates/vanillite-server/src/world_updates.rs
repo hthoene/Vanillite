@@ -22,16 +22,33 @@ const EVENT_RANGE: f64 = 64.0;
 pub(crate) struct WorldUpdates {
     light: Vec<(ChunkPos, LightChange)>,
     per_chunk: FxHashMap<ChunkPos, Vec<Arc<SharedPacket>>>,
+    /// The block changes up to this tick's [`Self::chunk_source_tick`], sent by
+    /// [`Self::broadcast`]; later ones wait in the level's output for the next tick.
+    ready: Changes,
 }
 
+/// Changed positions per section, each once, in change order.
+type Changes = FxHashMap<SectionPos, Vec<BlockPos>>;
+
 impl WorldUpdates {
-    /// The light changes of this tick, for the chunk packet cache and the broadcast.
-    pub(crate) fn light_changes(&mut self) -> &mut Vec<(ChunkPos, LightChange)> {
-        &mut self.light
+    /// The light changes of this tick, for the chunk packet cache and the broadcast, and the
+    /// block changes this tick's broadcast sends.
+    pub(crate) fn light_and_ready(&mut self) -> (&mut Vec<(ChunkPos, LightChange)>, &mut Changes) {
+        (&mut self.light, &mut self.ready)
     }
 
-    /// Sends the light changes collected with [`Self::light_changes`] and the level's output,
-    /// then clears both.
+    /// `broadcastChangedChunks` in `ServerChunkCache.tick`: the block changes made so far
+    /// (the previous tick's after this point, this tick's packets, scheduled and random ticks)
+    /// go out with this tick's [`Self::broadcast`]. Those of block events, the dragon fight,
+    /// entities, block entities and players later in the tick go out the next tick.
+    pub(crate) fn chunk_source_tick(&mut self, level: &mut Level) {
+        let changed = std::mem::take(&mut level.output().changed);
+        merge_changes(&mut self.ready, changed);
+    }
+
+    /// Sends the light changes collected with [`Self::light_and_ready`] and the level's output,
+    /// then clears both; block changes since [`Self::chunk_source_tick`] stay for the next
+    /// tick.
     pub(crate) fn broadcast(
         &mut self,
         level: &mut Level,
@@ -39,6 +56,7 @@ impl WorldUpdates {
         world: crate::world::WorldId,
     ) {
         let mut output = std::mem::take(level.output());
+        let later = std::mem::replace(&mut output.changed, std::mem::take(&mut self.ready));
         self.encode_chunks(level, &mut output);
         let entities = &level.entities;
         if !output.global_level_events.is_empty() {
@@ -158,6 +176,7 @@ impl WorldUpdates {
             output.changed.clear();
             *reuse = output;
         }
+        merge_changes(&mut level.output().changed, later);
     }
 
     /// Light updates first, then the changed blocks of each section, per chunk.
@@ -195,6 +214,22 @@ impl WorldUpdates {
                 section_blocks_update(section, &positions, |pos| level.block(pos).0)
             };
             self.per_chunk.entry(chunk).or_default().push(packet);
+        }
+    }
+}
+
+/// Adds the changed positions of `from` to `into`, each position once per section.
+fn merge_changes(into: &mut Changes, from: Changes) {
+    if into.is_empty() {
+        *into = from;
+        return;
+    }
+    for (section, positions) in from {
+        let list = into.entry(section).or_default();
+        for pos in positions {
+            if !list.contains(&pos) {
+                list.push(pos);
+            }
         }
     }
 }
