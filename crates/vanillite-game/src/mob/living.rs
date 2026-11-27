@@ -70,6 +70,8 @@ pub fn tick(t: &mut Tick<'_, '_>) {
             return;
         }
     }
+    // `detectEquipmentUpdates`.
+    super::fam::undead::cubes::detect_equipment(t);
     ai_step(t);
     if t.mob_ref().removed || !t.exists() {
         return;
@@ -159,8 +161,11 @@ fn base_tick(t: &mut Tick<'_, '_>) {
                 .is_bubble_column(t.level.block(BlockPos::containing(p.x, t.eye_y(), p.z)))
         };
         if eye_in_water && !bubble {
-            if !t.mob_ref().kind.breathes_underwater() && !t.mob_ref().effects.has_water_breathing()
-            {
+            // `SulfurCube.canBreatheUnderwater`: also while holding a block.
+            let breathes = t.mob_ref().kind.breathes_underwater()
+                || (t.mob_ref().kind == super::Kind::SulfurCube
+                    && super::fam::undead::cubes::has_body_item(t.mob_ref()));
+            if !breathes && !t.mob_ref().effects.has_water_breathing() {
                 t.mob().air -= 1;
                 if t.mob_ref().air <= -20 {
                     t.mob().air = 0;
@@ -646,6 +651,11 @@ pub fn travel_flying(
 
 /// `getFluidJumpThreshold`: 0.4 blocks, or the eye height for small mobs.
 fn fluid_jump_threshold(t: &Tick<'_, '_>) -> f64 {
+    if let Some(v) =
+        super::fam::undead::cubes::fluid_jump_threshold(t.mob_ref(), t.core().dims().height)
+    {
+        return v;
+    }
     let eye = super::eye_height(t.mob_ref());
     if eye < 0.4 { 0.0 } else { 0.4 }
 }
@@ -1008,6 +1018,10 @@ pub fn base_travel(t: &mut Tick<'_, '_>, input: Vec3) {
     };
     if (fluids.in_water() || fluids.in_lava()) && !stands {
         travel_in_fluid(t, input);
+        if !t.exists() {
+            return;
+        }
+        super::fam::undead::cubes::buoyancy(t);
         float_in_liquid_while_ridden(t);
     } else {
         travel_in_air(t, input);
@@ -1229,7 +1243,11 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
         t.set_velocity(Vec3::ZERO);
     }
     #[allow(clippy::cast_possible_truncation)]
-    let step = t.mob_ref().attrs.step_height as f32;
+    let step = if super::fam::undead::cubes::steps_up(t.mob_ref()) {
+        t.mob_ref().attrs.step_height as f32
+    } else {
+        0.0
+    };
     let on_ground = t.on_ground();
     let aabb = t.aabb();
     let on_lava = t.mob_ref().nav.stands_on_lava;
@@ -1308,7 +1326,11 @@ fn restitute_after_collisions(
 ) {
     let (x_collision, z_collision, vertical, below) = collisions;
     // Mobs never suppress the bounce (`isShiftKeyDown`).
-    let mut restitution = entity_bounciness(t.mob_ref().kind);
+    let mut restitution = if t.mob_ref().kind == super::Kind::SulfurCube {
+        super::fam::undead::cubes::bounciness(t.mob_ref())
+    } else {
+        entity_bounciness(t.mob_ref().kind)
+    };
     let current = t.velocity();
     let mut after = current;
     if x_collision {
@@ -1393,7 +1415,7 @@ fn snow_collision(m: &super::MobData, aabb: Aabb) -> physics::SnowCollision {
 }
 
 /// `LivingEntity.getEntityBounciness`: the kind's `bounciness` attribute.
-fn entity_bounciness(kind: super::Kind) -> f64 {
+pub(crate) fn entity_bounciness(kind: super::Kind) -> f64 {
     use vanillite_data::entity::ATTRIBUTES;
     let info = kind.type_id().info();
     let Some(id) = ATTRIBUTES
@@ -2267,7 +2289,8 @@ fn can_freeze(m: &super::MobData) -> bool {
     if matches!(
         m.kind,
         super::Kind::Stray | super::Kind::PolarBear | super::Kind::SnowGolem | super::Kind::Wither
-    ) {
+    ) || (m.kind == super::Kind::SulfurCube && super::fam::undead::cubes::has_body_item(m))
+    {
         return false;
     }
     let leather = [
@@ -2493,6 +2516,7 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         if t.ents.minecart(other).is_some() {
             // `AbstractMinecart.push(this)`.
             crate::minecart::push_by(t.ents, other, id);
+            sulfur_contact(t, other);
             continue;
         }
         let Some(o) = t.ents.store.get(other) else {
@@ -2505,6 +2529,10 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         let mut za = p.z - op.z;
         let mut dd = xa.abs().max(za.abs());
         if dd < f64::from(0.01_f32) {
+            sulfur_contact(t, other);
+            if !t.exists() {
+                break;
+            }
             continue;
         }
         dd = dd.sqrt();
@@ -2536,8 +2564,20 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             t.set_velocity(Vec3::new(v.x + xa, v.y, v.z + za));
             t.core_mut().set_flags(EntityFlags::HAS_IMPULSE, true);
         }
+        sulfur_contact(t, other);
+        if !t.exists() {
+            break;
+        }
     }
     t.cx.ids = ids;
+}
+
+/// `SulfurCube.doPush`: after the push, a hot cube burns the pushed entity.
+fn sulfur_contact(t: &mut Tick<'_, '_>, other: EntityId) {
+    if t.mob_ref().kind == super::Kind::SulfurCube {
+        let id = t.id;
+        super::fam::undead::cubes::contact_damage(t.level, t.ents, t.env, t.cx, id, other);
+    }
 }
 
 /// The end of `Player.aiStep` after [`crate::survival::player::do_tick_ai`]: `pushEntities`

@@ -206,10 +206,16 @@ pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> 
         "Rotation",
         Tag::List(List(vec![Tag::Float(rot.y_rot), Tag::Float(rot.x_rot)])),
     );
-    out.insert("FallDistance", Tag::Double(0.0));
+    out.insert("fall_distance", Tag::Double(0.0));
     out.insert("Fire", Tag::Short(-1));
     out.insert("Air", Tag::Short(300));
-    out.insert("OnGround", Tag::Byte(0));
+    out.insert(
+        "OnGround",
+        Tag::Byte(i8::from(
+            e.flags()
+                .contains(vanillite_world::entity::EntityFlags::ON_GROUND),
+        )),
+    );
     out.insert("Invulnerable", Tag::Byte(0));
     out.insert("PortalCooldown", Tag::Int(0));
     out.insert("UUID", uuid_tag(e.uuid()));
@@ -228,6 +234,39 @@ pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> 
         out.insert("playerGameType", Tag::Int(game_type(p.game_mode)));
         if let Some(prev) = p.previous_game_mode {
             out.insert("previousPlayerGameType", Tag::Int(game_type(prev)));
+        }
+        // `ServerPlayer.addAdditionalSaveData`'s other live state.
+        out.insert(
+            "FallFlying",
+            Tag::Byte(i8::from(
+                e.flags()
+                    .contains(vanillite_world::entity::EntityFlags::FALL_FLYING),
+            )),
+        );
+        out.insert(
+            "abilities",
+            Tag::Compound(crate::players::abilities_nbt(
+                p.game_mode,
+                p.survival.flying,
+            )),
+        );
+        out.insert("recipeBook", p.recipe_book.save());
+        out.insert(
+            "post_effects",
+            Tag::List(List(
+                p.post_effects
+                    .iter()
+                    .map(|e| Tag::String(e.clone()))
+                    .collect(),
+            )),
+        );
+        // `NbtPredicate.getEntityTagToCompare`: the selected item of a player.
+        let selected = p.inventory.selected_item();
+        if !selected.is_empty() {
+            out.insert(
+                "SelectedItem",
+                Tag::Compound(vanillite_game::inventory::stack_to_nbt(selected)),
+            );
         }
     } else if e.kind() == ids::ITEM
         && let Some(item) = entities.item(id)

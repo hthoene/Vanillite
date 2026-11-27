@@ -34,7 +34,181 @@ pub struct CubeState {
     pub from_bucket: bool,
     pub pickup_timer: i32,
     pub fuse: i32,
+    /// `MAX_FUSE`: the fuse it was primed with (client data).
+    pub max_fuse: i32,
+    pub push_sound_cooldown: i32,
+    /// `permanentlyInvulnerable`: set when primed.
+    pub invulnerable: bool,
+    /// `lastEquipmentItems[BODY]`: the body item the last equipment check saw.
+    pub last_body: ItemStack,
+    /// What the archetypes of the swallowed block give it.
+    pub traits: Traits,
 }
+
+/// The effects of the archetypes of a sulfur cube's swallowed block (`floatsInLiquids`,
+/// `explosionData`, `contactDamages`, `knockbackModifier`, `soundSettings` and the
+/// bounciness attribute).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Traits {
+    pub floats: bool,
+    /// Power, causes fire, fuse.
+    pub explosion: Option<(u8, bool, i32)>,
+    /// `sulfur_cube_hot` contact damage of 1.
+    pub hot: bool,
+    /// Horizontal and vertical power of a hit.
+    pub knockback: (f32, f32),
+    /// The archetype whose hit and push sounds it uses (index into [`ARCHETYPES`]).
+    pub sounds: usize,
+    pub bounciness: f64,
+}
+
+impl Default for Traits {
+    fn default() -> Self {
+        Traits {
+            floats: false,
+            explosion: None,
+            hot: false,
+            knockback: (0.33, 0.06),
+            sounds: REGULAR,
+            bounciness: 0.0,
+        }
+    }
+}
+
+/// A `minecraft:sulfur_cube_archetype` of Vanilla 26.3 (`SulfurCubeArchetypes.bootstrap`).
+struct Archetype {
+    /// The path of the archetype and of its item tag `#sulfur_cube_archetype/<name>`.
+    name: &'static str,
+    /// `archetype(speed, bounce, friction, drag)`.
+    speed: f32,
+    bounce: f32,
+    friction: f32,
+    drag: f32,
+    buoyant: bool,
+    explosion: Option<(u8, bool, i32)>,
+    hot: bool,
+    knockback: (f32, f32),
+    /// `push_sound_impulse_threshold`, `push_sound_cooldown` (seconds).
+    push_sound: (f32, f32),
+}
+
+const fn archetype(
+    name: &'static str,
+    (speed, bounce, friction, drag): (f32, f32, f32, f32),
+    buoyant: bool,
+    knockback: (f32, f32),
+    push_sound: (f32, f32),
+) -> Archetype {
+    Archetype {
+        name,
+        speed,
+        bounce,
+        friction,
+        drag,
+        buoyant,
+        explosion: None,
+        hot: false,
+        knockback,
+        push_sound,
+    }
+}
+
+/// The archetypes in registry order (the data pack files sorted by name).
+const ARCHETYPES: [Archetype; 12] = [
+    archetype(
+        "bouncy",
+        (2.0, 0.9, 0.3, 0.01),
+        true,
+        (0.4125, 0.105),
+        (0.3, 0.7),
+    ),
+    Archetype {
+        explosion: Some((3, false, 120)),
+        ..archetype(
+            "explosive",
+            (1.0, 0.5, 0.3, 0.3),
+            true,
+            (0.4125, 0.09),
+            (0.1, 0.7),
+        )
+    },
+    archetype(
+        "fast_flat",
+        (1.0, 0.5, 0.2, 0.01),
+        false,
+        (0.9125, 0.09),
+        (0.03, 0.9),
+    ),
+    archetype(
+        "fast_sliding",
+        (-0.5, 0.1, 0.05, 0.01),
+        false,
+        (0.6625, 0.09),
+        (0.05, 1.0),
+    ),
+    archetype(
+        "high_resistance",
+        (-0.7, 0.2, 1.0, 0.01),
+        false,
+        (0.4125, 0.09),
+        (0.03, 0.7),
+    ),
+    Archetype {
+        hot: true,
+        ..archetype(
+            "hot",
+            (1.0, 0.5, 0.3, 0.1),
+            true,
+            (0.4125, 0.09),
+            (0.2, 0.7),
+        )
+    },
+    archetype(
+        "light",
+        (1.0, 1.0, 0.3, 1.8),
+        true,
+        (0.4125, 0.18),
+        (0.2, 0.7),
+    ),
+    archetype(
+        "regular",
+        (1.0, 0.5, 0.3, 0.1),
+        true,
+        (0.4125, 0.09),
+        (0.2, 0.5),
+    ),
+    archetype(
+        "slow_bouncy",
+        (-0.4, 0.6, 0.3, 0.05),
+        false,
+        (0.4125, 0.24),
+        (0.05, 0.5),
+    ),
+    archetype(
+        "slow_flat",
+        (-0.5, 0.4, 0.4, 0.1),
+        false,
+        (0.4125, 0.105),
+        (0.03, 0.9),
+    ),
+    archetype(
+        "slow_sliding",
+        (-0.8, 0.1, 0.05, 0.01),
+        false,
+        (0.4125, 0.09),
+        (0.02, 1.0),
+    ),
+    archetype(
+        "sticky",
+        (2.0, 0.0, 2.0, 0.01),
+        false,
+        (0.4125, 0.09),
+        (0.05, 0.5),
+    ),
+];
+
+/// [`ARCHETYPES`] index of `regular`, whose sounds are the default ones.
+const REGULAR: usize = 7;
 
 impl Default for CubeState {
     fn default() -> Self {
@@ -48,6 +222,11 @@ impl Default for CubeState {
             from_bucket: false,
             pickup_timer: 0,
             fuse: -1,
+            max_fuse: -1,
+            push_sound_cooldown: 0,
+            invulnerable: false,
+            last_body: ItemStack::EMPTY,
+            traits: Traits::default(),
         }
     }
 }
@@ -261,6 +440,7 @@ pub fn init(m: &mut MobData) {
         // A fresh sulfur cube is not a baby until it spawns as one.
         m.baby = false;
         m.age = 0;
+        m.look.kind = nav::LookKind::Custom;
     }
 }
 
@@ -335,6 +515,12 @@ pub fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
 // --- Tick -------------------------------------------------------------------------------
 
 pub fn before_tick(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().kind == Kind::SulfurCube {
+        sulfur_tick(t);
+        if t.mob_ref().removed {
+            return;
+        }
+    }
     // The split happens when the dead cube is removed (`remove`), the tick its death time
     // reaches 20.
     let m = t.mob_ref();
@@ -416,7 +602,7 @@ pub fn player_touch(
     ents.store.for_each_in(&area, false, |id| {
         if ents
             .mob(id)
-            .is_some_and(|m| matches!(m.kind, Kind::Slime | Kind::MagmaCube))
+            .is_some_and(|m| matches!(m.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube))
         {
             cubes.push(id);
         }
@@ -429,7 +615,12 @@ pub fn player_touch(
             cx: &mut *cx,
             id: cube,
         };
-        if t.exists() && deals_damage(t.mob_ref()) {
+        if !t.exists() {
+            continue;
+        }
+        if t.mob_ref().kind == Kind::SulfurCube {
+            player_push(level, t.ents, t.env, t.cx, cube, player);
+        } else if deals_damage(t.mob_ref()) {
             deal_damage(&mut t, player);
         }
     }
@@ -571,6 +762,9 @@ pub fn custom_server_ai_step(t: &mut Tick<'_, '_>) {
         let c = cs_mut(t.mob());
         if c.pickup_timer > 0 {
             c.pickup_timer -= 1;
+        }
+        if c.push_sound_cooldown > 0 {
+            c.push_sound_cooldown -= 1;
         }
     }
 }
@@ -749,8 +943,21 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         }
         return Interaction::Pass;
     }
-    if cs(m).is_some_and(|c| c.fuse >= 0) {
+    if is_primed(m) {
         return Interaction::Pass;
+    }
+    if can_explode(m) && matches!(name, "minecraft:flint_and_steel" | "minecraft:fire_charge") {
+        if !ix.level.settings.tnt_explodes {
+            // The "TNT explosions are disabled" overlay message is not sent (as for TNT).
+            return Interaction::Pass;
+        }
+        prime(ix.level, ix.ents, ix.env, ix.target, false);
+        if name == "minecraft:flint_and_steel" {
+            crate::mob::animal::hurt_held(ix.ents, ix.env, ix.player, ix.hand, 1);
+        } else {
+            crate::mob::animal::use_item(ix.ents, ix.player, ix.hand);
+        }
+        return Interaction::Success;
     }
     let pos = ix.ents.store.get(ix.target).map_or(Vec3::ZERO, |e| e.pos());
     let height = ix
@@ -897,6 +1104,558 @@ pub fn pick_up_items(t: &mut Tick<'_, '_>) {
     t.cx.ids = found;
 }
 
+// --- Sulfur cube archetypes ---------------------------------------------------------------
+
+/// `matchingArchetypes`: the archetypes whose item tag holds the stack.
+fn archetypes_of(stack: &ItemStack) -> impl Iterator<Item = (usize, &'static Archetype)> + '_ {
+    let data = crate::player::play::game_data();
+    ARCHETYPES.iter().enumerate().filter(move |(_, a)| {
+        !stack.is_empty()
+            && data.as_ref().is_some_and(|d| {
+                d.item_in_tag(
+                    stack.item,
+                    &format!("minecraft:sulfur_cube_archetype/{}", a.name),
+                )
+            })
+    })
+}
+
+/// The traits and the attribute modifiers of the archetypes of `body`, applied to the base
+/// values (`collectEquipmentChanges`: the old modifiers removed, the new ones added).
+fn apply_archetypes(m: &mut MobData, body: &ItemStack) {
+    let base = crate::mob::Attrs::of(m.kind.type_id());
+    let mut traits = Traits {
+        bounciness: crate::mob::living::entity_bounciness(m.kind),
+        ..Traits::default()
+    };
+    let (mut kb, mut bounce, mut friction, mut drag) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (i, a) in archetypes_of(body) {
+        traits.floats |= a.buoyant;
+        if a.explosion.is_some() {
+            traits.explosion = a.explosion;
+        }
+        traits.hot |= a.hot;
+        traits.knockback = a.knockback;
+        traits.sounds = i;
+        // `add(KNOCKBACK_RESISTANCE, -speed)`, `add(BOUNCINESS, bounce)`,
+        // `multiply(FRICTION_MODIFIER, friction)`, `multiply(AIR_DRAG_MODIFIER, drag)`.
+        kb.push((0, -f64::from(a.speed)));
+        bounce.push((0, f64::from(a.bounce)));
+        friction.push((2, f64::from(a.friction) - 1.0));
+        drag.push((2, f64::from(a.drag) - 1.0));
+    }
+    let value = crate::item::attribute_value;
+    m.attrs.knockback_resistance = value(base.knockback_resistance, &kb, -2.0, 1.0);
+    m.attrs.explosion_knockback_resistance =
+        value(base.explosion_knockback_resistance, &kb, 0.0, 1.0);
+    m.attrs.friction_modifier = value(base.friction_modifier, &friction, 0.0, 2048.0);
+    m.attrs.air_drag_modifier = value(base.air_drag_modifier, &drag, 0.0, 2048.0);
+    traits.bounciness = value(traits.bounciness, &bounce, 0.0, 1.0);
+    cs_mut(m).traits = traits;
+}
+
+/// `LivingEntity.detectEquipmentUpdates` → `SulfurCube.collectEquipmentChanges` (before
+/// `aiStep`): a newly swallowed block removes all goals and stops it, an emptied body
+/// registers them again; the archetypes of the new block replace those of the old.
+pub fn detect_equipment(t: &mut Tick<'_, '_>) {
+    if t.mob_ref().kind != Kind::SulfurCube {
+        return;
+    }
+    let current = t.mob_ref().equipment.get(EquipmentSlot::Body).clone();
+    let last = cs(t.mob_ref()).map_or(ItemStack::EMPTY, |c| c.last_body.clone());
+    if crate::item::matches(&last, &current) {
+        return;
+    }
+    if current.is_empty() {
+        register_goals(t.mob());
+    } else {
+        goals::remove_all_goals(t);
+        set_speed(t.mob(), 0.0);
+    }
+    let m = t.mob();
+    apply_archetypes(m, &current);
+    cs_mut(m).last_body = current;
+}
+
+/// `getEntityBounciness` of a sulfur cube (its archetypes' `bounciness`).
+pub fn bounciness(m: &MobData) -> f64 {
+    cs(m).map_or(0.0, |c| c.traits.bounciness)
+}
+
+/// `maxUpStep`: a cube holding a block does not step up.
+pub fn steps_up(m: &MobData) -> bool {
+    m.kind != Kind::SulfurCube || !has_body_item(m)
+}
+
+/// `getFluidJumpThreshold` of sulfur cubes: a fifth of their height.
+pub fn fluid_jump_threshold(m: &MobData, height: f32) -> Option<f64> {
+    (m.kind == Kind::SulfurCube).then(|| f64::from(height) * 0.2)
+}
+
+/// `SulfurCube.travelInFluid` after `super.travelInFluid`: a buoyant cube holding a block
+/// bobs up.
+pub fn buoyancy(t: &mut Tick<'_, '_>) {
+    let m = t.mob_ref();
+    if m.kind != Kind::SulfurCube || !has_body_item(m) || !cs(m).is_some_and(|c| c.traits.floats) {
+        return;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let vibe = 0.2_f32 * vanillite_base::math::sin(f64::from(m.tick_count as f32 * 0.4));
+    let height = if m.fluids.in_water() {
+        m.fluids.water_height
+    } else {
+        m.fluids.lava_height
+    };
+    let threshold = f64::from(t.core().dims().height) * 0.2;
+    let immersion = height - threshold + f64::from(vibe);
+    if immersion > 0.0 {
+        let v = t.velocity();
+        t.set_velocity(Vec3::new(
+            v.x,
+            v.y + immersion.min(1.0) * f64::from(0.04_f32),
+            v.z,
+        ));
+    }
+}
+
+/// `SulfurCubeLookControl.tick`: a cube holding a block snaps its yaw to a multiple of 90°.
+pub fn look_control(t: &mut Tick<'_, '_>) -> bool {
+    if !has_body_item(t.mob_ref()) {
+        return false;
+    }
+    let mut rot = t.core().rot();
+    // `Mth.wrapDegrees90`.
+    let mut close = rot.y_rot % 90.0;
+    if close >= 45.0 {
+        close -= 90.0;
+    }
+    if close < -45.0 {
+        close += 90.0;
+    }
+    rot.y_rot -= close;
+    rot.y_head_rot = rot.y_rot;
+    t.core_mut().set_rot(rot);
+    true
+}
+
+fn is_primed(m: &MobData) -> bool {
+    cs(m).is_some_and(|c| c.fuse >= 0)
+}
+
+/// `canExplode`.
+fn can_explode(m: &MobData) -> bool {
+    cs(m).is_some_and(|c| c.traits.explosion.is_some()) && m.is_alive() && !is_primed(m)
+}
+
+/// `SulfurCube.tick` before `super.tick()`: `tickFuse` and `primeWhenOnPoweredPosition`.
+fn sulfur_tick(t: &mut Tick<'_, '_>) {
+    let c = cs_mut(t.mob());
+    if c.fuse > 0 {
+        c.fuse -= 1;
+    }
+    if let Some((power, fire, _)) = c.traits.explosion
+        && c.fuse == 0
+    {
+        let m = t.mob();
+        m.dead = true;
+        if t.level.settings.tnt_explodes {
+            let griefing = t.env.rules.bool(crate::survival::rules::Rule::MOB_GRIEFING);
+            let p = t.pos();
+            let y = p.y + f64::from(t.core().dims().height) * 0.0625;
+            let id = t.id;
+            // `mobGriefing ? ExplosionInteraction.TNT : NONE`.
+            t.cx.actions.push(crate::mob::WorldAction::Explode(
+                crate::mob::ExplosionRequest {
+                    source: Some(id),
+                    indirect: None,
+                    pos: Vec3::new(p.x, y, p.z),
+                    radius: f32::from(power),
+                    mob: !griefing,
+                    resistance: crate::level::explosion::BlockResistance::Default,
+                    fire,
+                },
+            ));
+        }
+        t.mob().removed = true;
+        return;
+    }
+    if can_explode(t.mob_ref()) {
+        let p = t.pos();
+        let pos = BlockPos::containing(p.x, p.y, p.z);
+        let state = t.level.block(pos);
+        // `getBestOwnOrNeighbourSignal`: the own signal of a signal source is its strongest.
+        let own = if t.level.is_signal_source(state) {
+            vanillite_base::Direction::ALL
+                .into_iter()
+                .map(|d| t.level.state_signal(state, pos, d))
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if t.level.best_neighbor_signal(pos).max(own) != 0 {
+            let (level, id) = (t.level, t.id);
+            prime(level, t.ents, t.env, id, false);
+        }
+    }
+}
+
+/// `primeTime(imminent)`: lights the fuse (a short random one for explosions).
+pub fn prime(
+    level: &Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    id: EntityId,
+    imminent: bool,
+) -> bool {
+    let Some(m) = ents.mob_mut(id) else {
+        return false;
+    };
+    let Some((_, _, fuse)) = cs(m).and_then(|c| c.traits.explosion) else {
+        return false;
+    };
+    if !m.is_alive() || !level.settings.tnt_explodes || is_primed(m) {
+        return false;
+    }
+    let time = if imminent {
+        m.random.next_int_bounded((fuse / 4).max(1)) + fuse / 8
+    } else {
+        fuse
+    };
+    let c = cs_mut(m);
+    c.invulnerable = true;
+    c.fuse = time;
+    c.max_fuse = time;
+    if let Some(mut e) = ents.store.get_mut(id) {
+        e.mark_data_dirty();
+    }
+    crate::mob::combat::mob_sound(ents, env, id, "minecraft:entity.tnt.primed");
+    crate::mob::animal::entity_game_event(
+        ents,
+        env,
+        id,
+        crate::level::game_event::events().prime_fuse,
+        None,
+    );
+    true
+}
+
+/// Plays a sound of the cube at full volume and pitch (`playSound(sound)`).
+fn cube_sound(
+    ents: &crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    id: EntityId,
+    name: &str,
+) {
+    let (Some(e), Some(m)) = (ents.store.get(id), ents.mob(id)) else {
+        return;
+    };
+    if m.silent {
+        return;
+    }
+    crate::survival::play_sound(
+        env.out,
+        None,
+        e.pos(),
+        name,
+        vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+        1.0,
+        1.0,
+        crate::survival::sound_seed(),
+    );
+}
+
+fn archetype_sound(m: &MobData, which: &str) -> String {
+    let i = cs(m).map_or(REGULAR, |c| c.traits.sounds);
+    format!(
+        "minecraft:entity.sulfur_cube.{}.{which}",
+        ARCHETYPES.get(i).map_or("regular", |a| a.name)
+    )
+}
+
+/// `SulfurCube.hurtServer` before `super.hurtServer`: a cube holding a block primes on fire
+/// or explosions and only gets knocked back by `#sulfur_cube_with_block_immune_to`; a primed
+/// cube is invulnerable (`permanentlyInvulnerable`). `None` goes on with the normal damage.
+pub fn sulfur_hurt(
+    level: &Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    target: EntityId,
+    source: &crate::survival::damage::DamageSource,
+    amount: f32,
+) -> Option<bool> {
+    use crate::survival::damage::tag;
+    let m = ents.mob(target)?;
+    if m.kind != Kind::SulfurCube {
+        return None;
+    }
+    let types = env.types;
+    if has_body_item(m) {
+        if can_explode(m) {
+            let burning_arrow = source.direct.is_some_and(|d| {
+                ents.store.get(d).is_some_and(|e| {
+                    matches!(
+                        e.kind().name(),
+                        "minecraft:arrow" | "minecraft:spectral_arrow" | "minecraft:trident"
+                    ) && e
+                        .flags()
+                        .contains(vanillite_world::entity::EntityFlags::ON_FIRE)
+                })
+            });
+            if types.is(source.kind, tag::IS_FIRE) || burning_arrow {
+                prime(level, ents, env, target, false);
+            } else if types.is(source.kind, tag::IS_EXPLOSION) {
+                prime(level, ents, env, target, true);
+            }
+        }
+        if types.is(source.kind, tag::SULFUR_CUBE_WITH_BLOCK_IMMUNE_TO) {
+            if !types.is(source.kind, tag::NO_KNOCKBACK) {
+                // `dealDefaultKnockback(source, damage, true)`.
+                let pos = ents.store.get(target).map_or(Vec3::ZERO, |e| e.pos());
+                let (xd, zd) = crate::mob::combat::default_knockback_direction(ents, source, pos);
+                crate::mob::combat::knock_mob(
+                    ents,
+                    env,
+                    target,
+                    f64::from(0.4_f32),
+                    xd,
+                    zd,
+                    source.cause.map(|c| (c, amount, false)),
+                );
+            }
+            return Some(true);
+        }
+    }
+    let invulnerable = ents
+        .mob(target)
+        .and_then(cs)
+        .is_some_and(|c| c.invulnerable);
+    let creative = source
+        .cause
+        .and_then(|c| ents.player(c))
+        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
+    (invulnerable && !types.is(source.kind, tag::BYPASSES_INVULNERABILITY) && !creative)
+        .then_some(false)
+}
+
+/// The eye position and the look direction of an entity.
+fn eye_and_look(ents: &crate::entities::Entities, id: EntityId) -> Option<(Vec3, Vec3, Vec3)> {
+    let e = ents.store.get(id)?;
+    let eye = if let Some(m) = ents.mob(id) {
+        crate::mob::eye_height(m)
+    } else {
+        f64::from(e.kind().info().eye_height)
+            * f64::from(e.dims().height / e.kind().info().height.max(0.01))
+    };
+    let p = e.pos();
+    let rot = e.rot();
+    let look = crate::effect::living::view_vector(rot.x_rot, rot.y_rot).normalize();
+    Some((p, Vec3::new(p.x, p.y + eye, p.z), look))
+}
+
+/// `Vec2.rotate(angle)`.
+fn rotate((x, y): (f32, f32), angle: f64) -> (f32, f32) {
+    let (cos, sin) = (
+        vanillite_base::math::cos(angle),
+        vanillite_base::math::sin(angle),
+    );
+    (x * cos - y * sin, y * cos + x * sin)
+}
+
+/// `SulfurCube.knockback` of a cube holding a block, hit by `cause`: the archetype's power,
+/// turned by where the hit lands. `false` when the default knockback applies.
+#[allow(clippy::too_many_arguments, clippy::cast_possible_truncation)]
+pub fn knockback(
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    target: EntityId,
+    power: f64,
+    xd: f64,
+    zd: f64,
+    cause: EntityId,
+    damage: f32,
+    from_effect: bool,
+) -> bool {
+    let Some(m) = ents.mob(target) else {
+        return false;
+    };
+    if m.kind != Kind::SulfurCube || !has_body_item(m) {
+        return false;
+    }
+    let (h0, v0) = cs(m).map_or((0.33, 0.06), |c| c.traits.knockback);
+    let resistance = m.attrs.knockback_resistance;
+    let Some((src_pos, eye, look)) = eye_and_look(ents, cause) else {
+        return false;
+    };
+    let Some(e) = ents.store.get(target) else {
+        return false;
+    };
+    let aabb = e.aabb();
+    let center = Vec3::new(
+        aabb.min_x + 0.5 * (aabb.max_x - aabb.min_x),
+        aabb.min_y + 0.5 * (aabb.max_y - aabb.min_y),
+        aabb.min_z + 0.5 * (aabb.max_z - aabb.min_z),
+    );
+    let height = e.dims().height;
+    let pos = e.pos();
+    // `applyHorizontalHitAngleScale(1.6)`.
+    let to = (center - eye).normalize();
+    let diff = (look.x * to.z - look.z * to.x).atan2(look.x * to.x + look.z * to.z) as f32;
+    let (nx, nz) = rotate((xd as f32, zd as f32), f64::from(diff * 1.6));
+    // `applyVerticalHitAnglePowerTransfer(0.5)`.
+    let half = f64::from(0.5 * height);
+    let to_top = (center + Vec3::new(0.0, half, 0.0) - eye).normalize();
+    let to_bottom = (center + Vec3::new(0.0, -half, 0.0) - eye).normalize();
+    let t = (look.y - to_top.y) / (to_bottom.y - to_top.y);
+    let factor = if t < 0.0 {
+        -1.0
+    } else if t > 1.0 {
+        1.0
+    } else {
+        -1.0 + t * 2.0
+    } as f32;
+    let mut ratio = (factor * 0.5).abs();
+    if factor < 0.0 {
+        ratio = -ratio;
+    }
+    let (px, py) = (h0 * (1.0 - ratio), v0 * (1.0 + ratio));
+    // `applyVerticalPositionAnglePowerRotation(0.8)`.
+    let d = pos - src_pos;
+    let angle = (-d.y).atan2((d.x * d.x + d.z * d.z).sqrt()) as f32;
+    let (mut hp, mut vp) = rotate((px, py), f64::from(-angle * 0.8));
+    let hr = if h0 > 0.0 { hp.abs() / h0 } else { 0.0 };
+    let vr = if v0 > 0.0 { vp.abs() / v0 } else { 0.0 };
+    let max = hr.max(vr);
+    if max > 1.0 {
+        hp *= 1.0 / max;
+        vp *= 1.0 / max;
+    }
+    let multiplier = damage.sqrt()
+        * if from_effect {
+            power as f32 * 0.25
+        } else {
+            1.0
+        };
+    hp *= multiplier;
+    vp *= multiplier;
+    hp *= (1.0 - resistance) as f32;
+    vp *= (1.0 - resistance) as f32;
+    hp *= 0.4;
+    let hp = hp.clamp(-128.0, 128.0);
+    let vp = vp.clamp(-128.0, 128.0);
+    let k = Vec3::new(f64::from(nx), 0.0, f64::from(nz)).normalize() * f64::from(hp);
+    if let Some(mut e) = ents.store.get_mut(target) {
+        let v = e.as_ref().velocity();
+        e.set_velocity(Vec3::new(v.x - k.x, v.y + f64::from(vp) * 1.2, v.z - k.z));
+        e.set_flags(vanillite_world::entity::EntityFlags::HAS_IMPULSE, true);
+    }
+    let hit = ents.mob(target).map(|m| archetype_sound(m, "hit"));
+    if let Some(hit) = hit {
+        cube_sound(ents, env, target, &hit);
+    }
+    true
+}
+
+/// `applyContactDamage`: a hot cube burns what it pushes or what pushes it (the player as the
+/// attacker of its own push).
+pub fn contact_damage(
+    level: &Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut crate::mob::MobContext,
+    cube: EntityId,
+    other: EntityId,
+) {
+    if !ents.mob(cube).and_then(cs).is_some_and(|c| c.traits.hot) {
+        return;
+    }
+    let kind = env.types.named("minecraft:sulfur_cube_hot");
+    let source = if ents.player(other).is_some() {
+        crate::mob::combat::entity_source(ents, kind, cube, cube)
+    } else {
+        crate::survival::damage::DamageSource::of(kind)
+    };
+    crate::mob::combat::hurt(level, ents, env, cx, other, source, 1.0);
+}
+
+/// `SulfurCube.playerPush`: a player walking into a cube holding a block pushes it.
+fn player_push(
+    level: &Level,
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    cx: &mut crate::mob::MobContext,
+    cube: EntityId,
+    player: EntityId,
+) {
+    let Some(m) = ents.mob(cube) else {
+        return;
+    };
+    if !has_body_item(m) {
+        return;
+    }
+    let resistance = m.attrs.knockback_resistance;
+    let traits = cs(m).map(|c| c.traits).unwrap_or_default();
+    let threshold = ARCHETYPES
+        .get(traits.sounds)
+        .map_or(0.2, |a| a.push_sound.0);
+    let cooldown = ARCHETYPES
+        .get(traits.sounds)
+        .map_or(0.5, |a| a.push_sound.1);
+    let passenger = ents.vehicle_of(player).is_some();
+    let mut pusher = player;
+    while let Some(v) = ents.vehicle_of(pusher) {
+        pusher = v;
+    }
+    let (Some(c), Some(p)) = (ents.store.get(cube), ents.store.get(pusher)) else {
+        return;
+    };
+    let to = c.pos() - p.pos();
+    let bottom = c.pos().y;
+    let top = bottom + f64::from(c.dims().height);
+    let feet = p.pos().y;
+    let pusher_top = feet + f64::from(p.dims().height);
+    let on_ground = c
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::ON_GROUND);
+    if (to.x * to.x + to.z * to.z).sqrt() >= f64::from(1.3_f32)
+        || feet > top
+        || pusher_top <= bottom
+    {
+        return;
+    }
+    let knockback = (1.0 - resistance).max(0.0);
+    let dir = Vec3::new(to.x, 0.0, to.z).normalize() * knockback;
+    let scale = if passenger { 0.16_f32 } else { 0.3 };
+    let speed =
+        (crate::spear::known_speed(ents, player).length() * 2.0 * f64::from(scale)).clamp(0.0, 0.5);
+    let y = if on_ground {
+        knockback * f64::from(0.3_f32)
+    } else {
+        0.0
+    };
+    let push = Vec3::new(dir.x, y, dir.z) * speed;
+    let Some(m) = ents.mob_mut(cube) else {
+        return;
+    };
+    let c = cs_mut(m);
+    let sound = push.length_sqr() > f64::from(threshold * threshold) && c.push_sound_cooldown <= 0;
+    if sound {
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            c.push_sound_cooldown = (cooldown * 20.0) as i32;
+        }
+        let name = archetype_sound(m, "push");
+        cube_sound(ents, env, cube, &name);
+    }
+    if let Some(mut e) = ents.store.get_mut(cube) {
+        let v = e.as_ref().velocity();
+        e.set_velocity(v + push);
+        e.set_flags(vanillite_world::entity::EntityFlags::HAS_IMPULSE, true);
+    }
+    contact_damage(level, ents, env, cx, cube, player);
+}
+
 // --- Client data and storage ------------------------------------------------------------
 
 pub fn encode_data(w: &mut DataWriter<'_>, m: &MobData) {
@@ -905,7 +1664,7 @@ pub fn encode_data(w: &mut DataWriter<'_>, m: &MobData) {
     w.boolean(17, c.age_locked, false);
     w.int(18, c.size, 1);
     if m.kind == Kind::SulfurCube {
-        w.int(19, c.fuse, -1);
+        w.int(19, c.max_fuse, -1);
         w.boolean(20, c.from_bucket, false);
     }
 }
@@ -921,6 +1680,9 @@ pub fn save(m: &MobData, out: &mut Compound) {
         out.insert("pickup_timer", c.pickup_timer);
         out.insert("from_bucket", c.from_bucket);
         out.insert("fuse", c.fuse);
+        if c.invulnerable {
+            out.insert("Invulnerable", true);
+        }
     }
 }
 
@@ -943,6 +1705,8 @@ pub fn load(m: &mut MobData, tag: &Compound) {
         c.pickup_timer = int("pickup_timer").unwrap_or(0);
         c.from_bucket = boolean("from_bucket");
         c.fuse = int("fuse").unwrap_or(-1);
+        c.max_fuse = c.fuse;
+        c.invulnerable = boolean("Invulnerable");
     }
 }
 

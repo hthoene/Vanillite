@@ -1,0 +1,65 @@
+{
+  "description": "A sulfur cube that swallowed TNT (the explosive archetype, #204) is primed with flint and steel (SulfurCube.primeTime: TNT primed sound, MAX_FUSE, invulnerable), ignores a player's hit apart from the knockback and explodes after its 120 tick fuse (tickFuse: power 3, TNT block interaction with mobGriefing) without splitting.",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -63,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 130,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        1.5
+      ],
+      "seed": 2,
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "cube",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "seed": 3
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "cube",
+      "item": "minecraft:tnt"
+    },
+    {
+      "tick": 3,
+      "op": "interact",
+      "entity": "alex",
+      "target": "cube",
+      "item": "minecraft:flint_and_steel"
+    },
+    {
+      "tick": 10,
+      "op": "attack_entity",
+      "entity": "alex",
+      "target": "cube"
+    }
+  ]
+}

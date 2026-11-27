@@ -1788,6 +1788,12 @@ impl Abilities {
     }
 }
 
+/// The `abilities` compound of a player in `mode` (`Abilities.Packed`) with the default
+/// speeds.
+pub(crate) fn abilities_nbt(mode: GameMode, flying: bool) -> vanillite_nbt::Compound {
+    Abilities { mode, flying }.save(vanillite_nbt::Compound::new())
+}
+
 /// `Entity.load`'s `Tags`.
 fn load_tags(data: &vanillite_nbt::Compound) -> Vec<String> {
     match data.get("Tags") {
