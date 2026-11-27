@@ -1654,8 +1654,12 @@ pub fn do_tick_ai(
             s.food.food_level += 1;
         }
     }
-    if player.survival.simulate_movement && result == TickResult::Alive {
-        simulate_travel(entity, player, env);
+    if result == TickResult::Alive {
+        if player.survival.simulate_movement {
+            simulate_travel(entity, player, env);
+        } else {
+            travel_motion(entity, player, env);
+        }
     }
     if result == TickResult::Alive && !player.survival.is_dead_or_dying() {
         if !spectator {
@@ -2269,6 +2273,81 @@ fn simulate_travel(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     } else {
         travel_in_air(entity, player, env);
     }
+}
+
+/// `LivingEntity.aiStep` → `Player.travel` without input for a player its client moves
+/// (`canSimulateMovement` is true for players on the server too): only the motion, as the next
+/// movement packet replaces the position. Knockback and other impulses decay with friction and
+/// gravity like in Vanilla, so the motion sent with a later hurt (`syncVelocity`, e.g. fall
+/// damage) and the next knockback start from it instead of from a stale impulse.
+fn travel_motion(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut Env<'_>) {
+    let v = entity.as_ref().velocity();
+    let (x, z) = if v.x * v.x + v.z * v.z < 9.0e-6 {
+        (0.0, 0.0)
+    } else {
+        (v.x, v.z)
+    };
+    let y = if v.y.abs() < 0.003 { 0.0 } else { v.y };
+    let v = Vec3::new(x, y, z);
+    if player.survival.is_dead_or_dying() {
+        entity.set_velocity(v);
+        return;
+    }
+    let flags = entity.as_ref().flags();
+    let flying = player.survival.flying;
+    if flags.contains(EntityFlags::FALL_FLYING) && !flying {
+        // The glide follows the look the server sees only through the client's moves.
+        entity.set_velocity(player.connection.movement.known_movement);
+        return;
+    }
+    let gravity = player_gravity(entity, player);
+    let fluids = player.survival.fluids;
+    let on_ground = flags.contains(EntityFlags::ON_GROUND);
+    // The move into the ground collides and stops the fall.
+    let fall = if on_ground && v.y < 0.0 { 0.0 } else { v.y };
+    let m = if fluids.in_water() {
+        let slow_down = if player
+            .survival
+            .effects
+            .has(crate::effect::MobEffect::DOLPHINS_GRACE)
+        {
+            0.96_f32
+        } else {
+            0.8
+        };
+        Vec3::new(
+            v.x * f64::from(slow_down),
+            fall * f64::from(0.8_f32) - gravity / 16.0,
+            v.z * f64::from(slow_down),
+        )
+    } else if fluids.in_lava() {
+        Vec3::new(v.x * 0.5, fall * 0.5 - gravity / 4.0, v.z * 0.5)
+    } else {
+        let pos = entity.as_ref().pos();
+        let below = env.blocks.block_state(pos_below_affecting_movement(pos));
+        let block_friction = match below {
+            Some(state) if on_ground => state.block().info().friction,
+            _ => 1.0,
+        };
+        let friction = f64::from(block_friction * 0.91);
+        let y = if let Some(a) = player
+            .survival
+            .effects
+            .amplifier(crate::effect::MobEffect::LEVITATION)
+        {
+            fall + (0.05 * f64::from(a + 1) - fall) * 0.2
+        } else if below.is_some() {
+            fall - gravity
+        } else if pos.y > f64::from(env.min_y) {
+            -0.1
+        } else {
+            0.0
+        };
+        Vec3::new(v.x * friction, y * f64::from(0.98_f32), v.z * friction)
+    };
+    // `Player.travel` while flying keeps 60 % of the vertical motion instead.
+    let y = if flying { v.y * 0.6 } else { m.y };
+    entity.set_velocity(Vec3::new(m.x, y, m.z));
 }
 
 /// The `minecraft:gravity` attribute of players.

@@ -1,0 +1,22 @@
+{
+  "description": "Fall damage without knockback (#143): three players and three pigs fall from 4, 10 and 23 blocks onto flat grass at noon. Fall damage is in the no_knockback tag: position and motion per tick show the straight fall and landing (no sideways push), health shows the damage (the pig from 23 blocks dies; players take fall damage only with client moves). After the landing a pig attacks the 4-block player (knockback that then decays) and the 10-block player takes generic damage (no knockback).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [0, -61, 0],
+    [23, -30, 23]
+  ],
+  "ticks": 100,
+  "entities": [
+    {"name": "p4", "type": "minecraft:player", "pos": [4.5, -56.0, 4.5]},
+    {"name": "p10", "type": "minecraft:player", "pos": [12.5, -50.0, 4.5]},
+    {"name": "p23", "type": "minecraft:player", "pos": [20.5, -37.0, 4.5]},
+    {"name": "pig4", "type": "minecraft:pig", "pos": [4.5, -56.0, 18.5], "seed": 4, "finalize": false},
+    {"name": "pig10", "type": "minecraft:pig", "pos": [12.5, -50.0, 18.5], "seed": 10, "finalize": false},
+    {"name": "pig23", "type": "minecraft:pig", "pos": [20.5, -37.0, 18.5], "seed": 23, "finalize": false}
+  ],
+  "actions": [
+    {"tick": 60, "op": "hurt", "entity": "p4", "by": "pig4", "amount": 1},
+    {"tick": 60, "op": "hurt", "entity": "p10", "amount": 1}
+  ]
+}
