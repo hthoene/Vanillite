@@ -22,6 +22,7 @@ use serde_json::Value;
 use vanillite_base::BlockPos;
 use vanillite_base::random::DecorationRandom;
 use vanillite_chunk::BiomeId;
+use vanillite_data::block::BlockState;
 use vanillite_datapack::LoadedPacks;
 
 use crate::Error;
@@ -623,6 +624,28 @@ pub struct FeatureSet {
     pub possible_biomes: FxHashSet<BiomeId>,
 }
 
+/// `FlatLevelGeneratorSettings.adjustGenerationSettings` for the biome of a flat generator: the
+/// features its biome gets instead of its own.
+#[derive(Clone, Debug)]
+pub struct FlatFeatures {
+    /// The flat settings' biome.
+    pub biome: BiomeId,
+    /// `lakes`: the two lava lakes in the lakes step instead of the biome's lakes.
+    pub lakes: bool,
+    /// The biome's own features (all steps but the structure steps): `features`, unless the
+    /// layers are all air and the biome is not `the_void`.
+    pub decoration: bool,
+    /// A `fill_layer` feature in the top layer step per layer that does not block motion: layer
+    /// index and state.
+    pub fill_layers: Vec<(i32, BlockState)>,
+}
+
+/// `GenerationStep.Decoration` indices the flat adjustment needs.
+const LAKES_STEP: usize = 1;
+const UNDERGROUND_STRUCTURES_STEP: usize = 3;
+const SURFACE_STRUCTURES_STEP: usize = 4;
+const TOP_LAYER_MODIFICATION_STEP: usize = 10;
+
 impl FeatureSet {
     /// Parses every feature the biomes of `possible_biomes` reference and sorts them like
     /// `FeatureSorter.buildFeaturesPerStep(possibleBiomes, ...)`.
@@ -633,6 +656,27 @@ impl FeatureSet {
         possible_biomes: &[BiomeId],
         context: WorldGenerationContext,
         templates: &std::sync::Arc<crate::template::StructureTemplateManager>,
+    ) -> Result<Self, Error> {
+        Self::load_with(
+            packs,
+            biomes,
+            random_state,
+            possible_biomes,
+            context,
+            templates,
+            None,
+        )
+    }
+
+    /// [`Self::load`] with the features of a flat generator's biome adjusted.
+    pub fn load_with(
+        packs: &LoadedPacks,
+        biomes: &BiomeRegistry,
+        random_state: &RandomState,
+        possible_biomes: &[BiomeId],
+        context: WorldGenerationContext,
+        templates: &std::sync::Arc<crate::template::StructureTemplateManager>,
+        flat: Option<&FlatFeatures>,
     ) -> Result<Self, Error> {
         crate::behaviour::init(packs);
         let mut parser = FeatureParser::new(packs, biomes, random_state).with_templates(templates);
@@ -648,6 +692,55 @@ impl FeatureSet {
                 );
             }
             biome_steps[usize::from(biome.id)] = parsed;
+        }
+        if let Some(flat) = flat {
+            let original = std::mem::take(&mut biome_steps[usize::from(flat.biome)]);
+            // `BiomeGenerationSettings.PlainBuilder.addFeature(step, feature)`.
+            let mut steps: Vec<Vec<PlacedFeatureId>> = Vec::new();
+            let mut add = |step: usize, feature: PlacedFeatureId| {
+                if steps.len() <= step {
+                    steps.resize_with(step + 1, Vec::new);
+                }
+                steps[step].push(feature);
+            };
+            if flat.lakes {
+                for lake in [
+                    "minecraft:lake_lava_underground",
+                    "minecraft:lake_lava_surface",
+                ] {
+                    add(LAKES_STEP, parser.placed(&Value::String(lake.to_owned()))?);
+                }
+            }
+            if flat.decoration {
+                for (step, features) in original.iter().enumerate() {
+                    if step != UNDERGROUND_STRUCTURES_STEP
+                        && step != SURFACE_STRUCTURES_STEP
+                        && !(flat.lakes && step == LAKES_STEP)
+                    {
+                        for &feature in features {
+                            add(step, feature);
+                        }
+                    }
+                }
+            }
+            for &(height, state) in &flat.fill_layers {
+                let properties: serde_json::Map<String, Value> = state
+                    .properties()
+                    .map(|(k, v)| (k.to_owned(), Value::String(v.to_owned())))
+                    .collect();
+                let placed = serde_json::json!({
+                    "feature": {
+                        "type": "minecraft:fill_layer",
+                        "config": {
+                            "height": height,
+                            "state": {"Name": state.block().name(), "Properties": properties},
+                        },
+                    },
+                    "placement": [],
+                });
+                add(TOP_LAYER_MODIFICATION_STEP, parser.placed(&placed)?);
+            }
+            biome_steps[usize::from(flat.biome)] = steps;
         }
         // The placed features no biome lists (placed by other features or structures), so every
         // placed feature of the packs parses and has an id.

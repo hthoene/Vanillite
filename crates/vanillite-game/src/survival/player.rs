@@ -3583,6 +3583,20 @@ impl crate::mob::physics::Blocks for MoveBlocks<'_> {
             .unwrap_or(vanillite_data::block::BlockState::AIR)
     }
 
+    fn states_in(
+        &self,
+        min: BlockPos,
+        max: BlockPos,
+        out: &mut [vanillite_data::block::BlockState],
+    ) {
+        let mut slots = out.iter_mut();
+        self.0.block_states_in(min, max, &mut |state| {
+            if let Some(slot) = slots.next() {
+                *slot = state.unwrap_or(vanillite_data::block::BlockState::AIR);
+            }
+        });
+    }
+
     fn border(&self) -> Option<&crate::level::border::WorldBorder> {
         self.1
     }

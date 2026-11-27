@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 10;
+pub const ABI_MINOR: u16 = 11;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -694,6 +694,8 @@ abi! {
             /// The longest SNBT text the host parses (entity, item and block entity data).
             /// Since ABI 1.5.
             MAX_SNBT = 1 << 21,
+            /// The most entries one `set_hosted_plugins` call reports. Since ABI 1.11.
+            MAX_HOSTED_PLUGINS = 4096,
         }
         /// Why a login was refused ([`LoginEvent::reason`]). Since ABI 1.4.
         pub mod login_reason: u32 {
@@ -2127,6 +2129,28 @@ abi! {
             /// offhand, feet, legs, chest, head, body, saddle), `u32::MAX` for none.
             pub equip_slot: u32,
         }
+        /// A plugin another plugin hosts (the Paper/Spigot layer's Bukkit plugins), for
+        /// `/plugins`, `/version <plugin>` and Query. The host copies every string; names,
+        /// versions, groups and websites are at most 256 bytes, descriptions and authors 4 KiB.
+        /// Since ABI 1.11.
+        pub struct HostedPlugin {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// 1 when the hosted plugin is enabled.
+            pub enabled: u32,
+            /// The section `/plugins` lists it under, e.g. `Bukkit` or `Paper`.
+            pub group: Str,
+            /// Its name.
+            pub name: Str,
+            /// Its version.
+            pub version: Str,
+            /// Its description; may be empty.
+            pub description: Str,
+            /// Its authors, separated by `, `; may be empty.
+            pub authors: Str,
+            /// Its website; may be empty.
+            pub website: Str,
+        }
         /// What `world_info` tells about a world. Since ABI 1.8.
         pub struct WorldDetails {
             /// Size of this record in bytes.
@@ -2889,6 +2913,12 @@ abi! {
             /// Sends an online player its command tree again (after its permissions changed),
             /// from any thread; `NOT_FOUND` for a player who is offline. Since ABI 1.10.
             pub player_update_commands: unsafe extern "C" fn(PluginId, Uuid) -> Status,
+            /// Replaces the plugins this plugin hosts (`count` records `stride` bytes apart, at
+            /// most [`limits::MAX_HOSTED_PLUGINS`]; 0 clears them), from any thread. On
+            /// `INVALID_ARGUMENT` (bad UTF-8, too long, too many) the previous list stays.
+            /// Since ABI 1.11.
+            pub set_hosted_plugins:
+                unsafe extern "C" fn(PluginId, *const HostedPlugin, usize, usize) -> Status,
         }
     }
 }

@@ -196,6 +196,7 @@ These apply to the whole server.
 | `max-selector-options` | security |  | `64` | `64` | `64` | `64` | `64` | Options inside one entity selector `[...]`. Integer from 1 to 1024. Environment: `VANILLITE_COMMANDS__MAX_SELECTOR_OPTIONS`. |
 | `max-message-selectors` | security |  | `16` | `16` | `16` | `16` | `16` | Entity selectors inside one message argument. Integer from 0 to 256. Environment: `VANILLITE_COMMANDS__MAX_MESSAGE_SELECTORS`. |
 | `max-redirect-depth` | security |  | `64` | `64` | `64` | `64` | `64` | Nested redirects followed while parsing one command. Integer from 1 to 1024. Environment: `VANILLITE_COMMANDS__MAX_REDIRECT_DEPTH`. |
+| `bukkit-commands` | setting | yes | `false` | `false` | `true` | `true` | `false` | Paper's `/version` (also `/ver` and `/about`): the server's version or that of a plugin, for everyone with `bukkit.command.version` (all players by default); Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is Vanilla's command for operators. `/plugins` is always there. Environment: `VANILLITE_COMMANDS__BUKKIT_COMMANDS`. |
 
 #### `[performance.survival]`
 
@@ -320,7 +321,7 @@ view-distance = 8
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
-| `enabled` | performance |  | `false` | `false` | `false` | `false` | `false` | Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial order at no cost. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED`. |
+| `enabled` | performance |  | `false` | `false` | `false` | `false` | `true` | Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. On in the performance profile; `false` keeps Vanilla's exact serial order at no cost. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED`. |
 | `tile-size` | performance |  | `16` | `16` | `16` | `16` | `16` | Edge of a tile in chunks. Smaller tiles balance better over the cores, larger ones cost less bookkeeping. Integer from 8 to 32. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__TILE_SIZE`. |
 
 #### `[performance.simulation]`

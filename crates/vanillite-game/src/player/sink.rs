@@ -62,6 +62,9 @@ pub trait PacketSink: Send + Sync {
         self.send_body(body)
     }
 
+    /// Writes what is queued. The world calls this once per tick after the tick's packets;
+    /// a sink may hold packets back until then (one write per tick). The default does nothing.
+    fn flush(&self) {}
     /// Flushes what is queued and closes the connection.
     fn close(&self);
     /// Whether the connection is closed.

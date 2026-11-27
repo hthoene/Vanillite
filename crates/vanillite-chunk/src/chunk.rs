@@ -14,12 +14,74 @@ use crate::section::Section;
 pub const MAX_SECTIONS: usize = 254;
 
 /// One chunk column.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Chunk {
     min_section: i32,
     sections: Box<[Arc<Section>]>,
     light: ChunkLight,
     heightmaps: Heightmaps,
+    hot: HotSections,
+}
+
+impl PartialEq for Chunk {
+    fn eq(&self, other: &Self) -> bool {
+        // `hot` is a cache of the sections.
+        self.min_section == other.min_section
+            && self.sections == other.sections
+            && self.light == other.light
+            && self.heightmaps == other.heightmaps
+    }
+}
+
+impl Eq for Chunk {}
+
+/// What the tick asks about every section, kept in the chunk itself so a scan over the
+/// sections does not visit each one: bit `i` is section `i` (the lowest 64 sections; above,
+/// every section is "maybe ticking" and "not known to be solid"). A set `maybe_ticking` bit
+/// may be stale-true and a clear `solid` bit stale-false (after [`Chunk::section_mut`]), never
+/// the other way round.
+#[derive(Debug, Clone, Copy, Default)]
+struct HotSections {
+    /// The section may tick randomly (`isRandomlyTicking`).
+    maybe_ticking: u64,
+    /// Every block of the section is a redstone conductor.
+    solid: u64,
+}
+
+impl HotSections {
+    fn of(sections: &[Arc<Section>]) -> HotSections {
+        let mut hot = HotSections::default();
+        for (index, section) in sections.iter().enumerate() {
+            hot.refresh(index, section);
+        }
+        hot
+    }
+
+    #[inline]
+    fn refresh(&mut self, index: usize, section: &Section) {
+        if index >= 64 {
+            return;
+        }
+        let bit = 1u64 << index;
+        let summary = section.summary();
+        self.maybe_ticking = (self.maybe_ticking & !bit)
+            | if summary.is_randomly_ticking() {
+                bit
+            } else {
+                0
+            };
+        self.solid = (self.solid & !bit) | if summary.all_conductors() { bit } else { 0 };
+    }
+
+    /// After a write the summary of `index` is not followed: assume the worst.
+    #[inline]
+    fn forget(&mut self, index: usize) {
+        if index < 64 {
+            let bit = 1u64 << index;
+            self.maybe_ticking |= bit;
+            self.solid &= !bit;
+        }
+    }
 }
 
 impl Chunk {
@@ -34,9 +96,11 @@ impl Chunk {
         let count = (height / 16) as usize;
         assert!(count <= MAX_SECTIONS, "too many sections");
         let empty = Arc::new(Section::new(air, biome));
+        let sections = vec![empty; count].into_boxed_slice();
         Self {
             min_section: min_y >> 4,
-            sections: vec![empty; count].into_boxed_slice(),
+            hot: HotSections::of(&sections),
+            sections,
             light: ChunkLight::new(count),
             heightmaps: Heightmaps::new(height, &HeightmapKind::LIVE),
         }
@@ -65,6 +129,7 @@ impl Chunk {
         let height = (sections.len() * 16) as u32;
         let mut chunk = Self {
             min_section,
+            hot: HotSections::of(&sections),
             sections: sections.into_boxed_slice(),
             light,
             heightmaps: Heightmaps::new(height, &HeightmapKind::LIVE),
@@ -109,7 +174,68 @@ impl Chunk {
     /// this skips the heightmaps; call [`prime_heightmaps`](Self::prime_heightmaps) afterwards.
     #[inline]
     pub fn section_mut(&mut self, index: usize) -> &mut Section {
+        self.hot.forget(index);
         Arc::make_mut(&mut self.sections[index])
+    }
+
+    /// The first section at or above `from` that ticks randomly (`isRandomlyTicking`), found
+    /// without visiting the sections that cannot.
+    #[inline]
+    pub fn next_randomly_ticking(&self, from: usize) -> Option<usize> {
+        let mut index = from;
+        while index < self.sections.len() {
+            if index < 64 {
+                let rest = self.hot.maybe_ticking >> index;
+                if rest == 0 {
+                    index = 64;
+                    continue;
+                }
+                index += rest.trailing_zeros() as usize;
+                if index >= self.sections.len() {
+                    return None;
+                }
+            }
+            if self.sections[index].summary().is_randomly_ticking() {
+                return Some(index);
+            }
+            index += 1;
+        }
+        None
+    }
+
+    /// Prefetch hint: starts loading the list of sections (the part with the sections that may
+    /// tick randomly).
+    #[inline]
+    pub fn prefetch_sections(&self) {
+        let first = self.hot.maybe_ticking.trailing_zeros() as usize;
+        let last = 63 - self.hot.maybe_ticking.leading_zeros().min(63) as usize;
+        let sections = &self.sections[..];
+        if let (Some(a), Some(b)) = (sections.get(first), sections.get(last)) {
+            vanillite_base::prefetch::read(a);
+            vanillite_base::prefetch::read(b);
+        } else {
+            vanillite_base::prefetch::read(sections.as_ptr());
+        }
+    }
+
+    /// Prefetch hint: starts loading the sections that may tick randomly.
+    #[inline]
+    pub fn prefetch_ticking_sections(&self) {
+        let mut bits = self.hot.maybe_ticking;
+        while bits != 0 {
+            let index = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            if let Some(section) = self.sections.get(index) {
+                vanillite_base::prefetch::read(Arc::as_ptr(section));
+            }
+        }
+    }
+
+    /// Whether every block of section `index` is known to be a redstone conductor without
+    /// visiting it (`false` = not known; read the block).
+    #[inline]
+    pub fn section_all_conductors(&self, index: usize) -> bool {
+        index < 64 && self.hot.solid & (1u64 << index) != 0
     }
 
     /// Light.
@@ -168,7 +294,9 @@ impl Chunk {
         {
             return None;
         }
-        let old = Arc::make_mut(&mut self.sections[index]).set_block(x, local_y, z, state);
+        let section = Arc::make_mut(&mut self.sections[index]);
+        let old = section.set_block(x, local_y, z, state);
+        self.hot.refresh(index, section);
         for kind in HeightmapKind::LIVE {
             self.update_heightmap(kind, x, y, z, state_flags);
         }

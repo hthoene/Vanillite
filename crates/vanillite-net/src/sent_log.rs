@@ -47,6 +47,11 @@ impl SentLog {
         self.state.store(state_tag(state), Ordering::Relaxed);
     }
 
+    /// Entries recorded so far (a running count, not capped by the ring size).
+    pub(crate) fn written(&self) -> usize {
+        self.next.load(Ordering::Relaxed)
+    }
+
     /// Milliseconds since the connection started, for [`SentLog::body`] and
     /// [`SentLog::frames`].
     pub(crate) fn now_ms(&self) -> u64 {

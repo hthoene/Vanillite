@@ -85,6 +85,7 @@ library in `native/<target-triple>/` (one per platform, e.g.
 | `threading` | no | `serialized` (default): never called on two threads at once. `concurrent`: the plugin is thread-safe and may be called from several world threads at once. |
 | `uses` | no | What the plugin uses (`files`, `network`, `admin`): shown to the admin, not enforced. |
 | `provides` | no | Slots the plugin may fill, e.g. `chunk-generator`. |
+| `description`, `authors`, `website` | no | Shown by `/version <plugin>` (`authors` is a list of names). |
 
 ## Lifecycle and threads
 

@@ -55,6 +55,8 @@ pub struct NoiseGeneratorSettings {
     pub sea_level: i32,
     pub aquifers: Option<AquiferConfig>,
     pub legacy_random_source: bool,
+    /// `disable_mob_generation`: no animals when a chunk is generated (`spawnOriginalMobs`).
+    pub disable_mob_generation: bool,
     /// `spawn_target`: where `NoiseSpawnFinder` looks for the dimension origin (empty: chunk
     /// 0, 0).
     pub spawn_target: Vec<SpawnTargetPoint>,
@@ -165,6 +167,10 @@ impl NoiseGeneratorSettings {
             sea_level: int(json, "sea_level")?,
             aquifers,
             legacy_random_source: boolean(json, "legacy_random_source")?,
+            disable_mob_generation: json
+                .get("disable_mob_generation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             spawn_target,
         })
     }

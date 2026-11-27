@@ -56,7 +56,7 @@ contracts live in the crate that owns them (`Scheduler` here; world-scoped slots
   the next deadline (Vanilla's `waitUntilNextTick`).
 - **Server tick**: G1 (console commands and global tasks, `&mut Server`) → world phase →
   cross-world hand-offs in world order → G2 (player list, autosave).
-- **Tile region mode** (`performance.region-threading`, off by default): natural spawning and
+- **Tile region mode** (`performance.region-threading`, on in the performance profile only): natural spawning and
   random ticks of one world run per tile on the compute pool; see `region-threading.md`.
 - **Sequential mode**: the server thread ticks the worlds in Vanilla order (overworld, nether,
   end). `TickContext::in_world` runs on the other world immediately.

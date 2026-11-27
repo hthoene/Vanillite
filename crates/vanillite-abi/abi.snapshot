@@ -1,4 +1,4 @@
-abi 1.10
+abi 1.11
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -183,6 +183,7 @@ const limits::LAST_CUSTOM_EVENT: u32 = 255
 const limits::MAX_PLUGIN_MESSAGE: u32 = 32767
 const limits::MAX_CHANNELS: u32 = 128
 const limits::MAX_SNBT: u32 = 2097152
+const limits::MAX_HOSTED_PLUGINS: u32 = 4096
 const login_reason::ALLOWED: u32 = 0
 const login_reason::BANNED: u32 = 1
 const login_reason::NOT_WHITELISTED: u32 = 2
@@ -776,6 +777,15 @@ struct ItemTypeInfo size=28 align=4
   flags: u32 @16
   rarity: u32 @20
   equip_slot: u32 @24
+struct HostedPlugin size=104 align=8
+  size: u32 @0
+  enabled: u32 @4
+  group: Str @8
+  name: Str @24
+  version: Str @40
+  description: Str @56
+  authors: Str @72
+  website: Str @88
 struct WorldDetails size=24 align=8
   size: u32 @0
   environment: u32 @4
@@ -869,7 +879,7 @@ struct PacketEvent size=80 align=8
   player: Uuid @40
   body: Bytes @56
   out: *constPacketOut @72
-struct HostApi size=1320 align=8
+struct HostApi size=1328 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -1037,3 +1047,4 @@ struct HostApi size=1320 align=8
   registry_entries: unsafeextern"C"fn(PluginId,Str,*constByteSink)->Status @1296
   registry_tag: unsafeextern"C"fn(PluginId,Str,Str,*constByteSink)->Status @1304
   player_update_commands: unsafeextern"C"fn(PluginId,Uuid)->Status @1312
+  set_hosted_plugins: unsafeextern"C"fn(PluginId,*constHostedPlugin,usize,usize)->Status @1320

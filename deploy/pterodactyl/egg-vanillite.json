@@ -813,7 +813,7 @@
     },
     {
       "name": "Performance: Region Threading › Enabled",
-      "description": "Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial order at no cost. Applies to every world. default: the profile's value (vanilla profile: false). vanillite.toml: performance.region-threading.enabled.",
+      "description": "Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. On in the performance profile; `false` keeps Vanilla's exact serial order at no cost. Applies to every world. default: the profile's value (vanilla profile: false). vanillite.toml: performance.region-threading.enabled.",
       "env_variable": "VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED",
       "default_value": "default",
       "user_viewable": true,
@@ -1639,6 +1639,16 @@
       "user_viewable": true,
       "user_editable": true,
       "rules": "nullable|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Commands: Bukkit Commands",
+      "description": "Paper's `/version` (also `/ver` and `/about`): the server's version or that of a plugin, for everyone with `bukkit.command.version` (all players by default); Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is Vanilla's command for operators. `/plugins` is always there. default: the profile's value (vanilla profile: false). vanillite.toml: commands.bukkit-commands.",
+      "env_variable": "VANILLITE_COMMANDS__BUKKIT_COMMANDS",
+      "default_value": "default",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|in:default,true,false",
       "field_type": "text"
     },
     {

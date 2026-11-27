@@ -213,6 +213,12 @@ rules! {
             /// Nested redirects followed while parsing one command.
             max_redirect_depth: u32 = "max-redirect-depth", Security, range = [1, 1024],
                 vanilla = 64;
+            /// Paper's `/version` (also `/ver` and `/about`): the server's version or that of
+            /// a plugin, for everyone with `bukkit.command.version` (all players by default);
+            /// Vanilla's version dump moves to `/minecraft:version`. Off, `/version` is
+            /// Vanilla's command for operators. `/plugins` is always there.
+            bukkit_commands: bool = "bukkit-commands", Setting, restart = true,
+                vanilla = false, paper = true, spigot = true;
         }
         /// Survival: time and weather.
         survival: SurvivalRules = "performance.survival" {
@@ -465,9 +471,9 @@ rules! {
             /// players are spread out; no gain for a crowd in one place. Deviation: these
             /// phases draw their random numbers per tile, so a seeded world differs from
             /// Vanilla (same rates), and a player's mob cap can be exceeded by one tick's
-            /// spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial
-            /// order at no cost.
-            enabled: bool = "enabled", Performance, vanilla = false;
+            /// spawns at a tile border. On in the performance profile; `false` keeps Vanilla's
+            /// exact serial order at no cost.
+            enabled: bool = "enabled", Performance, vanilla = false, performance = true;
             /// Edge of a tile in chunks. Smaller tiles balance better over the cores, larger
             /// ones cost less bookkeeping.
             tile_size: u8 = "tile-size", Performance, range = [8, 32], vanilla = 16;

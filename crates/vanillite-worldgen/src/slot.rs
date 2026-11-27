@@ -25,7 +25,7 @@ use vanillite_chunk::slots::{
     WorldInfo,
 };
 use vanillite_chunk::{Chunk, Heightmap, HeightmapKind, Section};
-use vanillite_data::block::BlockId;
+use vanillite_data::block::{BlockId, BlockState};
 use vanillite_data::registry::BLOCK_ENTITY_TYPE;
 
 use crate::generator::TerrainMemo;
@@ -153,6 +153,8 @@ pub struct VanillaChunkGenerator {
     structures: bool,
     /// The structure starts of chunks past `StructureStarts`, by chunk.
     starts: Mutex<FxHashMap<ChunkPos, ChunkStarts>>,
+    /// Whether the settings allow mobs at generation, read once.
+    original_mobs: std::sync::OnceLock<bool>,
 }
 
 impl VanillaChunkGenerator {
@@ -164,6 +166,7 @@ impl VanillaChunkGenerator {
             world,
             structures: true,
             starts: Mutex::default(),
+            original_mobs: std::sync::OnceLock::new(),
         }
     }
 
@@ -286,16 +289,42 @@ fn put(chunk: &mut slots::ProtoChunk, mut proto: ProtoChunk) {
         chunk.chunk.light().clone(),
         stored,
     );
+    let block_entity_of = |chunk: &Chunk, pos: BlockPos| {
+        chunk
+            .block((pos.x & 15) as u32, pos.y, (pos.z & 15) as u32)
+            .map(|state| BlockState(state).block().info().block_entity)
+            .filter(|&kind| kind != u16::MAX)
+    };
     for (&pos, data) in proto.block_entities() {
-        let Some(kind) = data
-            .get("id")
-            .and_then(|id| id.as_str())
-            .and_then(|id| BLOCK_ENTITY_TYPE.id(id))
-        else {
-            continue;
+        let id = data.get("id").and_then(|id| id.as_str());
+        // A `DUMMY` placeholder becomes a new block entity of the block's type when the chunk
+        // becomes live (`LevelChunk.promotePendingBlockEntity`).
+        let (kind, placeholder) = if id == Some("DUMMY") {
+            let Some(kind) = block_entity_of(&chunk.chunk, pos) else {
+                continue;
+            };
+            let Some(name) = BLOCK_ENTITY_TYPE.name(kind) else {
+                continue;
+            };
+            let tag = Compound::new()
+                .with("id", name)
+                .with("x", pos.x)
+                .with("y", pos.y)
+                .with("z", pos.z);
+            (kind, Some(tag))
+        } else {
+            let Some(kind) = id.and_then(|id| BLOCK_ENTITY_TYPE.id(id)) else {
+                continue;
+            };
+            (kind, None)
         };
         let mut nbt = Vec::new();
-        if vanillite_nbt::write::write_network_compound(data, &mut nbt).is_err() {
+        if vanillite_nbt::write::write_network_compound(
+            placeholder.as_ref().unwrap_or(data),
+            &mut nbt,
+        )
+        .is_err()
+        {
             continue;
         }
         chunk.block_entities.retain(|b| b.pos != pos);
@@ -305,6 +334,10 @@ fn put(chunk: &mut slots::ProtoChunk, mut proto: ProtoChunk) {
             nbt: nbt.into(),
         });
     }
+    // Block entities of blocks a later write replaced (`setBlock` removed them in the proto chunk).
+    chunk
+        .block_entities
+        .retain(|b| b.kind.is_some() && block_entity_of(&chunk.chunk, b.pos) == b.kind);
     // Generation ticks are stored with delay 0 (`ProtoChunkTicks`).
     fn saved<T>(kind: u16, tick: &ProtoTick<T>) -> SavedTick {
         SavedTick {
@@ -520,6 +553,12 @@ impl ChunkGenerator for VanillaChunkGenerator {
         // Starts are a function of the seed and of what the chunks store: forgotten ones are
         // made again when a chunk needs them (as beyond `MAX_KEPT_STARTS`).
         *self.kept_starts() = FxHashMap::default();
+    }
+
+    fn spawns_original_mobs(&self) -> bool {
+        *self
+            .original_mobs
+            .get_or_init(|| !self.terrain.get().settings().disable_mob_generation)
     }
 
     fn prepare(&self) {
