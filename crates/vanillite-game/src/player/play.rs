@@ -737,6 +737,11 @@ impl Digging {
                 ctx.actor.entity,
             );
         }
+        // `TntBlock` / `PistonHeadBlock.playerWillDestroy`: unstable TNT primes, a creative
+        // player's piston head takes the base along.
+        if let Some(level) = ctx.level.level_mut() {
+            crate::block::break_hooks::player_will_destroy(level, state, pos, ctx.actor.creative());
+        }
         // `playerWillDestroy`: break particles and sound for everyone else, and the other half
         // of double blocks.
         ctx.level.level_event(
@@ -815,6 +820,9 @@ impl Digging {
             // `Block.playerDestroy`.
             ctx.award_stat(Stat::of(StatType::Mined, state.block().0), 1);
             drop_resources(ctx, state, pos, &tool, entity.as_ref());
+            if let Some(level) = ctx.level.level_mut() {
+                crate::block::break_hooks::ice_player_destroy(level, state, pos, &tool);
+            }
             if crate::block::beehive::is_beehive(state.block())
                 && let Some(player) = ctx.actor.entity
                 && let Some(level) = ctx.level.level_mut()
@@ -1970,6 +1978,9 @@ fn drop_resources(
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);
+    }
+    if let Some(level) = ctx.level.level_mut() {
+        crate::block::break_hooks::spawn_after_break(level, state, pos, tool, true);
     }
 }
 

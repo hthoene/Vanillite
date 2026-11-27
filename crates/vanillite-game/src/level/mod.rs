@@ -159,6 +159,8 @@ pub struct LevelSettings {
     pub send_command_feedback: bool,
     /// `mobGriefing` game rule (`MOB_GRIEFING`).
     pub mob_griefing: bool,
+    /// `projectiles_can_break_blocks` game rule.
+    pub projectiles_can_break_blocks: bool,
 }
 
 impl Default for LevelSettings {
@@ -196,6 +198,7 @@ impl Default for LevelSettings {
             max_command_sequence_length: 65536,
             send_command_feedback: true,
             mob_griefing: true,
+            projectiles_can_break_blocks: true,
         }
     }
 }
@@ -241,6 +244,9 @@ impl LevelSettings {
         self.send_command_feedback = rules.bool(Rule::SEND_COMMAND_FEEDBACK);
         if let Some(v) = get("mob_griefing") {
             self.mob_griefing = v != 0;
+        }
+        if let Some(v) = get("projectiles_can_break_blocks") {
+            self.projectiles_can_break_blocks = v != 0;
         }
     }
 }

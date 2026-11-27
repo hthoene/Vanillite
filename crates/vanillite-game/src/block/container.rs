@@ -562,7 +562,8 @@ pub fn pre_remove_side_effects(level: &mut Level, pos: BlockPos, entity: &BlockE
         BlockEntity::Shelf(s) => &s.items,
         _ => return,
     };
-    let items: Vec<ItemStack> = items.iter().filter(|s| !s.is_empty()).cloned().collect();
+    // Every slot draws its drop position, empty ones too.
+    let items: Vec<ItemStack> = items.to_vec();
     for stack in items {
         drop_item_stack(level, pos, stack);
     }

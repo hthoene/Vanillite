@@ -704,8 +704,9 @@ pub enum WorldAction {
     EntityInside(BlockPos, EntityId),
     /// `stepOn` of the block at the position for the entity standing on it.
     StepOn(BlockPos, EntityId),
-    /// `onProjectileHit` of the block at the position, hit by the projectile at the point.
-    ProjectileHitBlock(BlockPos, Vec3, EntityId),
+    /// `onProjectileHit` of the block at the position, hit by the projectile at the point
+    /// with the speed.
+    ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
     /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
@@ -772,8 +773,8 @@ impl WorldAction {
                     crate::block::sculk::step_on_block(level, pos, id);
                 }
             }
-            WorldAction::ProjectileHitBlock(pos, at, id) => {
-                crate::block::sensor::projectile_hit_block(level, pos, at, id);
+            WorldAction::ProjectileHitBlock(pos, at, id, speed) => {
+                crate::block::projectile_hit::projectile_hit_block(level, pos, at, id, speed);
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
             WorldAction::OutputSignal(pos) => {

@@ -5,6 +5,8 @@ harness = 2
 
 [entries]
 block_bonemeal_growth = "c76634f5b397a1e9818fb1838c511bb4c1a7e1b1"
+block_break_player = "2d4acb2ea883fee7322ad335f43765e3ae03bdb0"
+block_break_xp = "e97c316e7b2ba0d53444dd1e8013b19e677e6798"
 block_bubble_columns = "7bf3e532fe467b4cc55deaef8c9c2106d73c18be"
 block_cake_candles = "7b3c87805b8e55dfee4b9a51967332cde88953ef"
 block_cauldrons = "a128039c8c1617e1630c1f0ea477837f236e6e9c"
@@ -26,6 +28,8 @@ block_lava_water = "4739add2f0921bde9e65ac4216b7345bbc3e5655"
 block_leaf_decay = "61ffee84200facef86b5c0c47ac038d7de930d76"
 block_plants_growth = "dc25d72b201ea64cfbae082f2a6f950f59c7d742"
 block_player_tripwire_buckets = "255d8a51516cc222151999cff68c85db974af8a6"
+block_projectile_hit = "860a8464ffd159d9e23740b8169f037f953437c5"
+block_projectile_trident = "b9aade74ad2f4308c1af6cfbacb9643d3dfcd434"
 block_propagules_vines = "3e66ff71aa1786bf5876f756dd22f8f0669bf1b8"
 block_rain = "b2dec526f9668bd8d5a0a2aae5bc50493aff09f6"
 block_saplings = "66ee6edafe7e09bca1dc5f109ccb09430b876f04"

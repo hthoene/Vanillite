@@ -1,0 +1,13 @@
+{
+  "description": "A fast trident thrown down onto a stalagmite tip breaks it (SpeleothemBlock.onProjectileHit: trident faster than 0.6), then falls onto the ground; drops are off.",
+  "tier": "fast",
+  "rules": {"block_drops": "false"},
+  "region": [[0, -62, 6], [4, -56, 10]],
+  "ticks": 20,
+  "setup": [
+    {"op": "set", "pos": [2, -60, 8], "block": "minecraft:pointed_dripstone[vertical_direction=up,thickness=tip]"}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:trident 2.5 -57.5 8.5 {Motion:[0.0,-1.5,0.0]}"}
+  ]
+}

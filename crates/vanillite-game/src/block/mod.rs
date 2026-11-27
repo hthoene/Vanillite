@@ -15,6 +15,7 @@ pub mod beehive;
 pub mod bell;
 pub mod bonemeal;
 pub mod bookshelf;
+pub mod break_hooks;
 pub mod brewing;
 pub mod brushable;
 mod bubble;
@@ -47,6 +48,7 @@ pub mod place;
 pub mod plate;
 pub mod portal;
 pub mod pot;
+pub mod projectile_hit;
 pub mod rail;
 pub mod redstone;
 pub mod sculk;
@@ -204,6 +206,8 @@ pub struct BlockBehaviour {
     pub entity_inside: Option<EntityInsideFn>,
     /// `attack`.
     pub attack: Option<AttackFn>,
+    /// `onProjectileHit`.
+    pub projectile_hit: Option<projectile_hit::ProjectileHitFn>,
 }
 
 /// The behaviour table of all blocks.
@@ -339,6 +343,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
         b.random_tick = Some(growth::budding_amethyst_random_tick);
     } else if block == ids::REDSTONE_ORE || block == ids::DEEPSLATE_REDSTONE_ORE {
         b.random_tick = Some(weather::redstone_ore_random_tick);
+        b.attack = Some(weather::redstone_ore_attack);
     } else if block == ids::SPONGE {
         b.on_place = Some(fluid::sponge_on_place);
         b.neighbor_changed = Some(fluid::sponge_neighbor_changed);
@@ -379,6 +384,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     portal::fill(block, &mut b);
     eggs::fill(block, &mut b);
     dripleaf::fill(block, &mut b);
+    projectile_hit::fill(block, &mut b);
     b
 }
 

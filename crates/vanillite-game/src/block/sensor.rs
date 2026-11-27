@@ -32,43 +32,6 @@ fn own_power(_level: &Level, state: BlockState, _pos: BlockPos, _direction: Dire
 
 // --- TargetBlock -------------------------------------------------------------------------
 
-/// `BlockState.onProjectileHit` of the block at `pos` that `projectile` hit at `at` (from
-/// `Projectile.onHitBlock`, as a world action after the projectile's tick): target blocks.
-pub fn projectile_hit_block(level: &mut Level, pos: BlockPos, at: Vec3, projectile: EntityId) {
-    if !level.block(pos).is(ids::TARGET) {
-        return;
-    }
-    let ents = &level.entities;
-    let Some(kind) = ents.store.get(projectile).map(|e| e.kind()) else {
-        return;
-    };
-    // `projectile instanceof AbstractArrow`: arrows, spectral arrows and tridents.
-    let arrow =
-        crate::mob::projectile::is_arrow_kind(kind) || kind == vanillite_data::entity::ids::TRIDENT;
-    let owner = ents
-        .arrow(projectile)
-        .and_then(|a| a.owner)
-        .or_else(|| ents.missile(projectile).and_then(|m| m.owner))
-        .or_else(|| match ents.special(projectile) {
-            Some(crate::mob::boss::special::SpecialData::ThrownPotion(p)) => p.owner,
-            _ => None,
-        });
-    // The face the hit point lies on (the target is a full cube).
-    let local = at - Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
-    let face = [
-        (local.x.abs(), Direction::West),
-        ((1.0 - local.x).abs(), Direction::East),
-        (local.y.abs(), Direction::Down),
-        ((1.0 - local.y).abs(), Direction::Up),
-        (local.z.abs(), Direction::North),
-        ((1.0 - local.z).abs(), Direction::South),
-    ]
-    .into_iter()
-    .min_by(|a, b| a.0.total_cmp(&b.0))
-    .map_or(Direction::Up, |f| f.1);
-    target_projectile_hit(level, pos, face, at, arrow, projectile, owner);
-}
-
 /// `onProjectileHit`: the projectile code calls this when `projectile` hits a target block at
 /// `hit` on `face`; `arrow` is `projectile instanceof AbstractArrow`. A player owner gets the
 /// `target_hit` statistic and trigger. Returns the output strength.
@@ -249,7 +212,7 @@ mod tests {
             let network_id = level.network_ids().next();
             let new = NewEntity::new(kind, network_id, 1, at);
             let id = level.entities.store.spawn(new, |_| 0);
-            projectile_hit_block(&mut level, pos, at, id);
+            crate::block::projectile_hit::projectile_hit_block(&mut level, pos, at, id, 0.0);
             assert_eq!(power(level.block(pos)), strength, "{}", kind.name());
             assert!(level.chunks.has_block_tick(pos, ids::TARGET.0));
         }

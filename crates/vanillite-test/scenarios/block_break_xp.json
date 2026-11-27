@@ -1,0 +1,25 @@
+{
+  "description": "Blocks destroyed with drops (setblock destroy) run spawnAfterBreak: ores, a spawner and sculk drop experience (level random draws for the amounts, nothing for iron ore), infested stone releases a silverfish.",
+  "tier": "fast",
+  "level_rng": true,
+  "region": [[0, -62, 0], [14, -58, 3]],
+  "ticks": 20,
+  "setup": [
+    {"op": "set", "pos": [1, -60, 1], "block": "minecraft:coal_ore"},
+    {"op": "set", "pos": [3, -60, 1], "block": "minecraft:diamond_ore"},
+    {"op": "set", "pos": [5, -60, 1], "block": "minecraft:spawner"},
+    {"op": "set", "pos": [7, -60, 1], "block": "minecraft:sculk"},
+    {"op": "set", "pos": [9, -60, 1], "block": "minecraft:infested_stone"},
+    {"op": "set", "pos": [11, -60, 1], "block": "minecraft:nether_quartz_ore"},
+    {"op": "set", "pos": [13, -60, 1], "block": "minecraft:iron_ore"}
+  ],
+  "actions": [
+    {"tick": 2, "op": "command", "command": "setblock 1 -60 1 air destroy"},
+    {"tick": 2, "op": "command", "command": "setblock 3 -60 1 air destroy"},
+    {"tick": 2, "op": "command", "command": "setblock 5 -60 1 air destroy"},
+    {"tick": 2, "op": "command", "command": "setblock 7 -60 1 air destroy"},
+    {"tick": 2, "op": "command", "command": "setblock 9 -60 1 air destroy"},
+    {"tick": 2, "op": "command", "command": "setblock 11 -60 1 air destroy"},
+    {"tick": 2, "op": "command", "command": "setblock 13 -60 1 air destroy"}
+  ]
+}

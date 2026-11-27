@@ -482,6 +482,15 @@ impl Level {
                     crate::block::beehive::exploded(self, pos, state, source);
                 }
                 loot.clear();
+                // `spawnAfterBreak` with experience only for a player's explosion.
+                let by_player = indirect.is_some_and(|i| self.entities.player(i).is_some());
+                crate::block::break_hooks::spawn_after_break(
+                    self,
+                    state,
+                    pos,
+                    &crate::item::ItemStack::EMPTY,
+                    by_player,
+                );
                 drops::explosion_loot(self, pos, state, decay, source, &mut loot);
                 for mut stack in loot.drain(..) {
                     for (_, collected) in &mut stacks {

@@ -563,6 +563,7 @@ pub struct Enchantment {
     pub projectile_spread: Vec<Conditional<ValueEffect>>,
     pub projectile_piercing: Vec<Conditional<ValueEffect>>,
     pub ammo_use: Vec<Conditional<ValueEffect>>,
+    pub block_experience: Vec<Conditional<ValueEffect>>,
 }
 
 /// `EquipmentSlotGroup` names in ordinal order.
@@ -676,6 +677,7 @@ impl Enchantment {
             projectile_spread: values("minecraft:projectile_spread"),
             projectile_piercing: values("minecraft:projectile_piercing"),
             ammo_use: values("minecraft:ammo_use"),
+            block_experience: values("minecraft:block_experience"),
         }
     }
 
@@ -814,6 +816,18 @@ impl Enchantments {
         #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
         let v = self.run_item(weapon, |e| &e.projectile_count, None, random, count as f32) as i32;
         v.max(0)
+    }
+
+    /// `EnchantmentHelper.processBlockExperience` (`MutableFloat.intValue`).
+    pub fn block_experience(
+        &self,
+        tool: &ItemStack,
+        random: &mut dyn FloatRandom,
+        amount: i32,
+    ) -> i32 {
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        let v = self.run_item(tool, |e| &e.block_experience, None, random, amount as f32) as i32;
+        v
     }
 
     /// `EnchantmentHelper.processProjectileSpread`: at least 0.
