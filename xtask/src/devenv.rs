@@ -81,7 +81,8 @@ pub fn deploy(root: &Path, args: &[&str]) -> Result<()> {
         .stdin(Stdio::from(file)))
 }
 
-/// `cargo xtask testserver provision|status|logs|start|stop|restart [<port>]`.
+/// `cargo xtask testserver provision|status|logs|start|stop|restart [<port>]` and
+/// `cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]`.
 pub fn testserver(root: &Path, args: &[&str]) -> Result<()> {
     let host = host();
     let unit = |port: Option<&str>| -> Result<String> {
@@ -102,8 +103,20 @@ pub fn testserver(root: &Path, args: &[&str]) -> Result<()> {
         ["status"] => ssh(
             &host,
             "systemctl --no-pager --all list-units paper.service 'vanillite@*'; \
-             echo; ss -ltnp | grep -E ':30[0-9]{3} ' || true; echo; vanillite-autodeploy status",
+             echo; ss -ltnp | grep -E ':30[0-9]{3} ' || true; echo; vanillite-autodeploy status; \
+             echo; echo 'incidents (cargo xtask testserver incidents):'; vanillite-incidents list 5",
         ),
+        ["incidents"] => ssh(&host, "vanillite-incidents list"),
+        ["incidents", "list"] => ssh(&host, "vanillite-incidents list"),
+        ["incidents", "list", count] => {
+            let count: u32 = count.parse().map_err(|e| format!("count: {e}"))?;
+            ssh(&host, &format!("vanillite-incidents list {count}"))
+        }
+        ["incidents", "show", id] => ssh(
+            &host,
+            &format!("vanillite-incidents show {}", incident_id(id)?),
+        ),
+        ["incidents", "fetch", ids @ ..] => fetch_incidents(root, &host, ids),
         ["logs", port @ ..] => run(Command::new("ssh").args([
             "-t",
             host.as_str(),
@@ -128,6 +141,71 @@ pub fn testserver(root: &Path, args: &[&str]) -> Result<()> {
         ),
         _ => Err(crate::USAGE.to_owned()),
     }
+}
+
+/// An incident id as `vanillite-incidents` writes it (`20261125-102719-30001-crash`).
+fn incident_id(id: &str) -> Result<&str> {
+    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        Ok(id)
+    } else {
+        Err(format!("not an incident id: {id}"))
+    }
+}
+
+/// Downloads incident bundles into `target/incidents/<id>/`: the given ones, or all that are
+/// not there yet.
+fn fetch_incidents(root: &Path, host: &str, ids: &[&str]) -> Result<()> {
+    let dest = root.join("target/incidents");
+    std::fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    let wanted: Vec<String> = if ids.is_empty() {
+        let out = Command::new("ssh")
+            .args([host, "vanillite-incidents list 1000"])
+            .output()
+            .map_err(|e| format!("ssh {host}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("vanillite-incidents list failed: {}", out.status));
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|id| !dest.join(id).exists())
+            .map(str::to_owned)
+            .collect()
+    } else {
+        ids.iter()
+            .map(|id| incident_id(id).map(str::to_owned))
+            .collect::<Result<_>>()?
+    };
+    if wanted.is_empty() {
+        println!("no new incidents");
+        return Ok(());
+    }
+    let mut remote = Command::new("ssh")
+        .args([
+            host,
+            "tar",
+            "-C",
+            "/var/lib/vanillite-incidents",
+            "-cf",
+            "-",
+        ])
+        .args(&wanted)
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ssh {host}: {e}"))?;
+    let tar = remote.stdout.take().ok_or("no output from ssh")?;
+    run(Command::new("tar")
+        .args(["-xf", "-", "-C"])
+        .arg(&dest)
+        .stdin(Stdio::from(tar)))?;
+    let status = remote.wait().map_err(|e| format!("ssh {host}: {e}"))?;
+    if !status.success() {
+        return Err(format!("downloading the incidents failed: {status}"));
+    }
+    for id in &wanted {
+        println!("{}", dest.join(id).join("summary.txt").display());
+    }
+    Ok(())
 }
 
 fn ssh(host: &str, command: &str) -> Result<()> {

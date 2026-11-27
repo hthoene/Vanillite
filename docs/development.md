@@ -69,6 +69,32 @@ these ports by hand: landing on dev is enough. For a test before landing, use a 
 | `cargo xtask testserver status` | Services, listening ports and the last auto-deploys. |
 | `cargo xtask testserver logs [<port>]` | Follow the log. |
 | `cargo xtask testserver start\|stop\|restart [<port>]` | Control a server; stop also disables it. |
+| `cargo xtask testserver incidents [list [<count>]]` | The newest crashes and suspicious disconnects. |
+| `cargo xtask testserver incidents show <id>` | Summary and backtrace of an incident. |
+| `cargo xtask testserver incidents fetch [<id>...]` | Download bundles to `target/incidents/<id>/` (no ids: all not downloaded yet). |
+
+### Incidents
+
+No log digging: `vanillite-incidents` (a systemd service on the test server) follows the journal
+of every `vanillite@<port>` and of `vanillite-proxy` and saves an incident bundle in
+`/var/lib/vanillite-incidents/<id>/` for
+
+- every **crash**: a panic, a crashed world thread, an exit with an error, a kill or an OOM kill
+  (systemd restarts the instance as before);
+- every **suspicious disconnect**: a log line starting with `Suspicious disconnect` (the
+  server's disconnect diagnosis), a player who loses the connection within 10 s of logging in,
+  or a disconnect with an error as reason. Not on the load test instance 30901; at most one per
+  instance and player in 10 minutes.
+
+A bundle has `summary.txt` (time, instance, signature, deployed commit and binary, the players
+online with their world and login position, the trigger lines, the Vanillite frames of the
+backtrace), `backtrace.txt`, `journal.log` (the instance's journal from 5 minutes before a crash,
+2 minutes before a disconnect, to 30 seconds after) and `meta.json`. The signature is the panic
+location (the first Vanillite frame when the panic is inside std), the exit status or the
+disconnect reason; `list` marks the first incident of a signature `new`, so known crashes stand
+out from new ones. Bundles are kept 60 days, at most 300. `cargo xtask testserver status` shows
+the last five. On the test server itself: `vanillite-incidents list|show <id>`, and
+`vanillite-incidents scan <since> [<until>]` collects a past time range after the fact.
 
 ## Docker image
 

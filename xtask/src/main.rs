@@ -12,6 +12,7 @@
 //! cargo xtask dev [--release] [-- <server args>]
 //! cargo xtask deploy [--port <port>] [--release]
 //! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
 //! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
 //! cargo xtask egg [--check] | egg smoke [--image <ref>]
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
@@ -86,8 +87,12 @@ pub const USAGE: &str = "usage:
       The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
   cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
       provision runs scripts/testserver/provision.sh on the test server (idempotent);
-      status lists the services, ports and the last auto-deploys; the others act on
+      status lists the services, ports, the last auto-deploys and incidents; the others act on
       vanillite@<port> (default 30001).
+  cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
+      Crashes and suspicious disconnects that vanillite-incidents saved on the test server:
+      list the newest (default 20), show one (summary and backtrace), or download bundles into
+      target/incidents/<id>/ (without ids: all not downloaded yet).
   cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
       Build the server image (Dockerfile) for linux/amd64 and linux/arm64, tagged dev and the
       short commit hash, as $VANILLITE_IMAGE (default docker.hthoene.de/vanillite/vanillite).
