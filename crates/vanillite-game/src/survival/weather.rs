@@ -155,9 +155,10 @@ impl LevelWeather {
         self.rain_level
     }
 
-    /// `getThunderLevel(1.0)`.
+    /// `getThunderLevel(1.0)`: the thunder level scaled by the rain level (no thunder
+    /// without rain).
     pub fn thunder(&self) -> f32 {
-        self.thunder_level
+        self.thunder_level * self.rain_level
     }
 
     /// `isRaining`.
@@ -167,7 +168,7 @@ impl LevelWeather {
 
     /// `isThundering`.
     pub fn is_thundering(&self) -> bool {
-        self.thunder_level > 0.9
+        self.thunder() > 0.9
     }
 
     /// `advanceWeatherCycle`: advances the shared timers (when `advance` is set) and this
@@ -239,7 +240,7 @@ impl LevelWeather {
             },
             GameEvent {
                 event: event::THUNDER_LEVEL_CHANGE,
-                param: self.thunder_level,
+                param: self.thunder(),
             },
         ]
     }
