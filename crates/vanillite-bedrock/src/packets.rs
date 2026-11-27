@@ -92,6 +92,7 @@ pub mod id {
     pub const SET_DISPLAY_OBJECTIVE: u32 = 107;
     pub const SET_SCORE: u32 = 108;
     pub const OPEN_SIGN: u32 = 202;
+    pub const PLAYER_ENCHANT_OPTIONS: u32 = 146;
 }
 
 /// Inventory window ids.
@@ -123,6 +124,19 @@ pub mod container {
     pub const BARREL: u8 = 58;
     pub const CURSOR: u8 = 59;
     pub const CREATED_OUTPUT: u8 = 60;
+    pub const ANVIL_INPUT: u8 = 0;
+    pub const ANVIL_MATERIAL: u8 = 1;
+    pub const SMITHING_INPUT: u8 = 3;
+    pub const SMITHING_MATERIAL: u8 = 4;
+    pub const ENCHANTING_INPUT: u8 = 22;
+    pub const ENCHANTING_MATERIAL: u8 = 23;
+    pub const GRINDSTONE_INPUT: u8 = 50;
+    pub const GRINDSTONE_ADDITIONAL: u8 = 51;
+    pub const STONECUTTER_INPUT: u8 = 53;
+    pub const CARTOGRAPHY_INPUT: u8 = 55;
+    pub const CARTOGRAPHY_ADDITIONAL: u8 = 56;
+    pub const SMITHING_TEMPLATE: u8 = 61;
+    pub const CRAFTER: u8 = 62;
 }
 
 /// `ContainerType` of `container_open`.
@@ -138,6 +152,13 @@ pub mod container_type {
     pub const BLAST_FURNACE: i8 = 27;
     pub const SMOKER: i8 = 28;
     pub const CHEST_BOAT: i8 = 34;
+    pub const ENCHANTMENT: i8 = 3;
+    pub const ANVIL: i8 = 5;
+    pub const GRINDSTONE: i8 = 26;
+    pub const STONECUTTER: i8 = 29;
+    pub const CARTOGRAPHY: i8 = 30;
+    pub const SMITHING_TABLE: i8 = 33;
+    pub const CRAFTER: i8 = 36;
 }
 
 /// `player_action` / block action types used here.
@@ -1037,6 +1058,14 @@ pub enum StackAction {
         net_id: u32,
         times: u8,
     },
+    /// An anvil (or cartography table) craft; `filter` indexes the request's filter strings
+    /// (the anvil's name field).
+    CraftRecipeOptional {
+        net_id: u32,
+        filter: i32,
+    },
+    /// A grindstone craft.
+    CraftGrindstone,
     /// Tool durability prediction of block breaking (nothing to do).
     MineBlock,
     /// The deprecated list of crafting results (nothing to do).
@@ -1050,6 +1079,8 @@ pub enum StackAction {
 pub struct StackRequest {
     pub id: i32,
     pub actions: Vec<StackAction>,
+    /// Text the request names (the anvil's name field).
+    pub filters: Vec<String>,
 }
 
 /// Largest number of actions in one request.
@@ -1149,16 +1180,15 @@ fn read_stack_action(r: &mut Reader<'_>, v: &Version) -> Result<StackAction> {
             net_id: r.varu32()?,
             times: r.u8()?,
         },
-        13 => {
-            r.varu32()?;
-            r.array::<4>()?;
-            StackAction::Unsupported
-        }
+        13 => StackAction::CraftRecipeOptional {
+            net_id: r.varu32()?,
+            filter: i32::from_le_bytes(r.array::<4>()?),
+        },
         14 => {
             r.array::<4>()?;
             r.u8()?;
             r.vari32()?;
-            StackAction::Unsupported
+            StackAction::CraftGrindstone
         }
         15 => {
             r.string("loom pattern", 256)?;
@@ -1200,11 +1230,16 @@ pub fn read_stack_request(r: &mut Reader<'_>, v: &Version) -> Result<StackReques
         actions.push(read_stack_action(r, v)?);
     }
     let strings = r.len("filter strings", 64)?;
+    let mut filters = Vec::with_capacity(strings);
     for _ in 0..strings {
-        r.string("filter string", 1024)?;
+        filters.push(r.string("filter string", 1024)?.to_owned());
     }
     r.array::<4>()?;
-    Ok(StackRequest { id, actions })
+    Ok(StackRequest {
+        id,
+        actions,
+        filters,
+    })
 }
 
 /// Reads `item_stack_request`.
@@ -1339,6 +1374,33 @@ pub fn container_open(window: u8, kind: i8, pos: [i32; 3], entity: i64) -> Vec<u
 }
 
 /// `container_set_data`.
+/// One option of `player_enchant_options`: the shown enchantment and its level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnchantOption {
+    pub cost: u8,
+    pub enchantment: u8,
+    pub level: u8,
+    pub net_id: u32,
+}
+
+/// `player_enchant_options`: the options of the enchanting table.
+pub fn player_enchant_options(options: &[EnchantOption]) -> Vec<u8> {
+    const NAMES: [&str; 3] = ["vanillite ", "fire light ", "free elder "];
+    let mut out = Vec::new();
+    io::write_len(&mut out, options.len());
+    for (i, o) in options.iter().enumerate() {
+        out.push(o.cost);
+        out.extend_from_slice(&0i32.to_le_bytes());
+        io::write_len(&mut out, 1);
+        out.extend_from_slice(&[o.enchantment, o.level]);
+        io::write_len(&mut out, 0);
+        io::write_len(&mut out, 0);
+        io::write_str(&mut out, NAMES.get(i).copied().unwrap_or(""));
+        io::write_varu32(&mut out, o.net_id);
+    }
+    out
+}
+
 pub fn container_set_data(window: u8, key: i32, value: i32) -> Vec<u8> {
     let mut out = vec![window];
     io::write_vari32(&mut out, key);

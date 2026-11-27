@@ -43,6 +43,11 @@ impl Nbt {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
 
+    fn short(&mut self, name: &str, v: i16) {
+        self.head(2, name);
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+
     fn long(&mut self, name: &str, v: i64) {
         self.head(4, name);
         self.0.extend_from_slice(&v.to_le_bytes());
@@ -112,6 +117,184 @@ pub fn writable_pages(stack: &ItemStack) -> Vec<String> {
         return Vec::new();
     };
     (0..n).map_while(|_| filterable_string(&mut r)).collect()
+}
+
+/// Bedrock enchantment ids by name (`Enchantment` ids of the Bedrock protocol).
+const BEDROCK_ENCHANTMENTS: &[&str] = &[
+    "protection",
+    "fire_protection",
+    "feather_falling",
+    "blast_protection",
+    "projectile_protection",
+    "thorns",
+    "respiration",
+    "depth_strider",
+    "aqua_affinity",
+    "sharpness",
+    "smite",
+    "bane_of_arthropods",
+    "knockback",
+    "fire_aspect",
+    "looting",
+    "efficiency",
+    "silk_touch",
+    "unbreaking",
+    "fortune",
+    "power",
+    "punch",
+    "flame",
+    "infinity",
+    "luck_of_the_sea",
+    "lure",
+    "frost_walker",
+    "mending",
+    "binding_curse",
+    "vanishing_curse",
+    "impaling",
+    "riptide",
+    "loyalty",
+    "channeling",
+    "multishot",
+    "piercing",
+    "quick_charge",
+    "soul_speed",
+    "swift_sneak",
+    "wind_burst",
+    "density",
+    "breach",
+    "lunge",
+];
+
+/// The Bedrock enchantment id of a Java enchantment (`minecraft:sharpness`).
+pub fn bedrock_enchantment(java: &str) -> Option<u8> {
+    let name = java.strip_prefix("minecraft:")?;
+    BEDROCK_ENCHANTMENTS
+        .iter()
+        .position(|&n| n == name)
+        .and_then(|i| u8::try_from(i).ok())
+}
+
+/// Java enchantment registry ids -> Bedrock enchantment ids, from the synchronised
+/// `minecraft:enchantment` registry of the server (data packs may add or reorder entries).
+/// Cheap to clone.
+#[derive(Debug, Default, Clone)]
+pub struct Enchantments(std::sync::Arc<[Option<u8>]>);
+
+impl Enchantments {
+    pub fn from_names(names: &[String]) -> Self {
+        Self(names.iter().map(|n| bedrock_enchantment(n)).collect())
+    }
+
+    /// The Bedrock id of a Java enchantment registry id.
+    pub fn bedrock(&self, java: i32) -> Option<u8> {
+        self.0.get(usize::try_from(java).ok()?).copied().flatten()
+    }
+}
+
+/// Bedrock potion ids (item metadata of potions; tipped arrows add one) by Java potion name.
+const BEDROCK_POTIONS: &[&str] = &[
+    "water",
+    "mundane",
+    "long_mundane",
+    "thick",
+    "awkward",
+    "night_vision",
+    "long_night_vision",
+    "invisibility",
+    "long_invisibility",
+    "leaping",
+    "long_leaping",
+    "strong_leaping",
+    "fire_resistance",
+    "long_fire_resistance",
+    "swiftness",
+    "long_swiftness",
+    "strong_swiftness",
+    "slowness",
+    "long_slowness",
+    "water_breathing",
+    "long_water_breathing",
+    "healing",
+    "strong_healing",
+    "harming",
+    "strong_harming",
+    "poison",
+    "long_poison",
+    "strong_poison",
+    "regeneration",
+    "long_regeneration",
+    "strong_regeneration",
+    "strength",
+    "long_strength",
+    "strong_strength",
+    "weakness",
+    "long_weakness",
+    "wither",
+    "turtle_master",
+    "long_turtle_master",
+    "strong_turtle_master",
+    "slow_falling",
+    "long_slow_falling",
+    "strong_slowness",
+    "wind_charged",
+    "weaving",
+    "oozing",
+    "infested",
+];
+
+/// The Bedrock potion id of a stack's `potion_contents` (`None`: no base potion).
+fn potion(stack: &ItemStack) -> Option<u16> {
+    let mut r = vanillite_protocol::codec::Reader::new(stack.component(ids::POTION_CONTENTS)?);
+    if r.u8().ok()? == 0 {
+        return None;
+    }
+    let id = u16::try_from(r.varint().ok()?).ok()?;
+    let name = vanillite_data::registry::POTION
+        .name(id)?
+        .strip_prefix("minecraft:")?;
+    let i = BEDROCK_POTIONS.iter().position(|&n| n == name)?;
+    u16::try_from(i).ok()
+}
+
+/// Most enchantments written per item.
+const MAX_ENCHANTMENTS: usize = 64;
+
+/// `ench`: the enchantments (or stored enchantments of a book) of a stack.
+fn enchantment_tags(nbt: &mut Nbt, stack: &ItemStack, enchantments: &Enchantments) {
+    let Some(raw) = stack
+        .component(ids::ENCHANTMENTS)
+        .filter(|v| v.first().is_some_and(|&n| n != 0))
+        .or_else(|| stack.component(ids::STORED_ENCHANTMENTS))
+    else {
+        return;
+    };
+    let mut r = vanillite_protocol::codec::Reader::new(raw);
+    let Ok(n) = r.len_prefix("enchantments", MAX_ENCHANTMENTS, 2) else {
+        return;
+    };
+    let mut list = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (Ok(id), Ok(level)) = (r.varint(), r.varint()) else {
+            break;
+        };
+        if let Some(b) = enchantments.bedrock(id) {
+            list.push((b, i16::try_from(level).unwrap_or(i16::MAX)));
+        }
+    }
+    if list.is_empty() {
+        return;
+    }
+    nbt.head(9, "ench");
+    nbt.0.push(10);
+    nbt.0
+        .extend_from_slice(&i32::try_from(list.len()).unwrap_or(0).to_le_bytes());
+    for (id, lvl) in list {
+        let mut e = Nbt::default();
+        e.short("id", i16::from(id));
+        e.short("lvl", lvl);
+        nbt.0.extend_from_slice(&e.0);
+        nbt.0.push(0);
+    }
 }
 
 /// Most lore lines shown (Java allows 256).
@@ -203,6 +386,9 @@ pub struct Items {
     names: rustc_hash::FxHashMap<i16, Box<str>>,
     /// Bedrock id of the shield (its user data carries the blocking tick).
     shield: i16,
+    /// Java tipped arrow, potion, splash potion and lingering potion: their metadata is the
+    /// Bedrock potion id (plus one for arrows).
+    potion_items: [u16; 4],
 }
 
 /// The Bedrock item names of an `item_registry` body.
@@ -290,7 +476,15 @@ impl Items {
             .id("minecraft:shield")
             .and_then(|j| to_bedrock.get(usize::from(j)))
             .map_or(0, |b| b.0);
+        let item = |n: &str| vanillite_data::registry::ITEM.id(n).unwrap_or(u16::MAX);
+        let potion_items = [
+            item("minecraft:tipped_arrow"),
+            item("minecraft:potion"),
+            item("minecraft:splash_potion"),
+            item("minecraft:lingering_potion"),
+        ];
         Items {
+            potion_items,
             to_bedrock,
             creative,
             block,
@@ -337,13 +531,34 @@ impl Items {
 
     /// The user data of a stack: NBT with the damage of tools, the `map_uuid` of filled maps
     /// and the pages, title and author of books.
-    fn write_user_data(&self, out: &mut Vec<u8>, stack: &ItemStack, shield: bool) {
+    fn write_user_data(
+        &self,
+        out: &mut Vec<u8>,
+        stack: &ItemStack,
+        shield: bool,
+        enchantments: &Enchantments,
+    ) {
         let mut nbt = Nbt::default();
         if let Some(d) = self.damage(stack).filter(|&d| d > 0) {
             nbt.int("Damage", d);
         }
         book_tags(&mut nbt, stack);
         display_tags(&mut nbt, stack, self.lore_component);
+        enchantment_tags(&mut nbt, stack, enchantments);
+        if let Some(cost) = stack
+            .component(ids::REPAIR_COST)
+            .and_then(|v| vanillite_protocol::codec::Reader::new(v).varint().ok())
+            .filter(|&c| c > 0)
+        {
+            nbt.int("RepairCost", cost);
+        }
+        if let Some(rgb) = stack
+            .component(ids::DYED_COLOR)
+            .and_then(|v| v.get(..4)?.try_into().ok())
+            .map(i32::from_be_bytes)
+        {
+            nbt.int("customColor", rgb | i32::from_be_bytes([0xff, 0, 0, 0]));
+        }
         if let Some(id) = stack
             .component(ids::MAP_ID)
             .and_then(|v| vanillite_protocol::codec::Reader::new(v).varint().ok())
@@ -375,9 +590,16 @@ impl Items {
         if stack.is_empty() {
             return None;
         }
-        let (id, meta) = self.bedrock(stack.item);
+        let (id, mut meta) = self.bedrock(stack.item);
         if id == 0 {
             return None;
+        }
+        if let Some(p) = potion(stack) {
+            if stack.item == self.potion_items[0] {
+                meta = p.saturating_add(1);
+            } else if self.potion_items[1..].contains(&stack.item) {
+                meta = p;
+            }
         }
         let block = self
             .block
@@ -389,7 +611,13 @@ impl Items {
     }
 
     /// Writes a stack as `ItemInstance` (inventories, equipment) with its stack network id.
-    pub fn write_instance(&self, out: &mut Vec<u8>, stack: &ItemStack, net_id: i32) {
+    pub fn write_instance(
+        &self,
+        out: &mut Vec<u8>,
+        stack: &ItemStack,
+        net_id: i32,
+        enchantments: &Enchantments,
+    ) {
         let Some((id, meta, block, count)) = self.parts(stack) else {
             out.extend_from_slice(&[0; 8]);
             return;
@@ -404,7 +632,7 @@ impl Items {
             out.push(0);
         }
         io::write_varu32(out, block);
-        self.write_user_data(out, stack, id == self.shield);
+        self.write_user_data(out, stack, id == self.shield, enchantments);
     }
 
     /// Writes a stack as `ItemStack` (recipe outputs: no stack network id).
@@ -418,7 +646,7 @@ impl Items {
         out.extend_from_slice(&count.to_le_bytes());
         io::write_varu32(out, u32::from(meta));
         io::write_vari32(out, i32::try_from(block).unwrap_or(0));
-        self.write_user_data(out, stack, id == self.shield);
+        self.write_user_data(out, stack, id == self.shield, &Enchantments::default());
     }
 }
 
@@ -460,8 +688,69 @@ pub fn read_instance(r: &mut Reader<'_>) -> Result<Instance> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 mod tests {
     use super::*;
+
+    fn java(name: &str) -> u16 {
+        vanillite_data::registry::ITEM.id(name).unwrap()
+    }
+
+    #[test]
+    fn potions_enchantments_and_colours_reach_bedrock() {
+        let items = crate::Version::latest().palette.items();
+        let potion_id = |n: &str| vanillite_data::registry::POTION.id(n).unwrap();
+        let with = |item: &str, component: u16, value: Vec<u8>| {
+            let mut s = ItemStack::new(java(item), 1);
+            s.patch_mut().set(component, value.into_boxed_slice());
+            s
+        };
+        // potion_contents: present, the potion id, no colour, no effects, no name.
+        let contents = |p: &str| vec![1, u8::try_from(potion_id(p)).unwrap(), 0, 0, 0];
+        let healing = with(
+            "minecraft:potion",
+            ids::POTION_CONTENTS,
+            contents("minecraft:strong_healing"),
+        );
+        assert_eq!(items.parts(&healing).map(|p| p.1), Some(22));
+        let arrow = with(
+            "minecraft:tipped_arrow",
+            ids::POTION_CONTENTS,
+            contents("minecraft:poison"),
+        );
+        assert_eq!(items.parts(&arrow).map(|p| p.1), Some(26));
+
+        // Enchantments through the server's registry order.
+        let names: Vec<String> = ["minecraft:aqua_affinity", "minecraft:sharpness"]
+            .map(String::from)
+            .to_vec();
+        let ench = Enchantments::from_names(&names);
+        assert_eq!(ench.bedrock(1), Some(9));
+        let sword = with("minecraft:diamond_sword", ids::ENCHANTMENTS, vec![1, 1, 5]);
+        let mut out = Vec::new();
+        items.write_instance(&mut out, &sword, 1, &ench);
+        let tag = out.windows(4).position(|w| w == b"ench").expect("ench tag");
+        // List of one compound: id 9 (sharpness), lvl 5.
+        assert_eq!(out[tag + 4], 10);
+        assert_eq!(out[tag + 5..tag + 9], 1i32.to_le_bytes());
+        let id = out.windows(2).position(|w| w == b"id").unwrap();
+        assert_eq!(out[id + 2..id + 4], 9i16.to_le_bytes());
+
+        let boots = with(
+            "minecraft:leather_boots",
+            ids::DYED_COLOR,
+            vec![0, 0x12, 0x34, 0x56],
+        );
+        let mut out = Vec::new();
+        items.write_instance(&mut out, &boots, 1, &ench);
+        let tag = out.windows(11).position(|w| w == b"customColor").unwrap();
+        assert_eq!(out[tag + 11..tag + 15], [0x56, 0x34, 0x12, 0xff]);
+    }
 
     #[test]
     fn every_java_item_maps_to_a_bedrock_item() {
@@ -486,7 +775,12 @@ mod tests {
         assert!(!items.creative.is_empty());
         assert!(items.creative(1).is_some());
         let mut out = Vec::new();
-        items.write_instance(&mut out, &ItemStack::new(stone, 5), 7);
+        items.write_instance(
+            &mut out,
+            &ItemStack::new(stone, 5),
+            7,
+            &Enchantments::default(),
+        );
         let i = read_instance(&mut Reader::new(&out)).unwrap_or_default();
         assert_eq!((i.id, i.count, i.net_id), (id, 5, 7));
     }
