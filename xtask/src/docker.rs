@@ -15,11 +15,23 @@ const PASSWORD_ENV: &str = "PRIVATE_DOCKER_REPO_KEY";
 const ZIG_X86_CFLAGS: (&str, &str) = ("CFLAGS_x86_64_unknown_linux_musl", "-mevex512");
 /// File name of the x86-64-v3 build (as in crates/vanillite/src/cpu.rs).
 const V3_BINARY: &str = "vanillite-x86-64-v3";
-/// Docker platform architecture and Rust target of each image platform.
-const ARCHES: &[(&str, &str)] = &[
-    ("amd64", "x86_64-unknown-linux-musl"),
-    ("arm64", "aarch64-unknown-linux-musl"),
+/// File name of the glibc build that loads plugins (as in crates/vanillite/src/runtime.rs).
+const GNU_BINARY: &str = "vanillite-gnu";
+/// Docker platform architecture, Rust target of each image platform and its glibc target.
+const ARCHES: &[(&str, &str, &str)] = &[
+    (
+        "amd64",
+        "x86_64-unknown-linux-musl",
+        "x86_64-unknown-linux-gnu",
+    ),
+    (
+        "arm64",
+        "aarch64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu",
+    ),
 ];
+/// The glibc version the glibc build links against (zigbuild's target suffix).
+const GLIBC: &str = "2.28";
 
 /// `cargo xtask docker [--push] [--in-docker] [--tag <tag>]...`
 pub fn run_docker(root: &Path, args: &[&str]) -> Result<()> {
@@ -51,7 +63,7 @@ pub fn run_docker(root: &Path, args: &[&str]) -> Result<()> {
         "--platform",
         &ARCHES
             .iter()
-            .map(|(arch, _)| format!("linux/{arch}"))
+            .map(|(arch, _, _)| format!("linux/{arch}"))
             .collect::<Vec<_>>()
             .join(","),
         "--build-arg",
@@ -138,11 +150,24 @@ fn build_binaries(root: &Path) -> Result<()> {
     cmd.current_dir(root)
         .args(["zigbuild", "--release", "--locked", "-p", "vanillite"])
         .env(ZIG_X86_CFLAGS.0, ZIG_X86_CFLAGS.1);
-    for (_, triple) in ARCHES {
+    for (_, triple, _) in ARCHES {
         cmd.args(["--target", triple]);
     }
     run(&mut cmd).map_err(|e| {
         format!("{e}\n(needs cargo-zigbuild, zig and the musl targets: see docs/development.md)")
+    })?;
+    // The glibc builds that load plugins (crates/vanillite/src/runtime.rs); a cargo run of
+    // their own, so no more than two fat-LTO links run at once.
+    let mut gnu = Command::new(&cargo);
+    gnu.current_dir(root)
+        .args(["zigbuild", "--release", "--locked", "-p", "vanillite"])
+        .args(["--features", "mimalloc"])
+        .env("CFLAGS_x86_64_unknown_linux_gnu", ZIG_X86_CFLAGS.1);
+    for (_, _, target) in ARCHES {
+        gnu.arg("--target").arg(format!("{target}.{GLIBC}"));
+    }
+    run(&mut gnu).map_err(|e| {
+        format!("{e}\n(needs the targets x86_64- and aarch64-unknown-linux-gnu: see docs/development.md)")
     })?;
     // amd64 also gets the x86-64-v3 build, which the baseline binary starts where the CPU has
     // it (crates/vanillite/src/cpu.rs).
@@ -159,11 +184,16 @@ fn build_binaries(root: &Path) -> Result<()> {
         std::fs::copy(&from, dir.join(name)).map_err(|e| format!("{}: {e}", from.display()))?;
         Ok(())
     };
-    for (arch, triple) in ARCHES {
+    for (arch, triple, gnu) in ARCHES {
         copy(
             root.join("target").join(triple).join("release/vanillite"),
             arch,
             "vanillite",
+        )?;
+        copy(
+            root.join("target").join(gnu).join("release/vanillite"),
+            arch,
+            GNU_BINARY,
         )?;
     }
     copy(
