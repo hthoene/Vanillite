@@ -55,9 +55,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   # The tests run in parallel jobs: the world generation goldens and the game and world crates
-  # (menu fuzz and chunk level tests) in two slices each (nextest --partition slice), the test
-  # harness (parity scenarios) and all other crates. Together they run every test of the
-  # workspace; the doc tests and the codegen checks run in a job of their own.
+  # (menu fuzz and chunk level tests) in two parts each, the test harness (parity scenarios) and
+  # all other crates. Together they run every test of the workspace; the doc tests and the
+  # codegen checks run in a job of their own.
   test:
     name: Tests (all other crates)
     runs-on: ubuntu-latest
@@ -232,12 +232,19 @@ jobs:
         run: cargo test --workspace --all-features --locked --doc
 
   test-worldgen:
-    name: Tests (world generation ${{ matrix.slice }}/2)
+    name: Tests (world generation ${{ matrix.part }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Two parts of about equal length: the slowest golden binaries and all the rest (the
+      # complement, so a new test always runs in exactly one part).
       matrix:
-        slice: [1, 2]
+        part: [structures, rest]
+        include:
+          - part: structures
+            filter: binary(structure_goldens) | binary(large_structure_goldens)
+          - part: rest
+            filter: not (binary(structure_goldens) | binary(large_structure_goldens))
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
@@ -269,11 +276,11 @@ jobs:
       - name: Tests
         run: >-
           cargo nextest run -p vanillite-worldgen --all-features --locked --profile ci --no-tests=warn
-          --partition slice:${{ matrix.slice }}/2
+          -E '${{ matrix.filter }}'
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: junit-worldgen-${{ matrix.slice }}
+          name: junit-worldgen-${{ matrix.part }}
           path: target/nextest/ci/junit.xml
 
   deny:
