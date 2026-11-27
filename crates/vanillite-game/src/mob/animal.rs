@@ -913,9 +913,23 @@ pub fn animal_interact(
     Interaction::Pass
 }
 
-/// `playEatingSound`: sheep and pigs have one.
+/// `playEatingSound`: sheep, pigs and frogs have one.
 pub fn eating_sound(ents: &mut Entities, env: &mut Env<'_>, target: EntityId) {
     let sound = match ents.mob(target) {
+        // `Frog.playEatingSound`: follows the frog, no voice pitch.
+        Some(m) if m.kind == Kind::Frog => {
+            crate::survival::play_entity_sound(
+                env.out,
+                ents,
+                None,
+                target,
+                "minecraft:entity.frog.eat",
+                SoundSource::Neutral,
+                2.0,
+                1.0,
+            );
+            return;
+        }
         Some(m) if m.kind == Kind::Sheep => "minecraft:entity.sheep.eat",
         Some(m) if m.kind == Kind::Pig => super::kinds::pig_eat_sound(m),
         _ => return,
@@ -933,12 +947,14 @@ pub(crate) fn shear_sheep(
     target: EntityId,
     source: SoundSource,
 ) {
-    sound_at(
+    crate::survival::play_entity_sound(
+        env.out,
         ents,
-        env,
+        None,
         target,
         "minecraft:entity.sheep.shear",
         source,
+        1.0,
         1.0,
     );
     let Some(pos) = ents.store.get(target).map(|e| e.pos()) else {
@@ -1313,19 +1329,16 @@ fn dye_sheep(
         return Interaction::Pass;
     }
     // `level.playSound(player, sheep, ...)`: the player's own client plays it itself.
-    if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
-        let seed = crate::survival::sound_seed();
-        play_sound(
-            env.out,
-            Some(player),
-            pos,
-            "minecraft:item.dye.use",
-            SoundSource::Players,
-            1.0,
-            1.0,
-            seed,
-        );
-    }
+    crate::survival::play_entity_sound(
+        env.out,
+        ents,
+        Some(player),
+        target,
+        "minecraft:item.dye.use",
+        SoundSource::Players,
+        1.0,
+        1.0,
+    );
     if let Some(m) = ents.mob_mut(target) {
         super::fam::classic::sheep_mut(m).color = color;
     }

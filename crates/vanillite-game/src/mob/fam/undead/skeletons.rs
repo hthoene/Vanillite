@@ -464,16 +464,15 @@ pub(crate) fn shear(
     };
     let pos = e.pos();
     let height = f64::from(e.dims().height);
-    let seed = crate::survival::sound_seed();
-    crate::survival::play_sound(
+    crate::survival::play_entity_sound(
         env.out,
+        ents,
         None,
-        pos,
+        target,
         "minecraft:entity.bogged.shear",
         source,
         1.0,
         1.0,
-        seed,
     );
     let drops = super::simple_table_loot(level, "minecraft:shearing/bogged", env.random);
     let Some(m) = ents.mob_mut(target) else {

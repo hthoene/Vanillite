@@ -198,16 +198,15 @@ pub fn use_while_gliding(
     }
     // `dropAllLeashConnections`: the player's leashed mobs go free.
     if crate::mob::tame::drop_leashes_of(ents, env, player) {
-        let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
-        play_sound(
+        crate::survival::play_entity_sound(
             env.out,
+            ents,
             None,
-            pos,
+            player,
             "minecraft:item.lead.break",
             SoundSource::Neutral,
             1.0,
             1.0,
-            crate::survival::sound_seed(),
         );
     }
     let Some(pos) = ents.store.get(player).map(|e| e.pos()) else {
