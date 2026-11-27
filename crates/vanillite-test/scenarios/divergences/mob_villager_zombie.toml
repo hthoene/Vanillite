@@ -1,3 +1,0 @@
-tick = 2
-cause = "light: the roof is placed in the setup; Vanilla's light engine darkens the room two ticks later (the zombie still draws its sun burn roll on ticks 1 and 2), Vanillite's one tick later (roll on tick 1 only)"
-owner = "world-developer #126"

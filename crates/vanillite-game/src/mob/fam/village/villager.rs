@@ -1064,6 +1064,14 @@ impl FamilyHooks for Hooks {
         rebuild_brain(m, None);
     }
 
+    /// `registerBrainGoals`: the brain made in the constructor (or from the saved one) takes
+    /// the scheduled activity at once.
+    fn created(m: &mut MobData, game_time: i64, day_time: i64) {
+        if let Some(b) = m.brain.as_deref_mut() {
+            b.update_activity_from_schedule(game_time, day_time);
+        }
+    }
+
     fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {
         if ctx.reason == SpawnReason::Breeding {
             set_profession(m, profession::NONE);

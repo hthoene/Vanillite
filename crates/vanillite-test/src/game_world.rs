@@ -271,6 +271,7 @@ impl GameWorld {
         // The world starts at day time 0 unless the scenario sets one; time does not advance.
         let env = Environment {
             sea_level: FLAT_SEA_LEVEL,
+            day_time: spec.time.unwrap_or(0),
             ..Environment::overworld(spec.time.unwrap_or(0), 0.0, 0.0)
         };
         // What spawner blocks and creaking hearts read when the block entities tick.
@@ -279,6 +280,7 @@ impl GameWorld {
             difficulty,
             ..Default::default()
         };
+        level.entities.day_time = env.day_time;
         let mut world = Self {
             level,
             spec: spec.clone(),
@@ -371,6 +373,7 @@ impl GameWorld {
             .begin_tick(self.env, MobSettings::default(), has_players);
         // What block entities (beehives) read of the world after the entities.
         self.level.spawner_env.env = self.env;
+        self.level.entities.day_time = self.env.day_time;
         minecart::players_push(&mut self.level.entities);
         let mut cursor = self.level.entities.store.tick_cursor();
         while let Some(id) = self.level.entities.store.next_to_tick(&mut cursor) {
@@ -1476,9 +1479,15 @@ impl ScenarioWorld for GameWorld {
         *level.output() = LevelOutput::default();
         let mut changes = Vec::new();
         level.chunks.take_block_changes(&mut changes);
+        // The light of this tick's changes is there when the next tick starts.
+        level.chunks.flush_light();
         let mut light = Vec::new();
         level.chunks.take_light_changes(&mut light);
         self.tick_players();
+    }
+
+    fn settle_light(&mut self) {
+        self.level.chunks.flush_light();
     }
 
     fn block_ticks(&self, min: BlockPos, max: BlockPos, out: &mut Vec<TickObs>) {

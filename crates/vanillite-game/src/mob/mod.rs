@@ -1084,8 +1084,9 @@ pub fn spawn(
     uuid: u128,
     pos: Vec3,
     rot: Rotation,
-    mob: MobData,
+    mut mob: MobData,
 ) -> EntityId {
+    fam::created(&mut mob, entities.game_time, entities.day_time);
     // The dragon's eight parts take the ids after its own.
     let network_id = if mob.kind == Kind::EnderDragon {
         network_ids.next_block(9)

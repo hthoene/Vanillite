@@ -28,12 +28,19 @@ pub fn record(
     for op in &scenario.setup {
         apply_in(world.as_mut(), scenario, op, false)?;
     }
+    world.settle_light();
     world.add_entities(&scenario.entities, scenario.entity_seed)?;
+    world.settle_light();
     let mut trace = Trace::new(scenario.min, scenario.max);
     observe(world.as_mut(), scenario, &mut trace, 0)?;
     for tick in 1..=scenario.ticks {
+        let mut acted = false;
         for op in scenario.actions.iter().filter(|a| a.tick == tick) {
             apply_in(world.as_mut(), scenario, op, true)?;
+            acted = true;
+        }
+        if acted {
+            world.settle_light();
         }
         world.step();
         observe(world.as_mut(), scenario, &mut trace, tick)?;
