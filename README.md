@@ -138,9 +138,15 @@ Both start the same image the same way and use the same variable names, so a ser
 switched between them (admin panel: the server's *Startup* tab, *Egg*); check the *Startup* page
 of the server after a switch.
 
-- **Image:** *Beta - Minecraft 26.3* (`mc26.3-beta`, the default) stays on that Minecraft
-  version; *Beta - newest Minecraft version* (`beta`) follows new versions. Switch it on the
-  *Startup* page.
+- **Minecraft version:** the image on the *Startup* page picks it. *Minecraft 26.3 - Beta*
+  (`mc26.3-beta`, the default) stays on Minecraft 26.3 and gets every Vanillite update for it as
+  long as we publish them; *Latest Minecraft - Beta* (`beta`) moves to each new Minecraft version
+  on the next restart (Wings pulls the image on every start). After the first stable release
+  *Minecraft 26.3* (`mc26.3`) and *Latest Minecraft* (`latest`) join them. New Minecraft
+  versions appear in the dropdown once the admin re-imports the egg (*Nests → Import Egg* over
+  the existing one). When a version gets no more updates, its entry leaves the egg and its image
+  stays pullable but frozen: switch such a server to a newer version (worlds are upgraded, never
+  downgraded).
 - **EULA:** switch on *Accept the Minecraft EULA*, or accept the panel's EULA prompt on the
   first start.
 - **Settings (simple egg):** server type (profile), name (MOTD), max players, game mode,

@@ -193,8 +193,12 @@ of the rule's table) with the area as name prefix, so new keys appear without ch
 generator. Panels render `in:true,false` as a switch (Pterodactyl) and other `in:` rules as
 dropdowns: booleans and enumerations (`ValueShape::choices`) of rules get a dropdown with
 `default`, which the server ignores like an empty value (`EnvOverrides`), so the profile decides.
-The image dropdown is derived from the workspace version and the Minecraft version (tags of
-`scripts/release/meta.sh`). `deploy/pterodactyl/egg-vanillite-simple.json` (*Vanillite
+The image dropdown comes from `deploy/minecraft-versions.txt` (one line per Minecraft version
+with images, `<version> beta|stable`, newest first): one entry per version (`mc<id>-beta` or
+`mc<id>`), the version of the sources first (the default), then `latest` (once a stable exists)
+and `beta`. `cargo xtask egg` (also run by `version update` and `regen`) adds the version of the
+sources and marks it stable for a stable workspace version, `egg --check` fails while the file
+lacks it; delete a line by hand when a version gets no more images. `deploy/pterodactyl/egg-vanillite-simple.json` (*Vanillite
 (Simple)*) holds only the curated `SIMPLE` settings with plain-language descriptions; everything
 else keeps the profile's value. Both eggs share images, startup, stop and variable names, so a
 server can switch between them; `egg --check` fails if a simple variable is missing in the full
@@ -331,8 +335,10 @@ To release: set the workspace version (and the `version` of every internal crate
   generated notes. A manual run (`gh workflow run release.yml --ref <branch>`) is a dry run: the
   archives become workflow artifacts and nothing is published.
 - `.github/workflows/docker.yml` pushes the linux/amd64 and linux/arm64 image to Docker Hub with
-  the tags above. The Pterodactyl egg offers `mc<minecraft>-<channel>` (default) and `<channel>`, after the
-  first stable release `mc<minecraft>` and `latest`.
+  the tags above. The channel tags `beta` and `latest` move only for the newest Minecraft version of
+  `deploy/minecraft-versions.txt`, so an update for an older version does not take them back; a
+  stable release also moves `mc<minecraft>-beta` and `beta`. The Pterodactyl eggs offer every
+  version of that file (see "Pterodactyl eggs").
 
 The binaries hold everything but Mojang's data: the first start downloads the pinned server jar
 into `cache/` (internet access needed once, no Java).

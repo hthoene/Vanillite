@@ -7,13 +7,13 @@
   "exported_at": "2026-11-24T00:00:00+00:00",
   "name": "Vanillite (Simple)",
   "author": "hthoene@users.noreply.github.com",
-  "description": "Vanillite: a Minecraft Java Edition server that plays exactly like the official one, but is faster and needs less memory. This egg shows only the basic settings; everything else uses the defaults of the chosen server type. For every setting use the egg \"Vanillite\" (servers can switch between the two). https://github.com/hthoene/vanillite",
+  "description": "Vanillite: a Minecraft Java Edition server that plays exactly like the official one, but is faster and needs less memory. This egg shows only the basic settings; everything else uses the defaults of the chosen server type. For every setting use the egg \"Vanillite\" (servers can switch between the two). The image (Startup page) picks the Minecraft version; \"Latest Minecraft\" follows new versions on the next restart, other new versions appear after re-importing this egg. https://github.com/hthoene/vanillite",
   "features": [
     "eula"
   ],
   "docker_images": {
-    "Beta - Minecraft 26.3": "thoenehannes/vanillite:mc26.3-beta",
-    "Beta - newest Minecraft version": "thoenehannes/vanillite:beta"
+    "Minecraft 26.3 - Beta": "thoenehannes/vanillite:mc26.3-beta",
+    "Latest Minecraft - Beta": "thoenehannes/vanillite:beta"
   },
   "file_denylist": [],
   "startup": "env VANILLITE_SERVER_PORT={{SERVER_PORT}} VANILLITE_BEDROCK__PORT=${VANILLITE_BEDROCK__PORT:-{{SERVER_PORT}}} /vanillite run --dir /home/container",
