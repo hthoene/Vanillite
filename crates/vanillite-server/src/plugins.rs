@@ -24,8 +24,13 @@ use crate::server::DIMENSIONS;
 use crate::world::ServerWorld;
 
 mod entity_api;
+mod populators;
 mod server_api;
+mod world16_api;
 mod world_api;
+
+pub(crate) use populators::with_populators;
+pub(crate) use world16_api::PluginTickets;
 
 /// Priority of plugin background jobs in the compute pool (after urgent world work).
 const BACKGROUND_PRIORITY: u32 = 1 << 20;
@@ -510,6 +515,29 @@ impl ServerAccess for Services {
             .ok_or(vanillite_abi::status::WRONG_PHASE)?;
         server_api::set_game_rule(&global, name, value)
     }
+
+    fn item_component(
+        &self,
+        item: &vanillite_nbt::Compound,
+        component: &str,
+    ) -> Result<Option<vanillite_nbt::Tag>, i32> {
+        world16_api::item_component(item, component)
+    }
+
+    fn item_set_component(
+        &self,
+        item: &vanillite_nbt::Compound,
+        component: &str,
+        value: Option<&vanillite_nbt::Tag>,
+    ) -> Result<vanillite_nbt::Compound, i32> {
+        world16_api::item_set_component(item, component, value)
+    }
+
+    fn plugin_disabled(&self, plugin: &str) {
+        if let Some(global) = self.global.upgrade() {
+            world16_api::plugin_disabled(&global, plugin);
+        }
+    }
 }
 
 impl Services {
@@ -923,6 +951,83 @@ impl WorldAccess for PluginWorld<'_> {
 
     fn clear_goals(&mut self, mob: u128, which: u32) -> Result<(), i32> {
         entity_api::clear_goals(self, mob, which)
+    }
+
+    fn biome(&self, pos: [i32; 3]) -> Result<String, i32> {
+        world16_api::biome(self, pos)
+    }
+
+    fn set_biome(&mut self, area: BlockBox, biome: &str) -> Result<(), i32> {
+        world16_api::set_biome(self, area, biome)
+    }
+
+    fn light(&self, pos: [i32; 3]) -> Result<(u32, u32), i32> {
+        world16_api::light(self, pos)
+    }
+
+    fn chunk_state(&self, x: i32, z: i32) -> Result<u32, i32> {
+        world16_api::chunk_state(self, x, z)
+    }
+
+    fn force_load(&mut self, x: i32, z: i32, on: bool) -> Result<(), i32> {
+        world16_api::force_load(self, x, z, on)
+    }
+
+    fn chunk_ticket(&mut self, plugin: &str, x: i32, z: i32, add: bool) -> Result<(), i32> {
+        world16_api::chunk_ticket(self, plugin, x, z, add)
+    }
+
+    fn border(&self) -> Result<vanillite_abi::BorderInfo, i32> {
+        world16_api::border(self)
+    }
+
+    fn set_border(&mut self, border: &vanillite_abi::BorderInfo) -> Result<(), i32> {
+        world16_api::set_border(self, border)
+    }
+
+    fn explode(
+        &mut self,
+        center: [f64; 3],
+        power: f32,
+        flags: u32,
+        source: Option<u128>,
+    ) -> Result<(), i32> {
+        world16_api::explode(self, center, power, flags, source)
+    }
+
+    fn raytrace(
+        &self,
+        from: [f64; 3],
+        to: [f64; 3],
+        flags: u32,
+        ignore: Option<u128>,
+    ) -> Result<vanillite_abi::RayHit, i32> {
+        world16_api::raytrace(self, from, to, flags, ignore)
+    }
+
+    fn open_menu(
+        &mut self,
+        player: u128,
+        menu: &vanillite_plugin_host::Menu<'_>,
+    ) -> Result<u32, i32> {
+        world16_api::open_menu(self, player, menu)
+    }
+
+    fn menu_item(&self, player: u128, slot: u32) -> Result<vanillite_nbt::Compound, i32> {
+        world16_api::menu_item(self, player, slot)
+    }
+
+    fn set_menu_item(
+        &mut self,
+        player: u128,
+        slot: u32,
+        item: &vanillite_nbt::Compound,
+    ) -> Result<(), i32> {
+        world16_api::set_menu_item(self, player, slot, item)
+    }
+
+    fn close_menu(&mut self, player: u128) -> Result<(), i32> {
+        world16_api::close_menu(self, player)
     }
 }
 

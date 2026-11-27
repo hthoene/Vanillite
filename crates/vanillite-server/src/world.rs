@@ -141,6 +141,8 @@ pub struct ServerWorld {
     pearl_tickets: FxHashMap<ChunkPos, (u64, TicketId, TicketId)>,
     /// What the players' tick asked of portals.
     portal_requests: crate::survival::PortalRequests,
+    /// The chunk tickets plugins hold (not saved).
+    pub(crate) plugin_tickets: crate::plugins::PluginTickets,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -251,6 +253,7 @@ impl ServerWorld {
             portal_tickets: Vec::new(),
             pearl_tickets: FxHashMap::default(),
             portal_requests: crate::survival::PortalRequests::default(),
+            plugin_tickets: crate::plugins::PluginTickets::default(),
         }
     }
 
@@ -273,6 +276,18 @@ impl ServerWorld {
     /// [`Level::set_block`]).
     pub fn level_mut(&mut self) -> &mut Level {
         &mut self.level
+    }
+
+    /// The level with the survival and mob systems, for plugin calls that run game code
+    /// between ticks (an explosion's damage).
+    pub(crate) fn level_systems(
+        &mut self,
+    ) -> (
+        &mut Level,
+        &mut crate::survival::WorldSurvival,
+        &mut crate::mobs::WorldMobs,
+    ) {
+        (&mut self.level, &mut self.survival, &mut self.mobs)
     }
 
     /// Keeps every player's view loaded and the chunks in its simulation distance ticking:

@@ -332,43 +332,65 @@ pub struct ContainerView<'a> {
     pub xp: Option<&'a mut crate::survival::player::Experience>,
 }
 
-impl ContainerView<'_> {
-    fn container_item(&self, i: usize) -> &ItemStack {
-        let empty = &ItemStack::EMPTY;
-        if self.menu.kind == MenuKind::Lectern {
-            return match self.menu.storage {
-                Storage::Block(pos) => match self.level.block_entity(pos) {
-                    Some(BlockEntity::Lectern(l)) if i == 0 => &l.book,
-                    _ => empty,
-                },
-                _ => empty,
-            };
-        }
-        if self.menu.kind == MenuKind::Beacon {
-            return self.menu.local.get(i).unwrap_or(empty);
-        }
-        match self.menu.storage {
-            Storage::Block(pos) => blocks::items(self.level, pos)
-                .and_then(|items| items.get(i))
-                .unwrap_or(empty),
-            Storage::Double(a, b) => {
-                let (pos, i) = if i < 27 { (a, i) } else { (b, i - 27) };
-                blocks::items(self.level, pos)
-                    .and_then(|items| items.get(i))
-                    .unwrap_or(empty)
-            }
-            Storage::Ender(_) => self.inv.ender_chest.get(i).unwrap_or(empty),
-            Storage::Local | Storage::Merchant(_) => self.menu.local.get(i).unwrap_or(empty),
-            Storage::Mount(id) => self.mount_item(id, i),
-            Storage::Entity(id) => self
-                .level
-                .entities
-                .container_items(id)
-                .and_then(|items| items.get(i))
-                .unwrap_or(empty),
-        }
+/// `getSlot(slot).getItem()` of an open container menu.
+fn slot_item<'a>(
+    menu: &'a ContainerMenu,
+    inv: &'a PlayerInventory,
+    level: &'a Level,
+    slot: usize,
+) -> &'a ItemStack {
+    match menu.source(slot) {
+        Some(Source::Container(i)) => container_item(menu, inv, level, i),
+        Some(Source::Inv(i)) => inv.get(i),
+        // A plugin's crafter menu has no result: its `local` slots are the grid.
+        Some(Source::CrafterResult) if menu.plugin => &ItemStack::EMPTY,
+        Some(Source::CrafterResult) => menu.local.first().unwrap_or(&ItemStack::EMPTY),
+        None => &ItemStack::EMPTY,
     }
+}
 
+/// The stack in a container slot of an open container menu.
+fn container_item<'a>(
+    menu: &'a ContainerMenu,
+    inv: &'a PlayerInventory,
+    level: &'a Level,
+    i: usize,
+) -> &'a ItemStack {
+    let empty = &ItemStack::EMPTY;
+    if menu.kind == MenuKind::Lectern {
+        return match menu.storage {
+            Storage::Block(pos) => match level.block_entity(pos) {
+                Some(BlockEntity::Lectern(l)) if i == 0 => &l.book,
+                _ => empty,
+            },
+            _ => empty,
+        };
+    }
+    if menu.kind == MenuKind::Beacon {
+        return menu.local.get(i).unwrap_or(empty);
+    }
+    match menu.storage {
+        Storage::Block(pos) => blocks::items(level, pos)
+            .and_then(|items| items.get(i))
+            .unwrap_or(empty),
+        Storage::Double(a, b) => {
+            let (pos, i) = if i < 27 { (a, i) } else { (b, i - 27) };
+            blocks::items(level, pos)
+                .and_then(|items| items.get(i))
+                .unwrap_or(empty)
+        }
+        Storage::Ender(_) => inv.ender_chest.get(i).unwrap_or(empty),
+        Storage::Local | Storage::Merchant(_) => menu.local.get(i).unwrap_or(empty),
+        Storage::Mount(id) => super::mount::mount_item_in(level, id, i),
+        Storage::Entity(id) => level
+            .entities
+            .container_items(id)
+            .and_then(|items| items.get(i))
+            .unwrap_or(empty),
+    }
+}
+
+impl ContainerView<'_> {
     fn container_item_mut(&mut self, i: usize) -> Option<&mut ItemStack> {
         if self.menu.kind == MenuKind::Lectern {
             return None;
@@ -467,12 +489,7 @@ impl MenuSlots for ContainerView<'_> {
     }
 
     fn item(&self, slot: usize) -> &ItemStack {
-        match self.menu.source(slot) {
-            Some(Source::Container(i)) => self.container_item(i),
-            Some(Source::Inv(i)) => self.inv.get(i),
-            Some(Source::CrafterResult) => self.menu.local.first().unwrap_or(&ItemStack::EMPTY),
-            None => &ItemStack::EMPTY,
-        }
+        slot_item(self.menu, self.inv, self.level, slot)
     }
 
     fn item_mut(&mut self, slot: usize) -> Option<&mut ItemStack> {
@@ -1108,6 +1125,20 @@ pub fn open(
     drops: &mut Vec<Drop>,
     sink: &dyn PacketSink,
 ) {
+    open_with(inv, level, request, who, drops, sink, None);
+}
+
+/// [`open`]; `plugin_items` makes it a plugin menu whose container slots are these (the
+/// menu's own) stacks.
+fn open_with(
+    inv: &mut PlayerInventory,
+    level: &mut Level,
+    request: MenuRequest,
+    who: Opener,
+    drops: &mut Vec<Drop>,
+    sink: &dyn PacketSink,
+    plugin_items: Option<Vec<ItemStack>>,
+) {
     if inv.container.is_some() {
         close(inv, level, who, drops, Some(sink));
     }
@@ -1150,6 +1181,8 @@ pub fn open(
         MenuKind::Merchant => vec![ItemStack::EMPTY; 3],
         _ => Vec::new(),
     };
+    let plugin = plugin_items.is_some();
+    let local = plugin_items.unwrap_or(local);
     let data = match kind {
         // `DataSlot.standalone()` starts at 0; a changed input sets -1.
         MenuKind::Stonecutter | MenuKind::Loom => vec![0],
@@ -1176,7 +1209,7 @@ pub fn open(
         crafter_grid: Vec::new(),
         may_build: true,
         merchant: super::merchant::MerchantMenu::default(),
-        plugin: false,
+        plugin,
     };
     // The menu's constructor counts the viewer (`container.startOpen`).
     for pos in menu.viewed().into_iter().flatten() {
@@ -1267,6 +1300,117 @@ pub fn open_requests(level: &mut Level, requests: Vec<MenuRequest>) {
     for (pos, drop) in drops {
         crate::block::drops::spawn_item(level, pos, drop.stack, Vec3::default(), 40, None);
     }
+}
+
+/// The menu type of a plugin menu (`menu_open`) by its `minecraft:menu` name.
+pub fn plugin_kind(name: &str) -> Option<MenuKind> {
+    Some(match name {
+        "minecraft:generic_9x1" => MenuKind::Generic { rows: 1 },
+        "minecraft:generic_9x2" => MenuKind::Generic { rows: 2 },
+        "minecraft:generic_9x3" => MenuKind::Generic { rows: 3 },
+        "minecraft:generic_9x4" => MenuKind::Generic { rows: 4 },
+        "minecraft:generic_9x5" => MenuKind::Generic { rows: 5 },
+        "minecraft:generic_9x6" => MenuKind::Generic { rows: 6 },
+        "minecraft:generic_3x3" => MenuKind::Dispenser,
+        "minecraft:crafter_3x3" => MenuKind::Crafter,
+        "minecraft:hopper" => MenuKind::Hopper,
+        "minecraft:shulker_box" => MenuKind::ShulkerBox,
+        _ => return None,
+    })
+}
+
+/// Runs `f` on a player of the level with its inventory, how it opens menus, its position and
+/// its packet sink; what `f` drops spawns at the player afterwards (as [`open_requests`]).
+/// `None` when the player is not in the level.
+fn with_player<R>(
+    level: &mut Level,
+    player: EntityId,
+    f: impl FnOnce(&mut PlayerInventory, &mut Level, Opener, Vec3, &mut Vec<Drop>, &dyn PacketSink) -> R,
+) -> Option<R> {
+    let (row, pos) = level
+        .entities
+        .store
+        .get(player)
+        .map(|e| (e.kind_row(), e.pos()))?;
+    let mut players = std::mem::take(&mut level.entities.players);
+    let mut drops = Vec::new();
+    let result = players.get_mut(row).map(|p| {
+        let who = Opener {
+            spectator: p.game_mode == vanillite_config::GameMode::Spectator,
+            infinite: p.game_mode == vanillite_config::GameMode::Creative,
+            disconnected: false,
+        };
+        let sink = std::sync::Arc::clone(&p.connection.sink);
+        f(&mut p.inventory, level, who, pos, &mut drops, sink.as_ref())
+    });
+    level.entities.players = players;
+    for drop in drops {
+        crate::block::drops::spawn_item(level, pos, drop.stack, Vec3::default(), 40, None);
+    }
+    result
+}
+
+/// Opens a plugin menu (`menu_open`) like `ServerPlayer.openMenu`: the open menu closes, the
+/// screen opens with `title` and the contents are sent. Its container slots are the menu's own
+/// (`items`, padded or cut to the menu's size); nothing is saved and they are gone when it
+/// closes. Returns the container id; `None` when the player is not in the level.
+pub fn open_plugin(
+    level: &mut Level,
+    player: EntityId,
+    kind: MenuKind,
+    title: Component,
+    mut items: Vec<ItemStack>,
+) -> Option<i32> {
+    items.resize(kind.container_slots(), ItemStack::EMPTY);
+    let request = MenuRequest {
+        player: Some(player),
+        menu: kind,
+        storage: Storage::Local,
+        title,
+        pos: BlockPos::default(),
+        block: vanillite_data::block::ids::AIR,
+    };
+    with_player(level, player, |inv, level, who, _, drops, sink| {
+        open_with(inv, level, request, who, drops, sink, Some(items));
+        inv.container.as_ref().map(|m| m.state.container_id)
+    })
+    .flatten()
+}
+
+/// Runs `f` on the slots of a player's open menu (its inventory menu when no container is
+/// open) with its packet sink. `None` when the player is not in the level.
+pub fn with_open_menu<R>(
+    level: &mut Level,
+    player: EntityId,
+    f: impl FnOnce(&mut dyn MenuSlots, &dyn PacketSink) -> R,
+) -> Option<R> {
+    with_player(level, player, |inv, level, _, pos, _, sink| {
+        if inv.container.is_some() {
+            with_view(inv, level, pos, None, |view| f(view, sink))
+        } else {
+            Some(f(inv, sink))
+        }
+    })
+    .flatten()
+}
+
+/// The stack in a slot of a player's open menu (its inventory menu when no container is
+/// open); `None` when the player is not in the level or the menu has no such slot.
+pub fn open_menu_item(level: &Level, player: EntityId, slot: usize) -> Option<ItemStack> {
+    let inv = &level.entities.player(player)?.inventory;
+    match inv.container.as_deref() {
+        Some(menu) => (slot < menu.slot_count()).then(|| slot_item(menu, inv, level, slot).clone()),
+        None => (slot < inv.slot_count()).then(|| MenuSlots::item(inv, slot).clone()),
+    }
+}
+
+/// `ServerPlayer.closeContainer`: the server closes a player's open container menu and tells
+/// the client. Returns whether the player is in the level.
+pub fn close_for(level: &mut Level, player: EntityId) -> bool {
+    with_player(level, player, |inv, level, who, _, drops, sink| {
+        close(inv, level, who, drops, Some(sink));
+    })
+    .is_some()
 }
 
 /// Runs `f` on the open container menu with the player's inventory and the level.
@@ -1414,6 +1558,10 @@ pub fn still_valid(
     let Some(menu) = &inv.container else {
         return true;
     };
+    // A plugin menu belongs to no block or entity: it stays until closed.
+    if menu.plugin {
+        return true;
+    }
     let block_ok = |pos: BlockPos| -> bool {
         match level.block_entity(pos) {
             Some(

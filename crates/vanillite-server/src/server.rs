@@ -443,6 +443,9 @@ impl ServerBuilder {
                     None => (built_in_generators(), Origin::BuiltIn),
                 },
             };
+        // Plugin chunk populators run after the steps of whichever generator fills the slot.
+        let generator_provider =
+            crate::plugins::with_populators(generator_provider, plugins.chunk_populators());
         slot("chunk-generator", &origin);
         let (light_provider, origin) = self
             .light_engine
