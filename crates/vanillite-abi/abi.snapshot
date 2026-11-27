@@ -1,4 +1,4 @@
-abi 1.5
+abi 1.6
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -18,6 +18,8 @@ type GeneratorCreateFn = unsafeextern"C"fn(user:*mutc_void,world:*constWorldInfo
 type GeneratorRunFn = unsafeextern"C"fn(instance:*mutc_void,chunks:*constGenChunk,count:usize,stride:usize,)->Status
 type GeneratorDestroyFn = unsafeextern"C"fn(instance:*mutc_void)
 type TextSetFn = unsafeextern"C"fn(state:*mutc_void,text:Str,format:u32)
+type PacketFn = unsafeextern"C"fn(user:*mutc_void,ctx:*mutContext,event:*mutPacketEvent)->Status
+type PacketSetFn = unsafeextern"C"fn(state:*mutc_void,body:Bytes)->Status
 const status::OK: Status = 0
 const status::ERROR: Status = 1
 const status::UNSUPPORTED: Status = 2
@@ -199,6 +201,20 @@ const permission_default::NOT_OP: u32 = 3
 const weather::CLEAR: u32 = 0
 const weather::RAIN: u32 = 1
 const weather::THUNDER: u32 = 2
+const packet_state::HANDSHAKE: u32 = 0
+const packet_state::STATUS: u32 = 1
+const packet_state::LOGIN: u32 = 2
+const packet_state::CONFIGURATION: u32 = 3
+const packet_state::PLAY: u32 = 4
+const packet_direction::CLIENTBOUND: u32 = 0
+const packet_direction::SERVERBOUND: u32 = 1
+const packet_id::ANY: i32 = -1
+const packet_listen::BROADCAST: u32 = 1
+const packet_listen::IGNORE_CANCELLED: u32 = 2
+const packet_event::BROADCAST: u32 = 1
+const packet_event::REPLACED: u32 = 2
+const packet_send::SKIP_LISTENERS: u32 = 1
+const packet_limits::MAX_BODY: u32 = 8388608
 const set_mode::UPDATE: u32 = 0
 const set_mode::NO_PHYSICS: u32 = 1
 struct Str size=16 align=8
@@ -477,7 +493,33 @@ struct ChunkGeneratorProvider size=40 align=8
   create: GeneratorCreateFn @16
   generate: GeneratorRunFn @24
   destroy: GeneratorDestroyFn @32
-struct HostApi size=856 align=8
+struct PacketSpec size=48 align=8
+  size: u32 @0
+  direction: u32 @4
+  state: u32 @8
+  id: i32 @12
+  priority: i32 @16
+  flags: u32 @20
+  run: PacketFn @24
+  drop: Option<DropFn> @32
+  user: *mutc_void @40
+struct PacketOut size=24 align=8
+  size: u32 @0
+  state: *mutc_void @8
+  set: PacketSetFn @16
+struct PacketEvent size=80 align=8
+  size: u32 @0
+  direction: u32 @4
+  state: u32 @8
+  id: i32 @12
+  cancelled: u32 @16
+  flags: u32 @20
+  protocol: i32 @24
+  connection: u64 @32
+  player: Uuid @40
+  body: Bytes @56
+  out: *constPacketOut @72
+struct HostApi size=904 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -587,3 +629,9 @@ struct HostApi size=856 align=8
   block_entity_merge: unsafeextern"C"fn(*mutContext,u32,BlockPos,Str)->Status @832
   advancement_set: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,Str,u32)->Status @840
   advancement_done: unsafeextern"C"fn(*mutContext,u32,Uuid,Str,*mutu32)->Status @848
+  packet_subscribe: unsafeextern"C"fn(PluginId,*constPacketSpec,*mutu64)->Status @856
+  packet_unsubscribe: unsafeextern"C"fn(PluginId,u64)->Status @864
+  packet_id: unsafeextern"C"fn(PluginId,u32,u32,Str,*muti32)->Status @872
+  packet_name: unsafeextern"C"fn(PluginId,u32,u32,i32,*mutStrBuf)->Status @880
+  packet_send: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @888
+  protocol_version: unsafeextern"C"fn(PluginId,*muti32)->Status @896

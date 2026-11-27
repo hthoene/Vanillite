@@ -1,0 +1,20 @@
+[package]
+name = "vanillite-example-packets"
+description = "Example Vanillite plugin for the packet interface: name tags hidden per viewer, a prefix on system messages and read-only signs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# `packets`: the typed packets of vanillite-protocol next to the raw packet bodies.
+vanillite-plugin = { workspace = true, features = ["packets"] }
+
+[lints]
+workspace = true

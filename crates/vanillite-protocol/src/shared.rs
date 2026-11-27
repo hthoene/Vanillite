@@ -18,6 +18,9 @@ pub struct SharedPacket {
     body: Vec<u8>,
     frame: OnceLock<(Option<usize>, Vec<u8>)>,
     translated: OnceLock<Box<[Translation; TRANSLATIONS]>>,
+    /// What the broadcast listeners of the packet tap decided (allocated by the first
+    /// listener that sees the packet).
+    tapped: OnceLock<Box<crate::tap::Tapped>>,
 }
 
 /// How many client versions one shared packet caches translations for.
@@ -32,7 +35,12 @@ impl SharedPacket {
             body,
             frame: OnceLock::new(),
             translated: OnceLock::new(),
+            tapped: OnceLock::new(),
         }
+    }
+
+    pub(crate) fn tapped(&self) -> &OnceLock<Box<crate::tap::Tapped>> {
+        &self.tapped
     }
 
     /// Encodes a packet.

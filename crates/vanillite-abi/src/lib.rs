@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 5;
+pub const ABI_MINOR: u16 = 6;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -177,6 +177,12 @@ abi! {
         /// Replaces a text (copied by the receiver before it returns; `format` from
         /// [`text_format`]). Since ABI 1.4.
         pub type TextSetFn = unsafe extern "C" fn(state: *mut c_void, text: Str, format: u32);
+        /// A packet listener; the event is valid for the call. Since ABI 1.6.
+        pub type PacketFn =
+            unsafe extern "C" fn(user: *mut c_void, ctx: *mut Context, event: *mut PacketEvent) -> Status;
+        /// Replaces a packet's body (copied by the host before it returns); fails with
+        /// [`status::INVALID_ARGUMENT`] for an empty or oversized body. Since ABI 1.6.
+        pub type PacketSetFn = unsafe extern "C" fn(state: *mut c_void, body: Bytes) -> Status;
     }
     consts {
         /// Result codes ([`Status`]).
@@ -653,6 +659,60 @@ abi! {
             RAIN = 1,
             /// Thunder.
             THUNDER = 2,
+        }
+        /// Protocol states of packets. Since ABI 1.6.
+        pub mod packet_state: u32 {
+            /// The first packet of a connection.
+            HANDSHAKE = 0,
+            /// The server list ping.
+            STATUS = 1,
+            /// Login, up to the client's acknowledgement.
+            LOGIN = 2,
+            /// Configuration (registries, resource packs).
+            CONFIGURATION = 3,
+            /// In a world.
+            PLAY = 4,
+        }
+        /// Packet directions. Since ABI 1.6.
+        pub mod packet_direction: u32 {
+            /// From the server to a client.
+            CLIENTBOUND = 0,
+            /// From a client to the server.
+            SERVERBOUND = 1,
+        }
+        /// Special packet ids. Since ABI 1.6.
+        pub mod packet_id: i32 {
+            /// [`PacketSpec::id`]: every packet of the state and direction.
+            ANY = -1,
+        }
+        /// Flags of a packet listener ([`PacketSpec::flags`]). Since ABI 1.6.
+        pub mod packet_listen: u32 {
+            /// Clientbound only: the listener does not depend on the receiver. The host calls
+            /// it once per encoded packet where the packet is encoded once for many receivers
+            /// (then without a player, [`packet_event::BROADCAST`]); its decision holds for all
+            /// of them, and a replacement is still one buffer shared by all. Broadcast
+            /// listeners run before the listeners per receiver.
+            BROADCAST = 1,
+            /// The listener is skipped while the packet is cancelled.
+            IGNORE_CANCELLED = 2,
+        }
+        /// Flags of a packet event ([`PacketEvent::flags`]). Since ABI 1.6.
+        pub mod packet_event: u32 {
+            /// The packet is encoded once for many receivers and this call decides for all of
+            /// them: [`PacketEvent::player`] is nil and [`PacketEvent::connection`] 0.
+            BROADCAST = 1,
+            /// An earlier listener replaced the body.
+            REPLACED = 2,
+        }
+        /// Flags of `packet_send`. Since ABI 1.6.
+        pub mod packet_send: u32 {
+            /// The packet passes no packet listener.
+            SKIP_LISTENERS = 1,
+        }
+        /// Limits of the packet interface. Since ABI 1.6.
+        pub mod packet_limits: u32 {
+            /// The longest packet body in bytes (Vanilla's limit of an uncompressed packet).
+            MAX_BODY = 1 << 23,
         }
         /// How `block_set_id` and `blocks_set` change blocks. Since ABI 1.2.
         pub mod set_mode: u32 {
@@ -1274,6 +1334,69 @@ abi! {
             /// Destroys an instance.
             pub destroy: GeneratorDestroyFn,
         }
+        /// A packet listener for `packet_subscribe`. Since ABI 1.6.
+        pub struct PacketSpec {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// One of [`packet_direction`].
+            pub direction: u32,
+            /// One of [`packet_state`].
+            pub state: u32,
+            /// The packet id in that state and direction (`packet_id` resolves a name), or
+            /// [`packet_id::ANY`].
+            pub id: i32,
+            /// One of [`priority`], or any value between: listeners run from the lowest to the
+            /// highest, then the monitors.
+            pub priority: i32,
+            /// [`packet_listen`] bits.
+            pub flags: u32,
+            /// The listener. It runs where packets are written and read: on network threads,
+            /// for many connections at once (a broadcast listener also on the thread that
+            /// encodes the packet), with a context that owns no world. The packets of one
+            /// connection arrive in order.
+            pub run: PacketFn,
+            /// Frees `user` once the listener is removed and no call is running.
+            pub drop: Option<DropFn>,
+            /// Passed to `run` and `drop`.
+            pub user: *mut c_void,
+        }
+        /// Where a packet listener writes a replacement body. Since ABI 1.6.
+        pub struct PacketOut {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// Passed to `set`.
+            pub state: *mut c_void,
+            /// Replaces the body (`id` + fields; the id may differ); the last call wins.
+            pub set: PacketSetFn,
+        }
+        /// What a packet listener sees. Since ABI 1.6.
+        pub struct PacketEvent {
+            /// Size of this record in bytes.
+            pub size: u32,
+            /// One of [`packet_direction`].
+            pub direction: u32,
+            /// One of [`packet_state`].
+            pub state: u32,
+            /// The packet id the body starts with.
+            pub id: i32,
+            /// Non-zero when cancelled: a clientbound packet is not sent, a serverbound one
+            /// not handled. Listeners may set or clear it.
+            pub cancelled: u32,
+            /// [`packet_event`] bits.
+            pub flags: u32,
+            /// The protocol version the body is encoded for (the server's own; clients of
+            /// other versions are translated behind the listeners).
+            pub protocol: i32,
+            /// The connection, a number unique in this server run (0 in a broadcast call).
+            pub connection: u64,
+            /// The player the packet goes to or comes from; nil before its login finished and
+            /// in a broadcast call.
+            pub player: Uuid,
+            /// The packet body: the id as a VarInt, then the fields.
+            pub body: Bytes,
+            /// Replaces the body. Monitors must not use it.
+            pub out: *const PacketOut,
+        }
         /// The host's functions for plugins.
         pub struct HostApi {
             /// Size of this record in bytes.
@@ -1598,6 +1721,25 @@ abi! {
             /// Whether a player has completed an advancement (0 or 1). Since ABI 1.5.
             pub advancement_done:
                 unsafe extern "C" fn(*mut Context, u32, Uuid, Str, *mut u32) -> Status,
+            /// Adds a packet listener; writes its handle. Allowed at any time and from any
+            /// thread. Packet types without a listener cost the server nothing. Since ABI 1.6.
+            pub packet_subscribe:
+                unsafe extern "C" fn(PluginId, *const PacketSpec, *mut u64) -> Status,
+            /// Removes a packet listener by its handle; calls that are running finish first.
+            /// Since ABI 1.6.
+            pub packet_unsubscribe: unsafe extern "C" fn(PluginId, u64) -> Status,
+            /// The id of a packet by its name in a state ([`packet_state`]) and direction
+            /// ([`packet_direction`]), e.g. `set_entity_data`. Ids change between Minecraft
+            /// versions, names rarely. Since ABI 1.6.
+            pub packet_id: unsafe extern "C" fn(PluginId, u32, u32, Str, *mut i32) -> Status,
+            /// The name of a packet by its id. Since ABI 1.6.
+            pub packet_name: unsafe extern "C" fn(PluginId, u32, u32, i32, *mut StrBuf) -> Status,
+            /// Sends a play packet body (`id` + fields, the server's protocol version) to a
+            /// player, in order with the server's packets from this thread; flags from
+            /// [`packet_send`]. Since ABI 1.6.
+            pub packet_send: unsafe extern "C" fn(PluginId, Uuid, Bytes, u32) -> Status,
+            /// The protocol version packet bodies are encoded for. Since ABI 1.6.
+            pub protocol_version: unsafe extern "C" fn(PluginId, *mut i32) -> Status,
         }
     }
 }

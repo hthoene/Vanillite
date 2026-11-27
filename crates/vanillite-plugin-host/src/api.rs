@@ -129,6 +129,12 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     block_entity_merge,
     advancement_set,
     advancement_done,
+    packet_subscribe,
+    packet_unsubscribe,
+    packet_id,
+    packet_name,
+    packet_send,
+    protocol_version,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -2500,4 +2506,100 @@ unsafe extern "C" fn advancement_done(
             Err(s) => s,
         }
     })
+}
+
+unsafe extern "C" fn packet_subscribe(
+    id: abi::PluginId,
+    spec: *const abi::PacketSpec,
+    out: *mut u64,
+) -> Status {
+    // SAFETY: the plugin passes a valid spec or null.
+    let Some(spec) = (unsafe { spec.as_ref() }) else {
+        return status::INVALID_ARGUMENT;
+    };
+    let result = if (spec.size as usize) < size_of::<abi::PacketSpec>() || out.is_null() {
+        status::INVALID_ARGUMENT
+    } else {
+        with(id, |inner, plugin| match inner.packets.add(plugin, spec) {
+            Ok(handle) => write(out, handle),
+            Err(s) => s,
+        })
+    };
+    if result != status::OK
+        && let Some(drop) = spec.drop
+    {
+        // SAFETY: the plugin's drop function for its own user data, which no listener took.
+        unsafe { drop(spec.user) };
+    }
+    result
+}
+
+unsafe extern "C" fn packet_unsubscribe(id: abi::PluginId, handle: u64) -> Status {
+    with(id, |inner, plugin| {
+        inner.packets.remove(plugin.local, Some(handle))
+    })
+}
+
+unsafe extern "C" fn packet_id(
+    id: abi::PluginId,
+    state: u32,
+    direction: u32,
+    name: abi::Str,
+    out: *mut i32,
+) -> Status {
+    with(id, |_, _| {
+        let name = match arg(name) {
+            Ok(name) => name,
+            Err(s) => return s,
+        };
+        match crate::packets::id_of(direction, state, name) {
+            Ok(packet) => write(out, packet),
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn packet_name(
+    id: abi::PluginId,
+    state: u32,
+    direction: u32,
+    packet: i32,
+    out: *mut abi::StrBuf,
+) -> Status {
+    with(id, |_, _| {
+        match crate::packets::name_of(direction, state, packet) {
+            Ok(name) => write_str(out, name),
+            Err(s) => s,
+        }
+    })
+}
+
+unsafe extern "C" fn packet_send(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    body: abi::Bytes,
+    flags: u32,
+) -> Status {
+    with(id, |inner, _| {
+        if flags & !abi::packet_send::SKIP_LISTENERS != 0 {
+            return status::UNSUPPORTED;
+        }
+        // SAFETY: the plugin passes bytes valid for the call.
+        let Some(body) = (unsafe { bytes(body) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if !crate::packets::sendable(body) {
+            return status::INVALID_ARGUMENT;
+        }
+        let skip = flags & abi::packet_send::SKIP_LISTENERS != 0;
+        if server!(inner).send_packet(player.to_u128(), body.to_vec(), skip) {
+            status::OK
+        } else {
+            status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn protocol_version(id: abi::PluginId, out: *mut i32) -> Status {
+    with(id, |_, _| write(out, vanillite_protocol::PROTOCOL_VERSION))
 }

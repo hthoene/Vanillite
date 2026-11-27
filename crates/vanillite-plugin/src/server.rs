@@ -50,6 +50,10 @@ impl Server {
         self.host.api
     }
 
+    pub(crate) fn host(&self) -> Host {
+        self.host
+    }
+
     /// The plugin's data folder (`plugins/<id>/`).
     pub fn data_dir(&self) -> PathBuf {
         // SAFETY: valid host function and buffer.

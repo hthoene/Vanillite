@@ -117,6 +117,21 @@ impl<P: Plugin> Registrar<P> {
         self
     }
 
+    /// Adds a packet listener ([`Server::on_packet`], which also works after `load`); see
+    /// [`packet`](crate::packet). Since ABI 1.6.
+    pub fn on_packet(
+        &mut self,
+        filter: crate::packet::PacketFilter,
+        listener: impl Fn(&mut crate::packet::PacketEvent<'_>) + Send + Sync + 'static,
+    ) -> &mut Self {
+        if let Err(e) = self.server().on_packet(filter, listener)
+            && self.error.is_none()
+        {
+            self.error = Some(e);
+        }
+        self
+    }
+
     /// The next `on_*` handler is skipped while its event is cancelled (Bukkit's
     /// `ignoreCancelled = true`), e.g. `registrar.ignore_cancelled().on_chat(...)`. Since
     /// ABI 1.5.
