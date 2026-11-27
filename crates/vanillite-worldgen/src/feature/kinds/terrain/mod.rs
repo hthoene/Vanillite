@@ -350,7 +350,7 @@ impl Climates {
     }
 
     /// The biome at `pos` of the region (`level.getBiome(pos).value()`).
-    fn at(&self, level: &WorldGenRegion<'_>, pos: BlockPos) -> &BiomeData {
+    pub(crate) fn at(&self, level: &WorldGenRegion<'_>, pos: BlockPos) -> &BiomeData {
         &self.0[usize::from(level.biome(pos))]
     }
 
@@ -364,7 +364,11 @@ impl Climates {
         biome_pos: BlockPos,
         pos: BlockPos,
     ) -> bool {
-        let biome = self.at(level, biome_pos);
+        Self::freezes(self.at(level, biome_pos), level, pos)
+    }
+
+    /// [`Self::should_freeze`] with the biome at the biome position.
+    pub(crate) fn freezes(biome: &BiomeData, level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
         if biome.warm_enough_to_rain(pos.x, pos.y, pos.z, level.sea_level()) {
             return false;
         }
@@ -376,10 +380,9 @@ impl Climates {
         is(state, ids::WATER) && is_still_water(state.fluid_state())
     }
 
-    /// `level.getBiome(pos).value().shouldSnow(level, pos)` (block light is 0, see
+    /// `biome.shouldSnow(level, pos)` with the biome at `pos` (block light is 0, see
     /// [`Self::should_freeze`]).
-    pub(crate) fn should_snow(&self, level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
-        let biome = self.at(level, pos);
+    pub(crate) fn snows(biome: &BiomeData, level: &WorldGenRegion<'_>, pos: BlockPos) -> bool {
         if !biome.has_precipitation
             || biome.warm_enough_to_rain(pos.x, pos.y, pos.z, level.sea_level())
         {
