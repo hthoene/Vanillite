@@ -1,0 +1,101 @@
+{
+  "description": "Thrown potions at endermen (Enderman.hurtServer): harming does no damage, water hurts; both make it try to teleport (repeatedlyTryToTeleport).",
+  "tier": "fast",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      31,
+      -50,
+      31
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        31,
+        -56,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        31
+      ],
+      "to": [
+        31,
+        -56,
+        31
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -56,
+        31
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        31,
+        -60,
+        0
+      ],
+      "to": [
+        31,
+        -56,
+        31
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:enderman 6.5 -60 6.5 {UUID:[I;1,2,3,13]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:enderman 24.5 -60 6.5 {UUID:[I;1,2,3,14]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:splash_potion 6.5 -57 6.5 {UUID:[I;1,2,3,17],Item:{id:\"minecraft:splash_potion\",count:1,components:{\"minecraft:potion_contents\":{potion:\"minecraft:harming\"}}},Motion:[0.0d,-0.5d,0.0d]}"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "summon minecraft:splash_potion 24.5 -57 6.5 {UUID:[I;1,2,3,18],Item:{id:\"minecraft:splash_potion\",count:1,components:{\"minecraft:potion_contents\":{potion:\"minecraft:water\"}}},Motion:[0.0d,-0.5d,0.0d]}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "description": "Endermen more than 128 blocks from the player: one carrying a block is persistent (Enderman.requiresCustomPersistence), the other despawns (Mob.checkDespawn).",
+  "tier": "fast",
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      159,
+      -55,
+      3
+    ]
+  ],
+  "ticks": 10,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        1.5,
+        -60.0,
+        1.5
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:enderman 150.5 -60 1.5 {UUID:[I;1,2,3,11],NoAI:1b,carriedBlockState:{id:\"minecraft:oak_log\",properties:{axis:\"x\"}}}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:enderman 155.5 -60 1.5 {UUID:[I;1,2,3,22],NoAI:1b}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

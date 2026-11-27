@@ -612,6 +612,12 @@ pub fn experience_reward(m: &mut MobData) -> i32 {
 /// The dimensions of a mob: its family's when they depend on state, else the type's (babies
 /// at half size).
 pub fn mob_dimensions(m: &MobData) -> Dimensions {
+    if m.kind == Kind::Zombie {
+        // `Zombie.BABY_DIMENSIONS` of the classic zombie.
+        if let Some(d) = fam::undead::zombies::dimensions(m) {
+            return d;
+        }
+    }
     fam::dimensions(m).unwrap_or_else(|| dimensions(m.kind.type_id(), m.baby))
 }
 
@@ -684,8 +690,8 @@ pub fn register_goals(m: &mut MobData) {
                     super::common::baby_turtle_on_land,
                 )),
             );
-            // `reassessWeaponGoal`: skeletons hold a bow.
-            g.add(4, Goal::bow(1.0, 40, 15.0));
+            // The constructor's `reassessWeaponGoal` (no bow yet): the melee goal.
+            g.add(4, fam::undead::skeletons::melee_goal());
         }
         Kind::Creeper => {
             g.add(1, Goal::Float);
@@ -892,15 +898,9 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                 equipment::stack("minecraft:bow"),
             );
             equipment::populate_default_enchantments(m, ctx.special_multiplier);
+            fam::undead::skeletons::reassess_weapon_goal(m, difficulty);
             m.can_pick_up_loot = m.random.next_float() < 0.55 * ctx.special_multiplier;
             halloween_head(m);
-            if difficulty == Difficulty::Hard {
-                for slot in &mut m.goals.slots {
-                    if let Goal::Bow { interval_min, .. } = &mut slot.goal {
-                        *interval_min = 20;
-                    }
-                }
-            }
         }
         Kind::Spider => spider_finalize(m, ctx),
         _ => {}
@@ -1125,6 +1125,7 @@ pub fn before_tick(t: &mut Tick<'_, '_>) {
             if t.mob_ref().removed {
                 return;
             }
+            fam::undead::skeletons::reassess_if_due(t);
             let m = t.mob();
             if m.using_item >= 0 {
                 m.using_item += 1;
@@ -1329,19 +1330,23 @@ pub fn after_attack(t: &mut Tick<'_, '_>, target: EntityId) {
         fam::after_attack(t, target);
         return;
     }
-    if t.mob_ref().kind != Kind::Zombie || !t.mob_ref().is_on_fire() {
+    if t.mob_ref().kind != Kind::Zombie {
         return;
     }
-    #[allow(clippy::cast_precision_loss)]
-    let difficulty = t.env.difficulty as i32 as f32;
-    if t.mob().random.next_float() < difficulty * 0.3 {
+    // `Zombie.doHurtTarget`: a burning zombie with an empty main hand sets its target on fire
+    // (chance and seconds from the local effective difficulty).
+    let empty = t
+        .mob_ref()
+        .equipment
+        .get(crate::item::EquipmentSlot::MainHand)
+        .is_empty();
+    if !empty || !t.mob_ref().is_on_fire() {
+        return;
+    }
+    let diff = crate::level::difficulty::at(t.level, t.block_pos()).effective;
+    if t.mob().random.next_float() < diff * 0.3 {
         #[allow(clippy::cast_possible_truncation)]
-        let ticks = 2 * difficulty as i32 * 20;
-        if let Some(p) = t.ents.player_mut(target) {
-            p.survival.fire_ticks = p.survival.fire_ticks.max(ticks);
-        } else if let Some(m) = t.ents.mob_mut(target) {
-            m.fire_ticks = m.fire_ticks.max(ticks);
-        }
+        super::attack::ignite(t.ents, target, 2 * diff as i32 * 20);
     }
 }
 

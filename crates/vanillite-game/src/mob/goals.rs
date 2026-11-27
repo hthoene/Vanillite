@@ -1162,7 +1162,7 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             false
         }
         Goal::RestrictSun => t.cx.env.is_bright_outside(),
-        Goal::Bow { .. } => t.mob_ref().target.is_some(),
+        Goal::Bow { .. } => t.mob_ref().target.is_some() && holds_bow(t.mob_ref()),
         Goal::EatBlock { .. } => {
             let chance = if t.mob_ref().baby { 50 } else { 1000 };
             if random_int(t, g.adjusted(chance)) != 0 {
@@ -1359,7 +1359,9 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         }
         Goal::Swell => can_use(t, g),
         Goal::Leap { .. } => !t.on_ground(),
-        Goal::Bow { .. } => t.mob_ref().target.is_some() || !t.mob_ref().nav.is_done(),
+        Goal::Bow { .. } => {
+            (t.mob_ref().target.is_some() || !t.mob_ref().nav.is_done()) && holds_bow(t.mob_ref())
+        }
         Goal::EatBlock { tick } => *tick > 0,
         Goal::FollowParent { parent, .. } => {
             if t.mob_ref().age >= 0 {
@@ -1419,6 +1421,13 @@ pub(crate) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         }
         Goal::Guardian(g) => super::boss::guardian::goal_can_continue(t, g),
     }
+}
+
+/// `RangedBowAttackGoal.isHoldingBow`: a bow in either hand.
+fn holds_bow(m: &super::MobData) -> bool {
+    let bow = vanillite_data::item::ids::BOW.0;
+    let off = m.equipment.get(crate::item::EquipmentSlot::OffHand);
+    m.equipment.holds(bow) || (!off.is_empty() && off.item == bow)
 }
 
 /// `TargetGoal.canContinueToUse`.

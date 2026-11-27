@@ -298,8 +298,22 @@ pub fn hurt_mob(
     }
     let mob_kind = m.kind;
     let mut amount = amount;
-    if mob_kind == Kind::Enderman && types.is(kind, tag::IS_PROJECTILE) {
-        // `EnderMan.hurtServer`: projectiles make it teleport instead.
+    // `EnderMan.hurtServer`: a thrown potion only hurts with water and always makes it try to
+    // teleport away.
+    let thrown_potion = if mob_kind == Kind::Enderman {
+        enderman_potion_hurts(ents, source.direct)
+    } else {
+        None
+    };
+    if mob_kind == Kind::Enderman
+        && types.is(kind, tag::IS_PROJECTILE)
+        && ents.vehicle_of(target).is_none()
+    {
+        // `EnderMan.hurtServer`: projectiles make it teleport instead (not while riding).
+        kinds::enderman_dodge(level, ents, env, cx, target);
+        return false;
+    }
+    if thrown_potion == Some(false) {
         kinds::enderman_dodge(level, ents, env, cx, target);
         return false;
     }
@@ -473,7 +487,11 @@ pub fn hurt_mob(
     // What the kinds' `hurtServer` overrides do after `super.hurtServer` (even when it died).
     if mob_kind.family() == super::Family::Classic {
         if mob_kind == Kind::Enderman {
-            kinds::after_hurt(level, ents, env, target, source);
+            if thrown_potion.is_some() {
+                kinds::enderman_dodge(level, ents, env, cx, target);
+            } else {
+                kinds::after_hurt(level, ents, env, target, source);
+            }
         }
         if mob_kind == Kind::Zombie {
             // `Zombie.hurtServer`: reinforcements on Hard.
@@ -897,6 +915,42 @@ fn die(
     };
     let pos = e.pos();
     let network_id = e.network_id().0;
+    // `Creeper.killedEntity`: a charged creeper's kill drops `charged_creeper/root` (the
+    // mob heads) once.
+    if let Some(cause) = source.cause
+        && env.rules.bool(Rule::MOB_DROPS)
+        && ents.mob(cause).is_some_and(|c| {
+            c.kind == Kind::Creeper && {
+                let s = super::fam::classic::creeper(c);
+                s.powered && !s.dropped_skulls
+            }
+        })
+    {
+        let heads = named_table_loot(
+            level,
+            ents,
+            env,
+            target,
+            &source,
+            "minecraft:charged_creeper/root",
+        )
+        .unwrap_or_default();
+        for stack in heads.into_iter().filter(|s| !s.is_empty()) {
+            if let Some(c) = ents.mob_mut(cause) {
+                super::fam::classic::creeper_mut(c).dropped_skulls = true;
+            }
+            let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
+            env.out.push(Effect::DropItem {
+                random: item_random,
+                uuid,
+                pos,
+                velocity,
+                y_rot,
+                pickup_delay: 10,
+                stack,
+            });
+        }
+    }
     // `gameEvent(ENTITY_DIE)`: a sculk catalyst nearby takes the experience
     // (`CatalystListener`, `skipDropExperience`); vibration listeners hear the death.
     let consumed = crate::block::sculk_catalyst::catalyst_near(level, pos);
@@ -1322,11 +1376,23 @@ fn table_loot(
     target: EntityId,
     source: &DamageSource,
 ) -> Option<Vec<crate::item::ItemStack>> {
-    let data = crate::player::play::game_data()?;
     let name = ents.store.get(target)?.kind().info().name;
     let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
     let table = format!("{ns}:entities/{path}");
-    if !data.loot.contains(&table) {
+    named_table_loot(level, ents, env, target, source, &table)
+}
+
+/// `dropFromLootTable` of the loot table `table` for the dying `target`.
+fn named_table_loot(
+    level: &Level,
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    target: EntityId,
+    source: &DamageSource,
+    table: &str,
+) -> Option<Vec<crate::item::ItemStack>> {
+    let data = crate::player::play::game_data()?;
+    if !data.loot.contains(table) {
         return None;
     }
     let this = super::attack::facts(ents, target)?;
@@ -1375,6 +1441,25 @@ fn table_loot(
     // `dropFromLootTable` without a loot table seed: the table's random sequence, else the
     // level random.
     data.loot
-        .roll_table(level, &table, &ctx, env.random, &mut out);
+        .roll_table(level, table, &ctx, env.random, &mut out);
     Some(out)
+}
+
+/// `EnderMan.hurtServer`'s thrown potion (`AbstractThrownPotion` as the direct entity):
+/// `Some(hurts)`, true for a potion in `#hurts_water_sensitive_entities` (water); `None` for
+/// any other damage.
+fn enderman_potion_hurts(ents: &Entities, direct: Option<EntityId>) -> Option<bool> {
+    let id = direct?;
+    let kind = ents.store.get(id)?.kind();
+    if !crate::effect::thrown::is_thrown_potion(kind) {
+        return None;
+    }
+    let water = crate::effect::potion::water_id();
+    let hurts = match ents.special(id) {
+        Some(crate::mob::boss::special::SpecialData::ThrownPotion(p)) => {
+            crate::effect::potion::PotionContents::of_stack(&p.stack).potion == water
+        }
+        _ => false,
+    };
+    Some(hurts)
 }

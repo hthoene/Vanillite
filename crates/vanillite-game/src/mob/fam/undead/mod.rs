@@ -193,6 +193,8 @@ pub enum Goal {
     HurtByIgnoringDrowned(HurtBy),
     /// `SpearUseGoal(mob, 1.0, 1.0, 10.0F, 2.0F)` of the zombies.
     SpearUse(zombies::SpearUse),
+    /// `MoveThroughVillageGoal(mob, 1.0, true, 4, canBreakDoors)` of the zombies.
+    MoveThroughVillage { poi: BlockPos },
     /// The melee goal of a skeleton without a bow (`AbstractSkeleton.meleeGoal`).
     SkeletonMelee(Melee),
     /// `Spider.SpiderTargetGoal` for other targets than players.
@@ -273,7 +275,8 @@ fn goal_group(g: &Goal) -> Group {
         | Goal::DrownedGoToBeach(_)
         | Goal::DrownedSwimUp { .. }
         | Goal::HurtByIgnoringDrowned(_)
-        | Goal::SpearUse(_) => Group::Zombie,
+        | Goal::SpearUse(_)
+        | Goal::MoveThroughVillage { .. } => Group::Zombie,
         Goal::SkeletonMelee(_) => Group::Skeleton,
         Goal::SpiderTarget(_)
         | Goal::SilverfishWakeUpFriends

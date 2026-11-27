@@ -268,7 +268,7 @@ fn has_controlling_passenger(t: &Tick<'_, '_>) -> bool {
 }
 
 /// `DoorBlock.isWoodenDoor`: a door that opens by hand.
-fn is_wooden_door(state: BlockState) -> bool {
+pub(crate) fn is_wooden_door(state: BlockState) -> bool {
     state.block().name().ends_with("_door")
         && crate::block::redstone::BlockSet::of(state.block()).can_open_by_hand
 }
