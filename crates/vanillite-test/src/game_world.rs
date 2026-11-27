@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::ProtoChunk;
-use vanillite_chunk::light::LightNibbles;
+use vanillite_chunk::light::{ChunkLight, LightNibbles};
 use vanillite_chunk::slots::{
     FlatGenerator, LightEngine, LightEngineProvider, MemoryStore, Neighbours, WorldInfo,
 };
@@ -75,7 +75,9 @@ struct NoLight;
 impl LightEngine for NoLight {
     fn initialize_light(&self, _: &mut [ProtoChunk]) {}
     fn light_chunks(&self, _: &mut [ProtoChunk], _: &mut Neighbours<'_>) {}
-    fn relight(&self, _: &[ChunkPos], _: &mut Neighbours<'_>) {}
+    fn relight(&self, _: &[BlockPos], _: &Neighbours<'_>) -> Vec<(ChunkPos, ChunkLight)> {
+        Vec::new()
+    }
 }
 
 /// A connection nobody reads.

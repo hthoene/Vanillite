@@ -22,7 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use vanillite_base::ChunkPos;
+use vanillite_base::{BlockPos, ChunkPos};
+use vanillite_chunk::light::ChunkLight;
 use vanillite_chunk::slots::{
     ChunkCodec, ChunkGenerator, ChunkStatus, LightEngine, Neighbours, ProtoChunk, RecordMeta,
     WorldInfo,
@@ -124,8 +125,8 @@ impl LightEngine for TimedLight {
         self.1.record(ChunkStatus::Light.index(), start);
     }
 
-    fn relight(&self, changed: &[ChunkPos], area: &mut Neighbours<'_>) {
-        self.0.relight(changed, area);
+    fn relight(&self, changes: &[BlockPos], area: &Neighbours<'_>) -> Vec<(ChunkPos, ChunkLight)> {
+        self.0.relight(changes, area)
     }
 }
 

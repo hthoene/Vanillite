@@ -430,8 +430,9 @@ rules! {
             /// skipped; "vanilla" uses `max-chained-neighbor-updates` of server.properties.
             max_chained_neighbor_updates: VanillaOr<u32> = "max-chained-neighbor-updates",
                 Performance, range = [1, 100_000_000], vanilla = VanillaOr::Vanilla;
-            /// Chunks whose light is recomputed per tick after block changes, each as one
-            /// background job over its 5 × 5 area. Lower values spread bursts over more ticks.
+            /// Chunks whose light is updated together after block changes, in one background
+            /// job that recomputes only the cells the changes reach; the rest follows in the
+            /// next job. Lower values split bursts into smaller jobs.
             max_relights_per_tick: u32 = "max-relights-per-tick", Performance,
                 range = [1, 65536], vanilla = 1024;
         }
