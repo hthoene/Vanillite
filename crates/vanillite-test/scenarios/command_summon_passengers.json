@@ -1,0 +1,11 @@
+{
+  "description": "/summon with Passengers (EntityType.loadEntityRecursive): an oak boat with two armor stands, and a minecart carrying an armor stand that carries another armor stand; every passenger is made at the summon position and rides its vehicle, then rideTick moves it to its seat.",
+  "tier": "fast",
+  "level_rng": true,
+  "region": [[0, -61, 0], [15, -55, 15]],
+  "ticks": 10,
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:oak_boat 4.5 -60 4.5 {Passengers:[{id:\"minecraft:armor_stand\"},{id:\"armor_stand\",Small:1b}]}"},
+    {"tick": 2, "op": "command", "command": "summon minecraft:minecart 10.5 -60 10.5 {Passengers:[{id:\"minecraft:armor_stand\",Passengers:[{id:\"minecraft:armor_stand\",Small:1b}]}]}"}
+  ]
+}

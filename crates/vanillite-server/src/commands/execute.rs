@@ -546,6 +546,45 @@ pub(crate) fn summon_for(
     finalize: bool,
     reason: u32,
 ) -> Result<Target, CommandError> {
+    let target = summon_one(env, source, id, pos, nbt, finalize, reason)?;
+    // `EntityType.loadEntityRecursive`: the `Passengers` (each with its own `Passengers`)
+    // are made at the same position and ride the entity (`startRiding(vehicle, true)`); one
+    // that cannot be made is left out.
+    if let (Some(Tag::List(passengers)), Some(vehicle)) = (nbt.get("Passengers"), target.entity) {
+        let dimension = super::entities_cmd::dimension_of(env.global, env.world);
+        for passenger in &passengers.0 {
+            let Tag::Compound(tag) = passenger else {
+                continue;
+            };
+            let Some(Tag::String(kind)) = tag.get("id") else {
+                continue;
+            };
+            let kind = if kind.contains(':') {
+                kind.clone()
+            } else {
+                format!("minecraft:{kind}")
+            };
+            let Ok(rider) = summon_for(env, source, &kind, pos, tag, false, reason) else {
+                continue;
+            };
+            if let Some(rider) = rider.entity {
+                super::entities_cmd::mount(env.level, env.global, dimension, rider, vehicle);
+            }
+        }
+    }
+    Ok(target)
+}
+
+/// [`summon_for`] of one entity, without its passengers.
+fn summon_one(
+    env: &mut Env<'_>,
+    source: &CommandSource,
+    id: &str,
+    pos: Vec3,
+    nbt: &vanillite_nbt::Compound,
+    finalize: bool,
+    reason: u32,
+) -> Result<Target, CommandError> {
     use vanillite_game::entities::{FallingBlockData, PrimedTntData};
     let failed = || CommandError::new("commands.summon.failed", vec![]);
     let duplicate = || CommandError::new("commands.summon.failed.uuid", vec![]);

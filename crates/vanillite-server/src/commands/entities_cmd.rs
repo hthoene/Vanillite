@@ -348,7 +348,7 @@ fn summon(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
 }
 
 /// The dimension id of a world.
-fn dimension_of(global: &Global, world: crate::world::WorldId) -> &str {
+pub(crate) fn dimension_of(global: &Global, world: crate::world::WorldId) -> &str {
     global.dimensions.name_or_overworld(world)
 }
 
