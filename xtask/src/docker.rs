@@ -13,6 +13,8 @@ const PASSWORD_ENV: &str = "PRIVATE_DOCKER_REPO_KEY";
 /// zig's clang turns off `evex512` for the x86-64 baseline, which breaks libdeflate's AVX-512
 /// functions; they are still only used when the CPU has AVX-512.
 const ZIG_X86_CFLAGS: (&str, &str) = ("CFLAGS_x86_64_unknown_linux_musl", "-mevex512");
+/// File name of the x86-64-v3 build (as in crates/vanillite/src/cpu.rs).
+const V3_BINARY: &str = "vanillite-x86-64-v3";
 /// Docker platform architecture and Rust target of each image platform.
 const ARCHES: &[(&str, &str)] = &[
     ("amd64", "x86_64-unknown-linux-musl"),
@@ -132,7 +134,7 @@ pub fn docker(host: Option<&str>) -> Command {
 /// Cross-compiles the static release binaries into `target/docker/<arch>/vanillite`.
 fn build_binaries(root: &Path) -> Result<()> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let mut cmd = Command::new(cargo);
+    let mut cmd = Command::new(&cargo);
     cmd.current_dir(root)
         .args(["zigbuild", "--release", "--locked", "-p", "vanillite"])
         .env(ZIG_X86_CFLAGS.0, ZIG_X86_CFLAGS.1);
@@ -142,14 +144,35 @@ fn build_binaries(root: &Path) -> Result<()> {
     run(&mut cmd).map_err(|e| {
         format!("{e}\n(needs cargo-zigbuild, zig and the musl targets: see docs/development.md)")
     })?;
-    for (arch, triple) in ARCHES {
-        let from = root.join("target").join(triple).join("release/vanillite");
+    // amd64 also gets the x86-64-v3 build, which the baseline binary starts where the CPU has
+    // it (crates/vanillite/src/cpu.rs).
+    let mut v3 = Command::new(&cargo);
+    v3.current_dir(root)
+        .args(["zigbuild", "--release", "--locked", "-p", "vanillite"])
+        .args(["--target", ARCHES[0].1, "--target-dir", "target/v3"])
+        .env(ZIG_X86_CFLAGS.0, ZIG_X86_CFLAGS.1)
+        .env("RUSTFLAGS", "-C target-cpu=x86-64-v3");
+    run(&mut v3)?;
+    let copy = |from: std::path::PathBuf, arch: &str, name: &str| -> Result<()> {
         let dir = root.join("target/docker").join(arch);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        std::fs::copy(&from, dir.join("vanillite"))
-            .map_err(|e| format!("{}: {e}", from.display()))?;
+        std::fs::copy(&from, dir.join(name)).map_err(|e| format!("{}: {e}", from.display()))?;
+        Ok(())
+    };
+    for (arch, triple) in ARCHES {
+        copy(
+            root.join("target").join(triple).join("release/vanillite"),
+            arch,
+            "vanillite",
+        )?;
     }
-    Ok(())
+    copy(
+        root.join("target/v3")
+            .join(ARCHES[0].1)
+            .join("release/vanillite"),
+        ARCHES[0].0,
+        V3_BINARY,
+    )
 }
 
 /// `docker login` with the password from the environment, never on the command line.

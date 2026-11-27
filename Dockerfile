@@ -35,14 +35,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     esac \
     # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
     && CFLAGS_x86_64_unknown_linux_musl=-mevex512 cargo zigbuild --release --locked -p vanillite --target "${triple}" \
-    && mkdir -p /out && cp "target/${triple}/release/vanillite" /out/vanillite
+    && mkdir -p /out && cp "target/${triple}/release/vanillite" /out/vanillite \
+    # amd64: also the x86-64-v3 build (AVX2), which the baseline binary starts where the CPU has it.
+    && if [ "${TARGETARCH}" = amd64 ]; then \
+         RUSTFLAGS="-C target-cpu=x86-64-v3" CFLAGS_x86_64_unknown_linux_musl=-mevex512 \
+           cargo zigbuild --release --locked -p vanillite --target "${triple}" --target-dir target/v3 \
+         && cp "target/v3/${triple}/release/vanillite" /out/vanillite-x86-64-v3; \
+       fi
 
 FROM scratch AS binary-build
-COPY --from=build /out/vanillite /vanillite
+COPY --from=build /out/ /
 
 FROM scratch AS binary-prebuilt
 ARG TARGETARCH
-COPY target/docker/${TARGETARCH}/vanillite /vanillite
+COPY target/docker/${TARGETARCH}/ /
 
 FROM binary-${BINARY} AS binary
 
@@ -59,7 +65,7 @@ FROM busybox:stable-musl AS busybox
 FROM scratch
 COPY --from=data /rootfs/ /
 COPY --from=busybox /bin/busybox /bin/busybox
-COPY --from=binary /vanillite /vanillite
+COPY --from=binary / /
 COPY --chmod=755 scripts/docker/entrypoint.sh /entrypoint.sh
 USER 10001:10001
 WORKDIR /data
@@ -70,6 +76,10 @@ EXPOSE 25565/tcp
 # VANILLITE_EULA=true accepts the Minecraft EULA. An empty variable is ignored.
 # Pterodactyl: the egg deploy/pterodactyl/egg-vanillite.json (STARTUP, /home/container).
 ENV VANILLITE_LOG=info
+# mimalloc (the musl build's allocator): commit arena memory on use and return freed pages at
+# once. Measured (#164): ~15 MiB less idle RSS, 50-100 MiB less under load and while chunks
+# generate, and a faster start, at the same tick time as the default.
+ENV MIMALLOC_ARENA_EAGER_COMMIT=0 MIMALLOC_PURGE_DELAY=0
 # The first start downloads the Vanilla jar and generates the spawn area.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5m --retries=3 \
     CMD ["/vanillite", "health", "--dir", "/data"]
