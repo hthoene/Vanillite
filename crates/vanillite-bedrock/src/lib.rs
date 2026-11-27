@@ -38,6 +38,7 @@ mod raknet;
 mod recipes;
 mod session;
 mod skin;
+mod text;
 pub mod version;
 
 use std::net::SocketAddr;
@@ -101,6 +102,8 @@ pub struct BedrockConfig {
     /// Key file of the server's NetherNet identity (clients remember the key; `None`: a new
     /// key every start).
     pub identity_file: Option<std::path::PathBuf>,
+    /// The Java server's English translations, to show its texts (empty: translation keys).
+    pub language: Arc<std::collections::HashMap<String, String>>,
 }
 
 impl Default for BedrockConfig {
@@ -125,6 +128,7 @@ impl Default for BedrockConfig {
             chunk_backlog: 512 << 10,
             raknet: raknet::Limits::default(),
             identity_file: None,
+            language: Arc::default(),
         }
     }
 }

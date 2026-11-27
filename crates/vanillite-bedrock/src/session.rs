@@ -5,6 +5,9 @@
 //! the section cache, the skins of other players and the form registry.
 
 mod container;
+mod dialog;
+mod heads;
+mod hud;
 mod inventory;
 mod play;
 mod scoreboard;
@@ -228,6 +231,8 @@ struct World {
     merchant: Option<trade::Merchant>,
     /// Item frames by block (Java entity ids): uses and hits of the frame block go to them.
     frames: FxHashMap<[i32; 3], i32>,
+    /// Lecterns holding a book: hitting one takes the book, as on Bedrock.
+    lecterns: FxHashSet<[i32; 3]>,
 }
 
 /// The layout of a Java dimension (`dim_type`: its dimension type name).
@@ -264,9 +269,22 @@ fn bedrock_game_mode(m: GameMode) -> i32 {
     }
 }
 
+/// The position of a lectern block actor that holds a book.
+fn lectern_with_book(actor: &[u8]) -> Option<[i32; 3]> {
+    let at = actor.windows(7).position(|w| w == b"hasBook")?;
+    if actor.get(at.checked_add(7)?) != Some(&1) || !actor.windows(7).any(|w| w == b"Lectern") {
+        return None;
+    }
+    let mut r = crate::io::Reader::new(actor);
+    Some([r.vari32().ok()?, r.vari32().ok()?, r.vari32().ok()?])
+}
+
 /// English text of Java disconnect keys a Bedrock client cannot translate.
-fn reason_text(c: &vanillite_protocol::text::Component) -> String {
-    let text = c.plain();
+fn reason_text(
+    c: &vanillite_protocol::text::Component,
+    language: &crate::text::Language,
+) -> String {
+    let text = crate::text::render(c, language);
     match text.as_str() {
         "multiplayer.disconnect.not_whitelisted" => {
             "You are not whitelisted on this server!".into()
@@ -333,6 +351,25 @@ pub(crate) struct Session {
     recent_blocks: FxHashMap<[i32; 3], u32>,
     /// The sign side the server let the client edit.
     editing_sign: Option<([i32; 3], bool)>,
+    /// The Java dialog shown as a form.
+    dialog: Option<Box<dialog::Shown>>,
+    /// The dialog registry: names and (for dialogs outside the known packs) their NBT.
+    dialogs: Vec<(String, Option<vanillite_nbt::Tag>)>,
+    /// `server_links`: label and URL.
+    server_links: Vec<(String, String)>,
+    /// Advancements that show a toast when done.
+    toasts: hud::Toasts,
+    border: hud::Border,
+    /// Player heads shown as entities with their skins.
+    heads: heads::Heads,
+    next_head: u64,
+    /// The player hit a lectern to take its book; its menu closes at once.
+    taking_book: bool,
+    /// Soft enums of server-suggested command arguments, asked for one per tick.
+    probes: Vec<crate::commands::Probe>,
+    next_probe: usize,
+    /// The songs jukeboxes play, by position (to stop them).
+    records: FxHashMap<[i32; 3], String>,
     /// Send the whole inventory after this packet (a request was refused).
     inventory_resync: bool,
     inventory_open: bool,
@@ -408,6 +445,17 @@ impl Session {
             teams: scoreboard::Teams::default(),
             recent_blocks: FxHashMap::default(),
             editing_sign: None,
+            dialog: None,
+            dialogs: Vec::new(),
+            server_links: Vec::new(),
+            toasts: hud::Toasts::default(),
+            border: hud::Border::default(),
+            records: FxHashMap::default(),
+            probes: Vec::new(),
+            taking_book: false,
+            heads: heads::Heads::default(),
+            next_head: 0,
+            next_probe: 0,
             inventory_resync: false,
             inventory_open: false,
             world_clocks: Vec::new(),
@@ -746,6 +794,8 @@ impl Session {
                 let (form, data) = bp::read_modal_form_response(body)?;
                 if form == trade::TRADE_FORM {
                     self.trade_answer(data.as_deref());
+                } else if form == dialog::DIALOG_FORM {
+                    self.dialog_answer(data.as_deref());
                 } else if form == container::MENU_FORM {
                     self.menu_form_answer(data.as_deref());
                 } else {
@@ -949,6 +999,8 @@ impl Session {
     }
 
     fn auth_input(&mut self, i: &bp::AuthInput, vehicle_rotation: Option<[f32; 2]>) {
+        self.draw_border();
+        self.ask_suggestions();
         let Some(w) = &mut self.world else {
             return;
         };
@@ -1082,7 +1134,9 @@ impl Session {
                 let info = self.client_info();
                 self.java_send(&csb::ClientInformation(info));
             }
-            Ok(ClientboundLogin::LoginDisconnect(d)) => self.kick(&reason_text(&d.reason.0)),
+            Ok(ClientboundLogin::LoginDisconnect(d)) => {
+                self.kick(&reason_text(&d.reason.0, &self.shared.config.language))
+            }
             Ok(ClientboundLogin::CustomQuery(q)) => {
                 self.java_send(&vanillite_protocol::packets::login::CustomQueryAnswer {
                     transaction_id: q.transaction_id,
@@ -1136,6 +1190,23 @@ impl Session {
                     }
                     "minecraft:world_clock" => self.world_clocks = names,
                     "minecraft:banner_pattern" => self.banner_patterns = names,
+                    "minecraft:dialog" => {
+                        self.dialogs = r
+                            .entries
+                            .iter()
+                            .take(1024)
+                            .map(|e| {
+                                let tag = e.data.as_ref().and_then(|d| {
+                                    let mut input = d.0.as_slice();
+                                    let mut budget = vanillite_nbt::Budget::network();
+                                    vanillite_nbt::read::read_network(&mut input, &mut budget)
+                                        .ok()
+                                        .flatten()
+                                });
+                                (e.id.as_str().to_owned(), tag)
+                            })
+                            .collect();
+                    }
                     _ => {}
                 }
             }
@@ -1154,11 +1225,14 @@ impl Session {
                         .collect();
                 }
             }
+            Ok(ClientboundConfiguration::ServerLinks(l)) => self.java_server_links(&l.links),
             Ok(ClientboundConfiguration::FinishConfiguration(_)) => {
                 self.java_send(&csb::FinishConfiguration);
                 self.java = JavaState::Play;
             }
-            Ok(ClientboundConfiguration::Disconnect(d)) => self.kick(&reason_text(&d.reason)),
+            Ok(ClientboundConfiguration::Disconnect(d)) => {
+                self.kick(&reason_text(&d.reason, &self.shared.config.language))
+            }
             Ok(_) => {}
             Err(e) => self.kick(&format!("Bad server packet: {e}")),
         }
@@ -1168,7 +1242,9 @@ impl Session {
         let packet = match ClientboundPlay::decode(body) {
             Ok(p) => p,
             Err(e) => {
-                log::debug!("Undecodable Java packet for {}: {e}", self.name);
+                if !self.java_sound_direct(body) {
+                    log::debug!("Undecodable Java packet for {}: {e}", self.name);
+                }
                 return;
             }
         };
@@ -1184,9 +1260,11 @@ impl Session {
                 self.spawn_if_ready();
             }
             ClientboundPlay::SetChunkCacheCenter(_) => self.publish_chunks(),
-            ClientboundPlay::Disconnect(d) => self.kick(&reason_text(&d.reason)),
+            ClientboundPlay::Disconnect(d) => {
+                self.kick(&reason_text(&d.reason, &self.shared.config.language))
+            }
             ClientboundPlay::SystemChat(c) => {
-                let text = c.content.plain();
+                let text = self.text(&c.content);
                 if text.is_empty() {
                     // Bedrock rejects an empty text; Java clears the action bar this way.
                 } else if c.overlay {
@@ -1199,20 +1277,27 @@ impl Session {
                 let content = c
                     .unsigned_content
                     .as_ref()
-                    .map_or_else(|| c.content.clone(), |u| u.plain());
-                let line = format!("<{}> {content}", c.chat_type.name.plain());
+                    .map_or_else(|| c.content.clone(), |u| self.text(u));
+                let line = format!("<{}§r> {content}", self.text(&c.chat_type.name));
                 self.send(id::TEXT, &bp::text_raw(&line));
             }
             ClientboundPlay::DisguisedChat(c) => {
-                let line = format!("<{}> {}", c.chat_type.name.plain(), c.message.plain());
+                let line = format!(
+                    "<{}§r> {}",
+                    self.text(&c.chat_type.name),
+                    self.text(&c.message)
+                );
                 self.send(id::TEXT, &bp::text_raw(&line));
             }
             ClientboundPlay::Commands(t) => {
-                self.send(
-                    id::AVAILABLE_COMMANDS,
-                    &crate::commands::available_commands(&t.0),
-                );
+                let (body, probes) = crate::commands::available_commands(&t.0);
+                self.send(id::AVAILABLE_COMMANDS, &body);
+                self.probes = probes;
+                self.next_probe = 0;
             }
+            ClientboundPlay::CommandSuggestions(c) => self.java_suggestions(&c),
+            ClientboundPlay::UpdateAdvancements(a) => self.java_advancements(a),
+            ClientboundPlay::HurtAnimation(h) => self.java_hurt(h.entity_id),
             ClientboundPlay::GameEvent(e) => self.java_game_event(&e),
             ClientboundPlay::PlayerAbilities(a) => {
                 if let Some(w) = &mut self.world {
@@ -1327,8 +1412,19 @@ impl Session {
             // Bedrock opens written books itself.
             ClientboundPlay::OpenBook(_) => {}
             ClientboundPlay::Unhandled { id } => self.java_unhandled(id, body),
-            _ => {}
+            // Packets the set decodes but this match does not take (`start_configuration`,
+            // `teleport_entity`, `sound_entity`, ...) go to the raw handlers by id.
+            _ => {
+                if let Ok(id) = vanillite_protocol::codec::Reader::new(body).varint() {
+                    self.java_unhandled(id, body);
+                }
+            }
         }
+    }
+
+    /// The Bedrock text of a Java component (translated with the server's language table).
+    pub(super) fn text(&self, c: &vanillite_protocol::text::Component) -> String {
+        crate::text::render(c, &self.shared.config.language)
     }
 
     fn java_unhandled(&mut self, packet: i32, body: &[u8]) {
@@ -1342,6 +1438,26 @@ impl Session {
     }
 
     fn block_update(&mut self, pos: [i32; 3], java_state: u32) {
+        if self
+            .heads
+            .get(&pos)
+            .is_some_and(|h| h.state() != java_state)
+        {
+            self.head_gone(pos);
+        }
+        let with_book = u16::try_from(java_state).is_ok_and(|s| {
+            let s = vanillite_data::block::BlockState(s);
+            s.is_valid()
+                && s.block().name() == "minecraft:lectern"
+                && s.value("has_book") == Some("true")
+        });
+        if let Some(w) = &mut self.world {
+            if with_book {
+                w.lecterns.insert(pos);
+            } else {
+                w.lecterns.remove(&pos);
+            }
+        }
         let blocks = self.version.palette.blocks();
         let e = blocks.entry(java_state);
         let water = if e & crate::data::WATERLOGGED != 0 {
@@ -1441,6 +1557,7 @@ impl Session {
             input: psb::Input::default(),
             merchant: None,
             frames: FxHashMap::default(),
+            lecterns: FxHashSet::default(),
         });
     }
 
@@ -1639,9 +1756,17 @@ impl Session {
             w.biome_key,
             &self.shared.cache,
         ) {
-            Ok((body, actors)) => {
+            Ok((body, actors, heads)) => {
                 self.send(id::LEVEL_CHUNK, &body);
+                for h in &heads {
+                    self.head_found(h.pos, h.state, &h.textures);
+                }
                 for actor in &actors {
+                    if let Some(pos) = lectern_with_book(actor)
+                        && let Some(w) = &mut self.world
+                    {
+                        w.lecterns.insert(pos);
+                    }
                     self.send(id::BLOCK_ACTOR_DATA, actor);
                 }
             }

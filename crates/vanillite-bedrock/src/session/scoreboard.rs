@@ -411,6 +411,16 @@ impl Session {
         else {
             return;
         };
+        let head = u16::try_from(state).is_ok_and(|s| {
+            let s = vanillite_data::block::BlockState(s);
+            s.is_valid() && crate::blockentity::is_player_head(s.block().name())
+        });
+        if head {
+            match crate::blockentity::head_textures(&nbt) {
+                Some(t) => self.head_found(pos, state, &t),
+                None => self.head_gone(pos),
+            }
+        }
         if let Some(actor) =
             crate::blockentity::translate(pos, state, Some(&nbt), self.version.palette)
         {

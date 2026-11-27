@@ -609,7 +609,7 @@ impl ServerBuilder {
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             diagnostics: crate::diagnostics::Diagnostics::new(),
             force_game_mode: config.properties.force_gamemode,
-            language: prepared.language,
+            language: Arc::new(prepared.language),
             broadcast_console_to_ops: config.properties.broadcast_console_to_ops,
             broadcast_rcon_to_ops: config.properties.broadcast_rcon_to_ops,
             plugins,
@@ -707,6 +707,7 @@ impl ServerBuilder {
             prepared.configuration,
             self.network,
             global.chat.enforce_secure,
+            Arc::clone(&global.language),
             Arc::clone(global.plugins.packet_tap()),
             match config.server.threads.network {
                 0 => budget.limits().default_network_threads(),
