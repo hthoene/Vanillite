@@ -75,8 +75,9 @@ pub fn tick(t: &mut Tick<'_, '_>) {
         return;
     }
     // `tickHeadTurn` → `BodyRotationControl.clientTick` (`CamelBodyRotationControl`, the
-    // armadillo's: none while it is scared).
+    // armadillo's: none while it is scared; `ShulkerBodyRotationControl`: never).
     let turns_body = match t.mob_ref().kind {
+        super::Kind::Shulker => false,
         super::Kind::Camel | super::Kind::CamelHusk => super::fam::mount::camel::turns_body(t),
         super::Kind::Armadillo => !super::fam::brainy::armadillo::is_scared(t.mob_ref()),
         _ => true,
