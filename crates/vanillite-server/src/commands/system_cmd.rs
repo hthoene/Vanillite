@@ -70,6 +70,12 @@ pub(crate) fn run(
         CommandId::Random(op) => random(op, parsed, source, env),
         CommandId::FetchProfile(op) => fetch_profile(op, parsed, source, env),
         CommandId::Version => Ok(version(source, env)),
+        CommandId::Plugins => Ok(super::plugins_cmd::plugins(source, env.global)),
+        CommandId::BukkitVersion => Ok(super::plugins_cmd::version(
+            parsed.args.string("plugin").map(String::as_str),
+            source,
+            env.global,
+        )),
         CommandId::Spectate => spectate(parsed, source, env),
         CommandId::Stopwatch(op) => stopwatch(op, parsed, source, env),
         CommandId::Test(op) => test(op, parsed, source, env),

@@ -512,6 +512,8 @@ pub(crate) fn execute(
         CommandId::Random(_)
         | CommandId::FetchProfile(_)
         | CommandId::Version
+        | CommandId::Plugins
+        | CommandId::BukkitVersion
         | CommandId::Spectate
         | CommandId::Stopwatch(_)
         | CommandId::Test(_)

@@ -43,9 +43,9 @@ pub struct QueryConfig {
     pub max_packets_per_second: u32,
 }
 
-/// The names of the online players, updated by the server.
+/// The names of the online players and the `plugins` field, updated by the server.
 #[derive(Debug, Default)]
-pub struct QueryPlayers(RwLock<Arc<[String]>>);
+pub struct QueryPlayers(RwLock<Arc<[String]>>, RwLock<String>);
 
 impl QueryPlayers {
     /// Replaces the names.
@@ -53,8 +53,20 @@ impl QueryPlayers {
         *self.0.write().unwrap_or_else(PoisonError::into_inner) = names.into();
     }
 
+    /// Replaces the `plugins` field (Bukkit's `<server version>: <plugin> <version>; ...`).
+    pub fn set_plugins(&self, plugins: String) {
+        *self.1.write().unwrap_or_else(PoisonError::into_inner) = plugins.replace('\0', "");
+    }
+
     fn get(&self) -> Arc<[String]> {
         Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn plugins(&self) -> String {
+        self.1
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -195,7 +207,7 @@ impl QueryState {
             ("gametype", GAME_TYPE.to_owned()),
             ("game_id", GAME_ID.to_owned()),
             ("version", vanillite_protocol::VERSION_ID.to_owned()),
-            ("plugins", String::new()),
+            ("plugins", self.players.plugins()),
             ("map", c.level_name.clone()),
             ("numplayers", players.len().to_string()),
             ("maxplayers", c.max_players.to_string()),
@@ -260,6 +272,7 @@ mod tests {
     fn state() -> QueryState {
         let players = Arc::new(QueryPlayers::default());
         players.set(vec!["Alice".into(), "Bob".into()]);
+        players.set_plugins("Vanillite 1: A 1.0; B\x002.0".into());
         QueryState::new(
             QueryConfig {
                 bind: SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -308,6 +321,7 @@ mod tests {
         let answer = s.handle(&full, from, now).unwrap_or_default();
         let text = String::from_utf8_lossy(&answer);
         assert!(text.contains("splitnum\0\u{fffd}\0hostname\0A Minecraft Server\0"));
+        assert!(text.contains("\0plugins\0Vanillite 1: A 1.0; B2.0\0map\0"));
         assert!(text.ends_with("\0\u{1}player_\0\0Alice\0Bob\0\0"));
 
         // A wrong token or an unknown address gets nothing.

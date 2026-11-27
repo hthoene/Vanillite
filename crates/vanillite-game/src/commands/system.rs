@@ -134,13 +134,40 @@ pub(super) fn register_schedule(d: &mut Dispatcher<CommandId>) {
     );
 }
 
-/// `VersionCommand` (with the dedicated server's permission check).
-pub(super) fn register_version(d: &mut Dispatcher<CommandId>) {
+/// `VersionCommand` (with the dedicated server's permission check), as `label`.
+pub(super) fn register_version(d: &mut Dispatcher<CommandId>, label: &str) {
     d.register(
-        literal("version")
+        literal(label)
             .requires(level::GAMEMASTERS)
             .executes(CommandId::Version),
     );
+}
+
+/// Paper's `plugins` and its alias `pl`.
+pub(super) fn register_plugins(d: &mut Dispatcher<CommandId>) {
+    for label in ["plugins", "pl"] {
+        d.register(
+            literal(label)
+                .permission("bukkit.command.plugins")
+                .executes(CommandId::Plugins),
+        );
+    }
+}
+
+/// Bukkit's `version [<plugin>]` and its aliases `ver` and `about`.
+pub(super) fn register_bukkit_version(d: &mut Dispatcher<CommandId>) {
+    for label in ["version", "ver", "about"] {
+        d.register(
+            literal(label)
+                .permission("bukkit.command.version")
+                .executes(CommandId::BukkitVersion)
+                .then(
+                    argument("plugin", ArgumentType::String(StringKind::GreedyPhrase))
+                        .suggests(suggest::PLUGINS)
+                        .executes(CommandId::BukkitVersion),
+                ),
+        );
+    }
 }
 
 /// `SpectateCommand`.
