@@ -436,13 +436,14 @@ pub fn bucket_or_feed(ix: &mut Interact<'_, '_>) -> Interaction {
     Interaction::Pass
 }
 
-/// Synched data: baby (16), variant (17), playing dead (18), from bucket (19).
+/// Synched data: baby (16), age locked (17, never here), variant (18), playing dead (19), from
+/// bucket (20).
 pub fn encode(w: &mut DataWriter<'_>, m: &MobData) {
     let s = state(m);
     w.boolean(16, m.baby, false);
-    w.int(17, s.variant, 0);
-    w.boolean(18, s.playing_dead, false);
-    w.boolean(19, s.from_bucket, false);
+    w.int(18, s.variant, 0);
+    w.boolean(19, s.playing_dead, false);
+    w.boolean(20, s.from_bucket, false);
 }
 
 pub fn save(m: &MobData, out: &mut Compound) {

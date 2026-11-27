@@ -1194,6 +1194,7 @@ impl Server {
                 }
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
+                self.accept_joins();
                 self.heartbeat.leave();
                 self.budget.leave_tick(clock.now().saturating_sub(started));
                 self.watch.progress.store(clock.now(), Ordering::Relaxed);
@@ -1205,6 +1206,9 @@ impl Server {
         self.global.tick_rate().tick();
         self.global_pre_phase();
         self.tick_clocks();
+        // After the clocks: a join sends its login on the player's world, so no broadcast of
+        // this thread (the time sync) may run between the player list entry and that.
+        self.accept_joins();
         self.tick_worlds();
         self.global_post_phase();
 
@@ -1234,8 +1238,7 @@ impl Server {
     }
 
     /// G1: console commands and global tasks, with `&mut` to everything because no world is
-    /// ticking. Accepted joins (bounded by `security.max-joins-per-tick`) are added here once
-    /// the network exists.
+    /// ticking.
     fn global_pre_phase(&mut self) {
         while let Some(msg) = self.global_queue.pop_front() {
             match msg {
@@ -1245,7 +1248,6 @@ impl Server {
             }
         }
         self.global.plugins.run_global_tasks(self.tick_count);
-        self.accept_joins();
     }
 
     /// `tickChildren`'s clocks and the game time sync every second (by default).

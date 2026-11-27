@@ -185,6 +185,8 @@ fn minecart_data(out: &mut Vec<u8>, m: &crate::minecart::MinecartData, all: bool
 
 /// Appends one data item.
 fn item(out: &mut Vec<u8>, id: u8, serializer: i32, value: impl FnOnce(&mut Vec<u8>)) {
+    #[cfg(test)]
+    layout_tests::record(id, serializer);
     out.push(id);
     write_varint(out, serializer);
     value(out);
@@ -922,5 +924,48 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 items: RawBytes(items),
             }))
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod layout_tests {
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+
+    use std::cell::RefCell;
+
+    use serde_json::Value;
+
+    thread_local! {
+        static WRITTEN: RefCell<Vec<(u8, i32)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn record(id: u8, serializer: i32) {
+        WRITTEN.with_borrow_mut(|w| w.push((id, serializer)));
+    }
+
+    /// Every synched data item a mob writes has the serializer Vanilla declares at its index:
+    /// the client disconnects on any other.
+    #[test]
+    fn mob_data_matches_vanilla_layout() {
+        let layout: Value =
+            serde_json::from_str(include_str!("../../../../data/vanilla/entity_data.json"))
+                .expect("entity_data.json");
+        let mut wrong = Vec::new();
+        for &kind in crate::mob::Kind::ALL {
+            let name = kind.type_id().info().name;
+            let fields = layout["types"][name].as_array().expect(name);
+            WRITTEN.with_borrow_mut(Vec::clear);
+            super::mob_data(&mut Vec::new(), &crate::mob::MobData::new(kind, 1), true);
+            for (id, serializer) in WRITTEN.take() {
+                let expected = fields.iter().find(|f| f[0].as_u64() == Some(u64::from(id)));
+                let actual = usize::try_from(serializer)
+                    .ok()
+                    .and_then(|i| layout["serializers"][i].as_str());
+                if expected.and_then(|f| f[1].as_str()) != actual {
+                    wrong.push(format!("{name} {id}: writes {actual:?}, is {expected:?}"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 }
