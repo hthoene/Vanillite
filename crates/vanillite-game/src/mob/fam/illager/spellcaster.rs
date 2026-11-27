@@ -233,12 +233,13 @@ pub fn tick(t: &mut Tick<'_, '_>, s: &mut UseSpell) {
                 dirty(t);
             }
             _ => {
-                if let Some(target) = t.mob_ref().target
-                    && let Some(m) = t.ents.mob_mut(target)
-                {
-                    // Players get the blindness with the effect system (#74).
-                    effects::living::add_to_mob(
-                        m,
+                if let Some(target) = t.mob_ref().target {
+                    effects::living::add_to_entity(
+                        t.level,
+                        t.ents,
+                        t.env,
+                        t.cx,
+                        target,
                         EffectInstance::new(MobEffect::BLINDNESS, 400, 0),
                     );
                 }
