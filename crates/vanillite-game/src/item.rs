@@ -752,6 +752,80 @@ mod tests {
     }
 
     #[test]
+    fn equippable_defaults_and_patches() {
+        use vanillite_data::item::ids as items;
+        let helmet = ItemStack::new(items::DIAMOND_HELMET.0, 1);
+        let e = equippable(&helmet).expect("helmet equippable");
+        assert_eq!(e.slot, EquipmentSlot::Head);
+        assert!(e.swappable && e.damage_on_hurt && !e.can_be_sheared);
+        assert_eq!(e.equip_sound, "minecraft:item.armor.equip_diamond");
+        let saddle = ItemStack::new(items::SADDLE.0, 1);
+        let s = equippable(&saddle).expect("saddle equippable");
+        assert_eq!(s.slot, EquipmentSlot::Saddle);
+        assert!(s.can_be_sheared && s.equip_on_interact);
+        assert_eq!(s.shearing_sound, "minecraft:item.saddle.unequip");
+        // A patched equippable puts a stick on the head; a removed one keeps a helmet in hand.
+        let mut stick = ItemStack::new(items::STICK.0, 1);
+        let mut wire = vec![5u8]; // slot: head
+        wire.push(0); // inline sound event
+        let name = "minecraft:item.armor.equip_generic";
+        wire.push(u8::try_from(name.len()).unwrap());
+        wire.extend_from_slice(name.as_bytes());
+        wire.extend([0, 0, 0, 0]); // no range, asset, overlay, allowed entities
+        wire.extend([1, 1, 1, 0, 0]); // dispensable, swappable, damage on hurt, interact, shear
+        let sound = vanillite_data::registry::SOUND_EVENT.id(name).unwrap();
+        vanillite_protocol::codec::write_varint(&mut wire, i32::from(sound) + 1);
+        stick.set_component(ids::EQUIPPABLE, wire.into_boxed_slice());
+        assert_eq!(equipment_slot(&stick), EquipmentSlot::Head);
+        let mut bare = helmet.clone();
+        bare.remove_component(ids::EQUIPPABLE);
+        assert_eq!(equipment_slot(&bare), EquipmentSlot::MainHand);
+        assert!(equippable(&bare).is_none());
+    }
+
+    #[test]
+    fn patched_modifiers_weapon_and_damage() {
+        use vanillite_data::item::ids as items;
+        let mut stick = ItemStack::new(items::STICK.0, 1);
+        let attack = attribute_id("minecraft:attack_damage").unwrap();
+        // One modifier: attribute, id, amount, add_value, mainhand, default display.
+        let mut wire = vec![1u8, u8::try_from(attack).unwrap()];
+        wire.push(14);
+        wire.extend_from_slice(b"minecraft:test");
+        wire.extend(3.0f64.to_be_bytes());
+        wire.extend([0, 1, 0]);
+        stick.set_component(ids::ATTRIBUTE_MODIFIERS, wire.into_boxed_slice());
+        let mut damage = Vec::new();
+        attribute_modifiers(
+            &stick,
+            EquipmentSlot::MainHand,
+            "minecraft:attack_damage",
+            &mut damage,
+        );
+        assert_eq!(damage, vec![(0, 3.0)]);
+        // A sword whose modifiers are removed has none.
+        let mut sword = ItemStack::new(items::DIAMOND_SWORD.0, 1);
+        sword.remove_component(ids::ATTRIBUTE_MODIFIERS);
+        let mut none = Vec::new();
+        attribute_modifiers(
+            &sword,
+            EquipmentSlot::MainHand,
+            "minecraft:attack_damage",
+            &mut none,
+        );
+        assert!(none.is_empty());
+        // `weapon` from the patch.
+        assert!(weapon(&stick).is_none());
+        stick.set_component(ids::WEAPON, vec![2, 0, 0, 0, 0].into_boxed_slice());
+        assert_eq!(weapon(&stick).map(|w| w.item_damage_per_attack), Some(2));
+        // `!damage` makes a sword unbreakable in effect.
+        let mut sword = ItemStack::new(items::DIAMOND_SWORD.0, 1);
+        assert!(is_damageable(&sword));
+        sword.remove_component(ids::DAMAGE);
+        assert!(!is_damageable(&sword));
+    }
+
+    #[test]
     fn attribute_operations_in_order() {
         // (base + add) * (1 + mult_base) * (1 + mult_total).
         let mods = [(2, 0.5), (0, 2.0), (1, 1.0)];

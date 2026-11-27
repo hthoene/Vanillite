@@ -231,6 +231,34 @@ mod tests {
     }
 
     #[test]
+    fn default_values_leave_no_patch() {
+        use crate::item::ItemStack;
+        let sword = vanillite_data::item::ids::DIAMOND_SWORD.0;
+        let mut repaired = ItemStack::new(sword, 1);
+        repaired.set_component(ids::DAMAGE, vec![5].into_boxed_slice());
+        assert!(repaired.patch().is_some());
+        repaired.set_component(ids::DAMAGE, vec![0].into_boxed_slice());
+        assert!(repaired.patch.is_none());
+        // A removal of a component the item does not have is dropped.
+        repaired.remove_component(ids::CUSTOM_NAME);
+        assert!(repaired.patch.is_none());
+        repaired.remove_component(ids::DAMAGE);
+        assert!(repaired.patch().is_some_and(|p| p.is_removed(ids::DAMAGE)));
+        // A stack that kept a default-equal value is the same as a plain one.
+        let mut kept = ItemStack::new(sword, 1);
+        kept.patch_mut()
+            .set(ids::DAMAGE, vec![0].into_boxed_slice());
+        assert!(kept.same_item_same_components(&ItemStack::new(sword, 1)));
+        kept.normalize();
+        assert!(kept.patch.is_none());
+        let mut damaged = ItemStack::new(sword, 1);
+        damaged
+            .patch_mut()
+            .set(ids::DAMAGE, vec![3].into_boxed_slice());
+        assert!(!damaged.same_item_same_components(&ItemStack::new(sword, 1)));
+    }
+
+    #[test]
     fn compounds_are_unordered() {
         let mut a = Compound::new();
         a.insert("x", 1);

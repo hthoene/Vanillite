@@ -1,0 +1,76 @@
+{
+  "description": "BoatItem.use (#265): a player looking at the ground places no boat while a pig stands where it would go (the boat would collide with it), and one once the pig is gone; a boat aimed at tall grass lands on the grass's outline, not the block behind it.",
+  "tier": "fast",
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 20,
+  "entities": [
+    {
+      "name": "p",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        -90,
+        45
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:pig 6.2 -60 8.5 {NoAI:1b}"
+    },
+    {
+      "tick": 3,
+      "op": "use_item",
+      "entity": "p",
+      "item": "minecraft:oak_boat"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "kill @e[type=pig]"
+    },
+    {
+      "tick": 8,
+      "op": "use_item",
+      "entity": "p",
+      "item": "minecraft:oak_boat"
+    },
+    {
+      "tick": 10,
+      "op": "command",
+      "command": "setblock 5 -60 12 minecraft:short_grass"
+    },
+    {
+      "tick": 11,
+      "op": "command",
+      "command": "tp @a 4.5 -60 10.5 -45 45"
+    },
+    {
+      "tick": 13,
+      "op": "use_item",
+      "entity": "p",
+      "item": "minecraft:birch_boat"
+    }
+  ]
+}
