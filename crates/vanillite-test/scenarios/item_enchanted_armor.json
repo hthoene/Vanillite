@@ -1,0 +1,150 @@
+{
+  "description": "Players with enchanted armour (#230): Frost Walker II boots freeze the water around players landing on the shore (replace_disk on onChangedBlock: frosted ice with its melting tick), Frost Walker boots make a player on a magma block immune to its damage, and a diver with a Respiration III helmet loses air more slowly (decreaseAirSupply, the player's random) than one without and drowns later.",
+  "tier": "fast",
+  "player_state": true,
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -64,
+      -16
+    ],
+    [
+      31,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 420,
+  "entities": [
+    {
+      "name": "walker",
+      "type": "minecraft:player",
+      "pos": [
+        3.5,
+        -57.0,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "stepper",
+      "type": "minecraft:player",
+      "pos": [
+        28.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "diver",
+      "type": "minecraft:player",
+      "pos": [
+        21.5,
+        -63.0,
+        21.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "plain",
+      "type": "minecraft:player",
+      "pos": [
+        23.5,
+        -63.0,
+        23.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "skater",
+      "type": "minecraft:player",
+      "pos": [
+        3.5,
+        -57.0,
+        12.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        4,
+        -61,
+        4
+      ],
+      "to": [
+        12,
+        -61,
+        14
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "fill",
+      "from": [
+        20,
+        -63,
+        20
+      ],
+      "to": [
+        24,
+        -61,
+        24
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        28,
+        -61,
+        4
+      ],
+      "block": "minecraft:magma_block"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "item replace entity walker armor.feet with minecraft:diamond_boots[minecraft:enchantments={\"minecraft:frost_walker\":2}]"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "item replace entity stepper armor.feet with minecraft:leather_boots[minecraft:enchantments={\"minecraft:frost_walker\":1}]"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "item replace entity diver armor.head with minecraft:diamond_helmet[minecraft:enchantments={\"minecraft:respiration\":3}]"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "item replace entity skater armor.feet with minecraft:iron_boots[minecraft:enchantments={\"minecraft:frost_walker\":1}]"
+    }
+  ]
+}

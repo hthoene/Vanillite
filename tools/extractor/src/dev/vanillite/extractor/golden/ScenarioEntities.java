@@ -95,6 +95,9 @@ final class ScenarioEntities {
    * The clientbound packets the client view normalizes ({@code client_view.rs} in {@code
    * vanillite-test}); the others are left out of the trace.
    */
+  /** Also records {@code update_attributes} ({@code "client_attributes"}). */
+  boolean clientAttributes;
+
   private static final java.util.Set<String> VIEW_PACKETS =
       java.util.Set.of(
           "add_entity",
@@ -522,7 +525,8 @@ final class ScenarioEntities {
             instanceof net.minecraft.network.protocol.game.ClientboundChunkBatchFinishedPacket) {
           acknowledging.add((ServerPlayer) byName.get(entry.getKey()));
         }
-        if (!VIEW_PACKETS.contains(packet.type().id().getPath())) {
+        String path = packet.type().id().getPath();
+        if (!VIEW_PACKETS.contains(path) && !(clientAttributes && path.equals("update_attributes"))) {
           continue;
         }
         io.netty.buffer.ByteBuf buf = io.netty.buffer.Unpooled.buffer();

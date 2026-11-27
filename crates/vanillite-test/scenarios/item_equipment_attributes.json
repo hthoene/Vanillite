@@ -1,0 +1,301 @@
+{
+  "description": "A client player puts on armour (use_item swaps) (#230): the equipment's attribute modifiers and those of its enchantments (Depth Strider, Swift Sneak, netherite knockback resistance) reach the client in update_attributes together with a Speed effect; Soul Speed boots on soul sand add their location-based modifiers. A worn elytra does not wear when the player is hurt (equippable damage_on_hurt false), nearly broken iron boots break. With a full inventory the glass bottle of a drunk honey bottle is dropped. A goat horn without an instrument patch plays its default instrument.",
+  "tier": "fast",
+  "dimensions": true,
+  "client_view": true,
+  "player_state": true,
+  "progress_state": true,
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -61,
+      -16
+    ],
+    [
+      31,
+      -56,
+      31
+    ]
+  ],
+  "ticks": 110,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "inventory": [
+        [
+          1,
+          "minecraft:stone",
+          64
+        ],
+        [
+          2,
+          "minecraft:stone",
+          64
+        ],
+        [
+          3,
+          "minecraft:stone",
+          64
+        ],
+        [
+          4,
+          "minecraft:stone",
+          64
+        ],
+        [
+          5,
+          "minecraft:stone",
+          64
+        ],
+        [
+          6,
+          "minecraft:stone",
+          64
+        ],
+        [
+          7,
+          "minecraft:stone",
+          64
+        ],
+        [
+          8,
+          "minecraft:stone",
+          64
+        ],
+        [
+          9,
+          "minecraft:stone",
+          64
+        ],
+        [
+          10,
+          "minecraft:stone",
+          64
+        ],
+        [
+          11,
+          "minecraft:stone",
+          64
+        ],
+        [
+          12,
+          "minecraft:stone",
+          64
+        ],
+        [
+          13,
+          "minecraft:stone",
+          64
+        ],
+        [
+          14,
+          "minecraft:stone",
+          64
+        ],
+        [
+          15,
+          "minecraft:stone",
+          64
+        ],
+        [
+          16,
+          "minecraft:stone",
+          64
+        ],
+        [
+          17,
+          "minecraft:stone",
+          64
+        ],
+        [
+          18,
+          "minecraft:stone",
+          64
+        ],
+        [
+          19,
+          "minecraft:stone",
+          64
+        ],
+        [
+          20,
+          "minecraft:stone",
+          64
+        ],
+        [
+          21,
+          "minecraft:stone",
+          64
+        ],
+        [
+          22,
+          "minecraft:stone",
+          64
+        ],
+        [
+          23,
+          "minecraft:stone",
+          64
+        ],
+        [
+          24,
+          "minecraft:stone",
+          64
+        ],
+        [
+          25,
+          "minecraft:stone",
+          64
+        ],
+        [
+          26,
+          "minecraft:stone",
+          64
+        ],
+        [
+          27,
+          "minecraft:stone",
+          64
+        ],
+        [
+          28,
+          "minecraft:stone",
+          64
+        ],
+        [
+          29,
+          "minecraft:stone",
+          64
+        ],
+        [
+          30,
+          "minecraft:stone",
+          64
+        ],
+        [
+          31,
+          "minecraft:stone",
+          64
+        ],
+        [
+          32,
+          "minecraft:stone",
+          64
+        ],
+        [
+          33,
+          "minecraft:stone",
+          64
+        ],
+        [
+          34,
+          "minecraft:stone",
+          64
+        ],
+        [
+          35,
+          "minecraft:stone",
+          64
+        ]
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -61,
+        2
+      ],
+      "block": "minecraft:soul_sand"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:diamond_chestplate"
+    },
+    {
+      "tick": 3,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:diamond_boots",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:depth_strider\":3}}"
+    },
+    {
+      "tick": 4,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:netherite_leggings",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:swift_sneak\":3}}"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "effect give alex minecraft:speed 100 1 true"
+    },
+    {
+      "tick": 10,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:diamond_boots",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:soul_speed\":3}}"
+    },
+    {
+      "tick": 12,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:honey_bottle",
+      "count": 2
+    },
+    {
+      "tick": 66,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:elytra",
+      "components": "{\"minecraft:damage\":431}"
+    },
+    {
+      "tick": 67,
+      "op": "command",
+      "command": "damage alex 4"
+    },
+    {
+      "tick": 70,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:iron_boots",
+      "components": "{\"minecraft:damage\":194}"
+    },
+    {
+      "tick": 80,
+      "op": "command",
+      "command": "damage alex 4"
+    },
+    {
+      "tick": 90,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:goat_horn"
+    }
+  ],
+  "client_attributes": true
+}

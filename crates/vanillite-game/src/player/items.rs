@@ -144,7 +144,8 @@ pub fn drop_from_player(
     };
     let pos = e.pos();
     let rot = e.rot();
-    let eye_y = pos.y + crate::survival::player::eye_height(e.dims().height) - 0.3;
+    // `getEyeY() - 0.3F`.
+    let eye_y = pos.y + crate::survival::player::eye_height(e.dims().height) - f64::from(0.3f32);
     let deg = std::f32::consts::PI / 180.0;
     let sin_x = vanillite_base::math::sin(f64::from(rot.x_rot * deg));
     let cos_x = vanillite_base::math::cos(f64::from(rot.x_rot * deg));
