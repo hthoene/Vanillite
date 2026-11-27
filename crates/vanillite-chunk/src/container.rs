@@ -316,7 +316,25 @@ impl<S: Strategy> PalettedContainer<S> {
     }
 
     /// Sets the value at `index` and returns the previous one.
+    #[inline]
     pub fn set(&mut self, index: usize, value: u16) -> u16 {
+        // The common case inline: a value already in the palette.
+        if let ContainerData::Indirect {
+            bits,
+            palette,
+            data,
+        } = &mut self.data
+            && let Some(id) = find(palette, value)
+        {
+            let old = bits::get_and_set(data, *bits, index, id as u32);
+            return palette[old as usize];
+        }
+        self.set_other(index, value)
+    }
+
+    /// [`Self::set`] for the other cases: one value, a new palette entry, the direct form.
+    #[inline(never)]
+    fn set_other(&mut self, index: usize, value: u16) -> u16 {
         match &mut self.data {
             ContainerData::Single(current) => {
                 if *current == value {
