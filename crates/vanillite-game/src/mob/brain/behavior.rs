@@ -190,6 +190,11 @@ pub enum Behavior {
     },
     /// `StopBeingAngryIfTargetDead`.
     StopBeingAngryIfTargetDead,
+    /// `InteractWithDoor.create()`: opens the doors on the path and closes them behind.
+    InteractWithDoor {
+        last_node: Option<BlockPos>,
+        cooldown: i32,
+    },
     /// `TryFindLand.create(range, speed)`.
     TryFindLand {
         range: i32,
@@ -744,6 +749,11 @@ pub fn requirements(b: &Behavior) -> &'static [(MemoryType, MemoryStatus)] {
             }
         }
         Behavior::StopBeingAngryIfTargetDead => &[(M::AngryAt, S::ValuePresent)],
+        Behavior::InteractWithDoor { .. } => &[
+            (M::Path, S::ValuePresent),
+            (M::DoorsToClose, S::Registered),
+            (M::NearestLivingEntities, S::Registered),
+        ],
         Behavior::TryFindLand { .. } | Behavior::TryFindWater { .. } => &[
             (M::AttackTarget, S::ValueAbsent),
             (M::WalkTarget, S::ValueAbsent),
@@ -1951,6 +1961,10 @@ fn find_breed_partner(t: &mut Tick<'_, '_>, partner: Kind) -> Option<EntityId> {
 
 fn one_shot(t: &mut Tick<'_, '_>, b: &mut Behavior, now: i64) -> bool {
     match b {
+        Behavior::InteractWithDoor {
+            last_node,
+            cooldown,
+        } => crate::mob::fam::village::ai::door(t, last_node, cooldown),
         Behavior::StartAttacking { cond, finder } => {
             if cond.is_some_and(|c| !c(t)) {
                 return false;

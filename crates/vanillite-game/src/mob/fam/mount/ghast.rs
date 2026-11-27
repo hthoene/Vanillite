@@ -5,6 +5,7 @@
 use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_nbt::Compound;
+use vanillite_protocol::packets::play::clientbound::SoundSource;
 use vanillite_world::entity::EntityId;
 
 use super::{Goal, State, encode_ageable, load_ageable, save_ageable};
@@ -250,10 +251,18 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
 
 /// `scanPlayerAboveGhast`: a player (not riding a happy ghast) stands on its top.
 fn player_above(t: &Tick<'_, '_>) -> bool {
-    if t.mob_ref().baby {
+    player_above_of(t.ents, t.id)
+}
+
+/// [`player_above`] of the happy ghast `id`.
+fn player_above_of(ents: &crate::entities::Entities, id: EntityId) -> bool {
+    let (Some(m), Some(e)) = (ents.mob(id), ents.store.get(id)) else {
+        return false;
+    };
+    if m.baby {
         return false;
     }
-    let bb = t.aabb();
+    let bb = e.aabb();
     let detect = Aabb::new(
         bb.min_x - 1.0,
         bb.max_y - 1.0e-5,
@@ -263,11 +272,11 @@ fn player_above(t: &Tick<'_, '_>) -> bool {
         bb.max_z + 1.0,
     );
     let mut found = false;
-    t.ents.store.for_each_in(&detect, true, |id| {
+    ents.store.for_each_in(&detect, true, |id| {
         if found {
             return;
         }
-        let Some(p) = t.ents.player(id) else {
+        let Some(p) = ents.player(id) else {
             return;
         };
         if p.game_mode == vanillite_config::GameMode::Spectator {
@@ -275,22 +284,91 @@ fn player_above(t: &Tick<'_, '_>) -> bool {
         }
         // `getRootVehicle`.
         let mut root = id;
-        while let Some(v) = t.ents.vehicle_of(root) {
+        while let Some(v) = ents.vehicle_of(root) {
             root = v;
         }
-        if t.ents
+        if ents
             .mob(root)
             .is_some_and(|m| m.kind == crate::mob::Kind::HappyGhast)
         {
             return;
         }
-        if let Some(e) = t.ents.store.get(root)
+        if let Some(e) = ents.store.get(root)
             && detect.contains(e.pos().x, e.pos().y, e.pos().z)
         {
             found = true;
         }
     });
     found
+}
+
+/// `HappyGhast.addPassenger`, before the passenger is added (`first`: it had none): the
+/// goggles come down and the still timeout ends (or is capped at 10 with a player on top).
+pub fn add_passenger(
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    id: EntityId,
+    first: bool,
+) {
+    if first {
+        animal::sound_at(
+            ents,
+            env,
+            id,
+            "minecraft:entity.happy_ghast.harness_goggles_down",
+            SoundSource::Neutral,
+            1.0,
+        );
+    }
+}
+
+/// `HappyGhast.addPassenger` after `super.addPassenger`: the still timeout.
+pub fn passenger_added(ents: &mut crate::entities::Entities, id: EntityId) {
+    let above = player_above_of(ents, id);
+    set_still_timeout(ents, id, |s| if !above { 0 } else { s.min(10) });
+}
+
+/// `HappyGhast.removePassenger`: a still timeout of 10; once empty the home is cleared and
+/// the goggles go up.
+pub fn passenger_removed(
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    id: EntityId,
+) {
+    set_still_timeout(ents, id, |_| 10);
+    if ents.riding.passengers_of(id).is_empty() {
+        if let Some(m) = ents.mob_mut(id) {
+            // `clearHome`: `restrictTo(BlockPos.ZERO, -1)`.
+            m.restrict_center = BlockPos::new(0, 0, 0);
+            m.restrict_radius = -1;
+        }
+        animal::sound_at(
+            ents,
+            env,
+            id,
+            "minecraft:entity.happy_ghast.harness_goggles_up",
+            SoundSource::Neutral,
+            1.0,
+        );
+    }
+}
+
+fn set_still_timeout(
+    ents: &mut crate::entities::Entities,
+    id: EntityId,
+    f: impl FnOnce(i32) -> i32,
+) {
+    let Some(m) = ents.mob_mut(id) else {
+        return;
+    };
+    let g = ghast_mut(m);
+    let was = g.still_timeout > 0;
+    g.still_timeout = f(g.still_timeout);
+    if was != (g.still_timeout > 0)
+        && let Some(mut e) = ents.store.get_mut(id)
+    {
+        e.mark_data_dirty();
+    }
 }
 
 /// `HappyGhast.aiStep`: ghastlings never drown; then `continuousHeal`.
@@ -533,15 +611,8 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         return Interaction::Pass;
     };
     if harnessed(m) && !ix.sneaking {
-        let first = ix.ents.riding.passengers_of(ix.target).is_empty();
-        if crate::riding::start_riding(ix.ents, ix.env, ix.player, ix.target, false) && first {
-            crate::mob::combat::mob_sound(
-                ix.ents,
-                ix.env,
-                ix.target,
-                "minecraft:entity.happy_ghast.harness_goggles_down",
-            );
-        }
+        // `doPlayerRide`; `addPassenger` plays the goggles sound.
+        crate::riding::start_riding(ix.ents, ix.env, ix.player, ix.target, false);
         return Interaction::Success;
     }
     animal::animal_interact(ix.ents, ix.env, ix.player, ix.target, ix.hand, ix.stack)

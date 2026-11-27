@@ -605,12 +605,19 @@ pub fn interact_on(
                 return Interaction::Pass;
             }
             crate::minecart::open_container(ents, env, cx, player, target);
+            // `PiglinAi.angerNearbyPiglins(player, true)`.
+            super::fam::brainy::piglin::anger_nearby_piglins(level, ents, env, cx, player, true);
             return Interaction::Success;
         }
         return Interaction::Pass;
     }
-    if ents.minecart(target).is_some() {
-        return crate::minecart::interact(ents, env, cx, player, target, hand, sneaking);
+    if let Some(kind) = ents.minecart(target).map(|m| m.kind) {
+        let r = crate::minecart::interact(ents, env, cx, player, target, hand, sneaking);
+        // `MinecartChest.interact`: `PiglinAi.angerNearbyPiglins(player, true)`.
+        if kind == crate::minecart::MinecartKind::Chest && r.consumes() {
+            super::fam::brainy::piglin::anger_nearby_piglins(level, ents, env, cx, player, true);
+        }
+        return r;
     }
     if !ents.mob(target).is_some_and(MobData::is_alive) {
         return Interaction::Pass;
@@ -913,7 +920,8 @@ pub fn animal_interact(
     }
     let age = m.age;
     let uuid = ents.store.get(player).map(|e| e.uuid());
-    if age == 0 && m.in_love <= 0 {
+    // `canFallInLove`: the happy ghast never falls in love from food.
+    if age == 0 && m.in_love <= 0 && m.kind != Kind::HappyGhast {
         use_player_item(ents, env, player, target, hand, stack);
         if let Some(m) = ents.mob_mut(target) {
             m.in_love = 600;

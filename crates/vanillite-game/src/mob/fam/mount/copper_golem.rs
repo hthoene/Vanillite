@@ -305,6 +305,10 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             m.equipment
                 .set(EquipmentSlot::MainHand, ItemStack::default());
         }
+        // `detectEquipmentUpdates`.
+        if let Some(e) = crate::mob::equipment::tracking_update(ix.ents, ix.target) {
+            ix.env.out.push(e);
+        }
         super::allay::throw_item(
             ix.ents,
             ix.env,
@@ -389,6 +393,10 @@ pub(crate) fn shear(
             std::mem::take(&mut m.equipment.items[usize::from(EquipmentSlot::Saddle.ordinal())])
         })
         .unwrap_or_default();
+    // `detectEquipmentUpdates`.
+    if let Some(e) = crate::mob::equipment::tracking_update(ents, target) {
+        env.out.push(e);
+    }
     if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
         drop_above(env, pos, antenna);
     }

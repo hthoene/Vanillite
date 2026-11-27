@@ -1711,7 +1711,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         },
         ("Mount", "Ghast") => match word(2) {
             "Float" => "HappyGhastFloatGoal",
-            "Tempt" => "TemptGoal",
+            "Tempt" => "ForNonPathfinders",
             _ => "RandomFloatAroundGoal",
         },
         ("Wildlife", "Swim") => match kind {

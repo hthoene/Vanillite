@@ -751,6 +751,7 @@ pub fn hurt_boat(
     }
     let pos = ents.store.get(id).map(|e| e.pos());
     crate::minecart::damage_game_event(ents, cx, id, source.cause);
+    let by_player = source.direct.filter(|&d| ents.player(d).is_some());
     let Some(b) = ents.boat_mut(id) else {
         return false;
     };
@@ -758,6 +759,10 @@ pub fn hurt_boat(
     b.hurt_time = 10;
     b.damage += amount * 10.0;
     let destroy = !creative && b.damage > 40.0;
+    // `AbstractChestBoat.destroy` → `chestVehicleDestroyed`: a player breaking it angers
+    // piglins.
+    let anger =
+        destroy && b.kind.chest && env.rules.bool(Rule::ENTITY_DROPS) && by_player.is_some();
     let drop = b.kind.drop_item();
     let name = b.custom_name.clone();
     let items = if destroy {
@@ -800,6 +805,9 @@ pub fn hurt_boat(
                     entity_drops,
                 },
             )));
+        if anger && let Some(p) = by_player {
+            cx.actions.push(crate::mob::WorldAction::PiglinAnger(p));
+        }
         return true;
     }
     // `kill` → `remove(KILLED)`: a chest boat drops its contents first.
@@ -832,6 +840,9 @@ pub fn hurt_boat(
             // `chestVehicleDestroyed` drops the (now empty) contents once more.
             crate::minecart::drop_contents(env, pos, &vec![ItemStack::EMPTY; items.len()]);
         }
+    }
+    if anger && let Some(p) = by_player {
+        cx.actions.push(crate::mob::WorldAction::PiglinAnger(p));
     }
     true
 }

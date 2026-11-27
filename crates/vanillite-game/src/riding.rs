@@ -152,7 +152,17 @@ pub fn start_riding(
         e.set_pose(Pose::Standing);
         e.set_flags(EntityFlags::PASSENGER, true);
     }
+    let ghast = ents
+        .mob(vehicle)
+        .is_some_and(|m| m.kind == Kind::HappyGhast);
+    if ghast {
+        let first = ents.riding.passengers_of(vehicle).is_empty();
+        crate::mob::fam::mount::ghast::add_passenger(ents, env, vehicle, first);
+    }
     ents.riding.add(passenger, vehicle, is_player);
+    if ghast {
+        crate::mob::fam::mount::ghast::passenger_added(ents, vehicle);
+    }
     if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
         let event = crate::level::game_event::events().entity_mount;
         crate::survival::game_event(env.out, event, at, Some(passenger));
@@ -287,6 +297,12 @@ pub fn stop_riding(
 /// exit event cannot be cancelled.
 fn dismount(ents: &mut Entities, env: &mut Env<'_>, passenger: EntityId) -> Option<EntityId> {
     let vehicle = ents.riding.remove(passenger)?;
+    if ents
+        .mob(vehicle)
+        .is_some_and(|m| m.kind == Kind::HappyGhast)
+    {
+        crate::mob::fam::mount::ghast::passenger_removed(ents, env, vehicle);
+    }
     if let Some(at) = ents.store.get(vehicle).map(|e| e.pos()) {
         let event = crate::level::game_event::events().entity_dismount;
         crate::survival::game_event(env.out, event, at, Some(passenger));
@@ -449,6 +465,13 @@ fn dismount_location(
     let fallback = Vec3::new(vpos.x, v.aabb().max_y, vpos.z);
     let (pw, ph) = (f64::from(p.dims().width), f64::from(p.dims().height));
     let mut scratch = Vec::new();
+    // `HappyGhast.getDismountLocationForPassenger`: always the top centre.
+    if ents
+        .mob(vehicle)
+        .is_some_and(|m| m.kind == Kind::HappyGhast)
+    {
+        return Some(fallback);
+    }
     if let Some(m) = ents.minecart(vehicle) {
         let flipped = m.flipped;
         if let Some(t) = minecart_dismount(ents, level, vehicle, passenger, flipped) {
@@ -915,8 +938,9 @@ pub fn paddle_boat(ents: &mut Entities, player: EntityId, left: bool, right: boo
     }
 }
 
-/// `FoodOnAStickItem.use`: the pig the player steers gets a boost; the carrot on a stick
-/// loses 7 durability and turns into a fishing rod when it breaks.
+/// `FoodOnAStickItem.use`: the pig (carrot on a stick) or strider (warped fungus on a stick)
+/// the player steers gets a boost; the stick loses 7 (carrot) or 1 (fungus) durability and
+/// turns into a fishing rod when it breaks.
 pub fn boost(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -933,9 +957,13 @@ pub fn boost(
     let Some(m) = ents.mob_mut(vehicle) else {
         return false;
     };
-    if m.boosting {
+    // `vehicle.is(canInteractWith)` and `consumeItemDamage`.
+    let fungus = stack.item == vanillite_data::item::ids::WARPED_FUNGUS_ON_A_STICK.0;
+    let wanted = if fungus { Kind::Strider } else { Kind::Pig };
+    if m.kind != wanted || m.boosting {
         return false;
     }
+    let cost = if fungus { 1 } else { 7 };
     m.boosting = true;
     m.boost_time = 0;
     m.boost_total = m.random.next_int_bounded(841) + 140;
@@ -948,7 +976,7 @@ pub fn boost(
     let unbreaking = crate::player::play::game_data()
         .map_or(0, |d| d.enchantment_level(stack, "minecraft:unbreaking"));
     let mut n = 0;
-    for _ in 0..7 {
+    for _ in 0..cost {
         #[allow(clippy::cast_precision_loss)]
         let level = unbreaking.max(0) as f32;
         // `remove_binomial`: the draw removes the point below level / (level + 1).
@@ -973,7 +1001,7 @@ pub fn boost(
         }
     }
     if d >= crate::item::max_damage(stack) {
-        // `hurtAndConvertOnBreak(7, FISHING_ROD)`: the components stay, the damage resets.
+        // `hurtAndConvertOnBreak(cost, FISHING_ROD)`: the components stay, the damage resets.
         let mut rod = stack.clone();
         rod.item = vanillite_data::item::ids::FISHING_ROD.0;
         rod.count = 1;

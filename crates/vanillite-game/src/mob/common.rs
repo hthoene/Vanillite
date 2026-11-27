@@ -186,6 +186,11 @@ pub fn villager(t: &Tick<'_, '_>, id: EntityId) -> bool {
         .is_some_and(|e| e.kind() == ids::VILLAGER || e.kind() == ids::WANDERING_TRADER)
 }
 
+/// An adult `AbstractVillager` (`Ravager`'s villager target: `!target.isBaby()`).
+pub fn adult_villager(t: &Tick<'_, '_>, id: EntityId) -> bool {
+    villager(t, id) && !t.ents.mob(id).is_some_and(|m| m.baby)
+}
+
 /// An `Enemy` (monsters, slimes, ghasts, phantoms, shulkers, hoglins).
 pub fn enemy(t: &Tick<'_, '_>, id: EntityId) -> bool {
     t.ents.mob(id).is_some_and(|m| m.kind.is_monster())

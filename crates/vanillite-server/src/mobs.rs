@@ -572,7 +572,8 @@ impl WorldMobs {
             }
             None => spawn::tick(level, &table, &mut self.spawner, &input, persistent),
         }
-        if dimension == "minecraft:overworld" {
+        // `tickChunks`: the custom spawners only run with `doMobSpawning`.
+        if dimension == "minecraft:overworld" && rules.bool(Rule::SPAWN_MOBS) {
             self.custom_spawners(
                 level,
                 &table,
@@ -582,6 +583,7 @@ impl WorldMobs {
                 env,
                 &players,
                 roll_siege,
+                input.thunder.clock_time,
             );
         }
     }
@@ -598,6 +600,7 @@ impl WorldMobs {
         env: Environment,
         players: &[(EntityId, Vec3)],
         roll_siege: bool,
+        clock_time: i64,
     ) {
         level.flush_poi_changes();
         use vanillite_game::mob::fam::illager::patrol::{self, PatrolInput};
@@ -627,8 +630,11 @@ impl WorldMobs {
                 Some((e.pos(), p.game_mode == GameMode::Spectator))
             })
             .collect();
+        // `CAN_PILLAGER_PATROL_SPAWN`: the biome's value ANDed with the `early_game` timeline
+        // of the overworld clock (false for the first 120000 ticks).
+        let early_game = clock_time < 120_000;
         let can_patrol = |level: &Level, pos: BlockPos| {
-            table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
+            !early_game && table.biome(level.biome(pos)).is_none_or(|b| b.patrol_spawn)
         };
         let input = PatrolInput {
             enabled: spawn_enemies && rules.bool(Rule::SPAWN_PATROLS),

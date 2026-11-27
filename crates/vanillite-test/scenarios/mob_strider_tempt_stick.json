@@ -1,0 +1,117 @@
+{
+  "description": "A player holds a warped fungus on a stick near a strider: its TemptGoal uses #strider_tempt_items (strider food plus the stick), so the strider follows.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -58,
+      15
+    ]
+  ],
+  "ticks": 80,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        0
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        15
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        0,
+        -60,
+        0
+      ],
+      "to": [
+        0,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    },
+    {
+      "op": "fill",
+      "from": [
+        15,
+        -60,
+        0
+      ],
+      "to": [
+        15,
+        -58,
+        15
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        7.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        180,
+        0
+      ]
+    },
+    {
+      "name": "strider",
+      "type": "minecraft:strider",
+      "pos": [
+        7.5,
+        -60.0,
+        4.5
+      ],
+      "seed": 11,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "use",
+      "entity": "steve",
+      "pos": [
+        7,
+        -61,
+        12
+      ],
+      "face": "up",
+      "item": "minecraft:warped_fungus_on_a_stick"
+    }
+  ],
+  "player_state": true
+}

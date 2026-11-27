@@ -105,6 +105,7 @@ pub fn hurt(
         return false;
     }
     let mut source = with_blocking_facts(ents, source);
+    let attacker_of_block = source.direct.filter(|_| source.own_blocked_by_item);
     // `resolvePlayerResponsibleForDamage`: the causing player, or a tame wolf's owner.
     source.responsible_player = source.cause.and_then(|c| {
         if ents.player(c).is_some() {
@@ -152,6 +153,7 @@ pub fn hurt(
         attackers,
     );
     let died = was_alive && data.survival.is_dead_or_dying();
+    let blocked_by_item = data.survival.blocked_by_item.take();
     // The killer's type while it is still there (`ENTITY_KILLED_BY`).
     if died {
         for effect in env.out.iter_mut().rev() {
@@ -169,6 +171,25 @@ pub fn hurt(
         }
     }
     view::resolve_combat(ents, env.types, target);
+    // `blockUsingItem` → the attacker's own `blockedByItem`.
+    if blocked_by_item.is_some()
+        && let Some(attacker) = attacker_of_block
+    {
+        let mut t = super::Tick {
+            level,
+            ents,
+            env,
+            cx,
+            id: attacker,
+        };
+        match t.mob_ref().kind {
+            Kind::Ravager => super::fam::illager::ravager::blocked_by_item(&mut t, target),
+            Kind::Hoglin | Kind::Zoglin if !t.mob_ref().baby => {
+                super::fam::brainy::hoglin::throw_target(&mut t, target);
+            }
+            _ => {}
+        }
+    }
     // `ServerPlayer.die` → `tellNeutralMobsThatIDied`: at once, so an attacker calms down
     // within its own tick.
     if died && env.rules.bool(Rule::FORGIVE_DEAD_PLAYERS) {
@@ -199,6 +220,9 @@ fn with_blocking_facts(ents: &Entities, mut source: DamageSource) -> DamageSourc
             (!off_hand).then(|| p.inventory.selected_item())
         })
     };
+    source.own_blocked_by_item = ents
+        .mob(direct)
+        .is_some_and(|m| matches!(m.kind, Kind::Hoglin | Kind::Zoglin | Kind::Ravager));
     if let Some(weapon) = weapon {
         source.disable_shield_seconds = if weapon.is_empty() {
             0.0
