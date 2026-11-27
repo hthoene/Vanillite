@@ -321,7 +321,7 @@ view-distance = 8
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
-| `enabled` | performance |  | `false` | `false` | `false` | `false` | `false` | Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. `false` (every profile) keeps Vanilla's exact serial order at no cost. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED`. |
+| `enabled` | performance |  | `false` | `false` | `false` | `false` | `true` | Turns the tile region mode on: natural mob spawning and random ticks of a world are worked out per tile (a fixed square of chunks) on several cores. Faster when players are spread out; no gain for a crowd in one place. Deviation: these phases draw their random numbers per tile, so a seeded world differs from Vanilla (same rates), and a player's mob cap can be exceeded by one tick's spawns at a tile border. On in the performance profile; `false` keeps Vanilla's exact serial order at no cost. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__ENABLED`. |
 | `tile-size` | performance |  | `16` | `16` | `16` | `16` | `16` | Edge of a tile in chunks. Smaller tiles balance better over the cores, larger ones cost less bookkeeping. Integer from 8 to 32. Environment: `VANILLITE_PERFORMANCE__REGION_THREADING__TILE_SIZE`. |
 
 #### `[performance.simulation]`

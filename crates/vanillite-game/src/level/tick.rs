@@ -91,7 +91,13 @@ impl Level {
         let speed = self.settings.random_tick_speed;
         scratch.clear();
         self.chunks.random_ticking_chunks(scratch);
-        for &chunk in scratch.iter() {
+        for (i, &chunk) in scratch.iter().enumerate() {
+            // The chunks ahead start loading into the cache while this one ticks.
+            for (ahead, stage) in [(3, 0), (2, 1), (1, 2)] {
+                if let Some(&next) = scratch.get(i + ahead) {
+                    self.chunks.prefetch(next, stage);
+                }
+            }
             self.tick_chunk(chunk, speed);
         }
     }
@@ -131,13 +137,10 @@ impl Level {
             };
             let sections = c.chunk.sections();
             if left == 0 {
-                let Some(offset) = sections.get(next..).and_then(|rest| {
-                    rest.iter()
-                        .position(|section| section.summary().is_randomly_ticking())
-                }) else {
+                let Some(found) = c.chunk.next_randomly_ticking(next) else {
                     break;
                 };
-                index = next + offset;
+                index = found;
                 next = index + 1;
                 left = speed;
             }
