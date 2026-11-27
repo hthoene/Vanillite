@@ -314,7 +314,9 @@ fn invulnerable_to(
         .and_then(|c| ents.player(c))
         .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
     m.removed
-        || m.invulnerable && !types.is(kind, tag::BYPASSES_INVULNERABILITY) && !creative
+        || super::entity_nbt::is_invulnerable(ents, target)
+            && !types.is(kind, tag::BYPASSES_INVULNERABILITY)
+            && !creative
         || crate::enchant::location::frost_walker_immune(
             types,
             kind,
@@ -373,6 +375,9 @@ fn hurt_mob_inner(
     let types = env.types;
     if ents.mob(target).is_some_and(|m| m.kind == Kind::ArmorStand) {
         return crate::decoration::stand::hurt(level, ents, env, cx, target, &source);
+    }
+    if super::entity_nbt::invulnerable_to(ents, types, target, &source) {
+        return false;
     }
     if let Some(took) =
         super::fam::undead::cubes::sulfur_hurt(level, ents, env, target, &source, amount)
@@ -454,6 +459,12 @@ fn hurt_mob_inner(
     };
     m.no_action_time = 0;
     let mut damage = amount.max(0.0);
+    // `#damages_helmet` with a helmet on: three quarters (`hurtHelmet` wears only players').
+    if types.is(kind, tag::DAMAGES_HELMET)
+        && !m.equipment.get(crate::item::EquipmentSlot::Head).is_empty()
+    {
+        damage *= 0.75;
+    }
     if !damage.is_finite() {
         damage = f32::MAX;
     }
@@ -1141,6 +1152,7 @@ fn die(
             target,
             &source,
             "minecraft:charged_creeper/root",
+            0,
         )
         .unwrap_or_default();
         for stack in heads.into_iter().filter(|s| !s.is_empty()) {
@@ -1585,34 +1597,7 @@ pub fn base_mob_attack(t: &mut super::Tick<'_, '_>, target: EntityId) -> bool {
             let v = t.velocity();
             t.set_velocity(v.multiply(0.6, 1.0, 0.6));
         }
-        // `weaponItem.hurtEnemy`: the weapon loses its `item_damage_per_attack`.
-        if let Some(per_attack) = crate::item::item_id(&weapon)
-            .info()
-            .weapon
-            .map(|w| w.item_damage_per_attack)
-            && per_attack > 0
-            && crate::item::is_damageable(&weapon)
-        {
-            let unbreaking = combat.enchantment_level(&weapon, "minecraft:unbreaking");
-            let mut amount = i32::try_from(per_attack).unwrap_or(i32::MAX);
-            if unbreaking > 0 {
-                #[allow(clippy::cast_precision_loss)]
-                let chance = unbreaking as f32 / (unbreaking as f32 + 1.0);
-                let removed = (0..amount)
-                    .filter(|_| t.env.random.next_float() < chance)
-                    .count();
-                amount -= i32::try_from(removed).unwrap_or(0);
-            }
-            if amount > 0 {
-                let m = t.mob();
-                let stack = &mut m.equipment.items[0];
-                let damage = crate::item::damage(stack) + amount;
-                crate::item::set_damage(stack, damage);
-                if damage >= crate::item::max_damage(stack) {
-                    stack.shrink(1);
-                }
-            }
-        }
+        // `weaponItem.hurtEnemy` wears nothing: only `Player.attack` runs `postHurtEnemy`.
         // `EnchantmentHelper.doPostAttackEffects`: the target's equipment (Thorns), then the
         // weapon (Fire Aspect).
         let weapon = (!weapon.is_empty()).then_some(&weapon);
@@ -1673,11 +1658,27 @@ fn table_loot(
 ) -> Option<Vec<crate::item::ItemStack>> {
     let name = ents.store.get(target)?.kind().info().name;
     let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
-    let table = format!("{ns}:entities/{path}");
-    named_table_loot(level, ents, env, target, source, &table)
+    // `Mob.getLootTable`: `DeathLootTable` replaces the type's table.
+    let (replaced, seed) = ents.extra(target).map_or((None, 0), |x| {
+        (x.death_loot_table.clone(), x.death_loot_seed)
+    });
+    let table = replaced
+        .clone()
+        .unwrap_or_else(|| format!("{ns}:entities/{path}"));
+    let drops = named_table_loot(level, ents, env, target, source, &table, seed);
+    if replaced.is_none() {
+        return drops;
+    }
+    // `Mob.dropFromLootTable` forgets its `DeathLootTable`.
+    if let Some(x) = ents.extra_mut(target) {
+        x.death_loot_table = None;
+    }
+    // An unknown table is the empty one: nothing drops.
+    Some(drops.unwrap_or_default())
 }
 
-/// `dropFromLootTable` of the loot table `table` for the dying `target`.
+/// `dropFromLootTable` of the loot table `table` for the dying `target`; a `seed` of 0 means
+/// none.
 fn named_table_loot(
     level: &Level,
     ents: &mut Entities,
@@ -1685,6 +1686,7 @@ fn named_table_loot(
     target: EntityId,
     source: &DamageSource,
     table: &str,
+    seed: i64,
 ) -> Option<Vec<crate::item::ItemStack>> {
     let data = crate::player::play::game_data()?;
     if !data.loot.contains(table) {
@@ -1733,10 +1735,15 @@ fn named_table_loot(
         block_entity: None,
     };
     let mut out = Vec::new();
-    // `dropFromLootTable` without a loot table seed: the table's random sequence, else the
-    // level random.
-    data.loot
-        .roll_table(level, table, &ctx, env.random, &mut out);
+    if seed == 0 {
+        // `dropFromLootTable` without a loot table seed: the table's random sequence, else
+        // the level random.
+        data.loot
+            .roll_table(level, table, &ctx, env.random, &mut out);
+    } else {
+        let mut random = vanillite_base::random::LegacyRandom::new(seed);
+        data.loot.table_drops(table, &ctx, &mut random, &mut out);
+    }
     Some(out)
 }
 

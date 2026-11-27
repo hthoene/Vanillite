@@ -80,6 +80,7 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
         return;
     };
     let mut pos = e.pos();
+    let start = pos;
     let mut velocity = e.velocity();
     let mut rot = e.rot();
     let aabb = e.aabb();
@@ -220,11 +221,15 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
                 }
             } else if let Some((target, hit)) = entity_hit {
                 pos = hit;
-                hit_entity(t, &mut d, target, pos);
+                // `projectileReceivesSideEffectsOnHit(wasHurt)`: the hit sound and the bounce
+                // (`deflect(REVERSE, .., (0.02, 0.2, 0.02))`), not for an enderman that dodged.
+                if hit_entity(t, &mut d, target, pos) {
+                    sound(t, pos, "minecraft:item.trident.hit", 1.0, 1.0);
+                    velocity = velocity.multiply(-0.01, -0.1, -0.01);
+                    let turn = 170.0 + own.next_float() * 20.0;
+                    rot.y_rot += turn;
+                }
                 crate::mob::missile::land_event(t.env.out, t.level, id, d.owner, None, hit);
-                velocity = velocity.multiply(-0.01, -0.1, -0.01);
-                let turn = 170.0 + own.next_float() * 20.0;
-                rot.y_rot += turn;
             } else if let Some((hit_pos, at)) = block_hit {
                 let sign = |v: f64| {
                     if v > 0.0 {
@@ -257,6 +262,11 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
             // `applyGravity`: `movement.add(0, -gravity, 0)` (turns -0.0 into 0.0).
             velocity = velocity + Vec3::new(0.0, -0.05, 0.0);
         }
+    }
+    // `applyEffectsFromBlocks` in flight, while returning and in the ground (buttons,
+    // tripwires, pressure plates).
+    if !d.removed {
+        crate::mob::projectile::inside_blocks(t.level, t.cx, id, aabb, start, pos);
     }
     if let Some(mut e) = t.ents.store.get_mut(id) {
         e.set_pos(pos);
@@ -306,7 +316,15 @@ fn find_hit(
         if other == t.id || (!d.left_owner && d.owner == Some(other)) {
             return;
         }
-        if !crate::effect::thrown::can_be_hit(t.ents, other) {
+        if !crate::mob::projectile::can_be_hit_by_projectile(t.ents, other) {
+            return;
+        }
+        // `AbstractArrow.canHitEntity`: a player's trident flies through the players it may
+        // not hurt (`canHarmPlayer`).
+        if t.ents.player(other).is_some()
+            && let Some(owner) = d.owner.filter(|&o| t.ents.player(o).is_some())
+            && !crate::mob::attack::can_harm_player(t.ents, t.env, owner, other)
+        {
             return;
         }
         let Some(oe) = t.ents.store.get(other) else {
@@ -326,7 +344,17 @@ fn find_hit(
 }
 
 /// `ThrownTrident.onHitEntity`: 8 damage (with the weapon's enchantments), then it bounces.
-fn hit_entity(t: &mut MissileTick<'_, '_>, d: &mut MissileData, target: EntityId, pos: Vec3) {
+/// Returns `projectileReceivesSideEffectsOnHit(wasHurt)`: false for an enderman it missed.
+fn hit_entity(
+    t: &mut MissileTick<'_, '_>,
+    d: &mut MissileData,
+    target: EntityId,
+    pos: Vec3,
+) -> bool {
+    let enderman = t
+        .ents
+        .mob(target)
+        .is_some_and(|m| m.kind == crate::mob::Kind::Enderman);
     let owner = d
         .owner
         .filter(|o| t.ents.store.contains(*o))
@@ -369,7 +397,7 @@ fn hit_entity(t: &mut MissileTick<'_, '_>, d: &mut MissileData, target: EntityId
             Some(&d.item),
         );
     }
-    sound(t, pos, "minecraft:item.trident.hit", 1.0, 1.0);
+    hurt || !enderman
 }
 
 /// `hitBlockEnchantmentEffects`: the `hit_block` effects of the trident (Channeling on a
@@ -517,19 +545,14 @@ pub fn load(d: &mut MissileData, tag: &Compound) {
     if d.kind != MissileKind::Trident {
         return;
     }
-    let boolean = |k: &str| matches!(tag.get(k), Some(Tag::Byte(b)) if *b != 0);
+    let boolean = |k: &str| crate::mob::entity_nbt::get_bool(tag, k).unwrap_or(false);
     d.in_ground = boolean("inGround");
-    d.ints[0] = match tag.get("life") {
-        Some(Tag::Short(v)) => i32::from(*v),
-        _ => 0,
-    };
+    d.ints[0] = crate::mob::entity_nbt::get_int(tag, "life").unwrap_or(0);
     if boolean("DealtDamage") {
         d.ints[2] |= DEALT;
     }
-    d.pickup = match tag.get("pickup") {
-        Some(Tag::Byte(b)) => u8::try_from(*b).unwrap_or(0).min(2),
-        _ => 0,
-    };
+    d.pickup = crate::mob::entity_nbt::get_int(tag, "pickup")
+        .map_or(0, |v| u8::try_from(v).unwrap_or(0).min(2));
     if d.item.is_empty()
         && let Some(Tag::Compound(c)) = tag.get("item")
     {

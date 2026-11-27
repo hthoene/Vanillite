@@ -86,6 +86,15 @@ impl EntityFlags {
     pub const PASSENGER: EntityFlags = EntityFlags(1 << 5);
     /// `getRequiresPrecisePosition`: movement is always sent as an absolute position.
     pub const PRECISE_POSITION: EntityFlags = EntityFlags(1 << 6);
+    /// `Entity.permanentlyInvulnerable` (the `Invulnerable` tag).
+    pub const INVULNERABLE: EntityFlags = EntityFlags(1 << 7);
+    /// `Entity.hasGlowingTag` (the `Glowing` tag); [`EntityFlags::GLOWING`] is what clients
+    /// see (the tag or the effect).
+    pub const GLOWING_TAG: EntityFlags = EntityFlags(1 << 16);
+    /// `isCustomNameVisible` (synched data 3).
+    pub const NAME_VISIBLE: EntityFlags = EntityFlags(1 << 17);
+    /// `Entity.hasVisualFire`: clients see the entity burn; it takes no damage from it.
+    pub const VISUAL_FIRE: EntityFlags = EntityFlags(1 << 18);
 
     /// Shared flag `FLAG_ONFIRE`.
     pub const ON_FIRE: EntityFlags = EntityFlags(1 << 8);

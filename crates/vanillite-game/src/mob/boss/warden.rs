@@ -199,8 +199,10 @@ pub fn can_target_entity(ents: &Entities, entity: Option<EntityId>) -> bool {
         return !p.survival.is_dead_or_dying()
             && matches!(p.game_mode, GameMode::Survival | GameMode::Adventure);
     }
-    ents.mob(entity)
-        .is_some_and(|m| m.is_alive() && !matches!(m.kind, Kind::Warden | Kind::ArmorStand))
+    !crate::mob::entity_nbt::is_invulnerable(ents, entity)
+        && ents
+            .mob(entity)
+            .is_some_and(|m| m.is_alive() && !matches!(m.kind, Kind::Warden | Kind::ArmorStand))
 }
 
 /// `getTarget()`: the attack target memory.

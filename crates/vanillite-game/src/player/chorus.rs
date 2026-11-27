@@ -46,6 +46,7 @@ pub fn teleport_randomly(
     env: &mut Env<'_>,
     player: EntityId,
     diameter: f64,
+    directional_particles: bool,
 ) -> bool {
     let Some(e) = ents.store.get(player) else {
         return false;
@@ -105,6 +106,15 @@ pub fn teleport_randomly(
     else {
         return false;
     };
+    // The client keeps its motion (`DELTA`); a player the server moves itself starts from rest
+    // like Vanilla's (recorded in the `item_food` golden).
+    if ents
+        .player(player)
+        .is_some_and(|p| p.survival.simulate_movement)
+        && let Some(mut e) = ents.store.get_mut(player)
+    {
+        e.set_velocity(Vec3::ZERO);
+    }
     let network_id = ents.store.get(player).map_or(0, |e| e.network_id().0);
     // `broadcastEntityEvent(46)`: the teleport particles.
     env.out.push(crate::survival::Effect::Tracking {
@@ -133,6 +143,34 @@ pub fn teleport_randomly(
         1.0,
         crate::survival::sound_seed(),
     );
+    if directional_particles {
+        // `levelEvent(2017, origin, clampedPackDifferenceInPosition(origin, target, 127..))`.
+        let origin = BlockPos::containing(old.x, old.y, old.z);
+        let target = BlockPos::containing(to.x, to.y, to.z);
+        let d = |a: i32, b: i32| b.saturating_sub(a).clamp(-127, 127).wrapping_add(127) & 0xFF;
+        let data = d(origin.x, target.x) << 16 | d(origin.y, target.y) << 8 | d(origin.z, target.z);
+        env.out.push(crate::survival::Effect::Nearby {
+            pos: Vec3::new(
+                f64::from(origin.x),
+                f64::from(origin.y),
+                f64::from(origin.z),
+            ),
+            range: 64.0,
+            except: None,
+            packet: vanillite_protocol::SharedPacket::of(
+                &vanillite_protocol::packets::play::clientbound::LevelEvent {
+                    event: 2017,
+                    pos: vanillite_protocol::types::BlockPos {
+                        x: origin.x,
+                        y: origin.y,
+                        z: origin.z,
+                    },
+                    data,
+                    global: false,
+                },
+            ),
+        });
+    }
     if let Some(p) = ents.player_mut(player) {
         crate::advancements::tracking::reset_fall_distance(p);
         // `resetCurrentImpulseContext`.
@@ -142,6 +180,8 @@ pub fn teleport_randomly(
     true
 }
 
-/// The rotation stays (`teleportTo(x, y, z)`): both angles relative.
-const ROTATION: i32 = vanillite_protocol::packets::play::clientbound::relative::Y_ROT
-    | vanillite_protocol::packets::play::clientbound::relative::X_ROT;
+/// Rotation and motion stay (`teleportTo(x, y, z)`: `Relative.union(DELTA, ROTATION)`).
+const ROTATION: i32 = {
+    use vanillite_protocol::packets::play::clientbound::relative::*;
+    Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA
+};

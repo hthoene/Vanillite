@@ -14,6 +14,7 @@ pub mod boss;
 pub mod brain;
 pub mod combat;
 pub mod common;
+pub mod entity_nbt;
 pub mod equipment;
 pub mod fam;
 pub mod goals;
@@ -170,8 +171,6 @@ pub struct MobData {
     pub persistent: bool,
     pub no_ai: bool,
     pub silent: bool,
-    /// `Entity.invulnerable` (`Invulnerable`).
-    pub invulnerable: bool,
     pub ambient_sound_time: i32,
     pub target: Option<EntityId>,
     pub aggressive: bool,
@@ -338,7 +337,6 @@ impl MobData {
             persistent: false,
             no_ai: false,
             silent: false,
-            invulnerable: false,
             ambient_sound_time: 0,
             target: None,
             aggressive: false,
@@ -815,6 +813,9 @@ impl ExplosionRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldAction {
     Explode(ExplosionRequest),
+    /// `addFreshEntity` of an area effect cloud at the position (after an explosion queued
+    /// before it: `Creeper.spawnLingeringCloud`).
+    SpawnCloud(Vec3, Box<crate::effect::cloud::CloudData>),
     /// `setBlock(pos, state, flags)`.
     SetBlock(BlockPos, BlockState, u32),
     /// `destroyBlock(pos, drop)`.
@@ -930,6 +931,10 @@ impl WorldAction {
                 if level.entities.store.contains(id) {
                     crate::block::contact::step_on(level, pos, id);
                 }
+            }
+            WorldAction::SpawnCloud(pos, ref data) => {
+                let ids = std::sync::Arc::clone(level.network_ids_arc());
+                crate::effect::cloud::spawn_cloud(&mut level.entities, &ids, pos, (**data).clone());
             }
             WorldAction::BubbleColumnParticles(pos) => {
                 crate::level::particles::bubble_column_particles(level, pos);

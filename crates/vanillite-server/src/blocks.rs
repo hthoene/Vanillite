@@ -678,6 +678,7 @@ pub fn tick_item(
         return burn;
     }
     let row = entity.kind_row();
+    burn.invulnerable = entity.flags().contains(EntityFlags::INVULNERABLE);
     let input = item_entity::TickInput {
         pos: entity.pos(),
         velocity: entity.velocity(),
@@ -686,6 +687,7 @@ pub fn tick_item(
         min_y,
         lifetime,
         fast_lava: level.settings.fast_lava,
+        no_gravity: entity.flags().contains(EntityFlags::NO_GRAVITY),
     };
     let Some(data) = items.get_mut(row) else {
         return burn;

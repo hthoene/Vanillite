@@ -358,9 +358,7 @@ impl Level {
         new.flags.set(EntityFlags::ON_GROUND, base.on_ground);
         new.flags.set(EntityFlags::NO_GRAVITY, base.no_gravity);
         let short = |name: &str, default: i16| {
-            nbt.get(name)
-                .and_then(Tag::as_i64)
-                .map_or(default, |v| v as i16)
+            crate::mob::entity_nbt::get_int(&nbt, name).map_or(default, |v| v as i16)
         };
         let id = if kind == ids::ITEM {
             let stack = match nbt.get("Item") {
@@ -381,10 +379,8 @@ impl Level {
             data.health = short("Health", 5);
             data.fire_ticks = i32::from(short("Fire", 0)).max(0);
             data.target = uuid_of(&nbt, "Owner");
-            data.fall_distance = match nbt.get("fall_distance") {
-                Some(Tag::Double(v)) => *v,
-                _ => 0.0,
-            };
+            data.fall_distance =
+                crate::mob::entity_nbt::get_double(&nbt, "fall_distance").unwrap_or(0.0);
             let items = &mut self.entities.items;
             self.entities.store.spawn(new, |id| items.push(id, data))
         } else if kind == ids::FALLING_BLOCK {
@@ -401,35 +397,27 @@ impl Level {
             data.time = int(&nbt, "Time").unwrap_or(0);
             data.hurt_entities = flag(&nbt, "HurtEntities")
                 .unwrap_or_else(|| crate::block::falling::is_anvil(state.block()));
-            data.fall_hurt_amount = match nbt.get("FallHurtAmount") {
-                Some(Tag::Float(v)) => *v,
-                _ => 0.0,
-            };
+            data.fall_hurt_amount =
+                crate::mob::entity_nbt::get_float(&nbt, "FallHurtAmount").unwrap_or(0.0);
             data.fall_hurt_max = int(&nbt, "FallHurtMax").unwrap_or(40);
             data.cancel_drop = flag(&nbt, "CancelDrop").unwrap_or(false);
-            data.fall_distance = match nbt.get("fall_distance") {
-                Some(Tag::Double(v)) => *v,
-                _ => 0.0,
-            };
+            data.fall_distance =
+                crate::mob::entity_nbt::get_double(&nbt, "fall_distance").unwrap_or(0.0);
             self.entities.spawn_falling_block(new, data)
         } else {
             let state = nbt
                 .get("block_state")
                 .and_then(super::block_entity::read_state_codec)
                 .unwrap_or_else(|| vanillite_data::block::ids::TNT.default_state());
-            let power = match nbt.get("explosion_power") {
-                Some(Tag::Float(v)) => v.clamp(0.0, 128.0),
-                _ => 4.0,
-            };
+            let power = crate::mob::entity_nbt::get_float(&nbt, "explosion_power")
+                .map_or(4.0, |v| v.clamp(0.0, 128.0));
             let data = PrimedTntData {
                 fuse: i32::from(short("fuse", 80)),
                 state,
                 owner: None,
                 explosion_power: power,
-                fall_distance: match nbt.get("fall_distance") {
-                    Some(Tag::Double(v)) => *v,
-                    _ => 0.0,
-                },
+                fall_distance: crate::mob::entity_nbt::get_double(&nbt, "fall_distance")
+                    .unwrap_or(0.0),
             };
             self.entities.spawn_primed_tnt(new, data)
         };
@@ -502,9 +490,11 @@ impl Level {
             Some(Tag::Compound(c)) => Some(c.clone()),
             _ => None,
         };
+        let base = crate::mob::entity_nbt::base_keys(&nbt);
         let Some(vehicle) = self.create_entity(nbt)? else {
             return Some(None);
         };
+        crate::mob::entity_nbt::load_base(&mut self.entities, vehicle, &base, false);
         self.entities.set_tags(vehicle, tags);
         self.entities.set_persistent_data(vehicle, persistent);
         loaded.push(vehicle);
@@ -658,6 +648,7 @@ impl Level {
     /// and kinds that are not saved. Its tags are saved with it.
     pub fn save_entity(&self, id: EntityId) -> Option<Compound> {
         let mut nbt = self.save_entity_kind(id)?;
+        crate::mob::entity_nbt::save_base(&self.entities, id, &mut nbt);
         let tags = self.entities.tags_of(id);
         if tags.is_empty() {
             nbt.remove("Tags");
@@ -1004,13 +995,11 @@ fn or_default(nbt: &mut Compound, name: &str, value: Tag) {
 }
 
 fn int(nbt: &Compound, name: &str) -> Option<i32> {
-    nbt.get(name)
-        .and_then(Tag::as_i64)
-        .and_then(|v| i32::try_from(v).ok())
+    crate::mob::entity_nbt::get_int(nbt, name)
 }
 
 fn flag(nbt: &Compound, name: &str) -> Option<bool> {
-    nbt.get(name).and_then(Tag::as_i64).map(|v| v != 0)
+    crate::mob::entity_nbt::get_bool(nbt, name)
 }
 
 fn doubles(v: Vec3) -> List {

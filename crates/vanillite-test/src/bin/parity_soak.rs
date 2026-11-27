@@ -1,13 +1,15 @@
 //! Soak parity runs (#166, [`vanillite_test::soak`]); started by `cargo xtask parity soak`,
 //! which compiles the Java recorder and passes its class path.
 //!
-//! Runs the soak scenarios (`scenarios/soak/*.json`, or the named ones) `--jobs` at a time and
-//! writes `<out>/<name>.md` per scenario and `<out>/summary.md`. Exit code 1 if a scenario
-//! failed or diverged from Vanilla other than known.
+//! Runs the soak scenarios (`scenarios/soak/*.json`, or those of `--dir`; all or the named
+//! ones) `--jobs` at a time and writes `<out>/<name>.md` per scenario and `<out>/summary.md`.
+//! Exit code 1 if a scenario failed or diverged from Vanilla other than known. `cargo xtask
+//! parity worlds` (#244) runs its generated world scenarios with `--dir` and `--title`.
 //!
 //! ```text
 //! parity-soak --java <java> --agent <agent.jar> --classpath <cp> --work-dir <dir> --out <dir>
-//!             [--jobs N] [--minutes N] [<scenario>...]
+//!             [--dir <scenario dir>] [--title <summary title>] [--jobs N] [--minutes N]
+//!             [<scenario>...]
 //! ```
 
 use std::path::PathBuf;
@@ -23,6 +25,8 @@ struct Args {
     jobs: usize,
     minutes: Option<u64>,
     only: Vec<String>,
+    dir: PathBuf,
+    title: String,
 }
 
 fn args() -> Result<Args, String> {
@@ -36,6 +40,8 @@ fn args() -> Result<Args, String> {
     let mut jobs = 2;
     let mut minutes = None;
     let mut only = Vec::new();
+    let mut dir = Scenario::soak_dir();
+    let mut title = "Soak parity runs".to_owned();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
@@ -45,6 +51,8 @@ fn args() -> Result<Args, String> {
             "--classpath" => java.classpath = value()?,
             "--work-dir" => java.work_dir = value()?.into(),
             "--out" => out = value()?.into(),
+            "--dir" => dir = value()?.into(),
+            "--title" => title = value()?,
             "--jobs" => jobs = value()?.parse().map_err(|e| format!("--jobs: {e}"))?,
             "--minutes" => {
                 minutes = Some(value()?.parse().map_err(|e| format!("--minutes: {e}"))?);
@@ -59,6 +67,8 @@ fn args() -> Result<Args, String> {
         jobs: jobs.max(1),
         minutes,
         only,
+        dir,
+        title,
     })
 }
 
@@ -70,7 +80,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
-    let dir = Scenario::soak_dir();
+    let dir = args.dir.clone();
     let scenarios = match Scenario::all_in(&dir) {
         Ok(s) => s,
         Err(e) => {
@@ -83,7 +93,7 @@ fn main() -> std::process::ExitCode {
         .filter(|s| args.only.is_empty() || args.only.contains(&s.name))
         .collect();
     if todo.is_empty() {
-        eprintln!("parity-soak: no soak scenario matches");
+        eprintln!("parity-soak: no scenario in {} matches", dir.display());
         return std::process::ExitCode::from(2);
     }
     let _ = std::fs::create_dir_all(&args.out);
@@ -120,8 +130,9 @@ fn main() -> std::process::ExitCode {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     reports.sort_by_key(|r| r.0);
     let mut summary = format!(
-        "Soak parity runs ({} scenarios, {:.1} min)\n\n| scenario | ticks | result | Vanilla \
+        "{} ({} scenarios, {:.1} min)\n\n| scenario | ticks | result | Vanilla \
          recording | Vanillite |\n|---|---|---|---|---|\n",
+        args.title,
         reports.len(),
         started.elapsed().as_secs_f64() / 60.0
     );

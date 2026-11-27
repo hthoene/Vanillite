@@ -55,6 +55,8 @@ pub struct PlayerEntry {
     pub details: Option<Arc<vanillite_net::ClientDetails>>,
     /// A Bedrock player (a remote virtual connection of the Bedrock frontend).
     pub bedrock: bool,
+    /// `requestedDebugSubscriptions`: bit `n` = `debug_subscription` registry id `n`.
+    pub debug_subscriptions: u32,
 }
 
 /// A player's connection with its chat inbox.
@@ -80,6 +82,9 @@ impl fmt::Debug for PlayerEntry {
 pub struct PlayerList {
     max_players: usize,
     players: Mutex<Vec<PlayerEntry>>,
+    /// Some player may have requested debug subscriptions (cleared by
+    /// [`PlayerList::debug_subscribers`] when none has).
+    debug_requested: std::sync::atomic::AtomicBool,
 }
 
 impl PlayerList {
@@ -88,6 +93,7 @@ impl PlayerList {
         PlayerList {
             max_players,
             players: Mutex::new(Vec::new()),
+            debug_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -130,6 +136,40 @@ impl PlayerList {
     /// The world an online player is in.
     pub fn world_of(&self, uuid: Uuid) -> Option<WorldId> {
         self.lock().iter().find(|p| p.uuid == uuid).map(|p| p.world)
+    }
+
+    /// `requestDebugSubscriptions`: the subscriptions a player asked for (bit mask).
+    pub fn set_debug_subscriptions(&self, uuid: Uuid, mask: u32) {
+        if let Some(player) = self.lock().iter_mut().find(|p| p.uuid == uuid) {
+            player.debug_subscriptions = mask;
+        }
+        if mask != 0 {
+            self.debug_requested
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The UUIDs and connections of the players that requested debug subscription `id`
+    /// (without the permission check). Cheap while nobody requested any.
+    pub fn debug_subscribers(&self, id: i32) -> Vec<(Uuid, Arc<dyn PacketSink>)> {
+        use std::sync::atomic::Ordering;
+        if !self.debug_requested.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
+        let players = self.lock();
+        if players.iter().all(|p| p.debug_subscriptions == 0) {
+            self.debug_requested.store(false, Ordering::Relaxed);
+            return Vec::new();
+        }
+        let bit = u32::try_from(id)
+            .ok()
+            .and_then(|i| 1u32.checked_shl(i))
+            .unwrap_or(0);
+        players
+            .iter()
+            .filter(|p| p.debug_subscriptions & bit != 0)
+            .map(|p| (p.uuid, Arc::clone(&p.sink)))
+            .collect()
     }
 
     /// Records that a player moved to another world.

@@ -1504,10 +1504,34 @@ pub(crate) fn hurt_equipment(
     let Some(p) = ents.player(owner) else {
         return;
     };
+    let index = match slot {
+        EquipmentSlot::MainHand => p.inventory.selected,
+        EquipmentSlot::OffHand => crate::inventory::OFFHAND,
+        EquipmentSlot::Feet => 36,
+        EquipmentSlot::Legs => 37,
+        EquipmentSlot::Chest => 38,
+        EquipmentSlot::Head => 39,
+        EquipmentSlot::Body | EquipmentSlot::Saddle => return,
+    };
+    hurt_inventory_item(ents, env, owner, index, amount);
+}
+
+/// `ItemStack.hurtAndBreak(amount, player, ..)` of the stack at `index` of a player's
+/// inventory.
+pub(crate) fn hurt_inventory_item(
+    ents: &mut Entities,
+    env: &mut Env<'_>,
+    owner: EntityId,
+    index: usize,
+    amount: i32,
+) {
+    let Some(p) = ents.player(owner) else {
+        return;
+    };
     if p.game_mode == vanillite_config::GameMode::Creative || amount <= 0 {
         return;
     }
-    let stack = p.inventory.equipment(slot).clone();
+    let stack = p.inventory.get(index).clone();
     if stack.is_empty() || !item::is_damageable(&stack) {
         return;
     }
@@ -1535,15 +1559,6 @@ pub(crate) fn hurt_equipment(
     let pos = ents.store.get(owner).map(|e| e.pos());
     let Some(p) = ents.player_mut(owner) else {
         return;
-    };
-    let index = match slot {
-        EquipmentSlot::MainHand => p.inventory.selected,
-        EquipmentSlot::OffHand => crate::inventory::OFFHAND,
-        EquipmentSlot::Feet => 36,
-        EquipmentSlot::Legs => 37,
-        EquipmentSlot::Chest => 38,
-        EquipmentSlot::Head => 39,
-        EquipmentSlot::Body | EquipmentSlot::Saddle => return,
     };
     let crate::player::PlayerData {
         inventory,
@@ -1619,14 +1634,40 @@ pub fn armor_effectiveness<'t>(
 /// `igniteForTicks`: burns at least `ticks` more ticks.
 pub fn ignite(ents: &mut Entities, id: EntityId, ticks: i32) {
     if let Some(m) = ents.mob_mut(id) {
-        if m.fire_ticks < ticks {
-            m.fire_ticks = ticks;
+        if ignite_mob(m, ticks)
+            && let Some(mut e) = ents.store.get_mut(id)
+        {
+            e.mark_data_dirty();
         }
-    } else if let Some(p) = ents.player_mut(id)
-        && p.survival.fire_ticks < ticks
-    {
-        p.survival.fire_ticks = ticks;
+    } else if ents.player(id).is_some() {
+        let burning = player_attribute(ents, id, "minecraft:burning_time", 1.0, 0.0, 1024.0);
+        let ticks = burning_ticks(ticks, burning);
+        if let Some(p) = ents.player_mut(id) {
+            if p.survival.fire_ticks < ticks {
+                p.survival.fire_ticks = ticks;
+            }
+            p.survival.ticks_frozen = 0;
+        }
     }
+}
+
+/// `LivingEntity.igniteForTicks`: `ceil(ticks * burning_time)` (Fire Protection shortens it).
+pub fn burning_ticks(ticks: i32, burning_time: f64) -> i32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let scaled = (f64::from(ticks) * burning_time).ceil() as i32;
+    scaled
+}
+
+/// `LivingEntity.igniteForTicks` of a mob: scaled by its `burning_time`, then
+/// `Entity.igniteForTicks` with `clearFreeze`. Returns whether the synched frozen ticks
+/// changed.
+pub fn ignite_mob(m: &mut crate::mob::MobData, ticks: i32) -> bool {
+    let burning = super::equipment::attribute(m, "minecraft:burning_time", 1.0, 0.0, 1024.0);
+    let ticks = burning_ticks(ticks, burning);
+    if m.fire_ticks < ticks {
+        m.fire_ticks = ticks;
+    }
+    std::mem::replace(&mut m.ticks_frozen, 0) != 0
 }
 
 /// `ItemStack.hurtEnemy` on a living target: a player's weapon (an item with the `weapon`
@@ -1652,6 +1693,18 @@ pub fn weapon_used_stat(
 /// `ItemStack.postHurtEnemy` of the main hand weapon: it loses `item_damage_per_attack`
 /// durability ([`hurt_equipment`]: Unbreaking, not in creative mode).
 fn hurt_weapon(ents: &mut Entities, env: &mut Env<'_>, attacker: EntityId, weapon: &ItemStack) {
+    // While spinning the riptide trident is the weapon, in whichever hand it was used.
+    if let Some(index) = ents
+        .player(attacker)
+        .and_then(|p| p.survival.spin_attack.as_ref())
+        .map(|s| s.index)
+    {
+        if let Some(w) = item::item_id(weapon).info().weapon {
+            let amount = i32::try_from(w.item_damage_per_attack).unwrap_or(i32::MAX);
+            hurt_inventory_item(ents, env, attacker, index, amount);
+        }
+        return;
+    }
     hurt_weapon_in(ents, env, attacker, weapon, EquipmentSlot::MainHand);
 }
 

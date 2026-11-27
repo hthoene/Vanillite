@@ -652,7 +652,7 @@ impl MapData {
 
     /// `isTrackedCountOverLimit(limit)`.
     pub fn is_tracked_count_over_limit(&self, limit: i32) -> bool {
-        self.tracked_count >= limit
+        self.tracked_count > limit
     }
 
     /// `removedFromFrame(pos, entityId)`.

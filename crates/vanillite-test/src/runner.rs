@@ -205,6 +205,10 @@ fn observe(
     if light {
         world.light(trace.min, trace.max, &mut frame.light);
     }
+    if scenario.world.block_entities {
+        world.block_entities(trace.min, trace.max, &mut frame.block_entities);
+        frame.block_entities.sort_unstable();
+    }
     frame.level_rng = world.level_rng();
     if scenario.world.client_view {
         frame.view = world.client_view()?;

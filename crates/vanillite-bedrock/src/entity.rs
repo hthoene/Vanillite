@@ -81,7 +81,7 @@ pub struct Data {
     pub fuse: Option<i32>,
     /// `LivingEntity.DATA_EFFECT_PARTICLES` (index 10) as one RGB colour (0: none).
     pub effect_color: Option<i32>,
-    /// `Sheep.DATA_WOOL_ID` (index 17): colour and the sheared bit.
+    /// `Sheep.DATA_WOOL_ID` (index 18; 17 is `AgeableMob.AGE_LOCKED`): colour and the sheared bit.
     pub wool: Option<u8>,
     /// `VillagerData`: type, profession and level ids.
     pub villager: Option<[i32; 3]>,
@@ -188,7 +188,7 @@ pub fn read_data(raw: &[u8], kind: &str) -> Data {
         let ok = match serializer {
             serializer::BYTE => r.u8().map(|v| match index {
                 0 => d.flags = Some(v),
-                17 if is_sheep => d.wool = Some(v),
+                18 if is_sheep => d.wool = Some(v),
                 15 if is_stand => d.stand_flags = Some(v),
                 _ => {}
             }),
@@ -497,5 +497,15 @@ mod tests {
         let d = read_data(&raw, "minecraft:zombie");
         assert_eq!(d.flags, Some(shared::CROUCHING));
         assert_eq!(d.baby, Some(true));
+    }
+
+    #[test]
+    fn sheep_wool_is_index_18() {
+        // Index 17 (AGE_LOCKED) must not be read as wool; index 18 carries colour and sheared bit.
+        let raw = [17u8, 0, 1, 18, 0, 0x13, 0xff];
+        let d = read_data(&raw, "minecraft:sheep");
+        assert_eq!(d.wool, Some(0x13));
+        let raw = [17u8, 0, 1, 0xff];
+        assert_eq!(read_data(&raw, "minecraft:sheep").wool, None);
     }
 }

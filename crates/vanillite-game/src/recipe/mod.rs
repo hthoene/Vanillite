@@ -1480,6 +1480,23 @@ impl Crafting {
                         .set(components::MAX_DAMAGE, bytes.into_boxed_slice());
                 }
                 item::set_damage(&mut out, (durability - remaining).max(0));
+                // The curses of both (`#minecraft:curse`) at the higher level.
+                if let Some(d) = crate::player::play::game_data() {
+                    use crate::menu::workstation::{
+                        crafting_enchantments, set_crafting_enchantments,
+                    };
+                    let (a, b) = (crafting_enchantments(first), crafting_enchantments(second));
+                    let level = |l: &[(u32, i32)], id: u32| {
+                        l.iter().find(|(e, _)| *e == id).map_or(0, |(_, v)| *v)
+                    };
+                    let mut list: Vec<(u32, i32)> = Vec::new();
+                    for &(id, _) in a.iter().chain(&b) {
+                        if d.enchanting.is_curse(id) && list.iter().all(|(e, _)| *e != id) {
+                            list.push((id, level(&a, id).max(level(&b, id))));
+                        }
+                    }
+                    set_crafting_enchantments(&mut out, &list);
+                }
                 out
             }
             Crafting::BookCloning { result, .. } => {
@@ -1854,7 +1871,8 @@ fn book_copy(content: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// `RepairItemRecipe.getItemsToCombine`: two damageable stacks of one item.
+/// `RepairItemRecipe.getItemsToCombine`: two single stacks of one item with `max_damage` (and
+/// `damage`; unbreakable ones too).
 fn repair_pair(input: &CraftingInput) -> Option<(&ItemStack, &ItemStack)> {
     if input.ingredient_count != 2 {
         return None;
@@ -1862,7 +1880,7 @@ fn repair_pair(input: &CraftingInput) -> Option<(&ItemStack, &ItemStack)> {
     let mut it = input.non_empty();
     let first = it.next()?;
     let second = it.next()?;
-    let combinable = |s: &ItemStack| s.count == 1 && item::is_damageable(s);
+    let combinable = |s: &ItemStack| s.count == 1 && item::max_damage(s) > 0;
     (first.item == second.item && combinable(first) && combinable(second))
         .then_some((first, second))
 }

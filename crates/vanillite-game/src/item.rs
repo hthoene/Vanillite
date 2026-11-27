@@ -110,7 +110,12 @@ pub fn is_damageable(stack: &ItemStack) -> bool {
 /// e.g. `minecraft:is_fire`): the patched one, else the item's default.
 pub fn damage_resistant(stack: &ItemStack) -> Option<&str> {
     if let Some(data) = stack.component(ids::DAMAGE_RESISTANT) {
-        return Reader::new(data).string(32767).ok();
+        // `HolderSet` of damage types: 0 and the tag (a list of single types is not kept).
+        let mut r = Reader::new(data);
+        return match r.varint() {
+            Ok(0) => r.string(32767).ok(),
+            _ => None,
+        };
     }
     if stack
         .patch()

@@ -10,7 +10,7 @@ pub mod container;
 pub mod merchant;
 pub mod mount;
 mod station;
-mod workstation;
+pub(crate) mod workstation;
 
 pub use station::{BannerPatterns, add_layer, dye_color};
 

@@ -305,6 +305,72 @@ pub fn tick_mob(t: &mut Tick<'_, '_>) {
     sync_mob(t.ents, t.env.out, id);
 }
 
+/// `sendEffectToPassengers` / `onEffectsRemoved` of a mob: its effect events as packets to
+/// the players riding it.
+fn send_to_passengers(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) {
+    let riders: Vec<EntityId> = ents
+        .riding
+        .passengers_of(id)
+        .iter()
+        .copied()
+        .filter(|&p| ents.player(p).is_some())
+        .collect();
+    let Some(network_id) = ents.store.get(id).map(|e| e.network_id().0) else {
+        return;
+    };
+    let Some(m) = ents.mob_mut(id) else {
+        return;
+    };
+    for event in m.effects.take_events() {
+        let packet = match event {
+            EffectEvent::Update {
+                instance, blend, ..
+            } => SharedPacket::of(&update_packet(network_id, &instance, blend)),
+            EffectEvent::Resend(instance) => {
+                SharedPacket::of(&update_packet(network_id, &instance, false))
+            }
+            EffectEvent::Remove(effect) => SharedPacket::of(&RemoveMobEffect {
+                entity_id: network_id,
+                effect: i32::from(effect.0),
+            }),
+            _ => continue,
+        };
+        for &player in &riders {
+            out.push(Effect::To {
+                player,
+                packet: std::sync::Arc::clone(&packet),
+            });
+        }
+    }
+}
+
+/// `ServerPlayer.startRiding` (`sendActiveEffects` of a living vehicle) and `removeVehicle`
+/// (a `remove_mob_effect` per effect): the vehicle's effects for its riding player.
+pub fn send_vehicle_effects(ents: &mut Entities, player: EntityId, vehicle: EntityId, mount: bool) {
+    let Some(network_id) = ents.store.get(vehicle).map(|e| e.network_id().0) else {
+        return;
+    };
+    let Some(effects) = ents
+        .mob(vehicle)
+        .map(|m| m.effects.iter().cloned().collect::<Vec<_>>())
+    else {
+        return;
+    };
+    let Some(p) = ents.player_mut(player) else {
+        return;
+    };
+    for e in &effects {
+        if mount {
+            p.connection.sink.send(&update_packet(network_id, e, false));
+        } else {
+            p.connection.sink.send(&RemoveMobEffect {
+                entity_id: network_id,
+                effect: i32::from(e.effect.0),
+            });
+        }
+    }
+}
+
 /// Sends what changed in a player's effects: `update_mob_effect` / `remove_mob_effect` to its
 /// client, the invisibility and glowing flags and particles to everyone, the changed
 /// attributes to everyone tracking it and itself (`onAttributeUpdated` clamps health and
@@ -526,7 +592,9 @@ pub fn player_equipment_update(
 /// data, so the data is marked dirty.
 fn update_flags(entity: &mut EntityMut<'_>, fx: &ActiveEffects) {
     entity.set_flags(EntityFlags::INVISIBLE, fx.has(MobEffect::INVISIBILITY));
-    entity.set_flags(EntityFlags::GLOWING, fx.has(MobEffect::GLOWING));
+    // `isCurrentlyGlowing`: the effect or the `Glowing` tag.
+    let tagged = entity.as_ref().flags().contains(EntityFlags::GLOWING_TAG);
+    entity.set_flags(EntityFlags::GLOWING, tagged || fx.has(MobEffect::GLOWING));
     entity.mark_data_dirty();
 }
 
@@ -548,6 +616,15 @@ pub fn update_packet(network_id: i32, e: &EffectInstance, blend: bool) -> Update
 /// The `Attrs` field of an attribute effects modify.
 fn attr_field(attrs: &mut Attrs, a: Attribute) -> Option<&mut f64> {
     Some(match a {
+        Attribute::AIR_DRAG_MODIFIER => &mut attrs.air_drag_modifier,
+        Attribute::ARMOR_TOUGHNESS => &mut attrs.armor_toughness,
+        Attribute::ATTACK_KNOCKBACK => &mut attrs.attack_knockback,
+        Attribute::EXPLOSION_KNOCKBACK_RESISTANCE => &mut attrs.explosion_knockback_resistance,
+        Attribute::FLYING_SPEED => &mut attrs.flying_speed,
+        Attribute::FRICTION_MODIFIER => &mut attrs.friction_modifier,
+        Attribute::MOVEMENT_EFFICIENCY => &mut attrs.movement_efficiency,
+        Attribute::STEP_HEIGHT => &mut attrs.step_height,
+        Attribute::WATER_MOVEMENT_EFFICIENCY => &mut attrs.water_movement_efficiency,
         Attribute::MOVEMENT_SPEED => &mut attrs.movement_speed,
         Attribute::ATTACK_DAMAGE => &mut attrs.attack_damage,
         Attribute::MAX_HEALTH => &mut attrs.max_health,
@@ -569,9 +646,12 @@ fn attr_field_ref(attrs: &Attrs, a: Attribute) -> Option<f64> {
 
 /// Sync of a mob after its effects changed: flags and particles, the attribute values
 /// (`attrs` carries the modified values, the unmodified ones wait in `base_attrs`), health and
-/// absorption clamped, and the synced attributes to the trackers. Riders hear nothing (no
-/// `sendEffectToPassengers`): the events are dropped.
+/// absorption clamped, and the synced attributes to the trackers. Riding players hear of the
+/// changes (`sendEffectToPassengers`).
 pub fn sync_mob(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) {
+    if ents.mob(id).is_some_and(|m| m.effects.has_events()) {
+        send_to_passengers(ents, out, id);
+    }
     let Entities { store, mobs, .. } = ents;
     let Some(mut entity) = store.get_mut(id) else {
         return;
@@ -635,6 +715,24 @@ pub fn apply_mob_modifiers(m: &mut crate::mob::MobData, dirty: &[Attribute]) -> 
 /// others: their base is the type's default).
 pub fn mob_attribute_base(m: &crate::mob::MobData, a: Attribute) -> Option<f64> {
     attr_field_ref(m.base_attrs.as_deref().unwrap_or(&m.attrs), a)
+}
+
+/// The `update_attributes` of the attributes a mob was given (`ServerEntity.sendPairingData`);
+/// `None` without any the client knows and the game keeps a value of.
+pub fn mob_pairing_attributes(
+    network_id: i32,
+    m: &crate::mob::MobData,
+    given: &crate::mob::entity_nbt::NbtAttributes,
+) -> Option<UpdateAttributes> {
+    let synced: Vec<(Attribute, f64)> = given
+        .0
+        .iter()
+        .filter(|a| a.attribute.syncable())
+        .filter_map(|a| Some((a.attribute, mob_attribute_base(m, a.attribute)?)))
+        .collect();
+    (!synced.is_empty()).then(|| UpdateAttributes {
+        body: attribute::encode_update(network_id, &synced, &m.effects.modifiers),
+    })
 }
 
 /// `AttributeInstance.setBaseValue` of an attribute a mob keeps a value of; the value with
@@ -950,14 +1048,32 @@ pub fn on_mob_killed(t: &mut Tick<'_, '_>) {
                 } else {
                     (cramming - nearby.min(cramming)).clamp(0, requested)
                 };
+                // `spawnSlimeOffspring`: a size-2 slime (`setSize(2, true)`) with the level
+                // random's yaw, added at once.
+                let network_ids = std::sync::Arc::clone(t.level.network_ids_arc());
                 for _ in 0..count {
+                    let seed = crate::mob::new_entity_seed();
+                    let mut slime = crate::mob::MobData::new(crate::mob::Kind::Slime, seed);
+                    crate::mob::fam::undead::cubes::set_size(&mut slime, 2, true);
+                    // `setSize` turns head and body to the constructor's yaw, `snapTo` only
+                    // the body's yaw to the level random's.
+                    let seed_yaw = crate::mob::constructor_y_rot(seed);
+                    slime.y_body_rot = seed_yaw;
                     let y_rot = t.env.random.next_float() * 360.0;
-                    t.env.out.push(Effect::SpawnMob {
-                        kind: ids::SLIME,
-                        pos: Vec3::new(pos.x, pos.y + 0.5, pos.z),
-                        y_rot,
-                        velocity: Vec3::ZERO,
-                    });
+                    let id = crate::mob::spawn(
+                        t.ents,
+                        &network_ids,
+                        crate::mob::new_uuid(),
+                        Vec3::new(pos.x, pos.y + 0.5, pos.z),
+                        vanillite_world::entity::Rotation {
+                            y_rot,
+                            x_rot: 0.0,
+                            y_head_rot: seed_yaw,
+                        },
+                        slime,
+                    );
+                    t.ents
+                        .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
                 }
             }
             MobEffect::WEAVING if t.env.rules.bool(crate::survival::rules::Rule::MOB_GRIEFING) => {
