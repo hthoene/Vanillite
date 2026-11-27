@@ -1534,7 +1534,10 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
             continue;
         }
         let at = Vec3::new(f64::from(xt), f64::from(yt), f64::from(zt));
-        if player_within(h, at, 7.0) || !super::box_free(h.level, kind, at, kind == Kind::Drowned) {
+        if player_within(h, at, 7.0)
+            || !unobstructed(h, kind, at)
+            || !super::box_free(h.level, kind, at, kind == Kind::Drowned)
+        {
             continue;
         }
         crate::mob::goals::assign_target(&mut new, Some(target));
@@ -1582,6 +1585,16 @@ fn placement_ok(level: &Level, kind: Kind, pos: BlockPos) -> bool {
     } else {
         crate::mob::spawn::spawn_position_ok(level, kind.type_id(), pos)
     }
+}
+
+/// `level.isUnobstructed(reinforcement)`: no entity that blocks building in its box.
+fn unobstructed(h: &Hurt<'_, '_>, kind: Kind, at: Vec3) -> bool {
+    let aabb = Dimensions::of(kind.type_id()).bounding_box(at);
+    let mut blocked = false;
+    h.ents.store.for_each_in(&aabb, false, |id| {
+        blocked |= crate::block::dispenser::entity_blocks_building(h.ents, id);
+    });
+    !blocked
 }
 
 /// `hasNearbyAlivePlayer(x, y, z, range)`.
