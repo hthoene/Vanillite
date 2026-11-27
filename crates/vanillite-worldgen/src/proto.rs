@@ -434,19 +434,23 @@ impl ProtoChunk {
         let start = dense.index(x, bottom, z);
         let target = &mut dense.states[start..start + states.len()];
         // The column must still be air (then the counts below are right).
-        if target.iter().any(|&state| state != air.0) {
+        if target
+            .iter()
+            .fold(false, |any, &state| any | (state != air.0))
+        {
             return false;
         }
-        for (slot, state) in target.iter_mut().zip(states) {
-            *slot = state.0;
-        }
-        // Section by section.
+        // Section by section: copied and counted in one pass.
         let mut row = 0;
         while row < states.len() {
             let section = (bottom + row) >> 4;
             let end = (((section + 1) << 4) - bottom).min(states.len());
-            let count = states[row..end].iter().filter(|&&s| s != air).count();
-            dense.non_air[section] += count as u16;
+            let mut count = 0u16;
+            for (slot, state) in target[row..end].iter_mut().zip(&states[row..end]) {
+                *slot = state.0;
+                count += u16::from(state.0 != air.0);
+            }
+            dense.non_air[section] += count;
             row = end;
         }
         let (mut surface, mut ocean_floor) = (None, None);
