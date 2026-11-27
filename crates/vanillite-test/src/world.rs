@@ -44,6 +44,16 @@ pub trait ScenarioWorld {
     /// Entities whose block position is inside `min..=max`.
     fn entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<EntityObs>);
 
+    /// Makes `dimension` the one the block operations and observations work in (scenarios
+    /// across dimensions); worlds of the overworld only refuse the others.
+    fn select_dimension(&mut self, dimension: &str) -> Result<(), String> {
+        if dimension == crate::scenario::OVERWORLD {
+            Ok(())
+        } else {
+            Err(format!("this world has no dimension {dimension}"))
+        }
+    }
+
     /// Whether `pos` is in an accessible chunk; other positions are traced as
     /// [`crate::scenario::UNLOADED`].
     fn is_loaded(&self, _pos: BlockPos) -> bool {

@@ -1,0 +1,19 @@
+{
+  "description": "Across dimensions in Vanilla's order: an item and an armor stand inside an overworld nether portal go to the Nether in the same tick and tick there in it; the first creates the exit portal, the other arrives in it.",
+  "dimensions": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-6, 0, -6], [6, 10, 8]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[0, -61, 6], [3, -55, 10]]}],
+  "ticks": 12,
+  "setup": [
+    {"op": "fill", "from": [0, -60, 8], "to": [3, -56, 8], "block": "minecraft:obsidian"},
+    {"op": "fill", "from": [1, -59, 8], "to": [2, -57, 8], "block": "minecraft:nether_portal[axis=x]"}
+  ],
+  "entities": [
+    {"name": "stand", "type": "minecraft:armor_stand", "pos": [1.5, -59.0, 8.5], "rot": [0, 0], "seed": 1}
+  ],
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:item 1.5 -58.5 8.5 {Item:{id:\"minecraft:cobblestone\",count:3}}"}
+  ]
+}

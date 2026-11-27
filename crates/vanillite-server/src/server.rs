@@ -149,6 +149,8 @@ pub struct ServerBuilder {
     vanilla_pack: VanillaPack,
     network: bool,
     version: String,
+    /// The parity harness drives the server (`test-support`).
+    harness: bool,
     memory_release: Option<fn()>,
 }
 
@@ -164,6 +166,7 @@ impl ServerBuilder {
             light_engine: Slot::new("light-engine"),
             vanilla_pack: VanillaPack::default(),
             network: true,
+            harness: false,
             memory_release: None,
             version: format!(
                 "Vanillite {} (Minecraft {})",
@@ -605,6 +608,7 @@ impl ServerBuilder {
                     dimension: DimensionId(index),
                     ..save_settings
                 },
+                blocking_tickets: self.harness,
             };
             let level_settings = crate::world_setup::level_settings(
                 packs.as_deref(),
@@ -1347,6 +1351,15 @@ impl Server {
         };
         arrival.stats = json(JsonFile::Stats);
         arrival.advancements = json(JsonFile::Advancements);
+        self.place_new_player(arrival, ip);
+    }
+
+    /// The end of [`Server::accept`]: the player list entry, then the world part on the
+    /// player's world.
+    fn place_new_player(&mut self, arrival: crate::players::Arrival, ip: String) {
+        let players = &self.global.players;
+        let uuid = arrival.uuid;
+        let sink = Arc::clone(&arrival.sink);
         let world = arrival
             .saved
             .as_ref()
@@ -1917,4 +1930,119 @@ fn prepare_levels(worlds: &mut [ServerWorld]) {
         "Loaded the chunks of the saved chunk tickets in {} ms",
         started.elapsed().as_millis()
     );
+}
+
+/// What the parity harness of `vanillite-test` drives (feature `test-support`): the tick loop
+/// without its clock, the worlds, and players without a network.
+#[cfg(feature = "test-support")]
+impl ServerBuilder {
+    /// Parity harness mode: every chunk ticket loads its chunks before the tick goes on
+    /// ([`ChunkSettings::blocking_tickets`]), like Vanilla's synchronous loads.
+    pub fn harness(&mut self) -> &mut Self {
+        self.harness = true;
+        self
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Server {
+    /// One iteration of [`Server::run`] without the clock: the messages that arrived while it
+    /// waited, the tick, then the work queued during the tick.
+    pub fn step(&mut self) {
+        self.wait_until_next_tick(0, true);
+        self.tick_server();
+        self.wait_until_next_tick(0, true);
+    }
+
+    /// A world (sequential dimensions only).
+    ///
+    /// # Panics
+    ///
+    /// If the dimensions tick in parallel or the world does not exist.
+    pub fn world(&mut self, id: WorldId) -> &mut ServerWorld {
+        match &mut self.worlds {
+            Worlds::Sequential(worlds) => &mut worlds[id.index()],
+            Worlds::Parallel(_) => panic!("the harness needs sequential dimensions"),
+        }
+    }
+
+    /// A world for reading (sequential dimensions only).
+    ///
+    /// # Panics
+    ///
+    /// If the dimensions tick in parallel or the world does not exist.
+    pub fn world_ref(&self, id: WorldId) -> &ServerWorld {
+        match &self.worlds {
+            Worlds::Sequential(worlds) => &worlds[id.index()],
+            Worlds::Parallel(_) => panic!("the harness needs sequential dimensions"),
+        }
+    }
+
+    /// Runs a console command now, as the global pre-phase runs one.
+    pub fn command(&mut self, line: &str) {
+        self.run_console_command(line);
+    }
+
+    /// Sets the game time of the server and every world (`setGameTime` of the overworld's
+    /// data).
+    pub fn set_game_time(&mut self, time: i64) {
+        self.global
+            .level
+            .game_time
+            .store(time, std::sync::atomic::Ordering::Relaxed);
+        if let Worlds::Sequential(worlds) = &mut self.worlds {
+            for world in worlds {
+                world.level_mut().set_game_time(time);
+            }
+        }
+    }
+
+    /// A survival player without saved data joins like [`Server::accept`] admits one, on a
+    /// connection nobody reads. Its packets go through the returned sender.
+    pub fn join_without_network(
+        &mut self,
+        name: &str,
+        uuid: u128,
+    ) -> vanillite_protocol::InboundSender {
+        /// A connection nobody reads.
+        struct Unread;
+        impl vanillite_game::player::sink::PacketSink for Unread {
+            fn send_body(&self, _: Vec<u8>) -> bool {
+                true
+            }
+            fn send_shared(&self, _: &Arc<vanillite_protocol::SharedPacket>) -> bool {
+                true
+            }
+            fn close(&self) {}
+            fn is_closed(&self) -> bool {
+                false
+            }
+            fn latency_ms(&self) -> u32 {
+                0
+            }
+        }
+        let (tx, inbound) = vanillite_protocol::inbound_queue(64);
+        let arrival = crate::players::Arrival {
+            uuid,
+            profile: vanillite_game::player::GameProfile {
+                name: name.to_owned(),
+                properties: Vec::new(),
+            },
+            client: vanillite_game::player::ClientInformation::default(),
+            game_mode: vanillite_config::GameMode::Survival,
+            sink: Arc::new(Unread),
+            inbound,
+            memory_connection: true,
+            virtual_connection: true,
+            saved: None,
+            stats: None,
+            advancements: None,
+            address: "harness".to_owned(),
+            inbox: Arc::new(Mutex::new(
+                vanillite_game::player::chat::ChatInbox::default(),
+            )),
+        };
+        self.place_new_player(arrival, "127.0.0.1".to_owned());
+        tx
+    }
 }

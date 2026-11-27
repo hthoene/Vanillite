@@ -1,0 +1,14 @@
+{
+  "description": "Command blocks across dimensions in Vanilla's order: while the overworld ticks, one summons an item in the Nether and one teleports an overworld item there with execute in; both items tick in the Nether in the same tick.",
+  "dimensions": true,
+  "dimension": "minecraft:the_nether",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[-2, 0, -2], [5, 10, 5]],
+  "views": [{"dimension": "minecraft:overworld", "region": [[2, -61, 2], [10, -57, 10]]}],
+  "ticks": 6,
+  "actions": [
+    {"tick": 1, "op": "command", "command": "summon minecraft:item 6.5 -60.0 6.5 {Item:{id:\"minecraft:dirt\",count:1},Tags:[\"moved\"]}"},
+    {"tick": 1, "op": "command", "command": "setblock 3 -60 3 minecraft:command_block{auto:1b,Command:\"execute in minecraft:the_nether run summon minecraft:item 0.5 8.0 0.5 {Item:{id:\\\"minecraft:stone\\\",count:1}}\"}"},
+    {"tick": 1, "op": "command", "command": "setblock 4 -60 3 minecraft:command_block{auto:1b,Command:\"execute in minecraft:the_nether run tp @e[type=minecraft:item,tag=moved] 2.5 8.0 2.5\"}"}
+  ]
+}

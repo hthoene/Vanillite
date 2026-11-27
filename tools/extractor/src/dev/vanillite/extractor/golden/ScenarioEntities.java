@@ -48,15 +48,28 @@ final class ScenarioEntities {
   private final ServerLevel level;
   private final Map<Entity, String> names = new IdentityHashMap<>();
   private final Map<String, Entity> byName = new LinkedHashMap<>();
+  /**
+   * Names by UUID: an entity that changes dimension is a new object with the same UUID
+   * ({@code Entity.teleportCrossDimension}).
+   */
+  private final Map<UUID, String> byUuid = new java.util.HashMap<>();
+  /**
+   * Players load chunks like on a normal server (scenarios across dimensions); otherwise the
+   * scenario's forced chunks are the whole world.
+   */
+  boolean loadingPlayers;
   /** Frames hold the players' food and hands ({@code "player_state": true}). */
   boolean playerState;
-
   /**
    * Frames hold the players' sleeping position, sleep timer, pose id and respawn point ({@code
    * "sleep_state": true}).
    */
   boolean sleepState;
+
+  /** The players removed from the chunk system, given back by {@link #release()}. */
   private final List<ServerPlayer> players = new ArrayList<>();
+  /** Every scenario player, for their connection tick. */
+  private final List<ServerPlayer> tickedPlayers = new ArrayList<>();
 
   ScenarioEntities(ParityServer server, ServerLevel level) {
     this.server = server;
@@ -94,6 +107,7 @@ final class ScenarioEntities {
     String name = spec.get("name").getAsString();
     names.put(e, name);
     byName.put(name, e);
+    byUuid.put(e.getUUID(), name);
   }
 
   /** A survival player on a connection nobody reads (like GameTest's mock server player). */
@@ -116,8 +130,13 @@ final class ScenarioEntities {
     // The player loads, ticks and offers for spawning no chunks: the scenario's forced chunks
     // are the whole world, as in Vanillite's scenario world.
     level.getChunkSource().move(player);
-    level.getChunkSource().chunkMap.getDistanceManager().removePlayer(SectionPos.of(player), player);
     name(spec, player);
+    if (loadingPlayers) {
+      tickedPlayers.add(player);
+      return;
+    }
+    level.getChunkSource().chunkMap.getDistanceManager().removePlayer(SectionPos.of(player), player);
+    tickedPlayers.add(player);
     players.add(player);
   }
 
@@ -171,7 +190,7 @@ final class ScenarioEntities {
 
   /** {@code ServerPlayer.doTick} of the players, as their connections would. */
   void tickPlayers() {
-    for (ServerPlayer p : players) {
+    for (ServerPlayer p : tickedPlayers) {
       if (!p.isRemoved()) {
         p.doTick();
       }
@@ -284,7 +303,8 @@ final class ScenarioEntities {
           net.minecraft.world.phys.Vec3.ZERO);
       return;
     }
-    player.gameMode.useItem(player, level, stack, net.minecraft.world.InteractionHand.MAIN_HAND);
+    player.gameMode.useItem(
+        player, player.level(), stack, net.minecraft.world.InteractionHand.MAIN_HAND);
   }
 
   /** The {@code effect} action: {@code addEffect} on a named living entity. */
@@ -332,7 +352,7 @@ final class ScenarioEntities {
   }
 
   private String nameOf(Entity e) {
-    String n = names.get(e);
+    String n = name(e);
     return n != null ? n : BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
   }
 
@@ -341,9 +361,15 @@ final class ScenarioEntities {
     return "[\"" + BuiltInRegistries.ITEM.getKey(stack.getItem()) + "\"," + stack.getCount() + "]";
   }
 
+  /** The scenario name of an entity, also after it changed dimension. */
+  private String name(Entity e) {
+    String name = names.get(e);
+    return name != null ? name : byUuid.get(e.getUUID());
+  }
+
   String detail(Entity e) {
     StringBuilder sb = new StringBuilder();
-    String name = names.get(e);
+    String name = name(e);
     if (name != null) {
       sb.append(",\"name\":\"").append(name).append('"');
     }

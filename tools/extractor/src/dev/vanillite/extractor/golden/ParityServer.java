@@ -122,12 +122,21 @@ public final class ParityServer extends MinecraftServer {
    */
   public static ParityServer start(Path dir, long seed, List<Layer> layers, String biome)
       throws Exception {
+    return start(dir, seed, layers, biome, false);
+  }
+
+  /**
+   * Like {@link #start(Path, long, List, String)}; with {@code flatOthers} the Nether and the End
+   * are flat too ({@link #NETHER_LAYERS}, {@link #END_LAYERS}), for scenarios across dimensions.
+   */
+  public static ParityServer start(
+      Path dir, long seed, List<Layer> layers, String biome, boolean flatOthers) throws Exception {
     Files.createDirectories(dir);
     LevelStorageSource.LevelStorageAccess access =
         LevelStorageSource.createDefault(dir).validateAndCreateAccess("world");
     PackRepository packs = ServerPacksSource.createPackRepository(access);
     packs.reload();
-    WorldStem stem = loadStem(packs, seed, layers, biome);
+    WorldStem stem = loadStem(packs, seed, layers, biome, flatOthers);
     ParityServer server = new ParityServer(Thread.currentThread(), access, packs, stem);
     if (!server.initServer()) {
       throw new IllegalStateException("parity server failed to start");
@@ -138,6 +147,20 @@ public final class ParityServer extends MinecraftServer {
   /** The Vanilla data pack and world settings, loaded like {@code WorldLoader} does at start. */
   public static WorldStem loadStem(
       PackRepository packs, long seed, List<Layer> layers, String biome) throws Exception {
+    return loadStem(packs, seed, layers, biome, false);
+  }
+
+  /** The Nether of scenarios across dimensions: bedrock and netherrack up to y 3. */
+  public static final List<Layer> NETHER_LAYERS =
+      List.of(new Layer("minecraft:bedrock", 1), new Layer("minecraft:netherrack", 3));
+
+  /** The End of scenarios across dimensions: bedrock and end stone up to y 3. */
+  public static final List<Layer> END_LAYERS =
+      List.of(new Layer("minecraft:bedrock", 1), new Layer("minecraft:end_stone", 3));
+
+  private static WorldStem loadStem(
+      PackRepository packs, long seed, List<Layer> layers, String biome, boolean flatOthers)
+      throws Exception {
     WorldDataConfiguration config = WorldDataConfiguration.DEFAULT;
     LevelSettings settings =
         new LevelSettings(
@@ -160,6 +183,22 @@ public final class ParityServer extends MinecraftServer {
                               ? normal
                               : normal.replaceOverworldGenerator(
                                   lookup, new FlatLevelSource(flat(lookup, layers, biome)));
+                      if (flatOthers) {
+                        java.util.Map<ResourceKey<LevelStem>, LevelStem> stems =
+                            new java.util.LinkedHashMap<>(dimensions.dimensions());
+                        stems.put(
+                            LevelStem.NETHER,
+                            new LevelStem(
+                                stems.get(LevelStem.NETHER).type(),
+                                new FlatLevelSource(
+                                    flat(lookup, NETHER_LAYERS, "minecraft:nether_wastes"))));
+                        stems.put(
+                            LevelStem.END,
+                            new LevelStem(
+                                stems.get(LevelStem.END).type(),
+                                new FlatLevelSource(flat(lookup, END_LAYERS, "minecraft:the_end"))));
+                        dimensions = new WorldDimensions(stems);
+                      }
                       WorldDimensions.Complete complete =
                           dimensions.bake(
                               new MappedRegistry<LevelStem>(
@@ -252,6 +291,16 @@ public final class ParityServer extends MinecraftServer {
 
   public ServerLevel level() {
     return overworld();
+  }
+
+  /** The level of a dimension id, e.g. {@code minecraft:the_nether}. */
+  public ServerLevel level(String dimension) {
+    ServerLevel level =
+        getLevel(ResourceKey.create(Registries.DIMENSION, Identifier.parse(dimension)));
+    if (level == null) {
+      throw new IllegalArgumentException("unknown dimension " + dimension);
+    }
+    return level;
   }
 
   @Override
