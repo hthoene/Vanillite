@@ -185,7 +185,7 @@ fn drink_stack(drink: Drink) -> ItemStack {
             let mut out = vec![1];
             vanillite_protocol::codec::write_varint(&mut out, id);
             out.extend_from_slice(&[0, 0, 0]);
-            stack.patch_mut().set(
+            stack.set_component(
                 vanillite_protocol::components::ids::POTION_CONTENTS,
                 out.into_boxed_slice(),
             );

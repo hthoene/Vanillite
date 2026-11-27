@@ -23,6 +23,7 @@ pub mod compress;
 pub mod frame;
 pub mod ids;
 pub mod item;
+pub mod item_defaults;
 pub mod packets;
 pub mod recipe_display;
 pub mod sets;

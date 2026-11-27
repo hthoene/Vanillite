@@ -292,10 +292,7 @@ pub fn minimum_attack_charge(stack: &ItemStack) -> f32 {
 
 /// The ticks of the stab swing (`attack_animation.duration`).
 fn stab_swing_ticks(stack: &ItemStack) -> i32 {
-    if stack.is_empty() {
-        return 6;
-    }
-    i32::from(item::item_id(stack).info().attack_animation_ticks)
+    item::attack_animation_ticks(stack)
 }
 
 // --- The attacker -----------------------------------------------------------------------------
@@ -391,7 +388,7 @@ fn player_movement(ents: &Entities, id: EntityId) -> Vec3 {
 
 /// `getKnownMovement`: a player's own movement, a mob's velocity (or the movement of the
 /// player controlling it).
-pub(crate) fn known_movement(ents: &Entities, id: EntityId) -> Vec3 {
+pub fn known_movement(ents: &Entities, id: EntityId) -> Vec3 {
     if ents.player(id).is_some() {
         return player_movement(ents, id);
     }
@@ -539,13 +536,7 @@ fn weapon_source(
 ) -> DamageSource {
     let player = ents.player(attacker).is_some();
     // `getItemDamageSource`: the stack's `damage_type`.
-    let own = if weapon.is_empty() {
-        ""
-    } else {
-        item::item_id(weapon).info().damage_type
-    };
-    let kind = Some(own)
-        .filter(|t| !t.is_empty())
+    let kind = item::damage_type(weapon)
         .and_then(|t| env.types.kind(t))
         .unwrap_or(if player {
             env.types.player_attack

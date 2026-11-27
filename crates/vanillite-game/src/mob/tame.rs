@@ -520,20 +520,6 @@ fn entity_sound(ents: &Entities, env: &mut Env<'_>, id: EntityId, sound: &str) {
     );
 }
 
-/// `Equippable.shearingSound` of the items with `canBeSheared` (saddles, harnesses, carpets,
-/// horse, wolf and nautilus armour).
-fn shearing_sound(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "minecraft:saddle" => "minecraft:item.saddle.unequip",
-        "minecraft:wolf_armor" => "minecraft:item.armor.unequip_wolf",
-        n if n.ends_with("_harness") => "minecraft:entity.happy_ghast.unequip",
-        n if n.ends_with("_carpet") => "minecraft:item.llama_carpet.unequip",
-        n if n.ends_with("_horse_armor") => "minecraft:item.horse_armor.unequip",
-        n if n.ends_with("_nautilus_armor") => "minecraft:item.armor.unequip_nautilus",
-        _ => return None,
-    })
-}
-
 /// `Mob.canShearEquipment` and `attemptToShearEquipment`: shears take the first shearable item
 /// off (a wolf's only for its owner, others only without passengers), drop it at the passenger
 /// attachment, play its shearing sound and post `SHEAR`.
@@ -562,7 +548,9 @@ fn shear_equipment(
         .filter_map(crate::item::EquipmentSlot::from_ordinal)
         .find_map(|slot| {
             let s = m.equipment.get(slot);
-            let sound = shearing_sound(crate::item::item_id(s).name())?;
+            let sound = crate::item::equippable(s)
+                .filter(|e| e.can_be_sheared)?
+                .shearing_sound;
             // `PREVENT_ARMOR_CHANGE` (Curse of Binding) keeps it, unless creative.
             let bound = crate::player::play::game_data()
                 .is_some_and(|d| d.enchantment_level(s, "minecraft:binding_curse") > 0);
@@ -572,6 +560,8 @@ fn shear_equipment(
         return false;
     };
     let kind = m.kind;
+    let sheared = crate::advancements::trigger::TriggerKind::PLAYER_SHEARED_EQUIPMENT;
+    let award = crate::advancements::view::listens(ents, player, sheared).then(|| stack.clone());
     super::animal::hurt_held(ents, env, player, hand, 1);
     let height = ents.store.get(target).map_or(0.0, |e| e.dims().height);
     if let Some(m) = ents.mob_mut(target) {
@@ -601,6 +591,15 @@ fn shear_equipment(
             stack,
         });
     }
+    if let Some(stack) = award {
+        crate::advancements::view::fire(ents, player, sheared, |ents| {
+            crate::advancements::trigger::Event::EntityItem(
+                sheared,
+                crate::advancements::view::snapshot(ents, target),
+                stack,
+            )
+        });
+    }
     if let Some(update) = super::equipment::tracking_update(ents, target) {
         env.out.push(update);
     }
@@ -613,7 +612,7 @@ fn shear_equipment(
         && let Some(pos) = ents.store.get(target).map(|e| e.pos())
     {
         let seed = crate::survival::sound_seed();
-        play_sound(env.out, None, pos, sound, m.sound_source(), 1.0, 1.0, seed);
+        play_sound(env.out, None, pos, &sound, m.sound_source(), 1.0, 1.0, seed);
     }
     true
 }

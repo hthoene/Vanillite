@@ -846,6 +846,8 @@ pub enum WorldAction {
     StepOn(BlockPos, EntityId),
     /// `Entity.sendBubbleColumnParticles` at the top of the bubble column at the position.
     BubbleColumnParticles(BlockPos),
+    /// `triggerOnDeathMobEffects` of a dead player (with the `max_entity_cramming` rule).
+    PlayerDeathEffects(EntityId, i32),
     /// `onProjectileHit` of the block at the position, hit by the projectile at the point
     /// with the speed.
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
@@ -935,6 +937,9 @@ impl WorldAction {
             WorldAction::SpawnCloud(pos, ref data) => {
                 let ids = std::sync::Arc::clone(level.network_ids_arc());
                 crate::effect::cloud::spawn_cloud(&mut level.entities, &ids, pos, (**data).clone());
+            }
+            WorldAction::PlayerDeathEffects(player, cramming) => {
+                crate::effect::living::player_death_effects(level, player, cramming);
             }
             WorldAction::BubbleColumnParticles(pos) => {
                 crate::level::particles::bubble_column_particles(level, pos);

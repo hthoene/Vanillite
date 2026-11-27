@@ -610,7 +610,7 @@ pub(super) fn bucket_stack(m: &MobData) -> ItemStack {
     match m.kind {
         Kind::Salmon => {
             if let Some(id) = component("minecraft:salmon/size") {
-                stack.patch_mut().set(id, varint_value(s.variant));
+                stack.set_component(id, varint_value(s.variant));
             }
         }
         Kind::TropicalFish => {
@@ -621,7 +621,7 @@ pub(super) fn bucket_stack(m: &MobData) -> ItemStack {
                 ("minecraft:tropical_fish/pattern_color", v >> 24 & 0xFF),
             ] {
                 if let Some(id) = component(name) {
-                    stack.patch_mut().set(id, varint_value(value));
+                    stack.set_component(id, varint_value(value));
                 }
             }
         }

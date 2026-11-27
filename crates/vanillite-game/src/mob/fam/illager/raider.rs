@@ -180,7 +180,7 @@ pub fn ominous_banner() -> ItemStack {
         let mut value = vec![0u8];
         vanillite_protocol::codec::write_varint(&mut value, 1);
         vanillite_protocol::codec::write_varint(&mut value, i32::from(hidden));
-        s.patch_mut().set(display, value.into_boxed_slice());
+        s.set_component(display, value.into_boxed_slice());
     }
     let mut name = Compound::new();
     name.insert("translate", "block.minecraft.ominous_banner");
@@ -188,10 +188,10 @@ pub fn ominous_banner() -> ItemStack {
         reg.id("minecraft:item_name"),
         super::super::super::nbt::tag_component(&Tag::Compound(name)),
     ) {
-        s.patch_mut().set(id, value);
+        s.set_component(id, value);
     }
     if let Some(id) = reg.id("minecraft:rarity") {
-        s.patch_mut().set(id, Box::new([1u8]));
+        s.set_component(id, Box::new([1u8]));
     }
     s
 }

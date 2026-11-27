@@ -1070,9 +1070,7 @@ pub fn map_id(stack: &ItemStack) -> Option<i32> {
 pub fn set_map_id(stack: &mut ItemStack, id: i32) {
     let mut out = Vec::with_capacity(5);
     write_varint(&mut out, id);
-    stack
-        .patch_mut()
-        .set(components::MAP_ID, out.into_boxed_slice());
+    stack.set_component(components::MAP_ID, out.into_boxed_slice());
 }
 
 /// Sets `map_post_processing`.
@@ -1081,9 +1079,7 @@ pub fn set_post_processing(stack: &mut ItemStack, value: PostProcessing) {
         PostProcessing::Lock => 0,
         PostProcessing::Scale => 1,
     };
-    stack
-        .patch_mut()
-        .set(components::MAP_POST_PROCESSING, Box::new([id]));
+    stack.set_component(components::MAP_POST_PROCESSING, Box::new([id]));
 }
 
 /// Whether the item is a `MapItem`: `filled_map` and the explorer map items
@@ -1193,9 +1189,7 @@ pub fn add_target_decoration(stack: &mut ItemStack, pos: BlockPos, key: &str, ki
     c.insert(key, Tag::Compound(entry));
     let mut out = Vec::new();
     vanillite_protocol::types::Nbt(Some(Tag::Compound(c))).encode(&mut out);
-    stack
-        .patch_mut()
-        .set(components::MAP_DECORATIONS, out.into_boxed_slice());
+    stack.set_component(components::MAP_DECORATIONS, out.into_boxed_slice());
 }
 
 /// Scale and lock state of a map (what the cartography table reads).

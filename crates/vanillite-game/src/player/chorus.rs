@@ -23,11 +23,18 @@ impl physics::Blocks for EnvBlocks<'_> {
     }
 }
 
-/// `BlockState.blocksMotion`: solid and not cobweb or bamboo sapling.
-fn blocks_motion(state: BlockState) -> bool {
-    state.block() != ids::COBWEB
-        && state.block() != ids::BAMBOO_SAPLING
-        && crate::mob::nav::is_solid(state)
+/// `#entities_can_teleport_to` (without loaded tags: `blocksMotion`, solid and not cobweb or
+/// bamboo sapling).
+fn can_teleport_onto(state: BlockState) -> bool {
+    const TAG: &str = "minecraft:entities_can_teleport_to";
+    match crate::player::play::game_data() {
+        Some(d) if d.block_tags.contains_key(TAG) => d.block_in_tag(state.block().0, TAG),
+        _ => {
+            state.block() != ids::COBWEB
+                && state.block() != ids::BAMBOO_SAPLING
+                && crate::mob::nav::is_solid(state)
+        }
+    }
 }
 
 /// `logicalHeight` of the vanilla dimension types.
@@ -67,6 +74,14 @@ pub fn teleport_randomly(
         let x = old.x + (dx - 0.5) * diameter;
         let y = (old.y + (dy - 0.5) * diameter).clamp(min_y, max_y);
         let z = old.z + (dz - 0.5) * diameter;
+        // `randomTeleport`: `worldBorder.clampVec3ToBound`.
+        let (x, z) = match env.border {
+            Some(b) => {
+                let c = b.clamp_vec(x, y, z);
+                (c.x, c.z)
+            }
+            None => (x, z),
+        };
         // `stopRiding` comes before each try.
         if ents.riding.vehicle_of(player).is_some() {
             crate::riding::stop_riding(ents, env, player);
@@ -80,7 +95,7 @@ pub fn teleport_randomly(
         let mut landed = false;
         while !landed && pos.y > env.min_y {
             let below = BlockPos::new(pos.x, pos.y.saturating_sub(1), pos.z);
-            if blocks_motion(blocks.state(below)) {
+            if can_teleport_onto(blocks.state(below)) {
                 landed = true;
             } else {
                 y -= 1.0;

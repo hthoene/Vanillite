@@ -801,16 +801,12 @@ pub fn creative_drop(level: &mut Level, pos: BlockPos, state: BlockState) {
         return;
     }
     let mut stack = ItemStack::new(item, 1);
-    stack
-        .patch_mut()
-        .set(components::BEES, encode_bees(&h.stored));
+    stack.set_component(components::BEES, encode_bees(&h.stored));
     let mut block_state = Vec::new();
     vanillite_protocol::codec::write_len(&mut block_state, 1);
     vanillite_protocol::codec::write_str(&mut block_state, "honey_level");
     vanillite_protocol::codec::write_str(&mut block_state, &honey.to_string());
-    stack
-        .patch_mut()
-        .set(components::BLOCK_STATE, block_state.into_boxed_slice());
+    stack.set_component(components::BLOCK_STATE, block_state.into_boxed_slice());
     let at = Vec3::new(f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     super::drops::spawn_item_moving(level, at, stack, None, 10, None);
 }

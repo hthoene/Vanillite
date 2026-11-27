@@ -463,11 +463,15 @@ impl PlayLevel for WorldLevel<'_> {
         self.level.game_event_block(event, pos, context);
     }
 
-    fn use_end_crystal(&mut self, on: BlockPos) -> bool {
+    fn use_end_crystal(
+        &mut self,
+        on: BlockPos,
+        player: Option<vanillite_world::entity::EntityId>,
+    ) -> bool {
         let seed = self.level.random().next_long();
         let uuid =
             vanillite_game::mob::random_uuid(&mut vanillite_base::random::LegacyRandom::new(seed));
-        vanillite_game::mob::boss::dragon::fight::use_end_crystal(self.level, uuid, on)
+        vanillite_game::mob::boss::dragon::fight::use_end_crystal(self.level, uuid, on, player)
     }
 
     fn is_unobstructed(&self, state: BlockState, pos: BlockPos) -> bool {

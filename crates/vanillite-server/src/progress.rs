@@ -81,6 +81,13 @@ impl World for LevelWorld<'_> {
         vanillite_game::block::beehive::is_smokey_pos(self.level, pos)
     }
 
+    fn block_entity_nbt(&self, pos: BlockPos) -> Option<vanillite_nbt::Compound> {
+        self.level
+            .chunks
+            .block(pos)
+            .and_then(|_| self.level.block_entity_nbt(pos))
+    }
+
     fn light(&self, pos: BlockPos) -> i32 {
         self.level.max_local_raw_brightness(pos)
     }
@@ -126,6 +133,10 @@ fn player_view<'a>(
     v.flying = survival.flying;
     v.fall_flying = flags.contains(EntityFlags::FALL_FLYING);
     v.in_water = survival.fluids.in_water();
+    v.fall_distance = survival.fall_distance;
+    v.tick_count = survival.tick_count;
+    v.movement = vanillite_game::spear::known_movement(&level.entities, id) * 20.0;
+    v.inventory = Some(Cow::Borrowed(&inv.items[..]));
     v.equipment = [
         Cow::Borrowed(head),
         Cow::Borrowed(chest),
@@ -162,23 +173,6 @@ fn player_view<'a>(
         v.vehicle = Some(view);
     }
     v
-}
-
-/// `onInsideBlock` of `checkInsideBlocks`: the non-air blocks the player's box is inside.
-fn inside_blocks(level: &Level, e: &EntityRef<'_>, out: &mut Vec<Event>) {
-    let b = e.aabb().inflate(-1.0e-5, -1.0e-5, -1.0e-5);
-    let floor = vanillite_base::math::floor;
-    for x in floor(b.min_x)..=floor(b.max_x) {
-        for y in floor(b.min_y)..=floor(b.max_y) {
-            for z in floor(b.min_z)..=floor(b.max_z) {
-                if let Some(state) = level.chunks.block(BlockPos::new(x, y, z)).map(BlockState)
-                    && !state.is_air()
-                {
-                    out.push(Event::EnterBlock(state));
-                }
-            }
-        }
-    }
 }
 
 /// The per-tick work of the players' statistics and advancements.
@@ -342,9 +336,6 @@ fn check_player(
     let mut extra = Vec::new();
     if a.listens(TriggerKind::TICK) {
         extra.push(Event::Tick);
-    }
-    if a.listens(TriggerKind::ENTER_BLOCK) {
-        inside_blocks(level, &entity, &mut extra);
     }
     if player.survival.tick_count % 20 == 0 && a.listens(TriggerKind::LOCATION) {
         extra.push(Event::Location);

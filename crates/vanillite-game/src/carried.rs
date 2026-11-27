@@ -75,9 +75,7 @@ fn tick_lodestone(level: &Level, dimension: &str, stack: &mut ItemStack) {
         || (level.is_loaded(pos)
             && level.block(pos).block() != vanillite_data::block::ids::LODESTONE);
     if gone {
-        stack
-            .patch_mut()
-            .set(ids::LODESTONE_TRACKER, Box::new([0, 1]));
+        stack.set_component(ids::LODESTONE_TRACKER, Box::new([0, 1]));
     }
 }
 
@@ -95,9 +93,7 @@ pub fn bind_lodestone(
     pos.as_long().encode(&mut value);
     value.push(1);
     if !infinite && stack.count == 1 {
-        stack
-            .patch_mut()
-            .set(ids::LODESTONE_TRACKER, value.into_boxed_slice());
+        stack.set_component(ids::LODESTONE_TRACKER, value.into_boxed_slice());
         return None;
     }
     // `transmuteCopy(COMPASS, 1)`.
@@ -106,9 +102,7 @@ pub fn bind_lodestone(
     if !infinite {
         stack.shrink(1);
     }
-    compass
-        .patch_mut()
-        .set(ids::LODESTONE_TRACKER, value.into_boxed_slice());
+    compass.set_component(ids::LODESTONE_TRACKER, value.into_boxed_slice());
     Some(compass)
 }
 

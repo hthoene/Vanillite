@@ -366,6 +366,7 @@ pub(super) fn sting(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
     let damage = f32::from(t.mob_ref().attrs.attack_damage as i16);
     let hurt = combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
     if hurt {
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &source);
         let seconds = match t.env.difficulty {
             Difficulty::Normal => 10,
             Difficulty::Hard => 18,

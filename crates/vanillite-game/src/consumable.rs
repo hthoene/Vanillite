@@ -110,7 +110,8 @@ pub(crate) fn read_optional_sound(r: &mut Reader<'_>) -> Option<Option<Sound>> {
 }
 
 /// What `ByteBufCodecs.holderSet` holds.
-pub(crate) enum HolderSet {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HolderSet {
     /// A tag id (without `#`).
     Tag(String),
     /// Registry ids.
@@ -152,8 +153,19 @@ pub fn read_effects(r: &mut Reader<'_>) -> Option<Vec<ConsumeEffect>> {
                     .into_iter()
                     .filter_map(|id| MobEffect::from_id(i32::from(id)))
                     .collect(),
-                // There are no mob effect tags in the data the game keeps.
-                HolderSet::Tag(_) => Vec::new(),
+                // A `#minecraft:mob_effect` tag of the loaded data packs.
+                HolderSet::Tag(tag) => crate::player::play::game_data()
+                    .and_then(|d| {
+                        d.registry_tags
+                            .get("minecraft:mob_effect")
+                            .and_then(|t| t.get(&tag))
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(|&id| MobEffect::from_id(i32::try_from(id).ok()?))
+                                    .collect()
+                            })
+                    })
+                    .unwrap_or_default(),
             }),
             "minecraft:clear_all_effects" => ConsumeEffect::ClearAll,
             "minecraft:teleport_randomly" => ConsumeEffect::Teleport(r.f32().ok()?, read_bool(r)?),
@@ -352,7 +364,7 @@ mod tests {
             .id("minecraft:clear_all_effects")
             .unwrap_or(0);
         v.extend_from_slice(&[2, 1, 0, 1, u8::try_from(clear).unwrap_or(0)]);
-        s.patch_mut().set(ids::CONSUMABLE, v.into());
+        s.set_component(ids::CONSUMABLE, v.into());
         let c = consumable(&s).expect("patched");
         assert_eq!(c.consume_ticks(), 10);
         assert!(c.drink && !c.has_consume_particles);

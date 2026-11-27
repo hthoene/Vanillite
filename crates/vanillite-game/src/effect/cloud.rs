@@ -364,13 +364,15 @@ fn box_distance_sqr(a: &Aabb, b: &Aabb) -> f64 {
     dx * dx + dy * dy + dz * dz
 }
 
-/// `LivingEntity.isAffectedByPotions`: living and not dying.
+/// `LivingEntity.isAffectedByPotions` (living and not dying; never armor stands) of the living
+/// entities `getEntitiesOfClass` finds (no spectators).
 fn is_affected_by_potions(ents: &Entities, id: EntityId) -> bool {
     if let Some(m) = ents.mob(id) {
-        return !m.is_dead_or_dying();
+        return !m.is_dead_or_dying() && m.kind != crate::mob::Kind::ArmorStand;
     }
-    ents.player(id)
-        .is_some_and(|p| !p.survival.is_dead_or_dying())
+    ents.player(id).is_some_and(|p| {
+        !p.survival.is_dead_or_dying() && p.game_mode != vanillite_config::GameMode::Spectator
+    })
 }
 
 /// `ThrownLingeringPotion.onHitAsPotion`: a cloud of radius 3 that shrinks to nothing in 600

@@ -232,32 +232,10 @@ pub fn in_tag(stack: &ItemStack, tag: &str) -> bool {
         && crate::player::play::game_data().is_some_and(|d| d.item_in_tag(stack.item, tag))
 }
 
-/// The `DyeColor` id of a dye item (`DataComponents.DYE`).
+/// The `DyeColor` id of a stack's `dye` component (`DataComponents.DYE`, patched or the
+/// item's default).
 pub fn dye_color(stack: &ItemStack) -> Option<u8> {
-    const COLORS: [&str; 16] = [
-        "white",
-        "orange",
-        "magenta",
-        "light_blue",
-        "yellow",
-        "lime",
-        "pink",
-        "gray",
-        "light_gray",
-        "cyan",
-        "purple",
-        "blue",
-        "brown",
-        "green",
-        "red",
-        "black",
-    ];
-    let name = item_name(stack).strip_prefix("minecraft:")?;
-    let color = name.strip_suffix("_dye")?;
-    COLORS
-        .iter()
-        .position(|c| *c == color)
-        .and_then(|i| u8::try_from(i).ok())
+    crate::menu::station::dye_color(stack).and_then(|i| u8::try_from(i).ok())
 }
 
 /// `DyeColor.getMixedColor`: the dye the two colours craft into, else one of them.

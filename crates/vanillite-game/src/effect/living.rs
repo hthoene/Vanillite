@@ -1095,6 +1095,136 @@ pub fn on_mob_killed(t: &mut Tick<'_, '_>) {
     }
 }
 
+/// `LivingEntity.remove(KILLED)` → `triggerOnDeathMobEffects` of a dead player (at death time
+/// 20, or when it respawns before): Oozing spawns slimes (the player's slime count against
+/// `cramming`), Weaving spreads cobwebs (for players without `mobGriefing`), Wind Charged
+/// bursts, all from the player's own random; then the effects are gone.
+pub fn player_death_effects(level: &mut Level, id: EntityId, cramming: i32) {
+    let Some((pos, height, aabb)) = level
+        .entities
+        .store
+        .get(id)
+        .map(|e| (e.pos(), e.dims().height, e.aabb()))
+    else {
+        return;
+    };
+    let Some(p) = level.entities.player_mut(id) else {
+        return;
+    };
+    if p.survival.effects.is_empty() {
+        return;
+    }
+    let effects = p.survival.effects.take_all();
+    for e in &effects {
+        match e.effect {
+            MobEffect::OOZING => {
+                let area = aabb.inflate(2.0, 2.0, 2.0);
+                let mut nearby = 0;
+                level.entities.store.for_each_in(&area, false, |other| {
+                    if other != id
+                        && level
+                            .entities
+                            .store
+                            .get(other)
+                            .is_some_and(|o| o.kind() == ids::SLIME)
+                    {
+                        nearby += 1;
+                    }
+                });
+                let count = if cramming < 1 {
+                    2
+                } else {
+                    (cramming - nearby.min(cramming)).clamp(0, 2)
+                };
+                let network_ids = std::sync::Arc::clone(level.network_ids_arc());
+                for _ in 0..count {
+                    let seed = crate::mob::new_entity_seed();
+                    let mut slime = crate::mob::MobData::new(crate::mob::Kind::Slime, seed);
+                    crate::mob::fam::undead::cubes::set_size(&mut slime, 2, true);
+                    let seed_yaw = crate::mob::constructor_y_rot(seed);
+                    slime.y_body_rot = seed_yaw;
+                    let y_rot = level.random().next_float() * 360.0;
+                    let slime_id = crate::mob::spawn(
+                        &mut level.entities,
+                        &network_ids,
+                        crate::mob::new_uuid(),
+                        Vec3::new(pos.x, pos.y + 0.5, pos.z),
+                        vanillite_world::entity::Rotation {
+                            y_rot,
+                            x_rot: 0.0,
+                            y_head_rot: seed_yaw,
+                        },
+                        slime,
+                    );
+                    level
+                        .entities
+                        .spawned(slime_id, vanillite_abi::spawn_reason::TRIGGERED, 0);
+                }
+            }
+            MobEffect::WEAVING => {
+                let center = BlockPos::containing(pos.x, pos.y, pos.z);
+                let Some(p) = level.entities.player_mut(id) else {
+                    continue;
+                };
+                let max = p.survival.random.next_int_bounded(2) + 2;
+                // `BlockPos.randomInCube(random, 15, pos, 1)`: drawn while iterating.
+                let mut chosen: Vec<BlockPos> = Vec::new();
+                for _ in 0..15 {
+                    let Some(p) = level.entities.player_mut(id) else {
+                        break;
+                    };
+                    let r = &mut p.survival.random;
+                    let at = BlockPos::new(
+                        center.x - 1 + r.next_int_bounded(3),
+                        center.y - 1 + r.next_int_bounded(3),
+                        center.z - 1 + r.next_int_bounded(3),
+                    );
+                    let below = BlockPos::new(at.x, at.y - 1, at.z);
+                    if !chosen.contains(&at)
+                        && crate::block::can_be_replaced(level.block(at))
+                        && crate::block::is_face_sturdy(
+                            level.block(below),
+                            vanillite_base::Direction::Up,
+                        )
+                    {
+                        chosen.push(at);
+                        if i32::try_from(chosen.len()).unwrap_or(i32::MAX) >= max {
+                            break;
+                        }
+                    }
+                }
+                let cobweb = vanillite_data::block::ids::COBWEB.default_state();
+                for at in chosen {
+                    level.set_block(at, cobweb, 3);
+                    level.level_event(None, 3018, at, 0);
+                }
+            }
+            MobEffect::WIND_CHARGED => {
+                let Some(p) = level.entities.player_mut(id) else {
+                    continue;
+                };
+                let (center, radius) = wind_burst(pos, height, &mut p.survival.random);
+                level.explode_with(
+                    Some(id),
+                    None,
+                    center,
+                    radius,
+                    crate::level::explosion::BlockInteraction::TriggerBlock,
+                    crate::level::explosion::ExplosionStyle {
+                        damages_entities: false,
+                        knockback: WIND_CHARGED_KNOCKBACK,
+                        wind_sound: Some(WIND_CHARGED_SOUND),
+                        resistance: crate::level::explosion::BlockResistance::WindCharge,
+                        fire: false,
+                        bad_respawn_point: false,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The knockback multiplier of a Wind Charged burst (`AbstractWindCharge.EXPLOSION_DAMAGE_CALCULATOR`).
 pub const WIND_CHARGED_KNOCKBACK: f64 = 1.22;
 /// The sound of a Wind Charged burst (`SoundEvents.BREEZE_WIND_CHARGE_BURST`).

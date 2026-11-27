@@ -84,7 +84,7 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
                 if let Some(id) = vanillite_data::registry::DATA_COMPONENT_TYPE
                     .id("minecraft:suspicious_stew_effects")
                 {
-                    s.patch_mut().set(id, stew_component(effect, duration));
+                    s.set_component(id, stew_component(effect, duration));
                 }
                 (s, "minecraft:entity.mooshroom.suspicious_milk")
             }
