@@ -212,7 +212,7 @@ fn roll_arg(
     let mut out = Vec::new();
     let result = with_context(env, params, |data, ctx, rng| match (&id, &inline) {
         (Some(id), _) => {
-            data.loot.roll(id, ctx, rng, &mut out);
+            data.loot.roll_keeping_empty(id, ctx, rng, &mut out);
             Ok(())
         }
         (None, Some(json)) => data.loot.roll_inline(json, ctx, rng, &mut out),
@@ -341,7 +341,7 @@ fn drops(
             };
             let mut out = Vec::new();
             with_context(env, params, |data, ctx, rng| {
-                data.loot.roll(&table, ctx, rng, &mut out);
+                data.loot.roll_keeping_empty(&table, ctx, rng, &mut out);
             });
             Ok((out, Some(table)))
         }
@@ -397,7 +397,8 @@ fn output(
                 source,
                 args.selector("players").ok_or_else(|| missing("players"))?,
             )?;
-            for drop in drops {
+            // `Inventory.add` takes no empty stack.
+            for drop in drops.iter().filter(|d| !d.is_empty()) {
                 for player in &players {
                     let stack = drop.clone();
                     let added = match player.entity {
@@ -436,20 +437,19 @@ fn output(
                 .ok_or_else(|| missing("targetPos"))?;
             let pos = resolve_position(source, c);
             for drop in drops {
-                let velocity = {
-                    let r = env.level.random();
-                    use vanillite_base::random::RandomSource;
-                    Vec3::new(
-                        r.next_double() * 0.2 - 0.1,
-                        0.2,
-                        r.next_double() * 0.2 - 0.1,
-                    )
-                };
-                vanillite_game::block::drops::spawn_item(
+                if drop.is_empty() {
+                    // An empty item entity takes its seed and is gone on its first tick.
+                    vanillite_game::mob::new_entity_uuid();
+                    used.track(drop, 1);
+                    continue;
+                }
+                // `new ItemEntity(level, x, y, z, stack)`: the motion comes from the item's own
+                // random, not the level's.
+                vanillite_game::block::drops::spawn_item_moving(
                     env.level,
                     pos,
                     drop.clone(),
-                    velocity,
+                    None,
                     10,
                     None,
                 );

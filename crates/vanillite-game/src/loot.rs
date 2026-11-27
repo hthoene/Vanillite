@@ -19,8 +19,9 @@
 //!   `sequence`, `discard`, `copy_components` and `copy_name` from the block entity,
 //!   `enchant_randomly`, `enchant_with_levels`, `set_enchantments`, `set_damage`, `set_name`,
 //!   `set_potion`, `set_stew_effect`, `set_instrument`, `set_ominous_bottle_amplifier`,
-//!   `filtered`, named item modifiers; `copy_custom_data` and `enchanted_count_increase` do
-//!   nothing (no attacking entity); `exploration_map` needs the context's level access;
+//!   `set_components`, `filtered`, named item modifiers; `copy_custom_data` and
+//!   `enchanted_count_increase` do nothing (no attacking entity); `exploration_map` needs the
+//!   context's level access;
 //! - results larger than the item's max stack size are split as `LootTable.createStackSplitter`.
 //!
 //! The context has no level access, so:
@@ -410,6 +411,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: false,
         };
         eval.table(table);
     }
@@ -429,6 +431,30 @@ impl LootTables {
         rng: &mut dyn LootRandom,
         out: &mut Vec<ItemStack>,
     ) {
+        self.roll_with(table_id, ctx, rng, out, false);
+    }
+
+    /// [`Self::roll`] that keeps discarded results as empty stacks, as `/loot` gets them from
+    /// `LootTable.getRandomItems` (an empty dropped item still takes an entity seed, an empty
+    /// replaced slot is cleared).
+    pub fn roll_keeping_empty(
+        &self,
+        table_id: &str,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+    ) {
+        self.roll_with(table_id, ctx, rng, out, true);
+    }
+
+    fn roll_with(
+        &self,
+        table_id: &str,
+        ctx: &LootContext<'_>,
+        rng: &mut dyn LootRandom,
+        out: &mut Vec<ItemStack>,
+        keep_empty: bool,
+    ) {
         let Some(table) = self
             .by_name
             .get(table_id)
@@ -445,6 +471,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty,
         };
         eval.table(table);
     }
@@ -518,7 +545,8 @@ impl LootTables {
         }
     }
 
-    /// `LootTable.getRandomItems` of an inline table (`ResourceOrIdArgument` with a value).
+    /// `LootTable.getRandomItems` of an inline table (`ResourceOrIdArgument` with a value), for
+    /// `/loot`: discarded results stay as empty stacks ([`Self::roll_keeping_empty`]).
     pub fn roll_inline(
         &self,
         json: &Value,
@@ -535,6 +563,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: true,
         };
         eval.table(&table);
         Ok(())
@@ -594,6 +623,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: false,
         };
         Ok(eval.test(cond))
     }
@@ -646,6 +676,7 @@ impl LootTables {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: false,
+            keep_empty: false,
         };
         eval.apply(func, stack);
         Ok(())
@@ -1046,14 +1077,17 @@ struct ItemPredicate {
     items: Option<ItemSet>,
     count: Bounds,
     enchantments: Box<[EnchantmentPredicate]>,
+    /// The `minecraft:stored_enchantments` predicates (enchanted books).
+    stored_enchantments: Box<[EnchantmentPredicate]>,
     /// Component types that must be present (`AnyValue` predicates).
     present: Box<[u16]>,
 }
 
 #[derive(Debug)]
 struct EnchantmentPredicate {
-    /// Any of these enchantments, with a level in `levels`.
-    enchantments: Box<[Box<str>]>,
+    /// Any of these enchantments (any enchantment at all if `None`), with a level in
+    /// `levels`.
+    enchantments: Option<Box<[Box<str>]>>,
     levels: Bounds,
 }
 
@@ -1167,6 +1201,9 @@ enum FuncKind {
     ExplorationMap(Box<ExplorationMap>),
     /// `set_ominous_bottle_amplifier`.
     SetOminousBottleAmplifier(IntProvider),
+    /// `set_components`: component type ids with their persistent value (`None` removes
+    /// the component). Encoded when applied, as the dynamic registries are known then.
+    SetComponents(Box<[(u16, Option<vanillite_nbt::Tag>)]>),
     /// `filtered`.
     Filtered {
         filter: Option<Box<ItemPredicate>>,
@@ -1657,11 +1694,16 @@ impl Parser<'_> {
             return Ok(None);
         }
         let mut enchantments = Vec::new();
+        let mut stored_enchantments = Vec::new();
         let mut present = Vec::new();
         if let Some(p) = o.get("predicates") {
             for (key, value) in object(p)? {
                 let name = qualify(key);
-                if name != "minecraft:enchantments" {
+                let list = if name == "minecraft:enchantments" {
+                    &mut enchantments
+                } else if name == "minecraft:stored_enchantments" {
+                    &mut stored_enchantments
+                } else {
                     // A component type that is no predicate type: `AnyValue`.
                     match vanillite_data::registry::DATA_COMPONENT_TYPE.id(&name) {
                         Some(id) if !COMPONENT_PREDICATE_TYPES.contains(&name.as_str()) => {
@@ -1673,31 +1715,27 @@ impl Parser<'_> {
                             return Ok(None);
                         }
                     }
-                }
+                };
                 for e in value
                     .as_array()
                     .ok_or("enchantments predicate is not a list")?
                 {
                     let e = object(e)?;
                     let levels = e.get("levels").map(bounds).transpose()?.unwrap_or_default();
-                    match e.get("enchantments").map(id_set).transpose()? {
-                        Some(IdSet::Ids(ids)) => enchantments.push(EnchantmentPredicate {
-                            enchantments: ids.into_iter().map(Box::from).collect(),
-                            levels,
-                        }),
+                    let ids = match e.get("enchantments").map(id_set).transpose()? {
+                        Some(IdSet::Ids(ids)) => Some(ids.into_iter().map(Box::from).collect()),
                         Some(IdSet::Tag(tag)) => {
                             self.unsupported(format!(
                                 "enchantment tag #{tag} in a predicate (false)"
                             ));
                             return Ok(None);
                         }
-                        None => {
-                            self.unsupported(
-                                "enchantment predicate without `enchantments` (false)".into(),
-                            );
-                            return Ok(None);
-                        }
-                    }
+                        None => None,
+                    };
+                    list.push(EnchantmentPredicate {
+                        enchantments: ids,
+                        levels,
+                    });
                 }
             }
         }
@@ -1705,6 +1743,7 @@ impl Parser<'_> {
             items,
             count,
             enchantments: enchantments.into(),
+            stored_enchantments: stored_enchantments.into(),
             present: present.into(),
         }))
     }
@@ -2026,6 +2065,20 @@ impl Parser<'_> {
                     skip_existing_chunks,
                 }))
             }
+            "minecraft:set_components" => {
+                let mut components = Vec::new();
+                for (key, value) in object(field(o, "components")?)? {
+                    let (name, removed) = match key.strip_prefix('!') {
+                        Some(name) => (name, true),
+                        None => (key.as_str(), false),
+                    };
+                    let id = vanillite_protocol::components_nbt::type_by_name(name)
+                        .ok_or_else(|| format!("unknown component {name}"))?;
+                    let value = (!removed).then(|| crate::trading::data::json_to_nbt(value));
+                    components.push((id, value));
+                }
+                FuncKind::SetComponents(components.into())
+            }
             "minecraft:copy_components" | "minecraft:copy_name" | "minecraft:copy_custom_data" => {
                 FuncKind::Noop
             }
@@ -2174,6 +2227,9 @@ struct Eval<'t, 'x> {
     depth: u32,
     /// `ADDITIONAL_COST_COMPONENT_ALLOWED` (villager trade contexts).
     allow_additional_cost: bool,
+    /// Empty results (a `discard` modifier) stay in the output as empty stacks, as
+    /// `LootTable.getRandomItems` passes them on (`/loot`).
+    keep_empty: bool,
 }
 
 impl<'t> Eval<'t, '_> {
@@ -2426,11 +2482,12 @@ impl<'t> Eval<'t, '_> {
             }
         }
         if stack.is_empty() {
+            if self.keep_empty {
+                self.out.push(ItemStack::default());
+            }
             return;
         }
-        let max = ITEMS
-            .get(usize::from(stack.item))
-            .map_or(1, |info| i32::from(info.max_stack_size).max(1));
+        let max = crate::item::max_stack_size(&stack).max(1);
         if stack.count < max {
             self.out.push(stack);
             return;
@@ -2563,10 +2620,23 @@ impl<'t> Eval<'t, '_> {
         item_ok
             && p.count.matches(count)
             && p.present.iter().all(|&id| stack.component(id).is_some())
-            && p.enchantments.iter().all(|e| {
-                e.enchantments.iter().any(|id| {
+            && p.enchantments.iter().all(|e| match &e.enchantments {
+                Some(ids) => ids.iter().any(|id| {
                     let level = enchantment_level(id);
                     level != 0 && (e.levels.is_any() || e.levels.matches(level))
+                }),
+                None => any_enchantment(&crate::item::enchantments(stack), e.levels),
+            })
+            && (p.stored_enchantments.is_empty() || {
+                let stored = crate::item::stored_enchantments(stack);
+                p.stored_enchantments.iter().all(|e| match &e.enchantments {
+                    Some(ids) => ids.iter().any(|id| {
+                        let ids = (self.ctx.holder_set)("minecraft:enchantment", id);
+                        stored
+                            .iter()
+                            .any(|(s, level)| ids.contains(s) && e.levels.matches(*level))
+                    }),
+                    None => any_enchantment(&stored, e.levels),
                 })
             })
     }
@@ -2902,6 +2972,35 @@ impl<'t> Eval<'t, '_> {
                     .patch_mut()
                     .set(ids::OMINOUS_BOTTLE_AMPLIFIER, out.into_boxed_slice());
             }
+            FuncKind::SetComponents(components) => {
+                // `applyComponentsAndValidate`: a patch that leaves the stack invalid is undone.
+                let old = stack.patch.clone();
+                for (id, value) in components {
+                    let Some(value) = value else {
+                        let patch = stack.patch_mut();
+                        patch.unset(*id);
+                        if let Err(i) = patch.removed.binary_search(id) {
+                            patch.removed.insert(i, *id);
+                        }
+                        continue;
+                    };
+                    match vanillite_protocol::components_nbt::from_nbt(
+                        *id,
+                        value,
+                        &vanillite_protocol::item::InstalledRegistries,
+                    ) {
+                        Ok(wire) => stack.patch_mut().set(*id, wire),
+                        Err(e) => log::debug!("set_components: component {id}: {e}"),
+                    }
+                }
+                // `validateStrict` (without the container and bundle contents checks).
+                let max_stack = crate::item::max_stack_size(stack);
+                if stack.count > max_stack || (crate::item::max_damage(stack) > 0 && max_stack > 1)
+                {
+                    log::debug!("set_components: invalid stack, patch not applied");
+                    stack.patch = old;
+                }
+            }
             FuncKind::Filtered {
                 filter,
                 on_pass,
@@ -3053,6 +3152,12 @@ impl<'t> Eval<'t, '_> {
 )]
 fn entry_weight(entry: &Entry, luck: f32) -> i32 {
     ((entry.weight as f32 + entry.quality as f32 * luck).floor() as i32).max(0)
+}
+
+/// `EnchantmentPredicate.containedIn` without `enchantments`: some enchantment of the list has
+/// a level in `levels`.
+fn any_enchantment(list: &[(u32, i32)], levels: Bounds) -> bool {
+    list.iter().any(|(_, level)| levels.matches(*level))
 }
 
 /// `EnchantmentHelper.getComponentType`: enchanted books store their enchantments.
@@ -3262,6 +3367,7 @@ impl<'a> LootEval<'a> {
             post: Vec::new(),
             depth: 0,
             allow_additional_cost: self.additional_cost_allowed,
+            keep_empty: false,
         }
     }
 }
@@ -3989,5 +4095,36 @@ mod tests {
             .roll_inline(&table, &ctx, &mut rng, &mut out)
             .expect("table");
         assert_eq!(summary(&out), vec![("minecraft:stone", 5)]);
+    }
+
+    /// The filter of the enchanted villager trades: `[{}]` is "any enchantment".
+    #[test]
+    fn filtered_any_enchantment() {
+        let parse = |t: &str| serde_json::from_str::<Value>(t).expect("json");
+        let tables = LootTables::from_files(Vec::new(), Vec::new(), Vec::new());
+        let ctx = LootContext::empty();
+        let mut rng = XoroshiroRandom::new(1);
+        for (key, component) in [
+            ("minecraft:enchantments", ids::ENCHANTMENTS),
+            ("minecraft:stored_enchantments", ids::STORED_ENCHANTMENTS),
+        ] {
+            let filter = parse(&format!(
+                r#"{{"type": "minecraft:filtered",
+                    "item_filter": {{"predicates": {{"{key}": [{{}}]}}}},
+                    "on_fail": {{"type": "minecraft:discard"}}}}"#
+            ));
+            let mut plain = ItemStack::new(items::BOOK.0, 1);
+            tables
+                .modify(None, Some(&filter), &mut plain, &ctx, &mut rng)
+                .expect("modifier");
+            assert!(plain.is_empty(), "{key}");
+            let mut enchanted = ItemStack::new(items::BOOK.0, 1);
+            // One entry: enchantment 0, level 1.
+            enchanted.patch_mut().set(component, Box::new([1, 0, 1]));
+            tables
+                .modify(None, Some(&filter), &mut enchanted, &ctx, &mut rng)
+                .expect("modifier");
+            assert!(!enchanted.is_empty(), "{key}");
+        }
     }
 }

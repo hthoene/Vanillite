@@ -2,13 +2,14 @@
 //! composter gives bone meal. How many layers an item adds is the `minecraft:context_int_provider`
 //! its `minecraft:compostable` component names, evaluated in a `BLOCK_INTERACT` loot context.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Vec3};
 use vanillite_data::block::{BlockId, BlockState, ids};
+use vanillite_data::item::ITEMS;
 use vanillite_world::entity::EntityId;
 use vanillite_worldgen::behaviour::StateExt;
 
@@ -158,46 +159,32 @@ impl IntProvider {
     }
 }
 
-/// Loads the `minecraft:context_int_provider` entries of the packs (later packs override).
+/// Loads the `minecraft:context_int_provider` entries the compostable items refer to (later
+/// packs override). The registry's other entries (cooking, brewing) are read elsewhere.
 pub fn load_providers(roots: &[PathBuf]) -> HashMap<String, IntProvider> {
-    let mut out = HashMap::new();
+    let mut files = BTreeMap::new();
     for root in roots {
         let Ok(namespaces) = std::fs::read_dir(root.join("data")) else {
             continue;
         };
         for ns in namespaces.flatten() {
             let ns_name = ns.file_name().to_string_lossy().into_owned();
-            let dir = ns.path().join("context_int_provider");
-            let mut stack = vec![dir.clone()];
-            while let Some(d) = stack.pop() {
-                let Ok(entries) = std::fs::read_dir(&d) else {
-                    continue;
-                };
-                for e in entries.flatten() {
-                    let path = e.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                        continue;
-                    }
-                    if path.extension().is_none_or(|x| x != "json") {
-                        continue;
-                    }
-                    let Some(rel) = path.strip_prefix(&dir).ok().and_then(|p| p.to_str()) else {
-                        continue;
-                    };
-                    let id = format!("{ns_name}:{}", rel.trim_end_matches(".json"));
-                    let parsed = std::fs::read_to_string(&path)
-                        .ok()
-                        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                        .and_then(|v| IntProvider::parse(&v));
-                    match parsed {
-                        Some(p) => {
-                            out.insert(id, p);
-                        }
-                        None => log::warn!("Unsupported context_int_provider {id}"),
-                    }
-                }
+            crate::loot::collect_json(
+                &ns.path().join("context_int_provider"),
+                &format!("{ns_name}:"),
+                &mut files,
+            );
+        }
+    }
+    let used: HashSet<&str> = ITEMS.iter().map(|i| i.compostable).collect();
+    files.retain(|id, _| used.contains(id.as_str()));
+    let mut out = HashMap::new();
+    for (id, json) in crate::loot::read_files(&files) {
+        match json.ok().and_then(|v| IntProvider::parse(&v)) {
+            Some(p) => {
+                out.insert(id, p);
             }
+            None => log::warn!("Unsupported context_int_provider {id}"),
         }
     }
     out
@@ -355,4 +342,34 @@ pub(super) fn add_layer(
         level.schedule_block_tick(pos, state.block(), 20);
     }
     new_state
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+
+    /// Ids use `/` on every platform, and only the providers of compostable items are loaded.
+    #[test]
+    fn nested_provider_ids() {
+        let root = std::env::temp_dir().join(format!("vanillite-compost-{}", std::process::id()));
+        let dir = root.join("data/minecraft/context_int_provider");
+        for (file, json) in [
+            ("compostable/low.json", "1"),
+            ("cooking/other.json", r#"{"type": "minecraft:div"}"#),
+        ] {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+            std::fs::write(path, json).expect("write");
+        }
+        let providers = load_providers(std::slice::from_ref(&root));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            providers,
+            [(
+                "minecraft:compostable/low".to_owned(),
+                IntProvider::Constant(1)
+            )]
+            .into()
+        );
+    }
 }

@@ -160,7 +160,16 @@ pub fn equipment_slot(stack: &ItemStack) -> EquipmentSlot {
 
 /// Enchantments of a stack: `(minecraft:enchantment id, level)`.
 pub fn enchantments(stack: &ItemStack) -> Vec<(u32, i32)> {
-    let Some(data) = stack.component(ids::ENCHANTMENTS) else {
+    enchantment_list(stack, ids::ENCHANTMENTS)
+}
+
+/// The stored enchantments of a stack (enchanted books), like [`enchantments`].
+pub fn stored_enchantments(stack: &ItemStack) -> Vec<(u32, i32)> {
+    enchantment_list(stack, ids::STORED_ENCHANTMENTS)
+}
+
+fn enchantment_list(stack: &ItemStack, component: u16) -> Vec<(u32, i32)> {
+    let Some(data) = stack.component(component) else {
         return Vec::new();
     };
     let mut r = Reader::new(data);

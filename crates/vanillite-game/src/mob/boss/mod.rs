@@ -358,6 +358,8 @@ pub mod data {
 
     /// Appends one data item.
     pub fn item(out: &mut Vec<u8>, id: u8, serializer: i32, value: impl FnOnce(&mut Vec<u8>)) {
+        #[cfg(test)]
+        crate::player::encode::layout_tests::record(id, serializer);
         out.push(id);
         write_varint(out, serializer);
         value(out);

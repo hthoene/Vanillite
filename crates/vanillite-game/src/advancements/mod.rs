@@ -821,20 +821,12 @@ mod tests {
         let pack = vanillite_datapack::vanilla::ensure_vanilla_pack(&cache, jar.as_deref())
             .expect("Vanilla data pack (set VANILLITE_SERVER_JAR for an offline copy)");
         let dir = pack.join("data/minecraft/advancement");
-        let mut files = BTreeMap::new();
-        let mut stack = vec![dir.clone()];
-        while let Some(d) = stack.pop() {
-            for e in std::fs::read_dir(&d).unwrap().map(Result::unwrap) {
-                let path = e.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else {
-                    let rel = path.strip_prefix(&dir).unwrap().with_extension("");
-                    let id = format!("minecraft:{}", rel.to_string_lossy());
-                    files.insert(id, std::fs::read_to_string(&path).unwrap());
-                }
-            }
-        }
+        let mut paths = BTreeMap::new();
+        crate::loot::collect_json(&dir, "minecraft:", &mut paths);
+        let files: BTreeMap<String, String> = paths
+            .into_iter()
+            .map(|(id, path)| (id, std::fs::read_to_string(path).unwrap()))
+            .collect();
         let set = std::sync::Arc::new(Advancements::load(&files));
         assert_eq!(set.len(), files.len());
         assert_eq!(set.tree_order.len(), files.len());
