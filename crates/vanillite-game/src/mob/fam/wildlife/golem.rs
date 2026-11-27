@@ -117,8 +117,16 @@ pub(super) fn snow_ai_step(t: &mut Tick<'_, '_>) {
         let y = vanillite_base::math::floor(p.y);
         let z = vanillite_base::math::floor(p.z + f64::from((i / 2 % 2 * 2 - 1) as f32 * 0.25));
         let pos = BlockPos::new(x, y, z);
-        if t.level.block(pos).is_air() && t.level.can_survive(snow, pos) {
+        // The four positions can be the same block: a later one sees the snow placed before.
+        if t.block(pos).is_air() && t.level.can_survive(snow, pos) {
             t.cx.actions.push(WorldAction::SetBlock(pos, snow, 3));
+            let at = Vec3::new(
+                f64::from(pos.x) + 0.5,
+                f64::from(pos.y) + 0.5,
+                f64::from(pos.z) + 0.5,
+            );
+            let place = crate::level::game_event::events().block_place;
+            crate::mob::living::post_game_event(t, place, at, Some(snow));
         }
     }
 }

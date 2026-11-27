@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use vanillite_base::hash::FxHashSet;
-use vanillite_base::random::{RandomSource, XoroshiroRandom};
+use vanillite_base::random::RandomSource;
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::block::BlockState;
 use vanillite_data::entity::ids as entity_ids;
@@ -603,44 +603,6 @@ impl LevelEffects {
 /// A random version 4 UUID (`Mth.createInsecureUUID`).
 pub(crate) fn is_item(store: &EntityStore, id: EntityId) -> bool {
     store.get(id).is_some_and(|e| e.kind() == entity_ids::ITEM)
-}
-
-/// `ItemEntity.tick` for every item entity of a world: movement, merging with neighbours and
-/// despawning.
-pub(crate) fn tick_items(
-    entities: &mut Entities,
-    chunks: &Chunks,
-    random: &mut XoroshiroRandom,
-    min_y: i32,
-    settings: ItemSettings,
-) {
-    let ids: Vec<EntityId> = entities.items.iter().map(|(id, _)| id).collect();
-    if ids.is_empty() {
-        return;
-    }
-    let mut scratch = ItemScratch::default();
-    for id in ids {
-        // Only items in the tick order (entity ticking chunk) and in entity ticking range.
-        let Some(pos) = entities.store.get(id).map(|e| e.pos()) else {
-            continue;
-        };
-        let chunk = vanillite_base::ChunkPos::new(
-            vanillite_base::math::floor(pos.x) >> 4,
-            vanillite_base::math::floor(pos.z) >> 4,
-        );
-        if !entities.store.is_ticking(id) || !chunks.in_entity_ticking_range(chunk) {
-            continue;
-        }
-        tick_item(
-            entities,
-            chunks,
-            id,
-            &mut || random.next_float(),
-            min_y,
-            settings,
-            &mut scratch,
-        );
-    }
 }
 
 /// The rules of item entities for [`tick_item`].
