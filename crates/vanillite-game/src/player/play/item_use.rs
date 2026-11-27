@@ -141,7 +141,7 @@ pub(super) fn use_on(
         UseOn::Shears => shears(ctx, click),
         UseOn::FireCharge => fire_charge(ctx, click),
         UseOn::Potion => water_bottle_on_mud(ctx, click),
-        UseOn::DebugStick => debug_stick(ctx, click.pos, true, sink),
+        UseOn::DebugStick => debug_stick(ctx, click.pos, true, click.hand, sink),
     };
     if creative {
         // `ServerPlayerGameMode.useItemOn`: creative players keep the count.
@@ -651,6 +651,7 @@ pub(super) fn debug_stick(
     ctx: &mut PlayContext<'_>,
     pos: BlockPos,
     cycle: bool,
+    hand: Hand,
     sink: &dyn super::PacketSink,
 ) -> Used {
     use vanillite_protocol::packets::play::clientbound::SystemChat;
@@ -658,7 +659,6 @@ pub(super) fn debug_stick(
     if !(ctx.actor.creative() && ctx.actor.permission_level >= 2) {
         return Used::Fail;
     }
-    let hand = Hand::MainHand;
     let state = ctx.level.block(pos);
     let block = state.block();
     let properties = block.info().properties;
@@ -1598,10 +1598,11 @@ fn glass_bottle(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32) -
         let sound = sound_id("item.bottle.fill_dragonbreath");
         level.play_sound(None, at.x, at.y, at.z, sound, SOUND_NEUTRAL, 1.0, 1.0);
         level.game_event(events().fluid_pickup, at, GameEventContext::of(player));
+        let target = crate::advancements::view::snapshot(&level.entities, cloud);
         let stack = held(ctx, hand);
         ctx.trigger(Event::EntityItem(
             TriggerKind::PLAYER_INTERACTED_WITH_ENTITY,
-            None,
+            target,
             stack.clone(),
         ));
         used_stat(ctx, stack.item);

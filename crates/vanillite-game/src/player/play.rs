@@ -583,7 +583,8 @@ impl Digging {
     /// `ServerPlayerGameMode.tick`.
     pub fn tick(&mut self, ctx: &mut PlayContext<'_>, sink: &dyn PacketSink) {
         self.game_ticks = self.game_ticks.wrapping_add(1);
-        self.drop_spam = self.drop_spam.saturating_sub(20).max(0);
+        // `dropSpamThrottler.tick()`: one less per tick.
+        self.drop_spam = self.drop_spam.saturating_sub(1).max(0);
         if self.has_delayed_destroy {
             let pos = self.delayed_destroy_pos;
             let state = ctx.level.block(pos);
@@ -819,7 +820,7 @@ impl Digging {
         let tool = ctx.inventory.selected_item().clone();
         if item::item_id(&tool) == vanillite_data::item::ids::DEBUG_STICK {
             // `DebugStickItem.canDestroyBlock`: selects the next property instead.
-            item_use::debug_stick(ctx, pos, false, sink);
+            item_use::debug_stick(ctx, pos, false, Hand::MainHand, sink);
             return false;
         }
         if ctx.actor.creative() && !ctx.data.tools.can_destroy_in_creative(&tool) {
@@ -1430,7 +1431,7 @@ impl Digging {
             return done;
         }
         if used == vanillite_data::item::ids::END_CRYSTAL {
-            if !ctx.level.use_end_crystal(pos) {
+            if !ctx.level.use_end_crystal(pos, ctx.actor.entity) {
                 return false;
             }
             if !ctx.actor.creative() {
@@ -2123,7 +2124,7 @@ impl Digging {
                 .set_creative_slot(usize::try_from(slot).unwrap_or(0), stack);
             flush_equips(ctx);
         } else if slot < 0 && valid_data && !stack.is_empty() {
-            // `dropSpamThrottler`: 20 per tick, threshold 1480.
+            // `dropSpamThrottler`: 20 per drop, threshold 1480.
             if self.drop_spam < 1480 {
                 self.drop_spam = self.drop_spam.saturating_add(20);
                 ctx.drops.push(Drop {

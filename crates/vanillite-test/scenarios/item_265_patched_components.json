@@ -2,7 +2,6 @@
   "description": "Patched item components (#265): a stick with its own attribute_modifiers (+3 attack damage) hits a pig harder, a stick with an equippable component goes to the head slot on use while a leather helmet without its equippable component stays in the hand, and stacks whose component equals the item default (rockets with flight_duration 1, ominous bottles with amplifier 0) stack with plain ones.",
   "tier": "fast",
   "player_state": true,
-  "progress_state": true,
   "rules": {
     "spawn_monsters": "false"
   },
@@ -51,12 +50,15 @@
   ],
   "actions": [
     {
-      "tick": 4,
+      "tick": 1,
+      "op": "command",
+      "command": "give @a minecraft:stick[minecraft:attribute_modifiers=[{type:\"minecraft:attack_damage\",id:\"minecraft:test\",amount:3.0,operation:\"add_value\",slot:\"mainhand\"}]] 1"
+    },
+    {
+      "tick": 20,
       "op": "attack_entity",
       "entity": "p",
-      "target": "pig",
-      "item": "minecraft:stick",
-      "components": "{\"minecraft:attribute_modifiers\":[{\"type\":\"minecraft:attack_damage\",\"id\":\"minecraft:test\",\"amount\":3.0,\"operation\":\"add_value\",\"slot\":\"mainhand\"}]}"
+      "target": "pig"
     },
     {
       "tick": 34,

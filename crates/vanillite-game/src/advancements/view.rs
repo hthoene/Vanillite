@@ -132,7 +132,8 @@ fn base_inner(ents: &Entities, id: EntityId, with_target: bool) -> Option<Entity
     if let Some(bolt) = ents.bolt(id) {
         v.lightning_fires = Some(bolt.blocks_set_on_fire);
     }
-    v.movement = crate::spear::known_movement(ents, id) * 20.0;
+    let m = crate::spear::known_movement(ents, id);
+    v.movement = vanillite_base::Vec3::new(m.x * 20.0, m.y * 20.0, m.z * 20.0);
     if let Some(b) = ents.missile(id).and_then(|d| d.bobber.as_deref()) {
         v.open_water = Some(b.open_water);
     }
@@ -343,6 +344,9 @@ pub fn apply_damage(
             Event::ItemDurabilityChanged(stack.clone(), new_damage)
         });
     }
+    // `applyDamage`: the damage is set before a broken stack shrinks, so the rest of a stack
+    // of several keeps it.
+    crate::item::set_damage(stack, new_damage);
     if new_damage >= crate::item::max_damage(stack) {
         let item = stack.item;
         stack.shrink(1);
@@ -354,7 +358,6 @@ pub fn apply_damage(
         }
         true
     } else {
-        crate::item::set_damage(stack, new_damage);
         false
     }
 }

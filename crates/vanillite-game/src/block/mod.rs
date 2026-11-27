@@ -488,7 +488,12 @@ pub fn hurt_item(
     player: EntityId,
 ) {
     use crate::item;
-    if !item::is_damageable(stack) {
+    // `hurtAndBreak`: players with infinite materials (creative) take no damage.
+    let creative = level
+        .entities
+        .player(player)
+        .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
+    if !item::is_damageable(stack) || creative {
         return;
     }
     let unbreaking = crate::player::play::game_data()
@@ -512,12 +517,11 @@ pub fn hurt_item(
         player,
         crate::advancements::trigger::Event::ItemDurabilityChanged(stack.clone(), damage),
     );
+    item::set_damage(stack, damage);
     if damage >= item::max_damage(stack) {
         let broken = crate::stats::Stat::of(crate::stats::StatType::Broken, stack.item);
         stack.shrink(1);
         level.award_stat(player, broken, 1);
-    } else {
-        item::set_damage(stack, damage);
     }
 }
 

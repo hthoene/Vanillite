@@ -241,13 +241,10 @@ fn use_without_item(
     Interaction::Pass
 }
 
-/// The dye colour of a dye item.
+/// The dye colour of a stack's `dye` component (patched or the item's default).
 pub(crate) fn dye_color(stack: &ItemStack) -> Option<&'static str> {
-    let name = crate::item::item_id(stack)
-        .name()
-        .strip_prefix("minecraft:")?;
-    let color = name.strip_suffix("_dye")?;
-    DYE_COLORS.iter().copied().find(|c| *c == color)
+    let id = crate::menu::station::dye_color(stack)?;
+    DYE_COLORS.get(usize::try_from(id).ok()?).copied()
 }
 
 /// `SignBlock.useItemOn`: dyes, glow ink, ink and honeycomb (`SignApplicator`).

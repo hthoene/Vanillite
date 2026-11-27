@@ -38,6 +38,22 @@ impl EquipmentSlot {
         })
     }
 
+    /// The slot of its stream id (`EquipmentSlot.STREAM_CODEC`: main hand 0, feet 1, legs 2,
+    /// chest 3, head 4, off hand 5, body 6, saddle 7), as component values use it.
+    pub fn from_id(v: u8) -> Option<EquipmentSlot> {
+        Some(match v {
+            0 => EquipmentSlot::MainHand,
+            1 => EquipmentSlot::Feet,
+            2 => EquipmentSlot::Legs,
+            3 => EquipmentSlot::Chest,
+            4 => EquipmentSlot::Head,
+            5 => EquipmentSlot::OffHand,
+            6 => EquipmentSlot::Body,
+            7 => EquipmentSlot::Saddle,
+            _ => return None,
+        })
+    }
+
     /// The ordinal (wire id).
     pub fn ordinal(self) -> u8 {
         #[allow(clippy::as_conversions)]
@@ -213,7 +229,7 @@ impl Equippable {
     fn read(data: &[u8]) -> Option<Equippable> {
         use crate::consumable::{read_bool, read_holder_set};
         let mut r = Reader::new(data);
-        let slot = EquipmentSlot::from_ordinal(u8::try_from(r.varint().ok()?).ok()?)?;
+        let slot = EquipmentSlot::from_id(u8::try_from(r.varint().ok()?).ok()?)?;
         let equip_sound = crate::consumable::read_sound(&mut r)?;
         for _ in 0..2 {
             if read_bool(&mut r)? {
@@ -261,13 +277,8 @@ pub fn equippable(stack: &ItemStack) -> Option<Equippable> {
     match patched(stack, ids::EQUIPPABLE) {
         Patched::Value(v) => Equippable::read(v),
         Patched::Removed => None,
-        Patched::Default => {
-            if item_id(stack).info().equip_slot == u8::MAX {
-                return None;
-            }
-            crate::item_nbt::default_component(stack.item, ids::EQUIPPABLE)
-                .and_then(|v| Equippable::read(&v))
-        }
+        Patched::Default => crate::item_nbt::default_component(stack.item, ids::EQUIPPABLE)
+            .and_then(|v| Equippable::read(&v)),
     }
 }
 
@@ -277,7 +288,8 @@ pub fn equippable_slot(stack: &ItemStack) -> Option<EquipmentSlot> {
         Patched::Value(_) => equippable(stack).map(|e| e.slot),
         Patched::Removed => None,
         Patched::Default if stack.is_empty() => None,
-        Patched::Default => EquipmentSlot::from_ordinal(item_id(stack).info().equip_slot),
+        Patched::Default => EquipmentSlot::from_ordinal(item_id(stack).info().equip_slot)
+            .or_else(|| equippable(stack).map(|e| e.slot)),
     }
 }
 
@@ -759,14 +771,18 @@ mod tests {
         assert_eq!(e.slot, EquipmentSlot::Head);
         assert!(e.swappable && e.damage_on_hurt && !e.can_be_sheared);
         assert_eq!(e.equip_sound, "minecraft:item.armor.equip_diamond");
-        let saddle = ItemStack::new(items::SADDLE.0, 1);
-        let s = equippable(&saddle).expect("saddle equippable");
-        assert_eq!(s.slot, EquipmentSlot::Saddle);
-        assert!(s.can_be_sheared && s.equip_on_interact);
-        assert_eq!(s.shearing_sound, "minecraft:item.saddle.unequip");
+        // Carpets (direct allowed entities: no tags needed without data packs).
+        let carpet = ItemStack::new(items::WHITE_CARPET.0, 1);
+        let c = equippable(&carpet).expect("carpet equippable");
+        assert_eq!(c.slot, EquipmentSlot::Body);
+        assert!(c.can_be_sheared && !c.equip_on_interact);
+        assert_eq!(c.shearing_sound, "minecraft:item.llama_carpet.unequip");
+        let llama = vanillite_data::entity::ids::LLAMA.0;
+        assert!(c.can_be_equipped_by(llama));
+        assert!(!c.can_be_equipped_by(vanillite_data::entity::ids::HORSE.0));
         // A patched equippable puts a stick on the head; a removed one keeps a helmet in hand.
         let mut stick = ItemStack::new(items::STICK.0, 1);
-        let mut wire = vec![5u8]; // slot: head
+        let mut wire = vec![4u8]; // slot: head
         wire.push(0); // inline sound event
         let name = "minecraft:item.armor.equip_generic";
         wire.push(u8::try_from(name.len()).unwrap());

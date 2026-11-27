@@ -1517,7 +1517,17 @@ impl Crafting {
                 let Some(copy) = book_copy(content) else {
                     return ItemStack::EMPTY;
                 };
-                let mut out = result.with_count(copies);
+                // `TransmuteRecipe.createWithOriginalComponents(result, source, copies - 1)`:
+                // the source's other components (name, lore, …) come along.
+                let mut out = result.with_count(result.count.saturating_add(copies - 1));
+                if let Some(patch) = source.patch() {
+                    for (t, v) in &patch.added {
+                        out.set_component(*t, v.clone());
+                    }
+                    for t in &patch.removed {
+                        out.remove_component(*t);
+                    }
+                }
                 out.set_component(components::WRITTEN_BOOK_CONTENT, copy.into_boxed_slice());
                 out
             }

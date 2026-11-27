@@ -1,5 +1,5 @@
 {
-  "description": "Post-attack effects of mob attacks (#265): an iron golem hits a zombie that wears a Thorns III chestplate (no AI, so it does not fight back); the Thorns of the victim's gear may hurt the golem and wears the chestplate.",
+  "description": "Post-attack effects of mob attacks (#265): an iron golem hits a zombie that wears a Thorns III chestplate (no AI, so it does not fight back); the Thorns of the victim's gear hurts the golem (twice before the zombie is nearly dead) and wears the chestplate.",
   "tier": "fast",
   "level_rng": true,
   "rules": {
@@ -17,7 +17,7 @@
       15
     ]
   ],
-  "ticks": 120,
+  "ticks": 66,
   "entities": [
     {
       "name": "golem",

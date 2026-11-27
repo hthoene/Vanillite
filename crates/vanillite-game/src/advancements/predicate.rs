@@ -1223,7 +1223,7 @@ fn slot_range(name: &str) -> Option<Vec<SlotRef>> {
             let n: usize = n.parse().ok()?;
             match prefix {
                 "hotbar" if n < 9 => vec![SlotRef::Inventory(n)],
-                "inventory" if n < 27 => vec![SlotRef::Inventory(n + 9)],
+                "inventory" if n < 27 => vec![SlotRef::Inventory(n.checked_add(9)?)],
                 "container" if n < 36 => vec![SlotRef::Inventory(n)],
                 _ => return None,
             }
@@ -1665,7 +1665,7 @@ impl EntityPredicate {
                     && vertical.matches(m.y.abs())
                     && fall.matches(e.fall_distance)
             }
-            EntityPart::PeriodicTick(n) => e.tick_count % n == 0,
+            EntityPart::PeriodicTick(n) => e.tick_count.checked_rem(*n) == Some(0),
             EntityPart::MovementAffectedBy(l) => {
                 // `getBlockPosBelowThatAffectsMyMovement`: 0.500001 below the feet.
                 let below = crate::player::play::block_pos_of(Vec3::new(

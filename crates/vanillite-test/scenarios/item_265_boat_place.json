@@ -1,5 +1,5 @@
 {
-  "description": "BoatItem.use (#265): a player looking at the ground places no boat while a pig stands where it would go (the boat would collide with it), and one once the pig is gone; a boat aimed at tall grass lands on the grass's outline, not the block behind it.",
+  "description": "BoatItem.use (#265): a player looking at the ground places no boat while a pig stands where it would go (the boat would collide with it), and one once the pig is gone; a second player aiming at short grass places its boat on the grass's outline, not on the block behind it.",
   "tier": "fast",
   "player_state": true,
   "rules": {
@@ -31,6 +31,19 @@
         -90,
         45
       ]
+    },
+    {
+      "name": "q",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60.0,
+        12.5
+      ],
+      "rot": [
+        -45,
+        45
+      ]
     }
   ],
   "actions": [
@@ -48,7 +61,7 @@
     {
       "tick": 5,
       "op": "command",
-      "command": "kill @e[type=pig]"
+      "command": "tp @e[type=minecraft:pig] 12.5 -60 2.5"
     },
     {
       "tick": 8,
@@ -59,17 +72,12 @@
     {
       "tick": 10,
       "op": "command",
-      "command": "setblock 5 -60 12 minecraft:short_grass"
-    },
-    {
-      "tick": 11,
-      "op": "command",
-      "command": "tp @a 4.5 -60 10.5 -45 45"
+      "command": "setblock 5 -60 13 minecraft:short_grass"
     },
     {
       "tick": 13,
       "op": "use_item",
-      "entity": "p",
+      "entity": "q",
       "item": "minecraft:birch_boat"
     }
   ]

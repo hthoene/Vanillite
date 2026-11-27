@@ -264,7 +264,22 @@ pub fn use_item_on(
     } else if item::item_id(&stack).name() == "minecraft:firework_rocket" {
         crate::firework::use_on(ents, env, network_ids, player, &mut stack, face, location)
     } else {
-        crate::minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative)
+        let placed =
+            crate::minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
+        if placed {
+            // `gameEvent(ENTITY_PLACE, pos, Context.of(player, blockBelow))`.
+            crate::survival::game_event(
+                env.out,
+                crate::level::game_event::events().entity_place,
+                Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                Some(player),
+            );
+        }
+        placed
     };
     put_back(ents, player, hand, stack);
     if used && !before.is_empty() {
