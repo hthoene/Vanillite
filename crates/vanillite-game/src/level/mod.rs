@@ -1107,9 +1107,10 @@ impl Level {
     }
 
     /// `getMaxLocalRawBrightness(pos)`: like [`Self::raw_brightness`] with the sky darkened by
-    /// the time of day. The simulation has no day cycle yet, so this is the daytime value.
+    /// this tick's `skyDarken` (the time of day and the weather).
     pub fn max_local_raw_brightness(&self, pos: BlockPos) -> i32 {
-        self.raw_brightness(pos)
+        let (sky, block) = self.light(pos);
+        (sky - self.spawner_env.env.sky_darken).max(block)
     }
 
     // --- Scheduled ticks and events --------------------------------------------------------

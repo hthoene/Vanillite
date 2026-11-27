@@ -203,8 +203,9 @@ pub struct WorldSpec {
     pub region: (BlockPos, BlockPos),
     /// Chunks forced before the setup: the region's chunks and one chunk around them.
     pub forced: Vec<ChunkPos>,
-    /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
-    /// Block-only scenarios run without it, which is much faster.
+    /// Whether the world computes light: with entities (mobs see it), random ticks (crops,
+    /// grass and saplings check it) or `"light": true`. Other block-only scenarios run
+    /// without it, which is much faster.
     pub light: bool,
     /// Whether frames observe light (`"light": true`).
     pub observe_light: bool,
@@ -610,7 +611,7 @@ impl Scenario {
                 ("minecraft:grass_block".to_owned(), 1),
             ],
         };
-        let rules = v
+        let rules: BTreeMap<String, String> = v
             .get("rules")
             .and_then(Value::as_object)
             .map(|r| {
@@ -622,6 +623,9 @@ impl Scenario {
                     .collect()
             })
             .unwrap_or_default();
+        let random_ticks = rules
+            .get("random_tick_speed")
+            .is_some_and(|speed| speed != "0");
         let region = v.get("region").ok_or("region is missing")?;
         let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
         let forced = forced_around(min, max);
@@ -701,6 +705,7 @@ impl Scenario {
                 region: (pos(region.get(0))?, pos(region.get(1))?),
                 forced,
                 light: v.get("entities").is_some()
+                    || random_ticks
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 difficulty: v
