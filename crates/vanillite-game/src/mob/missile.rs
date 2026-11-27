@@ -105,9 +105,10 @@ impl MissileKind {
     }
 }
 
-/// Whether entities of `t` keep their data in the missile store.
+/// Whether entities of `t` keep their data in the missile store. Thrown potions are special
+/// entities ([`crate::effect::thrown`]), not missiles.
 pub fn is_missile_kind(t: EntityTypeId) -> bool {
-    MissileKind::of(t).is_some()
+    MissileKind::of(t).is_some() && !crate::effect::thrown::is_thrown_potion(t)
 }
 
 /// The data of a projectile. The fields beyond the common ones are used as each kind needs
@@ -321,6 +322,22 @@ pub fn tick(
     }
     if ents.missile(id).is_some_and(|d| d.removed) {
         cx.discarded.push(id);
+    }
+}
+
+/// `Projectile.onHitBlock`: `onProjectileHit` of the block `projectile` hit at `at` (target
+/// blocks), applied with the world actions after the tick.
+pub fn hit_block(
+    level: &Level,
+    cx: &mut MobContext,
+    projectile: EntityId,
+    block: vanillite_base::BlockPos,
+    at: Vec3,
+) {
+    if level.block(block).block() == vanillite_data::block::ids::TARGET {
+        cx.actions.push(super::WorldAction::ProjectileHitBlock(
+            block, at, projectile,
+        ));
     }
 }
 

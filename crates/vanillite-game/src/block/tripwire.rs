@@ -62,13 +62,14 @@ fn wire_affect_neighbors_after_removal(
 }
 
 /// `playerWillDestroy`: string cut with shears is disarmed first (flags 260: clients, no block
-/// entity side effects), so the hooks do not fire. The block breaking code calls this before it
-/// destroys the block.
+/// entity side effects), so the hooks do not fire, and the `shear` game event is posted. The
+/// block breaking code calls this before it destroys the block.
 pub fn wire_player_will_destroy(
     level: &mut Level,
     pos: BlockPos,
     state: BlockState,
     holding_shears: bool,
+    player: Option<EntityId>,
 ) {
     if holding_shears && state.is(ids::TRIPWIRE) {
         level.set_block(
@@ -76,6 +77,7 @@ pub fn wire_player_will_destroy(
             state.set_flag("disarmed", true),
             update::CLIENTS | update::SKIP_BLOCK_ENTITY_SIDEEFFECTS,
         );
+        level.game_event_at(player, crate::level::game_event::events().shear, pos);
     }
 }
 

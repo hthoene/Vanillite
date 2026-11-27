@@ -262,6 +262,7 @@ fn fireball_tick(t: &mut MissileTick<'_, '_>) {
 }
 
 fn fireball_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3) {
+    hit_block(t, hit);
     let me = t.id;
     let fireball = t.env.types.named("minecraft:fireball");
     match hit {
@@ -536,6 +537,7 @@ fn bullet_tick(t: &mut MissileTick<'_, '_>) {
 }
 
 fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
+    hit_block(t, hit);
     let me = t.id;
     match hit {
         Hit::Entity(target, _) => {
@@ -571,6 +573,13 @@ fn bullet_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit) {
     }
     land(t, hit);
     discard(t);
+}
+
+/// `Projectile.onHitBlock`'s `onProjectileHit` of a block hit (comes first in `onHitBlock`).
+fn hit_block(t: &mut MissileTick<'_, '_>, hit: Hit) {
+    if let Hit::Block(pos, at, _) = hit {
+        crate::mob::missile::hit_block(t.level, t.cx, t.id, pos, at);
+    }
 }
 
 /// `Projectile.onHit`'s `PROJECTILE_LAND` of this projectile's hit.
@@ -705,6 +714,7 @@ fn potion_tick(t: &mut MissileTick<'_, '_>) {
 
 /// `AbstractThrownPotion.onHit` and `ThrownSplashPotion.onHitAsPotion`.
 fn potion_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3) {
+    hit_block(t, hit);
     let me = t.id;
     // `super.onHit` first: the land game event.
     land(t, hit);
@@ -714,7 +724,6 @@ fn potion_hit(t: &mut MissileTick<'_, '_>, d: &MissileData, hit: Hit, at: Vec3) 
     {
         splash(t, d, p, at);
     }
-    // Lingering potions leave an area effect cloud (#74): not spawned yet.
     let block = BlockPos::containing(at.x, at.y, at.z);
     let (event, sound) = if potion.is_some_and(Potion::is_instant) {
         (2007, 1054)
@@ -775,14 +784,20 @@ fn splash(t: &mut MissileTick<'_, '_>, d: &MissileData, p: Potion, at: Vec3) {
                 MobEffect::INSTANT_HEALTH | MobEffect::INSTANT_DAMAGE
             ) {
                 instant(t, d, owner_id, target, effect, scale);
-            } else if let Some(mob) = t.ents.mob_mut(target) {
+            } else {
                 #[allow(clippy::cast_possible_truncation)]
                 let duration = (scale * f64::from(effect.duration) + 0.5) as i32;
                 if duration > 20 {
-                    effects::living::add_to_mob(mob, EffectInstance { duration, ..effect });
+                    effects::living::add_to_entity(
+                        t.level,
+                        t.ents,
+                        t.env,
+                        t.cx,
+                        target,
+                        EffectInstance { duration, ..effect },
+                    );
                 }
             }
-            // Players get the lasting effects with the effect system (#74).
         }
     }
     t.cx.ids = ids;

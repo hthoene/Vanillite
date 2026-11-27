@@ -533,6 +533,7 @@ impl GameWorld {
         self.with_env(|level, ents, env, cx| {
             for hurt in hurts {
                 let mut source = match (hurt.source, hurt.indirect) {
+                    _ if hurt.bad_respawn_point => DamageSource::of(env.types.bad_respawn_point),
                     (Some(direct), Some(cause)) => {
                         combat::entity_source(ents, env.types.player_explosion, cause, direct)
                     }
@@ -613,6 +614,12 @@ impl GameWorld {
         if players.is_empty() {
             return;
         }
+        // `Player.tick`'s sleep part.
+        vanillite_game::survival::sleep::update_sleeping_player_list(&mut self.level);
+        vanillite_game::survival::sleep::tick_players(
+            &mut self.level,
+            &vanillite_game::hooks::NoHooks,
+        );
         self.with_env(|level, ents, env, cx| {
             for &id in &players {
                 let Entities { store, players, .. } = &mut *ents;
@@ -725,7 +732,13 @@ impl GameWorld {
     /// The trace detail of an entity (see [`crate::trace`]).
     fn detail(&self, row: usize) -> Option<Map<String, Value>> {
         let name_of = |id| self.name_of(id).map(str::to_owned);
-        entity_detail(&self.level.entities, row, &name_of, self.spec.player_state)
+        entity_detail(
+            &self.level.entities,
+            row,
+            &name_of,
+            self.spec.player_state,
+            self.spec.sleep_state,
+        )
     }
 }
 
@@ -809,6 +822,7 @@ pub(crate) fn entity_detail(
     row: usize,
     name_of: &dyn Fn(EntityId) -> Option<String>,
     player_state: bool,
+    sleep_state: bool,
 ) -> Option<Map<String, Value>> {
     let core = ents.store.columns();
     let id = core.id[row];
@@ -861,6 +875,18 @@ pub(crate) fn entity_detail(
                     hand(p.inventory.selected_item()),
                     hand(&p.inventory.offhand)
                 ]),
+            );
+        }
+        if sleep_state {
+            let s = &p.survival;
+            d.insert(
+                "sleep".into(),
+                json!({
+                    "pos": s.sleeping_pos.map(|b| json!([b.x, b.y, b.z])),
+                    "timer": s.sleep_timer,
+                    "pose": vanillite_game::player::encode::pose_id(core.pose[row]),
+                    "spawn": s.respawn.as_ref().map(|r| json!([r.pos.x, r.pos.y, r.pos.z, r.forced])),
+                }),
             );
         }
     }
@@ -1268,6 +1294,7 @@ fn apply_rules(
                 | "mob_drops"
                 | "tnt_explodes"
                 | "tnt_explosion_drop_decay"
+                | "players_sleeping_percentage"
         );
         let rule = Rule::by_name(name)
             .filter(|_| supported)
@@ -1392,6 +1419,11 @@ impl ScenarioWorld for GameWorld {
     /// ticks, the chunk source (post-processing, random ticks), block events, entities, block
     /// entities, entity management (pending entity loads).
     fn step(&mut self) {
+        // `ServerLevel.tick`: the night skip (time and weather stand still in scenarios).
+        vanillite_game::survival::sleep::skip_night(
+            &mut self.level,
+            &vanillite_game::hooks::NoHooks,
+        );
         let level = &mut self.level;
         level.tick_time();
         level.run_scheduled_ticks();
@@ -1557,32 +1589,70 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
+        if let Some(target) = &op.target {
+            // `Player.interactOn` with the stack in the main hand.
+            let player = self.named(&op.entity)?;
+            let target = self.named(target)?;
+            let item = vanillite_data::item::ItemId::by_name(&op.item)
+                .ok_or_else(|| format!("unknown item {}", op.item))?;
+            if let Some(p) = self.level.entities.player_mut(player) {
+                let slot = p.inventory.selected;
+                p.inventory
+                    .set(slot, vanillite_game::item::ItemStack::new(item.0, op.count));
+            }
+            self.with_env(|level, ents, env, cx| {
+                mob::animal::interact_on(
+                    level,
+                    ents,
+                    env,
+                    cx,
+                    player,
+                    target,
+                    vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+                    false,
+                );
+            });
+            self.spawn_drops();
+            return Ok(());
+        }
+        if op.item != mob::fam::wildlife::ender_pearl::ITEM {
+            // Every other item goes through the real `use_item` packet handler.
+            return self.player_use(&crate::scenario::PlayerUse {
+                entity: op.entity.clone(),
+                attack: false,
+                air: true,
+                pos: BlockPos::new(0, 0, 0),
+                face: "up".to_owned(),
+                hit: None,
+                item: Some(op.item.clone()),
+                count: op.count,
+                components: None,
+                offhand: false,
+                sneak: false,
+                food: None,
+            });
+        }
         let player = self.named(&op.entity)?;
         let item = vanillite_data::item::ItemId::by_name(&op.item)
             .ok_or_else(|| format!("unknown item {}", op.item))?;
         let mut stack = vanillite_game::item::ItemStack::new(item.0, op.count);
         let network_ids = Arc::clone(&self.network_ids);
-        let used = self.with_env(|_, ents, env, _| {
-            if op.item == mob::fam::wildlife::ender_pearl::ITEM {
-                mob::fam::wildlife::ender_pearl::throw(
-                    ents,
-                    env,
-                    &network_ids,
-                    player,
-                    &mut stack,
-                    vanillite_protocol::packets::play::serverbound::Hand::MainHand,
-                );
-                Ok(())
-            } else {
-                Err(format!("using {} is not supported here", op.item))
-            }
+        self.with_env(|_, ents, env, _| {
+            mob::fam::wildlife::ender_pearl::throw(
+                ents,
+                env,
+                &network_ids,
+                player,
+                &mut stack,
+                vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+            );
         });
         if let Some(p) = self.level.entities.player_mut(player) {
             let slot = p.inventory.selected;
             p.inventory.set(slot, stack);
         }
         self.spawn_drops();
-        used
+        Ok(())
     }
 
     /// `ServerPlayerGameMode.useItemOn` (through `handleUseItemOn`) or `START_DESTROY_BLOCK`
@@ -1662,6 +1732,12 @@ impl ScenarioWorld for GameWorld {
                 eyes_in_water: false,
                 dig_speed: None,
                 mining_fatigue: None,
+                respawn_here: player
+                    .survival
+                    .respawn
+                    .as_ref()
+                    .filter(|r| r.dimension == "minecraft:overworld")
+                    .map(|r| r.pos),
             };
             let mut effects = vanillite_server::LevelEffects::default();
             let spectators = vanillite_base::hash::FxHashSet::default();
@@ -1704,7 +1780,17 @@ impl ScenarioWorld for GameWorld {
                 y: at.y,
                 z: at.z,
             };
-            if click.attack {
+            if click.air {
+                let hand = if click.offhand {
+                    Hand::OffHand
+                } else {
+                    Hand::MainHand
+                };
+                player
+                    .connection
+                    .play
+                    .use_item(&mut ctx, hand, 0, rot.y_rot, rot.x_rot);
+            } else if click.attack {
                 player.connection.play.handle_action(
                     &mut ctx,
                     DigAction::StartDestroyBlock,
@@ -1746,6 +1832,11 @@ impl ScenarioWorld for GameWorld {
         })();
         self.level.entities.players = players;
         result?;
+        vanillite_game::survival::sleep::run_block_uses(
+            &mut self.level,
+            &vanillite_game::hooks::NoHooks,
+        );
+        self.explosion_hurts();
         self.apply_actions();
         self.finish_removals();
         self.spawn_drops();

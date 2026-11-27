@@ -304,6 +304,10 @@ fn on_hit(
         return;
     };
     let (owner, stack) = (p.owner, p.stack.clone());
+    // `super.onHitBlock`: the target block reacts first (applied after the tick).
+    if let Some((pos, _)) = block {
+        crate::mob::missile::hit_block(t.level, t.cx, id, pos, at);
+    }
     // `super.onHit`: the land game event comes first.
     crate::mob::missile::land_event(t.env.out, t.level, id, block.map(|(b, _)| b), at);
     if let Some((pos, face)) = block

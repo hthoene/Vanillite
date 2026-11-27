@@ -60,6 +60,12 @@ final class ScenarioEntities {
   boolean loadingPlayers;
   /** Frames hold the players' food and hands ({@code "player_state": true}). */
   boolean playerState;
+  /**
+   * Frames hold the players' sleeping position, sleep timer, pose id and respawn point ({@code
+   * "sleep_state": true}).
+   */
+  boolean sleepState;
+
   /** The players removed from the chunk system, given back by {@link #release()}. */
   private final List<ServerPlayer> players = new ArrayList<>();
   /** Every scenario player, for their connection tick. */
@@ -280,6 +286,8 @@ final class ScenarioEntities {
   /**
    * The {@code use_item} action: the named player gets {@code count} of {@code item} in its main
    * hand and uses it, as a {@code use_item} packet would ({@code ServerPlayerGameMode.useItem}).
+   * The {@code interact} action uses it on the named {@code target} instead ({@code
+   * Player.interactOn}).
    */
   void useItem(JsonObject action) {
     ServerPlayer player = (ServerPlayer) byName.get(action.get("entity").getAsString());
@@ -288,6 +296,13 @@ final class ScenarioEntities {
     int count = action.has("count") ? action.get("count").getAsInt() : 1;
     net.minecraft.world.item.ItemStack stack = new net.minecraft.world.item.ItemStack(item, count);
     player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, stack);
+    if (action.has("target")) {
+      player.interactOn(
+          byName.get(action.get("target").getAsString()),
+          net.minecraft.world.InteractionHand.MAIN_HAND,
+          net.minecraft.world.phys.Vec3.ZERO);
+      return;
+    }
     player.gameMode.useItem(
         player, player.level(), stack, net.minecraft.world.InteractionHand.MAIN_HAND);
   }
@@ -374,6 +389,30 @@ final class ScenarioEntities {
           .append(',')
           .append(hand(player.getOffhandItem()))
           .append(']');
+    }
+    if (sleepState && e instanceof ServerPlayer sp) {
+      BlockPos bed = sp.getSleepingPos().orElse(null);
+      ServerPlayer.RespawnConfig spawn = sp.getRespawnConfig();
+      sb.append(",\"sleep\":{\"pos\":")
+          .append(bed == null ? "null" : "[" + bed.getX() + "," + bed.getY() + "," + bed.getZ() + "]")
+          .append(",\"pose\":")
+          .append(sp.getPose().id())
+          .append(",\"spawn\":");
+      if (spawn == null) {
+        sb.append("null");
+      } else {
+        BlockPos at = spawn.respawnData().pos();
+        sb.append('[')
+            .append(at.getX())
+            .append(',')
+            .append(at.getY())
+            .append(',')
+            .append(at.getZ())
+            .append(',')
+            .append(spawn.forced())
+            .append(']');
+      }
+      sb.append(",\"timer\":").append(sp.getSleepTimer()).append('}');
     }
     if (e instanceof AbstractMinecart cart) {
       sb.append(",\"rot\":[")

@@ -159,6 +159,18 @@ pub struct LevelSettings {
     pub send_command_feedback: bool,
     /// `mobGriefing` game rule (`MOB_GRIEFING`).
     pub mob_griefing: bool,
+    /// `block_explosion_drop_decay` game rule.
+    pub block_explosion_drop_decay: bool,
+    /// `players_sleeping_percentage` game rule.
+    pub players_sleeping_percentage: i32,
+    /// The dimension's `gameplay/bed_rule` attribute.
+    pub bed_rule: crate::block::bed::BedRule,
+    /// The dimension's `gameplay/straw_bed_rule` attribute.
+    pub straw_bed_rule: crate::block::bed::BedRule,
+    /// The dimension's `gameplay/respawn_anchor_works` attribute (the Nether).
+    pub respawn_anchor_works: bool,
+    /// The dimension, e.g. `minecraft:overworld`.
+    pub dimension: String,
 }
 
 impl Default for LevelSettings {
@@ -196,6 +208,12 @@ impl Default for LevelSettings {
             max_command_sequence_length: 65536,
             send_command_feedback: true,
             mob_griefing: true,
+            block_explosion_drop_decay: true,
+            players_sleeping_percentage: 100,
+            bed_rule: crate::block::bed::BedRule::can_sleep_when_dark(),
+            straw_bed_rule: crate::block::bed::BedRule::destroy_on_leave(),
+            respawn_anchor_works: false,
+            dimension: "minecraft:overworld".to_owned(),
         }
     }
 }
@@ -241,6 +259,10 @@ impl LevelSettings {
         self.send_command_feedback = rules.bool(Rule::SEND_COMMAND_FEEDBACK);
         if let Some(v) = get("mob_griefing") {
             self.mob_griefing = v != 0;
+        }
+        self.block_explosion_drop_decay = rules.bool(Rule::BLOCK_EXPLOSION_DROP_DECAY);
+        if let Some(v) = get("players_sleeping_percentage") {
+            self.players_sleeping_percentage = v;
         }
     }
 }
@@ -438,6 +460,9 @@ pub struct Level {
     menu_requests: Vec<crate::menu::container::MenuRequest>,
     /// Sign editors blocks asked to open: player, position, front side.
     sign_editors: Vec<(EntityId, BlockPos, bool)>,
+    player_block_uses: Vec<(EntityId, BlockPos, crate::block::bed::PlayerBlockUse)>,
+    /// `ServerLevel.sleepStatus`.
+    pub sleep_status: crate::survival::sleep::SleepStatus,
     /// Stacks blocks hand to the player that used them (`player.getInventory().add`, else
     /// dropped); taken by the player handlers.
     player_gives: Vec<(EntityId, crate::item::ItemStack)>,
@@ -531,6 +556,8 @@ impl Level {
             output: LevelOutput::default(),
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
+            player_block_uses: Vec::new(),
+            sleep_status: crate::survival::sleep::SleepStatus::default(),
             player_gives: Vec::new(),
             player_effects: Vec::new(),
             player_awards: Vec::new(),
@@ -673,6 +700,24 @@ impl Level {
     /// Takes the sign editors blocks asked to open.
     pub fn take_sign_editors(&mut self) -> Vec<(EntityId, BlockPos, bool)> {
         std::mem::take(&mut self.sign_editors)
+    }
+
+    /// A bed or respawn anchor a player used: the player's side runs after its packets
+    /// ([`crate::survival::sleep::run_block_uses`]).
+    pub fn player_block_use(
+        &mut self,
+        player: EntityId,
+        pos: BlockPos,
+        kind: crate::block::bed::PlayerBlockUse,
+    ) {
+        self.player_block_uses.push((player, pos, kind));
+    }
+
+    /// Takes the bed and anchor uses since the last call.
+    pub fn take_player_block_uses(
+        &mut self,
+    ) -> Vec<(EntityId, BlockPos, crate::block::bed::PlayerBlockUse)> {
+        std::mem::take(&mut self.player_block_uses)
     }
 
     /// `setChanged` + `sendBlockUpdated` of a block entity whose client data changed: the

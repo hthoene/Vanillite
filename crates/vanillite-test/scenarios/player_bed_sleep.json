@@ -1,0 +1,209 @@
+{
+  "description": "Four players use beds at night: two fall asleep (a bed and a straw bed, the respawn point set by the bed only), one is too far away and one bed is obstructed. With players_sleeping_percentage 30 the two sleepers skip the night once both slept 100 ticks: they wake, stand up next to their beds, the straw bed breaks and the sleep timers run out.",
+  "tier": "fast",
+  "time": 18000,
+  "rules": {
+    "players_sleeping_percentage": "30"
+  },
+  "sleep_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      23,
+      -57,
+      10
+    ]
+  ],
+  "ticks": 114,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "block": "minecraft:red_bed[facing=south,occupied=false,part=foot]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        7
+      ],
+      "block": "minecraft:red_bed[facing=south,occupied=false,part=head]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "block": "minecraft:straw_bed[facing=south,occupied=false,part=foot]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        7
+      ],
+      "block": "minecraft:straw_bed[facing=south,occupied=false,part=head]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        16,
+        -60,
+        6
+      ],
+      "block": "minecraft:white_bed[facing=south,occupied=false,part=foot]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        16,
+        -60,
+        7
+      ],
+      "block": "minecraft:white_bed[facing=south,occupied=false,part=head]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -60,
+        6
+      ],
+      "block": "minecraft:blue_bed[facing=south,occupied=false,part=foot]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -60,
+        7
+      ],
+      "block": "minecraft:blue_bed[facing=south,occupied=false,part=head]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        21,
+        -59,
+        7
+      ],
+      "block": "minecraft:stone"
+    }
+  ],
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        4.5,
+        -60,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 1
+    },
+    {
+      "name": "hay",
+      "type": "minecraft:player",
+      "pos": [
+        10.5,
+        -60,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 2
+    },
+    {
+      "name": "far",
+      "type": "minecraft:player",
+      "pos": [
+        16.5,
+        -60,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 3
+    },
+    {
+      "name": "obs",
+      "type": "minecraft:player",
+      "pos": [
+        21.5,
+        -60,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 4
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "alex",
+      "pos": [
+        4,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "hay",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "far",
+      "pos": [
+        16,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    },
+    {
+      "tick": 2,
+      "op": "use",
+      "entity": "obs",
+      "pos": [
+        21,
+        -60,
+        6
+      ],
+      "item": "minecraft:air"
+    }
+  ]
+}

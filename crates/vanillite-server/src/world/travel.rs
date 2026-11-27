@@ -152,6 +152,8 @@ struct Landing {
     sound: bool,
     /// `placePortalTicket` at this position.
     ticket: Option<BlockPos>,
+    /// `missingRespawnBlock`: the bed or anchor is gone (the respawn point is cleared).
+    missing: bool,
 }
 
 /// `Relative.union(Relative.DELTA, Relative.ROTATION)`: velocity and rotation are kept.
@@ -321,6 +323,7 @@ impl ServerWorld {
                         | relative::X_ROT,
                     sound: true,
                     ticket: Some(containing(pos)),
+                    missing: false,
                 })
             }
             // `adjustSpawnLocation`: on top of the spawn column, turned by the spawn angle.
@@ -344,6 +347,7 @@ impl ServerWorld {
                     relatives: KEEP_MOTION_AND_ROTATION,
                     sound: true,
                     ticket: Some(containing(spawn)),
+                    missing: false,
                 })
             }
             _ => None,
@@ -473,6 +477,7 @@ impl ServerWorld {
                     wind_sound: Some(vanillite_game::effect::living::WIND_CHARGED_SOUND),
                     resistance: vanillite_game::level::explosion::BlockResistance::WindCharge,
                     fire: false,
+                    bad_respawn_point: false,
                 },
             );
         }
@@ -578,6 +583,14 @@ impl ServerWorld {
 
     /// `removePlayerImmediately`: the player entity leaves; its data travels.
     fn take_player(&mut self, id: EntityId, route: Route) -> Option<Traveller> {
+        // Out of bed before leaving the world.
+        vanillite_game::survival::sleep::stop_sleep_in_bed(
+            &mut self.level,
+            id,
+            true,
+            true,
+            &vanillite_game::hooks::NoHooks,
+        );
         let entity = self.level.entities.store.get(id)?;
         let (uuid, pos, velocity, rot) =
             (entity.uuid(), entity.pos(), entity.velocity(), entity.rot());
@@ -894,18 +907,7 @@ impl ServerWorld {
         drop(rules);
         // A respawn position that is gone (`NO_RESPAWN_BLOCK_AVAILABLE`): cleared, the world
         // spawn stands in.
-        let respawn_missing = keep_all.is_some()
-            && data
-                .survival
-                .respawn
-                .as_ref()
-                .is_some_and(|r| r.dimension == self.dimension)
-            && data
-                .survival
-                .respawn
-                .as_ref()
-                .and_then(|r| crate::survival::forced_respawn(&self.level.chunks, r))
-                .is_none();
+        let respawn_missing = keep_all.is_some() && landing.missing;
         if respawn_missing {
             data.survival.respawn = None;
         }
@@ -1130,28 +1132,51 @@ impl ServerWorld {
                         | relative::X_ROT,
                     sound: true,
                     ticket: Some(containing(pos)),
+                    missing: false,
                 })
             }
-            Route::Respawn { .. }
-                if let Some((pos, y_rot, x_rot)) = traveller
+            Route::Spawn | Route::Respawn { .. } => {
+                // `findRespawnPositionAndUseSpawnBlock`: a respawn (not the End's exit) uses
+                // an anchor charge.
+                let consume = matches!(traveller.route, Route::Respawn { .. });
+                let config = traveller
                     .data
                     .survival
                     .respawn
                     .as_ref()
-                    .filter(|r| r.dimension == self.dimension)
-                    .and_then(|r| crate::survival::forced_respawn(&self.level.chunks, r)) =>
-            {
-                Some(Landing {
-                    pos,
-                    y_rot,
-                    x_rot,
-                    relatives: 0,
-                    sound: false,
-                    ticket: None,
-                })
-            }
-            Route::Spawn | Route::Respawn { .. } => {
-                let (pos, yaw) = super::effective_spawn(&self.level, self.players.level.spawn);
+                    .filter(|r| r.dimension == self.dimension);
+                let found = config.map(|r| {
+                    vanillite_game::survival::respawn::find_respawn_and_use_spawn_block(
+                        &mut self.level,
+                        r,
+                        consume,
+                    )
+                });
+                if let Some(Some((pos, y_rot, x_rot))) = found {
+                    return Some(Landing {
+                        pos,
+                        y_rot,
+                        x_rot,
+                        relatives: 0,
+                        sound: false,
+                        ticket: None,
+                        missing: false,
+                    });
+                }
+                // `TeleportTransition.createDefault` / `missingRespawnBlock`: around the world
+                // spawn (`adjustSpawnLocation`).
+                let (spawn, yaw) = super::effective_spawn(&self.level, self.players.level.spawn);
+                let radius = global
+                    .level
+                    .rules()
+                    .get(vanillite_game::survival::rules::Rule::RESPAWN_RADIUS);
+                let pos = vanillite_game::survival::respawn::find_spawn(
+                    &mut self.level,
+                    BlockPos::containing(spawn.x, spawn.y, spawn.z),
+                    radius,
+                    crate::players::game_mode_by_id(global.level.default_game_type())
+                        == Some(GameMode::Adventure),
+                );
                 Some(Landing {
                     pos,
                     y_rot: yaw,
@@ -1159,6 +1184,7 @@ impl ServerWorld {
                     relatives: 0,
                     sound: false,
                     ticket: None,
+                    missing: found.is_some(),
                 })
             }
             Route::Pearl(arrival) => Some(Landing {
@@ -1168,6 +1194,7 @@ impl ServerWorld {
                 relatives: relative::Y_ROT | relative::X_ROT,
                 sound: false,
                 ticket: None,
+                missing: false,
             }),
             &Route::Command { pos, y_rot, x_rot } => Some(Landing {
                 pos,
@@ -1176,6 +1203,7 @@ impl ServerWorld {
                 relatives: 0,
                 sound: false,
                 ticket: None,
+                missing: false,
             }),
             Route::Back => Some(Landing {
                 pos: traveller.pos,
@@ -1184,6 +1212,7 @@ impl ServerWorld {
                 relatives: 0,
                 sound: false,
                 ticket: None,
+                missing: false,
             }),
         }
     }
@@ -1241,6 +1270,7 @@ impl ServerWorld {
             sound: true,
             // A found exit keeps its own chunks loaded, a new one those at the player.
             ticket: Some(ticket.unwrap_or_else(|| containing(pos))),
+            missing: false,
         })
     }
 

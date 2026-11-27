@@ -1,6 +1,7 @@
 //! The outbound side of a connection: an unbounded channel bounded by bytes (SEC-17) and the
 //! writer task that frames, compresses, encrypts and writes with one syscall per batch.
 
+use crate::sent_log::SentLog;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::io::AsyncWriteExt;
@@ -38,6 +39,8 @@ pub struct Outbound {
     closed: Arc<AtomicBool>,
     /// The last compression threshold queued ([`NO_COMPRESSION`] = off).
     threshold: Arc<AtomicUsize>,
+    /// The last packets the writer wrote.
+    sent: Arc<SentLog>,
 }
 
 /// [`Outbound::threshold`] value for compression off.
@@ -54,6 +57,7 @@ impl Outbound {
                 max_bytes,
                 closed: Arc::new(AtomicBool::new(false)),
                 threshold: Arc::new(AtomicUsize::new(NO_COMPRESSION)),
+                sent: Arc::new(SentLog::new()),
             },
             rx,
             queued,
@@ -123,6 +127,11 @@ impl Outbound {
         }
     }
 
+    /// The record of the last packets written, shared with the writer.
+    pub(crate) fn sent_log(&self) -> Arc<SentLog> {
+        Arc::clone(&self.sent)
+    }
+
     /// Whether the connection was closed.
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed) || self.tx.is_closed()
@@ -138,6 +147,7 @@ pub(crate) async fn tcp_writer(
     mut rx: mpsc::UnboundedReceiver<Out>,
     queued: Arc<AtomicUsize>,
     compression_level: i32,
+    sent: Arc<SentLog>,
 ) {
     let mut encoder = FrameEncoder::new();
     let mut codec = Codec::new(compression_level);
@@ -146,8 +156,10 @@ pub(crate) async fn tcp_writer(
     let mut adapter: Option<Box<ClientboundHalf>> = None;
     while open {
         let Some(first) = rx.recv().await else { break };
+        let ms = sent.now_ms();
         let mut next = Some(first);
         while let Some(msg) = next.take() {
+            record(&sent, ms, &msg);
             let consumed = match msg {
                 Out::Body(body) if adapter.is_some() => {
                     if let Some(a) = adapter.as_mut() {
@@ -261,9 +273,11 @@ pub(crate) async fn virtual_writer(
     tx: mpsc::Sender<Vec<u8>>,
     mut rx: mpsc::UnboundedReceiver<Out>,
     queued: Arc<AtomicUsize>,
+    sent: Arc<SentLog>,
 ) {
     let mut adapter: Option<Box<ClientboundHalf>> = None;
     while let Some(msg) = rx.recv().await {
+        record(&sent, sent.now_ms(), &msg);
         let (body, queued_len) = match msg {
             Out::Batch(frames, threshold) => {
                 queued.fetch_sub(frames.len(), Ordering::Relaxed);
@@ -321,5 +335,16 @@ pub(crate) async fn virtual_writer(
         {
             break;
         }
+    }
+}
+
+/// Notes a packet message in the connection's [`SentLog`] (before any version translation,
+/// so the names are this version's).
+fn record(sent: &SentLog, ms: u64, msg: &Out) {
+    match msg {
+        Out::Body(body) => sent.body(ms, body),
+        Out::Shared(p) => sent.body(ms, p.body()),
+        Out::Batch(frames, threshold) => sent.frames(ms, frames, threshold.is_some()),
+        _ => {}
     }
 }

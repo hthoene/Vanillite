@@ -47,6 +47,13 @@ fn held(ents: &Entities, player: EntityId, hand: Hand) -> ItemStack {
         .unwrap_or_default()
 }
 
+/// The `food` of an item that is eaten: only items with a `consumable` component are. The fish
+/// buckets carry `food` without `consumable` and are not edible.
+fn eaten_food(id: vanillite_data::item::ItemId) -> Option<vanillite_data::item::FoodInfo> {
+    let info = id.info();
+    info.food.filter(|_| !info.name.ends_with("_bucket"))
+}
+
 /// `getUseDuration` of an item, 0 when it is not used over time.
 fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
     let id = item::item_id(stack);
@@ -78,7 +85,7 @@ fn use_duration(ents: &Entities, player: EntityId, stack: &ItemStack) -> i32 {
             | "minecraft:honey_bottle"
             | "minecraft:ominous_bottle"
     );
-    if let Some(food) = info.food {
+    if let Some(food) = eaten_food(id) {
         // `canEat`: hungry, always edible, or invulnerable.
         let can = ents.player(player).is_some_and(|p| {
             food.can_always_eat
@@ -498,8 +505,7 @@ fn on_use_tick(
     stack: &ItemStack,
     remaining: i32,
 ) {
-    let info = item::item_id(stack).info();
-    if info.food.is_none() {
+    if eaten_food(item::item_id(stack)).is_none() {
         return;
     }
     // `Consumable.shouldEmitParticlesAndSounds`.
@@ -539,7 +545,7 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
     let id = item::item_id(&stack);
     let name = id.name();
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
-    let consumable = id.info().food.is_some()
+    let consumable = eaten_food(id).is_some()
         || matches!(
             name,
             "minecraft:milk_bucket"
@@ -563,7 +569,7 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
     let creative = ents
         .player(player)
         .is_some_and(|p| p.game_mode == GameMode::Creative);
-    if let Some(food) = id.info().food
+    if let Some(food) = eaten_food(id)
         && let Some(p) = ents.player_mut(player)
     {
         p.survival.food.eat(&crate::survival::food::FoodProperties {
@@ -634,7 +640,7 @@ fn finish(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, u: UsingItem
             | "minecraft:potion"
             | "minecraft:ominous_bottle"
     );
-    let consumable = drink || id.info().food.is_some();
+    let consumable = drink || eaten_food(id).is_some();
     if consumable {
         let events = crate::level::game_event::events();
         let event = if drink { events.drink } else { events.eat };
@@ -1133,6 +1139,23 @@ mod tests {
         assert!((bow_power(10) - (0.25 + 1.0) / 3.0).abs() < 1e-6);
         assert!((bow_power(20) - 1.0).abs() < 1e-6);
         assert!((bow_power(100) - 1.0).abs() < 1e-6);
+    }
+
+    /// Fish buckets carry `food` without `consumable`: they are not eaten (#119).
+    #[test]
+    fn fish_buckets_are_not_eaten() {
+        use vanillite_data::item::ids;
+        for bucket in [
+            ids::COD_BUCKET,
+            ids::SALMON_BUCKET,
+            ids::PUFFERFISH_BUCKET,
+            ids::TROPICAL_FISH_BUCKET,
+        ] {
+            assert!(bucket.info().food.is_some(), "{}", bucket.name());
+            assert!(eaten_food(bucket).is_none(), "{}", bucket.name());
+        }
+        assert!(eaten_food(ids::COD).is_some());
+        assert!(eaten_food(ids::PUFFERFISH).is_some());
     }
 
     #[test]

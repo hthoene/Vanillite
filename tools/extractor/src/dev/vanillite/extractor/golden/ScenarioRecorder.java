@@ -226,6 +226,8 @@ public final class ScenarioRecorder {
       entities.loadingPlayers = dimensions;
       entities.playerState =
           scenario.has("player_state") && scenario.get("player_state").getAsBoolean();
+      entities.sleepState =
+          scenario.has("sleep_state") && scenario.get("sleep_state").getAsBoolean();
       JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
       // Players join first; then the level random starts from the world seed and the mobs come.
       for (int i = 0; i < specs.size(); i++) {
@@ -284,7 +286,7 @@ public final class ScenarioRecorder {
                 BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
-              } else if (op.equals("use_item")) {
+              } else if (op.equals("use_item") || op.equals("interact")) {
                 entities.useItem(action);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));

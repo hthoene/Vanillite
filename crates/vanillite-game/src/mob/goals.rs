@@ -912,7 +912,7 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
         }
         Goal::Swell => {
             let m = t.mob_ref();
-            m.swell_dir > 0
+            super::fam::classic::creeper(m).swell_dir > 0
                 || m.target.is_some_and(|target| {
                     other_pos(t, target).is_some_and(|p| distance_sqr(t, p) < 9.0)
                 })
@@ -1018,12 +1018,12 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             player.is_some()
         }
         Goal::EndermanLeaveBlock => {
-            t.mob_ref().carried.is_some()
+            super::fam::classic::enderman(t.mob_ref()).carried.is_some()
                 && t.env.rules.bool(Rule::MOB_GRIEFING)
                 && random_int(t, reduced(2000)) == 0
         }
         Goal::EndermanTakeBlock => {
-            t.mob_ref().carried.is_none()
+            super::fam::classic::enderman(t.mob_ref()).carried.is_none()
                 && t.env.rules.bool(Rule::MOB_GRIEFING)
                 && random_int(t, reduced(20)) == 0
         }
@@ -1486,7 +1486,9 @@ pub(crate) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
         Goal::Bow { .. } => bow_tick(t, g),
         Goal::EatBlock { tick } => {
             *tick = (*tick - 1).max(0);
-            t.mob().eat_animation = *tick;
+            if let Some(s) = super::fam::classic::try_sheep_mut(t.mob()) {
+                s.eat_animation = *tick;
+            }
             if *tick == reduced(4) {
                 kinds::eat_block(t);
             }

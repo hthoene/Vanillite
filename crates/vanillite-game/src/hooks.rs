@@ -28,6 +28,21 @@ pub trait GameHooks: Sync {
     fn block_place(&self, _player: u128, _pos: BlockPos, _state: BlockState) -> bool {
         true
     }
+
+    /// A player is about to fall asleep in the bed `state` whose head is at `pos`. `false`
+    /// cancels it (the respawn point a bed sets is already set).
+    fn bed_enter(&self, _player: u128, _pos: BlockPos, _state: BlockState) -> bool {
+        true
+    }
+
+    /// A player left the bed `state` at `pos` (woke up, was woken or left it).
+    fn bed_leave(&self, _player: u128, _pos: BlockPos, _state: BlockState) {}
+
+    /// A bed or respawn anchor (`state` at `pos`) is about to become the player's respawn
+    /// point. `false` cancels it.
+    fn spawn_change(&self, _player: u128, _pos: BlockPos, _state: BlockState) -> bool {
+        true
+    }
 }
 
 /// No hooks (tests, worlds without plugins).

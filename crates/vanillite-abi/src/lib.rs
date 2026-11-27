@@ -41,7 +41,7 @@ pub mod layout;
 /// Major version of the plugin ABI: changes on breaking changes.
 pub const ABI_MAJOR: u16 = 1;
 /// Minor version of the plugin ABI: changes when declarations are appended.
-pub const ABI_MINOR: u16 = 2;
+pub const ABI_MINOR: u16 = 3;
 /// The symbol every plugin library exports (type [`EntryFn`]).
 pub const ENTRY_SYMBOL: &str = "vanillite_plugin_abi";
 
@@ -243,6 +243,14 @@ abi! {
             BLOCK_BREAK = 7,
             /// A player is about to place a block ([`BlockEvent`]); cancellable.
             BLOCK_PLACE = 8,
+            /// A player is about to fall asleep in a bed ([`BlockEvent`]: the bed's head);
+            /// cancellable. Since ABI 1.3.
+            PLAYER_BED_ENTER = 9,
+            /// A player left its bed ([`BlockEvent`]: the bed's head). Since ABI 1.3.
+            PLAYER_BED_LEAVE = 10,
+            /// A bed or respawn anchor is about to become a player's respawn point
+            /// ([`BlockEvent`]); cancellable. Since ABI 1.3.
+            PLAYER_SPAWN_CHANGE = 11,
         }
         /// Event priorities: handlers run from the lowest to the highest value, then monitors.
         pub mod priority: i32 {
@@ -506,7 +514,8 @@ abi! {
             /// The damage after armour-independent scaling; handlers may change it.
             pub amount: f32,
         }
-        /// [`event::BLOCK_BREAK`] and [`event::BLOCK_PLACE`].
+        /// [`event::BLOCK_BREAK`], [`event::BLOCK_PLACE`], [`event::PLAYER_BED_ENTER`],
+        /// [`event::PLAYER_BED_LEAVE`] and [`event::PLAYER_SPAWN_CHANGE`].
         pub struct BlockEvent {
             /// Header.
             pub header: EventHeader,

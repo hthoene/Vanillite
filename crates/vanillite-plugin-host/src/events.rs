@@ -13,7 +13,7 @@ use crate::api::CallCtx;
 use crate::{Inner, PluginHost, SendPtr, Subscriber, WorldAccess};
 
 /// Highest event kind of this ABI version.
-const MAX_KIND: u32 = abi::event::BLOCK_PLACE;
+const MAX_KIND: u32 = abi::event::PLAYER_SPAWN_CHANGE;
 
 #[derive(Debug, Default)]
 pub(crate) struct Events {
@@ -259,6 +259,37 @@ impl PluginHost {
             }
         );
         (event.header.cancelled == 0).then_some(event.amount)
+    }
+
+    /// A player event about a block (`PLAYER_BED_ENTER`, `PLAYER_BED_LEAVE`,
+    /// `PLAYER_SPAWN_CHANGE`). Returns `false` when a plugin cancelled it.
+    pub fn player_block(
+        &self,
+        kind: u32,
+        world: u32,
+        player: u128,
+        pos: [i32; 3],
+        state: &str,
+    ) -> bool {
+        if !self.wants(kind) {
+            return true;
+        }
+        let event = fire!(
+            self,
+            kind,
+            None,
+            BlockEvent {
+                world,
+                player: abi::Uuid::from_u128(player),
+                pos: abi::BlockPos {
+                    x: pos[0],
+                    y: pos[1],
+                    z: pos[2],
+                },
+                state: abi::Str::new(state),
+            }
+        );
+        event.header.cancelled == 0
     }
 
     /// A player is about to break (`place == false`) or place a block. Returns `false` when a

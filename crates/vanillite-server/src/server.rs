@@ -31,6 +31,7 @@ use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, SaveSettings};
 use vanillite_world::entity::NetworkIds;
 use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
 
+use crate::budget::{Budget, Limits};
 use crate::clock::Clock;
 use crate::compute::{Compute, ComputePool, Scheduler};
 use crate::global::Global;
@@ -51,6 +52,10 @@ pub const DIMENSIONS: [&str; 3] = [
 
 /// How far behind the server must be before "Can't keep up!" (plus 20 ticks).
 const OVERLOADED_THRESHOLD: u64 = NANOS_PER_SECOND;
+/// Ticks between the hand-backs of freed memory to the system ([`Budget::release_memory`]).
+const MEMORY_RELEASE_TICKS: u64 = 600;
+/// `performance.chunks.max-jobs` at most on scarce hardware ([`Budget::scarce`]).
+const SCARCE_MAX_JOBS: usize = 16;
 /// Minimum time between two "Can't keep up!" warnings (plus 100 ticks).
 const OVERLOADED_WARNING_INTERVAL: u64 = 10 * NANOS_PER_SECOND;
 /// Vanilla's autosave period in seconds of game time.
@@ -146,6 +151,7 @@ pub struct ServerBuilder {
     version: String,
     /// The parity harness drives the server (`test-support`).
     harness: bool,
+    memory_release: Option<fn()>,
 }
 
 impl ServerBuilder {
@@ -161,12 +167,20 @@ impl ServerBuilder {
             vanilla_pack: VanillaPack::default(),
             network: true,
             harness: false,
+            memory_release: None,
             version: format!(
                 "Vanillite {} (Minecraft {})",
                 env!("CARGO_PKG_VERSION"),
                 vanillite_data::version::VERSION_ID
             ),
         }
+    }
+
+    /// The allocator's way to return freed memory to the system (`malloc_trim`, `mi_collect`):
+    /// the server calls it after bursts of work ([`crate::budget::Budget::release_memory`]).
+    pub fn memory_release(&mut self, release: fn()) -> &mut Self {
+        self.memory_release = Some(release);
+        self
     }
 
     /// The version shown in the startup log (default: `Vanillite <version> (Minecraft <id>)`);
@@ -249,17 +263,23 @@ impl ServerBuilder {
         let parallel = config.server.tick.parallel_dimensions;
         // One core stays with the tick threads: dimensions without players sleep between their
         // ticks, so they do not take a core each (Vanilla: cores minus the server thread).
+        let budget = Arc::new(Budget::new(Limits::detect(
+            config.server.budget.cpu,
+            config.server.budget.memory,
+        )));
+        if let Some(release) = self.memory_release {
+            budget.set_memory_release(release);
+        }
+        log::info!("Hardware budget: {}", budget.describe());
         let workers = match config.server.threads.compute {
-            0 => std::thread::available_parallelism()
-                .map_or(1, usize::from)
-                .saturating_sub(1)
-                .max(1),
+            0 => budget.limits().default_workers(),
             n => usize::from(n),
         };
         let (scheduler, origin) = match self.scheduler.take() {
             Some(filled) => filled,
             None => {
-                let pool = ComputePool::new(workers).map_err(|e| StartError::io(&dir, e))?;
+                let pool = ComputePool::with_budget(workers, Arc::clone(&budget))
+                    .map_err(|e| StartError::io(&dir, e))?;
                 (Box::new(pool) as Box<dyn Scheduler>, Origin::BuiltIn)
             }
         };
@@ -316,6 +336,7 @@ impl ServerBuilder {
         if let Some(packs) = packs.as_deref() {
             vanillite_worldgen::behaviour::init(packs);
         }
+        let spawn_known = prepared.spawn_known;
         let seed = prepared.world_gen.seed;
         let world_gen = prepared.world_gen.clone();
         let mut behaviours = vanillite_game::block::Behaviours::vanilla();
@@ -428,7 +449,10 @@ impl ServerBuilder {
             .take()
             .unwrap_or_else(|| (Box::new(BfsLightEngineProvider), Origin::BuiltIn));
         slot("light-engine", &origin);
-        let executor = Arc::new(crate::world_setup::ComputeExecutor(compute.clone()));
+        let executor = Arc::new(crate::world_setup::ComputeExecutor(
+            compute.clone(),
+            Arc::clone(&budget),
+        ));
 
         let clock = Clock::new();
         let max_players = usize::try_from(config.properties.max_players).unwrap_or(0);
@@ -568,7 +592,13 @@ impl ServerBuilder {
             let settings = ChunkSettings {
                 view_distance: i32::from(view_distance),
                 unload_delay: u64::from(rules.chunks.unload_delay),
-                max_jobs: usize::from(rules.chunks.max_jobs),
+                // On scarce hardware fewer jobs wait in the queue, so the newest priorities
+                // (the chunks around the players now) come first.
+                max_jobs: if budget.scarce() {
+                    usize::from(rules.chunks.max_jobs).min(SCARCE_MAX_JOBS)
+                } else {
+                    usize::from(rules.chunks.max_jobs)
+                },
                 simulation_distance: i32::from(rules.distances.simulation_distance.or(
                     u8::try_from(config.properties.simulation_distance.clamp(2, 32)).unwrap_or(10),
                 )),
@@ -647,6 +677,9 @@ impl ServerBuilder {
             world.restore_tickets(saved_tickets);
             worlds.push(world);
         }
+        if !spawn_known {
+            initial_spawn(&mut worlds, &global, world_gen.flat_spawn_height());
+        }
         prepare_levels(&mut worlds);
         let (worlds, routes) = if parallel {
             log::info!("Dimensions tick in parallel");
@@ -697,6 +730,7 @@ impl ServerBuilder {
             dir,
             config,
             compute,
+            budget,
             global,
             worlds,
             routes,
@@ -959,6 +993,7 @@ pub struct Server {
     dir: PathBuf,
     config: Config,
     compute: Compute,
+    budget: Arc<Budget>,
     global: Arc<Global>,
     worlds: Worlds,
     routes: Arc<[Route]>,
@@ -1126,6 +1161,7 @@ impl Server {
     fn tick_server(&mut self) {
         let clock = self.global.clock;
         let started = clock.now();
+        self.budget.enter_tick();
         self.heartbeat.enter(&clock);
         self.watch.progress.store(started, Ordering::Relaxed);
 
@@ -1148,6 +1184,7 @@ impl Server {
                 // The console stays responsive while paused, like Vanilla.
                 self.global_pre_phase();
                 self.heartbeat.leave();
+                self.budget.leave_tick(clock.now().saturating_sub(started));
                 self.watch.progress.store(clock.now(), Ordering::Relaxed);
                 return;
             }
@@ -1176,6 +1213,12 @@ impl Server {
             }
         }
         self.heartbeat.leave();
+        self.budget.leave_tick(elapsed_nanos);
+        if self.tick_count.is_multiple_of(MEMORY_RELEASE_TICKS) {
+            let budget = Arc::clone(&self.budget);
+            self.compute
+                .spawn_background(u32::MAX, move || budget.release_memory());
+        }
         self.watch.progress.store(clock.now(), Ordering::Relaxed);
     }
 
@@ -1826,6 +1869,37 @@ fn open_tick_log() -> Option<io::BufWriter<File>> {
             );
             None
         }
+    }
+}
+
+/// `MinecraftServer.setInitialSpawn` of a new world: the generator's origin chunk (the noise
+/// spawn search), then the first chunk with a respawn column in a spiral of 11 × 11 chunks
+/// around it. `flat_height` is the flat generator's layer height (`getSpawnHeight`).
+fn initial_spawn(worlds: &mut [ServerWorld], global: &Global, flat_height: Option<i32>) {
+    let Some(world) = worlds.first_mut() else {
+        return;
+    };
+    let spawn = world.search_initial_spawn(flat_height);
+    log::info!(
+        "Spawn of the new world: {}, {}, {}",
+        spawn.x,
+        spawn.y,
+        spawn.z
+    );
+    global.level.set_spawn(vanillite_storage::level_dat::Spawn {
+        dimension: "minecraft:overworld".to_owned(),
+        pos: [spawn.x, spawn.y, spawn.z],
+        yaw: 0.0,
+        pitch: 0.0,
+    });
+    let at = vanillite_base::Vec3::new(
+        f64::from(spawn.x) + 0.5,
+        f64::from(spawn.y),
+        f64::from(spawn.z) + 0.5,
+    );
+    global.systems.set_spawn(at);
+    for world in worlds.iter_mut() {
+        world.players.level.spawn = (at, 0.0);
     }
 }
 

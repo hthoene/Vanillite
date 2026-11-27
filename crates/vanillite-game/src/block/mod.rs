@@ -11,6 +11,7 @@
 //! blocks that placing or breaking one block adds or removes.
 
 pub mod beacon;
+pub mod bed;
 pub mod beehive;
 pub mod bell;
 pub mod bonemeal;
@@ -119,8 +120,6 @@ pub type AttackFn = fn(&mut Level, BlockState, BlockPos, EntityId);
 /// (the player's data is not part of the level).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerEffect {
-    /// `player.awardStat(stat, count)`.
-    Stat(crate::stats::Stat, i32),
     /// `player.getFoodData().eat(nutrition, saturation)`.
     Eat(i32, f32),
     /// `ItemUtils.createFilledResult` for a creative player: the stack goes into the inventory
@@ -151,6 +150,12 @@ pub struct UseContext {
     pub can_eat: bool,
     /// `player.canUseGameMasterBlocks()`: creative with operator permission level 2.
     pub game_master: bool,
+    /// The click is with the main hand.
+    pub main_hand: bool,
+    /// The item id in the player's off hand.
+    pub off_hand_item: u16,
+    /// The player's respawn position if it is in this world (`getRespawnConfig`).
+    pub respawn_here: Option<BlockPos>,
 }
 
 /// `InteractionResult` as far as block use goes.
@@ -371,6 +376,7 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     bookshelf::fill(block, &mut b);
     campfire::fill(block, &mut b);
     cake::fill(block, &mut b);
+    bed::fill(block, &mut b);
     cauldron::fill(block, &mut b);
     composter::fill(block, &mut b);
     interact::fill(block, &mut b);

@@ -62,6 +62,15 @@ enum Kind {
     Pregen,
     /// `save-all flush` after bots flew through new terrain.
     Save,
+    /// Small container: a CPU quota in percent of one core and a memory limit in MiB; idle
+    /// RSS, then one bot through the steps with the movement checks on.
+    Weak {
+        cpu_percent: u32,
+        memory_mib: u32,
+        steps: &'static [Step],
+        settle: u64,
+        hold: u64,
+    },
 }
 
 struct Scenario {
@@ -195,6 +204,23 @@ const SCENARIOS: &[Scenario] = &[
         servers: &["vanillite", "paper"],
         headline: ("chunks generated per second", "chunks/s", Better::Higher),
         kind: Kind::Pregen,
+    },
+    Scenario {
+        name: "weak",
+        title: "Weak hardware: 1 core, 1 GiB",
+        what: "Vanillite in a cgroup with a CPU quota of one core and a memory limit of \
+               1 GiB, like a small Pterodactyl server: idle RSS, then one player walks \
+               (sprint speed) and flies (10 blocks/s) straight through new terrain with the \
+               movement checks on. Rubber-banding: server teleports of the bot.",
+        servers: &["vanillite"],
+        headline: ("MSPT max with one moving player", "ms", Better::Lower),
+        kind: Kind::Weak {
+            cpu_percent: 100,
+            memory_mib: 1024,
+            steps: &[(1, "straight:sprint", None), (1, "straight:10", None)],
+            settle: 5,
+            hold: 60,
+        },
     },
     Scenario {
         name: "proxy",
@@ -336,6 +362,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
             Ok(())
         }
         ["report"] => report(root),
+        ["publish", source] => publish(root, source),
         ["nightly", rest @ ..] => nightly(root, rest),
         _ => suite(root, args),
     }
@@ -460,18 +487,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
         }
         results.insert(
             scenario.name.to_owned(),
-            json!({
-                "title": scenario.title,
-                "what": scenario.what,
-                "headline": {
-                    "label": scenario.headline.0,
-                    "unit": scenario.headline.1,
-                    "better": match scenario.headline.2 { Better::Lower => "lower", Better::Higher => "higher" },
-                },
-                "date": stamp,
-                "commit": code_commit,
-                "results": per_server,
-            }),
+            scenario_entry(scenario, &stamp, &json!(code_commit), per_server),
         );
     }
     let run = json!({
@@ -485,6 +501,14 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
     });
     let text = serde_json::to_string_pretty(&run).map_err(|e| e.to_string())?;
     crate::write(&out_dir.join("results.json"), &text)?;
+    if !dirty {
+        // The whole run next to the raw files: `bench publish <time>` reads it from there.
+        let _ = loadtest::store(
+            &ctx.host,
+            &run,
+            &format!("{REMOTE_RESULTS}/{stamp}/run.json"),
+        );
+    }
     println!("wrote {}", out_dir.join("results.json").display());
     if publish {
         publish_results(root, &run)?;
@@ -563,7 +587,83 @@ fn run_one(ctx: &mut Ctx, scenario: &Scenario, server: &str) -> Result<Value> {
         Kind::Built { setup, cycle } => built(ctx, server, target, *setup, *cycle),
         Kind::Pregen => pregen(ctx, target),
         Kind::Save => save(ctx, server, target),
+        Kind::Weak {
+            cpu_percent,
+            memory_mib,
+            steps,
+            settle,
+            hold,
+        } => weak(
+            ctx,
+            server,
+            target,
+            (*cpu_percent, *memory_mib),
+            steps,
+            *settle,
+            *hold,
+        ),
     }
+}
+
+/// [`Kind::Weak`]: the limits apply from the start; `reset` drops them again.
+fn weak(
+    ctx: &mut Ctx,
+    server: &str,
+    target: Target,
+    (cpu_percent, memory_mib): (u32, u32),
+    steps: &[Step],
+    settle: u64,
+    hold: u64,
+) -> Result<Value> {
+    bench_cmd(&ctx.host, &["reset", target.name()])?;
+    bench_cmd(
+        &ctx.host,
+        &[
+            "limit",
+            target.name(),
+            &cpu_percent.to_string(),
+            &memory_mib.to_string(),
+        ],
+    )?;
+    let result = (|| {
+        let started = bench_json(&ctx.host, &["start", target.name()])?;
+        if let Some(v) = started["version"].as_str() {
+            ctx.versions.insert(server.to_owned(), v.to_owned());
+        }
+        std::thread::sleep(Duration::from_secs(15));
+        let idle = bench_json(&ctx.host, &["idle", target.name(), "30"])?;
+        let mut o = options(steps, settle, hold);
+        o.join_rate = 1.0;
+        let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+        let measured = loadtest::ramp(&o, &mut session);
+        session.close();
+        let measured = measured?;
+        let max_mspt = measured
+            .iter()
+            .filter_map(|s| s["mspt"]["max"].as_f64())
+            .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))));
+        let teleports: u64 = measured
+            .iter()
+            .filter_map(|s| s["bots"]["teleports"].as_u64())
+            .sum();
+        let mut result = json!({
+            "cpu_quota_percent": cpu_percent,
+            "memory_limit_mib": memory_mib,
+            "start_s": started["ready_s"],
+            "idle_rss_mib": idle["rss_mib"],
+            "idle_cpu_percent": idle["cpu_percent"],
+            "max_mspt": round(max_mspt),
+            "teleports": teleports,
+            "steps": measured.iter().map(compact_step).collect::<Vec<_>>(),
+        });
+        if measured.len() < o.steps.len() {
+            result["status"] = json!("failed");
+            result["note"] = json!("the bot did not stay online");
+        }
+        Ok(result)
+    })();
+    let _ = bench_cmd(&ctx.host, &["reset", target.name()]);
+    result
 }
 
 /// Fresh world, then start; records the version. With a proxy target the backend is
@@ -987,6 +1087,7 @@ fn headline(scenario: &Scenario, r: &Value) -> Value {
     match scenario.name {
         "startup" => r["idle_rss_mib"].clone(),
         "save" => r["save_s"].clone(),
+        "weak" => r["max_mspt"].clone(),
         "pregen" => r["chunks_per_s"].clone(),
         "proxy" => step(500).map_or(Value::Null, |s| s["cpu_percent"].clone()),
         "flight" => step(100).map_or(Value::Null, |s| s["near_missing_percent"].clone()),
@@ -1264,40 +1365,310 @@ fn light(x: i32, y: i32, z: i32, i: usize) -> Vec<String> {
 
 // --- Publishing: latest.json, history.json and README.md ---
 
+/// `cargo xtask bench publish <time|latest|results.json>`: publishes a finished suite run: a
+/// local results.json, or the run directory /opt/vanillite/bench/suite/<time>/ on the test
+/// server (`latest`: the newest one). Runs from before `run.json` was stored there are put
+/// together from the raw per-server files; their commit stays unknown.
+fn publish(root: &Path, source: &str) -> Result<()> {
+    let local = Path::new(source);
+    let run = if local.is_file() {
+        crate::read_json(local)?
+    } else {
+        let host = std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into());
+        let stamp = if source == "latest" {
+            let out = loadtest::command_output(
+                Command::new("ssh").args([&host, &format!("ls -1 {REMOTE_RESULTS}")]),
+            )?;
+            out.lines()
+                .filter(|l| l.ends_with('Z'))
+                .max()
+                .ok_or("no suite runs on the test server")?
+                .to_owned()
+        } else if source.len() == 16 && source.ends_with('Z') && !source.contains('/') {
+            source.to_owned()
+        } else {
+            return Err(format!(
+                "{source}: neither a results.json nor a run time like 20261125T040943Z"
+            ));
+        };
+        remote_run(&host, &stamp)?
+    };
+    if run["dirty"] == true {
+        return Err("the run was made from a checkout with local changes".into());
+    }
+    publish_results(root, &run)
+}
+
+/// The run of a suite directory on the test server.
+fn remote_run(host: &str, stamp: &str) -> Result<Value> {
+    let dir = format!("{REMOTE_RESULTS}/{stamp}");
+    let out = loadtest::command_output(Command::new("ssh").args([
+        host,
+        &format!("cd {dir} && for f in *.json; do printf '%s\\t' \"$f\"; cat \"$f\"; echo; done"),
+    ]))?;
+    let mut files = BTreeMap::new();
+    for line in out.lines() {
+        if let Some((name, text)) = line.split_once('\t') {
+            let v: Value = serde_json::from_str(text).map_err(|e| format!("{dir}/{name}: {e}"))?;
+            files.insert(name.trim_end_matches(".json").to_owned(), v);
+        }
+    }
+    if let Some(run) = files.remove("run") {
+        return Ok(run);
+    }
+    let mut scenarios = Map::new();
+    let mut versions = BTreeMap::new();
+    for scenario in SCENARIOS {
+        let mut per_server = Map::new();
+        for (server, _) in SERVERS {
+            if let Some(r) = files.get(&format!("{}-{server}", scenario.name)) {
+                if let Some(v) = r["version"].as_str() {
+                    versions.insert((*server).to_owned(), v.to_owned());
+                }
+                per_server.insert((*server).to_owned(), r.clone());
+            }
+        }
+        if !per_server.is_empty() {
+            scenarios.insert(
+                scenario.name.to_owned(),
+                scenario_entry(scenario, stamp, &Value::Null, per_server),
+            );
+        }
+    }
+    if scenarios.is_empty() {
+        return Err(format!("no results in {dir}"));
+    }
+    let root = Path::new(".");
+    let ctx = Ctx {
+        host: host.to_owned(),
+        root,
+        bin_dir: root.to_path_buf(),
+        versions,
+    };
+    Ok(json!({
+        "suite": 1,
+        "date": stamp,
+        "commit": null,
+        "code_commit": null,
+        "dirty": false,
+        "environment": environment(&ctx),
+        "scenarios": scenarios,
+    }))
+}
+
+/// The published entry of one scenario of a run.
+fn scenario_entry(
+    scenario: &Scenario,
+    stamp: &str,
+    commit: &Value,
+    results: Map<String, Value>,
+) -> Value {
+    json!({
+        "title": scenario.title,
+        "what": scenario.what,
+        "headline": {
+            "label": scenario.headline.0,
+            "unit": scenario.headline.1,
+            "better": match scenario.headline.2 { Better::Lower => "lower", Better::Higher => "higher" },
+        },
+        "date": stamp,
+        "commit": commit,
+        "results": results,
+    })
+}
+
+/// A number besides the headline that the history keeps and the regression check compares.
+struct Metric {
+    key: &'static str,
+    label: &'static str,
+    unit: &'static str,
+    better: Better,
+    get: fn(&Value) -> Value,
+}
+
+/// The extra metrics of a scenario (the headline is always compared too).
+fn metrics_of(name: &str) -> Vec<Metric> {
+    let m = |key, label, unit, better, get| Metric {
+        key,
+        label,
+        unit,
+        better,
+        get,
+    };
+    match name {
+        "startup" => vec![
+            m("cold_start_s", "cold start", "s", Better::Lower, |r| {
+                r["cold_start_s"].clone()
+            }),
+            m("warm_start_s", "warm start", "s", Better::Lower, |r| {
+                r["warm_start_s"].clone()
+            }),
+        ],
+        "pregen" => vec![
+            m(
+                "cpu_ms_per_chunk",
+                "CPU per chunk",
+                "ms",
+                Better::Lower,
+                |r| r["cpu_ms_per_chunk"].clone(),
+            ),
+            m(
+                "load_chunks_per_s",
+                "loading from disk",
+                "chunks/s",
+                Better::Higher,
+                |r| r["load_chunks_per_s"].clone(),
+            ),
+            m("peak_rss_mib", "peak RSS", "MiB", Better::Lower, |r| {
+                r["peak_rss_mib"].clone()
+            }),
+        ],
+        "save" => vec![m(
+            "flight_mspt_p95",
+            "MSPT p95 while flying",
+            "ms",
+            Better::Lower,
+            |r| r["flight_mspt_p95"].clone(),
+        )],
+        "weak" => vec![
+            m("idle_rss_mib", "idle RSS", "MiB", Better::Lower, |r| {
+                r["idle_rss_mib"].clone()
+            }),
+            m(
+                "player_rss_mib",
+                "RSS with one player",
+                "MiB",
+                Better::Lower,
+                |r| {
+                    r["steps"]
+                        .as_array()
+                        .and_then(|s| s.last())
+                        .map_or(Value::Null, |s| s["rss_mib"].clone())
+                },
+            ),
+            m("teleports", "server teleports", "", Better::Lower, |r| {
+                r["teleports"].clone()
+            }),
+        ],
+        "redstone" | "mobs" | "items" | "hoppers" | "tnt" | "fluids" | "light" => vec![
+            m("mspt_p95", "MSPT p95", "ms", Better::Lower, |r| {
+                r["mspt"]["p95"].clone()
+            }),
+            m("rss_mib", "RSS", "MiB", Better::Lower, |r| {
+                r["rss_mib"].clone()
+            }),
+        ],
+        _ => vec![
+            m(
+                "last_mspt_p95",
+                "MSPT p95 at the last step",
+                "ms",
+                Better::Lower,
+                |r| {
+                    r["steps"]
+                        .as_array()
+                        .and_then(|s| s.last())
+                        .map_or(Value::Null, |s| s["mspt"]["p95"].clone())
+                },
+            ),
+            m(
+                "last_rss_mib",
+                "RSS at the last step",
+                "MiB",
+                Better::Lower,
+                |r| {
+                    r["steps"]
+                        .as_array()
+                        .and_then(|s| s.last())
+                        .map_or(Value::Null, |s| s["rss_mib"].clone())
+                },
+            ),
+        ],
+    }
+}
+
 fn publish_results(root: &Path, run: &Value) -> Result<()> {
     let dir = root.join(RESULTS);
+    let stamp = run["date"].as_str().ok_or("the run has no date")?;
     let latest_path = dir.join("latest.json");
     let mut latest = crate::read_json(&latest_path).unwrap_or_else(|_| json!({ "scenarios": {} }));
+    if latest["date"].as_str().is_some_and(|d| d > stamp) {
+        return Err(format!(
+            "results of a newer run ({}) are already published",
+            latest["date"]
+        ));
+    }
     for key in ["suite", "date", "commit", "code_commit", "environment"] {
         latest[key] = run[key].clone();
     }
     for (name, scenario) in run["scenarios"].as_object().into_iter().flatten() {
-        latest["scenarios"][name] = scenario.clone();
+        let old = latest["scenarios"][name].take();
+        let mut scenario = scenario.clone();
+        // Servers left out of this run keep their last result, marked with its date.
+        for (server, r) in old["results"].as_object().into_iter().flatten() {
+            if scenario["results"].get(server).is_none() {
+                let mut r = r.clone();
+                if r["measured"].is_null() {
+                    r["measured"] = json!({ "date": old["date"], "commit": old["commit"] });
+                }
+                scenario["results"][server] = r;
+            }
+        }
+        latest["scenarios"][name] = scenario;
     }
     let history_path = dir.join("history.json");
     let mut history = crate::read_json(&history_path)
         .ok()
         .and_then(|h| h.as_array().cloned())
         .unwrap_or_default();
+    // Publishing a run again replaces its entry.
+    history.retain(|h| h["date"].as_str() != Some(stamp));
     let mut headlines = Map::new();
+    let mut metrics = Map::new();
     for (name, scenario) in run["scenarios"].as_object().into_iter().flatten() {
-        let per_server: Map<String, Value> = scenario["results"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .map(|(server, r)| (server.clone(), r["headline"].clone()))
-            .collect();
-        headlines.insert(name.clone(), Value::Object(per_server));
+        let defs = metrics_of(name);
+        let mut per_server_headline = Map::new();
+        let mut per_server_metrics = Map::new();
+        for (server, r) in scenario["results"].as_object().into_iter().flatten() {
+            per_server_headline.insert(server.clone(), r["headline"].clone());
+            let values: Map<String, Value> = defs
+                .iter()
+                .filter(|_| r["status"] != "unsupported" && r["status"] != "error")
+                .map(|d| (d.key.to_owned(), (d.get)(r)))
+                .filter(|(_, v)| v.is_number())
+                .collect();
+            if !values.is_empty() {
+                per_server_metrics.insert(server.clone(), Value::Object(values));
+            }
+        }
+        headlines.insert(name.clone(), Value::Object(per_server_headline));
+        metrics.insert(name.clone(), Value::Object(per_server_metrics));
     }
     history.push(json!({
         "date": run["date"],
         "commit": run["code_commit"],
         "headline": headlines,
+        "metrics": metrics,
     }));
+    history.sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
     let skip = history.len().saturating_sub(HISTORY_MAX);
     let history: Vec<Value> = history.into_iter().skip(skip).collect();
     let pretty = |v: &Value| serde_json::to_string_pretty(v).map_err(|e| e.to_string());
     crate::write(&latest_path, &(pretty(&latest)? + "\n"))?;
+    // The whole run, one compact line per scenario.
+    let mut raw = format!(
+        "{{\"suite\":{},\"date\":{},\"commit\":{},\"code_commit\":{},\"environment\":{},\"scenarios\":{{\n",
+        run["suite"], run["date"], run["commit"], run["code_commit"], run["environment"]
+    );
+    let lines: Vec<String> = run["scenarios"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, sc)| format!("{}:{sc}", Value::String(name.clone())))
+        .collect();
+    raw.push_str(&lines.join(",\n"));
+    raw.push_str("\n}}\n");
+    crate::write(&dir.join("runs").join(format!("{stamp}.json")), &raw)?;
     // One line per run keeps the history diff small.
     let lines: Vec<String> = history
         .iter()
@@ -1305,6 +1676,122 @@ fn publish_results(root: &Path, run: &Value) -> Result<()> {
         .collect::<Result<_>>()?;
     crate::write(&history_path, &format!("[\n{}\n]\n", lines.join(",\n")))?;
     report(root)
+}
+
+/// A change of one metric of one server against the previous run that measured it.
+struct Change {
+    /// A Vanillite server (else a reference server).
+    ours: bool,
+    regression: bool,
+    text: String,
+}
+
+/// Changes of the newest history entry against the run before, beyond the noise: at least
+/// 10 % (and a small absolute step per unit), or 3 robust deviations of the last 10 runs
+/// where the metric is noisier than that.
+fn changes(latest: &Value, history: &[Value]) -> Vec<Change> {
+    let Some((newest, before)) = history.split_last() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for sc_def in SCENARIOS {
+        let name = sc_def.name;
+        let Some(sc) = latest["scenarios"].get(name) else {
+            continue;
+        };
+        let title = sc["title"].as_str().unwrap_or(name);
+        let mut defs = vec![(
+            "headline",
+            sc_def.headline.0,
+            sc_def.headline.1,
+            sc_def.headline.2,
+        )];
+        defs.extend(
+            metrics_of(name)
+                .into_iter()
+                .map(|m| (m.key, m.label, m.unit, m.better)),
+        );
+        for (server, _) in SERVERS {
+            let value_in = |h: &Value, key: &str| -> Option<f64> {
+                if key == "headline" {
+                    h["headline"][name][*server].as_f64()
+                } else {
+                    h["metrics"][name][*server][key].as_f64()
+                }
+            };
+            let measured_now = newest["headline"][name].get(*server).is_some();
+            if !measured_now {
+                continue;
+            }
+            for &(key, label, unit, better) in &defs {
+                let past: Vec<f64> = before
+                    .iter()
+                    .rev()
+                    .filter_map(|h| value_in(h, key))
+                    .take(10)
+                    .collect();
+                let Some(&prev) = past.first() else {
+                    continue;
+                };
+                let Some(now) = value_in(newest, key) else {
+                    if key == "headline" {
+                        let status = sc["results"][*server]["status"]
+                            .as_str()
+                            .unwrap_or("no result");
+                        out.push(Change {
+                            ours: server.starts_with("vanillite"),
+                            regression: true,
+                            text: format!(
+                                "{}, {title}: {label} was {} {unit}, now none ({status})",
+                                display(server),
+                                num(&json!(prev)),
+                            ),
+                        });
+                    }
+                    continue;
+                };
+                if prev == 0.0 {
+                    continue;
+                }
+                let floor = match unit {
+                    "ms" => 0.5,
+                    "s" => 0.3,
+                    "MiB" => 16.0,
+                    "%" => 2.0,
+                    _ => 0.0,
+                };
+                let mut threshold = 0.10;
+                if past.len() >= 3 {
+                    let med = median(past.clone()).unwrap_or(prev);
+                    let mad = median(past.iter().map(|v| (v - med).abs()).collect()).unwrap_or(0.0);
+                    if med != 0.0 {
+                        threshold = f64::max(threshold, 3.0 * 1.4826 * mad / med.abs());
+                    }
+                }
+                let delta = now - prev;
+                if delta.abs() < floor || (delta / prev).abs() < threshold {
+                    continue;
+                }
+                let worse = match better {
+                    Better::Lower => delta > 0.0,
+                    Better::Higher => delta < 0.0,
+                };
+                out.push(Change {
+                    ours: server.starts_with("vanillite"),
+                    regression: worse,
+                    text: format!(
+                        "{}, {title}: {label} {} → {} {unit} ({:+.0} %, noise threshold ±{:.0} %)",
+                        display(server),
+                        num(&json!(prev)),
+                        num(&json!(now)),
+                        delta / prev * 100.0,
+                        threshold * 100.0,
+                    ),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// `cargo xtask bench report`: writes benchmarks/README.md from the results.
@@ -1354,12 +1841,51 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
         "# Benchmarks: Vanillite vs Paper, Vanilla and Pumpkin\n\n\
          <!-- Generated by `cargo xtask bench` from results/latest.json. Do not edit. -->\n\n\
          Measured automatically every night on the newest dev commit with new code (last run \
-         {}, dev `{}`). Machine-readable: [`results/latest.json`](results/latest.json) (all \
-         numbers of the last run) and [`results/history.json`](results/history.json) (the \
-         summary numbers of every run).\n\n",
+         {}, dev `{}`). Machine-readable: [`results/latest.json`](results/latest.json) (the \
+         newest numbers of every scenario), [`results/history.json`](results/history.json) \
+         (the compared numbers of every run) and `results/runs/<time>.json` (each run as \
+         measured).\n\n",
         pretty_date(latest["date"].as_str().unwrap_or("?")),
-        latest["code_commit"].as_str().unwrap_or("?"),
+        latest["code_commit"].as_str().unwrap_or("unknown"),
     ));
+    let found = changes(latest, history);
+    s.push_str(
+        "## Regressions and improvements\n\nThe last run against the run before that measured \
+         the same number; listed only beyond the noise (at least 10 % and a small absolute \
+         step, more where a number scattered more over the last 10 runs).\n\n",
+    );
+    for (regression, head) in [(true, "Regressions"), (false, "Improvements")] {
+        let items: Vec<&Change> = found
+            .iter()
+            .filter(|c| c.ours && c.regression == regression)
+            .collect();
+        s.push_str(&format!("**{head} of Vanillite:**"));
+        if items.is_empty() {
+            s.push_str(" none.\n\n");
+        } else {
+            s.push_str("\n\n");
+            for c in items {
+                s.push_str(&format!("- {}\n", c.text));
+            }
+            s.push('\n');
+        }
+    }
+    let reference: Vec<&Change> = found.iter().filter(|c| !c.ours).collect();
+    if !reference.is_empty() {
+        s.push_str(&format!(
+            "<details><summary>Reference servers beyond the noise threshold ({}): their code did \
+             not change, so this shows how much the machine itself varied</summary>\n\n",
+            reference.len()
+        ));
+        for c in reference {
+            s.push_str(&format!(
+                "- {} {}\n",
+                if c.regression { "worse:" } else { "better:" },
+                c.text
+            ));
+        }
+        s.push_str("\n</details>\n\n");
+    }
     s.push_str(
         "## How to read these numbers\n\n\
          - **Bots are not players.** The load comes from headless bots (`tools/loadbot`): they \
@@ -1416,7 +1942,6 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
         s.push_str("---:|");
     }
     s.push('\n');
-    let previous = history.iter().rev().nth(1);
     for (name, sc) in &ordered {
         let better = if sc["headline"]["better"] == "higher" {
             "↑"
@@ -1437,10 +1962,15 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
                 continue;
             }
             let mut text = cell(r, &r["headline"]);
-            if let (Some(now), Some(before)) = (
-                r["headline"].as_f64(),
-                previous.and_then(|p| p["headline"][*name][*c].as_f64()),
-            ) && before != 0.0
+            let date = sc["date"].as_str().unwrap_or("");
+            let before = history
+                .iter()
+                .rev()
+                .filter(|h| h["date"].as_str().is_some_and(|d| d < date))
+                .find_map(|h| h["headline"][*name][*c].as_f64());
+            if let (Some(now), Some(before)) = (r["headline"].as_f64(), before)
+                && r["measured"].is_null()
+                && before != 0.0
             {
                 text.push_str(&format!(" ({:+.0} %)", (now - before) / before * 100.0));
             }
@@ -1456,17 +1986,27 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
             sc["title"].as_str().unwrap_or(name),
             sc["what"].as_str().unwrap_or(""),
             pretty_date(sc["date"].as_str().unwrap_or("?")),
-            sc["commit"].as_str().unwrap_or("?"),
+            sc["commit"].as_str().unwrap_or("unknown"),
         ));
         s.push_str(&details(name, sc));
         s.push_str(&bar_chart(sc));
         s.push_str(&history_chart(name, sc, history));
         let notes: Vec<String> = servers_of(sc)
             .iter()
-            .filter_map(|id| {
-                sc["results"][*id]["note"]
+            .flat_map(|id| {
+                let r = &sc["results"][*id];
+                let older = r["measured"]["date"].as_str().map(|d| {
+                    format!(
+                        "- {}: from an earlier run ({}, dev `{}`), not measured in this one",
+                        display(id),
+                        pretty_date(d),
+                        r["measured"]["commit"].as_str().unwrap_or("unknown"),
+                    )
+                });
+                let note = r["note"]
                     .as_str()
-                    .map(|n| format!("- {}: {n}", display(id)))
+                    .map(|n| format!("- {}: {n}", display(id)));
+                older.into_iter().chain(note)
             })
             .collect();
         if !notes.is_empty() {
@@ -1550,6 +2090,52 @@ fn details(name: &str, sc: &Value) -> String {
                             .as_str()
                             .map_or("–".to_owned(), |m| format!("`{m}`")),
                     ]
+                })
+                .collect(),
+        ),
+        "weak" => table(
+            &[
+                "Server",
+                "Limits",
+                "Start s",
+                "Idle RSS MiB",
+                "Movement",
+                "MSPT p50",
+                "MSPT p99",
+                "MSPT max",
+                "RSS MiB",
+                "Teleports",
+            ],
+            servers
+                .iter()
+                .flat_map(|id| {
+                    let r = &sc["results"][*id];
+                    let head = vec![
+                        format!("{}{}", display(id), status(r)),
+                        format!(
+                            "{} % CPU, {} MiB",
+                            num(&r["cpu_quota_percent"]),
+                            num(&r["memory_limit_mib"])
+                        ),
+                        num(&r["start_s"]),
+                        num(&r["idle_rss_mib"]),
+                    ];
+                    let steps = r["steps"].as_array().cloned().unwrap_or_default();
+                    steps
+                        .iter()
+                        .map(|st| {
+                            let mut row = head.clone();
+                            row.extend([
+                                st["movement"].as_str().unwrap_or("–").to_owned(),
+                                num(&st["mspt"]["p50"]),
+                                num(&st["mspt"]["p99"]),
+                                num(&st["mspt"]["max"]),
+                                num(&st["rss_mib"]),
+                                num(&st["teleports"]),
+                            ]);
+                            row
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .collect(),
         ),

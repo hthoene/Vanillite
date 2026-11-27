@@ -121,11 +121,13 @@
 //!   face's centre), sneaking if `sneak`, with its food level set to `food` first
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
-//!   the players' food and hands to the frames.
+//!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
 //!   main hand and uses it (`ServerPlayerGameMode.useItem`, as a `use_item` packet would).
+//!   `interact`: the same, but on the entity `target` (`Player.interactOn`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -183,6 +185,8 @@ pub struct WorldSpec {
     pub dimension: String,
     /// More regions whose entities the frames hold (with `dimensions`).
     pub views: Vec<View>,
+    /// Whether frames hold the players' sleep state, pose and respawn point.
+    pub sleep_state: bool,
 }
 
 /// The overworld's dimension id.
@@ -222,6 +226,8 @@ pub enum OpKind {
     Effect,
     /// A player uses an item ([`Op::use_item`]).
     UseItem,
+    /// A player uses an item on an entity ([`Op::use_item`] with a `target`).
+    Interact,
     /// Bone meal used on the block at `pos` (an action).
     Bonemeal,
     /// A command run as the server at the origin ([`Op::command`]).
@@ -242,6 +248,8 @@ pub struct UseItemOp {
     /// Item id, e.g. `minecraft:ender_pearl`.
     pub item: String,
     pub count: i32,
+    /// The entity an `interact` action clicks (`Player.interactOn`).
+    pub target: Option<String>,
 }
 
 /// The potion of a `throw_potion` action.
@@ -361,6 +369,8 @@ pub struct PlayerUse {
     pub entity: String,
     /// `attack` instead of `use`.
     pub attack: bool,
+    /// The item's use in the air (`use_item` actions; `pos` and `face` are unused).
+    pub air: bool,
     pub pos: BlockPos,
     /// The clicked face: `down`, `up`, `north`, `south`, `west` or `east`.
     pub face: String,
@@ -564,6 +574,10 @@ impl Scenario {
                 dimensions,
                 dimension,
                 views,
+                sleep_state: v
+                    .get("sleep_state")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             min,
             max,
@@ -684,6 +698,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
         Some("use_item") if action => OpKind::UseItem,
+        Some("interact") if action => OpKind::Interact,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
         Some("unforce") if action => OpKind::Unforce,
@@ -720,6 +735,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             player_use: Some(PlayerUse {
                 entity: s("entity").ok_or("use needs an entity")?,
                 attack: kind == OpKind::Attack,
+                air: false,
                 pos: p,
                 face: s("face").unwrap_or_else(|| "up".to_owned()),
                 hit,
@@ -833,7 +849,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             ..Op::default()
         });
     }
-    if kind == OpKind::UseItem {
+    if matches!(kind, OpKind::UseItem | OpKind::Interact) {
         let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
         return Ok(Op {
             tick,
@@ -846,6 +862,11 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
                     .and_then(Value::as_i64)
                     .and_then(|n| i32::try_from(n).ok())
                     .unwrap_or(1),
+                target: if kind == OpKind::Interact {
+                    Some(s("target").ok_or("interact needs a target")?)
+                } else {
+                    None
+                },
             }),
             ..Op::default()
         });

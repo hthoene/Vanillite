@@ -112,6 +112,12 @@ impl Attrs {
 }
 
 /// The kind data of a mob (`Dense<MobData>`).
+///
+/// This is the record every mob carries: what every living mob ticks, plus the layers several
+/// families share (breeding, taming, steering, anger, equipment). State that only one kind or
+/// one family has lives in [`MobData::ext`] (a family's state, [`fam::classic`] for the kinds
+/// without a family) or [`MobData::boss`], never here: a new kind adds its fields there, and
+/// the test `mob_data_size` keeps this record from growing unnoticed.
 #[derive(Clone, Debug)]
 pub struct MobData {
     pub kind: Kind,
@@ -170,14 +176,6 @@ pub struct MobData {
     pub age: i32,
     pub in_love: i32,
     pub baby: bool,
-    // Kind specific state.
-    pub swell: i32,
-    pub old_swell: i32,
-    pub swell_dir: i32,
-    pub max_swell: i32,
-    pub explosion_radius: i32,
-    pub powered: bool,
-    pub ignited: bool,
     /// Ticks the mob draws its bow (`useItemRemaining` counted up), `-1` when not using it.
     pub using_item: i32,
     /// `Entity.lastKnownPosition` (`None` before the first tick).
@@ -186,15 +184,8 @@ pub struct MobData {
     pub known_speed: Vec3,
     /// `recentKineticEnemies`: the entities a kinetic weapon in use hit, with the game time.
     pub stabbed: Vec<(EntityId, i64)>,
-    pub sheep_color: u8,
     pub sheared: bool,
-    pub eat_animation: i32,
-    pub egg_time: i32,
     pub climbing: bool,
-    pub carried: Option<BlockState>,
-    pub creepy: bool,
-    pub stared_at: bool,
-    pub target_change_time: i32,
     /// The path a melee goal computed in `canUse` for its `start`.
     pub goal_path: Option<path::Path>,
     /// Index into the `minecraft:*_variant` registry (pigs, cows, chickens); 0 = default.
@@ -245,8 +236,6 @@ pub struct MobData {
     pub ext: fam::Ext,
     /// `Zombie.canBreakDoors` (and the other door breakers).
     pub can_break_doors: bool,
-    /// `Chicken.isChickenJockey`.
-    pub chicken_jockey: bool,
     /// `NeutralMob`: the game time the anger ends (`-1` = none) and whom it is angry at.
     pub anger_end: i64,
     pub anger_target: Option<u128>,
@@ -332,26 +321,12 @@ impl MobData {
             age: 0,
             in_love: 0,
             baby: false,
-            swell: 0,
-            old_swell: 0,
-            swell_dir: -1,
-            max_swell: 30,
-            explosion_radius: 3,
-            powered: false,
-            ignited: false,
             using_item: -1,
             last_known_pos: None,
             known_speed: Vec3::ZERO,
             stabbed: Vec::new(),
-            sheep_color: 0,
             sheared: false,
-            eat_animation: 0,
-            egg_time: 0,
             climbing: false,
-            carried: None,
-            creepy: false,
-            stared_at: false,
-            target_change_time: 0,
             goal_path: None,
             variant: 0,
             xp_reward: 0,
@@ -378,9 +353,8 @@ impl MobData {
             restrict_center: BlockPos::new(0, 0, 0),
             restrict_radius: -1,
             brain: None,
-            ext: fam::Ext::None,
+            ext: fam::classic::new_ext(kind).unwrap_or_default(),
             can_break_doors: false,
-            chicken_jockey: false,
             anger_end: -1,
             anger_target: None,
             discard_friction: false,
@@ -395,7 +369,10 @@ impl MobData {
         let y_rot = mob.random.next_float() * CONSTRUCTOR_YAW_SCALE;
         // The draws of field initializers (`eggTime`, `idleAnimationTimeout`).
         match kind {
-            Kind::Chicken => mob.egg_time = mob.random.next_int_bounded(6000) + 6000,
+            Kind::Chicken => {
+                let egg_time = mob.random.next_int_bounded(6000) + 6000;
+                fam::classic::chicken_mut(&mut mob).egg_time = egg_time;
+            }
             Kind::Rabbit => {
                 let _ = mob.random.next_int_bounded(40);
             }
@@ -725,6 +702,10 @@ pub enum WorldAction {
     Level(boss::warden::LevelAction),
     /// `entityInside` of the block at the position for the entity (`applyEffectsFromBlocks`).
     EntityInside(BlockPos, EntityId),
+    /// `stepOn` of the block at the position for the entity standing on it.
+    StepOn(BlockPos, EntityId),
+    /// `onProjectileHit` of the block at the position, hit by the projectile at the point.
+    ProjectileHitBlock(BlockPos, Vec3, EntityId),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
     /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
@@ -785,6 +766,14 @@ impl WorldAction {
                 if level.entities.store.contains(id) {
                     level.entity_inside(pos, id);
                 }
+            }
+            WorldAction::StepOn(pos, id) => {
+                if level.entities.store.contains(id) {
+                    crate::block::sculk::step_on_block(level, pos, id);
+                }
+            }
+            WorldAction::ProjectileHitBlock(pos, at, id) => {
+                crate::block::sensor::projectile_hit_block(level, pos, at, id);
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
             WorldAction::OutputSignal(pos) => {
@@ -859,6 +848,7 @@ impl WorldAction {
                         wind_sound: Some(b.sound),
                         resistance: crate::level::explosion::BlockResistance::WindCharge,
                         fire: false,
+                        bad_respawn_point: false,
                     },
                 );
             }
@@ -1330,4 +1320,21 @@ pub fn tick(
     }
     t.mob().tick_count += 1;
     living::tick(&mut t);
+}
+
+#[cfg(test)]
+mod size_tests {
+    /// The record every mob carries must not grow unnoticed: state of one kind or family goes
+    /// into `MobData::ext` (see [`super::MobData`]). Raise the limit only for state every mob
+    /// needs.
+    #[test]
+    fn mob_data_size() {
+        let size = std::mem::size_of::<super::MobData>();
+        assert!(
+            size <= LIMIT,
+            "MobData grew to {size} bytes (limit {LIMIT})"
+        );
+    }
+
+    const LIMIT: usize = 1760;
 }

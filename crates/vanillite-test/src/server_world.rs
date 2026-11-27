@@ -424,7 +424,13 @@ impl ScenarioWorld for ServerWorld {
             } else {
                 core.velocity[row]
             };
-            let mut detail = entity_detail(ents, row, &name_of, self.spec.player_state);
+            let mut detail = entity_detail(
+                ents,
+                row,
+                &name_of,
+                self.spec.player_state,
+                self.spec.sleep_state,
+            );
             if dimension != OVERWORLD {
                 detail
                     .get_or_insert_with(serde_json::Map::new)

@@ -35,6 +35,8 @@ vanillite-abi.workspace = true
 # What the parity harness of vanillite-test drives (`Server::step`, `Server::world`, players
 # without a network, blocking chunk tickets).
 test-support = []
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 

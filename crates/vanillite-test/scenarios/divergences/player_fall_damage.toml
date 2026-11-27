@@ -1,0 +1,3 @@
+tick = 27
+cause = "a pig killed by fall damage draws one entity random more than Vanilla in its death tick (positions, motion and health match)"
+owner = "gameplay-developer #143"

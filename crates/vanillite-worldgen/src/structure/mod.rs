@@ -24,8 +24,8 @@
 //! `structure.rs`:
 //!
 //! - `parse(json, parser)` reads the type's own fields. [`StructureParser`] resolves biome sets,
-//!   templates ([`StructureParser::template`], load every template the type can use here, so
-//!   generation never does I/O), processor lists, block tags and placed features.
+//!   templates ([`StructureParser::template`]; [`StructureParser::template_outline`] for types
+//!   with many templates, which then load them from the shared cache when placing), processor lists, block tags and placed features.
 //! - `find_generation_point(ctx)` ports `findGenerationPoint`. [`GenerationContext`] has the
 //!   legacy `random` (`setLargeFeatureSeed(seed, chunkX, chunkZ)`), `chunk_pos`, `height` (the
 //!   `LevelHeightAccessor`), the biome checks (`could_valid_biome_exist_on_top_of_chunk_center`,
@@ -453,6 +453,19 @@ impl<'a> StructureParser<'a> {
     /// `StructureTemplateManager.getOrCreate(id)`: a template, loaded once.
     pub fn template(&self, id: &str) -> Result<Arc<StructureTemplate>, Error> {
         self.templates.template(id)
+    }
+
+    /// The size and jigsaw blocks of a template ([`StructureTemplateManager::outline`]) for
+    /// elements that load the template only when they place it.
+    ///
+    /// [`StructureTemplateManager::outline`]: crate::template::StructureTemplateManager::outline
+    pub fn template_outline(&self, id: &str) -> Result<Arc<StructureTemplate>, Error> {
+        self.templates.manager().outline(id)
+    }
+
+    /// The template cache shared by the structures of this parser.
+    pub fn template_manager(&self) -> &Arc<crate::template::StructureTemplateManager> {
+        self.templates.manager()
     }
 
     /// A `Holder<StructureProcessorList>`: a registry id or an inline list.
