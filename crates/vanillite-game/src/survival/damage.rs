@@ -168,6 +168,7 @@ pub struct DamageTypes {
     pub sonic_boom: DamageKind,
     pub fireworks: DamageKind,
     pub fly_into_wall: DamageKind,
+    pub bad_respawn_point: DamageKind,
 }
 
 /// The built-in types of Vanilla 26.3 with their values, for servers without data packs (tests).
@@ -269,6 +270,7 @@ impl DamageTypes {
             sonic_boom: find("minecraft:sonic_boom"),
             fireworks: find("minecraft:fireworks"),
             fly_into_wall: find("minecraft:fly_into_wall"),
+            bad_respawn_point: find("minecraft:bad_respawn_point"),
             types,
         }
     }

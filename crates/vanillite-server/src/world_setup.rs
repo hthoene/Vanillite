@@ -169,6 +169,23 @@ impl WorldGen {
         self.generators.get(dimension)
     }
 
+    /// The total height of the overworld's flat layers (`FlatLevelSource.getSpawnHeight` takes
+    /// it); `None` for other generators.
+    pub(crate) fn flat_spawn_height(&self) -> Option<i32> {
+        let generator = self.generator("minecraft:overworld")?;
+        if generator.get("type").and_then(|t| t.as_str()) != Some("minecraft:flat") {
+            return None;
+        }
+        let layers = generator.get("settings")?.get("layers")?.as_array()?;
+        Some(
+            layers
+                .iter()
+                .filter_map(|l| l.get("height")?.as_i64())
+                .map(|h| i32::try_from(h).unwrap_or(0))
+                .sum(),
+        )
+    }
+
     /// Whether the overworld uses the flat generator (`is_flat` of the login packet).
     pub(crate) fn is_flat(&self) -> bool {
         self.generator("minecraft:overworld")
@@ -573,7 +590,29 @@ pub(crate) fn level_settings(
         .map_or_else(Default::default, |tag| {
             vanillite_game::block::fire::Infiniburn::from_tag(&tag)
         });
+    let attribute_value = |name: &str| {
+        packs
+            .and_then(|p| p.registry("minecraft:dimension_type"))
+            .and_then(|r| r.get(&info.dimension))
+            .and_then(|entry| serde_json::from_str::<serde_json::Value>(entry.json.get()).ok())
+            .and_then(|json| json.get("attributes")?.get(name).cloned())
+    };
+    let bed_rule = |name: &str, default: vanillite_game::block::bed::BedRule| {
+        attribute_value(name)
+            .and_then(|v| vanillite_game::block::bed::BedRule::from_json(&v))
+            .unwrap_or(default)
+    };
     let mut settings = vanillite_game::level::LevelSettings {
+        bed_rule: bed_rule(
+            "minecraft:gameplay/bed_rule",
+            vanillite_game::block::bed::BedRule::can_sleep_when_dark(),
+        ),
+        straw_bed_rule: bed_rule(
+            "minecraft:gameplay/straw_bed_rule",
+            vanillite_game::block::bed::BedRule::destroy_on_leave(),
+        ),
+        respawn_anchor_works: attribute("minecraft:gameplay/respawn_anchor_works"),
+        dimension: info.dimension.clone(),
         infiniburn,
         fast_lava: attribute("minecraft:gameplay/fast_lava"),
         water_evaporates: attribute("minecraft:gameplay/water_evaporates"),

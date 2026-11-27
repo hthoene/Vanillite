@@ -166,6 +166,8 @@ public final class ScenarioRecorder {
       entities = new ScenarioEntities(server, level);
       entities.playerState =
           scenario.has("player_state") && scenario.get("player_state").getAsBoolean();
+      entities.sleepState =
+          scenario.has("sleep_state") && scenario.get("sleep_state").getAsBoolean();
       JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
       // Players join first; then the level random starts from the world seed and the mobs come.
       for (int i = 0; i < specs.size(); i++) {

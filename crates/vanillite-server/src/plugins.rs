@@ -366,6 +366,20 @@ impl<'a> Hooks<'a> {
     }
 }
 
+impl Hooks<'_> {
+    /// A player event about a block; `false` when a plugin cancelled it.
+    fn player_block(&self, kind: u32, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        !self.host.wants(kind)
+            || self.host.player_block(
+                kind,
+                self.world,
+                player,
+                [pos.x, pos.y, pos.z],
+                &state_text(state),
+            )
+    }
+}
+
 impl GameHooks for Hooks<'_> {
     fn entity_damage(
         &self,
@@ -400,5 +414,22 @@ impl GameHooks for Hooks<'_> {
                 [pos.x, pos.y, pos.z],
                 &state_text(state),
             )
+    }
+
+    fn bed_enter(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.player_block(vanillite_abi::event::PLAYER_BED_ENTER, player, pos, state)
+    }
+
+    fn bed_leave(&self, player: u128, pos: BlockPos, state: BlockState) {
+        self.player_block(vanillite_abi::event::PLAYER_BED_LEAVE, player, pos, state);
+    }
+
+    fn spawn_change(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.player_block(
+            vanillite_abi::event::PLAYER_SPAWN_CHANGE,
+            player,
+            pos,
+            state,
+        )
     }
 }
