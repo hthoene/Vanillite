@@ -467,3 +467,185 @@ mod tests {
         round_trip(&DialogRef::Registered(0));
     }
 }
+
+/// `TrackedWaypoint.Type` with its contents.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WaypointTarget {
+    /// `EMPTY` (untrack).
+    Empty,
+    /// `VEC3I`: a block position.
+    Position { x: i32, y: i32, z: i32 },
+    /// `CHUNK`: a chunk position.
+    Chunk { x: i32, z: i32 },
+    /// `AZIMUTH`: the angle in radians.
+    Azimuth(f32),
+}
+
+/// `ClientboundTrackedWaypointPacket.Operation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaypointOperation {
+    Track,
+    Untrack,
+    Update,
+}
+
+/// `waypoint` (`ClientboundTrackedWaypointPacket`): an entry of the locator bar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Waypoint {
+    pub operation: WaypointOperation,
+    /// `Either<UUID, String>`: the source entity's UUID (left) or a name (right).
+    pub id: std::result::Result<crate::types::Uuid, String>,
+    /// `Waypoint.Icon.style`: a `waypoint_style_asset` key (`minecraft:default`).
+    pub style: crate::types::Identifier,
+    /// `Waypoint.Icon.color`: RGB.
+    pub color: Option<i32>,
+    pub target: WaypointTarget,
+}
+
+impl Encode for Waypoint {
+    fn encode(&self, out: &mut Vec<u8>) {
+        write_varint(
+            out,
+            match self.operation {
+                WaypointOperation::Track => 0,
+                WaypointOperation::Untrack => 1,
+                WaypointOperation::Update => 2,
+            },
+        );
+        match &self.id {
+            Ok(uuid) => {
+                out.push(1);
+                uuid.encode(out);
+            }
+            Err(name) => {
+                out.push(0);
+                name.encode(out);
+            }
+        }
+        self.style.encode(out);
+        match self.color {
+            Some(rgb) => {
+                out.push(1);
+                out.extend_from_slice(rgb.to_be_bytes().get(1..).unwrap_or_default());
+            }
+            None => out.push(0),
+        }
+        match self.target {
+            WaypointTarget::Empty => write_varint(out, 0),
+            WaypointTarget::Position { x, y, z } => {
+                write_varint(out, 1);
+                write_varint(out, x);
+                write_varint(out, y);
+                write_varint(out, z);
+            }
+            WaypointTarget::Chunk { x, z } => {
+                write_varint(out, 2);
+                write_varint(out, x);
+                write_varint(out, z);
+            }
+            WaypointTarget::Azimuth(angle) => {
+                write_varint(out, 3);
+                angle.encode(out);
+            }
+        }
+    }
+}
+
+impl Decode for Waypoint {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let operation = match r.varint()? {
+            0 => WaypointOperation::Track,
+            1 => WaypointOperation::Untrack,
+            2 => WaypointOperation::Update,
+            _ => return Err(Error::Invalid("waypoint operation")),
+        };
+        let id = if bool::decode(r)? {
+            Ok(crate::types::Uuid::decode(r)?)
+        } else {
+            Err(r.string(32_767)?.to_owned())
+        };
+        let style = crate::types::Identifier::decode(r)?;
+        let color = if bool::decode(r)? {
+            let (a, b, c) = (r.u8()?, r.u8()?, r.u8()?);
+            Some(i32::from_be_bytes([0, a, b, c]))
+        } else {
+            None
+        };
+        let target = match r.varint()? {
+            0 => WaypointTarget::Empty,
+            1 => WaypointTarget::Position {
+                x: r.varint()?,
+                y: r.varint()?,
+                z: r.varint()?,
+            },
+            2 => WaypointTarget::Chunk {
+                x: r.varint()?,
+                z: r.varint()?,
+            },
+            3 => WaypointTarget::Azimuth(r.f32()?),
+            _ => return Err(Error::Invalid("waypoint type")),
+        };
+        Ok(Waypoint {
+            operation,
+            id,
+            style,
+            color,
+            target,
+        })
+    }
+}
+
+impl Packet for Waypoint {
+    const ID: i32 = crate::ids::play::clientbound::WAYPOINT;
+    const NAME: &'static str = "waypoint";
+    const STATE: crate::State = crate::State::Play;
+    const DIRECTION: crate::Direction = crate::Direction::Clientbound;
+    const COST: u16 = 1;
+    const BUCKET: crate::Bucket = crate::Bucket::Default;
+}
+
+/// `server_data`: the MOTD and the favicon (PNG bytes) for the client's server list entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerData {
+    pub motd: Component,
+    pub icon: Option<Vec<u8>>,
+}
+
+impl Encode for ServerData {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.motd.encode(out);
+        match &self.icon {
+            Some(bytes) => {
+                out.push(1);
+                crate::codec::write_len(out, bytes.len());
+                out.extend_from_slice(bytes);
+            }
+            None => out.push(0),
+        }
+    }
+}
+
+impl Decode for ServerData {
+    fn decode(r: &mut Reader<'_>) -> Result<Self> {
+        let motd = Component::decode_limited(r, COMPONENT_MAX)?;
+        let icon = if bool::decode(r)? {
+            let len = usize::try_from(r.varint()?).map_err(|_| Error::Invalid("icon length"))?;
+            if len > 1 << 21 {
+                return Err(Error::Invalid("icon length"));
+            }
+            Some(r.take(len)?.to_vec())
+        } else {
+            None
+        };
+        Ok(ServerData { motd, icon })
+    }
+}
+
+impl Packet for ServerData {
+    const ID: i32 = crate::ids::play::clientbound::SERVER_DATA;
+    const NAME: &'static str = "server_data";
+    const STATE: crate::State = crate::State::Play;
+    const DIRECTION: crate::Direction = crate::Direction::Clientbound;
+    const COST: u16 = 1;
+    const BUCKET: crate::Bucket = crate::Bucket::Default;
+}

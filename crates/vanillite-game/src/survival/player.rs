@@ -1129,6 +1129,21 @@ pub fn hurt_with(
             if let Some(v) = v {
                 entity.set_velocity(v);
             }
+            if !blocked {
+                // `ServerPlayer.indicateDamage`: the camera tilts away from the source.
+                #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+                let yaw = (zd.atan2(xd) * 180.0 / f64::from(std::f32::consts::PI)
+                    - f64::from(entity.as_ref().rot().y_rot)) as f32;
+                env.out.push(Effect::To {
+                    player: id,
+                    packet: SharedPacket::of(
+                        &vanillite_protocol::packets::play::clientbound::HurtAnimation {
+                            entity_id: entity.as_ref().network_id().0,
+                            yaw,
+                        },
+                    ),
+                });
+            }
         }
     }
     if player.survival.is_dead_or_dying() {
