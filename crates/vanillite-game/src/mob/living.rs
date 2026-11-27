@@ -704,11 +704,20 @@ fn ai_step(t: &mut Tick<'_, '_>) {
     let decor = t.mob_ref().kind.family() == super::Family::Decor;
     // `isEffectiveAi`: armor stands move with physics, mannequins unless immovable; neither
     // has a `serverAiStep`.
+    // A mob its player rider steers (`getControllingPassenger` is a player) is the client's
+    // authority: no `serverAiStep` (`isEffectiveAi`) and no movement of its own on the server.
+    let rider = t
+        .ents
+        .riding
+        .passengers_of(t.id)
+        .first()
+        .copied()
+        .filter(|&p| crate::riding::controls(t.ents, p, t.id));
     let effective_ai = if decor {
         let no_gravity = t.core().flags().contains(EntityFlags::NO_GRAVITY);
         crate::decoration::stand::moves(t.mob_ref(), no_gravity)
     } else {
-        !t.mob_ref().no_ai
+        !t.mob_ref().no_ai && rider.is_none()
     };
     // `isImmobile`: dead or held by the kind (a stunned ravager).
     if t.mob_ref().is_dead_or_dying() || super::fam::is_immobile(t.mob_ref()) {
@@ -759,15 +768,15 @@ fn ai_step(t: &mut Tick<'_, '_>) {
             m.fall_distance = 0.0;
         }
     }
-    // A mob its rider steers moves on the rider's client (`isControlledByLocalInstance`).
-    let steered = t
-        .ents
-        .riding
-        .passengers_of(t.id)
-        .first()
-        .is_some_and(|&p| crate::riding::controls(t.ents, p, t.id));
     t.cx.movements.clear();
-    if effective_ai && !steered {
+    if let Some(rider) = rider {
+        // `travelRidden`: `tickRidden`, then (`canSimulateMovement` is false on the server) no
+        // motion; the rider's client moves it.
+        if t.mob_ref().is_alive() {
+            tick_ridden(t, rider);
+            t.set_velocity(Vec3::ZERO);
+        }
+    } else if effective_ai {
         let m = t.mob_ref();
         let input = Vec3::new(f64::from(m.xxa), f64::from(m.yya), f64::from(m.zza));
         travel(t, input);
@@ -819,6 +828,36 @@ fn ai_step(t: &mut Tick<'_, '_>) {
         return;
     }
     kinds::ai_step(t);
+}
+
+/// `tickRidden` of a mob its player `rider` steers: it turns to the rider's view
+/// (`getRiddenRotation`: the rider's yaw, half its pitch).
+fn tick_ridden(t: &mut Tick<'_, '_>, rider: EntityId) {
+    use super::Kind;
+    let Some(r) = t.ents.store.get(rider).map(|e| e.rot()) else {
+        return;
+    };
+    let kind = t.mob_ref().kind;
+    let mut rot = t.core().rot();
+    let y_rot = match kind {
+        // `AbstractNautilus` and `HappyGhast`: a part of the way each tick.
+        Kind::Nautilus | Kind::ZombieNautilus | Kind::HappyGhast => {
+            let turn = if kind == Kind::HappyGhast { 0.08 } else { 0.5 };
+            rot.y_rot + vanillite_base::math::wrap_degrees_f(r.y_rot - rot.y_rot) * turn
+        }
+        // `Camel.getRiddenRotation`: its own while it refuses to move.
+        Kind::Camel | Kind::CamelHusk
+            if super::fam::mount::camel::refuse_to_move(t.mob_ref(), t.env.game_time) =>
+        {
+            return;
+        }
+        _ => r.y_rot,
+    };
+    rot.y_rot = y_rot;
+    rot.x_rot = r.x_rot * 0.5;
+    rot.y_head_rot = y_rot;
+    t.core_mut().set_rot(rot);
+    t.mob().y_body_rot = y_rot;
 }
 
 /// `hurtAndBreak(amount, mob, slot)` of a mob's equipment (without Unbreaking).
