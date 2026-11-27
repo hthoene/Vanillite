@@ -196,7 +196,11 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
         .map(|x| x.1)
         .or_else(|| t.ents.player(target).map(|p| p.survival.health))
         .unwrap_or(20.0);
-    let has = |e| target_mob.as_ref().is_some_and(|x| x.2.has(e));
+    let player_effects = t.ents.player(target).map(|p| p.survival.effects.clone());
+    let has = |e| {
+        target_mob.as_ref().is_some_and(|x| x.2.has(e))
+            || player_effects.as_ref().is_some_and(|x| x.has(e))
+    };
     let mut chosen = Potion::Harming;
     if target_mob.as_ref().is_some_and(|x| is_raider(x.0)) {
         chosen = if target_health <= 4.0 {

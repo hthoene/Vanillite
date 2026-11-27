@@ -2,7 +2,7 @@
 //! `load` with the keys of 26.3), as stored in the `entities/` region files.
 
 use vanillite_base::Vec3;
-use vanillite_base::random::{LegacyRandom, RandomSource};
+use vanillite_base::random::LegacyRandom;
 use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{EntityFlags, EntityRef, Rotation};
@@ -483,8 +483,6 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
         Kind::Spider | Kind::Enderman => {}
         _ => super::fam::load(&mut m, tag),
     }
-    // A fresh random per loaded mob, like `Entity.random`.
-    let _ = m.random.next_int();
     Some(LoadedMob {
         pos,
         velocity,

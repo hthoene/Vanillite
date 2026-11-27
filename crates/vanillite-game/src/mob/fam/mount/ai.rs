@@ -412,7 +412,6 @@ pub fn hear_noteblock(m: &mut MobData, pos: BlockPos, dimension: &str) {
 
 /// The copper golem brain: `CopperGolemAi`.
 pub fn copper_golem_brain(m: &mut MobData) {
-    let cooldown = super::copper_golem::golem(m).transport_cooldown;
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -463,9 +462,6 @@ pub fn copper_golem_brain(m: &mut MobData) {
             ..BrainSpec::default()
         },
     );
-    if let Some(b) = m.brain.as_deref_mut() {
-        b.set(M::TransportItemsCooldownTicks, MemValue::Int(cooldown));
-    }
 }
 
 /// The breeze brain: `BreezeAi` (default activity `FIGHT`).

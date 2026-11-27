@@ -177,6 +177,12 @@ pub(super) fn fill(block: BlockId, b: &mut BlockBehaviour) {
         }
         _ => {}
     }
+    if matches!(
+        kind,
+        Kind::Chest | Kind::TrappedChest | Kind::EnderChest | Kind::Barrel
+    ) {
+        b.tick = Some(recheck_openers);
+    }
     match kind {
         Kind::Chest
         | Kind::TrappedChest
@@ -931,6 +937,23 @@ pub fn stop_open(level: &mut Level, pos: BlockPos, spectator: bool) {
     }
 }
 
+/// The delay of `ContainerOpenersCounter.scheduleRecheck`.
+const OPENERS_RECHECK_DELAY: i32 = 5;
+
+/// The scheduled tick of chests, ender chests and barrels (`recheckOpen`): an open container
+/// checks its viewers again every five ticks. The viewer count here is kept exact by
+/// [`start_open`] and [`stop_open`], so only the next check is scheduled.
+fn recheck_openers(level: &mut Level, state: BlockState, pos: BlockPos) {
+    let open = match level.block_entity(pos) {
+        Some(BlockEntity::Container(c)) => c.openers > 0,
+        Some(BlockEntity::EnderChest { openers }) => *openers > 0,
+        _ => false,
+    };
+    if open {
+        level.schedule_block_tick(pos, state.block(), OPENERS_RECHECK_DELAY);
+    }
+}
+
 /// `onOpen` / `onClose` / `openerCountChanged` of the kinds that count viewers.
 fn openers_changed(
     level: &mut Level,
@@ -947,6 +970,13 @@ fn openers_changed(
     let events = crate::level::game_event::events();
     if opened {
         level.game_event_at(None, events.container_open, pos);
+        // `ContainerOpenersCounter.scheduleRecheck`.
+        if matches!(
+            kind,
+            Kind::Chest | Kind::TrappedChest | Kind::EnderChest | Kind::Barrel
+        ) {
+            level.schedule_block_tick(pos, state.block(), OPENERS_RECHECK_DELAY);
+        }
     } else if closed {
         level.game_event_at(None, events.container_close, pos);
     }

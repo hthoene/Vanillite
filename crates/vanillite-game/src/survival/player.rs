@@ -1418,8 +1418,7 @@ pub fn die(
             event: entity_event::DEATH,
         }),
     });
-    entity.set_pose(Pose::Dying);
-    entity.set_dims(crate::player::dimensions(Pose::Dying));
+    // `ServerPlayer.die` does not call `LivingEntity.die`: the pose (and the box) stay.
     let s = &mut player.survival;
     // `die`: a sleeper leaves its bed.
     if s.sleeping_pos.is_some() {
@@ -2303,9 +2302,7 @@ fn simulate_travel(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     };
     let y = if v.y.abs() < 0.003 { 0.0 } else { v.y };
     entity.set_velocity(Vec3::new(x, y, z));
-    if player.survival.is_dead_or_dying() {
-        return;
-    }
+    // A dying player keeps moving (`travel` runs for immobile entities too).
     let fluids = player.survival.fluids;
     if fluids.in_water() || fluids.in_lava() {
         travel_in_fluid(entity, player, env);

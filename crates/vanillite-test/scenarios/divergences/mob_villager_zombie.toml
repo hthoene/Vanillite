@@ -1,3 +1,3 @@
-tick = 6
-cause = "not investigated yet: the brain lists shuffle with their own random since #101; the first difference moved here from tick 1"
-owner = "gameplay-developer #60"
+tick = 2
+cause = "light: the roof is placed in the setup; Vanilla's light engine darkens the room two ticks later (the zombie still draws its sun burn roll on ticks 1 and 2), Vanillite's one tick later (roll on tick 1 only)"
+owner = "world-developer #126"

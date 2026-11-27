@@ -356,6 +356,26 @@ pub fn create_path_to_any(
     targets: &[BlockPos],
     reach_range: i32,
 ) -> Option<Path> {
+    create_path_limited(t, targets, reach_range, None)
+}
+
+/// `createPath(pos, reachRange, maxPathLength)`: a path to `target` of at most
+/// `max_path_length` (no surface adjustment).
+pub fn create_path_within(
+    t: &mut Tick<'_, '_>,
+    target: BlockPos,
+    reach_range: i32,
+    max_path_length: f32,
+) -> Option<Path> {
+    create_path_limited(t, &[target], reach_range, Some(max_path_length))
+}
+
+fn create_path_limited(
+    t: &mut Tick<'_, '_>,
+    targets: &[BlockPos],
+    reach_range: i32,
+    max_path_length: Option<f32>,
+) -> Option<Path> {
     if targets.is_empty() || t.mob_ref().nav.kind == NavKind::None {
         return None;
     }
@@ -377,7 +397,8 @@ pub fn create_path_to_any(
     let mob = path_mob(t);
     let m = t.mob_ref();
     #[allow(clippy::cast_possible_truncation)]
-    let max_len = (m.attrs.follow_range as f32).max(m.nav.required_path_length);
+    let max_len = max_path_length
+        .unwrap_or_else(|| (m.attrs.follow_range as f32).max(m.nav.required_path_length));
     let budget = i32::try_from(t.cx.path_budget).unwrap_or(i32::MAX);
     #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
     let max_nodes = (m.nav.max_visited_nodes as f32 * m.nav.max_visited_nodes_multiplier) as i32;

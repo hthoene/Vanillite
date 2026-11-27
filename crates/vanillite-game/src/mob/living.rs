@@ -74,16 +74,18 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     if t.mob_ref().removed || !t.exists() {
         return;
     }
-    // `tickHeadTurn` → `BodyRotationControl.clientTick` (`CamelBodyRotationControl`).
-    let camel = matches!(
-        t.mob_ref().kind,
-        super::Kind::Camel | super::Kind::CamelHusk
-    );
+    // `tickHeadTurn` → `BodyRotationControl.clientTick` (`CamelBodyRotationControl`, the
+    // armadillo's: none while it is scared).
+    let turns_body = match t.mob_ref().kind {
+        super::Kind::Camel | super::Kind::CamelHusk => super::fam::mount::camel::turns_body(t),
+        super::Kind::Armadillo => !super::fam::brainy::armadillo::is_scared(t.mob_ref()),
+        _ => true,
+    };
     if t.mob_ref().kind == super::Kind::ArmorStand {
         // `ArmorStand.tickHeadTurn`: the body follows the yaw.
         let y = t.core().rot().y_rot;
         crate::decoration::stand::tick_head_turn(t.mob(), y);
-    } else if !camel || super::fam::mount::camel::turns_body(t) {
+    } else if turns_body {
         nav::tick_body_rotation(t);
     }
     // `refreshDirtyAttributes`: a lowered max health caps the health.
@@ -867,14 +869,25 @@ fn block_speed_factor(t: &Tick<'_, '_>) -> f32 {
 /// `canSpawnSprintParticle` → `spawnSprintParticle`: the particles are the client's, the
 /// server still draws their position.
 fn sprint_particle(t: &mut Tick<'_, '_>) {
-    let flags = t.core().flags();
-    let fluids = t.mob_ref().fluids;
-    if !flags.contains(EntityFlags::SPRINTING)
-        || flags.contains(EntityFlags::CROUCHING)
-        || fluids.in_water()
-        || fluids.in_lava()
-        || !t.mob_ref().is_alive()
-    {
+    // `canSpawnSprintParticle`: iron golems walking one in five ticks, rabbits never.
+    let can = match t.mob_ref().kind {
+        super::Kind::Rabbit => false,
+        super::Kind::IronGolem => {
+            let v = t.velocity();
+            v.x * v.x + v.z * v.z > f64::from(2.500_000_3e-7_f32)
+                && t.mob().random.next_int_bounded(5) == 0
+        }
+        _ => {
+            let flags = t.core().flags();
+            let fluids = t.mob_ref().fluids;
+            flags.contains(EntityFlags::SPRINTING)
+                && !flags.contains(EntityFlags::CROUCHING)
+                && !fluids.in_water()
+                && !fluids.in_lava()
+                && t.mob_ref().is_alive()
+        }
+    };
+    if !can {
         return;
     }
     use vanillite_data::block::BlockKind as K;
@@ -1211,7 +1224,8 @@ pub fn move_self(t: &mut Tick<'_, '_>, delta: Vec3) {
     t.mob().horizontal_collision = horizontal;
     let moved_vertically = delta.y.abs() > 0.0;
     let mut vertical = t.mob_ref().vertical_collision;
-    if moved_vertically {
+    // `isLocalInstanceAuthoritative`: always, unless a player steers the mob.
+    if moved_vertically || !crate::vehicle::player_controlled(t.ents, t.id) {
         vertical = delta.y != movement.y;
         let below = vertical && delta.y < 0.0;
         t.mob().vertical_collision = vertical;
@@ -1727,6 +1741,12 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             return;
         }
     }
+    // `Entity.push` does nothing while either side has `noPhysics`: a vex has it during its
+    // own tick, so it only gets pushed by the others' ticks.
+    if t.mob_ref().kind == super::Kind::Vex {
+        t.cx.ids = ids;
+        return;
+    }
     let climbing = on_climbable(t);
     // `max-entity-collisions`: only the first ones push.
     let limit =
@@ -1734,6 +1754,15 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             .max_entity_collisions
             .map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
     for &other in ids.iter().take(limit) {
+        // `IronGolem.doPush`: now and then turns on the enemy it bumps into.
+        if t.mob_ref().kind == super::Kind::IronGolem
+            && t.ents
+                .mob(other)
+                .is_some_and(|m| m.kind.is_monster() && m.kind != super::Kind::Creeper)
+            && t.mob().random.next_int_bounded(20) == 0
+        {
+            super::goals::set_target(t, Some(other));
+        }
         if t.ents.minecart(other).is_some() {
             // `AbstractMinecart.push(this)`.
             crate::minecart::push_by(t.ents, other, id);
@@ -1890,8 +1919,11 @@ fn is_sun_burn_tick(t: &mut Tick<'_, '_>) -> bool {
     let rain = (t.env.raining_at)(t.block_pos())
         || (t.env.raining_at)(BlockPos::containing(p.x, t.aabb().max_y, p.z));
     let wet = t.mob_ref().fluids.in_water() || rain;
-    let roll = t.mob().random.next_float() * 30.0;
-    br > 0.5 && roll < (br - 0.4) * 2.0 && !wet && super::can_see_sky(t.level, rounded)
+    // The roll is only drawn in bright light.
+    br > 0.5
+        && t.mob().random.next_float() * 30.0 < (br - 0.4) * 2.0
+        && !wet
+        && super::can_see_sky(t.level, rounded)
 }
 
 /// `Mob.checkDespawn`.

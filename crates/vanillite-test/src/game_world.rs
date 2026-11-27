@@ -569,6 +569,16 @@ impl GameWorld {
     /// other effects go to clients nobody has.
     fn spawn_drops(&mut self) {
         for effect in std::mem::take(&mut self.effects) {
+            // `ServerPlayer.die`: `tellNeutralMobsThatIDied` (as the server does on this effect).
+            if let Effect::Died { victim, .. } = effect
+                && self.level.entities.player(victim).is_some()
+                && self.rules.bool(Rule::FORGIVE_DEAD_PLAYERS)
+            {
+                vanillite_game::mob::common::tell_neutral_mobs_player_died(
+                    &mut self.level.entities,
+                    victim,
+                );
+            }
             if let Effect::Experience { pos, amount } = effect {
                 // The merge group comes from the level random (`tryMergeToExisting`).
                 let (entities, network_ids, random) = self.level.entity_parts();
@@ -1132,6 +1142,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
         },
         ("Wildlife", "Puff") => "PufferfishPuffGoal",
         ("Wildlife", "TurtleStroll") => "TurtleRandomStrollGoal",
+        ("Wildlife", "GolemStroll") => "GolemRandomStrollInVillageGoal",
         ("Wildlife", "BeeValidateFlower") => "ValidateFlowerGoal",
         ("Wildlife", "BeeValidateHive") => "ValidateHiveGoal",
         (_, variant) => leak(if variant.ends_with("Goal") {

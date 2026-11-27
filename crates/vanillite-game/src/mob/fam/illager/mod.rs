@@ -842,9 +842,10 @@ impl FamilyHooks for Hooks {
             | Goal::SpellCasting
             | Goal::BlazeAttack(_)
             | Goal::ShulkerAttack { .. } => MOVE | LOOK,
-            Goal::HurtBy(_) | Goal::Target { .. } | Goal::VexCopyOwner(_) => TARGET,
+            Goal::HurtBy(_) | Goal::Target { .. } => TARGET,
             Goal::LookAt(_) | Goal::GhastLook => LOOK,
-            Goal::GhastShoot { .. } | Goal::ShulkerPeek { .. } => 0,
+            // `VexCopyOwnerTargetGoal` sets no flags: it does not lock the target slot.
+            Goal::GhastShoot { .. } | Goal::ShulkerPeek { .. } | Goal::VexCopyOwner(_) => 0,
         }
     }
 
@@ -1124,6 +1125,7 @@ fn with_memory(g: MobGoal, ticks: i32) -> MobGoal {
             found,
             filter,
             players_only,
+            precheck,
         }) => {
             state.unseen_memory = ticks;
             MobGoal::Common(CommonGoal::NearestAttackable {
@@ -1132,6 +1134,7 @@ fn with_memory(g: MobGoal, ticks: i32) -> MobGoal {
                 found,
                 filter,
                 players_only,
+                precheck,
             })
         }
         other => other,
