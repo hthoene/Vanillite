@@ -73,8 +73,8 @@ pub fn entity_source(
     source
 }
 
-/// `hurtServer` of any living entity: players go through the survival logic, mobs through
-/// [`hurt_mob`]. Returns whether the damage was taken.
+/// `hurtServer` of any living entity, decoration or vehicle: players go through the survival
+/// logic, mobs through [`hurt_mob`]. Returns whether the damage was taken.
 pub fn hurt(
     level: &Level,
     ents: &mut Entities,
@@ -93,6 +93,13 @@ pub fn hurt(
     }
     if ents.decor(target).is_some() {
         return crate::decoration::hurt(level, ents, env, cx, target, &source);
+    }
+    // `VehicleEntity.hurtServer`.
+    if ents.minecart(target).is_some() {
+        return crate::minecart::hurt(ents, env, cx, target, source, amount);
+    }
+    if ents.boat(target).is_some() {
+        return crate::vehicle::hurt_boat(ents, env, cx, target, source, amount);
     }
     if ents.player(target).is_none() {
         return false;

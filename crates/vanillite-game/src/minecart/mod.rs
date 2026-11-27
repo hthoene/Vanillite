@@ -658,6 +658,7 @@ pub fn hurt(
         e.mark_data_dirty();
         e.set_flags(EntityFlags::HURT_MARKED, true);
     }
+    damage_game_event(ents, cx, id, source.cause);
     if destroy {
         destroy_minecart(ents, env, cx, id, &source);
     } else if creative {
@@ -665,6 +666,25 @@ pub fn hurt(
         discard(cx, id);
     }
     true
+}
+
+/// `gameEvent(ENTITY_DAMAGE, source.getEntity())` of a vehicle that was hurt.
+pub(crate) fn damage_game_event(
+    ents: &Entities,
+    cx: &mut MobContext,
+    id: EntityId,
+    cause: Option<EntityId>,
+) {
+    let Some(pos) = ents.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    cx.actions.push(crate::mob::WorldAction::Level(
+        crate::mob::boss::warden::LevelAction::GameEvent {
+            event: crate::level::game_event::events().entity_damage,
+            pos,
+            context: crate::level::game_event::GameEventContext::of(cause),
+        },
+    ));
 }
 
 /// `destroy(level, source)` of the minecart kinds.
