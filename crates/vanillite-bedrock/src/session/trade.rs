@@ -105,6 +105,11 @@ fn read_offers(r: &mut JReader<'_>) -> vanillite_protocol::codec::Result<Vec<Off
 
 /// "3 Emerald" for an item id and count.
 fn label((item, count): Cost) -> String {
+    format!("{count} {}", item_name(item))
+}
+
+/// "Oak Planks" for an item id.
+pub(super) fn item_name(item: u16) -> String {
     let name = vanillite_data::registry::ITEM
         .name(item)
         .map_or("?", |n| n.strip_prefix("minecraft:").unwrap_or(n));
@@ -119,11 +124,11 @@ fn label((item, count): Cost) -> String {
             pretty.push_str(chars.as_str());
         }
     }
-    format!("{count} {pretty}")
+    pretty
 }
 
 impl Session {
-    /// `open_screen`: a merchant menu starts a trade list; other menus are not shown.
+    /// `open_screen`: a merchant menu starts a trade list; other menus open as containers.
     pub(super) fn java_open_screen(&mut self, r: &mut JReader<'_>) {
         let (Ok(container), Ok(menu)) = (r.varint(), r.varint()) else {
             return;
@@ -135,6 +140,18 @@ impl Session {
         let title = crate::entity::component(r)
             .map(|c| c.plain())
             .unwrap_or_default();
+        if !merchant {
+            if let Some(w) = &mut self.world {
+                w.merchant = None;
+            }
+            let name = u16::try_from(menu)
+                .ok()
+                .and_then(|m| vanillite_data::registry::MENU.name(m))
+                .unwrap_or("");
+            self.open_menu(container, name, title);
+            return;
+        }
+        self.close_open_window(true);
         if let Some(w) = &mut self.world {
             w.merchant = merchant.then(|| Merchant {
                 container,
