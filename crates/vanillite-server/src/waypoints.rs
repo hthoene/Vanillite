@@ -353,6 +353,107 @@ impl Source {
     }
 }
 
+/// The high bit of every 2-bit entry of a [`Waypoints::kinds`] word; the slot masks of a tick
+/// use these positions.
+const HI: u64 = 0xAAAA_AAAA_AAAA_AAAA;
+/// The low bit of every 2-bit entry.
+const LO: u64 = 0x5555_5555_5555_5555;
+/// The least transmit range of a source whose pairs [`Fast`] may skip.
+const FAST_RANGE: f64 = 4096.0;
+
+/// The sources whose pairs a receiver may skip by their connection kind alone, as masks over
+/// slots (bit `2 * slot + 1` of word `slot / 32`). A source is *fast* when, apart from its
+/// position, nothing a pair reads of it changed (same block, chunk, icon, game mode and
+/// transmit range) and it is either not transmitting or not a spectator with a transmit range
+/// of at least [`FAST_RANGE`]. Where every fast source is surely within range of a receiver
+/// (see [`Fast::covers`]), none of their pairs starts or stops being ignored, so a block or
+/// chunk connection to it sends nothing and stays: only azimuths and missing connections to
+/// transmitting sources are updated. The work then follows the packets sent.
+struct Fast {
+    /// Fast sources that changed (moved) this tick.
+    changed: Vec<u64>,
+    /// Fast sources that did not change.
+    unchanged: Vec<u64>,
+    /// The other sources that changed.
+    slow_changed: Vec<u64>,
+    /// The other sources that did not change.
+    slow_unchanged: Vec<u64>,
+    /// Fast sources that transmit.
+    transmitting: Vec<u64>,
+    /// The box around the transmitting fast sources and their least transmit range.
+    bounds: Option<(Vec3, Vec3, f64)>,
+}
+
+impl Fast {
+    fn new(
+        now: &[Option<(EntityId, Snapshot)>],
+        before: &[Option<(EntityId, Snapshot)>],
+        changed: &[bool],
+    ) -> Fast {
+        let words = now.len().div_ceil(32);
+        let mut fast = Fast {
+            changed: vec![0; words],
+            unchanged: vec![0; words],
+            slow_changed: vec![0; words],
+            slow_unchanged: vec![0; words],
+            transmitting: vec![0; words],
+            bounds: None,
+        };
+        for (slot, entry) in now.iter().enumerate() {
+            let Some((_, s)) = entry else {
+                continue;
+            };
+            let (word, bit) = (slot / 32, 1u64 << (slot % 32 * 2 + 1));
+            let same = before
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|(_, b)| {
+                    b.uuid == s.uuid
+                        && b.block == s.block
+                        && b.chunk == s.chunk
+                        && b.spectator == s.spectator
+                        && b.transmit_range.to_bits() == s.transmit_range.to_bits()
+                        && b.icon == s.icon
+                });
+            let eligible =
+                same && (!s.transmitting() || (!s.spectator && s.transmit_range >= FAST_RANGE));
+            let mask = match (eligible, changed[slot]) {
+                (true, true) => &mut fast.changed,
+                (true, false) => &mut fast.unchanged,
+                (false, true) => &mut fast.slow_changed,
+                (false, false) => &mut fast.slow_unchanged,
+            };
+            mask[word] |= bit;
+            if eligible && s.transmitting() {
+                fast.transmitting[word] |= bit;
+                let (lo, hi, range) = fast.bounds.get_or_insert((s.pos, s.pos, s.transmit_range));
+                *lo = Vec3::new(lo.x.min(s.pos.x), lo.y.min(s.pos.y), lo.z.min(s.pos.z));
+                *hi = Vec3::new(hi.x.max(s.pos.x), hi.y.max(s.pos.y), hi.z.max(s.pos.z));
+                *range = range.min(s.transmit_range);
+            }
+        }
+        fast
+    }
+
+    /// Whether no fast source is ignored by `receiver`: it is no spectator, rides nothing and
+    /// the farthest corner of the box is (with a margin for rounding) within both ranges.
+    fn covers(&self, receiver: &Snapshot) -> bool {
+        let Some((lo, hi, range)) = self.bounds else {
+            return true;
+        };
+        if receiver.spectator || !receiver.vehicles.is_empty() {
+            return false;
+        }
+        let p = receiver.pos;
+        let (dx, dy, dz) = (
+            (p.x - lo.x).abs().max((p.x - hi.x).abs()),
+            (p.y - lo.y).abs().max((p.y - hi.y).abs()),
+            (p.z - lo.z).abs().max((p.z - hi.z).abs()),
+        );
+        (dx * dx + dy * dy + dz * dz).sqrt() + 1.0 < range.min(receiver.receive_range)
+    }
+}
+
 /// Receivers per part of the parallel pair updates.
 const RECEIVERS_PER_PART: usize = 64;
 
@@ -366,6 +467,7 @@ struct PairCtx<'a> {
     /// The slots of the players that changed, ascending.
     changed_slots: &'a [u32],
     sources: &'a [Option<Source>],
+    fast: &'a Fast,
     frames: &'a [SourceFrames],
     framing: Framing<'a>,
 }
@@ -490,12 +592,14 @@ impl Waypoints {
                 })
             })
             .collect();
+        let fast = Fast::new(&now, &self.players, &changed);
         let ctx = PairCtx {
             now: &now,
             before: &self.players,
             changed: &changed,
             changed_slots: &changed_slots,
             sources: &sources,
+            fast: &fast,
             frames: &frames,
             framing: Framing {
                 threshold,
@@ -575,7 +679,16 @@ impl PairCtx<'_> {
             }
             return;
         };
-        if !self.changed[r as usize] {
+        let moved_only = before.view == receiver.view
+            && before.spectator == receiver.spectator
+            && before.vehicles == receiver.vehicles
+            && before.receive_range.to_bits() == receiver.receive_range.to_bits();
+        let unchanged = !self.changed[r as usize];
+        if (unchanged || moved_only) && self.fast.covers(receiver) {
+            self.receiver_fast(r, receiver, unchanged, kinds, angles, codec, batch);
+            return;
+        }
+        if unchanged {
             for &s in self.changed_slots {
                 if s != r {
                     self.pair(receiver, s, kinds, angles, codec, batch);
@@ -586,10 +699,6 @@ impl PairCtx<'_> {
         // A receiver that only moved changes its pairs with unchanged sources only where the
         // source starts or stops being ignored (a distance threshold) and in azimuths: the
         // other pairs are skipped after a check on the compact source columns.
-        let moved_only = before.view == receiver.view
-            && before.spectator == receiver.spectator
-            && before.vehicles == receiver.vehicles
-            && before.receive_range.to_bits() == receiver.receive_range.to_bits();
         for (s, source) in (0u32..).zip(self.sources) {
             let Some(source) = source.filter(|_| s != r) else {
                 continue;
@@ -601,6 +710,56 @@ impl PairCtx<'_> {
                 }
             }
             self.pair(receiver, s, kinds, angles, codec, batch);
+        }
+    }
+
+    /// [`Self::receiver`] for a receiver that is unchanged or only moved and that
+    /// [`Fast::covers`]: block and chunk connections to fast sources are skipped by their kind.
+    #[allow(clippy::too_many_arguments)]
+    fn receiver_fast(
+        &self,
+        r: u32,
+        receiver: &Snapshot,
+        unchanged: bool,
+        kinds: &mut Vec<u64>,
+        angles: &mut FxHashMap<u32, f32>,
+        codec: &mut Codec,
+        batch: &mut Vec<u8>,
+    ) {
+        let fast = self.fast;
+        for (w, word) in (0u32..).zip(0..fast.changed.len()) {
+            let k = kinds.get(word).copied().unwrap_or(0);
+            let lo_up = (k & LO) << 1;
+            let azimuth = lo_up & !k & HI;
+            let none = !(k | lo_up) & HI;
+            let (fast_sources, checked) = if unchanged {
+                (fast.changed[word], 0)
+            } else {
+                (
+                    fast.changed[word] | fast.unchanged[word],
+                    fast.slow_unchanged[word],
+                )
+            };
+            let mut todo = fast.slow_changed[word]
+                | checked
+                | (fast_sources & (azimuth | (none & fast.transmitting[word])));
+            while todo != 0 {
+                let bit = todo.trailing_zeros();
+                todo &= todo - 1;
+                let s = w * 32 + bit / 2;
+                if s == r {
+                    continue;
+                }
+                if checked & (1 << bit) != 0
+                    && let Some(source) = self.sources[s as usize]
+                {
+                    let kind = kind_at(kinds, s);
+                    if kind != Kind::Azimuth && (kind == Kind::None) == source.ignores(receiver) {
+                        continue;
+                    }
+                }
+                self.pair(receiver, s, kinds, angles, codec, batch);
+            }
         }
     }
 
