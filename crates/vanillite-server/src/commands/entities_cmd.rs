@@ -31,7 +31,6 @@ use super::select::{self, Target};
 use super::source::CommandSource;
 use super::tracker::Tracker;
 use crate::global::Global;
-use crate::server::DIMENSIONS;
 use crate::survival::WorldSurvival;
 
 fn missing(name: &str) -> CommandError {
@@ -61,10 +60,8 @@ fn on_entity(
     target: &Target,
     f: impl FnOnce(&mut Entities, EntityId, &Global, &str) + Send + 'static,
 ) -> bool {
-    let dimension = DIMENSIONS
-        .get(target.world.index())
-        .copied()
-        .unwrap_or("minecraft:overworld");
+    let global = env.global;
+    let dimension = global.dimensions.name_or_overworld(target.world);
     if let Some(id) = target.entity {
         f(&mut env.level.entities, id, env.global, dimension);
         return true;
@@ -73,10 +70,11 @@ fn on_entity(
         return false;
     };
     let uuid = target.uuid;
+    let dimension = dimension.to_owned();
     env.global.run_in_world(target.world, move |w| {
         let entities = w.entities_mut();
         if let Some(id) = select::find_uuid(entities, uuid) {
-            f(entities, id, &global, dimension);
+            f(entities, id, &global, &dimension);
         }
     });
     true
@@ -343,11 +341,8 @@ fn summon(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
 }
 
 /// The dimension id of a world.
-fn dimension_of(world: crate::world::WorldId) -> &'static str {
-    DIMENSIONS
-        .get(world.index())
-        .copied()
-        .unwrap_or("minecraft:overworld")
+fn dimension_of(global: &Global, world: crate::world::WorldId) -> &str {
+    global.dimensions.name_or_overworld(world)
 }
 
 /// The display name of the entity with this id (`getDisplayName`).
@@ -416,7 +411,7 @@ fn ride_mount(
             vec![],
         ));
     }
-    let dimension = dimension_of(env.world);
+    let dimension = dimension_of(env.global, env.world);
     if !mount(env.level, env.global, dimension, t, v) {
         return Err(CommandError::new(
             "commands.ride.mount.failure.generic",
@@ -574,7 +569,7 @@ fn ride_dismount(
         ));
     };
     let vehicle_name = display_of(env, vehicle).unwrap_or_else(|| Component::text(""));
-    let dimension = dimension_of(env.world);
+    let dimension = dimension_of(env.global, env.world);
     dismount(env.level, env.global, dimension, t);
     source.send_success(
         env.global,
@@ -804,10 +799,7 @@ fn damage(args: &Args, source: &CommandSource, env: &mut Env<'_>) -> Result<i32,
     }
     let hurt = match target.entity {
         Some(id) => {
-            let dimension = DIMENSIONS
-                .get(target.world.index())
-                .copied()
-                .unwrap_or("minecraft:overworld");
+            let dimension = env.global.dimensions.name_or_overworld(target.world);
             hurt_any(env.level, env.global, dimension, id, damage_source, amount)
         }
         None => {

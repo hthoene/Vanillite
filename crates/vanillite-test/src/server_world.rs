@@ -9,7 +9,7 @@
 //! connection nobody reads, and a `use_item` action is their `use_item` packet. Everything
 //! between the worlds (portals, ender pearls, `execute in`, `/tp`) is the server's own code.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -36,7 +36,6 @@ use crate::scenario::{EntitySpec, OVERWORLD, WorldSpec};
 use crate::trace::{EntityObs, TickObs};
 use crate::world::{Execution, ScenarioWorld};
 
-/// The dimensions in world order (`vanillite_server::DIMENSIONS`).
 const NETHER: &str = "minecraft:the_nether";
 const END: &str = "minecraft:the_end";
 /// Server ticks the chunks of the regions get to become ticking.
@@ -44,11 +43,16 @@ const SETTLE_LIMIT: usize = 200;
 /// View and simulation distance (`ScenarioRecorder.VIEW_DISTANCE`).
 const VIEW_DISTANCE: u32 = 2;
 
+/// Dimension keys with their flat layers (block, height), bottom first.
+type PackDimensions = Vec<(String, Vec<(String, u32)>)>;
+
 /// The flat layers of each dimension: the scenario's overworld, the recorder's Nether and End
-/// (`ParityServer.NETHER_LAYERS`, `END_LAYERS`).
+/// (`ParityServer.NETHER_LAYERS`, `END_LAYERS`), the data pack's own.
 #[derive(Debug)]
 struct ScenarioGenerators {
     overworld: Vec<(String, u32)>,
+    /// The flat layers of the scenario data pack's dimensions, by dimension key.
+    pack_dimensions: PackDimensions,
 }
 
 impl ChunkGeneratorProvider for ScenarioGenerators {
@@ -58,6 +62,12 @@ impl ChunkGeneratorProvider for ScenarioGenerators {
         let layers: Vec<(&str, u32)> = match world.dimension.as_str() {
             NETHER => nether.to_vec(),
             END => end.to_vec(),
+            other if self.pack_dimensions.iter().any(|(d, _)| d == other) => self
+                .pack_dimensions
+                .iter()
+                .filter(|(d, _)| d == other)
+                .flat_map(|(_, layers)| layers.iter().map(|(b, h)| (b.as_str(), *h)))
+                .collect(),
             _ => self
                 .overworld
                 .iter()
@@ -73,6 +83,63 @@ impl ChunkGeneratorProvider for ScenarioGenerators {
         }
         Ok(Arc::new(FlatGenerator::new(world, &states)))
     }
+}
+
+/// Copies the scenario data pack `name` into the world's `datapacks/` folder; returns the flat
+/// layers of its dimensions.
+fn install_datapack(world_dir: &Path, name: &str) -> Result<PackDimensions, String> {
+    fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let target = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy(&entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), target)?;
+            }
+        }
+        Ok(())
+    }
+    let source = crate::golden::crate_dir().join("datapacks").join(name);
+    copy(&source, &world_dir.join("datapacks").join(name))
+        .map_err(|e| format!("data pack {}: {e}", source.display()))?;
+    let mut dimensions = Vec::new();
+    let data = source.join("data");
+    for namespace in std::fs::read_dir(&data).map_err(|e| e.to_string())? {
+        let namespace = namespace.map_err(|e| e.to_string())?;
+        let Ok(files) = std::fs::read_dir(namespace.path().join("dimension")) else {
+            continue;
+        };
+        for file in files {
+            let path = file.map_err(|e| e.to_string())?.path();
+            let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            let layers = json
+                .pointer("/generator/settings/layers")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| format!("{}: only flat dimensions are supported", path.display()))?
+                .iter()
+                .map(|l| {
+                    let block = l.get("block").and_then(serde_json::Value::as_str);
+                    let height = l.get("height").and_then(serde_json::Value::as_u64);
+                    match (block, height.and_then(|h| u32::try_from(h).ok())) {
+                        (Some(b), Some(h)) => Ok((b.to_owned(), h)),
+                        _ => Err(format!("{}: invalid layer {l}", path.display())),
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or("invalid dimension file name")?;
+            dimensions.push((
+                format!("{}:{stem}", namespace.file_name().to_string_lossy()),
+                layers,
+            ));
+        }
+    }
+    Ok(dimensions)
 }
 
 /// Chunks in memory.
@@ -110,12 +177,11 @@ impl std::fmt::Debug for ServerWorld {
     }
 }
 
-fn world_id(dimension: &str) -> Result<WorldId, String> {
-    vanillite_server::DIMENSIONS
-        .iter()
-        .position(|d| *d == dimension)
-        .and_then(|i| u16::try_from(i).ok())
-        .map(WorldId)
+fn world_id(server: &Server, dimension: &str) -> Result<WorldId, String> {
+    server
+        .global()
+        .dimensions
+        .world(dimension)
         .ok_or_else(|| format!("unknown dimension {dimension}"))
 }
 
@@ -157,6 +223,10 @@ impl ServerWorld {
         let cache = std::fs::canonicalize(&cache).unwrap_or(cache);
         #[cfg(unix)]
         std::os::unix::fs::symlink(&cache, dir.join("cache")).map_err(io)?;
+        let pack_dimensions = match &spec.datapack {
+            Some(name) => install_datapack(&dir.join("world"), name)?,
+            None => Vec::new(),
+        };
         let mut builder = ServerBuilder::new(&dir);
         builder
             .vanilla_pack(vanillite_server::VanillaPack::Download)
@@ -168,15 +238,17 @@ impl ServerWorld {
             .and_then(|b| {
                 b.chunk_generator(Box::new(ScenarioGenerators {
                     overworld: spec.layers.clone(),
+                    pack_dimensions,
                 }))
             })
             .map_err(|e| e.to_string())?;
         let server = builder.start().map_err(|e| e.to_string())?;
+        let selected = world_id(&server, &spec.dimension)?;
         let mut world = Self {
             server,
             spec: spec.clone(),
             dir,
-            selected: world_id(&spec.dimension)?,
+            selected,
             names: Vec::new(),
             players: Vec::new(),
             selected_player: WorldId(0),
@@ -201,7 +273,10 @@ impl ServerWorld {
         // The regions' chunks, forced like `/forceload`, until they tick with their entities.
         let mut areas = vec![(world.selected, spec.forced.clone())];
         for view in &spec.views {
-            areas.push((world_id(&view.dimension)?, view.forced.clone()));
+            areas.push((
+                world_id(&world.server, &view.dimension)?,
+                view.forced.clone(),
+            ));
         }
         for (id, chunks) in &areas {
             let level = world.server.world(*id).level_mut();
@@ -262,11 +337,9 @@ impl ServerWorld {
     /// positions) starts from the world seed (`ScenarioRecorder.seedLevels`).
     fn seed_levels(&mut self, rand_value: bool) {
         let seed = self.spec.seed;
-        for i in 0..vanillite_server::DIMENSIONS.len() {
-            let Ok(index) = u16::try_from(i) else {
-                continue;
-            };
-            let level = self.server.world(WorldId(index)).level_mut();
+        let worlds: Vec<WorldId> = self.server.global().dimensions.worlds().collect();
+        for id in worlds {
+            let level = self.server.world(id).level_mut();
             *level.random() = LegacyRandom::new(seed);
             if rand_value {
                 level.set_rand_value(seed as i32);
@@ -297,8 +370,9 @@ impl ServerWorld {
             .find(|(_, n)| n == name)
             .map(|(u, _)| *u)
             .ok_or_else(|| format!("no scenario entity `{name}`"))?;
-        for i in 0..vanillite_server::DIMENSIONS.len() {
-            let index = u16::try_from(i).map_err(|e| e.to_string())?;
+        let worlds: Vec<WorldId> = self.server.global().dimensions.worlds().collect();
+        for id in worlds {
+            let index = id.0;
             if let Some(id) = self
                 .server
                 .world_ref(WorldId(index))
@@ -358,7 +432,7 @@ impl Drop for ServerWorld {
 
 impl ScenarioWorld for ServerWorld {
     fn select_dimension(&mut self, dimension: &str) -> Result<(), String> {
-        self.selected = world_id(dimension)?;
+        self.selected = world_id(&self.server, dimension)?;
         Ok(())
     }
 
@@ -404,7 +478,11 @@ impl ScenarioWorld for ServerWorld {
     /// Entities in the region of the selected world; outside the overworld with their `dim`.
     fn entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<EntityObs>) {
         let level = self.level();
-        let dimension = vanillite_server::DIMENSIONS[self.selected.index()];
+        let dimension = self
+            .server
+            .global()
+            .dimensions
+            .name_or_overworld(self.selected);
         let ents = &level.entities;
         let core = ents.store.columns();
         let name_of = |id: EntityId| ents.store.get(id).and_then(|e| self.name_of(e.uuid()));

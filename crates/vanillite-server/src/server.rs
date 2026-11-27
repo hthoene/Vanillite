@@ -43,8 +43,9 @@ use crate::watchdog::{Heartbeat, WatchState, Watchdog};
 use crate::world::{ServerWorld, TickContext, WorldId, WorldTask};
 use vanillite_net::VirtualOpener;
 
-/// The dimensions of a server, in Vanilla's tick order.
-pub const DIMENSIONS: [&str; 3] = [
+/// Vanilla's built-in dimensions, in tick order; every server has them, data packs add more
+/// ([`crate::dimensions::Dimensions`]).
+pub const VANILLA_DIMENSIONS: [&str; 3] = [
     "minecraft:overworld",
     "minecraft:the_nether",
     "minecraft:the_end",
@@ -298,13 +299,6 @@ impl ServerBuilder {
         let level_dir = dir.join(&level_name);
         let session_lock = lock_world(&level_dir)?;
         let layout = crate::world_format::layout(&config);
-        let moved = vanillite_storage::layout::adopt_layout(&dir, &level_name, layout, &DIMENSIONS)
-            .map_err(|e| StartError::Io(format!("world layout of \"{level_name}\": {e}")))?;
-        for line in moved {
-            log::warn!("storage.layout = {layout:?}: {line}");
-        }
-        // Before anything writes into the world: a new world is marked with its format.
-        let format_plan = crate::world_format::plan(&config, &dir, &level_name)?;
         let writer = FileWriter::start().map_err(|e| StartError::io(&level_dir, e))?;
         let player_store = PlayerDataStore::new(&level_dir).with_writer(writer.clone());
         // Mojang's profile key signers are fetched while the data packs load.
@@ -315,6 +309,16 @@ impl ServerBuilder {
         });
         let prepared =
             crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack, &player_store)?;
+        // The dimensions come from the data packs and `world_gen_settings.dat`; the layout and
+        // the format are settled for all of them before a chunk is read.
+        let dimensions = prepared.world_gen.dimensions();
+        let names: Vec<&str> = dimensions.names().collect();
+        let moved = vanillite_storage::layout::adopt_layout(&dir, &level_name, layout, &names)
+            .map_err(|e| StartError::Io(format!("world layout of \"{level_name}\": {e}")))?;
+        for line in moved {
+            log::warn!("storage.layout = {layout:?}: {line}");
+        }
+        let format_plan = crate::world_format::plan(&config, &dir, &level_name, &dimensions)?;
         let chat = chat_settings(&config, services_keys);
         let level_setup = crate::level::LevelSetup {
             level_name: level_name.clone(),
@@ -353,13 +357,14 @@ impl ServerBuilder {
         let slot = |name: &str, origin: &Origin| log::info!("Slot {name}: {origin}");
         let compression = crate::world_format::anvil_compression(&config);
         let world_format = if format_plan.convert_to.is_some() {
-            let infos = DIMENSIONS
+            let infos = dimensions
                 .iter()
-                .map(|d| {
+                .map(|(_, d, kind)| {
                     crate::world_setup::world_info(
                         packs.as_deref(),
                         layout.dimension_dir(&dir, &level_name, d),
                         d,
+                        kind,
                         seed,
                     )
                 })
@@ -467,6 +472,7 @@ impl ServerBuilder {
         let level = crate::level::LevelState::load(
             &level_dir,
             packs.as_deref(),
+            &dimensions,
             crate::survival::difficulty(config.properties.difficulty),
             &level_setup,
             writer.clone(),
@@ -492,6 +498,7 @@ impl ServerBuilder {
             handle: std::sync::OnceLock::new(),
             commands,
             online_mode: config.properties.online_mode,
+            dimensions: dimensions.clone(),
             level,
             seed: level_seed(&config.properties.level_seed),
             registries: prepared.registries.clone(),
@@ -546,9 +553,9 @@ impl ServerBuilder {
         let (sender, receiver) = mpsc::channel();
 
         log::info!("Preparing level \"{level_name}\"");
-        let mut worlds = Vec::with_capacity(DIMENSIONS.len());
+        let mut worlds = Vec::with_capacity(dimensions.len());
         let trees = crate::world_setup::tree_features(packs.as_deref(), seed);
-        for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
+        for (WorldId(index), dimension, kind) in dimensions.iter() {
             let rules = Arc::new(config.world_rules(dimension));
             let view_distance = rules
                 .distances
@@ -565,6 +572,7 @@ impl ServerBuilder {
                 packs.as_deref(),
                 layout.dimension_dir(&dir, &level_name, dimension),
                 dimension,
+                kind,
                 seed,
             )?;
             let slots = ChunkSlots {
@@ -617,6 +625,7 @@ impl ServerBuilder {
             let level_settings = crate::world_setup::level_settings(
                 packs.as_deref(),
                 &info,
+                kind,
                 &rules,
                 &config.properties,
             );
@@ -637,7 +646,7 @@ impl ServerBuilder {
             level.generation = terrains
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(*dimension)
+                .get(dimension)
                 .cloned();
             level.border = crate::border::load(
                 &data,
@@ -654,8 +663,7 @@ impl ServerBuilder {
             level.set_command_runner(Arc::new(block_commands));
             if !global.plugins.plugins().is_empty() {
                 level.set_hooks(Arc::new(crate::plugins::WorldHooks::new(
-                    &global.plugins,
-                    dimension,
+                    &global, dimension,
                 )));
             }
             level.set_structure_templates(Arc::clone(&global.templates));
@@ -674,7 +682,7 @@ impl ServerBuilder {
             let mobs = crate::mobs::WorldMobs::new(spawn_table.clone(), seed, &rules);
             let mut world = ServerWorld::new(
                 WorldId(index),
-                (*dimension).to_owned(),
+                dimension.to_owned(),
                 rules,
                 tracker,
                 players,
@@ -682,6 +690,11 @@ impl ServerBuilder {
                 survival,
                 mobs,
                 data,
+                global
+                    .level
+                    .dimension_types
+                    .get(usize::from(index))
+                    .is_some_and(|t| t.has_ender_dragon_fight),
             );
             world.set_lent_levels(lent_levels);
             world.restore_tickets(saved_tickets);
@@ -1392,9 +1405,8 @@ impl Server {
         let world = arrival
             .saved
             .as_ref()
-            .and_then(|s| DIMENSIONS.iter().position(|d| *d == s.dimension))
-            .and_then(|i| u16::try_from(i).ok())
-            .map_or(WorldId(0), WorldId);
+            .and_then(|s| self.global.dimensions.world(&s.dimension))
+            .unwrap_or(WorldId(0));
         players.add(PlayerEntry {
             uuid: Uuid(uuid),
             name: arrival.profile.name.clone(),
@@ -1577,7 +1589,7 @@ impl Server {
     fn world_crashed(&mut self, id: WorldId) {
         log::error!(
             "The thread of world {} crashed; stopping the server",
-            DIMENSIONS.get(id.index()).copied().unwrap_or("?")
+            self.global.dimensions.name(id).unwrap_or("?")
         );
         self.running = false;
     }
@@ -1643,7 +1655,7 @@ impl Server {
         };
         new.properties = self.config.properties.clone();
         warn_restart_needed(&self.config.server, &new.server);
-        for dimension in DIMENSIONS {
+        for dimension in self.global.dimensions.names() {
             warn_restart_needed(
                 &self.config.world_rules(dimension),
                 &new.world_rules(dimension),
@@ -1653,13 +1665,11 @@ impl Server {
             new.server.watchdog.early_warning_after.get(),
             new.server.watchdog.warning_interval,
         );
-        for (dimension, index) in DIMENSIONS.iter().zip(0u16..) {
+        let dimensions = self.global.dimensions.clone();
+        for (world, dimension, _) in dimensions.iter() {
             let rules = Arc::new(new.world_rules(dimension));
             let max_chained = new.properties.max_chained_neighbor_updates;
-            self.run_in_world(
-                WorldId(index),
-                Box::new(move |w| w.set_rules(rules, max_chained)),
-            );
+            self.run_in_world(world, Box::new(move |w| w.set_rules(rules, max_chained)));
         }
         self.config = new;
         log::info!("Reloaded {VANILLITE_FILE}");
@@ -1737,7 +1747,7 @@ impl Server {
         };
         let level_name = self.config.properties.level_name.clone();
         let mut sources: Vec<PathBuf> = Vec::new();
-        for dimension in DIMENSIONS {
+        for dimension in self.global.dimensions.names() {
             let dir = self.layout.world_dir(&self.dir, &level_name, dimension);
             if !sources.contains(&dir) {
                 sources.push(dir);
@@ -1800,7 +1810,7 @@ impl Server {
                 }
             }
             Worlds::Parallel(threads) => {
-                for (thread, dimension) in threads.iter().zip(DIMENSIONS) {
+                for (thread, dimension) in threads.iter().zip(self.global.dimensions.names()) {
                     log::info!("Saving chunks for level '{level}'/{dimension}");
                     let _ = thread.sender.send(WorldMsg::Stop);
                 }

@@ -32,6 +32,8 @@ pub struct Global {
     pub(crate) commands: crate::commands::CommandDispatcher,
     /// `online-mode`.
     pub(crate) online_mode: bool,
+    /// The dimensions; a world's index here is its [`WorldId`].
+    pub dimensions: crate::dimensions::Dimensions,
     /// Game time, clocks, game rules, weather and the survival registries.
     pub(crate) level: crate::level::LevelState,
     /// The world seed (`/seed`).
