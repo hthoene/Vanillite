@@ -1,5 +1,5 @@
 {
-  "description": "A client player puts on armour (use_item swaps) (#230): the equipment's attribute modifiers and those of its enchantments (Depth Strider, Swift Sneak, netherite knockback resistance) reach the client in update_attributes together with a Speed effect; Soul Speed boots on soul sand add their location-based modifiers. A worn elytra does not wear when the player is hurt (equippable damage_on_hurt false), nearly broken iron boots break. With a full inventory the glass bottle of a drunk honey bottle is dropped. A goat horn without an instrument patch plays its default instrument.",
+  "description": "A client player puts on armour by using it (#230): Depth Strider, Swift Sneak and Soul Speed boots (Soul Speed on soul sand: its location-based modifiers and level-random rolls), a worn elytra does not wear when the player is hurt (equippable damage_on_hurt false) while nearly broken iron boots break, a goat horn without an instrument patch plays its default instrument, and with a full inventory the glass bottle of a drunk honey bottle is dropped.",
   "tier": "fast",
   "dimensions": true,
   "client_view": true,
@@ -21,7 +21,7 @@
       31
     ]
   ],
-  "ticks": 110,
+  "ticks": 150,
   "entities": [
     {
       "name": "alex",
@@ -260,13 +260,6 @@
       "components": "{\"minecraft:enchantments\":{\"minecraft:soul_speed\":3}}"
     },
     {
-      "tick": 12,
-      "op": "use_item",
-      "entity": "alex",
-      "item": "minecraft:honey_bottle",
-      "count": 2
-    },
-    {
       "tick": 66,
       "op": "use_item",
       "entity": "alex",
@@ -295,7 +288,13 @@
       "op": "use_item",
       "entity": "alex",
       "item": "minecraft:goat_horn"
+    },
+    {
+      "tick": 95,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:honey_bottle",
+      "count": 2
     }
-  ],
-  "client_attributes": true
+  ]
 }

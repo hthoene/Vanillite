@@ -128,23 +128,31 @@
   "actions": [
     {
       "tick": 1,
-      "op": "command",
-      "command": "item replace entity walker armor.feet with minecraft:diamond_boots[minecraft:enchantments={\"minecraft:frost_walker\":2}]"
+      "op": "use_item",
+      "entity": "walker",
+      "item": "minecraft:diamond_boots",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:frost_walker\":2}}"
     },
     {
       "tick": 1,
-      "op": "command",
-      "command": "item replace entity stepper armor.feet with minecraft:leather_boots[minecraft:enchantments={\"minecraft:frost_walker\":1}]"
+      "op": "use_item",
+      "entity": "stepper",
+      "item": "minecraft:leather_boots",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:frost_walker\":1}}"
     },
     {
       "tick": 1,
-      "op": "command",
-      "command": "item replace entity diver armor.head with minecraft:diamond_helmet[minecraft:enchantments={\"minecraft:respiration\":3}]"
+      "op": "use_item",
+      "entity": "diver",
+      "item": "minecraft:diamond_helmet",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:respiration\":3}}"
     },
     {
       "tick": 1,
-      "op": "command",
-      "command": "item replace entity skater armor.feet with minecraft:iron_boots[minecraft:enchantments={\"minecraft:frost_walker\":1}]"
+      "op": "use_item",
+      "entity": "skater",
+      "item": "minecraft:iron_boots",
+      "components": "{\"minecraft:enchantments\":{\"minecraft:frost_walker\":1}}"
     }
   ]
 }
