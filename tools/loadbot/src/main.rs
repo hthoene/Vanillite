@@ -19,7 +19,8 @@
 //! Control on stdin, one command per line: `target <n>` raises the number of bots to `n`
 //! (bots join at the join rate), `movement <spec>` switches the movement of all bots,
 //! `rate <joins per s> [<concurrent logins>]` changes the join rate (the concurrency can only
-//! grow), `quit` ends the process. Every second one JSON line with the
+//! grow), `say <text>` makes every joined bot send `<text>` once (a chat message, or a command
+//! when it starts with `/`), `quit` ends the process. Every second one JSON line with the
 //! metrics of that second goes to stdout (see [`Metrics::report`]). Driven by
 //! `cargo xtask loadtest`.
 
@@ -294,6 +295,7 @@ fn main() {
     let (target_tx, target_rx) = watch::channel(0u64);
     let (movement_tx, movement_rx) = watch::channel(config.movement);
     let (rate_tx, rate_rx) = watch::channel((config.join_rate, config.join_concurrency));
+    let (say_tx, say_rx) = watch::channel(String::new());
     let start = Instant::now();
 
     runtime.spawn(spawner(
@@ -302,6 +304,7 @@ fn main() {
         target_rx.clone(),
         movement_rx,
         rate_rx,
+        say_rx,
     ));
     let reporter_metrics = Arc::clone(&metrics);
     runtime.spawn(async move {
@@ -316,6 +319,10 @@ fn main() {
     // Control commands on stdin; the runtime keeps running on its own threads.
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
+        if let Some(text) = line.strip_prefix("say ") {
+            let _ = say_tx.send(text.to_owned());
+            continue;
+        }
         match line.split_whitespace().collect::<Vec<_>>().as_slice() {
             ["target", n] => match n.parse::<u64>() {
                 Ok(n) => {
@@ -359,6 +366,7 @@ async fn spawner(
     mut target: watch::Receiver<u64>,
     movement: watch::Receiver<Movement>,
     mut rate: watch::Receiver<(f64, usize)>,
+    say: watch::Receiver<String>,
 ) {
     let mut concurrency = config.join_concurrency;
     let pending = Arc::new(Semaphore::new(concurrency));
@@ -394,6 +402,7 @@ async fn spawner(
             Arc::clone(&config),
             Arc::clone(&metrics),
             movement.clone(),
+            say.clone(),
             permit,
         ));
     }

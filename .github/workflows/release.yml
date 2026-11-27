@@ -59,7 +59,8 @@ jobs:
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
       # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
       CFLAGS_x86_64_unknown_linux_musl: -mevex512
-      CFLAGS_x86_64_unknown_linux_gnu: -mevex512
+      # Only for the x86-64 job: in the aarch64 job it would reach the runner's gcc (build scripts).
+      CFLAGS_x86_64_unknown_linux_gnu: ${{ matrix.arch == 'x86_64' && '-mevex512' || '' }}
     steps:
       # Scripts and text files keep LF line ends on Windows (package.sh converts the texts).
       - run: git config --global core.autocrlf false
