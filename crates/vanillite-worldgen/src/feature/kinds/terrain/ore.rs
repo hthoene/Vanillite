@@ -20,9 +20,13 @@ struct OreConfig {
     targets: Vec<BlockReplacement>,
     size: i32,
     discard_chance_on_air_exposure: f32,
-    /// Per block id, when the block alone decides the test of every target (at most eight):
-    /// bit `i` is set where the test of `targets[i]` passes.
-    by_block: Option<Box<[u8]>>,
+    /// The block Ys where a target test's height condition changes, ascending: they split the
+    /// world into the Y intervals of `by_block`.
+    height_breaks: Vec<i32>,
+    /// Per Y interval (before the first break, between two, from the last on) and block id,
+    /// when the block and its Y decide the test of every target (at most eight): bit `i` is set
+    /// where the test of `targets[i]` passes. `None` for an interval where they don't.
+    by_block: Vec<Option<Box<[u8]>>>,
 }
 
 impl OreConfig {
@@ -39,22 +43,35 @@ impl OreConfig {
             )));
         }
         let targets = BlockReplacement::parse_list(json, parser)?;
-        let by_block = (targets.len() <= 8)
-            .then(|| {
-                (0..BLOCK_COUNT)
-                    .map(|block| {
-                        let block = BlockId(block as u16);
-                        targets.iter().enumerate().try_fold(0, |mask, (i, target)| {
-                            Some(mask | (u8::from(target.target.test_block(block)?) << i))
-                        })
+        let mut height_breaks = Vec::new();
+        for target in &targets {
+            target.target.height_breaks(&mut height_breaks);
+        }
+        height_breaks.sort_unstable();
+        height_breaks.dedup();
+        let interval_ys = std::iter::once(i32::MIN).chain(height_breaks.iter().copied());
+        let by_block = interval_ys
+            .map(|y| {
+                (targets.len() <= 8)
+                    .then(|| {
+                        (0..BLOCK_COUNT)
+                            .map(|block| {
+                                let block = BlockId(block as u16);
+                                targets.iter().enumerate().try_fold(0, |mask, (i, target)| {
+                                    let passes = target.target.test_block_at(block, y)?;
+                                    Some(mask | (u8::from(passes) << i))
+                                })
+                            })
+                            .collect()
                     })
-                    .collect()
+                    .flatten()
             })
-            .flatten();
+            .collect();
         Ok(Self {
             targets,
             size,
             discard_chance_on_air_exposure: discard,
+            height_breaks,
             by_block,
         })
     }
@@ -67,7 +84,8 @@ impl OreConfig {
         random: &mut R,
         pos: BlockPos,
     ) -> Option<&BlockReplacement> {
-        let Some(by_block) = &self.by_block else {
+        let interval = self.height_breaks.partition_point(|&y| y <= pos.y);
+        let Some(by_block) = &self.by_block[interval] else {
             return self
                 .targets
                 .iter()

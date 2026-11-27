@@ -60,6 +60,8 @@ pub(super) struct FoldedRules {
     above_surface: Vec<bool>,
     /// Members of the sequences, each a contiguous run.
     members: Vec<u32>,
+    /// The `StoneDepthCondition`s the tree tests.
+    stone_depths: Vec<StoneDepth>,
     /// `None` when the root never places a block.
     root: Option<u32>,
 }
@@ -81,6 +83,25 @@ enum Node {
     },
 }
 
+/// A `StoneDepthCondition` of the tree: true where the stone depth (above for a floor, below for
+/// a ceiling) is at most `1 + offset`, plus the column's surface depth and secondary depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct StoneDepth {
+    pub offset: i32,
+    pub add_surface_depth: bool,
+    pub secondary_depth_range: i32,
+    pub ceiling: bool,
+}
+
+/// What a block's Y is folded with (see [`FoldedRules::fold_at`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FoldMode {
+    /// The block is below its column's minimum surface level.
+    BelowSurface,
+    /// Every stone depth condition is false at the block.
+    DeepInStone,
+}
+
 /// What [`FoldedRules`] derives node Y ranges from: the chunk's generation context (to resolve
 /// anchors) and the ore veins' density Y ranges.
 pub(super) struct YBoundsInput<'a> {
@@ -92,7 +113,7 @@ pub(super) struct YBoundsInput<'a> {
 const UNBOUNDED: [i32; 2] = [i32::MIN, i32::MAX];
 
 /// What [`FoldedRules`] does at a block below its column's minimum surface level, as far as the
-/// block's Y alone decides it (see [`FoldedRules::fold_below_surface`]).
+/// block's Y alone decides it (see [`FoldedRules::fold_at`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BelowSurface {
     /// No block is placed.
@@ -162,10 +183,11 @@ impl FoldedRules {
             &Rule::Condition { if_true, then_run } => match fold_condition(rules, folds, if_true) {
                 Some(false) => return None,
                 Some(true) => return self.fold(rules, folds, bounds, then_run),
-                None => Node::Condition {
-                    if_true,
-                    then_run: self.fold(rules, folds, bounds, then_run)?,
-                },
+                None => {
+                    let then_run = self.fold(rules, folds, bounds, then_run)?;
+                    self.note_stone_depths(rules, if_true);
+                    Node::Condition { if_true, then_run }
+                }
             },
         };
         let y_bounds = match bounds {
@@ -185,6 +207,35 @@ impl FoldedRules {
         self.y_bounds.push(y_bounds);
         self.above_surface.push(above_surface);
         Some(self.nodes.len() as u32 - 1)
+    }
+
+    /// Records the stone depth conditions condition `id` tests.
+    fn note_stone_depths(&mut self, rules: &MaterialRules, id: CondId) {
+        match rules.conditions[id as usize] {
+            Condition::StoneDepth {
+                offset,
+                add_surface_depth,
+                secondary_depth_range,
+                ceiling,
+            } => {
+                let condition = StoneDepth {
+                    offset,
+                    add_surface_depth,
+                    secondary_depth_range,
+                    ceiling,
+                };
+                if !self.stone_depths.contains(&condition) {
+                    self.stone_depths.push(condition);
+                }
+            }
+            Condition::Not(target) => self.note_stone_depths(rules, target),
+            _ => {}
+        }
+    }
+
+    /// The `StoneDepthCondition`s the tree tests.
+    pub(super) fn stone_depths(&self) -> &[StoneDepth] {
+        &self.stone_depths
     }
 
     /// The block Y range where `node` (whose members are already folded) may place a block.
@@ -210,35 +261,37 @@ impl FoldedRules {
         }
     }
 
-    /// What the tree does at block Y `y` of a column whose minimum surface level is above
-    /// `y`, decided from the conditions that depend on Y alone (and the surface level); the
-    /// other inputs of a block (stone depth, water height, biome, noises) are then irrelevant.
+    /// What the tree does at block Y `y` of a block `mode` describes, decided from that and the
+    /// conditions that depend on Y alone; the other inputs of the block (water height, biome,
+    /// noises, and the stone depth or the surface level) are then irrelevant: conditions have
+    /// no effects, so one that gates nothing but rules that place no block need not be known.
     /// Ore veins whose bit is not in `ore_present` never place a block in this chunk.
-    pub(super) fn fold_below_surface(
+    pub(super) fn fold_at(
         &self,
         rules: &MaterialRules,
         generation: &WorldGenerationContext,
         ore_present: u32,
+        mode: FoldMode,
         y: i32,
     ) -> FoldedY {
         let mut ores = 0;
+        let input = (rules, generation, ore_present, mode);
         let outcome = match self.root {
-            Some(root) => self.fold_node(rules, generation, ore_present, y, root, &mut ores),
+            Some(root) => self.fold_node(input, y, root, &mut ores),
             None => BelowSurface::Nothing,
         };
         FoldedY { outcome, ores }
     }
 
-    /// [`Self::fold_below_surface`] of `node`, following `apply`.
+    /// [`Self::fold_at`] of `node`, following `apply`.
     fn fold_node(
         &self,
-        rules: &MaterialRules,
-        generation: &WorldGenerationContext,
-        ore_present: u32,
+        input: (&MaterialRules, &WorldGenerationContext, u32, FoldMode),
         y: i32,
         node: u32,
         ores: &mut u32,
     ) -> BelowSurface {
+        let (rules, generation, ore_present, mode) = input;
         let [min, max] = self.y_bounds[node as usize];
         if y < min || y > max {
             return BelowSurface::Nothing;
@@ -254,7 +307,7 @@ impl FoldedRules {
             }
             Node::Sequence { start, end } => {
                 for &member in &self.members[start as usize..end as usize] {
-                    match self.fold_node(rules, generation, ore_present, y, member, ores) {
+                    match self.fold_node(input, y, member, ores) {
                         BelowSurface::Nothing => {}
                         decided => return decided,
                     }
@@ -262,10 +315,14 @@ impl FoldedRules {
                 BelowSurface::Nothing
             }
             Node::Condition { if_true, then_run } => {
-                match condition_below_surface(rules, generation, if_true, y) {
+                match condition_at(rules, generation, if_true, mode, y) {
                     Some(false) => BelowSurface::Nothing,
-                    Some(true) => self.fold_node(rules, generation, ore_present, y, then_run, ores),
-                    None => BelowSurface::Unknown,
+                    Some(true) => self.fold_node(input, y, then_run, ores),
+                    // Whatever the condition is: nothing when its rule places nothing.
+                    None => match self.fold_node(input, y, then_run, ores) {
+                        BelowSurface::Nothing => BelowSurface::Nothing,
+                        _ => BelowSurface::Unknown,
+                    },
                 }
             }
         }
@@ -313,16 +370,18 @@ fn condition_y_bounds(
     }
 }
 
-/// The value of condition `id` at block Y `y` below the column's minimum surface level, when Y
-/// decides it (as `test` evaluates it).
-fn condition_below_surface(
+/// The value of condition `id` at a block `mode` describes with block Y `y`, when those decide
+/// it (as `test` evaluates it).
+fn condition_at(
     rules: &MaterialRules,
     generation: &WorldGenerationContext,
     id: CondId,
+    mode: FoldMode,
     y: i32,
 ) -> Option<bool> {
     match rules.conditions[id as usize] {
-        Condition::AbovePreliminarySurface => Some(false),
+        Condition::AbovePreliminarySurface if mode == FoldMode::BelowSurface => Some(false),
+        Condition::StoneDepth { .. } if mode == FoldMode::DeepInStone => Some(false),
         Condition::VerticalGradient {
             true_at_and_below,
             false_at_and_above,
@@ -342,7 +401,7 @@ fn condition_below_surface(
             add_stone_depth: false,
         } => Some(y >= anchor.resolve_y(generation)),
         Condition::Not(target) => {
-            condition_below_surface(rules, generation, target, y).map(|value| !value)
+            condition_at(rules, generation, target, mode, y).map(|value| !value)
         }
         _ => None,
     }
