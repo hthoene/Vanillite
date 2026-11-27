@@ -653,9 +653,8 @@ pub(super) fn spawn_dispensed(
     let mut y = f64::from(pos.y) + 0.5 + 0.7 * f64::from(dy);
     let z = f64::from(pos.z) + 0.5 + 0.7 * f64::from(dz);
     y -= if dy != 0 { 0.125 } else { 0.156_25 };
-    // `new ItemEntity(level, x, y, z, stack)` draws a velocity first.
-    level.random().next_double();
-    level.random().next_double();
+    // `new ItemEntity(level, x, y, z, stack)` draws its first velocity from the entity's own
+    // random, not the level's.
     let pow = level.random().next_double() * 0.1 + 0.2;
     let spread = 0.017_227_5 * 6.0;
     let mut triangle = |mode: f64| {
@@ -737,7 +736,10 @@ pub(crate) fn empty_bucket_contents_by(
         && (super::can_be_replaced(state) || !super::is_solid(state));
     let water = fluid == ids::WATER;
     let waterloggable = state.value("waterlogged").is_some();
-    let place_liquid = may_replace || (water && waterloggable && !state.flag("waterlogged"));
+    // `LiquidBlockContainer.canPlaceLiquid`: any water for waterloggable blocks, also when they
+    // hold water already (the bucket then empties without effect); not double slabs.
+    let place_liquid =
+        may_replace || (water && waterloggable && !super::fluid::is_double_slab(state));
     if !(state.is_air() || (place_liquid && (!sneaking || hit.is_none()))) {
         return hit.is_some_and(|(clicked, face)| {
             empty_bucket_contents_by(
