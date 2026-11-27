@@ -48,6 +48,9 @@ pub struct ItemInfo {
     /// Whether the default `minecraft:equippable` component is `swappable` by players (and
     /// allows every entity).
     pub equip_swappable: bool,
+    /// The damage type tag of the default `minecraft:damage_resistant` component (e.g.
+    /// `minecraft:is_fire`), empty without one.
+    pub damage_resistant: &'static str,
 }
 
 /// One entry of a `minecraft:attribute_modifiers` component.

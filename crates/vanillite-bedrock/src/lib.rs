@@ -18,6 +18,7 @@
 //! particles.
 
 mod batch;
+mod blockentity;
 mod chunk;
 pub mod client;
 mod commands;
@@ -27,10 +28,12 @@ pub mod forms;
 mod io;
 mod items;
 mod login;
+mod nbt;
 mod num;
 mod packets;
 mod png;
 mod raknet;
+mod recipes;
 mod session;
 mod skin;
 pub mod version;

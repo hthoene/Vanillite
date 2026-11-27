@@ -1,9 +1,9 @@
 //! Dolphins (`Dolphin`): they breathe air, dry out on land, swim with swimming players, jump
 //! out of the water, play with items and are fed raw fish.
 //!
-//! `DolphinSwimToTreasureGoal` needs `findNearestMapStructure` (structure locating is not
-//! available to mobs yet): a fed dolphin starts it, finds no treasure, gets stuck and forgets
-//! the fish like Vanilla does without a structure in range.
+//! `DolphinSwimToTreasureGoal`: a fed dolphin looks for the nearest ocean ruin or shipwreck
+//! (`findNearestMapStructure(#dolphin_located)`) and swims there; without one in range it
+//! gets stuck and forgets the fish.
 
 use vanillite_base::math::floor;
 use vanillite_base::random::RandomSource;
@@ -18,7 +18,7 @@ use crate::mob::equipment;
 use crate::mob::fam::{FamGoal, Interact};
 use crate::mob::goals::{Goal as MobGoal, MeleeKind};
 use crate::mob::kinds::{self, Kind};
-use crate::mob::{MobData, Tick, combat, is_water, living, nav};
+use crate::mob::{MobData, Tick, is_water, living, nav};
 
 fn fam(g: Goal) -> MobGoal {
     MobGoal::Fam(FamGoal::Wildlife(g))
@@ -115,7 +115,20 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
     if ix.stack.is_empty() || !item_in_tag(ix.stack.item, "minecraft:fishes") {
         return Interaction::Pass;
     }
-    combat::mob_sound(ix.ents, ix.env, ix.target, "minecraft:entity.dolphin.eat");
+    let Some(m) = ix.ents.mob(ix.target) else {
+        return Interaction::Pass;
+    };
+    // `playSound(DOLPHIN_EAT, 1.0F, 1.0F)`: a fixed pitch, nothing drawn.
+    if !m.silent {
+        crate::mob::animal::sound_at(
+            ix.ents,
+            ix.env,
+            ix.target,
+            "minecraft:entity.dolphin.eat",
+            vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+            1.0,
+        );
+    }
     let Some(m) = ix.ents.mob(ix.target) else {
         return Interaction::Pass;
     };
@@ -355,6 +368,27 @@ pub(super) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     }
 }
 
+/// The structures of the tag `#minecraft:dolphin_located` (`#ocean_ruin` and `#shipwreck`) of
+/// the Vanilla data pack.
+const DOLPHIN_LOCATED: &[&str] = &[
+    "minecraft:ocean_ruin_cold",
+    "minecraft:ocean_ruin_warm",
+    "minecraft:shipwreck",
+    "minecraft:shipwreck_beached",
+];
+
+/// `player.addEffect(new MobEffectInstance(DOLPHINS_GRACE, 100), dolphin)`.
+fn dolphins_grace(t: &mut Tick<'_, '_>, player: EntityId) {
+    crate::effect::living::add_to_entity(
+        t.level,
+        t.ents,
+        t.env,
+        t.cx,
+        player,
+        crate::effect::EffectInstance::new(crate::effect::MobEffect::DOLPHINS_GRACE, 100, 0),
+    );
+}
+
 pub(super) fn can_continue(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
     match g {
         Goal::DolphinSwimToTreasure { stuck } => {
@@ -412,14 +446,22 @@ pub(super) fn start(t: &mut Tick<'_, '_>, g: &mut Goal) {
             }
         }
         Goal::DolphinSwimToTreasure { stuck } => {
-            // `findNearestMapStructure(#dolphin_located)` is not available: no treasure.
+            *stuck = false;
             t.mob().nav.stop();
-            *stuck = true;
-            st_mut(t.mob()).treasure_pos = None;
+            // `findNearestMapStructure(#dolphin_located, pos, 50, false)`.
+            let found =
+                crate::level::locate::nearest_named(t.level, DOLPHIN_LOCATED, t.block_pos(), 50);
+            if let Some(pos) = found {
+                st_mut(t.mob()).treasure_pos = Some(pos);
+                let id = t.id;
+                living::entity_event(t, id, 38);
+            } else {
+                *stuck = true;
+            }
         }
-        Goal::DolphinSwimWithPlayer { .. } => {
-            // `addEffect(DOLPHINS_GRACE)` on the player: players get effects with #74.
-        }
+        Goal::DolphinSwimWithPlayer {
+            player: Some(p), ..
+        } => dolphins_grace(t, *p),
         Goal::DolphinJump { .. } => {
             let (sx, sz) = motion_steps(t.core().rot().y_rot);
             let v = t.velocity();
@@ -492,6 +534,12 @@ pub(super) fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
                 t.mob().nav.stop();
             } else {
                 nav::move_to_entity(t, o.pos, 1, *speed);
+            }
+            if let Some(p) = *player
+                && is_swimming(t, p)
+                && t.env.random.next_int_bounded(6) == 0
+            {
+                dolphins_grace(t, p);
             }
         }
         Goal::DolphinJump { breached, .. } => {

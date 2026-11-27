@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import net.minecraft.SystemReport;
 import net.minecraft.commands.Commands;
@@ -26,6 +27,7 @@ import net.minecraft.server.TickTask;
 import net.minecraft.server.WorldLoader;
 import net.minecraft.server.WorldStem;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.server.level.progress.LoggingLevelLoadListener;
 import net.minecraft.server.notifications.EmptyNotificationService;
 import net.minecraft.server.notifications.NotificationManager;
@@ -68,6 +70,9 @@ import net.minecraft.world.level.storage.PrimaryLevelData;
 public final class ParityServer extends MinecraftServer {
   /** A flat layer: block id and thickness. */
   public record Layer(String block, int height) {}
+
+  /** A chunk coordinate far outside every scenario. */
+  private static final int UNLOADED_CHUNK = 1_000_000;
 
   private final LocalSampleLogger sampleLogger = new LocalSampleLogger(1);
 
@@ -244,6 +249,28 @@ public final class ParityServer extends MinecraftServer {
   public void step() {
     tickServer(() -> true);
     drainTasks();
+  }
+
+  /**
+   * Runs the light engines until nothing is left to do.
+   *
+   * <p>Vanilla updates light on another thread, which the tick loop starts while it waits for the
+   * next tick ({@code ServerChunkCache.pollTask}): on a server with time left the light is
+   * settled when a tick starts. A recording does not wait between ticks, so it waits for that
+   * thread here instead of racing it.
+   */
+  public void settleLight() {
+    for (ServerLevel level : getAllLevels()) {
+      ThreadedLevelLightEngine engine = level.getChunkSource().getLightEngine();
+      do {
+        // A task of a chunk that is not loaded has the last priority: it runs after all others.
+        CompletableFuture<?> idle = engine.waitForPendingTasks(UNLOADED_CHUNK, UNLOADED_CHUNK);
+        while (!idle.isDone()) {
+          engine.tryScheduleUpdate();
+          Thread.onSpinWait();
+        }
+      } while (engine.hasLightWork());
+    }
   }
 
   /** Runs pending server and chunk tasks until none is left. */

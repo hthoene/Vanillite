@@ -152,6 +152,8 @@ pub struct BiomeSpawns {
     pub temperature: f32,
     /// `minecraft:gameplay/can_pillager_patrol_spawn`.
     pub patrol_spawn: bool,
+    /// `minecraft:gameplay/snow_golem_melts` where the biome sets it (else the dimension's).
+    pub snow_golem_melts: Option<bool>,
 }
 
 impl BiomeSpawns {

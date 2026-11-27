@@ -58,12 +58,15 @@ pub struct Chicken {
     pub egg_time: i32,
     /// `isChickenJockey`.
     pub jockey: bool,
+    /// `flapSpeed`.
+    pub flap_speed: f32,
 }
 
 impl Chicken {
     const NEW: Chicken = Chicken {
         egg_time: 0,
         jockey: false,
+        flap_speed: 0.0,
     };
 }
 

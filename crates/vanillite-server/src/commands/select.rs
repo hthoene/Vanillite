@@ -1,8 +1,9 @@
 //! Resolving entity selectors (Vanilla's `EntitySelector.findEntities` and `findPlayers`).
 //! Entities of the source's world are read directly; players of other worlds are known by
-//! name, UUID and game mode from the player list. Other kinds in other worlds are not
-//! reachable from this world's thread (region mode): selectors without position options see
-//! the non-player entities of the source's world only.
+//! name, UUID and game mode from the player list. Other kinds in other worlds are only
+//! reachable when the execution has those worlds at hand ([`Env::other_levels`], sequential
+//! dimensions); otherwise (region mode) selectors without position options see the
+//! non-player entities of the source's world only.
 
 use vanillite_base::{Aabb, Vec3};
 use vanillite_command::Source as _;
@@ -355,10 +356,20 @@ fn filter_matches(filter: &Filter, target: &Target, ctx: &Ctx<'_>) -> bool {
 pub(crate) fn select(
     selector: &EntitySelector,
     source: &CommandSource,
-    entities: &Entities,
-    global: &Global,
+    env: &Env<'_>,
 ) -> Vec<Target> {
+    let (entities, global) = (&env.level.entities, env.global);
     let here = source.world;
+    // An entity of another world at hand: known like a player there, without entity and place.
+    let remote = |entities: &Entities, world: WorldId, id: EntityId| {
+        local(entities, world, id)
+            .filter(|t| !t.is_player())
+            .map(|t| Target {
+                entity: None,
+                place: None,
+                ..t
+            })
+    };
     let players = || online_players(entities, global, here);
     if let Some(name) = &selector.player_name {
         return players()
@@ -370,6 +381,12 @@ pub(crate) fn select(
     if let Some(uuid) = selector.uuid {
         if let Some(id) = find_uuid(entities, uuid) {
             return local(entities, here, id).into_iter().collect();
+        }
+        let other = env.other_levels().find_map(|(world, level)| {
+            remote(&level.entities, world, find_uuid(&level.entities, uuid)?)
+        });
+        if let Some(other) = other {
+            return vec![other];
         }
         return players()
             .into_iter()
@@ -440,6 +457,32 @@ pub(crate) fn select(
                 found.push(t);
             }
         }
+        if !selector.world_limited {
+            for (world, level) in env.other_levels() {
+                let ctx = Ctx {
+                    entities: &level.entities,
+                    global,
+                    origin,
+                    aabb: ctx.aabb,
+                };
+                let columns = level.entities.store.columns();
+                for (row, &id) in columns.id.iter().enumerate() {
+                    if found.len() >= limit {
+                        break;
+                    }
+                    if type_id.is_some_and(|t| columns.kind.get(row) != Some(&t)) {
+                        continue;
+                    }
+                    if let Some(t) = local(&level.entities, world, id)
+                        && !t.is_player()
+                        && matches(selector, &t, &ctx)
+                        && let Some(t) = remote(&level.entities, world, id)
+                    {
+                        found.push(t);
+                    }
+                }
+            }
+        }
         if !selector.world_limited && type_id.is_none_or(|t| t == ids::PLAYER) {
             for p in players() {
                 if found.len() >= limit {
@@ -504,7 +547,7 @@ pub(crate) fn optional(
             vec![],
         ));
     }
-    Ok(select(selector, source, &env.level.entities, env.global))
+    Ok(select(selector, source, env))
 }
 
 /// `EntityArgument.getEntity`: exactly one.

@@ -1,0 +1,50 @@
+{
+  "description": "A spawner minecart spawns like a spawner block (MinecartSpawner.tick \u2192 BaseSpawner.serverTick at the minecart's block): with a player in range its delay runs out and pigs appear around it at positions of the level random, then it draws a new delay.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -56,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        2.5
+      ]
+    },
+    {
+      "name": "cart",
+      "type": "minecraft:spawner_minecart",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 9
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:spawner_minecart,limit=1] {SpawnData:{entity:{id:\"minecraft:pig\"}},Delay:10s,SpawnCount:3s,SpawnRange:3s,MaxNearbyEntities:6s,RequiredPlayerRange:16s,MinSpawnDelay:200s,MaxSpawnDelay:800s}"
+    }
+  ]
+}

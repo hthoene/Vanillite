@@ -267,10 +267,10 @@ pub fn spawner_spawn_rules(level: &mut Level, kind: Kind, pos: BlockPos, trial: 
 /// Creates the mob of `data` at `pos` (`EntityType.loadEntityRecursive`): a fresh mob for an
 /// entity with only its id, else the mob read from the entity NBT. `None` for types without
 /// mob behaviour or broken data.
-pub fn create_mob(level: &mut Level, data: &SpawnData, pos: Vec3) -> Option<(MobData, Vec3)> {
+pub fn create_mob(_level: &mut Level, data: &SpawnData, pos: Vec3) -> Option<(MobData, Vec3)> {
     let kind = Kind::of(data.entity_type()?)?;
-    #[allow(clippy::cast_possible_truncation)]
-    let seed = level.new_uuid() as i64;
+    // The new entity's random takes the next seed of the entity seed stream.
+    let seed = crate::mob::new_entity_seed();
     let entity = data.entity()?;
     if entity.len() <= 1 {
         return Some((MobData::new(kind, seed), pos));
@@ -424,24 +424,36 @@ impl MobSpawner {
     }
 }
 
-fn spawner_mut(level: &mut Level, pos: BlockPos) -> Option<&mut MobSpawner> {
-    match level.block_entity_mut(pos) {
-        Some(BlockEntity::Spawner(s)) => Some(s),
-        _ => None,
+/// Where a `BaseSpawner` lives: in a spawner block or in a spawner minecart.
+#[derive(Clone, Copy, Debug)]
+enum Holder {
+    Block(BlockPos),
+    Minecart(EntityId),
+}
+
+fn spawner_mut(level: &mut Level, holder: Holder) -> Option<&mut MobSpawner> {
+    match holder {
+        Holder::Block(pos) => match level.block_entity_mut(pos) {
+            Some(BlockEntity::Spawner(s)) => Some(s),
+            _ => None,
+        },
+        Holder::Minecart(id) => level.entities.minecart_mut(id)?.spawner.as_deref_mut(),
     }
 }
 
-/// `setNextSpawnData`: the clients see the new display entity.
-fn set_next_spawn_data(level: &mut Level, pos: BlockPos, data: SpawnData) {
-    if let Some(s) = spawner_mut(level, pos) {
+/// `setNextSpawnData`: the clients see the new display entity of a spawner block.
+fn set_next_spawn_data(level: &mut Level, holder: Holder, data: SpawnData) {
+    if let Some(s) = spawner_mut(level, holder) {
         s.next_spawn_data = Some(data);
     }
-    level.send_block_entity_updated(pos);
+    if let Holder::Block(pos) = holder {
+        level.send_block_entity_updated(pos);
+    }
 }
 
 /// `getOrCreateNextSpawnData`.
-fn next_spawn_data(level: &mut Level, pos: BlockPos) -> Option<SpawnData> {
-    let s = spawner_mut(level, pos)?;
+fn next_spawn_data(level: &mut Level, holder: Holder) -> Option<SpawnData> {
+    let s = spawner_mut(level, holder)?;
     if let Some(d) = &s.next_spawn_data {
         return Some(d.clone());
     }
@@ -450,14 +462,14 @@ fn next_spawn_data(level: &mut Level, pos: BlockPos) -> Option<SpawnData> {
         .get_random(level.random())
         .cloned()
         .unwrap_or_default();
-    set_next_spawn_data(level, pos, data.clone());
+    set_next_spawn_data(level, holder, data.clone());
     Some(data)
 }
 
-/// `BaseSpawner.delay`: a new delay, the next spawn data and the block event that resets the
-/// clients' spin.
-fn delay(level: &mut Level, pos: BlockPos) {
-    let Some(s) = spawner_mut(level, pos) else {
+/// `BaseSpawner.delay`: a new delay, the next spawn data and the event that resets the
+/// clients' spin (`broadcastEvent`: a block event, or the minecart's entity event).
+fn delay(level: &mut Level, holder: Holder) {
+    let Some(s) = spawner_mut(level, holder) else {
         return;
     };
     let (min, max) = (s.min_spawn_delay, s.max_spawn_delay);
@@ -467,18 +479,50 @@ fn delay(level: &mut Level, pos: BlockPos) {
     } else {
         min + level.random().next_int_bounded(max - min)
     };
-    if let Some(s) = spawner_mut(level, pos) {
+    if let Some(s) = spawner_mut(level, holder) {
         s.spawn_delay = delay;
     }
     if let Some(data) = potentials.get_random(level.random()).cloned() {
-        set_next_spawn_data(level, pos, data);
+        set_next_spawn_data(level, holder, data);
     }
-    level.block_event(pos, ids::SPAWNER, 1, 0);
+    match holder {
+        Holder::Block(pos) => level.block_event(pos, ids::SPAWNER, 1, 0),
+        Holder::Minecart(id) => {
+            if let Some(e) = level.entities.store.get(id) {
+                let (at, entity_id) = (e.pos(), e.network_id().0);
+                let packet = vanillite_protocol::SharedPacket::of(
+                    &vanillite_protocol::packets::play::clientbound::EntityEvent {
+                        entity_id,
+                        event: 1,
+                    },
+                );
+                level.output().nearby_packets.push((at, 160.0, packet));
+            }
+        }
+    }
 }
 
 /// `SpawnerBlockEntity.serverTick` (`BaseSpawner.serverTick`).
 pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
-    let Some(s) = spawner_mut(level, pos) else {
+    server_tick(level, Holder::Block(pos), pos);
+}
+
+/// `MinecartSpawner.tick` after the minecart moved: its spawner ticks at the block the
+/// minecart is in.
+pub fn tick_minecart(level: &mut Level, id: EntityId) {
+    let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+        return;
+    };
+    server_tick(
+        level,
+        Holder::Minecart(id),
+        BlockPos::containing(pos.x, pos.y, pos.z),
+    );
+}
+
+/// `BaseSpawner.serverTick(level, pos)`.
+fn server_tick(level: &mut Level, holder: Holder, pos: BlockPos) {
+    let Some(s) = spawner_mut(level, holder) else {
         return;
     };
     let s = s.clone();
@@ -486,9 +530,9 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
         return;
     }
     if s.spawn_delay == -1 {
-        delay(level, pos);
+        delay(level, holder);
     }
-    let Some(spawner) = spawner_mut(level, pos) else {
+    let Some(spawner) = spawner_mut(level, holder) else {
         return;
     };
     if spawner.spawn_delay > 0 {
@@ -498,12 +542,12 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
     let (spawn_count, spawn_range, max_nearby) =
         (s.spawn_count, s.spawn_range, s.max_nearby_entities);
     let mut delayed = false;
-    let Some(data) = next_spawn_data(level, pos) else {
+    let Some(data) = next_spawn_data(level, holder) else {
         return;
     };
     for _ in 0..spawn_count {
         let Some(type_id) = data.entity_type() else {
-            delay(level, pos);
+            delay(level, holder);
             return;
         };
         let spawn_pos =
@@ -528,7 +572,7 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
             continue;
         }
         let Some((mob, at)) = create_mob(level, &data, spawn_pos) else {
-            delay(level, pos);
+            delay(level, holder);
             return;
         };
         // Entities of the same type around the spawner.
@@ -552,7 +596,7 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
             }
         });
         if nearby >= max_nearby {
-            delay(level, pos);
+            delay(level, holder);
             return;
         }
         let y_rot = level.random().next_float() * 360.0;
@@ -575,15 +619,27 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
         );
         if !level.entities.store.contains(id) {
             // `tryAddFreshEntityWithPassengers` failed (a plugin cancelled the spawn).
-            delay(level, pos);
+            delay(level, holder);
             return;
+        }
+        // `Entity.load` turned head and body to the loaded yaw (0 without `Rotation`); the
+        // random yaw of `snapTo` turns the entity only.
+        if let Some(m) = level.entities.mob_mut(id) {
+            m.y_body_rot = 0.0;
+        }
+        if let Some(mut e) = level.entities.store.get_mut(id) {
+            let rot = e.as_ref().rot();
+            e.set_rot(vanillite_world::entity::Rotation {
+                y_head_rot: 0.0,
+                ..rot
+            });
         }
         level.level_event(None, 2004, pos, 0);
         entity_place_event(level, id, block);
         delayed = true;
     }
     if delayed {
-        delay(level, pos);
+        delay(level, holder);
     }
 }
 

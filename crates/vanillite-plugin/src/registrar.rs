@@ -1130,6 +1130,51 @@ impl<P: Plugin> Registrar<P> {
         self.on_event(abi::event::BREW, priority, f)
     }
 
+    /// A player is about to throw or shoot a projectile; cancellable. See [`abi::event::PLAYER_LAUNCH_PROJECTILE`]. Since ABI 1.6.
+    pub fn on_player_launch_projectile(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_LAUNCH_PROJECTILE, priority, f)
+    }
+
+    /// A fishing rod action of a player; cancellable. See [`abi::event::PLAYER_FISH`]. Since ABI 1.6.
+    pub fn on_player_fish(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::PLAYER_FISH, priority, f)
+    }
+
+    /// A totem is about to save an entity from death; cancellable. See [`abi::event::ENTITY_RESURRECT`]. Since ABI 1.6.
+    pub fn on_entity_resurrect(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_RESURRECT, priority, f)
+    }
+
+    /// A player is about to dye a sheep; cancellable. See [`abi::event::SHEEP_DYE_WOOL`]. Since ABI 1.6.
+    pub fn on_sheep_dye_wool(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::SHEEP_DYE_WOOL, priority, f)
+    }
+
+    /// An entity is about to drop an item on its own; cancellable. See [`abi::event::ENTITY_DROP_ITEM`]. Since ABI 1.6.
+    pub fn on_entity_drop_item(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::ENTITY_DROP_ITEM, priority, f)
+    }
+
     /// Adds a chunk populator after a stage of the generation ([`abi::gen_stage`]). Since
     /// ABI 1.6.
     pub fn chunk_populator(&mut self, stage: u32, populator: impl ChunkPopulator) -> &mut Self {

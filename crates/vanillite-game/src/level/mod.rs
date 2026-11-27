@@ -18,6 +18,7 @@ mod entity_storage;
 pub mod explosion;
 pub mod forced;
 pub mod game_event;
+pub mod locate;
 mod neighbors;
 pub mod particles;
 pub mod place;
@@ -136,6 +137,8 @@ pub struct LevelSettings {
     pub has_sky_light: bool,
     /// The dimension's `water_evaporates` attribute (the Nether).
     pub water_evaporates: bool,
+    /// The dimension's `snow_golem_melts` attribute (the Nether); biomes override it.
+    pub snow_golem_melts: bool,
     /// Fire lights nether portals here (`BaseFireBlock.inPortalDimension`: the Overworld and
     /// the Nether).
     pub portal_dimension: bool,
@@ -199,6 +202,7 @@ impl Default for LevelSettings {
             spawning_monsters: true,
             has_sky_light: true,
             water_evaporates: false,
+            snow_golem_melts: false,
             portal_dimension: true,
             exploits: ExploitSettings::default(),
             hopper_transfer_cooldown: 8,

@@ -233,6 +233,16 @@ pub enum Requirement {
     /// `match_tool` with an `items` holder set (`"ns:id"`, `"#ns:tag"` or a list); holds for
     /// the item of an item effect's context only.
     MatchTool(Vec<String>),
+    /// `weather_check`.
+    WeatherCheck {
+        raining: Option<bool>,
+        thundering: Option<bool>,
+    },
+    /// `location_check` with a block tag or id (`block.blocks`) and `can_see_sky`.
+    LocationCheck {
+        blocks: Option<String>,
+        can_see_sky: Option<bool>,
+    },
     /// Never holds.
     Unsupported,
 }
@@ -290,6 +300,36 @@ impl Requirement {
                     })
                     .map_or(Requirement::Unsupported, Requirement::RandomChance)
             }
+            "weather_check" => Requirement::WeatherCheck {
+                raining: o.get("raining").and_then(Value::as_bool),
+                thundering: o.get("thundering").and_then(Value::as_bool),
+            },
+            "location_check" => {
+                let p = o.get("predicate").and_then(Value::as_object);
+                let known = p.is_some_and(|p| {
+                    p.keys().all(|k| k == "block" || k == "can_see_sky")
+                        && p.get("block").is_none_or(|b| {
+                            b.as_object()
+                                .is_some_and(|b| b.keys().all(|k| k == "blocks"))
+                        })
+                }) && o.get("offsetX").is_none()
+                    && o.get("offsetY").is_none()
+                    && o.get("offsetZ").is_none();
+                if known {
+                    Requirement::LocationCheck {
+                        blocks: p
+                            .and_then(|p| p.get("block"))
+                            .and_then(|b| b.get("blocks"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        can_see_sky: p
+                            .and_then(|p| p.get("can_see_sky"))
+                            .and_then(Value::as_bool),
+                    }
+                } else {
+                    Requirement::Unsupported
+                }
+            }
             "match_tool" => {
                 let predicate = o.get("predicate").and_then(Value::as_object);
                 let items = predicate
@@ -329,6 +369,24 @@ impl Requirement {
             Requirement::AnyOf(l) => l.iter().any(|r| r.test(cx, level, random)),
             Requirement::Inverted(r) => !r.test(cx, level, random),
             Requirement::RandomChance(c) => random.next_float() < c.calculate(level),
+            Requirement::WeatherCheck {
+                raining,
+                thundering,
+            } => {
+                raining.is_none_or(|r| r == cx.raining)
+                    && thundering.is_none_or(|t| t == cx.thundering)
+            }
+            Requirement::LocationCheck {
+                blocks,
+                can_see_sky,
+            } => cx.location.is_some_and(|(block, sky)| {
+                can_see_sky.is_none_or(|s| s == sky)
+                    && blocks.as_deref().is_none_or(|b| match b.strip_prefix('#') {
+                        Some(tag) => crate::player::play::game_data()
+                            .is_some_and(|d| d.block_in_tag(block.block().0, tag)),
+                        None => block.block().name() == b,
+                    })
+            }),
             Requirement::MatchTool(_) | Requirement::Unsupported => false,
         }
     }
@@ -353,9 +411,11 @@ impl Requirement {
             Requirement::AnyOf(l) => l.iter().any(|r| r.test_item(tool, level, random)),
             Requirement::Inverted(r) => !r.test_item(tool, level, random),
             Requirement::RandomChance(c) => random.next_float() < c.calculate(level),
-            Requirement::Entity(..) | Requirement::DamageSource(_) | Requirement::Unsupported => {
-                false
-            }
+            Requirement::Entity(..)
+            | Requirement::DamageSource(_)
+            | Requirement::WeatherCheck { .. }
+            | Requirement::LocationCheck { .. }
+            | Requirement::Unsupported => false,
         }
     }
 }
@@ -390,6 +450,21 @@ pub enum EntityEffect {
     },
     /// `change_item_damage`: the enchanted item loses durability.
     ChangeItemDamage(LevelBased),
+    /// `explode` with the trigger block interaction and no damage (Wind Burst): a wind burst
+    /// at the affected entity.
+    WindBurst {
+        radius: f32,
+        knockback: LevelBased,
+        sound: String,
+    },
+    /// `summon_entity` of a lightning bolt (Channeling).
+    SummonLightning,
+    /// `play_sound`.
+    PlaySound {
+        sound: String,
+        volume: f32,
+        pitch: f32,
+    },
     AllOf(Vec<EntityEffect>),
     /// Effects of systems that do not exist yet (explosions, sounds, summons).
     Unsupported,
@@ -461,6 +536,60 @@ impl EntityEffect {
                 .get("amount")
                 .and_then(LevelBased::parse)
                 .map_or(EntityEffect::Unsupported, EntityEffect::ChangeItemDamage),
+            "explode" => {
+                let trigger = o
+                    .get("block_interaction")
+                    .and_then(Value::as_str)
+                    .is_some_and(|b| b == "trigger");
+                let harmless = o.get("attribute_to_user").is_none()
+                    && o.get("damage_type").is_none()
+                    && o.get("create_fire").is_none_or(|f| f == false);
+                match (
+                    o.get("radius").and_then(LevelBased::parse),
+                    o.get("knockback_multiplier").and_then(LevelBased::parse),
+                    o.get("sound").and_then(Value::as_str),
+                ) {
+                    (Some(radius), Some(knockback), Some(sound)) if trigger && harmless => {
+                        EntityEffect::WindBurst {
+                            radius: radius.calculate(1),
+                            knockback,
+                            sound: sound.to_owned(),
+                        }
+                    }
+                    _ => EntityEffect::Unsupported,
+                }
+            }
+            "summon_entity" => {
+                let lightning = match o.get("entity") {
+                    Some(Value::String(e)) => e == "minecraft:lightning_bolt",
+                    Some(Value::Array(a)) => {
+                        a.len() == 1 && a[0].as_str() == Some("minecraft:lightning_bolt")
+                    }
+                    _ => false,
+                };
+                if lightning && o.get("join_team").is_none_or(|j| j == false) {
+                    EntityEffect::SummonLightning
+                } else {
+                    EntityEffect::Unsupported
+                }
+            }
+            "play_sound" => {
+                let f = |k: &str| {
+                    o.get(k).and_then(Value::as_f64).map(|v| {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let v = v as f32;
+                        v
+                    })
+                };
+                match o.get("sound").and_then(Value::as_str) {
+                    Some(sound) => EntityEffect::PlaySound {
+                        sound: sound.to_owned(),
+                        volume: f("volume").unwrap_or(1.0),
+                        pitch: f("pitch").unwrap_or(1.0),
+                    },
+                    None => EntityEffect::Unsupported,
+                }
+            }
             "all_of" => EntityEffect::AllOf(
                 o.get("effects")
                     .and_then(Value::as_array)
@@ -563,6 +692,18 @@ pub struct Enchantment {
     pub projectile_spread: Vec<Conditional<ValueEffect>>,
     pub projectile_piercing: Vec<Conditional<ValueEffect>>,
     pub ammo_use: Vec<Conditional<ValueEffect>>,
+    /// `minecraft:trident_spin_attack_strength` (Riptide).
+    pub trident_spin_attack_strength: Option<ValueEffect>,
+    /// `minecraft:trident_sound`, one sound per level.
+    pub trident_sound: Vec<String>,
+    /// `minecraft:trident_return_acceleration` (Loyalty).
+    pub trident_return_acceleration: Vec<Conditional<ValueEffect>>,
+    /// `minecraft:fishing_time_reduction` (Lure).
+    pub fishing_time_reduction: Vec<Conditional<ValueEffect>>,
+    /// `minecraft:fishing_luck_bonus` (Luck of the Sea).
+    pub fishing_luck_bonus: Vec<Conditional<ValueEffect>>,
+    /// `minecraft:hit_block` (Channeling on lightning rods).
+    pub hit_block: Vec<Conditional<EntityEffect>>,
     pub block_experience: Vec<Conditional<ValueEffect>>,
 }
 
@@ -677,6 +818,21 @@ impl Enchantment {
             projectile_spread: values("minecraft:projectile_spread"),
             projectile_piercing: values("minecraft:projectile_piercing"),
             ammo_use: values("minecraft:ammo_use"),
+            trident_spin_attack_strength: get("minecraft:trident_spin_attack_strength")
+                .and_then(ValueEffect::parse),
+            trident_sound: get("minecraft:trident_sound")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            trident_return_acceleration: values("minecraft:trident_return_acceleration"),
+            fishing_time_reduction: values("minecraft:fishing_time_reduction"),
+            fishing_luck_bonus: values("minecraft:fishing_luck_bonus"),
+            hit_block: conditionals(get("minecraft:hit_block"), |e| Some(EntityEffect::parse(e))),
             block_experience: values("minecraft:block_experience"),
         }
     }
@@ -697,6 +853,11 @@ pub struct EnchantContext<'a> {
     pub direct_attacker: Option<EntityFacts>,
     pub attacking_player: Option<EntityFacts>,
     pub source: Option<SourceFacts>,
+    /// `weather_check`: the level rains / thunders.
+    pub raining: bool,
+    pub thundering: bool,
+    /// `location_check`: the block at the origin and whether it sees the sky.
+    pub location: Option<(vanillite_data::block::BlockState, bool)>,
 }
 
 impl std::fmt::Debug for EnchantContext<'_> {
@@ -786,6 +947,83 @@ impl Enchantments {
             }
         }
         time.max(0.0)
+    }
+
+    /// `EnchantmentHelper.getTridentSpinAttackStrength`: 0 without Riptide.
+    pub fn trident_spin_attack_strength(
+        &self,
+        stack: &ItemStack,
+        random: &mut dyn FloatRandom,
+    ) -> f32 {
+        let mut v = 0.0;
+        for (e, level) in self.of(stack) {
+            if let Some(effect) = &e.trident_spin_attack_strength {
+                v = effect.process(level, random, v);
+            }
+        }
+        v
+    }
+
+    /// `pickHighestLevel(TRIDENT_SOUND)`: the sound of the highest level, if any.
+    pub fn trident_sound(&self, stack: &ItemStack) -> Option<&str> {
+        let mut found: Option<(&Enchantment, i32)> = None;
+        for (e, level) in self.of(stack) {
+            if !e.trident_sound.is_empty() && found.is_none_or(|(_, l)| level > l) {
+                found = Some((e, level));
+            }
+        }
+        let (e, level) = found?;
+        let i = usize::try_from(level)
+            .unwrap_or(1)
+            .min(e.trident_sound.len())
+            .saturating_sub(1);
+        e.trident_sound.get(i).map(String::as_str)
+    }
+
+    /// `EnchantmentHelper.getTridentReturnToOwnerAcceleration` (Loyalty), the requirements in
+    /// an entity context without one (`None` holds only requirement-free effects).
+    pub fn trident_return_acceleration(
+        &self,
+        stack: &ItemStack,
+        random: &mut dyn FloatRandom,
+    ) -> i32 {
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.run_item(stack, |e| &e.trident_return_acceleration, None, random, 0.0) as i32;
+        v
+    }
+
+    /// `EnchantmentHelper.getFishingTimeReduction` (Lure), in seconds.
+    pub fn fishing_time_reduction(&self, rod: &ItemStack, random: &mut dyn FloatRandom) -> f32 {
+        self.run_item(rod, |e| &e.fishing_time_reduction, None, random, 0.0)
+    }
+
+    /// `EnchantmentHelper.getFishingLuckBonus` (Luck of the Sea).
+    pub fn fishing_luck_bonus(&self, rod: &ItemStack, random: &mut dyn FloatRandom) -> i32 {
+        #[allow(clippy::cast_possible_truncation)]
+        let v = self.run_item(rod, |e| &e.fishing_luck_bonus, None, random, 0.0) as i32;
+        v
+    }
+
+    /// `EnchantmentHelper.onHitBlock`: the `hit_block` effects whose requirements hold, with
+    /// their level.
+    pub fn hit_block_effects(
+        &self,
+        weapon: &ItemStack,
+        cx: &EnchantContext<'_>,
+        random: &mut dyn FloatRandom,
+    ) -> Vec<(EntityEffect, i32)> {
+        let mut out = Vec::new();
+        for (e, level) in self.of(weapon) {
+            for c in &e.hit_block {
+                if c.requirements
+                    .as_ref()
+                    .is_none_or(|r| r.test(cx, level, random))
+                {
+                    out.push((c.effect.clone(), level));
+                }
+            }
+        }
+        out
     }
 
     /// `EnchantmentHelper.pickHighestLevel(CROSSBOW_CHARGING_SOUNDS)`: the entry for the
@@ -1050,6 +1288,9 @@ mod tests {
             direct_attacker: None,
             attacking_player: None,
             source: None,
+            raining: false,
+            thundering: false,
+            location: None,
         };
         let mut r = vanillite_base::random::LegacyRandom::new(1);
         let c = &e.damage[0];

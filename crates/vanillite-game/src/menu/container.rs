@@ -627,11 +627,11 @@ impl MenuSlots for ContainerView<'_> {
         }
     }
 
-    fn before_set_by_player(&mut self, slot: usize, stack: &ItemStack) {
+    fn before_set_by_player(&mut self, slot: usize, stack: &ItemStack, previous: &ItemStack) {
         if let (Storage::Mount(id), Some(Source::Container(i))) =
             (self.menu.storage, self.menu.source(slot))
         {
-            self.mount_before_set_by_player(id, i, stack);
+            self.mount_before_set_by_player(id, i, stack, previous);
         }
     }
 
@@ -1261,6 +1261,14 @@ fn open_with(
     }
     for p in positions.into_iter().flatten() {
         crate::block::chest_loot::unpack(level, p, request.player);
+    }
+    // `AbstractMinecartContainer.createMenu` and `AbstractChestBoat.createMenu`: the same
+    // for a chest minecart, a hopper minecart and a chest boat.
+    if let Storage::Entity(id) = request.storage {
+        if who.spectator && crate::block::chest_loot::entity_has_loot(level, id) {
+            return;
+        }
+        crate::block::chest_loot::unpack_entity(level, id, request.player);
     }
     inv.container_counter = inv.container_counter % 100 + 1;
     let id = inv.container_counter;

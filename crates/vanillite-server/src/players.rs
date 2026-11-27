@@ -1050,6 +1050,7 @@ impl WorldPlayers {
         let mut taken_orbs: Vec<(EntityId, EntityId)> = Vec::new();
         // Picked up stacks with a thrower: the picker, the thrower's UUID and `getItem()`.
         let mut thrown: Vec<(EntityId, u128, ItemStack)> = Vec::new();
+        let mut taken_projectiles: Vec<(EntityId, EntityId)> = Vec::new();
         for (id, player) in players.iter_mut() {
             let sink = &player.connection.sink;
             if let Some(sequence) = player.connection.play.take_ack() {
@@ -1101,7 +1102,7 @@ impl WorldPlayers {
             }
             // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1).
             if player.game_mode != GameMode::Spectator {
-                let Entities { store, items, .. } = &mut level.entities;
+                let store = &level.entities.store;
                 let reach = aabb.inflate(1.0, 0.5, 1.0);
                 let mut near = Vec::new();
                 store.for_each_non_player_in(&reach, |e| {
@@ -1110,6 +1111,20 @@ impl WorldPlayers {
                     }
                 });
                 let infinite = player.game_mode == GameMode::Creative;
+                // `AbstractArrow.playerTouch`: arrows and tridents in the ground.
+                let mut projectiles = Vec::new();
+                store.for_each_non_player_in(&reach, |e| projectiles.push(e));
+                for p in projectiles {
+                    if vanillite_game::mob::projectile::try_pickup(
+                        &mut level.entities,
+                        p,
+                        player,
+                        id,
+                    ) {
+                        taken_projectiles.push((p, id));
+                    }
+                }
+                let Entities { store, items, .. } = &mut level.entities;
                 for item_id in near {
                     let Some(row) = store.get(item_id).map(|e| e.kind_row()) else {
                         continue;
@@ -1289,6 +1304,26 @@ impl WorldPlayers {
             if entities.experience_orb(orb).is_some_and(|d| d.count <= 0) {
                 entities.despawn(orb);
             }
+        }
+        for (projectile, taker) in taken_projectiles {
+            // `Player.take(arrow, 1)`, then the arrow is gone.
+            let (Some(net), Some(player_net)) = (
+                entities.store.get(projectile).map(|e| e.network_id().0),
+                entities.store.get(taker).map(|e| e.network_id().0),
+            ) else {
+                continue;
+            };
+            let packet = SharedPacket::of(&TakeItemEntity {
+                item_id: net,
+                player_id: player_net,
+                amount: 1,
+            });
+            for viewer in blocks.tracker.seen_by(projectile) {
+                if let Some(p) = entities.player(*viewer) {
+                    p.connection.sink.send_shared(&packet);
+                }
+            }
+            entities.despawn(projectile);
         }
         for (item_id, player_id, count) in taken {
             let (Some(item_net), Some(player_net)) = (

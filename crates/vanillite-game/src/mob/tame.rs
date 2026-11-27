@@ -338,6 +338,22 @@ pub fn set_leashed_to(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, hol
     }
 }
 
+/// `dropAllLeashConnections` of a player: the mobs on its leads go free and drop their leads;
+/// `true` when there were any.
+pub fn drop_leashes_of(ents: &mut Entities, env: &mut Env<'_>, holder: EntityId) -> bool {
+    let mut mine: Vec<EntityId> = ents
+        .leashes
+        .iter()
+        .filter(|(_, h)| **h == holder)
+        .map(|(m, _)| *m)
+        .collect();
+    mine.sort_unstable();
+    for &m in &mine {
+        drop_leash(ents, env, m, true);
+    }
+    !mine.is_empty()
+}
+
 /// `dropLeash` (`drop_item`) or `removeLeash`.
 pub fn drop_leash(ents: &mut Entities, env: &mut Env<'_>, mob: EntityId, drop_item: bool) {
     if ents.leashes.remove(&mob).is_none() {

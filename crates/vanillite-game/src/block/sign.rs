@@ -242,7 +242,7 @@ fn use_without_item(
 }
 
 /// The dye colour of a dye item.
-fn dye_color(stack: &ItemStack) -> Option<&'static str> {
+pub(crate) fn dye_color(stack: &ItemStack) -> Option<&'static str> {
     let name = crate::item::item_id(stack)
         .name()
         .strip_prefix("minecraft:")?;

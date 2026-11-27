@@ -1,3 +1,0 @@
-tick = 1
-cause = "Vanilla triggers `GoToClosestVillage` on tick 1 (5 x `LandRandomPos.getPos` = 150 draws of the villager's random: the bed is not claimed yet, so the villager stands outside a village), Vanillite does not (0 draws) and draws 7 numbers from the level random where Vanilla draws 6 (one more timed behaviour starts): the villager brain's order of behaviours around `AcquirePoi` on the first tick, not analysed further"
-owner = "gameplay-developer #60"

@@ -1,0 +1,16 @@
+{
+  "description": "Two players throw tridents (#107): each draws for 13 ticks and releases; a plain trident sticks in the ground, a Loyalty III trident sticks, then flies back to its owner and is picked up.",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -61, 0], [31, -50, 15]],
+  "ticks": 160,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [2.5, -60.0, 4.5], "rot": [-90, 10]},
+    {"name": "alex", "type": "minecraft:player", "pos": [2.5, -60.0, 11.5], "rot": [-90, 10]}
+  ],
+  "actions": [
+    {"tick": 62, "op": "use_item", "entity": "steve", "item": "minecraft:trident"},
+    {"tick": 62, "op": "use_item", "entity": "alex", "item": "minecraft:trident", "components": "{\"minecraft:enchantments\": {\"minecraft:loyalty\": 3}}"},
+    {"tick": 75, "op": "release_item", "entity": "steve"},
+    {"tick": 75, "op": "release_item", "entity": "alex"}
+  ]
+}

@@ -83,6 +83,8 @@ pub struct ServerWorld {
     rules: Arc<WorldRules>,
     ticks: u64,
     level: Level,
+    /// Where the level's command blocks find the other worlds' levels during the tick.
+    lent: Arc<crate::commands::LentLevels>,
     tracker: Box<dyn EntityTracker>,
     /// The tracker's result of the last tick.
     entity_updates: TrackerOutput,
@@ -224,6 +226,7 @@ impl ServerWorld {
             rules,
             ticks: 0,
             level,
+            lent: Arc::default(),
             tracker,
             entity_updates: TrackerOutput::default(),
             fan_out: FanOut::default(),
@@ -270,6 +273,11 @@ impl ServerWorld {
     /// The game state of this world.
     pub fn level(&self) -> &Level {
         &self.level
+    }
+
+    /// Sets where this world lends the other worlds' levels to its command blocks.
+    pub(crate) fn set_lent_levels(&mut self, lent: Arc<crate::commands::LentLevels>) {
+        self.lent = lent;
     }
 
     /// The game state of this world, mutably (block changes go through
@@ -585,6 +593,7 @@ impl ServerWorld {
             level: &mut self.level,
             global: ctx.global,
             world: self.id,
+            others: Vec::new(),
         });
         if let Some(before) = positions {
             let moves: Vec<(u128, [f64; 3], [f64; 3])> = self
@@ -618,7 +627,12 @@ impl ServerWorld {
         if self.id.0 == 0 && ctx.runs_normally {
             // `ServerFunctionManager.tick`: the data pack functions run as the server in the
             // overworld before the clocks and the worlds tick.
-            crate::commands::tick_functions(&mut self.level, ctx.global, self.id);
+            crate::commands::tick_functions(
+                &mut self.level,
+                ctx.global,
+                self.id,
+                ctx.other_levels().collect(),
+            );
         }
         self.players_inside_blocks();
         // The rules block behaviour reads (sculk shriekers).
@@ -648,10 +662,18 @@ impl ServerWorld {
             let level = &mut self.level;
             level.set_game_time(ctx.global.level.game_time());
             if self.id.0 == 0 {
-                crate::commands::tick_scheduled(level, ctx.global, self.id);
+                crate::commands::tick_scheduled(
+                    level,
+                    ctx.global,
+                    self.id,
+                    ctx.other_levels().collect(),
+                );
             }
-            let level = &mut self.level;
-            level.run_scheduled_ticks();
+            {
+                // Command blocks run here: `execute in` continues in the other world at once.
+                let _loan = self.lent.lend(ctx.other_levels());
+                self.level.run_scheduled_ticks();
+            }
             // `raids.tick`.
             self.mobs.tick_raids(
                 &mut self.level,
@@ -697,7 +719,12 @@ impl ServerWorld {
         level.set_handling_tick(false);
         if ctx.runs_normally {
             self.ticks += 1;
-            self.tick_entities(ctx.global);
+            {
+                // Command block minecarts.
+                let global = ctx.global;
+                let _loan = self.lent.lend(ctx.other_levels());
+                self.tick_entities(global);
+            }
             self.entity_travel(ctx);
             self.level.tick_block_entities();
             // `GameTestTicker.tick` for this world's tests.
@@ -705,6 +732,7 @@ impl ServerWorld {
                 level: &mut self.level,
                 global: ctx.global,
                 world: self.id,
+                others: Vec::new(),
             });
             self.mobs.apply_magic_hurts(
                 &mut self.level,
@@ -719,6 +747,7 @@ impl ServerWorld {
         }
         // `entityManager.tick()`: entities of chunks that became visible this tick load now.
         self.level.tick_entity_manager();
+        self.level.chunks.end_tick();
         let light = self.updates.light_changes();
         self.level.chunks.take_light_changes(light);
         let mut changed = std::mem::take(&mut self.level.output().changed);
@@ -1206,6 +1235,16 @@ impl<'a> TickContext<'a> {
     ) -> Self {
         self.others = Some(OtherWorlds { before, after });
         self
+    }
+
+    /// The levels of the other worlds by world index, with `None` at this world's index, when
+    /// they are at hand (sequential mode); nothing otherwise.
+    pub(crate) fn other_levels(&mut self) -> impl Iterator<Item = Option<&mut Level>> {
+        self.others.iter_mut().flat_map(|others| {
+            let before = others.before.iter_mut().map(|w| Some(&mut w.level));
+            let after = others.after.iter_mut().map(|w| Some(&mut w.level));
+            before.chain(std::iter::once(None)).chain(after)
+        })
     }
 
     /// Runs `op` on another world after the world phase of this tick, in both modes: for what

@@ -673,10 +673,25 @@ impl ServerWorld {
             }
             return;
         }
-        let Some(mut nbt) = self.level.save_entity(id) else {
+        let Some(nbt) = Self::take_entity(&mut self.level, id, pos, y_rot, x_rot) else {
             return;
         };
-        self.level.entities.despawn(id);
+        global.run_in_world(target, move |world: &mut ServerWorld| {
+            Self::load_moved(&mut world.level, nbt);
+        });
+    }
+
+    /// Takes the entity `id` (not a player) out of `level` for a teleport to another world:
+    /// its data at the destination, for [`Level::load_entity`] there.
+    pub(crate) fn take_entity(
+        level: &mut vanillite_game::level::Level,
+        id: EntityId,
+        pos: Vec3,
+        y_rot: f32,
+        x_rot: f32,
+    ) -> Option<vanillite_nbt::Compound> {
+        let mut nbt = level.save_entity(id)?;
+        level.entities.despawn(id);
         use vanillite_nbt::{List, Tag};
         nbt.insert(
             "Pos",
@@ -693,17 +708,22 @@ impl ServerWorld {
         );
         nbt.insert("OnGround", Tag::Byte(1));
         nbt.remove("Passengers");
-        global.run_in_world(target, move |world: &mut ServerWorld| {
-            if world.level.load_entity(nbt) {
-                // The entity just loaded is the last one.
-                let entities = &mut world.level.entities;
-                if let Some(&id) = entities.store.columns().id.last()
-                    && entities.store.get(id).is_some_and(|e| e.uuid() == uuid)
-                {
-                    entities.spawned(id, vanillite_abi::spawn_reason::DIMENSION_TRAVEL, 0);
-                }
+        Some(nbt)
+    }
+
+    /// Loads an entity [`Self::take_entity`] took out of another world into `level` and fires
+    /// the plugins' spawn event with the dimension travel reason.
+    pub(crate) fn load_moved(
+        level: &mut vanillite_game::level::Level,
+        nbt: vanillite_nbt::Compound,
+    ) {
+        if level.load_entity(nbt) {
+            // The entity just loaded is the last one.
+            let entities = &mut level.entities;
+            if let Some(&id) = entities.store.columns().id.last() {
+                entities.spawned(id, vanillite_abi::spawn_reason::DIMENSION_TRAVEL, 0);
             }
-        });
+        }
     }
 
     /// Removes the player `id` from this world and hands it to `target` (this world too): at
@@ -1011,6 +1031,12 @@ impl ServerWorld {
             _ => None,
         };
         let from_world = traveller.from;
+        // Vanilla teleports inside the player's tick (`handlePortal`): the rest of that tick
+        // runs here.
+        let finish_tick = matches!(
+            traveller.route,
+            Route::NetherPortal { .. } | Route::EndPlatform | Route::Spawn
+        );
         let landing = match self.landing(global, &traveller) {
             Some(landing) => landing,
             None => return Some(traveller),
@@ -1224,6 +1250,17 @@ impl ServerWorld {
         }
         if let Some((arrival, from)) = pearl {
             self.pearl_landed(global, id, arrival, from);
+        }
+        if finish_tick {
+            self.survival.finish_portal_tick(
+                &mut self.level.entities,
+                &self.level.chunks,
+                &self.level.border,
+                &self.level.block_entities,
+                global,
+                &self.dimension,
+                id,
+            );
         }
         // Plugins see the player in its place: a respawn, or the arrival in another world.
         let from = u32::from(from_world.0);
@@ -1756,6 +1793,7 @@ impl ServerWorld {
         let mut no_gateway = |_| false;
         let dimension = self.dimension.clone();
         let names = |name: &str, uuid| crate::scoreboard::display_name(global, name, uuid);
+        let teams = |uuid| crate::scoreboard::entity_team(global, uuid);
         let mut env = self.survival.env(
             state,
             &rules,
@@ -1765,6 +1803,7 @@ impl ServerWorld {
             &mut no_gateway,
             &hooks,
             &names,
+            &teams,
         );
         let entities = &mut self.level.entities;
         if arrival.endermite {

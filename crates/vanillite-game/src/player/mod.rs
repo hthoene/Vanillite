@@ -11,10 +11,12 @@
 )]
 
 pub mod chat;
+pub mod chorus;
 pub mod chunks;
 pub mod connection;
 pub mod cooldowns;
 pub mod encode;
+pub mod item_use;
 pub mod items;
 pub mod join;
 pub mod movement;

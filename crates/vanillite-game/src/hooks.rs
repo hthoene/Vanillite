@@ -1,5 +1,6 @@
 //! Hooks the server installs into the game so plugins can observe and change game events
-//! (block breaking and placing, damage, deaths, item use). Each method has a no-op default; the server checks
+//! (block breaking and placing, damage, deaths, item use, thrown projectiles, totems, fishing,
+//! sheep dyeing, entity transformation, item drops of mobs). Each method has a no-op default; the server checks
 //! for listeners before it does any work, so an unused hook costs one virtual call.
 //!
 //! The event kinds since plugin ABI 1.6 go through one generic [`Event`]: a hook site asks
@@ -299,6 +300,15 @@ pub trait GameHooks: Sync {
     /// Fires an event of the kinds since ABI 1.6; the handlers' changes are written back.
     fn event(&self, _event: &mut Event) {}
 
+    /// Fires `event` when a plugin listens to its kind: whether it goes on (not cancelled).
+    fn cancellable(&self, mut event: Event) -> bool {
+        if !self.wants(event.kind) {
+            return true;
+        }
+        self.event(&mut event);
+        !event.cancelled
+    }
+
     /// An entity is about to take `amount` damage of `damage_type` (e.g. `minecraft:fall`)
     /// from `attacker` (the responsible entity) and `direct` (e.g. its projectile). Returns
     /// the damage to apply, or `None` to cancel it.
@@ -322,6 +332,89 @@ pub trait GameHooks: Sync {
     /// A player is about to place `state` at `pos`. `false` cancels it.
     fn block_place(&self, _player: u128, _pos: BlockPos, _state: BlockState) -> bool {
         true
+    }
+
+    /// A player is about to throw or shoot a projectile of `projectile_type` (e.g.
+    /// `minecraft:snowball`; Paper's `PlayerLaunchProjectileEvent`). `false` cancels it: the
+    /// item stays.
+    fn projectile_launch(&self, shooter: u128, projectile_type: &str) -> bool {
+        self.cancellable(Event {
+            entity: shooter,
+            entity_type: "minecraft:player".to_owned(),
+            key: projectile_type.to_owned(),
+            ..Event::new(vanillite_abi::event::PLAYER_LAUNCH_PROJECTILE)
+        })
+    }
+
+    /// A totem of undying (`death_protection`) is about to save `entity` from death (Paper's
+    /// `EntityResurrectEvent`). `false` lets it die.
+    fn entity_resurrect(&self, entity: u128, entity_type: &str) -> bool {
+        self.cancellable(Event {
+            entity,
+            entity_type: entity_type.to_owned(),
+            ..Event::new(vanillite_abi::event::ENTITY_RESURRECT)
+        })
+    }
+
+    /// A fishing rod action of `player` (Paper's `PlayerFishEvent`): `state` is `fishing`
+    /// (the cast), `caught_entity`, `caught_fish`, `in_ground` or `reel_in`. `false` cancels
+    /// it: no cast, or the bobber stays without pulling or loot.
+    fn player_fish(&self, player: u128, state: &str) -> bool {
+        use vanillite_abi::fish_state;
+        let cause = match state {
+            "caught_entity" => fish_state::CAUGHT_ENTITY,
+            "caught_fish" => fish_state::CAUGHT_FISH,
+            "in_ground" => fish_state::IN_GROUND,
+            "reel_in" => fish_state::REEL_IN,
+            _ => fish_state::FISHING,
+        };
+        self.cancellable(Event {
+            entity: player,
+            entity_type: "minecraft:player".to_owned(),
+            cause,
+            ..Event::new(vanillite_abi::event::PLAYER_FISH)
+        })
+    }
+
+    /// `player` is about to dye the sheep `sheep` with the dye colour `color` (e.g. `lime`;
+    /// Paper's `SheepDyeWoolEvent`). `false` cancels it: the dye stays.
+    fn sheep_dye_wool(&self, sheep: u128, color: &str, player: u128) -> bool {
+        self.cancellable(Event {
+            entity: sheep,
+            entity_type: "minecraft:sheep".to_owned(),
+            player,
+            key: color.to_owned(),
+            ..Event::new(vanillite_abi::event::SHEEP_DYE_WOOL)
+        })
+    }
+
+    /// `entity` of `from_type` is about to turn into `to_type` (e.g. `minecraft:pig` into
+    /// `minecraft:zombified_piglin`) for `reason` (`lightning`; Paper's
+    /// `EntityTransformEvent`). `false` cancels it: the entity stays what it is.
+    fn entity_transform(&self, entity: u128, from_type: &str, to_type: &str, reason: &str) -> bool {
+        use vanillite_abi::transform_reason;
+        let cause = match reason {
+            "lightning" => transform_reason::LIGHTNING,
+            _ => transform_reason::UNKNOWN,
+        };
+        self.cancellable(Event {
+            entity,
+            entity_type: from_type.to_owned(),
+            key: to_type.to_owned(),
+            cause,
+            ..Event::new(vanillite_abi::event::ENTITY_TRANSFORM)
+        })
+    }
+
+    /// `entity` of `entity_type` is about to drop `item` on its own (a chicken's egg; Paper's
+    /// `EntityDropItemEvent`). `false` cancels it: nothing drops.
+    fn entity_drop_item(&self, entity: u128, entity_type: &str, item: &str) -> bool {
+        self.cancellable(Event {
+            entity,
+            entity_type: entity_type.to_owned(),
+            key: item.to_owned(),
+            ..Event::new(vanillite_abi::event::ENTITY_DROP_ITEM)
+        })
     }
 
     /// A player is about to fall asleep in the bed `state` whose head is at `pos`. `false`

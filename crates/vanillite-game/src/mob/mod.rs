@@ -249,6 +249,9 @@ pub struct MobData {
     /// `moveDist` and `nextStep`: when the next step makes a vibration.
     pub move_dist: f32,
     pub next_step: f32,
+    /// `flyDist` and `nextFlap` (chickens and parrots flap when the flight passes it).
+    pub fly_dist: f32,
+    pub next_flap: f32,
     /// The state of bosses and the other kinds with their own machinery.
     pub boss: boss::Ext,
 }
@@ -336,7 +339,8 @@ impl MobData {
             sheared: false,
             climbing: false,
             goal_path: None,
-            variant: 0,
+            // Chickens, cows and pigs start as the temperate variant (registry index 1).
+            variant: i32::from(matches!(kind, Kind::Chicken | Kind::Cow | Kind::Pig)),
             xp_reward: 0,
             effects: crate::effect::ActiveEffects::default(),
             absorption: 0.0,
@@ -368,6 +372,8 @@ impl MobData {
             discard_friction: false,
             move_dist: 0.0,
             next_step: 1.0,
+            fly_dist: 0.0,
+            next_flap: 1.0,
             boss: boss::new_ext(kind),
         };
         // `Mob.ambientSoundTime` starts at 0; only playing a sound resets it to `-interval`.
@@ -789,6 +795,10 @@ pub enum WorldAction {
     ProjectileHitBlock(BlockPos, Vec3, EntityId, f64),
     /// A hopper minecart takes in an item (`MinecartHopper.tryConsumeItems`).
     HopperMinecart(EntityId),
+    /// A chest minecart or chest boat that still had its loot table was destroyed.
+    DestroyLootVehicle(Box<crate::minecart::LootVehicleDrop>),
+    /// A spawner minecart ticks its spawner (`MinecartSpawner.tick`).
+    SpawnerMinecart(EntityId),
     /// `updateNeighbourForOutputSignal(pos, AIR)`: comparators re-read an item frame.
     OutputSignal(BlockPos),
     /// A command block minecart runs its command (`BaseCommandBlock.performCommand`).
@@ -867,6 +877,10 @@ impl WorldAction {
                 crate::block::projectile_hit::projectile_hit_block(level, pos, at, id, speed);
             }
             WorldAction::HopperMinecart(id) => crate::minecart::hopper_suck(level, id),
+            WorldAction::SpawnerMinecart(id) => crate::block::spawner::tick_minecart(level, id),
+            WorldAction::DestroyLootVehicle(ref drop) => {
+                crate::minecart::destroy_with_loot(level, (**drop).clone());
+            }
             WorldAction::OutputSignal(pos) => {
                 level.update_neighbour_for_output_signal(pos, vanillite_data::block::ids::AIR);
             }
@@ -895,7 +909,8 @@ impl WorldAction {
                 let halves = match c {
                     crate::block::container::ContainerRef::Block(p) => [Some(p), None],
                     crate::block::container::ContainerRef::Double(a, b) => [Some(a), Some(b)],
-                    crate::block::container::ContainerRef::Entity(_) => [None, None],
+                    crate::block::container::ContainerRef::Entity(_)
+                    | crate::block::container::ContainerRef::Composter(..) => [None, None],
                 };
                 for p in halves.into_iter().flatten() {
                     if open {
@@ -1078,8 +1093,9 @@ pub fn spawn(
     uuid: u128,
     pos: Vec3,
     rot: Rotation,
-    mob: MobData,
+    mut mob: MobData,
 ) -> EntityId {
+    fam::created(&mut mob, entities.game_time, entities.day_time);
     // The dragon's eight parts take the ids after its own.
     let network_id = if mob.kind == Kind::EnderDragon {
         network_ids.next_block(9)
@@ -1427,5 +1443,5 @@ mod size_tests {
         );
     }
 
-    const LIMIT: usize = 1760;
+    const LIMIT: usize = 1776;
 }

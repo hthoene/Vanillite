@@ -77,6 +77,13 @@ pub trait ScenarioWorld {
         Err("this world has no bone meal".to_owned())
     }
 
+    /// Recomputes the light of the block changes so far. The runner calls it wherever the
+    /// recorder waits for Vanilla's light thread (`ParityServer.settleLight`): after the setup,
+    /// the entities and the actions of a tick; [`ScenarioWorld::step`] does it for the changes
+    /// of its tick. Not across dimensions: there the recorder does not wait either (chunks
+    /// load meanwhile).
+    fn settle_light(&mut self) {}
+
     /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
     /// a client sees. Worlds without a light engine leave `out` empty.
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {

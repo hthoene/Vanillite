@@ -1003,7 +1003,6 @@ fn struck_by_lightning(t: &mut Tick<'_, '_>) -> bool {
     if difficulty == Difficulty::Peaceful {
         return false;
     }
-    release_all_pois(t);
     let env = t.cx.env;
     let pos = t.block_pos();
     let mut random = std::mem::replace(t.env.random, LegacyRandom::new(0));
@@ -1030,6 +1029,10 @@ fn struck_by_lightning(t: &mut Tick<'_, '_>) -> bool {
         },
     );
     *t.env.random = random;
+    if id.is_some() {
+        // `releaseAllPois` in the conversion callback: not when a plugin cancelled it.
+        release_all_pois(t);
+    }
     id.is_some()
 }
 
@@ -1089,6 +1092,14 @@ impl FamilyHooks for Hooks {
         m.nav.set_required_path_length(48.0, follow);
         m.can_pick_up_loot = true;
         rebuild_brain(m, None);
+    }
+
+    /// `registerBrainGoals`: the brain made in the constructor (or from the saved one) takes
+    /// the scheduled activity at once.
+    fn created(m: &mut MobData, game_time: i64, day_time: i64) {
+        if let Some(b) = m.brain.as_deref_mut() {
+            b.update_activity_from_schedule(game_time, day_time);
+        }
     }
 
     fn finalize_spawn(m: &mut MobData, ctx: &mut SpawnContext<'_>) {

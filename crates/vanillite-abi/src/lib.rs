@@ -353,6 +353,15 @@ abi! {
             /// A player gains experience points from an orb ([`GameEvent`]: `entity`, `other`
             /// the orb, `value` the points, changeable). Since ABI 1.6.
             PLAYER_EXP_CHANGE = 36,
+            /// A player is about to throw or shoot a projectile from an item it uses
+            /// ([`GameEvent`]: `entity`, `key` the projectile's entity type, e.g.
+            /// `minecraft:snowball`); cancellable: the item stays. [`PROJECTILE_LAUNCH`] follows
+            /// once the projectile exists. Since ABI 1.6.
+            PLAYER_LAUNCH_PROJECTILE = 37,
+            /// A fishing rod action of a player ([`GameEvent`]: `entity`, `cause` from
+            /// [`fish_state`]); cancellable: no cast, or the bobber stays without pulling or
+            /// loot. Since ABI 1.6.
+            PLAYER_FISH = 38,
             /// An entity is about to be added to a world ([`GameEvent`]: `entity`,
             /// `entity_type`, `cause` from [`spawn_reason`], `to` where, `other` the parent or
             /// spawner entity when there is one); cancellable: it is not added. Not for
@@ -402,6 +411,17 @@ abi! {
             /// `entity_type`, `key` the new type, `other` the new entity, `cause` from
             /// [`transform_reason`]); cancellable: it stays. Since ABI 1.6.
             ENTITY_TRANSFORM = 51,
+            /// A death protection item (totem of undying) is about to save an entity from
+            /// death ([`GameEvent`]: `entity`, `entity_type`); cancellable: it dies. Since
+            /// ABI 1.6.
+            ENTITY_RESURRECT = 52,
+            /// A player is about to dye a sheep ([`GameEvent`]: `entity` the sheep, `player`,
+            /// `key` the dye colour, e.g. `lime`); cancellable: the dye stays. Since ABI 1.6.
+            SHEEP_DYE_WOOL = 53,
+            /// An entity is about to drop an item on its own, e.g. a chicken's egg
+            /// ([`GameEvent`]: `entity`, `entity_type`, `key` the item); cancellable: nothing
+            /// drops. Since ABI 1.6.
+            ENTITY_DROP_ITEM = 54,
             /// A block is broken and about to drop ([`GameEvent`]: `player` who broke it or
             /// [`Uuid::NIL`], `pos`, `state` the broken state, `item` the drops as an SNBT
             /// list, `item_out` replaces them, `value` the experience, changeable);
@@ -1042,6 +1062,19 @@ abi! {
             SPLIT = 8,
             /// A tadpole grows up.
             METAMORPHOSIS = 9,
+        }
+        /// What a player does with a fishing rod ([`event::PLAYER_FISH`]). Since ABI 1.6.
+        pub mod fish_state: u32 {
+            /// The rod is cast.
+            FISHING = 0,
+            /// The bobber pulls a hooked entity.
+            CAUGHT_ENTITY = 1,
+            /// A fish (or other fishing loot) is caught.
+            CAUGHT_FISH = 2,
+            /// The bobber is reeled in from the ground.
+            IN_GROUND = 3,
+            /// The bobber is reeled in with nothing.
+            REEL_IN = 4,
         }
         /// What set a block on fire ([`event::BLOCK_IGNITE`]). Since ABI 1.6.
         pub mod ignite_cause: u32 {

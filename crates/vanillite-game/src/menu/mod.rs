@@ -164,9 +164,9 @@ pub trait MenuSlots {
     fn set_item(&mut self, slot: usize, stack: ItemStack);
     /// `Slot.setChanged`.
     fn set_changed(&mut self, _slot: usize) {}
-    /// What a slot does in `setByPlayer` before it sets the stack (`ArmorSlot`: the owner's
-    /// `onEquipItem`).
-    fn before_set_by_player(&mut self, _slot: usize, _stack: &ItemStack) {}
+    /// What a slot does in `setByPlayer(stack, previous)` before it sets the stack
+    /// (`ArmorSlot`: the owner's `onEquipItem`).
+    fn before_set_by_player(&mut self, _slot: usize, _stack: &ItemStack, _previous: &ItemStack) {}
     /// `Slot.mayPlace`.
     fn may_place(&self, _slot: usize, _stack: &ItemStack) -> bool {
         true
@@ -235,7 +235,18 @@ pub trait MenuSlots {
 
 /// `Slot.setByPlayer(stack)` = `set`: the container's `setItem`, then `setChanged`.
 pub fn set_by_player<S: MenuSlots + ?Sized>(s: &mut S, slot: usize, stack: ItemStack) {
-    s.before_set_by_player(slot, &stack);
+    let previous = s.item(slot).clone();
+    set_by_player_from(s, slot, stack, &previous);
+}
+
+/// `Slot.setByPlayer(stack, previous)`.
+pub fn set_by_player_from<S: MenuSlots + ?Sized>(
+    s: &mut S,
+    slot: usize,
+    stack: ItemStack,
+    previous: &ItemStack,
+) {
+    s.before_set_by_player(slot, &stack, previous);
     s.set_item(slot, stack);
     s.set_changed(slot);
 }
@@ -263,7 +274,7 @@ pub fn try_remove<S: MenuSlots + ?Sized>(
         return None;
     }
     if s.item(slot).is_empty() {
-        set_by_player(s, slot, ItemStack::EMPTY);
+        set_by_player_from(s, slot, ItemStack::EMPTY, &removed);
     }
     Some(removed)
 }

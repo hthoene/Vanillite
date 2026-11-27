@@ -764,8 +764,34 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
         }
         return;
     }
-    mob_part(m);
     let (difficulty, climate, group_index) = (ctx.difficulty, ctx.climate, ctx.group_index);
+    if matches!(m.kind, Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken) {
+        // `Cow`, `Pig` and `Chicken.finalizeSpawn`: the variant of the biome
+        // (`selectVariantToSpawn` picks one of the matching entries: one draw) and a random
+        // sound variant; `Sheep.finalizeSpawn`: the colour. Then `AgeableMob.finalizeSpawn`
+        // (5 % babies after the first of a group) and `Mob.finalizeSpawn` last.
+        if m.kind == Kind::Sheep {
+            let color = sheep_color(climate, &mut m.random);
+            classic::sheep_mut(m).color = color;
+        } else {
+            let _ = m.random.next_int_bounded(1);
+            m.variant = match climate {
+                FarmClimate::Cold => 0,
+                FarmClimate::Temperate => 1,
+                FarmClimate::Warm => 2,
+            };
+            // `pig_sound_variant` has three entries, the cow's and the chicken's two.
+            let sounds = if m.kind == Kind::Pig { 3 } else { 2 };
+            let _ = m.random.next_int_bounded(sounds);
+        }
+        if group_index > 0 && m.random.next_float() <= 0.05 {
+            m.age = -24000;
+            m.baby = true;
+        }
+        mob_part(m);
+        return;
+    }
+    mob_part(m);
     match m.kind {
         Kind::Zombie => {
             // `Zombie.finalizeSpawn`, shared with the zombie variants.
@@ -787,21 +813,6 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
                         *interval_min = 20;
                     }
                 }
-            }
-        }
-        Kind::Cow | Kind::Pig | Kind::Sheep | Kind::Chicken => {
-            if group_index > 0 && m.random.next_float() <= 0.05 {
-                m.age = -24000;
-                m.baby = true;
-            }
-            m.variant = match climate {
-                FarmClimate::Cold => 0,
-                FarmClimate::Temperate => 1,
-                FarmClimate::Warm => 2,
-            };
-            if m.kind == Kind::Sheep {
-                let color = sheep_color(climate, &mut m.random);
-                classic::sheep_mut(m).color = color;
             }
         }
         _ => {}
@@ -1032,14 +1043,53 @@ pub fn after_tick(t: &mut Tick<'_, '_>) {
     }
 }
 
+/// `Chicken.aiStep`: the egg timer of an adult that is no jockey; the egg comes from the gift
+/// loot table `gameplay/chicken_lay` (by the chicken's variant).
+fn lay_egg(t: &mut Tick<'_, '_>) {
+    let m = t.mob_ref();
+    if !m.is_alive() || m.baby || fam::classic::chicken(m).jockey {
+        return;
+    }
+    let c = fam::classic::chicken_mut(t.mob());
+    c.egg_time -= 1;
+    if c.egg_time > 0 {
+        return;
+    }
+    let items = fam::brainy::gift_loot(t, "minecraft:gameplay/chicken_lay");
+    if !items.is_empty() {
+        let uuid = t.core().uuid();
+        for stack in items {
+            let item = crate::item::item_id(&stack).name();
+            if t.env
+                .hooks
+                .entity_drop_item(uuid, "minecraft:chicken", item)
+            {
+                super::equipment::spawn_at_location(t, stack, 0.0);
+            }
+        }
+        let r = &mut t.mob().random;
+        let pitch = (r.next_float() - r.next_float()) * 0.2 + 1.0;
+        play_sound(t, "minecraft:entity.chicken.egg", 1.0, pitch);
+        let event = crate::level::game_event::events().entity_place;
+        let pos = t.pos();
+        crate::survival::game_event(t.env.out, event, pos, Some(t.id));
+    }
+    let egg_time = t.mob().random.next_int_bounded(6000) + 6000;
+    fam::classic::chicken_mut(t.mob()).egg_time = egg_time;
+}
+
 /// Kind specific parts of `aiStep` (chicken flapping, animal ageing).
 pub fn ai_step(t: &mut Tick<'_, '_>) {
     let kind = t.mob_ref().kind;
     if kind == Kind::Chicken {
+        let delta = if t.on_ground() { -1.0 } else { 4.0 } * 0.3;
+        let c = fam::classic::chicken_mut(t.mob());
+        c.flap_speed = (c.flap_speed + delta).clamp(0.0, 1.0);
         let v = t.velocity();
         if !t.on_ground() && v.y < 0.0 {
             t.set_velocity(v.multiply(1.0, 0.6, 1.0));
         }
+        lay_egg(t);
     }
     if kind.ageable() && t.mob_ref().forced_age_timer > 0 {
         // `AgeableMob.aiStep`: a happy villager particle at a random spot every 4 ticks.

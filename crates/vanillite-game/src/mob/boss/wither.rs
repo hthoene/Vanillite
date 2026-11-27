@@ -1038,6 +1038,7 @@ pub fn spawn_skull(
             dangerous,
             acceleration_power: 0.1,
             left_owner: false,
+            has_been_shot: false,
             tick_count: 0,
         })),
     );
@@ -1499,6 +1500,8 @@ pub struct Skull {
     pub acceleration_power: f64,
     /// `leftOwner`.
     pub left_owner: bool,
+    /// `hasBeenShot`: the `projectile_shoot` game event is posted.
+    pub has_been_shot: bool,
     /// `tickCount`.
     pub tick_count: i32,
 }
@@ -1641,6 +1644,10 @@ pub fn tick_skull(t: &mut SpecialTick<'_, '_>) {
         e.set_velocity(velocity);
         e.set_rot(rot);
     }
+    // `Projectile.tick`: the first tick posts `PROJECTILE_SHOOT` from the shooter.
+    if !std::mem::replace(&mut skull.has_been_shot, true) {
+        crate::mob::missile::shoot_event(t.env.out, pos, skull.owner);
+    }
     if let Some(SpecialData::WitherSkull(s)) = t.ents.special_mut(id) {
         **s = skull.clone();
     }
@@ -1749,7 +1756,7 @@ pub fn save_skull(s: &Skull, out: &mut Compound) {
         out.insert("Owner", Tag::IntArray(ints));
     }
     out.insert("LeftOwner", s.left_owner);
-    out.insert("HasBeenShot", true);
+    out.insert("HasBeenShot", s.has_been_shot);
     out.insert("acceleration_power", s.acceleration_power);
     out.insert("dangerous", s.dangerous);
 }
@@ -1776,6 +1783,10 @@ pub fn load_skull(tag: &Compound) -> Skull {
         },
         left_owner: tag
             .get("LeftOwner")
+            .and_then(Tag::as_i64)
+            .is_some_and(|v| v != 0),
+        has_been_shot: tag
+            .get("HasBeenShot")
             .and_then(Tag::as_i64)
             .is_some_and(|v| v != 0),
         tick_count: 0,

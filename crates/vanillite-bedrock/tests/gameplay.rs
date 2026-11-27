@@ -1,6 +1,6 @@
 //! A headless Bedrock client plays on an in-process server (flat test world): takes blocks from
 //! the creative palette, breaks and places blocks, moves items in the survival inventory and
-//! drops one, which comes back as an item entity.
+//! drops one, which comes back as an item entity; places a chest, opens it and stores items.
 
 #![allow(
     clippy::unwrap_used,
@@ -185,6 +185,76 @@ fn builds_and_uses_the_inventory(version: &'static Version) {
         assert_eq!(client::read_stack_response(&r), Some((4, true)));
         // The dropped stone is an item entity, which proves the server moved the stack.
         until(&mut c, "item entity", id::ADD_ITEM_ACTOR, |_| true).await;
+
+        // A chest: place it on the stone, open it and move the stones into it.
+        handle.console("give .Builder minecraft:chest 1".into());
+        // Window 0 slot 0, no container name, no storage item, then a non-air item.
+        until(&mut c, "chest given", id::INVENTORY_SLOT, |b| {
+            b.get(..2) == Some(&[0, 0]) && b.get(4..6).is_some_and(|i| i != [0, 0])
+        })
+        .await;
+        c.send(
+            id::INVENTORY_TRANSACTION,
+            &client::use_item_on(version, target, 1, 0, [0.5, 1.0, 0.5]),
+        )
+        .await
+        .unwrap();
+        let chest = [target[0], target[1] + 1, target[2]];
+        until(&mut c, "chest placed", id::UPDATE_BLOCK, |b| {
+            matches!(client::read_update_block(b), Some((p, rid, 0)) if p == chest && rid != air)
+        })
+        .await;
+        c.send(
+            id::INVENTORY_TRANSACTION,
+            &client::use_item_on(version, chest, 1, 0, [0.5, 1.0, 0.5]),
+        )
+        .await
+        .unwrap();
+        let open = until(&mut c, "chest open", id::CONTAINER_OPEN, |b| {
+            b.get(1) == Some(&0)
+        })
+        .await;
+        let window = open[0];
+        until(&mut c, "chest content", id::INVENTORY_CONTENT, |b| {
+            b.first() == Some(&window)
+        })
+        .await;
+        let store = client::stack_request(
+            5,
+            &[
+                A::Take(15, (container::INVENTORY, 9), (container::CURSOR, 0)),
+                A::Place(15, (container::CURSOR, 0), (container::LEVEL_ENTITY, 0)),
+            ],
+        );
+        c.send(id::ITEM_STACK_REQUEST, &store).await.unwrap();
+        let r = until(&mut c, "store", id::ITEM_STACK_RESPONSE, |_| true).await;
+        assert_eq!(client::read_stack_response(&r), Some((5, true)));
+        c.send(id::CONTAINER_CLOSE, &[window, 0, 0]).await.unwrap();
+        until(&mut c, "chest closed", id::CONTAINER_CLOSE, |b| {
+            b.first() == Some(&window)
+        })
+        .await;
+        // Opened again, the chest holds the stones: the server stored them.
+        c.send(
+            id::INVENTORY_TRANSACTION,
+            &client::use_item_on(version, chest, 1, 0, [0.5, 1.0, 0.5]),
+        )
+        .await
+        .unwrap();
+        let open = until(&mut c, "chest open again", id::CONTAINER_OPEN, |_| true).await;
+        let window = open[0];
+        let content = until(&mut c, "chest content again", id::INVENTORY_CONTENT, |b| {
+            b.first() == Some(&window)
+        })
+        .await;
+        // Window, 27 slots, then the first item: a non-air id and a count of 15.
+        assert_eq!(content[1], 27);
+        assert_ne!(
+            &content[2..4],
+            &[0, 0],
+            "the first chest slot holds the stones"
+        );
+        assert_eq!(u16::from_le_bytes([content[4], content[5]]), 15);
     });
 
     handle.stop();

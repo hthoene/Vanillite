@@ -447,7 +447,11 @@ pub fn can_use(t: &mut Tick<'_, '_>, g: &mut CommonGoal) -> bool {
                 return false;
             }
             let range = t.mob_ref().attrs.follow_range;
-            let area = t.aabb().inflate(range, range, range);
+            let area = if t.mob_ref().kind == Kind::Shulker {
+                super::fam::illager::shulker::target_search_area(t, range)
+            } else {
+                t.aabb().inflate(range, range, range)
+            };
             *found = find_nearest(t, *filter, range, state.must_see, *players_only, area);
             found.is_some()
         }

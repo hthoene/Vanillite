@@ -94,6 +94,8 @@ pub enum LevelAction {
     },
     /// A mob died next to a sculk catalyst: the catalyst takes its experience.
     SculkDeath { pos: Vec3, experience: i32 },
+    /// A lightning bolt at `pos` (`summon_entity` of Channeling).
+    Lightning { pos: Vec3 },
 }
 
 impl LevelAction {
@@ -116,6 +118,9 @@ impl LevelAction {
             }
             LevelAction::SculkDeath { pos, experience } => {
                 crate::block::sculk_catalyst::on_mob_death(level, pos, experience);
+            }
+            LevelAction::Lightning { pos } => {
+                crate::lightning::spawn(level, pos, false);
             }
         }
     }

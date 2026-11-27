@@ -1646,12 +1646,13 @@ fn swap_with_equipment_slot(ctx: &mut PlayContext<'_>, hand: Hand) -> Used {
             });
         }
     }
-    on_equip_item(ctx, &worn, &equipped);
+    on_equip_item(ctx, slot, &worn, &equipped);
     Used::Success
 }
 
-/// `LivingEntity.onEquipItem` of a player's armour slot.
-fn on_equip_item(ctx: &mut PlayContext<'_>, old: &ItemStack, new: &ItemStack) {
+/// `LivingEntity.onEquipItem` of a player's armour slot: the equip sound of an item made for
+/// the slot, and `equip` (or `unequip` for an item that is not equippable).
+fn on_equip_item(ctx: &mut PlayContext<'_>, slot: EquipmentSlot, old: &ItemStack, new: &ItemStack) {
     if ctx.actor.game_mode == vanillite_config::GameMode::Spectator
         || old.same_item_same_components(new)
     {
@@ -1662,8 +1663,30 @@ fn on_equip_item(ctx: &mut PlayContext<'_>, old: &ItemStack, new: &ItemStack) {
     let Some(level) = ctx.level.level_mut() else {
         return;
     };
-    let sound = item::item_id(new).info().equip_sound;
-    let id = vanillite_data::registry::SOUND_EVENT.id(sound).unwrap_or(0);
-    level.play_sound(None, at.x, at.y, at.z, id, SOUND_PLAYERS, 1.0, 1.0);
-    level.game_event(events().equip, at, GameEventContext::of(player));
+    let info = item::item_id(new).info();
+    // `equip_slot` 255: no `equippable` component.
+    let equippable = !new.is_empty() && info.equip_slot != u8::MAX;
+    if equippable && info.equip_slot == slot.ordinal() {
+        let id = vanillite_data::registry::SOUND_EVENT
+            .id(info.equip_sound)
+            .unwrap_or(0);
+        level.play_sound(None, at.x, at.y, at.z, id, SOUND_PLAYERS, 1.0, 1.0);
+    }
+    // `Player.doesEmitEquipEvent`: armour slots only, which these all are.
+    let event = if equippable {
+        events().equip
+    } else {
+        events().unequip
+    };
+    level.game_event(event, at, GameEventContext::of(player));
+}
+
+/// `onEquipItem` of the armour slots the player's menu clicks set (`ArmorSlot.setByPlayer`).
+pub(crate) fn flush_equips(ctx: &mut PlayContext<'_>) {
+    if ctx.inventory.equips.is_empty() {
+        return;
+    }
+    for (slot, old, new) in std::mem::take(&mut ctx.inventory.equips) {
+        on_equip_item(ctx, slot, &old, &new);
+    }
 }

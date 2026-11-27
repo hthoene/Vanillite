@@ -15,6 +15,7 @@
 //! cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
 //! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
 //! cargo xtask egg [--check] | egg smoke [--image <ref>]
+//! cargo xtask config-docs [--check]
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
 //! cargo xtask bench list | report | publish <time|latest|results.json> | nightly [--no-push]
@@ -23,6 +24,7 @@
 
 mod bench;
 mod codegen;
+mod configdoc;
 mod devenv;
 mod docker;
 mod egg;
@@ -103,9 +105,15 @@ pub const USAGE: &str = "usage:
       over SSH. --push logs in as $VANILLITE_REGISTRY_USER (default deploy) with the password
       from $PRIVATE_DOCKER_REPO_KEY and pushes; without it the image is loaded into the engine.
   cargo xtask egg [--check]
-      Generate the Pterodactyl egg deploy/pterodactyl/egg-vanillite.json from the configuration
-      schema (server.properties keys and vanillite.toml rules) and check it against the egg
-      format. --check fails if the committed egg is not current.
+      Generate the Pterodactyl eggs deploy/pterodactyl/egg-vanillite.json (every setting) and
+      egg-vanillite-simple.json (basic settings only) from the configuration schema
+      (server.properties keys and vanillite.toml rules) and check them against the egg format,
+      and the configuration reference (config-docs). --check fails if a committed file is not
+      current or the eggs differ in what they share.
+  cargo xtask config-docs [--check]
+      Generate the configuration reference docs/configuration.md from the configuration schema
+      (server.properties keys and vanillite.toml rules with their value in every profile).
+      --check fails if the committed file is not current.
   cargo xtask egg smoke [--image <ref>]
       Start the image (default $VANILLITE_IMAGE:dev, see docker) like Pterodactyl's Wings does,
       with the egg's startup command and default variables (EULA accepted), on the Docker host
@@ -157,8 +165,8 @@ pub const USAGE: &str = "usage:
       golden KEYS.toml, the egg, Cargo.toml, module lists, the rule catalogue): parallel
       additions there merge without conflicts. --global: for all clones of this user.
   cargo xtask regen
-      After a merge: rewrite the generated files (vanillite-data codegen, the egg) from their
-      sources; cargo updates Cargo.lock on the way.";
+      After a merge: rewrite the generated files (vanillite-data codegen, the egg, the
+      configuration reference) from their sources; cargo updates Cargo.lock on the way.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -178,6 +186,7 @@ fn main() -> ExitCode {
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),
         ["docker", rest @ ..] => docker::run_docker(&repo_root(), rest),
         ["egg", rest @ ..] => egg::run(&repo_root(), rest),
+        ["config-docs", rest @ ..] => configdoc::run(&repo_root(), rest),
         ["loadtest", rest @ ..] => loadtest::run(&repo_root(), rest),
         ["bench", rest @ ..] => bench::run(&repo_root(), rest),
         ["setup", rest @ ..] => merge::setup(rest),

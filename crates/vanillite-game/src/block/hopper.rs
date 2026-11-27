@@ -198,7 +198,9 @@ fn move_allowed(
         return true;
     };
     let at = |c: ContainerRef| match c {
-        ContainerRef::Block(p) | ContainerRef::Double(p, _) => center(p),
+        ContainerRef::Block(p) | ContainerRef::Double(p, _) | ContainerRef::Composter(p, _) => {
+            center(p)
+        }
         ContainerRef::Entity(id) => level
             .entities
             .store

@@ -628,6 +628,9 @@ pub enum ContainerRef {
     Double(BlockPos, BlockPos),
     /// A container entity (chest and hopper minecarts, chest boats).
     Entity(vanillite_world::entity::EntityId),
+    /// `ComposterBlock.getContainer`: the composter at the position with the state its
+    /// container was made for (input below level 7, bone meal output at level 8, none at 7).
+    Composter(BlockPos, BlockState),
 }
 
 impl ContainerRef {
@@ -650,11 +653,21 @@ impl ContainerRef {
         Some(ContainerRef::Block(pos))
     }
 
+    /// `HopperBlockEntity.getBlockContainer`: a composter's container (`WorldlyContainerHolder`)
+    /// or [`ContainerRef::at`].
+    pub fn at_block(level: &Level, pos: BlockPos) -> Option<ContainerRef> {
+        let state = level.block(pos);
+        if state.block() == vanillite_data::block::ids::COMPOSTER {
+            return Some(ContainerRef::Composter(pos, state));
+        }
+        ContainerRef::at(level, pos)
+    }
+
     /// `HopperBlockEntity.getContainerAt(level, x, y, z)`: the block container at the point,
     /// else a random container entity within half a block of it.
     pub fn at_point(level: &mut Level, point: Vec3) -> Option<ContainerRef> {
         let pos = BlockPos::containing(point.x, point.y, point.z);
-        if let Some(c) = ContainerRef::at(level, pos) {
+        if let Some(c) = ContainerRef::at_block(level, pos) {
             return Some(c);
         }
         let area = vanillite_base::Aabb::new(
@@ -682,7 +695,7 @@ impl ContainerRef {
 
     fn locate(self, level: &Level, slot: usize) -> Option<(BlockPos, usize)> {
         match self {
-            ContainerRef::Entity(_) => None,
+            ContainerRef::Entity(_) | ContainerRef::Composter(..) => None,
             ContainerRef::Block(p) => Some((p, slot)),
             ContainerRef::Double(a, b) => {
                 let first = items(level, a).map_or(0, <[ItemStack]>::len);
@@ -707,6 +720,7 @@ impl ContainerRef {
                 items(level, a).map_or(0, <[ItemStack]>::len)
                     + items(level, b).map_or(0, <[ItemStack]>::len)
             }
+            ContainerRef::Composter(_, state) => usize::from(composter_level(state) != 7),
         }
     }
 
@@ -718,6 +732,14 @@ impl ContainerRef {
                 .container_items(id)
                 .and_then(|items| items.get(slot).cloned())
                 .unwrap_or_default();
+        }
+        if let ContainerRef::Composter(pos, state) = self {
+            // The output holds its bone meal until it empties the composter.
+            return if slot == 0 && composter_level(state) == 8 && level.block(pos) == state {
+                ItemStack::new(vanillite_data::item::ids::BONE_MEAL.0, 1)
+            } else {
+                ItemStack::EMPTY
+            };
         }
         self.locate(level, slot)
             .and_then(|(p, i)| items(level, p)?.get(i).cloned())
@@ -745,6 +767,18 @@ impl ContainerRef {
             }
             return;
         }
+        if let ContainerRef::Composter(pos, state) = self {
+            // `InputContainer.setItem` → `setChanged`: the item becomes a layer at once.
+            let mut stack = stack;
+            if composter_level(state) < 7
+                && let Some(provider) = super::composter::compostable(&stack)
+            {
+                let new_state = super::composter::add_layer(level, None, state, pos, &provider);
+                level.level_event(None, 1500, pos, i32::from(new_state != state));
+                stack.shrink(1);
+            }
+            return;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return;
         };
@@ -761,6 +795,11 @@ impl ContainerRef {
 
     /// `removeItem(slot, 1)`: one item of a slot (a bookshelf updates its state).
     pub fn remove_one(self, level: &mut Level, slot: usize) {
+        if let ContainerRef::Composter(..) = self {
+            // `SimpleContainer.removeItem` → `OutputContainer.setChanged`.
+            self.set_changed(level);
+            return;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return;
         };
@@ -780,13 +819,22 @@ impl ContainerRef {
                 set_changed(level, b);
             }
             ContainerRef::Entity(_) => {}
+            // `OutputContainer.setChanged` empties the composter (again); the input turned its
+            // item into a layer when it was set.
+            ContainerRef::Composter(pos, state) => {
+                if composter_level(state) == 8 {
+                    super::composter::empty(level, None, state, pos);
+                }
+            }
         }
     }
 
     /// `getItem(slot)` of a `RandomizableContainer` first rolls the loot table of the block
     /// entity holding the slot.
     pub fn unpack(self, level: &mut Level, slot: usize) {
-        if let Some((p, _)) = self.locate(level, slot) {
+        if let ContainerRef::Entity(id) = self {
+            super::chest_loot::unpack_entity(level, id, None);
+        } else if let Some((p, _)) = self.locate(level, slot) {
             super::chest_loot::unpack(level, p, None);
         }
     }
@@ -807,7 +855,8 @@ impl ContainerRef {
                 super::chest_loot::unpack(level, b, None);
                 ContainerRef::Block(b).is_empty(level)
             }
-            ContainerRef::Entity(_) => self.is_empty(level),
+            // `isChestVehicleEmpty` reads the stacks as they are.
+            ContainerRef::Entity(_) | ContainerRef::Composter(..) => self.is_empty(level),
         }
     }
 
@@ -820,12 +869,22 @@ impl ContainerRef {
     pub fn hopper(self) -> Option<BlockPos> {
         match self {
             ContainerRef::Block(p) => Some(p),
-            ContainerRef::Double(..) | ContainerRef::Entity(_) => None,
+            ContainerRef::Double(..) | ContainerRef::Entity(_) | ContainerRef::Composter(..) => {
+                None
+            }
         }
     }
 
     /// `getSlotsForFace` (`WorldlyContainer`; all slots otherwise).
     pub fn slots_for_face(self, level: &Level, face: Direction) -> Vec<usize> {
+        if let ContainerRef::Composter(_, state) = self {
+            let open = match composter_level(state) {
+                8 => Direction::Down,
+                7 => return Vec::new(),
+                _ => Direction::Up,
+            };
+            return if face == open { vec![0] } else { Vec::new() };
+        }
         if let ContainerRef::Block(p) = self {
             match level.block_entity(p) {
                 Some(BlockEntity::Furnace(_)) => {
@@ -853,6 +912,9 @@ impl ContainerRef {
         if let ContainerRef::Entity(_) = self {
             return slot < self.size(level);
         }
+        if let ContainerRef::Composter(_, state) = self {
+            return composter_level(state) < 7 && super::composter::compostable(stack).is_some();
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };
@@ -878,6 +940,11 @@ impl ContainerRef {
         if let ContainerRef::Entity(_) = self {
             return slot < self.size(level);
         }
+        if let ContainerRef::Composter(_, state) = self {
+            return composter_level(state) == 8
+                && face == Direction::Down
+                && crate::item::item_id(stack) == vanillite_data::item::ids::BONE_MEAL;
+        }
         let Some((p, i)) = self.locate(level, slot) else {
             return false;
         };
@@ -895,6 +962,11 @@ impl ContainerRef {
             _ => true,
         }
     }
+}
+
+/// The `level` of a composter state.
+fn composter_level(state: BlockState) -> i32 {
+    state.int("level").unwrap_or(0)
 }
 
 // --- Viewers ---------------------------------------------------------------------------------

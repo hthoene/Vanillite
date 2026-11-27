@@ -17,8 +17,8 @@ use crate::{Inner, Location, PluginHost, SendPtr, Subscriber, WorldAccess};
 fn known_kind(kind: u32) -> bool {
     use abi::event;
     matches!(kind,
-        event::PLAYER_JOIN..=event::PLAYER_EXP_CHANGE
-        | event::ENTITY_SPAWN..=event::ENTITY_TRANSFORM
+        event::PLAYER_JOIN..=event::PLAYER_FISH
+        | event::ENTITY_SPAWN..=event::ENTITY_DROP_ITEM
         | event::BLOCK_DROP..=event::PORTAL_CREATE
         | event::INVENTORY_OPEN..=event::BREW)
 }

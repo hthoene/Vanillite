@@ -236,6 +236,7 @@ pub(crate) fn tick(level: &mut Level, global: &Global, world: WorldId, dimension
         level,
         global,
         world,
+        others: Vec::new(),
     };
     for id in rewards {
         grant_rewards(&mut env, id);

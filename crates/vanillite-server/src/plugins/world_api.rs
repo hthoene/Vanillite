@@ -97,6 +97,7 @@ fn env<'a>(w: &'a mut PluginWorld<'_>) -> Env<'a> {
         world: w.0.id(),
         level: w.0.level_mut(),
         global: w.1,
+        others: Vec::new(),
     }
 }
 

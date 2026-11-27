@@ -220,6 +220,13 @@ public final class ScenarioRecorder {
           apply(levelOf(server, op.getAsJsonObject()), op.getAsJsonObject(), false);
         }
       }
+      // Light is settled whenever a tick starts (see `ParityServer.settleLight`): after the
+      // setup, the entities, the actions of a tick and the tick. Not across dimensions: chunks
+      // generate there meanwhile, and waiting for their light would let more of them load.
+      boolean settleLight = !dimensions;
+      if (settleLight) {
+        server.settleLight();
+      }
 
       timeAndDifficulty(server, level, scenario);
       entities = new ScenarioEntities(server, server.overworld());
@@ -245,6 +252,9 @@ public final class ScenarioRecorder {
           entities.mob(spec, i);
         }
       }
+      if (settleLight) {
+        server.settleLight();
+      }
       ParityHooks.startStream(scenario.has("entity_seed") ? scenario.get("entity_seed").getAsLong() : seed);
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
@@ -255,9 +265,11 @@ public final class ScenarioRecorder {
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
       for (int tick = 1; tick <= ticks; tick++) {
         if (actions != null) {
+          boolean acted = false;
           for (JsonElement a : actions) {
             JsonObject action = a.getAsJsonObject();
             if (action.get("tick").getAsInt() == tick) {
+              acted = true;
               String op = action.get("op").getAsString();
               if (op.equals("force") || op.equals("unforce")) {
                 for (JsonElement c : action.getAsJsonArray("chunks")) {
@@ -286,8 +298,11 @@ public final class ScenarioRecorder {
                 BoneMealItem.growCrop(new ItemStack(Items.BONE_MEAL), level, pos(action.get("pos")));
               } else if (op.equals("hurt")) {
                 entities.hurt(action);
-              } else if (op.equals("use_item") || op.equals("interact")) {
-                entities.useItem(action);
+              } else if (op.equals("use_item")
+                  || op.equals("interact")
+                  || op.equals("release_item")
+                  || op.equals("attack_entity")) {
+                entities.useItem(action, op);
               } else if (op.equals("lightning")) {
                 strike(level, pos(action.get("pos")));
               } else if (op.equals("effect")) {
@@ -308,8 +323,14 @@ public final class ScenarioRecorder {
               }
             }
           }
+          if (acted && settleLight) {
+            server.settleLight();
+          }
         }
         server.step();
+        if (settleLight) {
+          server.settleLight();
+        }
         // The connection tick of the players (`ServerGamePacketListenerImpl.tick`), which the
         // server runs after the levels.
         entities.tickPlayers();

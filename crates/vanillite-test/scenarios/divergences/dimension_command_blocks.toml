@@ -1,4 +1,0 @@
-# Across dimensions (#131): commands that leave their world run one tick late or not at all.
-tick = 1
-cause = "a command block's `execute in <other dimension>` runs its rest through Global::run_in_world (after the tick) instead of at once with the other worlds at hand like TickContext::in_world in sequential mode, so the summoned item ticks in the Nether one tick late; and `tp @e[...]` from there finds no entity of another world (selectors search the executing world only), so the overworld item never moves"
-owner = "architect (commands without the tick's view of the other worlds, architecture 3.5) / game-systems-developer (selectors across worlds)"

@@ -78,6 +78,12 @@ pub const PERSISTENT_DATA: &str = "BukkitValues";
 /// All entities of a world. Kinds without own data yet only live in the core store.
 #[derive(Debug, Default)]
 pub struct Entities {
+    /// The level's game time now, for what a mob reads of its level when it is created
+    /// (`Villager.registerBrainGoals`); the level keeps it current.
+    pub game_time: i64,
+    /// The time of the overworld day now, like [`Entities::game_time`]; the world sets it with
+    /// each tick's environment.
+    pub day_time: i64,
     /// Core columns, tick order and section index.
     pub store: EntityStore,
     /// Player kind data.

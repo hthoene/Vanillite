@@ -1,0 +1,165 @@
+{
+  "_comment": "DO NOT EDIT: generated from the vanillite-config schema by `cargo xtask egg`",
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
+  "exported_at": "2026-11-24T00:00:00+00:00",
+  "name": "Vanillite (Simple)",
+  "author": "hthoene@users.noreply.github.com",
+  "description": "Vanillite: a Minecraft Java Edition server that plays exactly like the official one, but is faster and needs less memory. This egg shows only the basic settings; everything else uses the defaults of the chosen server type. For every setting use the egg \"Vanillite\" (servers can switch between the two). https://github.com/hthoene/Vanillite",
+  "features": [
+    "eula"
+  ],
+  "docker_images": {
+    "Beta - Minecraft 26.3": "thoenehannes/vanillite:mc26.3-beta",
+    "Beta - newest Minecraft version": "thoenehannes/vanillite:beta"
+  },
+  "file_denylist": [],
+  "startup": "env VANILLITE_SERVER_PORT={{SERVER_PORT}} VANILLITE_BEDROCK__PORT=${VANILLITE_BEDROCK__PORT:-{{SERVER_PORT}}} /vanillite run --dir /home/container",
+  "config": {
+    "files": "{}",
+    "startup": "{\"done\":\")! For help, type \"}",
+    "logs": "{}",
+    "stop": "stop"
+  },
+  "scripts": {
+    "installation": {
+      "script": "#!/bin/ash\n# Vanillite needs no installation: the image holds the server, and the first start downloads\n# Mojang's server jar for the Vanilla data into cache/.\nmkdir -p /mnt/server\necho \"Nothing to install.\"\n",
+      "container": "ghcr.io/pterodactyl/installers:alpine",
+      "entrypoint": "ash"
+    }
+  },
+  "variables": [
+    {
+      "name": "Accept the Minecraft EULA",
+      "description": "Switch on to accept the Minecraft EULA (https://aka.ms/MinecraftEULA). The server only starts after you accept it.",
+      "env_variable": "VANILLITE_EULA",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Server Type (Profile)",
+      "description": "How the server plays. vanilla: exactly like the official Minecraft server (recommended). performance: faster with many players, a few small differences to Vanilla. paper or spigot: behaves like a Paper or Spigot server. technical: like Vanilla, with extras for technical players.",
+      "env_variable": "VANILLITE_PROFILE",
+      "default_value": "vanilla",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:vanilla,technical,paper,spigot,performance",
+      "field_type": "text"
+    },
+    {
+      "name": "Server Name (MOTD)",
+      "description": "The text players see below your server in their multiplayer list.",
+      "env_variable": "VANILLITE_MOTD",
+      "default_value": "A Minecraft Server",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Max Players",
+      "description": "How many players can play at the same time.",
+      "env_variable": "VANILLITE_MAX_PLAYERS",
+      "default_value": "20",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer",
+      "field_type": "text"
+    },
+    {
+      "name": "Game Mode",
+      "description": "The game mode of new players: survival, creative, adventure or spectator.",
+      "env_variable": "VANILLITE_GAMEMODE",
+      "default_value": "survival",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:survival,creative,adventure,spectator",
+      "field_type": "text"
+    },
+    {
+      "name": "Difficulty",
+      "description": "How hard the game is: peaceful (no monsters), easy, normal or hard.",
+      "env_variable": "VANILLITE_DIFFICULTY",
+      "default_value": "easy",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:peaceful,easy,normal,hard",
+      "field_type": "text"
+    },
+    {
+      "name": "Hardcore",
+      "description": "Switch on for hardcore: always hard, and players have only one life.",
+      "env_variable": "VANILLITE_HARDCORE",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Whitelist",
+      "description": "Switch on so that only players you add with /whitelist add <name> in the console can join.",
+      "env_variable": "VANILLITE_WHITE_LIST",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "Online Mode",
+      "description": "Keep on: only players with a real Minecraft account can join. Switch off only if your server runs behind a proxy such as Velocity.",
+      "env_variable": "VANILLITE_ONLINE_MODE",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    },
+    {
+      "name": "World Seed",
+      "description": "The seed of a new world. Leave empty for a random world. Has no effect once the world exists.",
+      "env_variable": "VANILLITE_LEVEL_SEED",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string",
+      "field_type": "text"
+    },
+    {
+      "name": "View Distance",
+      "description": "How far players can see, in chunks (2 to 32). 10 is the Minecraft default; lower values save memory and CPU.",
+      "env_variable": "VANILLITE_VIEW_DISTANCE",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:2,32",
+      "field_type": "text"
+    },
+    {
+      "name": "World Format",
+      "description": "How the world is saved for new worlds. vanillite: smaller and faster (recommended). anvil: the files of the official Minecraft server. An existing world keeps its format.",
+      "env_variable": "VANILLITE_STORAGE__WORLD_FORMAT",
+      "default_value": "vanillite",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:vanillite,anvil",
+      "field_type": "text"
+    },
+    {
+      "name": "Bedrock Players",
+      "description": "Switch on to let players of Minecraft Bedrock Edition (phones, consoles, Windows) join on the same port.",
+      "env_variable": "VANILLITE_BEDROCK__ENABLED",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:true,false",
+      "field_type": "text"
+    }
+  ]
+}

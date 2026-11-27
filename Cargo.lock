@@ -1431,6 +1431,7 @@ dependencies = [
  "tokio",
  "ureq",
  "vanillite-data",
+ "vanillite-nbt",
  "vanillite-net",
  "vanillite-protocol",
  "vanillite-server",

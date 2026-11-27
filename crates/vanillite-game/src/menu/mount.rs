@@ -269,10 +269,15 @@ impl ContainerView<'_> {
     }
 
     /// `ArmorSlot.setByPlayer`: the owner's `onEquipItem` before the slot is set.
-    pub(super) fn mount_before_set_by_player(&mut self, id: EntityId, i: usize, new: &ItemStack) {
+    pub(super) fn mount_before_set_by_player(
+        &mut self,
+        id: EntityId,
+        i: usize,
+        new: &ItemStack,
+        old: &ItemStack,
+    ) {
         if let Some(slot) = equipment_slot(i) {
-            let old = self.mount_item(id, i).clone();
-            on_equip(self.level, id, slot, &old, new);
+            on_equip(self.level, id, slot, old, new);
         }
     }
 

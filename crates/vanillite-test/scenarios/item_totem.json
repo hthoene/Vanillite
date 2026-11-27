@@ -1,0 +1,13 @@
+{
+  "description": "A player holding a totem of undying takes deadly damage (#107): the totem is used up, health is set to 1 and its effects (regeneration, absorption, fire resistance) act on the following ticks.",
+  "rules": {"spawn_monsters": "false"},
+  "region": [[0, -61, 0], [15, -55, 15]],
+  "ticks": 120,
+  "entities": [
+    {"name": "steve", "type": "minecraft:player", "pos": [4.5, -60.0, 4.5]}
+  ],
+  "actions": [
+    {"tick": 62, "op": "use_item", "entity": "steve", "item": "minecraft:totem_of_undying"},
+    {"tick": 64, "op": "hurt", "entity": "steve", "amount": 50}
+  ]
+}

@@ -125,9 +125,14 @@
 //!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
-//! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` in its
-//!   main hand and uses it (`ServerPlayerGameMode.useItem`, as a `use_item` packet would).
-//!   `interact`: the same, but on the entity `target` (`Player.interactOn`).
+//! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` (SNBT
+//!   `components`; without `item` the hand stays as it is) in its main hand and uses it
+//!   (`ServerPlayerGameMode.useItem`, as a `use_item` packet would). `release_item`: the
+//!   player stops using its item (`releaseUsingItem`, the `RELEASE_USE_ITEM` action).
+//!   `attack_entity`: the player, with the same optional stack, attacks the entity `target`
+//!   (`Player.attack`), with its `fall_distance` set first if given (as its client's moves
+//!   would; the server does not add up a player's fall itself).
+//!   `interact`: like `use_item`, but on the entity `target` (`Player.interactOn`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -240,16 +245,32 @@ pub enum OpKind {
     Attack,
 }
 
-/// The item use of a `use_item` action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The item use of a `use_item`, `release_item` or `attack_entity` action.
+#[derive(Clone, Debug, PartialEq)]
 pub struct UseItemOp {
     /// Name of the player.
     pub entity: String,
-    /// Item id, e.g. `minecraft:ender_pearl`.
-    pub item: String,
+    /// Item id, e.g. `minecraft:ender_pearl`; `None` keeps the held stack.
+    pub item: Option<String>,
     pub count: i32,
+    /// SNBT components of the stack.
+    pub components: Option<String>,
+    pub mode: UseMode,
+    /// The player's `fallDistance` before the action.
+    pub fall_distance: Option<f64>,
     /// The entity an `interact` action clicks (`Player.interactOn`).
     pub target: Option<String>,
+}
+
+/// What a [`UseItemOp`] does with the held stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UseMode {
+    /// `useItem`.
+    Use,
+    /// `releaseUsingItem`.
+    Release,
+    /// `Player.attack` of the named entity.
+    Attack(String),
 }
 
 /// The potion of a `throw_potion` action.
@@ -697,7 +718,7 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
         Some("hurt") if action => OpKind::Hurt,
         Some("lightning") if action => OpKind::Lightning,
         Some("effect") if action => OpKind::Effect,
-        Some("use_item") if action => OpKind::UseItem,
+        Some("use_item" | "release_item" | "attack_entity") if action => OpKind::UseItem,
         Some("interact") if action => OpKind::Interact,
         Some("throw_potion") if action => OpKind::ThrowPotion,
         Some("force") if action => OpKind::Force,
@@ -856,12 +877,21 @@ fn op(v: &Value, action: bool) -> Result<Op, String> {
             kind,
             use_item: Some(UseItemOp {
                 entity: s("entity").ok_or("use_item needs an entity")?,
-                item: s("item").ok_or("use_item needs an item")?,
+                item: s("item"),
                 count: v
                     .get("count")
                     .and_then(Value::as_i64)
                     .and_then(|n| i32::try_from(n).ok())
                     .unwrap_or(1),
+                components: s("components"),
+                mode: match v.get("op").and_then(Value::as_str) {
+                    Some("release_item") => UseMode::Release,
+                    Some("attack_entity") => {
+                        UseMode::Attack(s("target").ok_or("attack_entity needs a target")?)
+                    }
+                    _ => UseMode::Use,
+                },
+                fall_distance: v.get("fall_distance").and_then(Value::as_f64),
                 target: if kind == OpKind::Interact {
                     Some(s("target").ok_or("interact needs a target")?)
                 } else {

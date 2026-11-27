@@ -4,8 +4,10 @@
 //! Everything for one player runs on one task, so no state is shared except the read-only data,
 //! the section cache, the skins of other players and the form registry.
 
+mod container;
 mod inventory;
 mod play;
+mod scoreboard;
 mod trade;
 mod utility;
 mod vehicle;
@@ -206,6 +208,9 @@ fn rid(java: i32) -> u64 {
     u64::from(u32::from_ne_bytes(java.to_ne_bytes())).saturating_add(1)
 }
 
+/// Most block states kept for block entity updates.
+const RECENT_BLOCKS: usize = 256;
+
 fn uid(java: i32) -> i64 {
     i64::try_from(rid(java)).unwrap_or(i64::MAX)
 }
@@ -268,6 +273,17 @@ pub(crate) struct Session {
     chunk_radius: i32,
     scratch: Vec<Vec<u8>>,
     inv: inventory::Inventory,
+    /// The block or entity the player used last (a menu opens at it).
+    used: Option<(container::Used, Instant)>,
+    /// The last Bedrock window id of a menu.
+    next_window: u8,
+    /// The Bedrock recipes of the Java recipe book.
+    recipes: crate::recipes::Recipes,
+    scoreboard: scoreboard::Scoreboard,
+    /// Recent Java states of blocks whose block actor needs their block entity's NBT.
+    recent_blocks: FxHashMap<[i32; 3], u32>,
+    /// The sign side the server let the client edit.
+    editing_sign: Option<([i32; 3], bool)>,
     /// Send the whole inventory after this packet (a request was refused).
     inventory_resync: bool,
     inventory_open: bool,
@@ -330,6 +346,12 @@ impl Session {
             chunk_radius,
             scratch: Vec::new(),
             inv: inventory::Inventory::default(),
+            used: None,
+            next_window: 0,
+            recipes: crate::recipes::Recipes::default(),
+            scoreboard: scoreboard::Scoreboard::default(),
+            recent_blocks: FxHashMap::default(),
+            editing_sign: None,
             inventory_resync: false,
             inventory_open: false,
             world_clocks: Vec::new(),
@@ -595,10 +617,13 @@ impl Session {
             (Phase::Playing, id::BLOCK_PICK_REQUEST) => self.pick_block(body)?,
             (Phase::Playing, id::MAP_INFO_REQUEST) => self.map_info_request(body)?,
             (Phase::Playing, id::BOOK_EDIT) => self.book_edit(body, Instant::now())?,
+            (Phase::Playing, id::BLOCK_ACTOR_DATA) => self.sign_edited(body)?,
             (Phase::Playing, id::MODAL_FORM_RESPONSE) => {
                 let (form, data) = bp::read_modal_form_response(body)?;
                 if form == trade::TRADE_FORM {
                     self.trade_answer(data.as_deref());
+                } else if form == container::MENU_FORM {
+                    self.menu_form_answer(data.as_deref());
                 } else {
                     self.shared.forms.answer(self.uuid, form, data.as_deref());
                 }
@@ -1115,6 +1140,17 @@ impl Session {
             &bp::update_block(pos, u32::from(e & !crate::data::WATERLOGGED), 0),
         );
         self.send(id::UPDATE_BLOCK, &bp::update_block(pos, water, 1));
+        if crate::blockentity::needs_nbt(java_state) {
+            if self.recent_blocks.len() >= RECENT_BLOCKS {
+                self.recent_blocks.clear();
+            }
+            self.recent_blocks.insert(pos, java_state);
+        }
+        if crate::blockentity::from_state(java_state)
+            && let Some(nbt) = crate::blockentity::translate(pos, java_state, None)
+        {
+            self.send(id::BLOCK_ACTOR_DATA, &bp::block_actor_data(pos, &nbt));
+        }
     }
 
     fn java_join(&mut self, l: &pcb::Login) {
@@ -1388,7 +1424,12 @@ impl Session {
             w.biome_key,
             &self.shared.cache,
         ) {
-            Ok(body) => self.send(id::LEVEL_CHUNK, &body),
+            Ok((body, actors)) => {
+                self.send(id::LEVEL_CHUNK, &body);
+                for actor in &actors {
+                    self.send(id::BLOCK_ACTOR_DATA, actor);
+                }
+            }
             Err(e) => log::debug!("Cannot translate chunk {x} {z} for {}: {e}", self.name),
         }
     }

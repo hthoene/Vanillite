@@ -56,6 +56,52 @@ pub fn new_charge(kind: MissileKind) -> MissileData {
     d
 }
 
+/// `WindChargeItem.use`: a wind charge from the player's eyes (`spawnProjectileFromRotation`
+/// with power 1.5), the throw sound, the use statistic and one item less.
+pub fn player_throw(
+    ents: &mut crate::entities::Entities,
+    env: &mut crate::survival::player::Env<'_>,
+    network_ids: &vanillite_world::entity::NetworkIds,
+    player: EntityId,
+    stack: &mut crate::item::ItemStack,
+) {
+    let Some(pos) = ents.store.get(player).map(|e| e.pos()) else {
+        return;
+    };
+    let eye = crate::mob::missile::eye_height(ents, player);
+    crate::mob::missile::spawn_from_rotation(
+        ents,
+        network_ids,
+        player,
+        Vec3::new(pos.x, pos.y + eye, pos.z),
+        0.0,
+        1.5,
+        1.0,
+        new_charge(MissileKind::WindCharge),
+    );
+    let pitch = 0.4 / (env.random.next_float() * 0.4 + 0.8);
+    crate::survival::play_sound(
+        env.out,
+        None,
+        pos,
+        "minecraft:entity.wind_charge.throw",
+        vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+        0.5,
+        pitch,
+        crate::survival::sound_seed(),
+    );
+    let infinite = ents.player_mut(player).is_some_and(|p| {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
+            1,
+        );
+        p.game_mode == vanillite_config::GameMode::Creative
+    });
+    if !infinite {
+        stack.shrink(1);
+    }
+}
+
 /// One tick of a wind charge (`AbstractWindCharge.tick`, `AbstractHurtingProjectile.tick`).
 pub fn tick(t: &mut MissileTick<'_, '_>) {
     let Some(kind) = t.ents.missile(t.id).map(|d| d.kind) else {
@@ -262,7 +308,12 @@ fn burst(t: &mut MissileTick<'_, '_>, pos: Vec3) {
     let (radius, knockback, sound) = if breeze {
         (3.0, 1.0, "minecraft:entity.breeze.wind_burst")
     } else {
-        (1.2, 1.22, "minecraft:entity.wind_charge.wind_burst")
+        // `Optional.of(1.22F)`: a float.
+        (
+            1.2,
+            f64::from(1.22_f32),
+            "minecraft:entity.wind_charge.wind_burst",
+        )
     };
     let id = t.id;
     t.cx.actions.push(WorldAction::WindBurst(WindBurst {

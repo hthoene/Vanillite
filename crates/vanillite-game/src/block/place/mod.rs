@@ -28,6 +28,7 @@
 
 mod attached;
 mod building;
+pub use building::copper_chest_from_block;
 mod functional;
 mod plants;
 mod signal;

@@ -541,14 +541,17 @@ pub(crate) fn teleport(
                             vec![],
                         ));
                     }
-                    move_to_world(
-                        global,
-                        target,
-                        env.world,
-                        pos,
-                        Some((y_rot, x_rot)),
-                        Some(vanillite_abi::teleport_cause::COMMAND),
-                    );
+                    let world = env.world;
+                    if !move_now(env, target, world, pos, Some((y_rot, x_rot))) {
+                        move_to_world(
+                            global,
+                            target,
+                            world,
+                            pos,
+                            Some((y_rot, x_rot)),
+                            Some(vanillite_abi::teleport_cause::COMMAND),
+                        );
+                    }
                 }
             }
             source.send_success(global, message, true);
@@ -574,14 +577,16 @@ pub(crate) fn teleport(
                             vec![],
                         ));
                     }
-                    move_to_world(
-                        global,
-                        target,
-                        source.world,
-                        pos,
-                        rot,
-                        Some(vanillite_abi::teleport_cause::COMMAND),
-                    );
+                    if !move_now(env, target, source.world, pos, rot) {
+                        move_to_world(
+                            global,
+                            target,
+                            source.world,
+                            pos,
+                            rot,
+                            Some(vanillite_abi::teleport_cause::COMMAND),
+                        );
+                    }
                     continue;
                 }
                 let (y_rot, x_rot) = match rot {
@@ -619,6 +624,42 @@ pub(crate) fn teleport(
         }
     }
     Ok(count)
+}
+
+/// Moves a target of another world than the command's to `world` at once
+/// (`Entity.teleportTo(level, ...)`), when it is not a player and both levels are at hand:
+/// whether it did.
+fn move_now(
+    env: &mut super::Env<'_>,
+    target: &Target,
+    world: WorldId,
+    pos: Vec3,
+    rotation: Option<(f32, f32)>,
+) -> bool {
+    if target.is_player() || target.world == world || !env.has(world) {
+        return false;
+    }
+    let Some(level) = env.level_of(target.world) else {
+        return false;
+    };
+    let Some(id) = super::select::find_uuid(&level.entities, target.uuid) else {
+        return true;
+    };
+    let Some(rot) = level.entities.store.get(id).map(|e| e.rot()) else {
+        return true;
+    };
+    let (y_rot, x_rot) = rotation.unwrap_or((rot.y_rot, rot.x_rot));
+    let nbt = crate::world::ServerWorld::take_entity(
+        level,
+        id,
+        pos,
+        vanillite_base::math::wrap_degrees_f(y_rot),
+        vanillite_base::math::wrap_degrees_f(x_rot),
+    );
+    if let (Some(nbt), Some(level)) = (nbt, env.level_of(world)) {
+        crate::world::ServerWorld::load_moved(level, nbt);
+    }
+    true
 }
 
 /// Moves a target of another world than the command's to `world` on the target's world

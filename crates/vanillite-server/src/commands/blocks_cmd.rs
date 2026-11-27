@@ -565,6 +565,7 @@ pub(super) fn clone(
                 level,
                 global,
                 world: from_world,
+                others: Vec::new(),
             };
             collect(&mut env);
         });

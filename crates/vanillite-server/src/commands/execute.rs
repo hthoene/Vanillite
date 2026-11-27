@@ -625,7 +625,8 @@ pub(crate) fn summon_for(
     if select::find_uuid(&env.level.entities, uuid).is_some() {
         return Err(duplicate());
     }
-    let network_id = env.global.network_ids.next();
+    // The level's allocator (the server's shared one).
+    let network_id = env.level.network_ids_arc().next();
     let new = NewEntity::new(kind, network_id, uuid, pos);
     let short = |key: &str, default: i32| {
         nbt.get(key)
@@ -648,7 +649,9 @@ pub(crate) fn summon_for(
             // A plugin cancelled the spawn (`tryAddFreshEntityWithPassengers` failed).
             return Err(failed());
         }
-        let mut loaded = nbt.clone();
+        // The given tags on top of what the mob has (like `data merge`).
+        let mut loaded = data::entity_nbt(&env.level.entities, id).unwrap_or_default();
+        super::data_cmd::merge_compound(&mut loaded, nbt);
         loaded.remove("Pos");
         data::apply_entity_nbt(&mut env.level.entities, id, &loaded)?;
         return select::local(&env.level.entities, env.world, id).ok_or_else(failed);
