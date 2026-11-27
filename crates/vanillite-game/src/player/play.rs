@@ -2089,19 +2089,28 @@ pub fn pop_resource(level: &mut dyn PlayLevel, pos: BlockPos, stack: ItemStack) 
 
 /// `LivingEntity.createItemStackToDrop(stack, false, thrown)`: a stack thrown from the eye
 /// position in look direction.
-pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop) {
+///
+/// `own_random` is the player's own random (`Survival::own_random`).
+pub fn throw_item(level: &mut dyn PlayLevel, actor: &Actor, drop: Drop, own_random: &mut i64) {
     if drop.stack.is_empty() {
         return;
     }
-    let y = actor.pos.y + actor.eye_height - 0.3;
+    let y = actor.pos.y + actor.eye_height - f64::from(0.3_f32);
     let deg = std::f64::consts::PI / 180.0;
     let sin_x = sin(f64::from(actor.x_rot) * deg);
     let cos_x = cos(f64::from(actor.x_rot) * deg);
     let sin_y = sin(f64::from(actor.y_rot) * deg);
     let cos_y = cos(f64::from(actor.y_rot) * deg);
-    let dir = level.random_float() * std::f32::consts::TAU;
-    let pow2 = 0.02 * level.random_float();
-    let spread = level.random_float() - level.random_float();
+    // The player's own random, not the level's.
+    let mut r = vanillite_base::random::LegacyRandom::from_state(*own_random);
+    let (dir, pow2, spread) = {
+        use vanillite_base::RandomSource;
+        let dir = r.next_float() * std::f32::consts::TAU;
+        let pow2 = 0.02 * r.next_float();
+        let spread = r.next_float() - r.next_float();
+        (dir, pow2, spread)
+    };
+    *own_random = r.state();
     let velocity = Vec3::new(
         f64::from(-sin_y * cos_x * 0.3) + f64::from(dir).cos() * f64::from(pow2),
         f64::from(-sin_x * 0.3 + 0.1 + spread * 0.1),

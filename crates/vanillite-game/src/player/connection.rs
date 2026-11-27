@@ -64,8 +64,9 @@ pub enum EntityAction {
         sneaking: bool,
     },
     /// `use_item` (after the block handling): items used on air that need the entities
-    /// (boats, carrot on a stick, shields, eating).
-    UseItem(Hand),
+    /// (boats, carrot on a stick, shields, eating, throwing), with the player's known movement
+    /// when the packet arrived (later moves of the tick change it).
+    UseItem { hand: Hand, known_movement: Vec3 },
     /// `use_item_on` with an item that acts on entities (spawn eggs, leads on fences).
     UseItemOn {
         hand: Hand,
@@ -87,6 +88,8 @@ pub enum EntityAction {
     Stab,
     /// `player_command` `START_FALL_FLYING`.
     StartFallFlying,
+    /// `punch`: the swing resets the attack strength (`resetAttackStrengthTicker`).
+    Punch,
 }
 
 /// What a player sends to steer its vehicle.
@@ -414,6 +417,13 @@ impl Connection {
         play: &mut PlayContext<'_>,
     ) -> Result<(), Kick> {
         let sink = self.sink.as_ref();
+        let ctx = MoveContext {
+            blocks: play
+                .level
+                .level()
+                .map(|l| -> &dyn crate::mob::physics::Blocks { l }),
+            ..ctx
+        };
         let mv =
             |pos: Option<(f64, f64, f64)>,
              rot,
@@ -649,15 +659,36 @@ impl Connection {
             }
             ServerboundPlay::UseItem(p) => {
                 if self.movement.has_client_loaded() {
+                    // `handleUseItem`: a held item turns the player to the packet's rotation
+                    // first.
+                    let stack = match p.hand {
+                        Hand::MainHand => play.inventory.selected_item(),
+                        Hand::OffHand => &play.inventory.offhand,
+                    };
+                    if !stack.is_empty() {
+                        let y_rot = crate::player::movement::wrap_degrees(p.y_rot);
+                        let x_rot = crate::player::movement::wrap_degrees(p.x_rot);
+                        if x_rot != state.body.x_rot || y_rot != state.body.y_rot {
+                            crate::player::movement::snap_rotation(&mut state.body, y_rot, x_rot);
+                        }
+                    }
                     let handled = self
                         .play
                         .use_item(play, p.hand, p.sequence, p.y_rot, p.x_rot);
                     if !handled && self.entity_actions.len() < 16 {
-                        self.entity_actions.push(EntityAction::UseItem(p.hand));
+                        self.entity_actions.push(EntityAction::UseItem {
+                            hand: p.hand,
+                            known_movement: self.movement.known_movement,
+                        });
                     }
                 }
             }
-            ServerboundPlay::Punch(_) => play.swings.push(Hand::MainHand),
+            ServerboundPlay::Punch(_) => {
+                play.swings.push(Hand::MainHand);
+                if self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Punch);
+                }
+            }
             ServerboundPlay::SetCarriedItem(p) => match usize::try_from(p.slot) {
                 Ok(slot) if slot < crate::inventory::HOTBAR => play.inventory.selected = slot,
                 _ => log::warn!("{} tried to set an invalid carried item", chat.name),

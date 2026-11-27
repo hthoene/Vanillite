@@ -1,11 +1,11 @@
 //! Player movement from the client, validated like Vanilla's `ServerGamePacketListenerImpl`
 //! (`handleMovePlayer`, `handleAcceptTeleportPacket`, `teleport`, `tickPlayer`).
 //!
-//! Not yet ported, because they need block collision (milestone 3): the "moved wrongly" check
-//! (`player.move` with collisions and `isEntityCollidingWithAnythingNew`) and the kick for
-//! floating too long. Their rules (`movement.wrong-movement-check`, `movement.flying-kick`) are
-//! declared already. Until then the client's position is accepted when it passes the other
-//! checks.
+//! A move is collided with the blocks like `player.move` and goes back when it ends too far
+//! from the server's result ("moved wrongly") or enters a block
+//! (`isEntityCollidingWithAnythingNew`), unless `movement.wrong-movement-check` is off.
+//! Not yet ported: the kick for floating too long (`movement.flying-kick`), and collisions
+//! with entities (boats, shulkers) in these checks.
 
 use vanillite_base::Vec3;
 use vanillite_config::MovementRules;
@@ -16,6 +16,8 @@ use vanillite_protocol::types;
 
 use super::sink::PacketSink;
 
+/// The player's `step_height` attribute default.
+const PLAYER_STEP_HEIGHT: f32 = 0.6;
 /// Ticks after which an unconfirmed teleport is sent again.
 const TELEPORT_RESEND_TICKS: i32 = 20;
 /// Ticks the server waits for `player_loaded` after joining before treating the client as loaded.
@@ -69,51 +71,35 @@ pub struct MoveRequest {
 }
 
 /// What the movement checks need from the world.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct MoveContext<'a> {
     /// The tick rate manager runs normally (not frozen).
     pub runs_normally: bool,
     /// The world's movement rules.
     pub rules: &'a MovementRules,
-    /// The world border the player collides with (`None`: no border).
-    pub border: Option<&'a crate::level::border::WorldBorder>,
     /// No "moved wrongly" check for this player (`isCreative()`, `isSpectator()`).
     pub no_wrong_move_check: bool,
+    /// The player has no physics (`noPhysics`, spectators): moves are not collided.
+    pub no_physics: bool,
+    /// The player's size in its pose (`getDimensions`).
+    pub dims: vanillite_world::entity::Dimensions,
+    /// The blocks the player collides with (`None`: no block collision).
+    pub blocks: Option<&'a dyn crate::mob::physics::Blocks>,
     /// The `player_movement_check` game rule.
     pub movement_check: bool,
     /// The `elytra_movement_check` game rule.
     pub elytra_movement_check: bool,
 }
 
-/// The part of `player.move`'s collision with the world border that the "moved wrongly"
-/// check sees: whether the move from `from` to `target` of a player box ends more than
-/// 0.25 blocks (`> 0.0625` squared) past the border's collision shape.
-fn moved_wrongly_into_border(
-    border: &crate::level::border::WorldBorder,
-    from: Vec3,
-    target: Vec3,
-) -> bool {
-    const HALF_WIDTH: f64 = 0.3;
-    let (dx, dz) = (target.x - from.x, target.z - from.z);
-    // `isInsideCloseToBorder` with the box grown by the movement.
-    let x_size = HALF_WIDTH * 2.0 + dx.abs();
-    let z_size = HALF_WIDTH * 2.0 + dz.abs();
-    if !border.is_inside_close_to_border(from.x, from.z, x_size, z_size) {
-        return false;
+impl std::fmt::Debug for MoveContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MoveContext")
+            .field("runs_normally", &self.runs_normally)
+            .field("no_wrong_move_check", &self.no_wrong_move_check)
+            .field("no_physics", &self.no_physics)
+            .field("dims", &self.dims)
+            .finish_non_exhaustive()
     }
-    let (min_x, min_z, max_x, max_z) = border.collision_box();
-    let clamp = |v: f64, start: f64, lo: f64, hi: f64| {
-        // A box already past an edge does not collide with it from inside.
-        if start - HALF_WIDTH < lo || start + HALF_WIDTH > hi {
-            v
-        } else {
-            v.clamp(lo + HALF_WIDTH, hi - HALF_WIDTH)
-        }
-    };
-    let x = clamp(target.x, from.x, min_x, max_x);
-    let z = clamp(target.z, from.z, min_z, max_z);
-    let (ex, ez) = (target.x - x, target.z - z);
-    ex * ex + ez * ez > 0.0625
 }
 
 /// Per-connection movement state.
@@ -153,7 +139,7 @@ pub fn wrap_degrees(angle: f32) -> f32 {
 }
 
 /// `Entity.absSnapRotationTo` (with `setXRot`'s clamp).
-fn snap_rotation(body: &mut Body, y_rot: f32, x_rot: f32) {
+pub(crate) fn snap_rotation(body: &mut Body, y_rot: f32, x_rot: f32) {
     if y_rot.is_finite() {
         body.y_rot = y_rot % 360.0;
     }
@@ -444,7 +430,7 @@ impl Movement {
             && (!fall_flying || (ctx.elytra_movement_check && ctx.rules.elytra_too_fast_check))
     }
 
-    /// `handlePlayerPositionChange` without vehicles, sleeping and block collision.
+    /// `handlePlayerPositionChange` without vehicles and sleeping.
     #[allow(clippy::too_many_arguments)]
     fn position_change(
         &mut self,
@@ -496,21 +482,27 @@ impl Movement {
             }
         }
         let from = body.pos;
-        // `player.move` collides with the world border: a move through it is a wrong move,
-        // and the player goes back (`teleport(oldX, oldY, oldZ)`).
-        if !ctx.no_wrong_move_check
-            && let Some(border) = ctx.border
-            && moved_wrongly_into_border(border, from, target)
-        {
+        let was_on_ground = body.on_ground;
+        let delta = Vec3::new(
+            target.x - self.last_good.x,
+            target.y - self.last_good.y,
+            target.z - self.last_good.z,
+        );
+        let moved_upwards = delta.y > 0.0;
+        if !self.collision_allows(body, target, delta, ctx) {
             log::warn!("Player moved wrongly!");
-            let (y, x) = (body.y_rot, body.x_rot);
+            let (y, x) = (y_rot, x_rot);
             self.teleport(body, from, y, x, sink);
+            self.moves.push(crate::survival::player::MoveRecord {
+                from,
+                to: from,
+                was_on_ground,
+                on_ground,
+                moved_upwards,
+                accepted: false,
+            });
             return;
         }
-        let was_on_ground = body.on_ground;
-        let moved_upwards = target.y - self.last_good.y > 0.0;
-        // TODO(milestone 3): `player.move` with block collision and the "moved wrongly" check
-        // (`movement.wrong-movement-check`); without collision the move lands on the target.
         body.pos = Vec3::new(
             clamp_horizontal(target.x),
             target.y,
@@ -533,7 +525,61 @@ impl Movement {
             was_on_ground,
             on_ground,
             moved_upwards,
+            accepted: true,
         });
+    }
+
+    /// The collision part of `handlePlayerPositionChange`: `player.move` by `delta` from the
+    /// current position, then the move to `target` passes unless it ends more than 0.25
+    /// blocks horizontally from the collided position ("moved wrongly", not for creative
+    /// players) from a free box, or enters a block. A rejected move leaves the player where
+    /// the collision put it, with its `onGround`.
+    fn collision_allows(
+        &self,
+        body: &mut Body,
+        target: Vec3,
+        delta: Vec3,
+        ctx: MoveContext<'_>,
+    ) -> bool {
+        use crate::mob::physics;
+        let Some(blocks) = ctx.blocks else {
+            return true;
+        };
+        if ctx.no_physics || !ctx.rules.wrong_movement_check {
+            return true;
+        }
+        let old_box = ctx.dims.bounding_box(body.pos);
+        let mut scratch = Vec::new();
+        // `Entity.move(MoverType.PLAYER, delta)`.
+        let movement = physics::collide(
+            blocks,
+            old_box,
+            delta,
+            PLAYER_STEP_HEIGHT,
+            body.on_ground,
+            &mut scratch,
+        );
+        let length = movement.length_sqr();
+        let moved_to = if length > 1.0e-7 || delta.length_sqr() - length < 1.0e-7 {
+            Vec3::new(
+                body.pos.x + movement.x,
+                body.pos.y + movement.y,
+                body.pos.z + movement.z,
+            )
+        } else {
+            body.pos
+        };
+        // The vertical difference never counts (`yDist > -0.5 || yDist < 0.5`).
+        let (dx, dz) = (target.x - moved_to.x, target.z - moved_to.z);
+        let fail = dx * dx + dz * dz > 0.0625 && !ctx.no_wrong_move_check;
+        let new_box = ctx.dims.bounding_box(target);
+        let allowed = (!fail || !physics::no_collision(blocks, &old_box, &mut scratch))
+            && !physics::collides_with_anything_new(blocks, &old_box, &new_box);
+        if !allowed && delta.y.abs() > 0.0 {
+            // `setOnGroundWithMovement(verticalCollisionBelow, ...)` of the move.
+            body.on_ground = delta.y != movement.y && delta.y < 0.0;
+        }
+        allowed
     }
 }
 

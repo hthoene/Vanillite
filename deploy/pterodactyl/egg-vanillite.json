@@ -1413,7 +1413,7 @@
     },
     {
       "name": "Movement: Wrong Movement Check",
-      "description": "Players whose movement does not match the server's collision result are teleported back (\"moved wrongly\"). Not enforced yet: it needs block collision (milestone 3). Applies to every world. default: the profile's value (vanilla profile: true). vanillite.toml: movement.wrong-movement-check.",
+      "description": "Players whose movement does not match the server's collision result (\"moved wrongly\") or that move into a block are teleported back, like Vanilla's `handleMovePlayer`. Off accepts every move that passes the other checks. Applies to every world. default: the profile's value (vanilla profile: true). vanillite.toml: movement.wrong-movement-check.",
       "env_variable": "VANILLITE_MOVEMENT__WRONG_MOVEMENT_CHECK",
       "default_value": "default",
       "user_viewable": true,

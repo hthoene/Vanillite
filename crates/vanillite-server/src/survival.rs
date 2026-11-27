@@ -351,6 +351,9 @@ impl WorldSurvival {
         dimension: &str,
         portals: &mut PortalRequests,
     ) {
+        // `pushEntities` in the players' `aiStep`: after the entity tick, like Vanilla's
+        // connection tick.
+        vanillite_game::minecart::players_push(entities);
         self.tick_players(
             entities,
             chunks,
