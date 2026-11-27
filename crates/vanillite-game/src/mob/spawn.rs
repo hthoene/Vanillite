@@ -1992,7 +1992,21 @@ pub fn summon(
     difficulty: Difficulty,
     reason: u32,
 ) -> EntityId {
-    let seed = crate::mob::new_entity_seed();
+    summon_seeded(level, table, kind, pos, difficulty, reason, None)
+}
+
+/// [`summon`] of a mob whose constructor already took its seed from the entity seed stream
+/// (`seed`), else it takes the next one.
+pub fn summon_seeded(
+    level: &mut Level,
+    table: Option<&SpawnTable>,
+    kind: Kind,
+    pos: Vec3,
+    difficulty: Difficulty,
+    reason: u32,
+    seed: Option<i64>,
+) -> EntityId {
+    let seed = seed.unwrap_or_else(crate::mob::new_entity_seed);
     let mut mob = MobData::new(kind, seed);
     let block = BlockPos::containing(pos.x, pos.y, pos.z);
     let env = Environment::default();
@@ -2009,8 +2023,9 @@ pub fn summon(
             random,
         )
     });
-    let y_rot = level.random().next_float() * 360.0;
-    add_mob_with_code(level, mob, pos, y_rot, extra, reason)
+    // `EntityType.loadEntityRecursive` of `{id}` reads no `Rotation`: yaw, head and body 0;
+    // `snapTo` keeps it (no draw from the level random).
+    add_mob_with_code(level, mob, pos, 0.0, extra, reason)
 }
 
 /// `CatSpawner`'s state.

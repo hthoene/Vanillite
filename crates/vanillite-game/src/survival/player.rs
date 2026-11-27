@@ -1773,8 +1773,10 @@ pub fn do_tick_base(
         // `ServerPlayer.tick`: `wardenSpawnTracker.tick()`.
         s.warden_spawn_tracker.tick();
     }
-    // `Entity.baseTick`: `handlePortal` first.
-    let can_use_portal = !player.survival.is_dead_or_dying();
+    // `Entity.baseTick`: `handlePortal` first (`canUsePortal(false)`: alive and riding
+    // nothing; a vehicle takes its riders along).
+    let can_use_portal = !player.survival.is_dead_or_dying()
+        && !entity.as_ref().flags().contains(EntityFlags::PASSENGER);
     let portal_delay = |kind| match kind {
         crate::portal::PortalKind::Nether => env
             .rules
@@ -1948,7 +1950,14 @@ pub fn do_tick_ai(
     player.survival.server_step = Vec3::ZERO;
     if result == TickResult::Alive {
         if player.survival.simulate_movement {
-            simulate_travel(entity, player, env);
+            if entity.as_ref().flags().contains(EntityFlags::PASSENGER) {
+                // `rideTick`: no motion of its own; the vehicle positions it
+                // (`positionRider`) and `LivingEntity.rideTick` resets the fall distance.
+                entity.set_velocity(Vec3::ZERO);
+                player.survival.fall_distance = 0.0;
+            } else {
+                simulate_travel(entity, player, env);
+            }
         } else {
             player.survival.server_step = server_step(entity, env);
             travel_motion(entity, player, env);
@@ -2137,6 +2146,10 @@ fn enter_portals(entity: &EntityMut<'_>, player: &mut PlayerData, env: &mut Env<
         },
         None => now,
     };
+    // `canUsePortal(false)` of the portal blocks' `entityInside`: riders stay out.
+    if entity.as_ref().flags().contains(EntityFlags::PASSENGER) {
+        return false;
+    }
     let portals = blocks::inside_portals(env.blocks, swept);
     let portal = &mut player.survival.portal;
     if let Some(pos) = portals.nether {

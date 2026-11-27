@@ -1498,7 +1498,16 @@ pub fn tick(
         return;
     }
     t.mob().tick_count += 1;
+    // `Entity.rideTick` of a passenger: no motion of its own before the tick, and
+    // `LivingEntity.rideTick` resets the fall distance after it.
+    let passenger = t.ents.vehicle_of(id).is_some();
+    if passenger {
+        t.set_velocity(Vec3::ZERO);
+    }
     living::tick(&mut t);
+    if passenger && t.exists() && t.ents.vehicle_of(id).is_some() {
+        t.mob().fall_distance = 0.0;
+    }
 }
 
 /// The tick of an inactive mob that thinks (`performance.activation-range`, the goal

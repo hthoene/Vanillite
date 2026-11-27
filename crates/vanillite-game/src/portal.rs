@@ -230,8 +230,8 @@ pub struct PearlArrival {
 }
 
 /// `canUsePortal(false)` of an entity besides players: not riding, alive, and not one of the
-/// kinds that never use portals (the ender dragon, the wither, fishing bobbers). Vehicles with
-/// players aboard stay: only the players' worlds move players.
+/// kinds that never use portals (the ender dragon, the wither, fishing bobbers). Vehicles take
+/// their passengers, players too, along (`teleportCrossDimension`).
 pub fn can_use_portal(ents: &Entities, id: EntityId) -> bool {
     let Some(e) = ents.store.get(id) else {
         return false;
@@ -246,14 +246,6 @@ pub fn can_use_portal(ents: &Entities, id: EntityId) -> bool {
     // `ThrowableProjectile.canUsePortal` ignores riding.
     let throwable = ents.missile(id).is_some_and(|d| d.kind.is_throwable());
     if !throwable && ents.riding.vehicle_of(id).is_some() {
-        return false;
-    }
-    if ents
-        .riding
-        .passengers_of(id)
-        .iter()
-        .any(|&p| ents.player(p).is_some())
-    {
         return false;
     }
     if let Some(m) = ents.mob(id) {
