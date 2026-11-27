@@ -13,11 +13,21 @@
 //! event, handlers of another plugin's `economy:payment` event that skip cancelled ones, and
 //! the greeting count saved to its config at shutdown.
 //!
+//! ABI 1.6: `/hello menu` opens a plugin menu whose button (an item marked with persistent
+//! data) gives a cookie, `/hello pig` names its pig, makes it faster and gives it a goal that
+//! keeps it near its spawn point with a "retired" callback when it is gone, `/hello look`
+//! traces a ray along the player's view, mobs drop twice the experience and, with
+//! `protect.enabled`, phantoms do not spawn naturally.
+//!
 //! Build it with `cargo build -p vanillite-example-hello` and put `plugin.toml` and the library
 //! into `plugins/hello/` (or `plugins/hello/native/<target-triple>/`).
 
+use vanillite_plugin::abi;
 use vanillite_plugin::prelude::*;
-use vanillite_plugin::{ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, WorldInfo};
+use vanillite_plugin::{
+    ChunkBlocks, ChunkGenerator, ChunkGeneratorProvider, Goal, GoalAction, GoalMob, RayHit,
+    WorldInfo,
+};
 
 /// The `hello:greeter` service other plugins call (version 1): a `repr(C)` table, so plugins
 /// in any language can use it.
@@ -133,7 +143,38 @@ impl Plugin for Hello {
             }
         });
 
+        // The button of `/hello menu`: clicks in the plugin's menu never move items.
+        registrar.on_inventory_click(priority::NORMAL, |_, ctx, click| {
+            if click.flags() & abi::menu_flag::PLUGIN == 0 {
+                return;
+            }
+            click.set_cancelled(true);
+            let server = ctx.server();
+            let button = server.item_data(click.item(), "button");
+            let (Some(player), Ok(Some(_))) = (click.entity(), button) else {
+                return;
+            };
+            let world = click.world();
+            let _ = server.schedule(Owner::Entity(world, player), 0, 0, move |ctx| {
+                let _ = ctx.close_menu(world, player);
+                let _ = ctx.give_item(world, player, "{id:\"minecraft:cookie\",count:1}");
+            });
+        });
+
+        // Mobs drop twice the experience.
+        registrar.on_entity_drops(priority::NORMAL, |_, _, drops| {
+            let doubled = drops.value().saturating_mul(2);
+            drops.set_value(doubled);
+        });
+
         if server.config_bool("protect.enabled") == Some(true) {
+            registrar.on_entity_spawn(priority::NORMAL, |_, _, spawn| {
+                if spawn.entity_type() == "minecraft:phantom"
+                    && spawn.cause() == abi::spawn_reason::NATURAL
+                {
+                    spawn.set_cancelled(true);
+                }
+            });
             registrar.on_interact(priority::NORMAL, |_, ctx, interact| {
                 if matches!(
                     interact.item(),
@@ -202,16 +243,50 @@ impl Plugin for Hello {
                             let task =
                                 ctx.server()
                                     .schedule(Owner::World(world), 0, 0, move |ctx| {
-                                        let _ = ctx.spawn_entity(
+                                        if let Ok(pig) = ctx.spawn_entity(
                                             world,
                                             "minecraft:pig",
                                             pos,
                                             "{Glowing:1b,CustomName:\"Hello\"}",
-                                        );
+                                        ) {
+                                            let _ = home_pig(ctx, world, pig, pos);
+                                        }
                                     });
                             Ok(i32::from(task.is_ok()))
                         },
                     ),
+                ))
+                .then(Command::literal("menu").executes(
+                    |_: &mut Hello, ctx, invocation| {
+                        let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
+                            return Ok(0);
+                        };
+                        let server = ctx.server();
+                        let Some(world) = server.player_world(player) else {
+                            return Ok(0);
+                        };
+                        let task =
+                            server.schedule(Owner::Entity(world, player), 0, 0, move |ctx| {
+                                let _ = open_menu(ctx, world, player);
+                            });
+                        Ok(i32::from(task.is_ok()))
+                    },
+                ))
+                .then(Command::literal("look").executes(
+                    |_: &mut Hello, ctx, invocation| {
+                        let vanillite_plugin::Sender::Player(player) = invocation.sender() else {
+                            return Ok(0);
+                        };
+                        let server = ctx.server();
+                        let Some(world) = server.player_world(player) else {
+                            return Ok(0);
+                        };
+                        let task =
+                            server.schedule(Owner::Entity(world, player), 0, 0, move |ctx| {
+                                let _ = look(ctx, world, player);
+                            });
+                        Ok(i32::from(task.is_ok()))
+                    },
                 ))
                 .then(
                     Command::literal("pad")
@@ -380,6 +455,108 @@ fn treat(ctx: &mut Ctx<'_>, world: World, player: Uuid) -> Result<(), Error> {
         z: 0.5,
     };
     ctx.server().spawn_particle(player, &hearts)
+}
+
+/// `/hello menu`: a one-row plugin menu with a named diamond marked as the button.
+fn open_menu(ctx: &mut Ctx<'_>, world: World, player: Uuid) -> Result<(), Error> {
+    let server = ctx.server();
+    let item = "{id:\"minecraft:diamond\",count:1}";
+    let item = server.item_with_name(item, &Text::colored("Take a cookie", "gold"))?;
+    let item = server.item_with_data(&item, "button", &DataValue::Byte(1))?;
+    // A stack with its slot: `{Slot:4b,` and the rest of the item compound.
+    let slotted = format!("[{{Slot:4b,{}]", item.strip_prefix('{').unwrap_or(&item));
+    ctx.open_menu(
+        world,
+        player,
+        "minecraft:generic_9x1",
+        Text::colored("Hello menu", "dark_green"),
+        &slotted,
+    )?;
+    Ok(())
+}
+
+/// `/hello look`: what the player looks at within 50 blocks.
+fn look(ctx: &mut Ctx<'_>, world: World, player: Uuid) -> Result<(), Error> {
+    let at = ctx.location(world, player)?;
+    let (yaw, pitch) = (f64::from(at.yaw).to_radians(), f64::from(at.pitch).to_radians());
+    let eye = Vec3 {
+        x: at.pos.x,
+        y: at.pos.y + 1.62,
+        z: at.pos.z,
+    };
+    let to = Vec3 {
+        x: eye.x - yaw.sin() * pitch.cos() * 50.0,
+        y: eye.y - pitch.sin() * 50.0,
+        z: eye.z + yaw.cos() * pitch.cos() * 50.0,
+    };
+    let flags = abi::raytrace_flag::BLOCKS | abi::raytrace_flag::ENTITIES;
+    let text = match ctx.raytrace(world, eye, to, flags, Some(player))? {
+        Some(RayHit::Block(_, pos, _)) => {
+            format!("{} at {} {} {}", ctx.block(world, pos)?, pos.x, pos.y, pos.z)
+        }
+        Some(RayHit::Entity(_, entity)) => ctx.entity_type(world, entity)?,
+        None => "nothing".to_owned(),
+    };
+    ctx.server().send_message(player, format!("You look at {text}"))
+}
+
+/// `/hello pig`: the pig gets a name, more speed and a goal that walks it home; a task on the
+/// pig tells the players when it is gone.
+fn home_pig(ctx: &mut Ctx<'_>, world: World, pig: Uuid, home: Vec3) -> Result<(), Error> {
+    ctx.set_entity_name(world, pig, Some(Text::colored("Homebody", "light_purple")))?;
+    ctx.add_attribute_modifier(
+        world,
+        pig,
+        "minecraft:movement_speed",
+        "homebody",
+        0.5,
+        abi::attribute_op::ADD_MULTIPLIED_BASE,
+    )?;
+    ctx.add_goal(world, pig, 1, abi::goal_flag::MOVE, false, HomeGoal { home })?;
+    ctx.server().schedule_entity(
+        world,
+        pig,
+        0,
+        200,
+        |_| {},
+        |ctx| {
+            let server = ctx.server();
+            for player in server.online_players() {
+                let _ = server.send_message(player, "The homebody pig is gone");
+            }
+        },
+    )?;
+    Ok(())
+}
+
+/// Walks the mob back when it is more than four blocks from home.
+struct HomeGoal {
+    home: Vec3,
+}
+
+impl HomeGoal {
+    fn far(&self, mob: &GoalMob) -> bool {
+        let (dx, dz) = (mob.pos.x - self.home.x, mob.pos.z - self.home.z);
+        dx * dx + dz * dz > 16.0
+    }
+}
+
+impl Goal for HomeGoal {
+    fn can_use(&mut self, mob: &GoalMob) -> bool {
+        self.far(mob)
+    }
+
+    fn can_continue(&mut self, mob: &GoalMob) -> bool {
+        mob.navigating || self.far(mob)
+    }
+
+    fn tick(&mut self, _: &GoalMob) -> GoalAction {
+        GoalAction {
+            move_to: Some((self.home, 1.0)),
+            look_at: Some(self.home),
+            ..GoalAction::default()
+        }
+    }
 }
 
 /// Flat stone with a grass surface in one dimension.
