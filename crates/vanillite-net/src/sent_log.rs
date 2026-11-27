@@ -52,6 +52,12 @@ impl SentLog {
     }
 
     fn record(&self, ms: u64, id: Option<i32>, size: usize) {
+        let index = self.next.fetch_add(1, Ordering::Relaxed);
+        self.store(index, ms, id, size);
+    }
+
+    /// Writes the entry with the sequence number `index`.
+    fn store(&self, index: usize, ms: u64, id: Option<i32>, size: usize) {
         let id = id
             .and_then(|i| u8::try_from(i).ok())
             .filter(|&i| i != UNKNOWN_ID)
@@ -63,8 +69,7 @@ impl SentLog {
             | state.wrapping_shl(32)
             | u64::from(id).wrapping_shl(24)
             | size;
-        let index = self.next.fetch_add(1, Ordering::Relaxed) & SLOT_MASK;
-        if let Some(slot) = self.slots.get(index) {
+        if let Some(slot) = self.slots.get(index & SLOT_MASK) {
             slot.store(packed, Ordering::Relaxed);
         }
     }
@@ -74,9 +79,12 @@ impl SentLog {
         self.record(ms, Reader::new(body).varint().ok(), body.len());
     }
 
-    /// Records every frame of a batch built for `compressed` or uncompressed framing. The id
-    /// of a compressed frame is not read (that would inflate it).
+    /// Records the frames of a batch built for `compressed` or uncompressed framing. The id
+    /// of a compressed frame is not read (that would inflate it). Only the last [`SLOTS`]
+    /// frames stay in the ring, so only those are written.
     pub(crate) fn frames(&self, ms: u64, frames: &[u8], compressed: bool) {
+        let mut last = [(None, 0usize); SLOTS];
+        let mut count = 0usize;
         let mut r = Reader::new(frames);
         while r.remaining() > 0 {
             let Some(frame) = r
@@ -96,7 +104,17 @@ impl SentLog {
             } else {
                 f.varint().ok()
             };
-            self.record(ms, id, frame.len());
+            if let Some(entry) = last.get_mut(count & SLOT_MASK) {
+                *entry = (id, frame.len());
+            }
+            count = count.wrapping_add(1);
+        }
+        let kept = count.min(SLOTS);
+        let first = self.next.fetch_add(kept, Ordering::Relaxed);
+        for (k, index) in (count.wrapping_sub(kept)..count).zip(first..) {
+            if let Some(&(id, size)) = last.get(k & SLOT_MASK) {
+                self.store(index, ms, id, size);
+            }
         }
     }
 
