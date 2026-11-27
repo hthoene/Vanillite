@@ -80,6 +80,8 @@ pub fn tick(t: &mut Tick<'_, '_>) {
         super::Kind::Shulker => false,
         super::Kind::Camel | super::Kind::CamelHusk => super::fam::mount::camel::turns_body(t),
         super::Kind::Armadillo => !super::fam::brainy::armadillo::is_scared(t.mob_ref()),
+        // `CreakingBodyRotationControl`: only while it can move.
+        super::Kind::Creaking => super::fam::mount::creaking::can_move(t.mob_ref()),
         _ => true,
     };
     if t.mob_ref().kind == super::Kind::ArmorStand {

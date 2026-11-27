@@ -687,6 +687,12 @@ pub fn tick(t: &mut Tick<'_, '_>) {
     if kind == NavKind::None || t.mob_ref().nav.paused {
         return;
     }
+    // `CreakingPathNavigation.tick`: nothing while it is frozen.
+    if t.mob_ref().kind == super::Kind::Creaking
+        && !super::fam::mount::creaking::can_move(t.mob_ref())
+    {
+        return;
+    }
     if kind == NavKind::WallClimber && t.mob_ref().nav.is_done() {
         wall_climber_idle(t);
         return;
