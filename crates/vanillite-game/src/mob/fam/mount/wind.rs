@@ -132,6 +132,13 @@ pub fn tick(t: &mut MissileTick<'_, '_>) {
     let block_hit = crate::mob::physics::clip(t.level, pos, to);
     let end = block_hit.map_or(to, |(_, at)| at);
     let entity_hit = hit_entity(t, pos, end, kind, owner);
+    // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored, the charge flies on.
+    let hit_event = |what| crate::mob::missile::hit_event(t.level, t.ents, t.id, owner, what);
+    let entity_hit =
+        entity_hit.filter(|&(target, _)| hit_event(crate::mob::missile::HitWhat::Entity(target)));
+    let block_hit = block_hit.filter(|&(block, at)| {
+        entity_hit.is_some() || hit_event(crate::mob::missile::HitWhat::Block(block, at))
+    });
     let new_pos = match (entity_hit, block_hit) {
         (Some((_, at)), _) => at,
         (None, Some((_, at))) => at,

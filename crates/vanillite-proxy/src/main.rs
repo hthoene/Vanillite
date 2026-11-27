@@ -7,7 +7,8 @@ const USAGE: &str = "\
 Usage: vanillite-proxy [--dir <path>]
 
 Reads proxy.toml (written with defaults if missing) and the forwarding secret from <path>
-(default: current folder).
+(default: current folder). Commands on standard input: help, glist, send, alert, kick,
+proxy reload, end.
 
 Environment:
   VANILLITE_LOG=<level>         error, warn, info (default), debug or trace
@@ -41,12 +42,31 @@ fn main() -> ExitCode {
         }
     };
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let ctrl_c = stop_tx.clone();
     if let Err(e) = ctrlc::set_handler(move || {
-        let _ = stop_tx.send(());
+        let _ = ctrl_c.send(None);
     }) {
         log::warn!("cannot install the stop handler: {e}");
     }
-    let _ = stop_rx.recv();
+    // Console lines go to the main thread, which owns the proxy.
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines() {
+            let Ok(line) = line else { break };
+            if stop_tx.send(Some(line)).is_err() {
+                break;
+            }
+        }
+    });
+    while let Ok(Some(line)) = stop_rx.recv() {
+        let command = line.trim().trim_start_matches('/');
+        if matches!(command, "end" | "stop" | "shutdown") {
+            break;
+        }
+        let out = proxy.console(command);
+        if !out.is_empty() {
+            log::info!("{out}");
+        }
+    }
     log::info!("Stopping");
     proxy.shutdown();
     ExitCode::SUCCESS

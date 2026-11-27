@@ -443,6 +443,9 @@ impl ServerBuilder {
                     None => (built_in_generators(), Origin::BuiltIn),
                 },
             };
+        // Plugin chunk populators run after the steps of whichever generator fills the slot.
+        let generator_provider =
+            crate::plugins::with_populators(generator_provider, plugins.chunk_populators());
         slot("chunk-generator", &origin);
         let (light_provider, origin) = self
             .light_engine
@@ -649,6 +652,12 @@ impl ServerBuilder {
             let block_commands = crate::commands::BlockCommands::new(&global, WorldId(index));
             let lent_levels = block_commands.lent();
             level.set_command_runner(Arc::new(block_commands));
+            if !global.plugins.plugins().is_empty() {
+                level.set_hooks(Arc::new(crate::plugins::WorldHooks::new(
+                    &global.plugins,
+                    dimension,
+                )));
+            }
             level.set_structure_templates(Arc::clone(&global.templates));
             if let Some(packs) = &packs {
                 level.set_data_packs(Arc::clone(packs));

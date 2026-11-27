@@ -377,10 +377,12 @@ pub fn spawn_cloud(
     data.owner_uuid = data.owner.and_then(|o| ents.store.get(o)).map(|e| e.uuid());
     let radius = data.radius;
     let new = NewEntity::new(ids::AREA_EFFECT_CLOUD, network_ids.next(), uuid, pos);
+    let parent = data.owner_uuid.unwrap_or(0);
     let id = ents.spawn_cloud(new, data);
     if let Some(mut e) = ents.store.get_mut(id) {
         e.set_dims(dims_of(radius));
     }
+    ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, parent);
     id
 }
 

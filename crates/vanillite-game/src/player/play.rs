@@ -625,6 +625,20 @@ impl Digging {
                     block_update(sink, ctx.level, pos);
                     return;
                 }
+                // Bukkit's `PlayerInteractEvent` `LEFT_CLICK_BLOCK`: a cancelled hit leaves
+                // the block as it is and corrects the client.
+                if ctx.hooks.wants(vanillite_abi::event::PLAYER_INTERACT)
+                    && !ctx.hooks.player_interact(
+                        ctx.actor.uuid,
+                        vanillite_abi::interact::LEFT_CLICK_BLOCK,
+                        hand_index(Hand::MainHand),
+                        held_name(ctx, Hand::MainHand),
+                        Some((pos, u32::from(direction % 6), ctx.level.block(pos))),
+                    )
+                {
+                    block_update(sink, ctx.level, pos);
+                    return;
+                }
                 if ctx.actor.creative() {
                     self.destroy_and_ack(ctx, pos, sink);
                     return;
@@ -955,6 +969,7 @@ impl Digging {
                 build_limit_message(sink, true, max_y);
             } else if !ctx.hooks.player_interact(
                 ctx.actor.uuid,
+                vanillite_abi::interact::USE_ON_BLOCK,
                 hand_index(p.hand),
                 held_name(ctx, p.hand),
                 Some((
@@ -1441,6 +1456,21 @@ impl Digging {
                 return false;
             }
         }
+        // Bukkit's `BlockIgniteEvent` (`FLINT_AND_STEEL`): a cancelled use does nothing.
+        if ctx.hooks.wants(vanillite_abi::event::BLOCK_IGNITE) {
+            let mut ev = crate::hooks::Event {
+                pos: target,
+                cause: vanillite_abi::ignite_cause::FLINT_AND_STEEL,
+                entity: ctx.actor.uuid,
+                player: ctx.actor.uuid,
+                state: Some(ctx.level.block(target)),
+                ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_IGNITE)
+            };
+            ctx.hooks.event(&mut ev);
+            if ev.cancelled {
+                return false;
+            }
+        }
         let pitch = ctx.level.random_float() * 0.4 + 0.8;
         let sound = vanillite_data::registry::SOUND_EVENT
             .id("minecraft:item.flintandsteel.use")
@@ -1702,10 +1732,13 @@ impl Digging {
         if ctx.actor.game_mode == GameMode::Spectator {
             return false;
         }
-        if !ctx
-            .hooks
-            .player_interact(ctx.actor.uuid, hand_index(hand), held_name(ctx, hand), None)
-        {
+        if !ctx.hooks.player_interact(
+            ctx.actor.uuid,
+            vanillite_abi::interact::USE_ITEM,
+            hand_index(hand),
+            held_name(ctx, hand),
+            None,
+        ) {
             // A plugin cancelled the use: nothing uses the item.
             return true;
         }
@@ -2043,6 +2076,28 @@ fn drop_resources(
                 data.loot.block_drops(&loot, &mut rng, &mut stacks);
             }
         }
+    }
+    if ctx.hooks.wants(vanillite_abi::event::BLOCK_DROP) {
+        let xp = ctx.level.level_mut().map_or(0, |level| {
+            crate::block::break_hooks::break_experience(level, state, tool)
+        });
+        let Some(xp) = crate::block::drops::block_drop_event(
+            ctx.hooks,
+            ctx.actor.uuid,
+            pos,
+            state,
+            &mut stacks,
+            xp,
+        ) else {
+            return;
+        };
+        for stack in stacks {
+            pop_resource(ctx.level, pos, stack);
+        }
+        if let Some(level) = ctx.level.level_mut() {
+            crate::block::break_hooks::spawn_after_break_with(level, state, pos, tool, xp);
+        }
+        return;
     }
     for stack in stacks {
         pop_resource(ctx.level, pos, stack);

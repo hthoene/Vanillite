@@ -2,6 +2,7 @@
 //! growing plant heads (kelp, vines), cocoa, nether wart, sweet berries, saplings, farmland
 //! and budding amethyst (`CropBlock`, `StemBlock`, `SugarCaneBlock`, …).
 
+use vanillite_abi::event::{BLOCK_FADE, BLOCK_GROW, BLOCK_SPREAD};
 use vanillite_base::random::RandomSource;
 use vanillite_base::{BlockPos, Direction};
 use vanillite_data::block::{BlockId, BlockState, ids};
@@ -10,6 +11,7 @@ use vanillite_worldgen::behaviour::{
     counter_clockwise, is_horizontal,
 };
 
+use super::hook_events as he;
 use super::{block_tags, fluid};
 use crate::level::{Level, update};
 
@@ -100,7 +102,8 @@ pub(super) fn crop_random_tick(level: &mut Level, state: BlockState, pos: BlockP
     if age < crop_max_age(block) {
         let speed = growth_speed(level, block, pos);
         if grows(level, speed) {
-            level.set_block(pos, crop_state_for_age(block, age + 1), update::CLIENTS);
+            let grown = crop_state_for_age(block, age + 1);
+            he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
         }
     }
 }
@@ -117,7 +120,13 @@ pub(super) fn stem_random_tick(level: &mut Level, state: BlockState, pos: BlockP
     }
     let age = state.int("age").unwrap_or(0);
     if age < 7 {
-        level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+        he::set_block(
+            level,
+            BLOCK_GROW,
+            pos,
+            state.set_int("age", age + 1),
+            update::CLIENTS,
+        );
         return;
     }
     let direction = HORIZONTAL[level.random().next_int_bounded(4) as usize];
@@ -136,7 +145,10 @@ pub(super) fn stem_random_tick(level: &mut Level, state: BlockState, pos: BlockP
             &block_tags().supports_melon_stem_fruit,
         )
     };
-    if level.block(target).is_air() && support.contains(below) {
+    if level.block(target).is_air()
+        && support.contains(below)
+        && he::allows(level, BLOCK_GROW, target, fruit.default_state())
+    {
         level.set_block_and_update(target, fruit.default_state());
         level.set_block_and_update(
             pos,
@@ -157,8 +169,11 @@ pub(super) fn sugar_cane_random_tick(level: &mut Level, state: BlockState, pos: 
     if height < 3 {
         let age = state.int("age").unwrap_or(0);
         if age == 15 {
-            level.set_block_and_update(pos.above(), state.block().default_state());
-            level.set_block(pos, state.set_int("age", 0), QUIET);
+            let grown = state.block().default_state();
+            if he::allows(level, BLOCK_GROW, pos.above(), grown) {
+                level.set_block_and_update(pos.above(), grown);
+                level.set_block(pos, state.set_int("age", 0), QUIET);
+            }
         } else {
             level.set_block(pos, state.set_int("age", age + 1), QUIET);
         }
@@ -182,10 +197,15 @@ pub(super) fn cactus_random_tick(level: &mut Level, state: BlockState, pos: Bloc
     if age == 8 && level.can_survive(state.block().default_state(), above) {
         let chance = if height >= 3 { 0.25 } else { 0.1 };
         if level.random().next_double() <= chance {
-            level.set_block_and_update(above, ids::CACTUS_FLOWER.default_state());
+            let flower = ids::CACTUS_FLOWER.default_state();
+            he::set_block_and_update(level, BLOCK_GROW, above, flower);
         }
     } else if age == 15 && height < 3 {
-        level.set_block_and_update(above, state.block().default_state());
+        let grown = state.block().default_state();
+        if !he::allows(level, BLOCK_GROW, above, grown) {
+            return;
+        }
+        level.set_block_and_update(above, grown);
         let reset = state.set_int("age", 0);
         level.set_block(pos, reset, QUIET);
         level.neighbor_changed(above, state.block());
@@ -201,7 +221,9 @@ pub(super) fn bamboo_sapling_random_tick(level: &mut Level, _state: BlockState, 
         && level.block(pos.above()).is_air()
         && level.raw_brightness(pos.above()) >= 9
     {
-        level.set_block_and_update(
+        he::set_block_and_update(
+            level,
+            BLOCK_SPREAD,
             pos.above(),
             ids::BAMBOO.default_state().set("leaves", "small"),
         );
@@ -253,7 +275,9 @@ pub(super) fn bamboo_random_tick(level: &mut Level, state: BlockState, pos: Bloc
     } else {
         1
     };
-    level.set_block_and_update(
+    he::set_block_and_update(
+        level,
+        BLOCK_SPREAD,
         pos.above(),
         ids::BAMBOO
             .default_state()
@@ -289,7 +313,7 @@ pub(super) fn growing_plant_head_random_tick(level: &mut Level, state: BlockStat
         let berries = level.random().next_float() < 0.11;
         grown = grown.set_flag("berries", berries);
     }
-    level.set_block_and_update(target, grown);
+    he::set_block_and_update(level, BLOCK_SPREAD, target, grown);
 }
 
 /// `CocoaBlock.randomTick`.
@@ -297,7 +321,8 @@ pub(super) fn cocoa_random_tick(level: &mut Level, state: BlockState, pos: Block
     if level.random().next_int_bounded(5) == 0 {
         let age = state.int("age").unwrap_or(2);
         if age < 2 {
-            level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+            let grown = state.set_int("age", age + 1);
+            he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
         }
     }
 }
@@ -306,7 +331,8 @@ pub(super) fn cocoa_random_tick(level: &mut Level, state: BlockState, pos: Block
 pub(super) fn nether_wart_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     let age = state.int("age").unwrap_or(3);
     if age < 3 && level.random().next_int_bounded(10) == 0 {
-        level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+        let grown = state.set_int("age", age + 1);
+        he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
     }
 }
 
@@ -315,7 +341,8 @@ pub(super) fn sweet_berry_random_tick(level: &mut Level, state: BlockState, pos:
     let age = state.int("age").unwrap_or(3);
     if age < 3 && level.random().next_int_bounded(5) == 0 && level.raw_brightness(pos.above()) >= 9
     {
-        level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+        let grown = state.set_int("age", age + 1);
+        he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
     }
 }
 
@@ -331,7 +358,7 @@ pub(super) fn is_sapling(block: BlockId) -> bool {
 pub(super) fn sapling_random_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if level.max_local_raw_brightness(pos.above()) >= 9 && level.random().next_int_bounded(7) == 0 {
         if state.int("stage") == Some(0) {
-            level.set_block(pos, state.set_int("stage", 1), QUIET);
+            he::set_block(level, BLOCK_GROW, pos, state.set_int("stage", 1), QUIET);
         } else {
             super::tree::grow_tree(level, pos, state);
         }
@@ -344,7 +371,7 @@ pub(super) fn propagule_random_tick(level: &mut Level, state: BlockState, pos: B
     if !state.flag("hanging") {
         if level.random().next_int_bounded(7) == 0 {
             if state.int("stage") == Some(0) {
-                level.set_block(pos, state.set_int("stage", 1), QUIET);
+                he::set_block(level, BLOCK_GROW, pos, state.set_int("stage", 1), QUIET);
             } else {
                 super::tree::grow_tree(level, pos, state);
             }
@@ -352,14 +379,15 @@ pub(super) fn propagule_random_tick(level: &mut Level, state: BlockState, pos: B
     } else if let Some(age) = state.int("age")
         && age != 4
     {
-        level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
+        let grown = state.set_int("age", age + 1);
+        he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
     }
 }
 
 /// `FarmlandBlock.tick`: turns to dirt if it cannot stay.
 pub(super) fn farmland_tick(level: &mut Level, state: BlockState, pos: BlockPos) {
     if !level.can_survive(state, pos) {
-        level.set_block_and_update(pos, ids::DIRT.default_state());
+        he::set_block_and_update(level, BLOCK_FADE, pos, ids::DIRT.default_state());
     }
 }
 
@@ -377,7 +405,7 @@ pub(super) fn farmland_random_tick(level: &mut Level, state: BlockState, pos: Bl
             .maintains_farmland
             .contains(level.block(pos.above()))
         {
-            level.set_block_and_update(pos, ids::DIRT.default_state());
+            he::set_block_and_update(level, BLOCK_FADE, pos, ids::DIRT.default_state());
         }
     } else if moisture < 7 {
         level.set_block(pos, state.set_int("moisture", 7), update::CLIENTS);
@@ -430,7 +458,7 @@ pub(super) fn budding_amethyst_random_tick(level: &mut Level, _state: BlockState
             .default_state()
             .set_direction("facing", direction)
             .set_flag("waterlogged", waterlogged);
-        level.set_block_and_update(target, state);
+        he::set_block_and_update(level, BLOCK_SPREAD, target, state);
     }
 }
 
@@ -473,9 +501,18 @@ fn place_grown_flower(level: &mut Level, pos: BlockPos, age: i32) {
     level.level_event(None, CHORUS_GROW, pos, 0);
 }
 
-/// `ChorusFlowerBlock.placeDeadFlower`.
+/// Whether plugins let a chorus flower of `age` spread to `pos` (`BLOCK_SPREAD`).
+fn flower_may_spread(level: &Level, pos: BlockPos, age: i32) -> bool {
+    let flower = ids::CHORUS_FLOWER.default_state().set_int("age", age);
+    he::allows(level, BLOCK_SPREAD, pos, flower)
+}
+
+/// `ChorusFlowerBlock.placeDeadFlower`; a plugin may cancel it (`BLOCK_GROW`).
 fn place_dead_flower(level: &mut Level, pos: BlockPos) {
     let flower = ids::CHORUS_FLOWER.default_state().set_int("age", 5);
+    if !he::allows(level, BLOCK_GROW, pos, flower) {
+        return;
+    }
     level.set_block(pos, flower, update::CLIENTS);
     level.level_event(None, CHORUS_DEATH, pos, 0);
 }
@@ -522,9 +559,11 @@ pub(super) fn chorus_flower_random_tick(level: &mut Level, state: BlockState, po
         && chorus_neighbours_empty(level, above, None)
         && level.block(below_n(pos, -2)).is_air()
     {
-        let plant = chorus_plant_state(level, pos);
-        level.set_block(pos, plant, update::CLIENTS);
-        place_grown_flower(level, above, age);
+        if flower_may_spread(level, above, age) {
+            let plant = chorus_plant_state(level, pos);
+            level.set_block(pos, plant, update::CLIENTS);
+            place_grown_flower(level, above, age);
+        }
     } else if age < 4 {
         let mut attempts = level.random().next_int_bounded(4);
         if pillar_on_support {
@@ -537,6 +576,7 @@ pub(super) fn chorus_flower_random_tick(level: &mut Level, state: BlockState, po
             if level.block(target).is_air()
                 && level.block(target.below()).is_air()
                 && chorus_neighbours_empty(level, target, Some(direction.opposite()))
+                && flower_may_spread(level, target, age + 1)
             {
                 place_grown_flower(level, target, age + 1);
                 branched = true;
@@ -643,13 +683,17 @@ pub(super) fn vine_random_tick(level: &mut Level, state: BlockState, pos: BlockP
             let cw_pos = test_pos.relative(cw);
             let ccw_pos = test_pos.relative(ccw);
             if cw_face && vine_acceptable(level, cw_pos, cw) {
-                level.set_block(
+                he::set_block(
+                    level,
+                    BLOCK_SPREAD,
                     test_pos,
                     vine.set_flag(vine_face(cw), true),
                     update::CLIENTS,
                 );
             } else if ccw_face && vine_acceptable(level, ccw_pos, ccw) {
-                level.set_block(
+                he::set_block(
+                    level,
+                    BLOCK_SPREAD,
                     test_pos,
                     vine.set_flag(vine_face(ccw), true),
                     update::CLIENTS,
@@ -661,27 +705,30 @@ pub(super) fn vine_random_tick(level: &mut Level, state: BlockState, pos: BlockP
                     && vine_acceptable(level, pos.relative(cw), opposite)
                 {
                     let grown = vine.set_flag(vine_face(opposite), true);
-                    level.set_block(cw_pos, grown, update::CLIENTS);
+                    he::set_block(level, BLOCK_SPREAD, cw_pos, grown, update::CLIENTS);
                 } else if ccw_face
                     && level.block(ccw_pos).is_air()
                     && vine_acceptable(level, pos.relative(ccw), opposite)
                 {
                     let grown = vine.set_flag(vine_face(opposite), true);
-                    level.set_block(ccw_pos, grown, update::CLIENTS);
+                    he::set_block(level, BLOCK_SPREAD, ccw_pos, grown, update::CLIENTS);
                 } else if f64::from(level.random().next_float()) < 0.05
                     && vine_acceptable(level, test_pos.above(), Direction::Up)
                 {
-                    level.set_block(test_pos, vine.set_flag("up", true), update::CLIENTS);
+                    let grown = vine.set_flag("up", true);
+                    he::set_block(level, BLOCK_SPREAD, test_pos, grown, update::CLIENTS);
                 }
             }
         } else if vine_acceptable(level, test_pos, test) {
-            level.set_block(pos, state.set_flag(vine_face(test), true), update::CLIENTS);
+            let grown = state.set_flag(vine_face(test), true);
+            he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
         }
         return;
     }
     if test == Direction::Up && pos.y < level.max_y() {
         if vine_can_support_at_face(level, pos, test) {
-            level.set_block(pos, state.set_flag("up", true), update::CLIENTS);
+            let grown = state.set_flag("up", true);
+            he::set_block(level, BLOCK_GROW, pos, grown, update::CLIENTS);
             return;
         }
         if level.block(above_pos).is_air() {
@@ -697,7 +744,7 @@ pub(super) fn vine_random_tick(level: &mut Level, state: BlockState, pos: BlockP
                 }
             }
             if vine_has_horizontal(above_state) {
-                level.set_block(above_pos, above_state, update::CLIENTS);
+                he::set_block(level, BLOCK_SPREAD, above_pos, above_state, update::CLIENTS);
             }
             return;
         }
@@ -709,7 +756,7 @@ pub(super) fn vine_random_tick(level: &mut Level, state: BlockState, pos: BlockP
             let before = if below.is_air() { vine } else { below };
             let after = vine_copy_random_faces(level, state, before);
             if before != after && vine_has_horizontal(after) {
-                level.set_block(below_pos, after, update::CLIENTS);
+                he::set_block(level, BLOCK_SPREAD, below_pos, after, update::CLIENTS);
             }
         }
     }
@@ -734,6 +781,9 @@ pub(super) fn pitcher_crop_random_tick(level: &mut Level, state: BlockState, pos
         });
     if can_grow {
         let lower = state.set_int("age", new_age);
+        if !he::allows(level, BLOCK_GROW, pos, lower) {
+            return;
+        }
         level.set_block(pos, lower, update::CLIENTS);
         if double {
             level.set_block_and_update(pos.above(), lower.set("half", "upper"));

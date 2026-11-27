@@ -23,8 +23,14 @@ use crate::player_list::Uuid;
 use crate::server::DIMENSIONS;
 use crate::world::ServerWorld;
 
+mod entity_api;
+mod populators;
 mod server_api;
+mod world16_api;
 mod world_api;
+
+pub(crate) use populators::with_populators;
+pub(crate) use world16_api::PluginTickets;
 
 /// Priority of plugin background jobs in the compute pool (after urgent world work).
 const BACKGROUND_PRIORITY: u32 = 1 << 20;
@@ -185,7 +191,10 @@ impl ServerAccess for Services {
         let Some((sink, _)) = global.players.connection(Uuid(player)) else {
             return false;
         };
-        sink.kick(component(reason));
+        let world = self.player_world(player).unwrap_or(0);
+        if let Some(reason) = player_kick(&global.plugins, world, player, component(reason)) {
+            sink.kick(reason);
+        }
         true
     }
 
@@ -530,6 +539,29 @@ impl ServerAccess for Services {
             .ok_or(vanillite_abi::status::WRONG_PHASE)?;
         server_api::set_game_rule(&global, name, value)
     }
+
+    fn item_component(
+        &self,
+        item: &vanillite_nbt::Compound,
+        component: &str,
+    ) -> Result<Option<vanillite_nbt::Tag>, i32> {
+        world16_api::item_component(item, component)
+    }
+
+    fn item_set_component(
+        &self,
+        item: &vanillite_nbt::Compound,
+        component: &str,
+        value: Option<&vanillite_nbt::Tag>,
+    ) -> Result<vanillite_nbt::Compound, i32> {
+        world16_api::item_set_component(item, component, value)
+    }
+
+    fn plugin_disabled(&self, plugin: &str) {
+        if let Some(global) = self.global.upgrade() {
+            world16_api::plugin_disabled(&global, plugin);
+        }
+    }
 }
 
 impl Services {
@@ -567,11 +599,39 @@ fn is_empty(text: &NewText) -> bool {
 }
 
 /// A plugin's replacement text as a component.
-fn new_component(text: &NewText) -> Component {
+pub(crate) fn new_component(text: &NewText) -> Component {
     match text {
         NewText::Plain(s) => component(Text::Plain(s)),
         NewText::Json(s) => component(Text::Json(s)),
     }
+}
+
+/// Bukkit's `PlayerKickEvent` for a kick the server decided (`/kick`, a plugin, idling,
+/// spam; not protocol errors and shutdown) of `player` in `world`: `None` when a plugin
+/// cancelled it, else the reason, maybe replaced.
+pub(crate) fn player_kick(
+    host: &PluginHost,
+    world: u32,
+    player: u128,
+    reason: Component,
+) -> Option<Component> {
+    if !host.wants(vanillite_abi::event::PLAYER_KICK) {
+        return Some(reason);
+    }
+    let text = reason.to_json_string();
+    let mut event = vanillite_plugin_host::GameEvent {
+        kind: vanillite_abi::event::PLAYER_KICK,
+        world,
+        entity: player,
+        entity_type: "minecraft:player",
+        text: &text,
+        ..vanillite_plugin_host::GameEvent::default()
+    };
+    host.game_event(None, &mut event);
+    if event.cancelled {
+        return None;
+    }
+    Some(event.text_out.map_or(reason, |t| new_component(&t)))
 }
 
 /// The game mode as plugins number it.
@@ -842,6 +902,157 @@ impl WorldAccess for PluginWorld<'_> {
     fn advancement_done(&self, player: u128, advancement: &str) -> Result<bool, i32> {
         world_api::advancement_done(self, player, advancement)
     }
+
+    fn entity_get(&self, entity: u128, prop: u32) -> Result<f64, i32> {
+        entity_api::entity_get(self, entity, prop)
+    }
+
+    fn entity_set(&mut self, entity: u128, prop: u32, value: f64) -> Result<(), i32> {
+        entity_api::entity_set(self, entity, prop, value)
+    }
+
+    fn entity_name(&self, entity: u128) -> Result<Option<String>, i32> {
+        entity_api::entity_name(self, entity)
+    }
+
+    fn set_entity_name(&mut self, entity: u128, name: Option<Text<'_>>) -> Result<(), i32> {
+        entity_api::set_entity_name(self, entity, name)
+    }
+
+    fn passengers(&self, entity: u128) -> Result<Vec<u128>, i32> {
+        entity_api::passengers(self, entity)
+    }
+
+    fn vehicle(&self, entity: u128) -> Result<Option<u128>, i32> {
+        entity_api::vehicle(self, entity)
+    }
+
+    fn mount(&mut self, passenger: u128, vehicle: u128) -> Result<(), i32> {
+        entity_api::mount(self, passenger, vehicle)
+    }
+
+    fn dismount(&mut self, passenger: u128) -> Result<(), i32> {
+        entity_api::dismount(self, passenger)
+    }
+
+    fn attribute(&self, entity: u128, attribute: &str) -> Result<(f64, f64), i32> {
+        entity_api::attribute(self, entity, attribute)
+    }
+
+    fn set_attribute_base(&mut self, entity: u128, attribute: &str, value: f64) -> Result<(), i32> {
+        entity_api::set_attribute_base(self, entity, attribute, value)
+    }
+
+    fn attribute_modifier(
+        &mut self,
+        entity: u128,
+        attribute: &str,
+        id: &str,
+        change: Option<(f64, u32)>,
+    ) -> Result<(), i32> {
+        entity_api::attribute_modifier(self, entity, attribute, id, change)
+    }
+
+    fn mob_target(&self, mob: u128) -> Result<Option<u128>, i32> {
+        entity_api::mob_target(self, mob)
+    }
+
+    fn set_mob_target(&mut self, mob: u128, target: Option<u128>) -> Result<(), i32> {
+        entity_api::set_mob_target(self, mob, target)
+    }
+
+    fn navigate(&mut self, mob: u128, to: [f64; 3], speed: f64) -> Result<(), i32> {
+        entity_api::navigate(self, mob, to, speed)
+    }
+
+    fn add_goal(&mut self, mob: u128, goal: vanillite_plugin_host::PluginGoal) -> Result<u64, i32> {
+        entity_api::add_goal(self, mob, goal)
+    }
+
+    fn remove_goal(&mut self, mob: u128, goal: u64) -> Result<(), i32> {
+        entity_api::remove_goal(self, mob, goal)
+    }
+
+    fn clear_goals(&mut self, mob: u128, which: u32) -> Result<(), i32> {
+        entity_api::clear_goals(self, mob, which)
+    }
+
+    fn biome(&self, pos: [i32; 3]) -> Result<String, i32> {
+        world16_api::biome(self, pos)
+    }
+
+    fn set_biome(&mut self, area: BlockBox, biome: &str) -> Result<(), i32> {
+        world16_api::set_biome(self, area, biome)
+    }
+
+    fn light(&self, pos: [i32; 3]) -> Result<(u32, u32), i32> {
+        world16_api::light(self, pos)
+    }
+
+    fn chunk_state(&self, x: i32, z: i32) -> Result<u32, i32> {
+        world16_api::chunk_state(self, x, z)
+    }
+
+    fn force_load(&mut self, x: i32, z: i32, on: bool) -> Result<(), i32> {
+        world16_api::force_load(self, x, z, on)
+    }
+
+    fn chunk_ticket(&mut self, plugin: &str, x: i32, z: i32, add: bool) -> Result<(), i32> {
+        world16_api::chunk_ticket(self, plugin, x, z, add)
+    }
+
+    fn border(&self) -> Result<vanillite_abi::BorderInfo, i32> {
+        world16_api::border(self)
+    }
+
+    fn set_border(&mut self, border: &vanillite_abi::BorderInfo) -> Result<(), i32> {
+        world16_api::set_border(self, border)
+    }
+
+    fn explode(
+        &mut self,
+        center: [f64; 3],
+        power: f32,
+        flags: u32,
+        source: Option<u128>,
+    ) -> Result<(), i32> {
+        world16_api::explode(self, center, power, flags, source)
+    }
+
+    fn raytrace(
+        &self,
+        from: [f64; 3],
+        to: [f64; 3],
+        flags: u32,
+        ignore: Option<u128>,
+    ) -> Result<vanillite_abi::RayHit, i32> {
+        world16_api::raytrace(self, from, to, flags, ignore)
+    }
+
+    fn open_menu(
+        &mut self,
+        player: u128,
+        menu: &vanillite_plugin_host::Menu<'_>,
+    ) -> Result<u32, i32> {
+        world16_api::open_menu(self, player, menu)
+    }
+
+    fn menu_item(&self, player: u128, slot: u32) -> Result<vanillite_nbt::Compound, i32> {
+        world16_api::menu_item(self, player, slot)
+    }
+
+    fn set_menu_item(
+        &mut self,
+        player: u128,
+        slot: u32,
+        item: &vanillite_nbt::Compound,
+    ) -> Result<(), i32> {
+        world16_api::set_menu_item(self, player, slot, item)
+    }
+
+    fn close_menu(&mut self, player: u128) -> Result<(), i32> {
+        world16_api::close_menu(self, player)
+    }
 }
 
 /// An entity of a world by UUID: players by their index, other entities by a scan.
@@ -899,16 +1110,207 @@ impl Hooks<'_> {
     }
 }
 
-impl GameHooks for Hooks<'_> {
+/// The game hooks a level keeps ([`vanillite_game::level::Level::set_hooks`]): the hooks of
+/// one world, owning a handle of the plugin host.
+#[derive(Debug)]
+pub(crate) struct WorldHooks {
+    host: PluginHost,
+    world: u32,
+}
+
+impl WorldHooks {
+    pub(crate) fn new(host: &PluginHost, dimension: &str) -> Self {
+        WorldHooks {
+            host: host.clone(),
+            world: world_index(dimension),
+        }
+    }
+
+    fn hooks(&self) -> Hooks<'_> {
+        Hooks {
+            host: &self.host,
+            world: self.world,
+        }
+    }
+}
+
+impl GameHooks for WorldHooks {
+    fn wants(&self, kind: u32) -> bool {
+        self.host.wants(kind)
+    }
+
+    fn event(&self, event: &mut vanillite_game::hooks::Event) {
+        self.hooks().event(event);
+    }
+
     fn entity_damage(
         &self,
         entity: u128,
         entity_type: &str,
         damage_type: &str,
         amount: f32,
+        attacker: Option<u128>,
+        direct: Option<u128>,
     ) -> Option<f32> {
-        self.host
-            .entity_damage(self.world, entity, entity_type, damage_type, amount)
+        self.hooks()
+            .entity_damage(entity, entity_type, damage_type, amount, attacker, direct)
+    }
+
+    fn block_break(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().block_break(player, pos, state)
+    }
+
+    fn block_place(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().block_place(player, pos, state)
+    }
+
+    fn bed_enter(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().bed_enter(player, pos, state)
+    }
+
+    fn bed_leave(&self, player: u128, pos: BlockPos, state: BlockState) {
+        self.hooks().bed_leave(player, pos, state);
+    }
+
+    fn spawn_change(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
+        self.hooks().spawn_change(player, pos, state)
+    }
+
+    fn player_death(
+        &self,
+        player: u128,
+        damage_type: &str,
+        killer: Option<u128>,
+        death: &mut vanillite_game::hooks::Death,
+    ) {
+        self.hooks()
+            .player_death(player, damage_type, killer, death);
+    }
+
+    fn entity_death(
+        &self,
+        entity: u128,
+        entity_type: &str,
+        damage_type: &str,
+        killer: Option<u128>,
+    ) {
+        self.hooks()
+            .entity_death(entity, entity_type, damage_type, killer);
+    }
+
+    fn player_interact(
+        &self,
+        player: u128,
+        action: u32,
+        hand: u32,
+        item: &str,
+        block: Option<(BlockPos, u32, BlockState)>,
+    ) -> bool {
+        self.hooks()
+            .player_interact(player, action, hand, item, block)
+    }
+}
+
+fn place(world: u32, p: vanillite_game::hooks::Place) -> Location {
+    Location {
+        world: p.world.unwrap_or(world),
+        pos: p.pos,
+        yaw: p.yaw,
+        pitch: p.pitch,
+    }
+}
+
+impl Hooks<'_> {
+    /// Fires an event of the kinds since ABI 1.6 without world access; see
+    /// [`Hooks::event_in`].
+    pub(crate) fn event(&self, event: &mut vanillite_game::hooks::Event) {
+        self.event_in(None, event);
+    }
+
+    /// Fires an event of the kinds since ABI 1.6; `world` is the event's world when the
+    /// caller owns it whole (handlers may then touch it).
+    pub(crate) fn event_in(
+        &self,
+        world: Option<&mut dyn WorldAccess>,
+        event: &mut vanillite_game::hooks::Event,
+    ) {
+        if !self.host.wants(event.kind) {
+            return;
+        }
+        let state = event.state.map(state_text).unwrap_or_default();
+        let mut e = vanillite_plugin_host::GameEvent {
+            kind: event.kind,
+            cancelled: event.cancelled,
+            world: self.world,
+            entity: event.entity,
+            entity_type: &event.entity_type,
+            other: event.other,
+            other_type: &event.other_type,
+            source: event.source,
+            player: event.player,
+            cause: event.cause,
+            key: &event.key,
+            pos: [event.pos.x, event.pos.y, event.pos.z],
+            state: &state,
+            from: place(self.world, event.from),
+            to: place(self.world, event.to),
+            item: &event.item,
+            other_item: &event.other_item,
+            text: &event.text,
+            amount: event.amount,
+            value: event.value,
+            extra: event.extra,
+            flags: event.flags,
+            item_out: None,
+            text_out: None,
+        };
+        self.host.game_event(world, &mut e);
+        event.cancelled = e.cancelled;
+        event.to = vanillite_game::hooks::Place {
+            world: (e.to.world != self.world).then_some(e.to.world),
+            pos: e.to.pos,
+            yaw: e.to.yaw,
+            pitch: e.to.pitch,
+        };
+        event.amount = e.amount;
+        event.value = e.value;
+        event.extra = e.extra;
+        event.flags = e.flags;
+        event.item_out = e.item_out;
+        event.text_out = e.text_out.map(|t| match t {
+            NewText::Plain(s) => vanillite_game::hooks::NewText::Plain(s),
+            NewText::Json(s) => vanillite_game::hooks::NewText::Json(s),
+        });
+    }
+}
+
+impl GameHooks for Hooks<'_> {
+    fn wants(&self, kind: u32) -> bool {
+        self.host.wants(kind)
+    }
+
+    fn event(&self, event: &mut vanillite_game::hooks::Event) {
+        self.event_in(None, event);
+    }
+
+    fn entity_damage(
+        &self,
+        entity: u128,
+        entity_type: &str,
+        damage_type: &str,
+        amount: f32,
+        attacker: Option<u128>,
+        direct: Option<u128>,
+    ) -> Option<f32> {
+        self.host.entity_damage(
+            self.world,
+            entity,
+            entity_type,
+            damage_type,
+            amount,
+            attacker,
+            direct,
+        )
     }
 
     fn block_break(&self, player: u128, pos: BlockPos, state: BlockState) -> bool {
@@ -997,6 +1399,7 @@ impl GameHooks for Hooks<'_> {
     fn player_interact(
         &self,
         player: u128,
+        action: u32,
         hand: u32,
         item: &str,
         block: Option<(BlockPos, u32, BlockState)>,
@@ -1011,6 +1414,6 @@ impl GameHooks for Hooks<'_> {
             state: state.as_deref().unwrap_or(""),
         });
         self.host
-            .player_interact(self.world, player, hand, item, target)
+            .player_interact(self.world, player, action, hand, item, target)
     }
 }

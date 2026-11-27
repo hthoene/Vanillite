@@ -24,7 +24,34 @@ pub fn grow_crop(level: &mut Level, pos: BlockPos, stack: &mut ItemStack) -> boo
         return false;
     }
     if is_success(level, state) {
-        perform(level, pos, state);
+        perform(level, pos, state, 0);
+    }
+    stack.shrink(1);
+    true
+}
+
+/// [`grow_crop`] by a player or (`player` 0) a dispenser, which plugins may cancel
+/// (`BLOCK_FERTILIZE`; Bukkit's `BlockFertilizeEvent`): a cancelled use takes no bone meal and
+/// returns `false`. Trees and huge plants it grows name the player (`STRUCTURE_GROW`).
+pub fn fertilize(level: &mut Level, pos: BlockPos, stack: &mut ItemStack, player: u128) -> bool {
+    let state = level.block(pos);
+    if !is_valid_target(level, pos, state) {
+        return false;
+    }
+    if let Some(hooks) = level.hooks_for(vanillite_abi::event::BLOCK_FERTILIZE) {
+        let mut ev = crate::hooks::Event {
+            player,
+            pos,
+            state: Some(state),
+            ..crate::hooks::Event::new(vanillite_abi::event::BLOCK_FERTILIZE)
+        };
+        hooks.event(&mut ev);
+        if ev.cancelled {
+            return false;
+        }
+    }
+    if is_success(level, state) {
+        perform(level, pos, state, player);
     }
     stack.shrink(1);
     true
@@ -95,7 +122,7 @@ pub fn grow_water_plant_from(
                 && is_valid_target(level, test, current)
                 && level.random().next_int_bounded(10) == 0
             {
-                perform(level, test, current);
+                perform(level, test, current, 0);
             }
         }
     }
@@ -450,8 +477,9 @@ fn is_success(level: &mut Level, state: BlockState) -> bool {
     }
 }
 
-/// `performBonemeal(level, random, pos, state, INTERACTION)`.
-fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
+/// `performBonemeal(level, random, pos, state, INTERACTION)`; `player` (0 for none) used the
+/// bone meal.
+fn perform(level: &mut Level, pos: BlockPos, state: BlockState, player: u128) {
     use BlockKind as K;
     let block = state.block();
     let age = state.int("age").unwrap_or(0);
@@ -482,18 +510,18 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
         K::SweetBerryBushBlock => {
             level.set_block(pos, state.set_int("age", (age + 1).min(3)), update::CLIENTS);
         }
-        K::SaplingBlock => advance_tree(level, pos, state),
+        K::SaplingBlock => advance_tree(level, pos, state, player),
         K::MangrovePropaguleBlock => {
             if state.flag("hanging") {
                 if age != 4 {
                     level.set_block(pos, state.set_int("age", age + 1), update::CLIENTS);
                 }
             } else {
-                advance_tree(level, pos, state);
+                advance_tree(level, pos, state, player);
             }
         }
         K::AzaleaBlock => {
-            super::tree::grow_tree(level, pos, state);
+            super::tree::grow_tree_by(level, pos, state, player);
         }
         K::PitcherCropBlock => {
             if let Some((lower_pos, lower)) = pitcher_lower(level, pos, state) {
@@ -647,12 +675,15 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
             } else {
                 "minecraft:warped_fungus_planted"
             };
-            super::tree::place_named(level, name, pos);
+            if super::tree::structure_may_grow(level, pos, state, player) {
+                super::tree::place_named(level, name, pos);
+            }
         }
         K::MushroomBlock => {
             // `growMushroom`: the mushroom goes, and comes back if the feature fails.
             if let Some((name, _)) = mushroom_feature(block)
                 && level.tree_features().is_some()
+                && super::tree::structure_may_grow(level, pos, state, player)
             {
                 level.remove_block(pos, false);
                 if super::tree::place_named(level, name, pos) != Some(true) {
@@ -682,11 +713,11 @@ fn perform(level: &mut Level, pos: BlockPos, state: BlockState) {
 const QUIET: u32 = update::INVISIBLE | update::SKIP_BLOCK_ENTITY_SIDEEFFECTS;
 
 /// `SaplingBlock.advanceTree`: stage 0 becomes stage 1, then the tree grows.
-fn advance_tree(level: &mut Level, pos: BlockPos, state: BlockState) {
+fn advance_tree(level: &mut Level, pos: BlockPos, state: BlockState, player: u128) {
     if state.int("stage") == Some(0) {
         level.set_block(pos, state.set_int("stage", 1), QUIET);
     } else {
-        super::tree::grow_tree(level, pos, state);
+        super::tree::grow_tree_by(level, pos, state, player);
     }
 }
 
@@ -1102,7 +1133,7 @@ fn perform_grass(level: &mut Level, pos: BlockPos) {
             && level.random().next_float() < 0.1
             && is_valid_target(level, test, current)
         {
-            perform(level, test, current);
+            perform(level, test, current, 0);
         }
         if current.is_air() && in_height(level, test) {
             if level.random().next_float() < 0.125 {

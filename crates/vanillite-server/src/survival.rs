@@ -8,6 +8,7 @@ use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
 use vanillite_chunk::HeightmapKind;
 use vanillite_data::block::BlockState;
+use vanillite_data::entity::ids;
 use vanillite_game::block::weather::Climate;
 use vanillite_game::entities::Entities;
 use vanillite_game::level::block_entity::{BlockEntities, BlockEntity};
@@ -19,6 +20,8 @@ use vanillite_game::survival::player::{self, Env, TickResult};
 use vanillite_game::survival::rules::{Difficulty, GameRules, Rule};
 use vanillite_game::survival::weather::{LevelWeather, WeatherPacket};
 use vanillite_protocol::SharedPacket;
+use vanillite_protocol::compress::Codec;
+use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
     ChangeDifficulty, ClockUpdate, GameEvent, RemoveEntities, SetTime,
 };
@@ -68,9 +71,122 @@ pub(crate) struct WorldSurvival {
     pub(crate) min_y: i32,
     /// Tracking range of players in blocks.
     player_range: i32,
-    /// Players by chunk, rebuilt when effects are delivered.
-    grid: FxHashMap<ChunkPos, Vec<EntityId>>,
+    /// Player rows by chunk, rebuilt when effects are delivered.
+    grid: FxHashMap<ChunkPos, Vec<u32>>,
+    /// The players by row while effects are delivered.
+    receivers: Vec<Receiver>,
     scratch: Vec<EntityId>,
+    /// The delivered packets per receiver.
+    outgoing: Outgoing,
+}
+
+/// A player as a receiver of delivered effects.
+#[derive(Clone, Copy, Debug)]
+struct Receiver {
+    /// Its view (`entity` is the player).
+    view: vanillite_world::tracking::Viewer,
+    /// Its position; `None` if it has no entity.
+    pos: Option<Vec3>,
+}
+
+/// The packets of one delivery, queued per receiver as one batch: each packet is framed
+/// (and compressed) once and its frame copied to the batches of its receivers, so a crowd
+/// costs one queue entry per receiver instead of one per packet and receiver.
+#[derive(Debug, Default)]
+struct Outgoing {
+    threshold: Option<usize>,
+    codec: Codec,
+    /// The frame of the packet being delivered (empty: it could not be framed).
+    frame: Vec<u8>,
+    /// Frames by player row.
+    batches: Vec<Vec<u8>>,
+    /// Rows with frames, in the order they got their first one.
+    rows: Vec<u32>,
+}
+
+impl Outgoing {
+    /// Starts a delivery to the players of `entities`.
+    fn begin(&mut self, entities: &Entities) {
+        self.threshold = entities
+            .players
+            .iter()
+            .next()
+            .and_then(|(_, player)| player.connection.sink.frame_threshold());
+        if self.batches.len() < entities.players.len() {
+            self.batches.resize_with(entities.players.len(), Vec::new);
+        }
+    }
+
+    /// Frames the packet that the next [`Outgoing::send`] calls deliver.
+    fn packet(&mut self, packet: &SharedPacket) {
+        self.frame.clear();
+        if encode_frame(
+            packet.body(),
+            self.threshold,
+            &mut self.codec,
+            &mut self.frame,
+        )
+        .is_err()
+        {
+            self.frame.clear();
+        }
+    }
+
+    /// Queues the current packet for the player `id`.
+    fn send(&mut self, entities: &Entities, id: EntityId, packet: &Arc<SharedPacket>) {
+        let Some(entity) = entities.store.get(id) else {
+            return;
+        };
+        if entity.kind() == ids::PLAYER {
+            self.send_row(entities, entity.kind_row(), packet);
+        }
+    }
+
+    /// Queues the current packet for the player in `row`.
+    fn send_row(&mut self, entities: &Entities, row: u32, packet: &Arc<SharedPacket>) {
+        match self.batches.get_mut(row as usize) {
+            Some(batch) if !self.frame.is_empty() => {
+                if batch.is_empty() {
+                    self.rows.push(row);
+                }
+                batch.extend_from_slice(&self.frame);
+            }
+            _ => {
+                // Not framed: queue it on its own after what is batched for the player.
+                self.flush_row(entities, row);
+                if let Some(player) = entities.players.get(row) {
+                    player.connection.sink.send_shared(packet);
+                }
+            }
+        }
+    }
+
+    fn flush_row(&mut self, entities: &Entities, row: u32) {
+        let Some(batch) = self.batches.get_mut(row as usize) else {
+            return;
+        };
+        if batch.is_empty() {
+            return;
+        }
+        let frames = std::mem::take(batch);
+        if let Some(player) = entities.players.get(row) {
+            player.connection.sink.send_batch(frames, self.threshold);
+        }
+        self.rows.retain(|&r| r != row);
+    }
+
+    /// Queues the batches: before anything else is sent to the players and at the end.
+    fn flush(&mut self, entities: &Entities) {
+        for row in self.rows.drain(..) {
+            let Some(batch) = self.batches.get_mut(row as usize) else {
+                continue;
+            };
+            let frames = std::mem::take(batch);
+            if let Some(player) = entities.players.get(row) {
+                player.connection.sink.send_batch(frames, self.threshold);
+            }
+        }
+    }
 }
 
 /// `Level.isRainingAt` without the sky light test (the heightmap test covers it outside of
@@ -198,7 +314,9 @@ impl WorldSurvival {
             min_y,
             player_range: player_range.max(0),
             grid: FxHashMap::default(),
+            receivers: Vec::new(),
             scratch: Vec::new(),
+            outgoing: Outgoing::default(),
         }
     }
 
@@ -218,13 +336,24 @@ impl WorldSurvival {
         let advance = level.rules().bool(Rule::ADVANCE_WEATHER);
         self.weather_out.clear();
         if self.can_have_weather {
-            let mut data = level.weather();
-            self.weather.advance(
-                Some(&mut data),
-                advance,
-                &mut self.random,
-                &mut self.weather_out,
-            );
+            if advance && global.plugins.wants(vanillite_abi::event::WEATHER_CHANGE) {
+                weather_change_event(global, &mut self.random);
+                let mut data = level.weather();
+                self.weather.advance(
+                    Some(&mut data),
+                    false,
+                    &mut self.random,
+                    &mut self.weather_out,
+                );
+            } else {
+                let mut data = level.weather();
+                self.weather.advance(
+                    Some(&mut data),
+                    advance,
+                    &mut self.random,
+                    &mut self.weather_out,
+                );
+            }
         } else {
             self.weather
                 .advance(None, advance, &mut self.random, &mut self.weather_out);
@@ -506,6 +635,16 @@ impl WorldSurvival {
         amount: f32,
         events: &mut Vec<PendingGameEvent>,
     ) -> bool {
+        // The causing and direct entities for the plugins' damage and death events.
+        let attackers = if global.plugins.wants(vanillite_abi::event::ENTITY_DAMAGE)
+            || global.plugins.wants(vanillite_abi::event::PLAYER_DEATH)
+        {
+            let uuid_of =
+                |id: Option<EntityId>| id.and_then(|i| entities.store.get(i)).map(|e| e.uuid());
+            (uuid_of(source.cause), uuid_of(source.direct))
+        } else {
+            (None, None)
+        };
         Self::on_player(
             entities,
             chunks,
@@ -513,7 +652,7 @@ impl WorldSurvival {
             dimension,
             id,
             events,
-            |entity, data, env| player::hurt(entity, data, env, source, amount),
+            |entity, data, env| player::hurt_by(entity, data, env, source, amount, attackers),
         )
     }
 
@@ -653,15 +792,26 @@ impl WorldSurvival {
         done
     }
 
-    /// Players by chunk for the delivery of effects.
+    /// The players by row and by chunk for the delivery of effects.
     fn build_grid(&mut self, entities: &Entities) {
         for list in self.grid.values_mut() {
             list.clear();
         }
-        for (id, _) in entities.players.iter() {
-            if let Some(e) = entities.store.get(id) {
-                self.grid.entry(chunk_of(e.pos())).or_default().push(id);
+        self.receivers.clear();
+        for ((id, player), row) in entities.players.iter().zip(0u32..) {
+            let pos = entities.store.get(id).map(|e| e.pos());
+            if let Some(pos) = pos {
+                self.grid.entry(chunk_of(pos)).or_default().push(row);
             }
+            self.receivers.push(Receiver {
+                view: vanillite_world::tracking::Viewer {
+                    entity: id,
+                    view_center: player.chunk_view.center,
+                    view_distance: player.chunk_view.view_distance,
+                    sent_radius: 0,
+                },
+                pos,
+            });
         }
         self.grid.retain(|_, list| !list.is_empty());
     }
@@ -677,6 +827,8 @@ impl WorldSurvival {
         collect_game_events(&effects, &mut self.game_events);
         self.build_grid(entities);
         let mut receivers = Vec::new();
+        let mut out = std::mem::take(&mut self.outgoing);
+        out.begin(entities);
         for effect in &effects {
             match effect {
                 Effect::Tracking {
@@ -690,30 +842,26 @@ impl WorldSurvival {
                     let pos = source.pos();
                     let chunk = chunk_of(pos);
                     let range = f64::from(self.player_range);
-                    self.near(entities, pos, range, &mut receivers);
-                    for &viewer in &receivers {
-                        if viewer == *entity {
-                            continue;
-                        }
-                        let (Some(v), Some(p)) =
-                            (entities.store.get(viewer), entities.player(viewer))
+                    self.near(pos, range, &mut receivers);
+                    out.packet(packet);
+                    for &row in &receivers {
+                        let Some(&Receiver {
+                            view,
+                            pos: Some(at),
+                        }) = self.receivers.get(row as usize)
                         else {
                             continue;
                         };
-                        let d = v.pos() - pos;
-                        let sees = vanillite_world::tracking::Viewer {
-                            entity: viewer,
-                            view_center: p.chunk_view.center,
-                            view_distance: p.chunk_view.view_distance,
-                            sent_radius: 0,
+                        if view.entity == *entity {
+                            continue;
                         }
-                        .sees_chunk(chunk);
-                        if sees && d.x * d.x + d.z * d.z <= range * range {
-                            p.connection.sink.send_shared(packet);
+                        let d = at - pos;
+                        if view.sees_chunk(chunk) && d.x * d.x + d.z * d.z <= range * range {
+                            out.send_row(entities, row, packet);
                         }
                     }
-                    if *with_self && let Some(p) = entities.player(*entity) {
-                        p.connection.sink.send_shared(packet);
+                    if *with_self {
+                        out.send(entities, *entity, packet);
                     }
                 }
                 Effect::Nearby {
@@ -722,22 +870,27 @@ impl WorldSurvival {
                     except,
                     packet,
                 } => {
-                    self.near(entities, *pos, *range, &mut receivers);
-                    for &id in &receivers {
-                        if Some(id) == *except {
-                            continue;
-                        }
-                        let (Some(e), Some(p)) = (entities.store.get(id), entities.player(id))
+                    self.near(*pos, *range, &mut receivers);
+                    out.packet(packet);
+                    for &row in &receivers {
+                        let Some(&Receiver {
+                            view,
+                            pos: Some(at),
+                        }) = self.receivers.get(row as usize)
                         else {
                             continue;
                         };
-                        let d = e.pos() - *pos;
+                        if Some(view.entity) == *except {
+                            continue;
+                        }
+                        let d = at - *pos;
                         if d.x * d.x + d.y * d.y + d.z * d.z < range * range {
-                            p.connection.sink.send_shared(packet);
+                            out.send_row(entities, row, packet);
                         }
                     }
                 }
                 Effect::Broadcast(message) => {
+                    out.flush(entities);
                     global
                         .players
                         .broadcast_system(message.clone(), false, None);
@@ -747,6 +900,7 @@ impl WorldSurvival {
                     killer,
                     message,
                 } => {
+                    out.flush(entities);
                     // `ServerPlayer.die`: `tellNeutralMobsThatIDied` with `forgive_dead_players`.
                     if entities.player(*victim).is_some()
                         && global.level.rules().bool(Rule::FORGIVE_DEAD_PLAYERS)
@@ -758,9 +912,8 @@ impl WorldSurvival {
                     crate::scoreboard::died(global, entities, *victim, *killer, message.as_ref());
                 }
                 Effect::To { player, packet } => {
-                    if let Some(p) = entities.player(*player) {
-                        p.connection.sink.send_shared(packet);
-                    }
+                    out.packet(packet);
+                    out.send(entities, *player, packet);
                 }
                 Effect::DropItem { .. }
                 | Effect::Experience { .. }
@@ -770,17 +923,20 @@ impl WorldSurvival {
                 | Effect::RespawnShoulder { .. } => {}
             }
         }
+        out.flush(entities);
+        self.outgoing = out;
         spawn_drops(&effects, entities, &mut self.random, global);
     }
 
-    /// The players of the chunks within `range` of `pos` (all players when that is fewer).
-    fn near(&self, entities: &Entities, pos: Vec3, range: f64, out: &mut Vec<EntityId>) {
+    /// The player rows of the chunks within `range` of `pos` (all players when that is
+    /// fewer).
+    fn near(&self, pos: Vec3, range: f64, out: &mut Vec<u32>) {
         out.clear();
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let r = (range / 16.0).ceil() as i32 + 1;
         let side = usize::try_from(2 * r + 1).unwrap_or(usize::MAX);
-        if entities.players.len() <= side.saturating_mul(side) {
-            out.extend(entities.players.iter().map(|(id, _)| id));
+        if self.receivers.len() <= side.saturating_mul(side) {
+            out.extend((0u32..).take(self.receivers.len()));
             return;
         }
         let c = chunk_of(pos);
@@ -966,6 +1122,7 @@ fn spawn_drops(
             if let Some(mut e) = entities.store.get_mut(id) {
                 e.set_velocity(*velocity);
             }
+            entities.spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
         }
         if let Effect::RespawnShoulder { tag, pos, owner } = effect {
             // `EntityType.create(tag, LOAD)`, `setOwner`, `setPos`, `addWithUUID`.
@@ -994,7 +1151,7 @@ fn spawn_drops(
             stack,
         } = effect
         {
-            entities.spawn_item(
+            let id = entities.spawn_item(
                 global.network_ids.next(),
                 *uuid,
                 *pos,
@@ -1002,6 +1159,7 @@ fn spawn_drops(
                 *y_rot,
                 vanillite_game::item_entity::ItemData::new(stack.clone(), *pickup_delay, None),
             );
+            entities.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0);
         }
     }
 }
@@ -1009,6 +1167,43 @@ fn spawn_drops(
 /// Sends `packet` to every player of the server (`broadcastAll`).
 pub(crate) fn broadcast_all<P: vanillite_protocol::Packet>(global: &Global, packet: &P) {
     global.players.broadcast(packet, None);
+}
+
+/// The `weather` code of a world's weather for plugins (thunder needs rain).
+fn weather_code(raining: bool, thundering: bool) -> u32 {
+    use vanillite_abi::weather;
+    match (raining, thundering) {
+        (false, _) => weather::CLEAR,
+        (true, false) => weather::RAIN,
+        (true, true) => weather::THUNDER,
+    }
+}
+
+/// The weather timers of `advanceWeatherCycle` with `WEATHER_CHANGE` (Bukkit's
+/// `WeatherChangeEvent` and `ThunderChangeEvent`): when the rain or thunder flips, plugins
+/// may cancel it and the old weather stays. The timers are not locked while handlers run.
+fn weather_change_event(global: &Global, random: &mut LegacyRandom) {
+    let (old, new) = {
+        let mut data = global.level.weather();
+        let old = (data.raining, data.thundering);
+        data.advance(random);
+        (old, (data.raining, data.thundering))
+    };
+    let (old_code, new_code) = (weather_code(old.0, old.1), weather_code(new.0, new.1));
+    if old_code == new_code {
+        return;
+    }
+    let mut ev = vanillite_game::hooks::Event {
+        cause: new_code,
+        extra: i64::from(old_code),
+        ..vanillite_game::hooks::Event::new(vanillite_abi::event::WEATHER_CHANGE)
+    };
+    crate::plugins::Hooks::of(&global.plugins, "minecraft:overworld").event(&mut ev);
+    if ev.cancelled {
+        let mut data = global.level.weather();
+        data.raining = old.0;
+        data.thundering = old.1;
+    }
 }
 
 #[cfg(test)]

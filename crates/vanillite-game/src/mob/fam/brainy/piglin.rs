@@ -863,8 +863,13 @@ pub fn update_activity(t: &mut Tick<'_, '_>) {
             cancel_admiring(t);
             drop_inventory(t);
         }
-        if let Some(z) = convert_to(t, Kind::ZombifiedPiglin, true, true)
-            && let Some(m) = t.ents.mob_mut(z)
+        if let Some(z) = convert_to(
+            t,
+            Kind::ZombifiedPiglin,
+            true,
+            true,
+            vanillite_abi::transform_reason::PIGLIN_ZOMBIFIED,
+        ) && let Some(m) = t.ents.mob_mut(z)
         {
             crate::effect::living::add_to_mob(
                 m,

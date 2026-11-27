@@ -143,6 +143,8 @@ pub struct ServerWorld {
     pearl_tickets: FxHashMap<ChunkPos, (u64, TicketId, TicketId)>,
     /// What the players' tick asked of portals.
     portal_requests: crate::survival::PortalRequests,
+    /// The chunk tickets plugins hold (not saved).
+    pub(crate) plugin_tickets: crate::plugins::PluginTickets,
 }
 
 impl fmt::Debug for ServerWorld {
@@ -254,6 +256,7 @@ impl ServerWorld {
             portal_tickets: Vec::new(),
             pearl_tickets: FxHashMap::default(),
             portal_requests: crate::survival::PortalRequests::default(),
+            plugin_tickets: crate::plugins::PluginTickets::default(),
         }
     }
 
@@ -281,6 +284,18 @@ impl ServerWorld {
     /// [`Level::set_block`]).
     pub fn level_mut(&mut self) -> &mut Level {
         &mut self.level
+    }
+
+    /// The level with the survival and mob systems, for plugin calls that run game code
+    /// between ticks (an explosion's damage).
+    pub(crate) fn level_systems(
+        &mut self,
+    ) -> (
+        &mut Level,
+        &mut crate::survival::WorldSurvival,
+        &mut crate::mobs::WorldMobs,
+    ) {
+        (&mut self.level, &mut self.survival, &mut self.mobs)
     }
 
     /// Keeps every player's view loaded and the chunks in its simulation distance ticking:
@@ -889,10 +904,14 @@ impl ServerWorld {
             .copied()
             .flatten();
         if advance_time && let Some(clock) = clock {
-            let moved = global
-                .level
-                .clocks()
-                .move_to_marker(clock, "minecraft:wake_up_from_sleep");
+            let moved = if global.plugins.wants(vanillite_abi::event::TIME_SKIP) {
+                self.time_skip(global, clock)
+            } else {
+                global
+                    .level
+                    .clocks()
+                    .move_to_marker(clock, "minecraft:wake_up_from_sleep")
+            };
             if moved == vanillite_game::survival::clock::MoveResult::Moved {
                 crate::survival::broadcast_all(
                     global,
@@ -908,6 +927,51 @@ impl ServerWorld {
             weather.thunder_time = 0;
             weather.thundering = false;
         }
+    }
+
+    /// `moveToTimeMarker(wake_up_from_sleep)` of the night skip as plugins allow it
+    /// (`TIME_SKIP`, Bukkit's `TimeSkipEvent`): cancelled, the time stays; handlers may change
+    /// the ticks skipped.
+    fn time_skip(
+        &mut self,
+        global: &Global,
+        clock: usize,
+    ) -> vanillite_game::survival::clock::MoveResult {
+        use vanillite_game::survival::clock::MoveResult;
+        /// The most ticks a plugin may skip at once (a thousand days).
+        const MAX_SKIP: i64 = 24_000_000;
+        let skip = {
+            let clocks = global.level.clocks();
+            let Some(c) = clocks.clocks.get(clock) else {
+                return MoveResult::NoTimeMarkerFound;
+            };
+            let Some(marker) = c.marker("minecraft:wake_up_from_sleep") else {
+                return MoveResult::NoTimeMarkerFound;
+            };
+            if marker.occurs_at(c.total_ticks) {
+                return MoveResult::NotMoved;
+            }
+            marker.resolve_time_to_move_to(c.total_ticks) - c.total_ticks
+        };
+        let mut ev = vanillite_game::hooks::Event {
+            value: skip,
+            ..vanillite_game::hooks::Event::new(vanillite_abi::event::TIME_SKIP)
+        };
+        let host = global.plugins.clone();
+        crate::plugins::Hooks::of(&host, &self.dimension).event_in(
+            Some(&mut crate::plugins::PluginWorld(self, global)),
+            &mut ev,
+        );
+        if ev.cancelled {
+            return MoveResult::NotMoved;
+        }
+        let mut clocks = global.level.clocks();
+        let Some(total) = clocks.clocks.get(clock).map(|c| c.total_ticks) else {
+            return MoveResult::NoTimeMarkerFound;
+        };
+        let skip = ev.value.clamp(0, MAX_SKIP);
+        clocks.set_total_ticks(clock, total.saturating_add(skip));
+        MoveResult::Moved
     }
 
     /// `applyEffectsFromBlocks` after the players' moves: pressure plates, tripwire and other
@@ -1028,6 +1092,11 @@ impl ServerWorld {
         log::debug!("Saving {} (flush: {flush})", self.dimension);
         self.players.save_all(&self.level);
         if !skip_chunks {
+            if let Some(hooks) = self.level.hooks_for(vanillite_abi::event::WORLD_SAVE) {
+                hooks.event(&mut vanillite_game::hooks::Event::new(
+                    vanillite_abi::event::WORLD_SAVE,
+                ));
+            }
             if let Some(border) = self.level.border.take_dirty() {
                 self.data.write(crate::border::SAVED_DATA, border.to_nbt());
             }

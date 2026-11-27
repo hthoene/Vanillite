@@ -16,7 +16,7 @@ use vanillite_protocol::types::{GameProfile, RawBytes, Uuid};
 use vanillite_protocol::{Error, State};
 
 use crate::link::{self, Rx, Tx};
-use crate::{Online, Shared};
+use crate::{CONTROL_QUEUE, Control, Online, Shared};
 
 /// Why a connection ends.
 #[derive(Debug)]
@@ -98,7 +98,7 @@ pub(crate) async fn handle(
     addr: SocketAddr,
     guard: ConnectionGuard,
 ) {
-    let (rx, tx) = link::split(socket, shared.config.compression_level);
+    let (rx, tx) = link::split(socket, shared.config().compression_level);
     run(shared, rx, tx, addr, guard, None).await;
 }
 
@@ -125,10 +125,10 @@ async fn run(
     mut guard: ConnectionGuard,
     vouched: Option<GameProfile>,
 ) {
-    let timeout = shared.config.limits.read_timeout;
+    let timeout = shared.config().limits.read_timeout;
     let mut state = State::Handshake;
     let r = pre_play(&shared, &mut rx, &mut tx, addr, &mut state, vouched).await;
-    let (profile, host, registered) = match r {
+    let (profile, host, registered, control) = match r {
         Ok(Some(v)) => v,
         Ok(None) => return,
         Err(end) => {
@@ -150,11 +150,26 @@ async fn run(
     };
     guard.joined();
     log::info!("{} ({}) connected from {addr}", profile.name, profile.id);
-    crate::session::run(shared, rx, tx, profile, addr.ip(), host, registered).await;
+    crate::session::run(
+        shared,
+        rx,
+        tx,
+        profile,
+        addr.ip(),
+        host,
+        registered,
+        control,
+    )
+    .await;
     drop(guard);
 }
 
-type Joined = (GameProfile, String, Registered);
+type Joined = (
+    GameProfile,
+    String,
+    Registered,
+    tokio::sync::mpsc::Receiver<Control>,
+);
 
 async fn pre_play(
     shared: &Arc<Shared>,
@@ -164,7 +179,8 @@ async fn pre_play(
     state: &mut State,
     vouched: Option<GameProfile>,
 ) -> Result<Option<Joined>, End> {
-    let limits = &shared.config.limits;
+    let config = shared.config();
+    let limits = &config.limits;
     let deadline = Instant::now()
         .checked_add(limits.login_timeout)
         .unwrap_or_else(Instant::now);
@@ -182,11 +198,7 @@ async fn pre_play(
         let json = shared.status.get();
         // Clients of an accepted older version see the proxy as compatible.
         let json = if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION
-            && shared
-                .config
-                .multiversion
-                .version(hs.protocol_version)
-                .is_some()
+            && config.multiversion.version(hs.protocol_version).is_some()
         {
             vanillite_multiversion::status_json(&json, hs.protocol_version)
         } else {
@@ -205,8 +217,7 @@ async fn pre_play(
     *state = State::Login;
     rx.set_state(State::Login);
     if hs.protocol_version != vanillite_protocol::PROTOCOL_VERSION
-        && let Some(adapter) = shared
-            .config
+        && let Some(adapter) = config
             .multiversion
             .adapter(hs.protocol_version, State::Login)
     {
@@ -226,7 +237,7 @@ async fn pre_play(
             vec![Component::text(vanillite_protocol::VERSION_ID)],
         ))));
     }
-    if hs.intent == Intent::Transfer {
+    if hs.intent == Intent::Transfer && !config.accepts_transfers {
         return Err(kick_key("multiplayer.disconnect.transfers_disabled"));
     }
     if !shared.login_allowed(addr.ip()) {
@@ -286,6 +297,7 @@ async fn pre_play(
         }
     };
 
+    let (control, orders) = tokio::sync::mpsc::channel(CONTROL_QUEUE);
     let registered = {
         let Ok(mut players) = shared.players.lock() else {
             return Err(End::Closed);
@@ -298,6 +310,8 @@ async fn pre_play(
             Online {
                 name: profile.name.clone(),
                 server: None,
+                address: addr,
+                control,
             },
         );
         shared.update_status(&players);
@@ -307,7 +321,7 @@ async fn pre_play(
         }
     };
 
-    let threshold = shared.config.compression_threshold;
+    let threshold = config.compression_threshold;
     if threshold >= 0 && !is_virtual {
         tx.send(&login::LoginCompression { threshold })?;
         tx.encoder.set_compression(threshold);
@@ -325,7 +339,7 @@ async fn pre_play(
     };
     *state = State::Configuration;
     rx.set_state(State::Configuration);
-    Ok(Some((profile, host, registered)))
+    Ok(Some((profile, host, registered, orders)))
 }
 
 async fn authenticate(

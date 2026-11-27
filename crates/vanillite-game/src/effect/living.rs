@@ -74,7 +74,25 @@ impl EffectHost for PlayerHost<'_, '_, '_> {
         {
             return false;
         }
-        player::hurt(self.entity, self.player, self.env, source, amount)
+        // The plugins' damage and death events see a causing or direct player (the UUIDs of other
+        // entities are not at hand here).
+        let attackers = match self.players {
+            Some(players) if player::wants_attackers(self.env.hooks) => {
+                let uuid_of = |id: Option<EntityId>| {
+                    id.and_then(|id| players.iter().find(|(_, p)| **p == id).map(|(u, _)| *u))
+                };
+                (uuid_of(source.cause), uuid_of(source.direct))
+            }
+            _ => (None, None),
+        };
+        player::hurt_by(
+            self.entity,
+            self.player,
+            self.env,
+            source,
+            amount,
+            attackers,
+        )
     }
     fn absorption(&self) -> f32 {
         self.player.survival.absorption
@@ -480,6 +498,28 @@ pub fn apply_mob_modifiers(m: &mut crate::mob::MobData, dirty: &[Attribute]) -> 
     let max_absorption = m.effects.attribute(Attribute::MAX_ABSORPTION, 0.0) as f32;
     m.absorption = m.absorption.min(max_absorption);
     base
+}
+
+/// `AttributeInstance.getBaseValue` of an attribute a mob keeps a value of (`None` for the
+/// others: their base is the type's default).
+pub fn mob_attribute_base(m: &crate::mob::MobData, a: Attribute) -> Option<f64> {
+    attr_field_ref(m.base_attrs.as_deref().unwrap_or(&m.attrs), a)
+}
+
+/// `AttributeInstance.setBaseValue` of an attribute a mob keeps a value of; the value with
+/// the modifiers follows with the mob's next effect sync (`onAttributeUpdated`, the update to
+/// the trackers). Returns `false` for an attribute the mob keeps no value of.
+pub fn set_mob_attribute_base(m: &mut crate::mob::MobData, a: Attribute, value: f64) -> bool {
+    let base = match m.base_attrs.as_deref_mut() {
+        Some(b) => b,
+        None => &mut m.attrs,
+    };
+    let Some(field) = attr_field(base, a) else {
+        return false;
+    };
+    *field = value;
+    m.effects.modifiers.touch(a);
+    true
 }
 
 /// A player as the target of effects added outside its tick and without the world's

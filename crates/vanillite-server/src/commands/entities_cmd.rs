@@ -407,22 +407,8 @@ fn ride_mount(
             vec![component(target.display()), component(current)],
         ));
     }
-    if vehicle.is_player() {
-        return Err(CommandError::new(
-            "commands.ride.mount.failure.cant_ride_players",
-            vec![],
-        ));
-    }
-    // `getSelfAndPassengers().anyMatch(e -> e == vehicle)`.
-    let mut stack = vec![t];
-    while let Some(e) = stack.pop() {
-        if e == v {
-            return Err(CommandError::new(
-                "commands.ride.mount.failure.loop",
-                vec![],
-            ));
-        }
-        stack.extend_from_slice(env.level.entities.riding.passengers_of(e));
+    if let Some(key) = mount_refusal(&env.level.entities, t, v) {
+        return Err(CommandError::new(key, vec![]));
     }
     if target.world != vehicle.world {
         return Err(CommandError::new(
@@ -431,11 +417,7 @@ fn ride_mount(
         ));
     }
     let dimension = dimension_of(env.world);
-    let mounted =
-        WorldSurvival::with_entities(env.level, env.global, dimension, |_, ents, e, _| {
-            vanillite_game::riding::start_riding(ents, e, t, v, true)
-        });
-    if !mounted {
+    if !mount(env.level, env.global, dimension, t, v) {
         return Err(CommandError::new(
             "commands.ride.mount.failure.generic",
             vec![component(target.display()), component(vehicle.display())],
@@ -450,6 +432,53 @@ fn ride_mount(
         true,
     );
     Ok(1)
+}
+
+/// Why `RideCommand.mount` refuses to put `target` on `vehicle` of the same world (the
+/// translation key): players carry nobody and no entity rides itself or its passengers.
+pub(crate) fn mount_refusal(
+    entities: &Entities,
+    target: EntityId,
+    vehicle: EntityId,
+) -> Option<&'static str> {
+    if entities.player(vehicle).is_some() {
+        return Some("commands.ride.mount.failure.cant_ride_players");
+    }
+    // `getSelfAndPassengers().anyMatch(e -> e == vehicle)`.
+    let mut stack = vec![target];
+    while let Some(e) = stack.pop() {
+        if e == vehicle {
+            return Some("commands.ride.mount.failure.loop");
+        }
+        stack.extend_from_slice(entities.riding.passengers_of(e));
+    }
+    None
+}
+
+/// `startRiding(vehicle, true)` of `RideCommand.mount` (it leaves an old vehicle first);
+/// returns whether it got on.
+pub(crate) fn mount(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    dimension: &str,
+    target: EntityId,
+    vehicle: EntityId,
+) -> bool {
+    WorldSurvival::with_entities(level, global, dimension, |_, ents, e, _| {
+        vanillite_game::riding::start_riding(ents, e, target, vehicle, true)
+    })
+}
+
+/// `stopRiding` of `RideCommand.dismount`.
+pub(crate) fn dismount(
+    level: &mut vanillite_game::level::Level,
+    global: &Global,
+    dimension: &str,
+    target: EntityId,
+) {
+    WorldSurvival::with_entities(level, global, dimension, |_, ents, e, _| {
+        vanillite_game::riding::stop_riding(ents, e, target);
+    });
 }
 
 /// `hurtServer` of a player or a mob; non-living entities take no damage here.
@@ -546,9 +575,7 @@ fn ride_dismount(
     };
     let vehicle_name = display_of(env, vehicle).unwrap_or_else(|| Component::text(""));
     let dimension = dimension_of(env.world);
-    WorldSurvival::with_entities(env.level, env.global, dimension, |_, ents, e, _| {
-        vanillite_game::riding::stop_riding(ents, e, t);
-    });
+    dismount(env.level, env.global, dimension, t);
     source.send_success(
         env.global,
         Component::translatable(

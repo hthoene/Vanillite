@@ -1183,9 +1183,12 @@ pub fn tick(t: &mut Tick<'_, '_>, g: &mut Goal) {
             if t.ents.player(passenger).is_some() {
                 let temper = st(t.mob_ref()).temper;
                 let max = max_temper(t.mob_ref().kind);
-                if max > 0 && t.mob().random.next_int_bounded(max) < temper {
+                let owner = t.ents.store.get(passenger).map(|e| e.uuid());
+                if max > 0
+                    && t.mob().random.next_int_bounded(max) < temper
+                    && owner.is_none_or(|o| crate::mob::tame::tame_event(t.ents, t.id, o))
+                {
                     // `tameWithName`.
-                    let owner = t.ents.store.get(passenger).map(|e| e.uuid());
                     if let Some(o) = owner {
                         let m = t.mob();
                         m.tame = true;
@@ -1264,6 +1267,8 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
         let uuid = crate::mob::new_uuid();
         let id = crate::mob::spawn(t.ents, &network_ids, uuid, hp, Rotation::default(), sk);
         t.ents.riding.add(id, horse, false);
+        t.ents
+            .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0);
     };
     let me = t.id;
     spawn_skeleton(t, me);
@@ -1281,6 +1286,12 @@ fn skeleton_trap(t: &mut Tick<'_, '_>) {
         let dz = t.mob().random.triangle(0.0, 1.1485);
         let uuid = crate::mob::new_uuid();
         let id = crate::mob::spawn(t.ents, &network_ids, uuid, pos, Rotation::default(), horse);
+        if !t
+            .ents
+            .spawned(id, vanillite_abi::spawn_reason::TRIGGERED, 0)
+        {
+            continue;
+        }
         if let Some(mut e) = t.ents.store.get_mut(id) {
             e.set_velocity(Vec3::new(dx, 0.0, dz));
         }

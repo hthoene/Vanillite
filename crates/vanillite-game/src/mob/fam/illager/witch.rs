@@ -236,7 +236,7 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
     new.rot = rot;
     let owner_uuid = t.core().uuid();
     let owner = t.id;
-    t.ents.spawn_special(
+    let potion = t.ents.spawn_special(
         new,
         crate::mob::boss::special::SpecialData::ThrownPotion(Box::new(
             crate::effect::thrown::ThrownPotion {
@@ -249,6 +249,7 @@ pub fn perform_ranged_attack(t: &mut Tick<'_, '_>, target: EntityId) {
             },
         )),
     );
+    t.ents.launched(potion, Some(owner));
     if !t.mob_ref().silent {
         let pitch = 0.8 + t.mob().random.next_float() * 0.4;
         sound(t, "minecraft:entity.witch.throw", 1.0, pitch);

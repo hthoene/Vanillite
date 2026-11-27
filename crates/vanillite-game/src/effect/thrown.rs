@@ -120,6 +120,9 @@ pub fn throw(
             has_been_shot: false,
         })),
     );
+    if !ents.launched(id, Some(thrower)) {
+        return None;
+    }
     if !infinite {
         stack.shrink(1);
     }
@@ -227,6 +230,13 @@ pub fn tick(t: &mut SpecialTick<'_, '_>) {
         }
     }
     let hit_entity = best.map(|(e, _, at)| (e, at));
+    // Bukkit's `ProjectileHitEvent`: a cancelled hit is ignored, the potion flies on.
+    let hit_event = |what| crate::mob::missile::hit_event(t.level, t.ents, id, owner, what);
+    let hit_entity =
+        hit_entity.filter(|&(target, _)| hit_event(crate::mob::missile::HitWhat::Entity(target)));
+    let block_hit = block_hit.filter(|&(block, at)| {
+        hit_entity.is_some() || hit_event(crate::mob::missile::HitWhat::Block(block, at))
+    });
     let hit = hit_entity.map(|(_, at)| at).or(block_hit.map(|(_, at)| at));
     let new_pos = hit.unwrap_or(to);
     // `updateRotation`.
