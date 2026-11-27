@@ -127,6 +127,8 @@ pub struct ServerWorld {
     kept_tickets: Vec<vanillite_nbt::Tag>,
     /// The portal tickets changed since the last save.
     tickets_dirty: bool,
+    /// [`ServerWorld::release_memory`] ran and no player has been here since.
+    memory_released: bool,
     /// Players arriving from other worlds or respawning, waiting for their destination.
     arrivals: Vec<travel::Waiting>,
     /// Entities besides players arriving through portals, waiting for their destination.
@@ -242,6 +244,7 @@ impl ServerWorld {
             data,
             kept_tickets: Vec::new(),
             tickets_dirty: false,
+            memory_released: false,
             arrivals: Vec::new(),
             entity_arrivals: Vec::new(),
             gateway_waits: Vec::new(),
@@ -563,6 +566,11 @@ impl ServerWorld {
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
         self.place_ready_spawns(ctx.global);
+        if self.memory_released && self.level.entities.players.iter().next().is_some() {
+            // Players are back: the generator is built ahead, off the tick.
+            self.memory_released = false;
+            self.level.chunks.prepare_generator();
+        }
         let plugins = ctx.global.plugins.clone();
         let positions = plugins
             .wants(vanillite_abi::event::PLAYERS_MOVED)
@@ -854,7 +862,9 @@ impl ServerWorld {
         let origin = level
             .generation
             .as_ref()
-            .map_or(vanillite_base::ChunkPos::new(0, 0), |g| g.terrain.origin());
+            .map_or(vanillite_base::ChunkPos::new(0, 0), |g| {
+                g.terrain().origin()
+            });
         let min_y = level.min_y();
         let mut height =
             flat_height.map_or(64, |layers| min_y + layers.min(level.max_y() - min_y + 1));
@@ -1068,6 +1078,17 @@ impl ServerWorld {
         self.tracker.update(&input, &mut self.entity_updates);
         self.level.entities.store.clear_removed();
         self.level.entities.store.clear_sync_flags();
+    }
+
+    /// Frees what this world can build again (`performance.memory.release-when-empty`).
+    pub(crate) fn release_memory(&mut self) {
+        self.level.chunks.release_memory();
+        self.packets.release_memory();
+        let entities = &mut self.level.entities;
+        entities.mobs.shrink_to_fit();
+        entities.items.shrink_to_fit();
+        entities.players.shrink_to_fit();
+        self.memory_released = true;
     }
 
     /// Runs `then` once the running save round of this world is committed.

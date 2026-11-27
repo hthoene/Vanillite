@@ -114,6 +114,12 @@ These apply to the whole server.
 | `cpu` | setting | yes | `0.0` | `0.0` | `0.0` | `0.0` | `0.0` | CPU cores the server may use. 0 = detect: the cgroup CPU quota (`cpu.max`, Docker `--cpus`, Pterodactyl's CPU limit) and the CPU affinity. Number from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__BUDGET__CPU`. |
 | `memory` | setting | yes | `0` | `0` | `0` | `0` | `0` | Memory in MiB the server should stay far below; caches are sized from it. 0 = detect: the cgroup memory limit (`memory.max`), none without a container. Integer from 0 to 16777216. Environment: `VANILLITE_PERFORMANCE__BUDGET__MEMORY`. |
 
+#### `[performance.memory]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `release-when-empty` | setting |  | `60` | `60` | `60` | `60` | `60` | Seconds without players after which the server frees what it can build again: the tables of the world generators, structure templates and caches. They come back in the background when a player joins (new chunks then start a moment later, chunks from disk do not wait). In-game behaviour does not change; disabled keeps everything in memory. Integer from 1 to 86400. Also accepts `"disabled"`. Environment: `VANILLITE_PERFORMANCE__MEMORY__RELEASE_WHEN_EMPTY`. |
+
 #### `[performance.autosave]`
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |

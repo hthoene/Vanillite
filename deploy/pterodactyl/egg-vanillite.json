@@ -662,6 +662,16 @@
       "field_type": "text"
     },
     {
+      "name": "Performance: Memory › Release When Empty",
+      "description": "Seconds without players after which the server frees what it can build again: the tables of the world generators, structure templates and caches. They come back in the background when a player joins (new chunks then start a moment later, chunks from disk do not wait). In-game behaviour does not change; disabled keeps everything in memory. Range: 1 to 86400. Also accepts disabled. Empty: the profile's value (vanilla profile: 60). vanillite.toml: performance.memory.release-when-empty.",
+      "env_variable": "VANILLITE_PERFORMANCE__MEMORY__RELEASE_WHEN_EMPTY",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "nullable|string|regex:/^(?!disabled[0-9])(disabled)?[0-9]*$/",
+      "field_type": "text"
+    },
+    {
       "name": "Performance: Autosave › Interval",
       "description": "Ticks between autosaves. Vanilla saves every 5 minutes of game time. Range: 20 to 1728000. Also accepts vanilla. Empty: the profile's value (vanilla profile: vanilla). vanillite.toml: performance.autosave.interval.",
       "env_variable": "VANILLITE_PERFORMANCE__AUTOSAVE__INTERVAL",

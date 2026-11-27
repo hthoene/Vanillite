@@ -229,6 +229,17 @@ impl<'a> FeatureParser<'a> {
         }
     }
 
+    /// Reads templates through `templates` (the cache of the generator) instead of an own
+    /// cache.
+    pub fn with_templates(
+        mut self,
+        templates: &std::sync::Arc<crate::template::StructureTemplateManager>,
+    ) -> Self {
+        self.templates =
+            crate::template::TemplateLoader::with_manager(std::sync::Arc::clone(templates));
+        self
+    }
+
     /// The data packs.
     pub fn packs(&self) -> &'a LoadedPacks {
         self.packs
@@ -244,11 +255,8 @@ impl<'a> FeatureParser<'a> {
         self.random_state
     }
 
-    /// `StructureTemplateManager.getOrCreate(id)`: a structure template, loaded once.
-    pub fn structure_template(
-        &self,
-        id: &str,
-    ) -> Result<std::sync::Arc<crate::template::StructureTemplate>, Error> {
+    /// The structure template `id`, read when the feature places it.
+    pub fn structure_template(&self, id: &str) -> crate::template::TemplateRef {
         self.templates.template(id)
     }
 
@@ -624,17 +632,13 @@ impl FeatureSet {
         random_state: &RandomState,
         possible_biomes: &[BiomeId],
         context: WorldGenerationContext,
+        templates: &std::sync::Arc<crate::template::StructureTemplateManager>,
     ) -> Result<Self, Error> {
         crate::behaviour::init(packs);
-        let mut parser = FeatureParser::new(packs, biomes, random_state);
+        let mut parser = FeatureParser::new(packs, biomes, random_state).with_templates(templates);
         let mut biome_steps = vec![Vec::new(); biomes.all().len()];
         for biome in biomes.all() {
-            let steps = biome
-                .json
-                .get("features")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
+            let steps = &biome.features;
             let mut parsed = Vec::with_capacity(steps.len());
             for step in steps {
                 parsed.push(

@@ -167,6 +167,14 @@ pub struct LevelTicks {
 }
 
 impl LevelTicks {
+    /// Gives back the room of ticks that ran and of containers that left.
+    pub fn shrink_to_fit(&mut self) {
+        self.containers.shrink_to_fit();
+        self.next_tick.shrink_to_fit();
+        self.to_run.shrink_to_fit();
+        self.to_run_set.shrink_to_fit();
+    }
+
     /// Adds the container of a chunk that became live, with the ticks it was stored with
     /// (`LevelChunkTicks.unpack`: stored ticks get sub-tick values below every new tick, in
     /// stored order). `sub_tick` is the level's counter.

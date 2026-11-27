@@ -79,6 +79,10 @@ impl ChunkGenerator for Populating {
     fn prepare(&self) {
         self.inner.prepare();
     }
+
+    fn release_memory(&self) {
+        self.inner.release_memory();
+    }
 }
 
 impl Populating {

@@ -25,6 +25,12 @@ impl<T> Dense<T> {
         Self::default()
     }
 
+    /// Gives back the room of removed rows.
+    pub fn shrink_to_fit(&mut self) {
+        self.ids.shrink_to_fit();
+        self.values.shrink_to_fit();
+    }
+
     /// Number of rows.
     #[inline]
     pub fn len(&self) -> usize {

@@ -387,11 +387,19 @@ pub struct LevelOutput {
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
 #[derive(Clone)]
 pub struct Generation {
-    pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// Released while the server is empty; [`Generation::terrain`] builds it again.
+    pub shared: vanillite_worldgen::SharedTerrain,
     /// The dimension it generates.
     pub dimension: String,
     /// `WorldOptions.generateStructures`.
     pub structures: bool,
+}
+
+impl Generation {
+    /// The generator.
+    pub fn terrain(&self) -> Arc<vanillite_worldgen::generator::TerrainGenerator> {
+        self.shared.get()
+    }
 }
 
 impl std::fmt::Debug for Generation {

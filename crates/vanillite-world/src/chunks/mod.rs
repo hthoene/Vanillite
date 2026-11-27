@@ -2332,6 +2332,36 @@ impl Chunks {
         self.slots.store.commit(round, self.inbox_tx.clone());
     }
 
+    /// Frees what can be built again: the generator's tables ([`ChunkGenerator::release_memory`])
+    /// and the spare room of the chunk tables. For a server without players; the next
+    /// generation step builds the generator again ([`Chunks::prepare_generator`] does it
+    /// ahead).
+    pub fn release_memory(&mut self) {
+        self.slots.generator.release_memory();
+        self.levels.shrink_to_fit();
+        self.generation.shrink_to_fit();
+        self.block_ticks.shrink_to_fit();
+        self.fluid_ticks.shrink_to_fit();
+        self.holders.shrink_to_fit();
+        self.tickets.shrink_to_fit();
+        self.generation_tickets.shrink_to_fit();
+        self.waiters.shrink_to_fit();
+        self.loads.shrink_to_fit();
+        self.changed.shrink_to_fit();
+        self.unload_candidates.shrink_to_fit();
+        self.light_changes.shrink_to_fit();
+        self.block_changes.shrink_to_fit();
+        self.level_changes.shrink_to_fit();
+    }
+
+    /// Runs [`ChunkGenerator::prepare`] as a background job.
+    pub fn prepare_generator(&self) {
+        let generator = Arc::clone(&self.slots.generator);
+        self.slots
+            .executor
+            .spawn(0, Box::new(move || generator.prepare()));
+    }
+
     /// Runs `then` once the running save round is committed, at once if none runs.
     pub fn when_saved(&mut self, then: SavedCallback) {
         match &mut self.round {

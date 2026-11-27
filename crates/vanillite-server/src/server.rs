@@ -50,6 +50,9 @@ pub const VANILLA_DIMENSIONS: [&str; 3] = [
 const OVERLOADED_THRESHOLD: u64 = NANOS_PER_SECOND;
 /// Ticks between the hand-backs of freed memory to the system ([`Budget::release_memory`]).
 const MEMORY_RELEASE_TICKS: u64 = 600;
+/// Ticks after an empty server released its memory until what that freed (also in jobs that
+/// were still running) is handed back to the system.
+const EMPTY_RELEASE_SETTLE_TICKS: u32 = 100;
 /// Minimum time between two "Can't keep up!" warnings (plus 100 ticks).
 const OVERLOADED_WARNING_INTERVAL: u64 = 10 * NANOS_PER_SECOND;
 /// Vanilla's autosave period in seconds of game time.
@@ -467,17 +470,30 @@ impl ServerBuilder {
         let terrains = crate::world_setup::GeneratorsByDimension::default();
         let extra_gens = crate::world_setup::ExtraWorldGens::default();
         log::info!("World format: {}", world_format.name());
+        // `StructureTemplateManager`: one cache for world generation, structure blocks and
+        // commands, like Vanilla's.
+        let templates = Arc::new(
+            vanillite_worldgen::template::StructureTemplateManager::for_world(
+                packs
+                    .as_deref()
+                    .map(|p| p.roots().to_vec())
+                    .unwrap_or_default(),
+                level_dir.join("generated"),
+            ),
+        );
         let built_in_generators = {
             let packs = packs.clone();
             let world_gen = prepared.world_gen;
             let created = Arc::clone(&terrains);
             let extra = Arc::clone(&extra_gens);
+            let templates = Arc::clone(&templates);
             move || -> Box<dyn ChunkGeneratorProvider> {
                 Box::new(crate::world_setup::BuiltInGenerators {
                     packs,
                     world_gen,
                     created,
                     extra: Arc::clone(&extra),
+                    templates: Arc::clone(&templates),
                 })
             }
         };
@@ -560,15 +576,7 @@ impl ServerBuilder {
                 Arc::clone(&random_sequences),
             ),
             packs: data_packs.with_loaded(packs.clone()),
-            templates: Arc::new(
-                vanillite_worldgen::template::StructureTemplateManager::for_world(
-                    packs
-                        .as_deref()
-                        .map(|p| p.roots().to_vec())
-                        .unwrap_or_default(),
-                    level_dir.join("generated"),
-                ),
-            ),
+            templates,
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
@@ -687,6 +695,7 @@ impl ServerBuilder {
             tick_count: 0,
             next_tick: 0,
             empty_ticks: 0,
+            memory_settle_ticks: 0,
             ticks_until_autosave: 0,
             average_tick_nanos: 0.0,
             tick_log: open_tick_log(),
@@ -966,6 +975,9 @@ pub struct Server {
     tick_count: u64,
     next_tick: u64,
     empty_ticks: u64,
+    /// Ticks until the memory an empty server released is handed back to the system; 0 = no
+    /// hand-back is due.
+    memory_settle_ticks: u32,
     ticks_until_autosave: i64,
     average_tick_nanos: f64,
     /// Load test tick log (`VANILLITE_TICK_LOG`): one line with the duration in nanoseconds per
@@ -1133,14 +1145,15 @@ impl Server {
         self.heartbeat.enter(&clock);
         self.watch.progress.store(started, Ordering::Relaxed);
 
+        if self.global.players.count() == 0 && !self.global.tick_rate().is_sprinting() {
+            self.empty_ticks += 1;
+        } else {
+            self.empty_ticks = 0;
+        }
+        self.release_memory_when_empty();
         let pause_seconds =
             u64::try_from(self.config.properties.pause_when_empty_seconds).unwrap_or(0);
         if pause_seconds > 0 {
-            if self.global.players.count() == 0 && !self.global.tick_rate().is_sprinting() {
-                self.empty_ticks += 1;
-            } else {
-                self.empty_ticks = 0;
-            }
             let threshold = pause_seconds * 20;
             if self.empty_ticks >= threshold {
                 if self.empty_ticks == threshold {
@@ -1188,6 +1201,36 @@ impl Server {
                 .spawn_background(u32::MAX, move || budget.release_memory());
         }
         self.watch.progress.store(clock.now(), Ordering::Relaxed);
+    }
+
+    /// `performance.memory.release-when-empty`: after that time without players (and again
+    /// every such interval while the server stays empty) the worlds free what they can build
+    /// again, and a little later the allocator hands the freed memory back to the system.
+    fn release_memory_when_empty(&mut self) {
+        if self.empty_ticks == 0 {
+            self.memory_settle_ticks = 0;
+            return;
+        }
+        if self.memory_settle_ticks > 0 {
+            self.memory_settle_ticks -= 1;
+            if self.memory_settle_ticks == 0 {
+                // On this thread: nobody is online to notice, and the workers stay untouched.
+                self.budget.release_idle_memory();
+            }
+        }
+        let Some(seconds) = self.config.server.memory.release_when_empty.get() else {
+            return;
+        };
+        if !self.empty_ticks.is_multiple_of(u64::from(seconds) * 20) {
+            return;
+        }
+        log::debug!("Server empty: releasing memory");
+        self.global.templates.trim();
+        self.compute.release_memory();
+        for id in self.loaded_worlds() {
+            self.run_in_world(id, Box::new(ServerWorld::release_memory));
+        }
+        self.memory_settle_ticks = EMPTY_RELEASE_SETTLE_TICKS;
     }
 
     /// G1: console commands and global tasks, with `&mut` to everything because no world is
@@ -1649,6 +1692,19 @@ impl Server {
         self.save_everything(false, false, None);
     }
 
+    /// The ids of the loaded worlds.
+    fn loaded_worlds(&self) -> Vec<WorldId> {
+        match &self.worlds {
+            Worlds::Sequential(worlds) => worlds.iter().flatten().map(ServerWorld::id).collect(),
+            Worlds::Parallel(threads) => threads
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.is_some())
+                .filter_map(|(i, _)| u16::try_from(i).ok().map(WorldId))
+                .collect(),
+        }
+    }
+
     /// Vanilla's `saveEverything`: the players, `level.dat`, the saved data and the chunks of
     /// every world; after `/save-off` the chunks only when `force`d. Each world saves between
     /// its ticks; files are written in the background. `then` runs once every world has saved
@@ -1657,15 +1713,7 @@ impl Server {
         let skip_chunks = !force && !self.global.level.auto_save.load(Ordering::Relaxed);
         self.global.systems.save(&self.global.level.data);
         self.global.level.save();
-        let loaded: Vec<WorldId> = match &self.worlds {
-            Worlds::Sequential(worlds) => worlds.iter().flatten().map(ServerWorld::id).collect(),
-            Worlds::Parallel(threads) => threads
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.is_some())
-                .filter_map(|(i, _)| u16::try_from(i).ok().map(WorldId))
-                .collect(),
-        };
+        let loaded = self.loaded_worlds();
         let done = Arc::new(SaveDone {
             remaining: AtomicUsize::new(loaded.len()),
             writer: flush.then(|| self.global.level.writer().clone()),

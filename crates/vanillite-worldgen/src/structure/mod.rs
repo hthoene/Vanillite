@@ -118,6 +118,7 @@ use crate::Error;
 use crate::biome::BiomeRegistry;
 use crate::blocks::{BlockSet, qualify};
 use crate::feature::FeatureSet;
+use crate::template::TemplateRef;
 use crate::template::{ProcessorList, StructureTemplate, TemplateLoader};
 
 pub use beardifier::Beardifier;
@@ -297,8 +298,9 @@ impl StructureRegistry {
         biomes: &BiomeRegistry,
         features: &FeatureSet,
         possible_biomes: &[BiomeId],
+        templates: &Arc<crate::template::StructureTemplateManager>,
     ) -> Result<Self, Error> {
-        let mut parser = StructureParser::new(packs, biomes, features);
+        let mut parser = StructureParser::new(packs, biomes, features).with_templates(templates);
         let mut structures = Vec::new();
         if let Some(registry) = packs.registry(STRUCTURE_REGISTRY) {
             for (index, entry) in registry.entries().iter().enumerate() {
@@ -435,6 +437,16 @@ impl<'a> StructureParser<'a> {
         }
     }
 
+    /// Reads templates through `templates` (the cache of the generator) instead of an own
+    /// cache.
+    pub fn with_templates(
+        mut self,
+        templates: &Arc<crate::template::StructureTemplateManager>,
+    ) -> Self {
+        self.templates = TemplateLoader::with_manager(Arc::clone(templates));
+        self
+    }
+
     /// The data packs.
     pub fn packs(&self) -> &'a LoadedPacks {
         self.packs
@@ -450,8 +462,8 @@ impl<'a> StructureParser<'a> {
         self.features
     }
 
-    /// `StructureTemplateManager.getOrCreate(id)`: a template, loaded once.
-    pub fn template(&self, id: &str) -> Result<Arc<StructureTemplate>, Error> {
+    /// The template `id`, read when a piece uses it.
+    pub fn template(&self, id: &str) -> TemplateRef {
         self.templates.template(id)
     }
 

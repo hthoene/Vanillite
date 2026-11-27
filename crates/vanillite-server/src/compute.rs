@@ -39,6 +39,10 @@ pub trait Scheduler: Send + Sync + 'static {
     /// Starts a long-running named thread (world tick threads, the watchdog).
     fn spawn_thread(&self, name: String, body: Job) -> io::Result<JoinHandle<()>>;
 
+    /// Frees what the worker threads keep between jobs (thread-local scratch buffers and
+    /// compression contexts, used stack pages). Queued and running jobs are not affected.
+    fn release_memory(&self) {}
+
     /// Stops the workers after all queued jobs have run. Owners cancel jobs they no longer need
     /// before shutdown (the pool cannot know which ones matter).
     fn shutdown(&self);
@@ -72,6 +76,11 @@ impl Compute {
     /// The scheduler behind this handle.
     pub fn scheduler(&self) -> &dyn Scheduler {
         &*self.scheduler
+    }
+
+    /// See [`Scheduler::release_memory`].
+    pub fn release_memory(&self) {
+        self.scheduler.release_memory();
     }
 
     /// Queues a background job; see [`Scheduler::spawn_background`].
@@ -256,6 +265,11 @@ struct Queues {
     background: BinaryHeap<BackgroundJob>,
     next_seq: u64,
     stopping: bool,
+    /// Workers started before this generation end after their job
+    /// ([`Scheduler::release_memory`]).
+    generation: u64,
+    /// Jobs taken by workers of the current generation.
+    jobs_taken: u64,
 }
 
 struct BackgroundJob {
@@ -320,16 +334,7 @@ impl ComputePool {
         }
         let mut handles = Vec::with_capacity(count);
         for index in 0..count {
-            let shared = Arc::clone(&shared);
-            let handle = thread::Builder::new()
-                .name(format!("Compute #{index}"))
-                .spawn(move || {
-                    if let Some(budget) = &shared.budget {
-                        budget.worker_started();
-                    }
-                    worker(&shared)
-                })?;
-            handles.push(handle);
+            handles.push(spawn_worker(&shared, index, 0)?);
         }
         Ok(ComputePool {
             shared,
@@ -339,9 +344,26 @@ impl ComputePool {
     }
 }
 
-fn worker(shared: &Shared) {
+/// Starts worker `index` of `generation`.
+fn spawn_worker(shared: &Arc<Shared>, index: usize, generation: u64) -> io::Result<JoinHandle<()>> {
+    let shared = Arc::clone(shared);
+    thread::Builder::new()
+        .name(format!("Compute #{index}"))
+        .spawn(move || {
+            if let Some(budget) = &shared.budget {
+                budget.worker_started();
+            }
+            worker(&shared, generation)
+        })
+}
+
+fn worker(shared: &Shared, generation: u64) {
     let mut queues = shared.lock();
     loop {
+        if queues.generation != generation {
+            // Replaced by a fresh thread: ending this one frees what it kept.
+            return;
+        }
         let job = match queues.urgent.pop_front() {
             Some(job) => job,
             None if !queues.background.is_empty()
@@ -366,6 +388,7 @@ fn worker(shared: &Shared) {
                 }
             },
         };
+        queues.jobs_taken += 1;
         drop(queues);
         run_job(job);
         queues = shared.lock();
@@ -411,6 +434,33 @@ impl Scheduler for ComputePool {
 
     fn spawn_thread(&self, name: String, body: Job) -> io::Result<JoinHandle<()>> {
         thread::Builder::new().name(name).spawn(body)
+    }
+
+    fn release_memory(&self) {
+        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut queues = self.shared.lock();
+        if queues.jobs_taken == 0 || queues.stopping {
+            // Fresh threads keep nothing.
+            return;
+        }
+        // Fresh workers first (they wait for the queue lock held here); the old ones are
+        // only retired once all of them exist, and end after the job they run.
+        let generation = queues.generation + 1;
+        let fresh: io::Result<Vec<_>> = (0..self.count)
+            .map(|index| spawn_worker(&self.shared, index, generation))
+            .collect();
+        match fresh {
+            Ok(fresh) => {
+                queues.generation = generation;
+                queues.jobs_taken = 0;
+                workers.retain(|worker| !worker.is_finished());
+                workers.extend(fresh);
+            }
+            // Those that did start end at once: their generation never begins.
+            Err(e) => log::warn!("Cannot replace the compute workers: {e}"),
+        }
+        drop(queues);
+        self.shared.available.notify_all();
     }
 
     fn shutdown(&self) {
