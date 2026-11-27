@@ -602,7 +602,7 @@ fn ignites_tnt(ents: &Entities, env: &Env<'_>, source: &DamageSource) -> bool {
     if let Some(direct) = source.direct
         && let Some(arrow) = ents.arrow(direct)
     {
-        return arrow.fire;
+        return arrow.fire > 0;
     }
     let tags = env.types.get(source.kind).tags;
     tags & (tag::IS_FIRE | tag::IS_EXPLOSION) != 0
@@ -628,7 +628,7 @@ pub fn hurt(
     if kind == MinecartKind::Tnt
         && let Some(direct) = source.direct
         && let Some(arrow) = ents.arrow(direct)
-        && arrow.fire
+        && arrow.fire > 0
     {
         let speed = ents
             .store

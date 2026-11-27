@@ -981,6 +981,7 @@ impl GameWorld {
         self.with_env(|level, ents, env, cx| {
             vanillite_game::block::falling::apply_falling_hurts(level, ents, env, cx, falling);
             for hurt in hurts {
+                hurt.aim(ents);
                 let mut source = match (hurt.source, hurt.indirect) {
                     _ if hurt.bad_respawn_point => DamageSource::of(env.types.bad_respawn_point),
                     (Some(direct), Some(cause)) => {

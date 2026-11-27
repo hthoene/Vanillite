@@ -1,0 +1,94 @@
+{
+  "description": "A thrown egg and a thrown bottle o' enchanting hit target blocks: their onHit runs Projectile.onHitBlock, so the target blocks give a redstone signal (TargetBlock.onProjectileHit).",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        12
+      ],
+      "to": [
+        11,
+        -55,
+        12
+      ],
+      "block": "minecraft:target"
+    },
+    {
+      "op": "fill",
+      "from": [
+        5,
+        -60,
+        3
+      ],
+      "to": [
+        11,
+        -54,
+        3
+      ],
+      "block": "minecraft:target"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        9.0
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        6.5
+      ],
+      "rot": [
+        180,
+        0
+      ],
+      "seed": 7
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "steve",
+      "item": "minecraft:egg"
+    },
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:experience_bottle"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

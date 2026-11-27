@@ -715,6 +715,10 @@ pub(crate) fn summon_for(
         if entities.store.get(id).is_none_or(|e| e.uuid() != uuid) {
             return Err(failed());
         }
+        // The orb's own random: the seed its constructor took.
+        if let (Some(seed), Some(orb)) = (fresh_seed, entities.experience_orb_mut(id)) {
+            orb.random_state = vanillite_base::random::LegacyRandom::new(seed).state();
+        }
         if !entities.spawned(id, reason, 0) {
             return Err(failed());
         }

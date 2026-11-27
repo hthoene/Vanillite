@@ -262,6 +262,33 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     if let Some(d) = level.entities.primed_tnt_mut(id) {
         d.fuse = fuse;
     }
+    if fuse > 0 {
+        // `updateFluidInteraction`: flowing water and lava push primed TNT (`tick` never runs
+        // `baseTick`, so `firstTick` stays and it never splashes).
+        let aabb = level.entities.store.get(id).map_or(aabb, |e| e.aabb());
+        let eye = Vec3::new(new_pos.x, new_pos.y + 0.15, new_pos.z);
+        let (contact, currents) = crate::mob::living::fluid_currents(
+            level,
+            crate::survival::blocks::fluid_facts(),
+            aabb,
+            eye,
+        );
+        if contact.in_water()
+            && let Some(pushed) = currents.water.push(velocity, 0.014)
+        {
+            velocity = pushed;
+        }
+        if contact.in_lava() {
+            let scale = if level.settings.fast_lava {
+                0.007
+            } else {
+                0.002_333_333_333_333_333_5
+            };
+            if let Some(pushed) = currents.lava.push(velocity, scale) {
+                velocity = pushed;
+            }
+        }
+    }
     if let Some(mut entity) = level.entities.store.get_mut(id) {
         entity.set_velocity(velocity);
         // `setFuse` changes synched data every tick.

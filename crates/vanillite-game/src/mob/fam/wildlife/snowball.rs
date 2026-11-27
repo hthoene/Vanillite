@@ -405,6 +405,10 @@ fn tick_egg_or_bottle(t: &mut MissileTick<'_, '_>) {
             let source = thrown_source(t, owner);
             crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 0.0);
         }
+        // `Projectile.onHitBlock`: target blocks, bells, chorus flowers, pots.
+        if let Some(block) = block {
+            crate::mob::missile::hit_block(t.level, t.cx, t.id, block, hit_at);
+        }
         crate::mob::missile::land_event(t.env.out, t.level, t.id, block, hit_at);
         // `onHit`: one chick in 8, four in 256.
         if random.next_int_bounded(8) == 0 {
@@ -423,6 +427,9 @@ fn tick_egg_or_bottle(t: &mut MissileTick<'_, '_>) {
         }
         break_event(t);
     } else {
+        if let Some(block) = block {
+            crate::mob::missile::hit_block(t.level, t.cx, t.id, block, hit_at);
+        }
         crate::mob::missile::land_event(t.env.out, t.level, t.id, block, hit_at);
         // `ThrownExperienceBottle.onHit`: the splash particles and sound, 3 to 11 experience.
         let block = vanillite_base::BlockPos::containing(at.x, at.y, at.z);

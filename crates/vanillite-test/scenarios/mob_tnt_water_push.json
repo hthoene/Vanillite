@@ -1,0 +1,102 @@
+{
+  "description": "Primed TNT in flowing water is pushed by the current (PrimedTnt.tick \u2192 updateFluidInteraction), as TNT cannons and water transport rely on.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 50,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        2,
+        -60,
+        8
+      ],
+      "block": "minecraft:water"
+    },
+    {
+      "op": "set",
+      "pos": [
+        3,
+        -60,
+        8
+      ],
+      "block": "minecraft:water[level=1]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        4,
+        -60,
+        8
+      ],
+      "block": "minecraft:water[level=2]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        5,
+        -60,
+        8
+      ],
+      "block": "minecraft:water[level=3]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        6,
+        -60,
+        8
+      ],
+      "block": "minecraft:water[level=4]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        7,
+        -60,
+        8
+      ],
+      "block": "minecraft:water[level=5]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        8
+      ],
+      "block": "minecraft:water[level=6]"
+    },
+    {
+      "op": "set",
+      "pos": [
+        9,
+        -60,
+        8
+      ],
+      "block": "minecraft:water[level=7]"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:tnt 3.5 -60.0 8.5 {fuse:80}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

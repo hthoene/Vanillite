@@ -373,7 +373,7 @@ pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
         return None;
     }
     // `blameSourceForDamage`.
-    let player = crate::mob::combat::blame(h.ents, h.target, &h.source);
+    let player = crate::mob::combat::blame(h.ents, h.env.types, h.target, &h.source);
     let direct_living_or_projectile = h.source.direct.is_some_and(|d| {
         h.ents.mob(d).is_some()
             || h.ents.player(d).is_some()

@@ -170,12 +170,19 @@ pub fn pre_remove(level: &mut Level, pos: BlockPos, state: BlockState) {
     }
 }
 
-/// `SculkShriekerBlockEntity.tryGetPlayer`: the player behind an entity (itself, the owner
-/// of its projectile, the thrower of a dropped item).
+/// `SculkShriekerBlockEntity.tryGetPlayer`: the player behind an entity (itself, the player
+/// steering it, the owner of its projectile, the thrower of a dropped item).
 pub fn try_get_player(level: &Level, entity: Option<EntityId>) -> Option<EntityId> {
     let entity = entity?;
     if level.entities.player(entity).is_some() {
         return Some(entity);
+    }
+    // `getControllingPassenger() instanceof ServerPlayer`: a ridden horse, boat, pig, ...
+    if let Some(&rider) = level.entities.riding.passengers_of(entity).first()
+        && level.entities.player(rider).is_some()
+        && crate::riding::controls(&level.entities, rider, entity)
+    {
+        return Some(rider);
     }
     if let Some(owner) = sculk_vibration::projectile_owner(level, Some(entity)) {
         return level.entities.player(owner).is_some().then_some(owner);
