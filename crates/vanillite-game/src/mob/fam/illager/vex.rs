@@ -272,9 +272,6 @@ pub fn load(s: &mut State, tag: &Compound) {
         Some(Tag::IntArray(v)) if v.len() == 3 => Some(BlockPos::new(v[0], v[1], v[2])),
         _ => None,
     };
-    s.life_ticks = match tag.get("life_ticks") {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => None,
-    };
+    s.life_ticks = crate::mob::entity_nbt::get_int(tag, "life_ticks");
     s.owner = super::super::super::nbt::uuid_key_of(tag, "owner");
 }

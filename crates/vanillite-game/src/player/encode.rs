@@ -197,7 +197,11 @@ fn item(out: &mut Vec<u8>, id: u8, serializer: i32, value: impl FnOnce(&mut Vec<
 /// nothing is to be sent.
 fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(16);
-    let flags = entity.flags().shared_byte();
+    // `setSharedFlagOnFire`: clients also see the fire of `HasVisualFire`.
+    let visual_fire = entity
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::VISUAL_FIRE);
+    let flags = entity.flags().shared_byte() | u8::from(visual_fire);
     if all || flags != 0 {
         item(&mut out, data_id::SHARED_FLAGS, serializer::BYTE, |o| {
             o.push(flags);
@@ -243,7 +247,10 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             },
         );
     }
-    let name_visible = crate::decoration::name_visible(entities, entity.id());
+    let name_visible = crate::decoration::name_visible(entities, entity.id())
+        || entity
+            .flags()
+            .contains(vanillite_world::entity::EntityFlags::NAME_VISIBLE);
     if all || name_visible {
         item(&mut out, 3, serializer::BOOLEAN, |o| {
             o.push(u8::from(name_visible));
@@ -867,7 +874,12 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 .vehicle_of(message.entity)
                 .and_then(|v| crate::riding::passengers_packet(entities, v));
             let link = crate::mob::tame::link_pairing_packet(entities, message.entity);
+            let attributes = entities.mob(message.entity).and_then(|m| {
+                let given = &entities.extra(message.entity)?.attributes;
+                crate::effect::living::mob_pairing_attributes(id, m, given)
+            });
             if data.is_none()
+                && attributes.is_none()
                 && gear.is_none()
                 && passengers.is_none()
                 && riding.is_none()
@@ -882,6 +894,9 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                     entity_id: id,
                     items: RawBytes(items),
                 }));
+            }
+            if let Some(attributes) = attributes {
+                packets.push(SharedPacket::of(&attributes));
             }
             if let Some(gear) = gear {
                 packets.push(SharedPacket::of(&gear));

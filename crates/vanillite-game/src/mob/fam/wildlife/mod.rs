@@ -388,7 +388,7 @@ pub(crate) fn load_ageable(m: &mut MobData, tag: &Compound) {
     m.age = int(tag, "Age").unwrap_or(0);
     m.baby = m.age < 0;
     m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
-    m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+    m.age_locked = crate::mob::entity_nbt::get_bool(tag, "AgeLocked").unwrap_or(false);
     m.in_love = int(tag, "InLove").unwrap_or(0);
     m.love_cause = crate::mob::nbt::uuid_key_of(tag, "LoveCause");
 }
@@ -407,21 +407,12 @@ pub(crate) fn uuid_ints(uuid: u128) -> Vec<i32> {
 
 /// An int (or byte/short) value.
 pub(crate) fn int(tag: &Compound, key: &str) -> Option<i32> {
-    match tag.get(key)? {
-        Tag::Byte(v) => Some(i32::from(*v)),
-        Tag::Short(v) => Some(i32::from(*v)),
-        Tag::Int(v) => Some(*v),
-        Tag::Long(v) => i32::try_from(*v).ok(),
-        _ => None,
-    }
+    crate::mob::entity_nbt::get_int(tag, key)
 }
 
 /// A boolean value.
 pub(crate) fn boolean(tag: &Compound, key: &str, default: bool) -> bool {
-    match tag.get(key) {
-        Some(Tag::Byte(v)) => *v != 0,
-        _ => default,
-    }
+    crate::mob::entity_nbt::get_bool(tag, key).unwrap_or(default)
 }
 
 /// A block position (`BlockPos.CODEC`: an int array of 3).
