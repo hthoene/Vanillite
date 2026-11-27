@@ -38,14 +38,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cache/vanillite,id=vanillite-data,sharing=locked \
     --mount=type=cache,target=/src/target,id=vanillite-target-${TARGETARCH} \
     case "${TARGETARCH}" in \
-      amd64) triple=x86_64-unknown-linux-musl gnu=x86_64-unknown-linux-gnu ;; \
-      arm64) triple=aarch64-unknown-linux-musl gnu=aarch64-unknown-linux-gnu ;; \
+      amd64) triple=x86_64-unknown-linux-musl gnu=x86_64-unknown-linux-gnu evex=-mevex512 ;; \
+      arm64) triple=aarch64-unknown-linux-musl gnu=aarch64-unknown-linux-gnu evex= ;; \
       *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
     && CFLAGS_x86_64_unknown_linux_musl=-mevex512 cargo zigbuild --release --locked -p vanillite --target "${triple}" \
     && mkdir -p /out && cp "target/${triple}/release/vanillite" /out/vanillite \
-    && CFLAGS_x86_64_unknown_linux_gnu=-mevex512 cargo zigbuild --release --locked -p vanillite --features mimalloc --target "${gnu}.2.28" \
+    # Only for the x86-64 target: for arm64 the variable reaches the host's gcc (build scripts).
+    && CFLAGS_x86_64_unknown_linux_gnu="${evex}" cargo zigbuild --release --locked -p vanillite --features mimalloc --target "${gnu}.2.28" \
     && cp "target/${gnu}/release/vanillite" /out/vanillite-gnu \
     # amd64: also the x86-64-v3 build (AVX2), which the baseline binary starts where the CPU has it.
     && if [ "${TARGETARCH}" = amd64 ]; then \

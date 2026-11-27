@@ -66,11 +66,15 @@ pub async fn run(
     config: Arc<Config>,
     metrics: Arc<Metrics>,
     movement: watch::Receiver<Movement>,
+    mut say: watch::Receiver<String>,
     permit: OwnedSemaphorePermit,
 ) {
+    // Only what is said after the bot started.
+    say.mark_unchanged();
     let mut bot = Bot {
         index,
         movement,
+        say,
         name: format!("{}{index:05}", config.prefix),
         rng: Rng::new(config.seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
         config,
@@ -96,6 +100,8 @@ pub async fn run(
 struct Bot {
     index: u64,
     movement: watch::Receiver<Movement>,
+    /// Text to send once (`say` on stdin): a chat message or, with a leading `/`, a command.
+    say: watch::Receiver<String>,
     name: String,
     rng: Rng,
     config: Arc<Config>,
@@ -365,6 +371,17 @@ impl Bot {
                             climb(y, speed / 20.0)
                         }
                     };
+                    if self.say.has_changed().unwrap_or(false) {
+                        let text = self.say.borrow_and_update().clone();
+                        match text.strip_prefix('/') {
+                            Some(command) => {
+                                let mut b = body(ids::play::serverbound::CHAT_COMMAND);
+                                write_str(&mut b, command);
+                                conn.queue_body(&b)?;
+                            }
+                            None => conn.queue_body(&chat_body(&text))?,
+                        }
+                    }
                     if movement == Movement::Still {
                         conn.queue(&ClientTickEnd)?;
                         conn.flush().await?;

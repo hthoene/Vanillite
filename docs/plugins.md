@@ -146,11 +146,12 @@ native plugin (`plugins/bukkit/`) that hosts a Java virtual machine. Put the jar
    `plugins/vanillite-bukkit-<version>-<target>.tar.gz` if it lies there, else a download from
    the layer's GitHub releases into `plugins/.cache/`. The archive must match the pinned
    SHA-256; it is unpacked into `plugins/bukkit/` (the layer's `config.toml` and downloaded
-   libraries stay).
+   libraries stay). Layer releases are built for Linux (x86_64, aarch64), Windows (x86_64) and
+   macOS (aarch64, x86_64).
 2. If the layer would find no Java 25 runtime (`jvm.java-home` in `plugins/bukkit/config.toml`,
    `plugins/bukkit/runtime/`, `JAVA_HOME`, `java` on the `PATH`), Eclipse Temurin 25 (JRE) for
-   the machine is downloaded from Adoptium into `plugins/bukkit/runtime/`, checked against the
-   SHA-256 Adoptium publishes.
+   the machine is downloaded from Adoptium into `plugins/bukkit/runtime/` (`.zip` on Windows,
+   `.tar.gz` elsewhere), checked against the SHA-256 Adoptium publishes.
 3. The layer loads with the other plugins and loads the jars.
 
 `plugins.bukkit.auto-setup = false` turns the downloads off (offline or air-gapped servers): the
