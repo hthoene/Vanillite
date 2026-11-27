@@ -42,9 +42,9 @@ conflicts:
 | `cargo test --doc` | Doc tests (nextest does not run them). |
 | `cargo deny check` | Licences, advisories, duplicate and wildcard dependencies (`deny.toml`). |
 | `cargo xtask codegen --check` | Generated tables match `data/vanilla/`. |
-| `cargo xtask egg --check` | The Pterodactyl egg matches the configuration schema (`cargo xtask egg` regenerates it). |
+| `cargo xtask egg --check` | The Pterodactyl egg and `docs/configuration.md` match the configuration schema (`cargo xtask egg` regenerates both). |
 | `cargo xtask dev [--release] [-- <args>]` | Build and run the server in `./run`. |
-| `cargo xtask regen` | After a merge: rewrite generated files (codegen, egg). |
+| `cargo xtask regen` | After a merge: rewrite generated files (codegen, egg, configuration reference). |
 
 ## New Minecraft versions
 
@@ -191,6 +191,14 @@ The image dropdown is derived from the workspace version and the Minecraft versi
 `egg` test of xtask fail while the committed egg is stale. `cargo xtask egg smoke [--image
 <ref>]` starts an image like Wings does (STARTUP, `/home/container`, UID 988, read-only root)
 and pings it. How to import and use the egg is in the README.
+
+### Configuration reference
+
+`docs/configuration.md` is generated from the same schema by `cargo xtask config-docs`
+(`xtask/src/configdoc.rs`): every `server.properties` key with its default, and every
+`vanillite.toml` rule with its value in each profile, its kind, whether it needs a restart and
+its environment variable. `cargo xtask egg` writes it too and `cargo xtask egg --check` fails
+while it is stale, so a new or changed rule only needs its doc comment in the catalogue.
 
 ## Fuzzing
 
