@@ -554,6 +554,7 @@ impl GameWorld {
             }
         });
         if !click.attack
+            && !click.air
             && held.is_some_and(|s| vanillite_game::player::item_use::uses_entities_on_block(&s))
         {
             let [hx, hy, hz] = click.hit.unwrap_or(match face {

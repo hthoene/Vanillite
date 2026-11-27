@@ -1,0 +1,74 @@
+{
+  "description": "A sulfur cube that swallowed dirt goes into a bucket with its sulfur_cube_content, custom name and bucket_entity_data (SulfurCube.saveToBucketTag) and comes out of it with the block again (applyImplicitComponents, loadFromBucketTag) (#183). A gold block marks the released cube with the block, name and bucket data. Only the marks are observed: a cube holding a block is not simulated like Vanilla yet.",
+  "region": [
+    [
+      0,
+      -56,
+      0
+    ],
+    [
+      0,
+      -56,
+      0
+    ]
+  ],
+  "ticks": 10,
+  "level_rng": true,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60,
+        8.5
+      ],
+      "rot": [
+        0,
+        90
+      ],
+      "seed": 2
+    },
+    {
+      "name": "cube",
+      "type": "minecraft:sulfur_cube",
+      "pos": [
+        8.5,
+        -60,
+        10.5
+      ],
+      "seed": 3
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "interact",
+      "entity": "alex",
+      "target": "cube",
+      "item": "minecraft:dirt"
+    },
+    {
+      "tick": 2,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:sulfur_cube,limit=1] {CustomName:\"Cubey\"}"
+    },
+    {
+      "tick": 3,
+      "op": "interact",
+      "entity": "alex",
+      "target": "cube",
+      "item": "minecraft:bucket"
+    },
+    {
+      "tick": 5,
+      "op": "use_item",
+      "entity": "alex"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:sulfur_cube,nbt={from_bucket:1b,CustomName:\"Cubey\",equipment:{body:{id:\"minecraft:dirt\"}}}] run setblock 0 -56 0 minecraft:gold_block"
+    }
+  ]
+}

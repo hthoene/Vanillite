@@ -23,7 +23,7 @@ use crate::loot::{BlockLootContext, LootTables};
 use crate::player::world::{PlayLevel, SoundSource, events};
 use crate::stats::{Stat, StatType, custom};
 
-mod item_use;
+pub(crate) mod item_use;
 
 pub use item_use::adventure_allows;
 pub(crate) use item_use::flush_equips;

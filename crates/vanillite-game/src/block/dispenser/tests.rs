@@ -75,11 +75,11 @@ fn registry_matches_bootstrap() {
     );
     assert_eq!(
         behaviour_of(&stack(items::COD_BUCKET, 1)),
-        Behaviour::Entity
+        Behaviour::FilledBucket
     );
     assert_eq!(
         behaviour_of(&stack(items::PIG_SPAWN_EGG, 1)),
-        Behaviour::Entity
+        Behaviour::SpawnEgg
     );
     assert_eq!(
         behaviour_of(&stack(items::WATER_BUCKET, 1)),

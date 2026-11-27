@@ -406,8 +406,15 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
 
 /// `Entity.load` on a living mob (`/data merge entity`, `/data modify entity`): the saved
 /// state is read again from `tag`; what is not saved (its random, running goals, path) stays.
-pub fn apply_mob(m: &mut MobData, tag: &Compound) {
+pub fn apply_mob(m: &mut MobData, tag: &Compound, game_time: i64, day_time: i64) {
     read_mob(m, tag);
+    // `Villager.registerBrainGoals` of the brain the load made: the scheduled activity.
+    if m.kind == Kind::Villager
+        && tag.get("Brain").is_some()
+        && let Some(b) = m.brain.as_deref_mut()
+    {
+        b.update_activity_from_schedule(game_time, day_time);
+    }
     // `Entity.load` ends with `reapplyPosition`: the known speed starts over.
     m.last_known_pos = None;
 }
@@ -442,6 +449,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
     m.custom_name = tag.get("CustomName").and_then(tag_component);
+    super::fam::reload_brain(m, tag);
     super::equipment::load(m, tag);
     {
         use crate::item::EquipmentSlot;

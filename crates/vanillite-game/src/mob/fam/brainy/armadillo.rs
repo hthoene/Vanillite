@@ -47,7 +47,7 @@ fn is_player(t: &Tick<'_, '_>, id: EntityId) -> bool {
     t.ents.player(id).is_some()
 }
 
-fn brain_spec() -> BrainSpec {
+pub(super) fn brain_spec() -> BrainSpec {
     let mut panic = Spec::animal_panic(2.0);
     // `ArmadilloPanic`: environmental causes only, rolling out first.
     if let Some(bh::Behavior::AnimalPanic { causes, .. }) = panic.behavior_mut() {

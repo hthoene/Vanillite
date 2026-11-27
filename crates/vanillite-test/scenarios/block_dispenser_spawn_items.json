@@ -1,0 +1,96 @@
+{
+  "description": "Powered dispensers spawn the mobs of spawn eggs (SpawnEggItemBehavior: DISPENSER spawn in front, moved down unless facing up) and of mob buckets (the filled bucket behaviour: water or nothing, then MobBucketItem.spawn with the bucket's components and bucket_entity_data), leaving empty buckets (#183). Gold blocks mark each mob with its item's data; the sulfur cube is outside the observed region (its swallowed-block archetypes are not simulated yet).",
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      12
+    ]
+  ],
+  "ticks": 10,
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -60 1 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:pig_spawn_egg\",count:2,components:{\"minecraft:pig/variant\":\"minecraft:cold\"}}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -60 3 minecraft:dispenser[facing=up]{Items:[{Slot:0b,id:\"minecraft:chicken_spawn_egg\",count:1}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -60 5 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:cod_bucket\",count:1}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -60 7 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:axolotl_bucket\",count:1,components:{\"minecraft:axolotl/variant\":\"blue\",\"minecraft:bucket_entity_data\":{Age:-2000,Health:9.0f}}}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -60 9 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:tadpole_bucket\",count:1}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -60 15 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:sulfur_cube_bucket\",count:1,components:{\"minecraft:sulfur_cube_content\":{id:\"minecraft:dirt\"},\"minecraft:bucket_entity_data\":{age:0,age_locked:1b,Health:4.0f}}}]}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "setblock 2 -60 11 minecraft:dispenser[facing=east]{Items:[{Slot:0b,id:\"minecraft:tropical_fish_bucket\",count:1,components:{\"minecraft:tropical_fish/pattern\":\"clayfish\",\"minecraft:tropical_fish/base_color\":\"red\"}}]}"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "fill 1 -60 1 1 -60 15 minecraft:redstone_block"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:pig,nbt={variant:\"minecraft:cold\"}] run setblock 0 -55 0 minecraft:gold_block"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:chicken] run setblock 1 -55 0 minecraft:gold_block"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:cod,nbt={FromBucket:1b}] run setblock 2 -55 0 minecraft:gold_block"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:axolotl,nbt={Variant:4,FromBucket:1b}] run setblock 3 -55 0 minecraft:gold_block"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:tadpole,nbt={FromBucket:1b}] run setblock 4 -55 0 minecraft:gold_block"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:sulfur_cube,nbt={from_bucket:1b,AgeLocked:1b,equipment:{body:{id:\"minecraft:dirt\"}}}] run setblock 5 -55 0 minecraft:gold_block"
+    },
+    {
+      "tick": 9,
+      "op": "command",
+      "command": "execute if entity @e[type=minecraft:tropical_fish,nbt={FromBucket:1b}] run setblock 6 -55 0 minecraft:gold_block"
+    }
+  ]
+}

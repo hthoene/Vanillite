@@ -175,7 +175,7 @@ fn idle_movement() -> Spec {
     ])
 }
 
-fn piglin_brain() -> BrainSpec {
+pub(super) fn piglin_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
@@ -345,7 +345,7 @@ fn piglin_brain() -> BrainSpec {
     }
 }
 
-fn brute_brain() -> BrainSpec {
+pub(super) fn brute_brain() -> BrainSpec {
     let core = ActivitySpec::new(
         Activity::Core,
         0,
