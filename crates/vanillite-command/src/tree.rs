@@ -15,12 +15,15 @@ pub struct Requirement {
     pub level: u8,
     /// A permission node a plugin permission system checks (hook for later).
     pub permission: Option<&'static str>,
+    /// The node decides alone when a permission provider or a plugin's registered default
+    /// answers it; `level` is only the default (Vanillite's own commands).
+    pub node_decides: bool,
 }
 
 impl Requirement {
     /// Whether a source without any permission fails it (the packet's restricted flag).
     pub fn is_restricted(&self) -> bool {
-        self.level > 0 || self.permission.is_some()
+        self.level > 0 || (self.permission.is_some() && !self.node_decides)
     }
 }
 
@@ -146,6 +149,18 @@ impl<C> Builder<C> {
     #[must_use]
     pub fn permission(mut self, node: &'static str) -> Self {
         self.requirement.permission = Some(node);
+        self
+    }
+
+    /// Requires a permission node that a permission provider can grant or deny; without its
+    /// answer the source needs permission level `level`.
+    #[must_use]
+    pub fn permission_or_level(mut self, node: &'static str, level: u8) -> Self {
+        self.requirement = Requirement {
+            level,
+            permission: Some(node),
+            node_decides: true,
+        };
         self
     }
 

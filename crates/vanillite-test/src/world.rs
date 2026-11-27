@@ -83,6 +83,12 @@ pub trait ScenarioWorld {
     /// load meanwhile).
     fn settle_light(&mut self) {}
 
+    /// The block entities inside `min..=max` as `x,y,z <canonical nbt>` (`"block_entities"`
+    /// scenarios, [`crate::trace::canonical_nbt`] of `saveWithFullMetadata`), in any order.
+    fn block_entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<String>) {
+        let _ = (min, max, out);
+    }
+
     /// The settled light inside `min..=max` in y, z, x order as `sky << 4 | block`: the levels
     /// a client sees. Worlds without a light engine leave `out` empty.
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {

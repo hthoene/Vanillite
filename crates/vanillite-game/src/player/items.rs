@@ -343,15 +343,15 @@ fn use_empty_map(
         p.stats.award(Stat::of(StatType::Used, stack.item), 1);
         p.inventory.get(i).clone()
     };
-    play_sound(
+    crate::survival::play_entity_sound(
         env.out,
+        ents,
         None,
-        pos,
+        player,
         "minecraft:ui.cartography_table.take_result",
         SoundSource::Players,
         1.0,
         1.0,
-        sound_seed(),
     );
     let at = crate::player::play::block_pos_of(pos);
     let map = crate::map::create(maps, at.x, at.z, 0, true, false, env.dimension.to_owned());
@@ -381,15 +381,15 @@ fn use_instrument(
         return;
     };
     super::using::start(ents, env, network_ids, player, hand);
-    play_sound(
+    crate::survival::play_entity_sound(
         env.out,
+        ents,
         Some(player),
-        pos,
+        player,
         &instrument.sound,
         SoundSource::Records,
         instrument.range / 16.0,
         1.0,
-        sound_seed(),
     );
     let i = hand_index(ents, player, hand);
     let Some(p) = ents.player_mut(player) else {

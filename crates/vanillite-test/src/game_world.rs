@@ -138,7 +138,12 @@ const SNAPSHOT_MARGIN: i32 = 4;
 
 /// Puts the chunk and POI records of the snapshot's region files around the forced chunks
 /// into `store` (the entities stay out, see the scenario documentation).
-fn preload_snapshot(store: &MemoryStore, dir: &Path, forced: &[ChunkPos]) -> Result<(), String> {
+fn preload_snapshot(
+    store: &MemoryStore,
+    dir: &Path,
+    forced: &[ChunkPos],
+    entities: bool,
+) -> Result<(), String> {
     use vanillite_chunk::store::{
         ChunkStore, CompletionTarget, DimensionId, Priority, RecordKey, RecordMeta, StoreOp, Token,
     };
@@ -155,7 +160,13 @@ fn preload_snapshot(store: &MemoryStore, dir: &Path, forced: &[ChunkPos]) -> Res
     };
     let dimension = DimensionId(0);
     let mut ops = Vec::new();
-    for (folder, poi) in [("region", false), ("poi", true)] {
+    // `world.entities`: the snapshot's entities too.
+    let folders: &[(&str, u8)] = if entities {
+        &[("region", 0), ("poi", 1), ("entities", 2)]
+    } else {
+        &[("region", 0), ("poi", 1)]
+    };
+    for &(folder, kind) in folders {
         let mut files = std::collections::HashMap::new();
         for x in min_x - SNAPSHOT_MARGIN..=max_x + SNAPSHOT_MARGIN {
             for z in min_z - SNAPSHOT_MARGIN..=max_z + SNAPSHOT_MARGIN {
@@ -182,10 +193,10 @@ fn preload_snapshot(store: &MemoryStore, dir: &Path, forced: &[ChunkPos]) -> Res
                 else {
                     continue;
                 };
-                let key = if poi {
-                    RecordKey::poi(dimension, pos)
-                } else {
-                    RecordKey::chunk(dimension, pos)
+                let key = match kind {
+                    1 => RecordKey::poi(dimension, pos),
+                    2 => RecordKey::entities(dimension, pos),
+                    _ => RecordKey::chunk(dimension, pos),
                 };
                 ops.push(StoreOp::Put {
                     key,
@@ -636,7 +647,7 @@ impl GameWorld {
         vanillite_game::mob::set_parity_shuffle_seed(Some(PARITY_SHUFFLE_SEED));
         let store = Arc::new(MemoryStore::default());
         if let Some(snapshot) = &spec.snapshot {
-            preload_snapshot(&store, snapshot, &spec.forced)?;
+            preload_snapshot(&store, snapshot, &spec.forced, spec.snapshot_entities)?;
         }
         let (mut level, network_ids) = open_level(spec, Arc::clone(&store))?;
         let mut rules = GameRules::default();
@@ -685,7 +696,7 @@ impl GameWorld {
         world
             .set_forced(&spec.forced, true)
             .map_err(|_| "the scenario region does not become ticking".to_owned())?;
-        if spec.snapshot.is_some() {
+        if spec.snapshot.is_some() && !spec.snapshot_entities {
             // What chunk generation spawned (see the scenario documentation).
             let spawned = world.level.entities.store.columns().id.clone();
             for id in spawned {
@@ -2171,6 +2182,26 @@ impl ScenarioWorld for GameWorld {
         );
     }
 
+    fn block_entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<String>) {
+        for y in min.y..=max.y {
+            for z in min.z..=max.z {
+                for x in min.x..=max.x {
+                    let pos = BlockPos::new(x, y, z);
+                    if !self.is_loaded(pos)
+                        || self.level.block(pos).block().info().block_entity == u16::MAX
+                    {
+                        continue;
+                    }
+                    if let Some(nbt) = self.level.block_entity_nbt(pos) {
+                        let mut s = format!("{x},{y},{z} ");
+                        crate::trace::canonical_nbt(&mut s, &vanillite_nbt::Tag::Compound(nbt));
+                        out.push(s);
+                    }
+                }
+            }
+        }
+    }
+
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
         if !self.light {
             return;
@@ -2508,7 +2539,7 @@ impl ScenarioWorld for GameWorld {
             .id(&op.potion)
             .ok_or_else(|| format!("unknown potion {}", op.potion))?;
         let mut stack = vanillite_game::item::ItemStack::new(item, 1);
-        stack.patch_mut().set(
+        stack.set_component(
             vanillite_protocol::components::ids::POTION_CONTENTS,
             PotionContents::of(potion).encode(),
         );

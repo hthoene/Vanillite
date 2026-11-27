@@ -15,9 +15,25 @@ pub trait Source {
         true
     }
 
+    /// The explicit answer of a permission provider (or a plugin's registered default) for a
+    /// node; `None` when nobody decides it.
+    fn permission_node_answer(&self, _node: &str) -> Option<bool> {
+        None
+    }
+
     /// Whether the source meets a node's requirement. Parsing and suggestions never walk
     /// nodes it does not meet (SEC-11).
     fn meets(&self, requirement: &Requirement) -> bool {
+        if requirement.node_decides
+            && let Some(answer) = requirement
+                .permission
+                .and_then(|p| self.permission_node_answer(p))
+        {
+            return answer;
+        }
+        if requirement.node_decides {
+            return self.permission_level() >= requirement.level;
+        }
         self.permission_level() >= requirement.level
             && requirement
                 .permission

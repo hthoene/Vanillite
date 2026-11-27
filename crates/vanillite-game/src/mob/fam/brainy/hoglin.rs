@@ -408,6 +408,9 @@ fn hurt_and_throw(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
     };
     let source = crate::mob::combat::entity_source(t.ents, t.env.types.mob_attack, t.id, t.id);
     let hurt = crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
+    if hurt {
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &source);
+    }
     if hurt && t.exists() && !t.mob_ref().baby {
         throw_target(t, target);
     }

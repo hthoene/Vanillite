@@ -1,6 +1,7 @@
 //! `cargo xtask parity fuzz`: random parity scenarios against Vanilla (#132); `cargo xtask
 //! parity replay`: recorded server sessions against Vanilla (#152); `cargo xtask parity
-//! soak`: long scenarios against Vanilla (#166).
+//! soak`: long scenarios against Vanilla (#166); `cargo xtask parity quick`: the quick tier of
+//! the parity scenarios for the quick check (#257).
 //!
 //! Compiles the Java recorder on the pinned jar (like `golden regen`) and runs the
 //! `parity_fuzz` binary of `vanillite-test` with its class path; that binary generates (or
@@ -54,7 +55,7 @@ pub fn replay(root: &Path, args: &[&str]) -> Result<()> {
         pass.extend(["--session", session.as_str()]);
     }
     pass.extend_from_slice(args);
-    driver(root, &pass)
+    driver(root, &pass, None)
 }
 
 /// Copies a recording of the test server instance on `port` into `target/recordings/`.
@@ -98,7 +99,7 @@ fn fetch_recording(root: &Path, port: &str, name: &str) -> Result<std::path::Pat
 }
 
 /// The compiled recorder: its classes with the class path, the agent jar and the work dir.
-fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
+pub(crate) fn recorder(root: &Path) -> Result<(String, std::path::PathBuf, std::path::PathBuf)> {
     let key = golden::Key::current(root)?;
     let (classes, cp, broken) = golden::harness(root, &key)?;
     let recorder_broken = broken.files.iter().any(|f| {
@@ -152,49 +153,89 @@ pub fn soak(root: &Path, args: &[&str]) -> Result<()> {
     )
 }
 
+/// `cargo xtask parity quick`: the fast scenarios without the slow ones of
+/// `crates/vanillite-test/scenarios/quick-skip.txt` against their goldens (no Java needed), with
+/// the world crate at opt-level 1 like CI's parity jobs.
+pub fn quick(root: &Path) -> Result<()> {
+    run(
+        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+            .current_dir(root)
+            .args([
+                "test",
+                "-q",
+                "-p",
+                "vanillite-test",
+                "--locked",
+                "--config",
+                "profile.dev.package.vanillite-world.opt-level=1",
+                "--test",
+                "parity",
+                "--",
+                "--ignored",
+                "--exact",
+                "quick_scenarios",
+            ]),
+    )
+}
+
 pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
     let adopt = args.contains(&"--adopt");
-    let pass: Vec<&str> = args.iter().copied().filter(|a| *a != "--adopt").collect();
-    driver(root, &pass)?;
+    let mut pass: Vec<&str> = args
+        .iter()
+        .copied()
+        .filter(|a| *a != "--adopt" && *a != "--no-coverage")
+        .collect();
+    // The coverage of Vanilla's code by the scenarios (`parity coverage`, #257) steers the
+    // generated scenarios towards what is least exercised.
+    let coverage = crate::coverage::out_dir(root).join("coverage.json");
+    let coverage = coverage.to_string_lossy();
+    if !args.contains(&"--no-coverage") && Path::new(coverage.as_ref()).is_file() {
+        println!("fuzz: weighting the scenarios by {coverage}");
+        pass.extend(["--coverage", coverage.as_ref()]);
+    }
+    driver(root, &pass, None)?;
     if !adopt {
         return Ok(());
     }
     adopt_found(root)
 }
 
-/// Runs the `parity_fuzz` driver with the recorder's class path; built with the cargo profile
+/// Runs the `parity_fuzz` driver with the recorder's class path, with an extra environment
+/// variable (the coverage agent of `parity coverage`) if given; built with the cargo profile
 /// `VANILLITE_PARITY_PROFILE` (default `dev`; the nightly replays with `release-fast`).
-fn driver(root: &Path, pass: &[&str]) -> Result<()> {
+pub(crate) fn driver(root: &Path, pass: &[&str], env: Option<(&str, String)>) -> Result<()> {
     let (classpath, agent, work_dir) = recorder(root)?;
     let out = root.join("target/parity-fuzz");
     remove_dir(&out)?;
     let profile = std::env::var("VANILLITE_PARITY_PROFILE").unwrap_or_else(|_| "dev".to_owned());
-    run(
-        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
-            .current_dir(root)
-            .args([
-                "run",
-                "-q",
-                "--profile",
-                &profile,
-                "-p",
-                "vanillite-test",
-                "--bin",
-                "parity_fuzz",
-                "--",
-            ])
-            .arg("--java")
-            .arg(java_tool("java"))
-            .arg("--agent")
-            .arg(&agent)
-            .arg("--classpath")
-            .arg(classpath)
-            .arg("--work-dir")
-            .arg(&work_dir)
-            .arg("--out")
-            .arg(&out)
-            .args(pass),
-    )
+    let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()));
+    if let Some((k, v)) = env {
+        cmd.env(k, v);
+    }
+    run(cmd
+        .current_dir(root)
+        .args([
+            "run",
+            "-q",
+            "--profile",
+            &profile,
+            "-p",
+            "vanillite-test",
+            "--bin",
+            "parity_fuzz",
+            "--",
+        ])
+        .arg("--java")
+        .arg(java_tool("java"))
+        .arg("--agent")
+        .arg(&agent)
+        .arg("--classpath")
+        .arg(classpath)
+        .arg("--work-dir")
+        .arg(&work_dir)
+        .arg("--out")
+        .arg(&out)
+        .args(pass))
 }
 
 /// The found scenarios become fixed ones with their Vanilla goldens.

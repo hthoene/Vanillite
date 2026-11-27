@@ -1,0 +1,116 @@
+{
+  "description": "Spawn eggs used on a mob of their type (#238 D-12, F-13, F-14, A-21): SpawnEggItem.spawnOffspringFromSpawnEgg makes a baby zombie (no AgeableMob: created and made a baby, with Zombie.onOffspringSpawnedFromEgg's loot pickup roll) and a villager baby of the biome's or the parent's type (Villager.getBreedOffspring), and nothing for the wandering trader (getBreedOffspring is null: the click goes on to mobInteract). A turtle that carries an egg does not fall in love (Turtle.canFallInLove) and keeps the seagrass.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 16,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        5.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 21,
+      "finalize": false
+    },
+    {
+      "name": "villager",
+      "type": "minecraft:villager",
+      "pos": [
+        11.5,
+        -60.0,
+        8.5
+      ],
+      "seed": 22,
+      "finalize": false
+    },
+    {
+      "name": "trader",
+      "type": "minecraft:wandering_trader",
+      "pos": [
+        8.5,
+        -60.0,
+        5.5
+      ],
+      "seed": 23,
+      "finalize": false
+    },
+    {
+      "name": "turtle",
+      "type": "minecraft:turtle",
+      "pos": [
+        6.5,
+        -60.0,
+        6.5
+      ],
+      "seed": 25,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:turtle,limit=1] {HasEgg:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:zombie,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 2,
+      "op": "interact",
+      "entity": "steve",
+      "target": "zombie",
+      "item": "minecraft:zombie_spawn_egg"
+    },
+    {
+      "tick": 3,
+      "op": "interact",
+      "entity": "steve",
+      "target": "villager",
+      "item": "minecraft:villager_spawn_egg"
+    },
+    {
+      "tick": 4,
+      "op": "interact",
+      "entity": "steve",
+      "target": "trader",
+      "item": "minecraft:wandering_trader_spawn_egg"
+    },
+    {
+      "tick": 6,
+      "op": "interact",
+      "entity": "steve",
+      "target": "turtle",
+      "item": "minecraft:seagrass"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

@@ -199,12 +199,14 @@ pub(crate) fn snow_shear(
     target: EntityId,
     source: SoundSource,
 ) {
-    sound_at(
+    crate::survival::play_entity_sound(
+        env.out,
         ents,
-        env,
+        None,
         target,
         "minecraft:entity.snow_golem.shear",
         source,
+        1.0,
         1.0,
     );
     let eye = ents.mob(target).map_or(1.7, crate::mob::eye_height);
@@ -291,6 +293,7 @@ pub(super) fn iron_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> bool {
             e.set_flags(EntityFlags::HURT_MARKED, true);
         }
         t.mob().last_hurt_mob = Some(target);
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &source);
     }
     if t.exists() {
         kinds::play_sound(t, "minecraft:entity.iron_golem.attack", 1.0, 1.0);

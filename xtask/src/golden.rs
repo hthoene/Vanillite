@@ -346,6 +346,19 @@ pub fn check(root: &Path) -> Result<()> {
     }
 }
 
+/// Every scenario file Vanilla records (fast and bulk tier, profile `vanilla`; not the soak
+/// scenarios), for `cargo xtask parity coverage`.
+pub(crate) fn scenario_files(root: &Path, key: &Key) -> Result<Vec<PathBuf>> {
+    Ok(sets(root, key)?
+        .into_iter()
+        .flat_map(|s| s.entries)
+        .filter_map(|e| match e.source {
+            Source::Scenario(p) => Some(p),
+            Source::Part(_) => None,
+        })
+        .collect())
+}
+
 /// `cargo xtask golden regen [--all] [--bulk] [<name>...]`.
 pub fn regen(root: &Path, args: &[&str]) -> Result<()> {
     let all = args.contains(&"--all");

@@ -736,7 +736,7 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
             match *state {
                 0 => {
                     if bh::dist_sqr(t, target).sqrt() < 1.75 {
-                        sound_at(
+                        super::entity_sound_at(
                             t,
                             "minecraft:entity.frog.tongue",
                             SoundSource::Neutral,
@@ -784,7 +784,7 @@ pub fn tick(b: &mut Behavior, t: &mut Tick<'_, '_>, _now: i64) {
 
 /// `ShootTongue.eatEntity`: the frog bites; a killed slime or magma cube drops a froglight.
 fn eat_entity(t: &mut Tick<'_, '_>) {
-    sound_at(
+    super::entity_sound_at(
         t,
         "minecraft:entity.frog.eat",
         SoundSource::Neutral,
@@ -863,7 +863,7 @@ pub fn trigger(b: &mut Behavior, t: &mut Tick<'_, '_>, now: i64) -> bool {
                         let block = vanillite_data::block::BlockId(id).default_state();
                         t.cx.actions
                             .push(crate::mob::WorldAction::SetBlock(spawn, block, 3));
-                        sound_at(
+                        super::entity_sound_at(
                             t,
                             "minecraft:entity.frog.lay_spawn",
                             SoundSource::Blocks,

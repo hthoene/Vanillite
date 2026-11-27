@@ -58,7 +58,7 @@ fn zombie_not_piglin(t: &Tick<'_, '_>, id: EntityId) -> bool {
     t.ents.mob(id).is_some_and(|m| {
         matches!(
             m.kind,
-            Kind::Zombie | Kind::Husk | Kind::Drowned | Kind::ZombieVillager | Kind::Giant
+            Kind::Zombie | Kind::Husk | Kind::Drowned | Kind::ZombieVillager
         )
     })
 }
@@ -256,7 +256,11 @@ pub fn spit_tick(t: &mut MissileTick<'_, '_>) {
         }) {
             let kind = t.env.types.named("minecraft:spit");
             let source = crate::mob::combat::entity_source(t.ents, kind, owner, t.id);
-            crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 1.0);
+            if crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, 1.0) {
+                crate::mob::attack::post_attack_effects(
+                    t.level, t.ents, t.env, t.cx, target, &source,
+                );
+            }
         }
         crate::mob::missile::land_event(t.env.out, t.level, t.id, d.owner, None, end);
     } else if let Some((block, at)) = block_hit {

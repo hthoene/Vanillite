@@ -34,10 +34,14 @@ pub struct FightView {
 }
 
 /// What the dragon and the crystals tell the fight (handled right after their tick).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DragonEvent {
-    /// `updateDragon`: the bar's progress, the dragon was seen.
-    Update { uuid: u128, progress: f32 },
+    /// `updateDragon`: the bar's progress (and the custom name), the dragon was seen.
+    Update {
+        uuid: u128,
+        progress: f32,
+        name: Option<vanillite_protocol::text::Component>,
+    },
     /// `setDragonKilled`.
     Killed { uuid: u128 },
     /// `onCrystalDestroyed`.
@@ -539,10 +543,17 @@ impl DragonFight {
         event: DragonEvent,
     ) {
         match event {
-            DragonEvent::Update { uuid, progress } => {
+            DragonEvent::Update {
+                uuid,
+                progress,
+                name,
+            } => {
                 if Some(uuid) == self.dragon_uuid {
                     self.bar.set_progress(progress, env.out);
                     self.ticks_since_dragon_seen = 0;
+                    if let Some(name) = name {
+                        self.bar.set_name(name, env.out);
+                    }
                 }
             }
             DragonEvent::Killed { uuid } => self.set_dragon_killed(level, uuid, env),
@@ -885,7 +896,12 @@ fn set_crystal(level: &mut Level, id: EntityId, f: impl FnOnce(&mut super::Cryst
 /// `EndCrystalItem.useOn`: places a crystal (without its bottom) on obsidian or bedrock when
 /// the two blocks above are free of entities. Returns whether it was placed; the fight then
 /// tries to respawn the dragon.
-pub fn use_end_crystal(level: &mut Level, uuid: u128, on: BlockPos) -> bool {
+pub fn use_end_crystal(
+    level: &mut Level,
+    uuid: u128,
+    on: BlockPos,
+    player: Option<vanillite_world::entity::EntityId>,
+) -> bool {
     let b = level.block(on).block();
     if b != ids::OBSIDIAN && b != ids::BEDROCK {
         return false;
@@ -898,11 +914,16 @@ pub fn use_end_crystal(level: &mut Level, uuid: u128, on: BlockPos) -> bool {
     let area = Aabb::new(x, y, z, x + 1.0, y + 2.0, z + 1.0);
     let mut any = false;
     let ents = &level.entities;
+    // `getEntities(null, box)`: spectators do not count.
     ents.store.for_each_in(&area, false, |id| {
-        if ents
-            .store
-            .get(id)
-            .is_some_and(|e| e.aabb().intersects(&area))
+        let spectator = ents
+            .player(id)
+            .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Spectator);
+        if !spectator
+            && ents
+                .store
+                .get(id)
+                .is_some_and(|e| e.aabb().intersects(&area))
         {
             any = true;
         }
@@ -931,7 +952,7 @@ pub fn use_end_crystal(level: &mut Level, uuid: u128, on: BlockPos) -> bool {
         return false;
     }
     let place = crate::level::game_event::events().entity_place;
-    level.game_event_at(None, place, above);
+    level.game_event_at(player, place, above);
     level.output().try_dragon_respawn = true;
     true
 }

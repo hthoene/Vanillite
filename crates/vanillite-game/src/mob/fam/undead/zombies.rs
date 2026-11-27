@@ -156,13 +156,13 @@ pub fn experience_reward(m: &mut MobData) -> i32 {
 }
 
 /// `Mob.getBaseExperienceReward`'s equipment bonus: 1–3 per worn item that is not a
-/// guaranteed drop.
+/// guaranteed drop (every slot but the saddle, `canIncreaseExperience`).
 pub fn equipment_experience(m: &mut MobData, xp: i32) -> i32 {
     if xp <= 0 {
         return xp;
     }
     let mut result = xp;
-    for slot in &equipment::SLOTS[..6] {
+    for slot in &equipment::SLOTS[..7] {
         let i = usize::from(slot.ordinal());
         if !m.equipment.items[i].is_empty() && m.equipment.drop_chances[i] <= 1.0 {
             result += 1 + m.random.next_int_bounded(3);
@@ -1480,7 +1480,8 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
     let Some(m) = h.ents.mob(h.target) else {
         return;
     };
-    if !m.is_alive() || !is_zombie(m.kind) {
+    // Also on the killing blow: `super.hurtServer` returned true.
+    if !is_zombie(m.kind) {
         return;
     }
     let kind = m.kind;
@@ -1519,7 +1520,7 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
         if !placement_ok(h.level, kind, spawn) {
             continue;
         }
-        let mut random = LegacyRandom::new(h.env.random.next_long());
+        // `checkSpawnRules(..., level.getRandom())`.
         // The real level: at night the open surface is dark enough.
         let level_env = h.level.spawner_env.env;
         if !crate::mob::fam::check_spawn_rules(
@@ -1527,13 +1528,16 @@ pub fn reinforcements(h: &mut Hurt<'_, '_>) {
             h.level,
             &level_env,
             spawn,
-            &mut random,
+            h.env.random,
             SpawnReason::Reinforcement,
         ) {
             continue;
         }
         let at = Vec3::new(f64::from(xt), f64::from(yt), f64::from(zt));
-        if player_within(h, at, 7.0) || !super::box_free(h.level, kind, at, kind == Kind::Drowned) {
+        if player_within(h, at, 7.0)
+            || !unobstructed(h, kind, at)
+            || !super::box_free(h.level, kind, at, kind == Kind::Drowned)
+        {
             continue;
         }
         crate::mob::goals::assign_target(&mut new, Some(target));
@@ -1581,6 +1585,16 @@ fn placement_ok(level: &Level, kind: Kind, pos: BlockPos) -> bool {
     } else {
         crate::mob::spawn::spawn_position_ok(level, kind.type_id(), pos)
     }
+}
+
+/// `level.isUnobstructed(reinforcement)`: no entity that blocks building in its box.
+fn unobstructed(h: &Hurt<'_, '_>, kind: Kind, at: Vec3) -> bool {
+    let aabb = Dimensions::of(kind.type_id()).bounding_box(at);
+    let mut blocked = false;
+    h.ents.store.for_each_in(&aabb, false, |id| {
+        blocked |= crate::block::dispenser::entity_blocks_building(h.ents, id);
+    });
+    !blocked
 }
 
 /// `hasNearbyAlivePlayer(x, y, z, range)`.
@@ -1733,10 +1747,7 @@ pub fn save_conversion(m: &MobData, out: &mut Compound) {
 
 /// Reads the conversion data of a zombie.
 pub fn load_conversion(m: &mut MobData, tag: &Compound) {
-    let int = |k: &str| match tag.get(k) {
-        Some(Tag::Int(v)) => Some(*v),
-        _ => None,
-    };
+    let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
     let z = zs_mut(m);
     z.in_water_time = int("InWaterTime").unwrap_or(0);
     match int("DrownedConversionTime") {
@@ -1823,23 +1834,21 @@ pub fn save_attributes(m: &MobData, out: &mut Compound) {
 /// The value of a saved attribute: its base with the modifiers applied (`AttributeInstance`
 /// order: add, multiply base, multiply total).
 fn attribute_value(c: &Compound) -> Option<f64> {
-    let Some(Tag::Double(base)) = c.get("base") else {
-        return None;
-    };
+    let base = crate::mob::entity_nbt::get_double(c, "base")?;
     let mut mods = Vec::new();
     if let Some(Tag::List(l)) = c.get("modifiers") {
         for t in &l.0 {
             if let Tag::Compound(m) = t
-                && let Some(Tag::Double(amount)) = m.get("amount")
+                && let Some(amount) = crate::mob::entity_nbt::get_double(m, "amount")
             {
                 mods.push((
                     m.get("operation").and_then(Tag::as_str).unwrap_or(""),
-                    *amount,
+                    amount,
                 ));
             }
         }
     }
-    let mut v = *base;
+    let mut v = base;
     for (op, a) in &mods {
         if *op == "add_value" {
             v += a;
@@ -1860,24 +1869,19 @@ fn attribute_value(c: &Compound) -> Option<f64> {
 }
 
 /// Reads the zombie attributes [`save_attributes`] writes (before the health, like
-/// `LivingEntity.readAdditionalSaveData`).
+/// `LivingEntity.readAdditionalSaveData`): the shared attributes, and the reinforcement
+/// chance, which only zombies keep.
 pub fn load_attributes(m: &mut MobData, tag: &Compound) {
+    crate::mob::entity_nbt::load_attributes(m, tag.get("attributes"));
     let Some(Tag::List(l)) = tag.get("attributes") else {
         return;
     };
     for t in &l.0 {
-        let Tag::Compound(c) = t else {
-            continue;
-        };
-        let Some(v) = attribute_value(c) else {
-            continue;
-        };
-        match c.get("id").and_then(Tag::as_str) {
-            Some("minecraft:follow_range") => m.attrs.follow_range = v,
-            Some("minecraft:knockback_resistance") => m.attrs.knockback_resistance = v,
-            Some("minecraft:max_health") => m.attrs.max_health = v,
-            Some("minecraft:spawn_reinforcements") => zs_mut(m).reinforcement = v,
-            _ => {}
+        if let Tag::Compound(c) = t
+            && c.get("id").and_then(Tag::as_str) == Some("minecraft:spawn_reinforcements")
+            && let Some(v) = attribute_value(c)
+        {
+            zs_mut(m).reinforcement = v;
         }
     }
 }
@@ -1897,16 +1901,13 @@ pub fn load(m: &mut MobData, tag: &Compound) {
     if m.kind == Kind::Giant {
         return;
     }
-    let boolean = |k: &str| matches!(tag.get(k), Some(Tag::Byte(b)) if *b != 0);
+    let boolean = |k: &str| crate::mob::entity_nbt::get_bool(tag, k).unwrap_or(false);
     super::set_baby(m, boolean("IsBaby"));
     set_can_break_doors(m, boolean("CanBreakDoors"));
     load_conversion(m, tag);
     match m.kind {
         Kind::ZombieVillager => {
-            let int = |k: &str| match tag.get(k) {
-                Some(Tag::Int(v)) => Some(*v),
-                _ => None,
-            };
+            let int = |k: &str| crate::mob::entity_nbt::get_int(tag, k);
             let finalized = boolean("VillagerDataFinalized");
             let data = match tag.get("VillagerData") {
                 Some(Tag::Compound(c)) => Some(c.clone()),
@@ -1930,10 +1931,8 @@ pub fn load(m: &mut MobData, tag: &Compound) {
                         "profession",
                         "minecraft:none",
                     );
-                    z.villager_level = match d.get("level") {
-                        Some(Tag::Int(v)) => (*v).max(1),
-                        _ => 1,
-                    };
+                    z.villager_level =
+                        crate::mob::entity_nbt::get_int(&d, "level").map_or(1, |v| v.max(1));
                 }
             }
             z.villager_xp = int("Xp").unwrap_or(0);

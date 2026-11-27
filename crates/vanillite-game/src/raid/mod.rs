@@ -1245,7 +1245,7 @@ fn enchant_single(stack: &mut crate::item::ItemStack, name: &str, level: i32) {
         Some(e) => e.1 = e.1.max(level),
         None => list.push((id, level)),
     }
-    stack.patch_mut().set(
+    stack.set_component(
         vanillite_protocol::components::ids::ENCHANTMENTS,
         crate::enchant::write(&list),
     );

@@ -13,6 +13,9 @@
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
 //! cargo xtask parity replay <recording dir | port:name | port:latest>... [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+//! cargo xtask parity quick
+//! cargo xtask parity worlds [--ticks N] [--jobs N] [--minutes N] [--prepare-only] [<world>...]
+//! cargo xtask parity coverage [--jobs N] [--fuzz-minutes N] [--report-only] [<scenario>...]
 //! cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask light sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask dev [--release] [-- <server args>]
@@ -33,6 +36,7 @@
 
 mod bench;
 mod configdoc;
+mod coverage;
 mod data;
 mod devenv;
 mod docker;
@@ -41,6 +45,7 @@ mod golden;
 mod loadtest;
 mod merge;
 mod parity;
+mod parity_worlds;
 mod version;
 mod worldgen;
 
@@ -95,13 +100,16 @@ pub const USAGE: &str = "usage:
       and unpacked if needed; needs a JDK 25). --all records every repository golden, --bulk
       also the bulk scenario goldens into $VANILLITE_GOLDENS (default target/goldens); names
       (part like ChunkGoldens or chunk, or scenario) record just those.
-  cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--jobs N] [--adopt]
+  cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--jobs N] [--adopt] [--no-coverage]
       Random parity scenarios (#132): generate scenarios with a packet-level player from
       consecutive seeds (default: 20 from seed 1), record them in Vanilla and run them in
       Vanillite, shrink every divergence to a small scenario. Writes target/parity-fuzz/found/
       and summary.md. --adopt copies the found scenarios into crates/vanillite-test/scenarios/
       and records their goldens (then add scenarios/divergences/<name>.toml with the cause).
-      Also: --replay <scenario.json> runs given scenarios without generating.
+      Also: --replay <scenario.json> runs given scenarios without generating. With a
+      target/parity-coverage/coverage.json (parity coverage) the generator picks behaviours,
+      mobs, items and blocks whose Vanilla code is least exercised more often (--no-coverage:
+      not).
   cargo xtask parity replay <recording dir | port:name | port:latest>... [--ticks N] [--jobs N]
       Replay recorded server sessions (debug.session-recording, #152) in Vanilla and
       Vanillite on its world snapshot and compare them tick by tick; a divergence is shrunk
@@ -116,6 +124,26 @@ pub const USAGE: &str = "usage:
       <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
       tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
       Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
+  cargo xtask parity quick
+      The quick tier of the parity scenarios (#257, part of scripts/quick-check.sh): the fast
+      scenarios without the slow ones of crates/vanillite-test/scenarios/quick-skip.txt against
+      their goldens, serial and parallel, on all cores (about a minute). The full fast tier
+      runs on every land.
+  cargo xtask parity worlds [--ticks N] [--jobs N] [--minutes N] [--prepare-only] [<world>...]
+      Complex real-world worlds and schematics (redstone, farms, machines; #244) against
+      Vanilla: the corpus crates/vanillite-test/parity-worlds.toml is downloaded into
+      ~/.cache/vanillite/parity-worlds/ (SHA-256 checked), upgraded or pasted by the pinned
+      Vanilla server, then run like soak scenarios (blocks, ticks, entities and block entities
+      per tick). Writes target/parity-worlds/summary.md and <world>.md. Runs nightly.
+  cargo xtask parity coverage [--jobs N] [--fuzz-minutes N] [--report-only] [<scenario>...]
+      Which Vanilla code the parity scenarios exercise (#257): the recorder plays every
+      Vanilla-recorded scenario (fast and bulk) on the pinned jar under the JaCoCo agent
+      (downloaded into target/vanilla/jacoco/), on --jobs JVMs; --fuzz-minutes adds a parity
+      fuzz run under the agent. Writes target/parity-coverage/ (never committed, #213):
+      summary.md (gameplay coverage, per system, the 30 biggest uncovered classes and
+      packages), coverage.json (also per class, read by parity fuzz) and html/ (per package,
+      class and method). --report-only re-reads the coverage data of the last run; scenario
+      names record just those.
   cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
       World generation against Vanilla (#223): for --seeds world seeds (default 3, derived from
       --seed, default the day number; or the given --world-seed values) and every kind
@@ -284,6 +312,9 @@ fn main() -> ExitCode {
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
         ["parity", "replay", rest @ ..] => parity::replay(&repo_root(), rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
+        ["parity", "quick"] => parity::quick(&repo_root()),
+        ["parity", "worlds", rest @ ..] => parity_worlds::worlds(&repo_root(), rest),
+        ["parity", "coverage", rest @ ..] => coverage::run_coverage(&repo_root(), rest),
         ["worldgen", "sweep", rest @ ..] => worldgen::sweep(&repo_root(), rest),
         ["light", "sweep", rest @ ..] => worldgen::light_sweep(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),

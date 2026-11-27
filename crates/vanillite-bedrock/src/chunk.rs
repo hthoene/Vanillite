@@ -371,7 +371,7 @@ pub fn translate(
     biomes: &BiomeTable,
     biome_key: u64,
     cache: &ChunkCache,
-) -> Result<(Vec<u8>, Vec<Vec<u8>>)> {
+) -> Result<ChunkOut> {
     let map = v.palette.blocks();
     let mut r = Reader::new(java);
     // Heightmaps.
@@ -417,7 +417,16 @@ pub fn translate(
         }));
         java_blocks.push(blocks);
     }
-    let mut actors = block_entities(&mut r, x, z, layout.java_min_section, &java_blocks, v);
+    let mut heads = Vec::new();
+    let mut actors = block_entities(
+        &mut r,
+        x,
+        z,
+        layout.java_min_section,
+        &java_blocks,
+        v,
+        &mut heads,
+    );
     flower_pots(&mut actors, x, z, layout.java_min_section, &java_blocks, v);
 
     // Sub-chunks up to the highest non-empty one; biomes for the whole dimension.
@@ -471,7 +480,19 @@ pub fn translate(
     if !v.before_26_60() {
         out.push(0); // No client biome override.
     }
-    Ok((out, actors))
+    Ok((out, actors, heads))
+}
+
+/// A translated chunk: the `level_chunk` body, its block actors and its player heads.
+pub type ChunkOut = (Vec<u8>, Vec<Vec<u8>>, Vec<Head>);
+
+/// A player head with a skin in a chunk: position, Java state and the `textures` value of its
+/// profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Head {
+    pub pos: [i32; 3],
+    pub state: u32,
+    pub textures: String,
 }
 
 /// The block entities after the sections that Bedrock needs block actor data for.
@@ -482,6 +503,7 @@ fn block_entities(
     min_section: i32,
     sections: &[Container],
     v: &Version,
+    heads: &mut Vec<Head>,
 ) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let Ok(n) = java_varint(r) else {
@@ -525,6 +547,13 @@ fn block_entities(
             Some(vanillite_nbt::Tag::Compound(c)) => Some(c),
             _ => None,
         };
+        if let Some(textures) = compound.and_then(crate::blockentity::head_textures) {
+            heads.push(Head {
+                pos,
+                state,
+                textures,
+            });
+        }
         if let Some(nbt) = crate::blockentity::translate(pos, state, compound, v.palette) {
             out.push(crate::packets::block_actor_data(pos, &nbt));
         }
@@ -542,7 +571,9 @@ fn flower_pots(
     sections: &[Container],
     v: &Version,
 ) {
-    let pot = |s: u32| v.palette.potted_plant(s).is_some();
+    // Pots and extended pistons: block actors without a Java block entity.
+    let pot =
+        |s: u32| v.palette.potted_plant(s).is_some() || crate::blockentity::extended_piston(s);
     for (i, c) in sections.iter().enumerate() {
         if !c.palette.is_empty() && !c.palette.iter().any(|&s| pot(s)) {
             continue;
@@ -638,7 +669,7 @@ mod tests {
         let java = chunk(&sections);
         let table = BiomeTable::new(&["minecraft:plains".to_owned()]);
         let cache = ChunkCache::new(16);
-        let (out, _) =
+        let (out, _, _) =
             translate(Version::latest(), 3, -2, &java, layout, &table, 0, &cache).unwrap();
         let mut r = Reader::new(&out);
         assert_eq!(

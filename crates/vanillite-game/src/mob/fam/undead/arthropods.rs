@@ -2,7 +2,7 @@
 
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, Vec3};
-use vanillite_nbt::{Compound, Tag};
+use vanillite_nbt::Compound;
 use vanillite_world::entity::{Dimensions, EntityId};
 
 use super::{Goal, State, goal, state, state_mut};
@@ -357,10 +357,7 @@ pub fn save(m: &MobData, out: &mut Compound) {
 
 pub fn load(m: &mut MobData, tag: &Compound) {
     if m.kind == Kind::Endermite {
-        st_mut(m).life = match tag.get("Lifetime") {
-            Some(Tag::Int(v)) => *v,
-            _ => 0,
-        };
+        st_mut(m).life = crate::mob::entity_nbt::get_int(tag, "Lifetime").unwrap_or(0);
     }
 }
 

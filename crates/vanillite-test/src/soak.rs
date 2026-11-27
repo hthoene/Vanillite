@@ -403,6 +403,9 @@ fn vanilla(
     let mut cmd = Command::new(&java.java);
     cmd.current_dir(&java.work_dir)
         .arg(format!("-javaagent:{}", java.agent.display()))
+        // A bounded heap: without it the JVM grows towards a quarter of the host's memory, and
+        // several recorders side by side (`parity worlds --jobs`) get OOM-killed.
+        .arg("-Xmx4G")
         .arg("-cp")
         .arg(&java.classpath)
         .arg("dev.vanillite.extractor.golden.ScenarioRecorder")

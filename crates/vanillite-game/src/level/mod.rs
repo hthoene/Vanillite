@@ -1308,6 +1308,38 @@ impl Level {
         });
     }
 
+    /// `playSound(null, entity, sound, source, volume, pitch)`: a sound that follows the entity
+    /// on the client (`ClientboundSoundEntityPacket`).
+    pub fn play_entity_sound(
+        &mut self,
+        entity: EntityId,
+        sound: &str,
+        source: vanillite_protocol::packets::play::clientbound::SoundSource,
+        volume: f32,
+        pitch: f32,
+    ) {
+        let Some((pos, entity_id)) = self
+            .entities
+            .store
+            .get(entity)
+            .map(|e| (e.pos(), e.network_id().0))
+        else {
+            return;
+        };
+        let packet = vanillite_protocol::SharedPacket::of(
+            &vanillite_protocol::packets::play::clientbound::SoundEntity {
+                sound: crate::survival::sound_event(sound),
+                source,
+                entity_id,
+                volume,
+                pitch,
+                seed: self.sound_seeds.next_long(),
+            },
+        );
+        let range = f64::from(if volume > 1.0 { 16.0 * volume } else { 16.0 });
+        self.output().nearby_packets.push((pos, range, packet));
+    }
+
     /// `globalLevelEvent(event, pos, data)`.
     pub fn global_level_event(&mut self, event: i32, pos: BlockPos, data: i32) {
         self.output.global_level_events.push((event, pos, data));

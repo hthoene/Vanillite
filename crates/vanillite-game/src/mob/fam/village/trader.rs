@@ -185,7 +185,7 @@ fn drink_stack(drink: Drink) -> ItemStack {
             let mut out = vec![1];
             vanillite_protocol::codec::write_varint(&mut out, id);
             out.extend_from_slice(&[0, 0, 0]);
-            stack.patch_mut().set(
+            stack.set_component(
                 vanillite_protocol::components::ids::POTION_CONTENTS,
                 out.into_boxed_slice(),
             );
@@ -399,7 +399,7 @@ impl FamilyHooks for Hooks {
         // `setAge(max(0, age))`.
         m.age = int("Age").max(0);
         m.forced_age = int("ForcedAge");
-        m.age_locked = matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+        m.age_locked = crate::mob::entity_nbt::get_bool(tag, "AgeLocked").unwrap_or(false);
         m.baby = false;
         let s = state_mut(m);
         merchant::load(&mut s.merchant, tag);
@@ -429,7 +429,7 @@ impl FamilyHooks for Hooks {
             Goal::UseItem(drink) => {
                 let m = t.mob_ref();
                 match drink {
-                    Drink::Invisibility => !t.cx.env.is_bright_outside() && !invisible(m),
+                    Drink::Invisibility => t.cx.env.is_dark_outside() && !invisible(m),
                     Drink::Milk => t.cx.env.is_bright_outside() && invisible(m),
                 }
             }

@@ -733,7 +733,8 @@ pub(super) fn distance_sqr(t: &Tick<'_, '_>, other: Vec3) -> f64 {
 
 /// `LivingEntity.canAttack(target)` and the combat part of `TargetingConditions.test`.
 pub(crate) fn can_attack(t: &Tick<'_, '_>, target: EntityId) -> bool {
-    if target == t.id {
+    // `canBeSeenAsEnemy`: invulnerable entities are no targets.
+    if target == t.id || crate::mob::entity_nbt::is_invulnerable(t.ents, target) {
         return false;
     }
     let me = t.mob_ref();
@@ -1225,7 +1226,14 @@ pub(crate) fn can_use(t: &mut Tick<'_, '_>, g: &mut Goal) -> bool {
             }
             false
         }
-        Goal::RestrictSun => t.cx.env.is_bright_outside(),
+        // `RestrictSunGoal.canUse`: not with a helmet (ground navigation: every user walks).
+        Goal::RestrictSun => {
+            t.cx.env.is_bright_outside()
+                && t.mob_ref()
+                    .equipment
+                    .get(crate::item::EquipmentSlot::Head)
+                    .is_empty()
+        }
         Goal::Bow { .. } => t.mob_ref().target.is_some() && holds_bow(t.mob_ref()),
         Goal::EatBlock { .. } => {
             let chance = if t.mob_ref().baby { 50 } else { 1000 };

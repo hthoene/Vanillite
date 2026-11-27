@@ -1,0 +1,66 @@
+{
+  "description": "A creeper that starts to swell posts PRIME_FUSE (#238 D-25, Creeper.tick: the primed sound and gameEvent(PRIME_FUSE) when the swell starts); a sculk sensor four blocks away turns active. The creeper has no AI and is ignited by NBT, so the fuse is the only vibration.",
+  "tier": "fast",
+  "time": 6000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 14,
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        8,
+        -60,
+        5
+      ],
+      "block": "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        14.5
+      ]
+    },
+    {
+      "name": "creeper",
+      "type": "minecraft:creeper",
+      "pos": [
+        8.5,
+        -60.0,
+        9.5
+      ],
+      "seed": 51,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:creeper,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:creeper,limit=1] {ignited:1b}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

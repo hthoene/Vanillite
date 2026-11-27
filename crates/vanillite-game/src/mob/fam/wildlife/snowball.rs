@@ -32,12 +32,14 @@ pub(crate) fn shoot(
     crate::mob::projectile::shoot(random, dir, power, uncertainty)
 }
 
-/// `canHitEntity`: living, not a spectator, and not the owner until the projectile left it.
+/// `canHitEntity`: `canBeHitByProjectile` (living entities but spectators, crystals,
+/// vehicles, frames, paintings, bullets, fireballs, ...), not the owner until the projectile
+/// left it.
 fn can_hit(t: &MissileTick<'_, '_>, id: EntityId, owner: Option<EntityId>, left: bool) -> bool {
     if id == t.id || (!left && Some(id) == owner) {
         return false;
     }
-    crate::effect::thrown::can_be_hit(t.ents, id)
+    crate::mob::projectile::can_be_hit_by_projectile(t.ents, id)
 }
 
 /// The end of a throwable's flight this tick.
@@ -205,7 +207,12 @@ pub(super) fn fly(t: &mut MissileTick<'_, '_>) -> Flight {
         return Flight::Miss;
     }
     match (hit, block_hit) {
-        (Some((target, _)), _) => Flight::Hit(Some(target), None, new_pos),
+        (Some((target, _)), _) => {
+            // `Projectile.onHit`: a `#redirectable_projectile` it hits flies off along the
+            // owner's look.
+            crate::mob::attack::aim_deflect(t.ents, target, owner, owner);
+            Flight::Hit(Some(target), None, new_pos)
+        }
         (None, Some((block, at))) => Flight::Hit(None, Some(block), at),
         (None, None) => Flight::Miss,
     }

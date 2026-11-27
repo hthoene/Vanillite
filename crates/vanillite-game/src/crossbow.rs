@@ -95,9 +95,7 @@ pub fn set_charged(stack: &mut ItemStack, projectiles: &[ItemStack]) {
     for s in projectiles {
         s.encode_template(&mut out);
     }
-    stack
-        .patch_mut()
-        .set(ids::CHARGED_PROJECTILES, out.into_boxed_slice());
+    stack.set_component(ids::CHARGED_PROJECTILES, out.into_boxed_slice());
 }
 
 /// `CrossbowItem.getChargeDuration`: 25 ticks, shortened by Quick Charge.
@@ -177,9 +175,7 @@ pub fn use_tick(flags: &mut UseFlags, used: i32, duration: i32) -> UseTick {
 
 /// The intangible marker (`intangible_projectile`, a unit as an empty compound tag).
 fn set_intangible(stack: &mut ItemStack) {
-    stack
-        .patch_mut()
-        .set(ids::INTANGIBLE_PROJECTILE, vec![10, 0].into_boxed_slice());
+    stack.set_component(ids::INTANGIBLE_PROJECTILE, vec![10, 0].into_boxed_slice());
 }
 
 /// Whether the stack was drawn for free (`intangible_projectile`).
@@ -585,7 +581,7 @@ pub fn mob_use_tick(t: &mut crate::mob::Tick<'_, '_>, flags: &mut UseFlags, used
             / (vanillite_base::random::RandomSource::next_float(&mut *t.env.random) * 0.5 + 1.0)
             + 0.2;
         let seed = crate::survival::sound_seed();
-        let source = t.mob_ref().kind.sound_source();
+        let source = t.mob_ref().sound_source();
         crate::survival::play_sound(t.env.out, None, pos, sound, source, 1.0, pitch, seed);
     }
 }
@@ -648,7 +644,7 @@ pub fn mob_shoot(t: &mut crate::mob::Tick<'_, '_>, target: Option<EntityId>, pow
         x_rot: rot.x_rot,
         y_rot: rot.y_rot,
         player: false,
-        source: t.mob_ref().kind.sound_source(),
+        source: t.mob_ref().sound_source(),
     };
     #[allow(clippy::cast_precision_loss)]
     let uncertainty = (14 - t.env.difficulty as i32 * 4) as f32;

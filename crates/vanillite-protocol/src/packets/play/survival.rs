@@ -237,6 +237,33 @@ impl Decode for UpdateAttributes {
     }
 }
 
+/// `sound_entity`: a sound that follows an entity on the client.
+#[derive(Debug, Clone, PartialEq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "sound_entity")]
+pub struct SoundEntity {
+    pub sound: SoundEvent,
+    pub source: SoundSource,
+    #[field(varint)]
+    pub entity_id: i32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub seed: i64,
+}
+
+/// `player_combat_enter`: the player entered combat (`ServerPlayer.onEnterCombat`).
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "player_combat_enter")]
+pub struct PlayerCombatEnter;
+
+/// `player_combat_end`: the player left combat after `duration` ticks
+/// (`ServerPlayer.onLeaveCombat`).
+#[derive(Debug, Clone, PartialEq, Eq, Packet)]
+#[packet(state = Play, dir = Clientbound, name = "player_combat_end")]
+pub struct PlayerCombatEnd {
+    #[field(varint)]
+    pub duration: i32,
+}
+
 /// `hurt_animation`.
 #[derive(Debug, Clone, PartialEq, Packet)]
 #[packet(state = Play, dir = Clientbound, name = "hurt_animation")]

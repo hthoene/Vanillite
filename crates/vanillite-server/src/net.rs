@@ -319,12 +319,14 @@ pub(crate) struct NetState {
 impl NetState {
     /// Starts the network pipeline with the settings of `server.properties`.
     /// Without `listen` it binds to a free port of the loopback interface only.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         config: &Config,
         dir: &Path,
         configuration: ConfigurationData,
         listen: bool,
         enforces_secure_chat: bool,
+        language: Arc<std::collections::HashMap<String, String>>,
         tap: Arc<vanillite_protocol::tap::PacketTap>,
         io_threads: usize,
     ) -> Result<NetState, StartError> {
@@ -384,7 +386,7 @@ impl NetState {
         let (network, arrivals) = Network::start(net, status.clone(), configuration, None)
             .map_err(|e| StartError::Io(format!("cannot listen on {ip}:{}: {e}", p.server_port)))?;
         let bedrock = if config.server.bedrock.enabled {
-            Some(start_bedrock(config, &network, ip, listen)?)
+            Some(start_bedrock(config, &network, ip, listen, language)?)
         } else {
             None
         };
@@ -465,6 +467,7 @@ fn start_bedrock(
     network: &Network,
     ip: std::net::IpAddr,
     listen: bool,
+    language: Arc<std::collections::HashMap<String, String>>,
 ) -> Result<(vanillite_bedrock::Frontend, Arc<vanillite_bedrock::Status>), StartError> {
     let b = &config.server.bedrock;
     let p = &config.properties;
@@ -492,6 +495,7 @@ fn start_bedrock(
         max_view_distance: b.max_view_distance,
         chunk_cache_sections: usize::try_from(b.chunk_cache_sections).unwrap_or(0),
         identity_file: Some("bedrock-identity.key".into()),
+        language,
         ..vanillite_bedrock::BedrockConfig::default()
     };
     let frontend = vanillite_bedrock::Frontend::start(
@@ -560,6 +564,7 @@ pub(crate) fn arrival(
         address: joined.address.to_string(),
         inbox,
         transferred: joined.transferred,
+        details: Some(joined.details),
     };
     (arrival, sink)
 }

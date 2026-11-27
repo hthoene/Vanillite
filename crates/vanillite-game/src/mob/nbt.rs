@@ -7,7 +7,7 @@ use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{EntityFlags, EntityRef, Rotation};
 
-use super::{Kind, MobData};
+use super::{Kind, MobData, entity_nbt};
 use crate::experience_orb::ExperienceOrbData;
 
 fn doubles(v: Vec3) -> List {
@@ -71,47 +71,23 @@ pub fn tag_component(tag: &Tag) -> Option<Box<[u8]>> {
 }
 
 fn vec3_of(tag: &Compound, key: &str) -> Option<Vec3> {
-    match tag.get(key) {
-        Some(Tag::List(l)) if l.0.len() == 3 => {
-            let d = |i: usize| match l.0[i] {
-                Tag::Double(v) if v.is_finite() => Some(v),
-                Tag::Float(v) if v.is_finite() => Some(f64::from(v)),
-                _ => None,
-            };
-            Some(Vec3::new(d(0)?, d(1)?, d(2)?))
-        }
-        _ => None,
-    }
+    entity_nbt::vec3(tag.get(key))
 }
 
 fn int(tag: &Compound, key: &str) -> Option<i32> {
-    tag.get(key)
-        .and_then(Tag::as_i64)
-        .and_then(|v| i32::try_from(v).ok())
+    entity_nbt::get_int(tag, key)
 }
 
 fn boolean(tag: &Compound, key: &str) -> bool {
-    tag.get(key).and_then(Tag::as_i64).is_some_and(|v| v != 0)
+    entity_nbt::get_bool(tag, key).unwrap_or(false)
 }
 
 fn double(tag: &Compound, key: &str) -> Option<f64> {
-    match tag.get(key) {
-        Some(Tag::Double(v)) if v.is_finite() => Some(*v),
-        Some(Tag::Float(v)) if v.is_finite() => Some(f64::from(*v)),
-        _ => None,
-    }
+    entity_nbt::get_double(tag, key)
 }
 
 fn float(tag: &Compound, key: &str) -> Option<f32> {
-    match tag.get(key) {
-        Some(Tag::Float(v)) if v.is_finite() => Some(*v),
-        Some(Tag::Double(v)) if v.is_finite() => {
-            #[allow(clippy::cast_possible_truncation)]
-            let f = *v as f32;
-            Some(f)
-        }
-        _ => None,
-    }
+    entity_nbt::get_float(tag, key)
 }
 
 /// The entity type of a compound (`id`).
@@ -161,12 +137,9 @@ fn save_entity(core: &EntityRef<'_>, out: &mut Compound) {
         List(vec![Tag::Float(rot.y_rot), Tag::Float(rot.x_rot)]),
     );
     out.insert("OnGround", core.flags().contains(EntityFlags::ON_GROUND));
-    out.insert("Invulnerable", false);
     out.insert("PortalCooldown", 0);
     out.insert("UUID", uuid_ints(core.uuid()));
-    if core.flags().contains(EntityFlags::NO_GRAVITY) {
-        out.insert("NoGravity", true);
-    }
+    entity_nbt::save_flags(core.flags(), out);
 }
 
 /// An area effect cloud as entity NBT.
@@ -214,18 +187,14 @@ pub fn load_special(
     let kind = type_of(tag)?;
     let data = super::boss::special::load(kind, tag)?;
     let pos = vec3_of(tag, "Pos")?;
-    let velocity = vec3_of(tag, "Motion").unwrap_or(Vec3::ZERO);
-    let rot = match tag.get("Rotation") {
-        Some(Tag::List(l)) if l.0.len() == 2 => match (&l.0[0], &l.0[1]) {
-            (Tag::Float(y), Tag::Float(x)) if y.is_finite() && x.is_finite() => Rotation {
-                y_rot: *y,
-                x_rot: *x,
-                y_head_rot: *y,
-            },
-            _ => Rotation::default(),
-        },
-        _ => Rotation::default(),
-    };
+    let velocity = entity_nbt::motion(tag.get("Motion")).unwrap_or(Vec3::ZERO);
+    let rot = entity_nbt::rotation(tag.get("Rotation")).map_or_else(Rotation::default, |(y, x)| {
+        Rotation {
+            y_rot: y,
+            x_rot: x,
+            y_head_rot: y,
+        }
+    });
     // Generated entities (the pillars' crystals) have no UUID yet.
     let uuid = uuid_of(tag).unwrap_or_else(|| {
         let mut r = vanillite_base::random::LegacyRandom::new(seed);
@@ -252,7 +221,6 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
     if m.silent {
         out.insert("Silent", true);
     }
-    out.insert("Invulnerable", m.invulnerable);
     out.insert("Health", m.health);
     out.insert("AbsorptionAmount", m.absorption);
     if let Some(list) = m.effects.save() {
@@ -385,14 +353,8 @@ pub struct LoadedMob {
 pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     let kind = Kind::of(type_of(tag)?)?;
     let pos = vec3_of(tag, "Pos")?;
-    let velocity = vec3_of(tag, "Motion").unwrap_or(Vec3::ZERO);
-    let (y_rot, x_rot) = match tag.get("Rotation") {
-        Some(Tag::List(l)) if l.0.len() == 2 => match (&l.0[0], &l.0[1]) {
-            (Tag::Float(y), Tag::Float(x)) if y.is_finite() && x.is_finite() => (*y, *x),
-            _ => (0.0, 0.0),
-        },
-        _ => (0.0, 0.0),
-    };
+    let velocity = entity_nbt::motion(tag.get("Motion")).unwrap_or(Vec3::ZERO);
+    let (y_rot, x_rot) = entity_nbt::rotation(tag.get("Rotation")).unwrap_or_default();
     let uuid = uuid_of(tag).unwrap_or_else(|| {
         let mut r = vanillite_base::random::LegacyRandom::new(seed);
         super::random_uuid(&mut r)
@@ -432,11 +394,13 @@ pub fn apply_mob(m: &mut MobData, tag: &Compound, game_time: i64, day_time: i64)
 /// The saved state of a mob (`readAdditionalSaveData` of the entity classes) from `tag`.
 fn read_mob(m: &mut MobData, tag: &Compound) {
     let kind = m.kind;
-    // The saved attributes of the zombies before the health (`attributes` comes first).
+    // `LivingEntity.readAdditionalSaveData`: the attributes and effects first, their values
+    // and modifiers (Health Boost) set the maximum health.
     if super::fam::undead::zombies::is_zombie(kind) {
         super::fam::undead::zombies::load_attributes(m, tag);
+    } else {
+        entity_nbt::load_attributes(m, tag.get("attributes"));
     }
-    // Effects first: their modifiers (Health Boost) raise the maximum health.
     m.effects.load(tag.get("active_effects"));
     if !m.effects.is_empty() {
         let dirty = m.effects.modifiers.take_dirty();
@@ -444,16 +408,16 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
         m.absorption = float(tag, "AbsorptionAmount").unwrap_or(0.0).max(0.0);
         crate::effect::living::apply_mob_modifiers(m, &[]);
     }
-    if let Some(h) = float(tag, "Health") {
+    let health = float(tag, "Health");
+    if let Some(h) = health {
         m.health = h.clamp(0.0, m.max_health());
     }
-    m.fire_ticks = int(tag, "Fire").unwrap_or(-1);
+    m.fire_ticks = int(tag, "Fire").unwrap_or(0);
     m.air = int(tag, "Air").unwrap_or(300);
     m.ticks_frozen = int(tag, "TicksFrozen").unwrap_or(0);
-    m.fall_distance = match tag.get("fall_distance") {
-        Some(Tag::Double(d)) if d.is_finite() => *d,
-        _ => f64::from(float(tag, "FallDistance").unwrap_or(0.0)),
-    };
+    m.fall_distance = double(tag, "fall_distance")
+        .or_else(|| double(tag, "FallDistance"))
+        .unwrap_or(0.0);
     m.hurt_time = int(tag, "HurtTime").unwrap_or(0);
     m.death_time = int(tag, "DeathTime").unwrap_or(0);
     // Elder guardians are persistent from birth (`setPersistenceRequired`), also when
@@ -462,7 +426,6 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
         || kind == Kind::ElderGuardian && tag.get("PersistenceRequired").is_none();
     m.no_ai = boolean(tag, "NoAI");
     m.silent = boolean(tag, "Silent");
-    m.invulnerable = boolean(tag, "Invulnerable");
     m.custom_name = tag.get("CustomName").and_then(tag_component);
     super::fam::reload_brain(m, tag);
     super::equipment::load(m, tag);
@@ -512,8 +475,7 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
             m.in_love = int(tag, "InLove").unwrap_or(0);
             m.love_cause = uuid_key(tag, "LoveCause");
             m.forced_age = int(tag, "ForcedAge").unwrap_or(0);
-            m.age_locked =
-                matches!(tag.get("AgeLocked"), Some(vanillite_nbt::Tag::Byte(b)) if *b != 0);
+            m.age_locked = boolean(tag, "AgeLocked");
             if kind == Kind::Sheep {
                 super::fam::classic::sheep_mut(m).color =
                     u8::try_from(int(tag, "Color").unwrap_or(0) & 15).unwrap_or(0);
@@ -553,6 +515,17 @@ fn read_mob(m: &mut MobData, tag: &Compound) {
         }
         Kind::Spider => {}
         _ => super::fam::load(m, tag),
+    }
+    // `AbstractCubeMob` sets its size before `super` reads the attributes and health.
+    let cube = matches!(kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube);
+    if cube {
+        entity_nbt::load_attributes(m, tag.get("attributes"));
+    }
+    // Without `Health` the mob has its full health, of the maximum its kind data set.
+    match health {
+        None => m.health = m.max_health(),
+        Some(h) if cube => m.health = h.clamp(0.0, m.max_health()),
+        Some(_) => {}
     }
 }
 
@@ -596,10 +569,7 @@ pub fn load_orb(tag: &Compound) -> Option<(Vec3, Vec3, u128, ExperienceOrbData)>
             // A summon replaces it with the seed its constructor took.
             random_state: vanillite_base::random::LegacyRandom::new(crate::mob::new_unique_seed())
                 .state(),
-            fall_distance: match tag.get("fall_distance") {
-                Some(Tag::Double(v)) => *v,
-                _ => 0.0,
-            },
+            fall_distance: double(tag, "fall_distance").unwrap_or(0.0),
         },
     ))
 }
@@ -616,16 +586,10 @@ pub struct LoadedEntity {
 
 fn load_entity(tag: &Compound) -> Option<LoadedEntity> {
     let pos = vec3_of(tag, "Pos")?;
-    let (y_rot, x_rot) = match tag.get("Rotation") {
-        Some(Tag::List(l)) if l.0.len() == 2 => match (&l.0[0], &l.0[1]) {
-            (Tag::Float(y), Tag::Float(x)) if y.is_finite() && x.is_finite() => (*y, *x),
-            _ => (0.0, 0.0),
-        },
-        _ => (0.0, 0.0),
-    };
+    let (y_rot, x_rot) = entity_nbt::rotation(tag.get("Rotation")).unwrap_or_default();
     Some(LoadedEntity {
         pos,
-        velocity: vec3_of(tag, "Motion").unwrap_or(Vec3::ZERO),
+        velocity: entity_nbt::motion(tag.get("Motion")).unwrap_or(Vec3::ZERO),
         rot: Rotation {
             y_rot,
             x_rot,
@@ -744,8 +708,12 @@ fn hit_sound(a: &super::projectile::ArrowData) -> &'static str {
     }
 }
 
-/// An arrow from entity NBT (its owner is not resolved).
-pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
+/// An arrow from entity NBT (its owner is not resolved). Its own random starts from `seed`,
+/// the seed its constructor already took, or else from the next entity seed.
+pub fn load_arrow(
+    tag: &Compound,
+    seed: Option<i64>,
+) -> Option<(LoadedEntity, super::projectile::ArrowData)> {
     let kind = type_of(tag)?;
     if !super::projectile::is_arrow_kind(kind) {
         return None;
@@ -766,10 +734,7 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
         item
     };
     let e = load_entity(tag)?;
-    let damage = match tag.get("damage") {
-        Some(Tag::Double(d)) if d.is_finite() => *d,
-        _ => 2.0,
-    };
+    let damage = double(tag, "damage").unwrap_or(2.0);
     Some((
         e,
         super::projectile::ArrowData {
@@ -783,14 +748,15 @@ pub fn load_arrow(tag: &Compound) -> Option<(LoadedEntity, super::projectile::Ar
             last_state: None,
             tick_count: 0,
             pickup: u8::try_from(int(tag, "pickup").unwrap_or(0).clamp(0, 2)).unwrap_or(0),
-            random_state: LegacyRandom::new(crate::mob::new_entity_seed()).state(),
+            random_state: LegacyRandom::new(seed.unwrap_or_else(crate::mob::new_entity_seed))
+                .state(),
             knockback: 0.0,
             fire: int(tag, "Fire").unwrap_or(0).max(0),
             touching_water: false,
             item,
             in_ground_time: 0,
             spectral_duration: int(tag, "Duration").unwrap_or(200),
-            has_been_shot: matches!(tag.get("HasBeenShot"), Some(Tag::Byte(b)) if *b != 0),
+            has_been_shot: boolean(tag, "HasBeenShot"),
             pierce_level: u8::try_from(int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127))
                 .unwrap_or(0),
             pierced: Vec::new(),
@@ -851,10 +817,10 @@ fn leash_ref(tag: &Compound) -> Option<super::LeashRef> {
 }
 
 /// A boat from entity NBT.
-pub fn load_boat(tag: &Compound) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
+pub fn load_boat(tag: &Compound, seed: i64) -> Option<(LoadedEntity, crate::vehicle::BoatData)> {
     let kind = crate::vehicle::BoatKind::of(type_of(tag)?)?;
     let e = load_entity(tag)?;
-    let mut b = crate::vehicle::BoatData::new(kind);
+    let mut b = crate::vehicle::BoatData::new(kind, seed);
     b.custom_name = tag.get("CustomName").and_then(tag_component);
     b.pending_leash = leash_ref(tag);
     if kind.chest {

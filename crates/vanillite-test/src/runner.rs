@@ -9,6 +9,9 @@
 //! `VANILLITE_SCENARIO=<scenario>,...` runs only those scenarios.
 //! `VANILLITE_SCENARIO_SHARD=<k>/<n>` runs only part k of n (CI jobs side by side): the
 //! scenarios in name order, every n-th from the k-th on, so the parts together run all of them.
+//!
+//! [`check_quick`] is the quick tier (`cargo xtask parity quick`, part of the quick check): the
+//! fast scenarios without the slow ones listed in `scenarios/quick-skip.txt`.
 
 use std::path::PathBuf;
 
@@ -210,6 +213,10 @@ fn observe(
     if light {
         world.light(trace.min, trace.max, &mut frame.light);
     }
+    if scenario.world.block_entities {
+        world.block_entities(trace.min, trace.max, &mut frame.block_entities);
+        frame.block_entities.sort_unstable();
+    }
     frame.level_rng = world.level_rng();
     if scenario.world.client_view {
         frame.view = world.client_view()?;
@@ -371,6 +378,38 @@ fn shard(v: &str) -> Option<(usize, usize)> {
 
 /// Checks every scenario of a tier; returns one message per failing scenario.
 pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
+    check_where(tier, factory, &[])
+}
+
+/// Checks the quick tier: the fast scenarios except those in `scenarios/quick-skip.txt` (one
+/// name per line, `#` comments). The full fast tier still runs them all.
+pub fn check_quick(factory: WorldFactory) -> Vec<String> {
+    let path = Scenario::dir().join("quick-skip.txt");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return vec![format!("{}: {e}", path.display())],
+    };
+    let skip: Vec<&str> = text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let stale: Vec<&str> = skip
+        .iter()
+        .copied()
+        .filter(|n| !Scenario::dir().join(format!("{n}.json")).is_file())
+        .collect();
+    if !stale.is_empty() {
+        return vec![format!(
+            "{}: no such scenarios (remove them): {}",
+            path.display(),
+            stale.join(", ")
+        )];
+    }
+    check_where(Tier::Fast, factory, &skip)
+}
+
+fn check_where(tier: Tier, factory: WorldFactory, skip: &[&str]) -> Vec<String> {
     let scenarios = match Scenario::all() {
         Ok(s) => s,
         Err(e) => return vec![e],
@@ -389,7 +428,7 @@ pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
     };
     let todo: Vec<&Scenario> = scenarios
         .iter()
-        .filter(|s| s.tier == tier)
+        .filter(|s| s.tier == tier && !skip.contains(&s.name.as_str()))
         .filter(|s| {
             only.as_deref()
                 .is_none_or(|o| o.split(',').any(|n| n.trim() == s.name))

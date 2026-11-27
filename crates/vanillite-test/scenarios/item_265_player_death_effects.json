@@ -1,0 +1,59 @@
+{
+  "description": "Death effects of players (#265): a player with Weaving and Oozing dies; at death time 20 (tickDeath removes it) Weaving spreads cobwebs around it from the player's random, even without mob griefing, and Oozing spawns two size-2 slimes.",
+  "tier": "fast",
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false",
+    "mob_griefing": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 40,
+  "entities": [
+    {
+      "name": "p",
+      "type": "minecraft:player",
+      "pos": [
+        8.5,
+        -60.0,
+        8.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "seed": 7
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "effect",
+      "entity": "p",
+      "effect": "minecraft:weaving",
+      "duration": 600
+    },
+    {
+      "tick": 2,
+      "op": "effect",
+      "entity": "p",
+      "effect": "minecraft:oozing",
+      "duration": 600
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "kill @a"
+    }
+  ]
+}

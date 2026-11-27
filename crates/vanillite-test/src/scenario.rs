@@ -33,6 +33,8 @@
 //!   client sees. Default `false`.
 //! - `weather`: `clear` (default), `rain` or `thunder`, at full strength from the start (no
 //!   fade in); with `advance_weather` off it stays.
+//! - `block_entities`: frames also hold the block entities of the region (their full saved
+//!   data, see [`crate::trace`]). Default `false`.
 //! - `level_rng`: frames also hold the state of the level random (always with entities).
 //!   Scenarios with random ticks set it: the random draws must match call by call.
 //!
@@ -189,7 +191,10 @@
 //!   instead of flat layers. Its chunks load from there; missing chunks are generated from the
 //!   seed by the normal overworld generator without structures on both sides. The snapshot's
 //!   entities are not loaded, and entities that chunk generation spawns are removed before
-//!   frame 0: their randoms and network ids cannot match between the two servers.
+//!   frame 0: their randoms and network ids cannot match between the two servers. With
+//!   `world.entities: true` (the parity world corpus, #244) the snapshot's `entities/` load
+//!   with its chunks (their randoms from their UUIDs, see `entity_seed`) and nothing is
+//!   removed.
 //! - Players: `"game_mode"` (`survival` default, `creative`, `adventure`, `spectator`), and
 //!   `"join": tick` to join before the actions of that tick instead of at the start.
 //! - `"client_tick_end": false`: the harness sends no `client_tick_end` after each tick; the
@@ -224,6 +229,8 @@ pub struct WorldSpec {
     pub seed: i64,
     /// A recorded world (`world.snapshot`) instead of the flat layers.
     pub snapshot: Option<std::path::PathBuf>,
+    /// Whether the snapshot's entities load with its chunks (`world.entities`, #244).
+    pub snapshot_entities: bool,
     pub biome: String,
     /// Layers bottom up: block name and thickness.
     pub layers: Vec<(String, u32)>,
@@ -275,6 +282,8 @@ pub struct WorldSpec {
     pub view_events: bool,
     /// Whether the End generates like a new Vanilla world (`"end": "normal"`).
     pub normal_end: bool,
+    /// Whether frames hold the region's block entities (`"block_entities": true`, #244).
+    pub block_entities: bool,
 }
 
 /// The overworld's dimension id.
@@ -773,6 +782,10 @@ impl Scenario {
                     .and_then(|w| w.get("snapshot"))
                     .and_then(Value::as_str)
                     .map(std::path::PathBuf::from),
+                snapshot_entities: world
+                    .and_then(|w| w.get("entities"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 biome: world
                     .and_then(|w| w.get("biome"))
                     .and_then(Value::as_str)
@@ -803,6 +816,10 @@ impl Scenario {
                     .unwrap_or("clear")
                     .to_owned(),
                 level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
+                block_entities: v
+                    .get("block_entities")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 client_tick_end: v
                     .get("client_tick_end")
                     .and_then(Value::as_bool)

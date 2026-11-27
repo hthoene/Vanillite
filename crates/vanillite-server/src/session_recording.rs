@@ -493,7 +493,7 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// `YYYY-MM-DD_HH-MM-SS` in UTC.
-fn utc_name(time: std::time::SystemTime) -> String {
+pub(crate) fn utc_name(time: std::time::SystemTime) -> String {
     let secs = time
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

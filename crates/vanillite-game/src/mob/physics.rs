@@ -650,19 +650,19 @@ fn shape_clip(from: Vec3, to: Vec3, pos: BlockPos, boxes: &[[f64; 6]]) -> Option
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.NONE`: the first block whose
 /// collision shape the segment hits (`BlockGetter.traverseBlocks`), with the hit point.
 pub fn clip(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, Fluids::None, false)
+    clip_with(blocks, from, to, Fluids::None, Shapes::Collider)
 }
 
 /// `Level.clip` with `ClipContext.Block.VISUAL` and `Fluid.NONE`: glass, iron bars, powder
 /// snow and the like do not stop it.
 pub fn clip_visual(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, Fluids::None, true)
+    clip_with(blocks, from, to, Fluids::None, Shapes::Visual)
 }
 
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.SOURCE_ONLY`: also stops at the
 /// surfaces of source fluids.
 pub fn clip_source_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, Fluids::Source, false)
+    clip_with(blocks, from, to, Fluids::Source, Shapes::Collider)
 }
 
 /// `ClipContext.Fluid`.
@@ -676,7 +676,20 @@ enum Fluids {
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.ANY`: also stops at fluid
 /// surfaces (a fluid's shape is its height in the block).
 pub fn clip_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
-    clip_with(blocks, from, to, Fluids::Any, false)
+    clip_with(blocks, from, to, Fluids::Any, Shapes::Collider)
+}
+
+/// `Level.clip` with `ClipContext.Block.OUTLINE` and `Fluid.ANY` (`BoatItem.use`).
+pub fn clip_outline_fluids(blocks: &dyn Blocks, from: Vec3, to: Vec3) -> Option<(BlockPos, Vec3)> {
+    clip_with(blocks, from, to, Fluids::Any, Shapes::Outline)
+}
+
+/// `ClipContext.Block`.
+#[derive(Clone, Copy, PartialEq)]
+enum Shapes {
+    Collider,
+    Visual,
+    Outline,
 }
 
 fn clip_with(
@@ -684,7 +697,7 @@ fn clip_with(
     from: Vec3,
     to: Vec3,
     fluids: Fluids,
-    visual: bool,
+    shapes: Shapes,
 ) -> Option<(BlockPos, Vec3)> {
     if from == to {
         return None;
@@ -701,10 +714,10 @@ fn clip_with(
     let mut bz = floor(from_z);
     let hit = |pos: BlockPos| -> Option<(BlockPos, Vec3)> {
         let state = blocks.state(pos);
-        let shape = if visual {
-            state.visual_shape()
-        } else {
-            state.collision_shape()
+        let shape = match shapes {
+            Shapes::Visual => state.visual_shape(),
+            Shapes::Outline => state.outline_shape(),
+            Shapes::Collider => state.collision_shape(),
         };
         let block = shape_clip(from, to, pos, shape);
         let fluid = state.fluid_state();

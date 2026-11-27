@@ -238,8 +238,11 @@ pub enum EntityUpdate {
     },
     /// Head yaw (`rotate_head`).
     HeadRot(i8),
-    /// Velocity (`set_entity_motion`).
+    /// Velocity (`set_entity_motion`) of `hurtMarked`.
     Motion(Vec3),
+    /// Velocity of the movement tracking (`set_entity_motion`; bundled with
+    /// `projectile_power` for `AbstractHurtingProjectile`s).
+    TrackedMotion(Vec3),
     /// The dirty synched data (`set_entity_data`; attributes too for living entities). The
     /// encoder packs it from the entity's current state.
     Data,

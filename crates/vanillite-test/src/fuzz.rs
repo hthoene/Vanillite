@@ -574,8 +574,129 @@ const BEHAVIOURS: &[(Behaviour, u32)] = &[
     (Behaviour::Ride, 2),
 ];
 
+/// The behaviours' system in the coverage of Vanilla's code (`cargo xtask parity coverage`).
+fn behaviour_system(b: Behaviour) -> &'static str {
+    match b {
+        Behaviour::Walk | Behaviour::Jump | Behaviour::Idle | Behaviour::Look => "player",
+        Behaviour::Mine | Behaviour::Place | Behaviour::Pillar => "blocks",
+        Behaviour::UseItem | Behaviour::Drop => "items",
+        Behaviour::Attack => "combat",
+        Behaviour::Interact => "mobs",
+        Behaviour::Inventory | Behaviour::Swap => "inventory & crafting",
+        Behaviour::Ride => "vehicles",
+    }
+}
+
+/// Weights that steer [`generate_biased`] towards what the parity scenarios leave untested
+/// (#257): behaviours, mobs, items and blocks whose Vanilla code the coverage of `cargo xtask
+/// parity coverage` shows as little exercised are picked up to four times as often.
+#[derive(Clone, Debug)]
+pub struct Bias {
+    behaviours: Vec<u32>,
+    mobs: Vec<u32>,
+    items: Vec<u32>,
+    blocks: Vec<u32>,
+    soft: Vec<u32>,
+}
+
+impl Bias {
+    /// From the `coverage.json` of `cargo xtask parity coverage`: its `systems` (name and
+    /// `instructions.missed`/`covered`) and `classes` (`im`/`ic` per class).
+    pub fn from_coverage(coverage: &Value) -> Self {
+        let fraction = |missed: f64, covered: f64| {
+            if missed + covered > 0.0 {
+                missed / (missed + covered)
+            } else {
+                1.0
+            }
+        };
+        let mut systems: HashMap<&str, f64> = HashMap::new();
+        for s in coverage["systems"].as_array().into_iter().flatten() {
+            if let Some(name) = s["name"].as_str() {
+                let i = &s["instructions"];
+                systems.insert(
+                    name,
+                    fraction(
+                        i["missed"].as_f64().unwrap_or(0.0),
+                        i["covered"].as_f64().unwrap_or(0.0),
+                    ),
+                );
+            }
+        }
+        // Outer classes by simple name: missed and covered instructions.
+        let mut classes: HashMap<&str, (f64, f64)> = HashMap::new();
+        for (name, c) in coverage["classes"].as_object().into_iter().flatten() {
+            let simple = name.rsplit('/').next().unwrap_or(name);
+            if simple.contains('$') {
+                continue;
+            }
+            let e = classes.entry(simple).or_default();
+            e.0 += c["im"].as_f64().unwrap_or(0.0);
+            e.1 += c["ic"].as_f64().unwrap_or(0.0);
+        }
+        let system = |name: &str| systems.get(name).copied().unwrap_or(0.0);
+        // The class of a registry id (`minecraft:iron_golem` → `IronGolem`, `minecraft:oak_slab`
+        // → `SlabBlock`), else the system's share.
+        let id = |id: &str, suffix: &str, fallback: &str| {
+            let path = id.split('[').next().unwrap_or(id);
+            let path = path.strip_prefix("minecraft:").unwrap_or(path);
+            let words: Vec<&str> = path.split('_').collect();
+            for k in 0..words.len() {
+                let camel: String = words[k..]
+                    .iter()
+                    .map(|w| {
+                        let mut c = w.chars();
+                        c.next().map_or(String::new(), |f| {
+                            f.to_ascii_uppercase().to_string() + c.as_str()
+                        })
+                    })
+                    .collect();
+                for name in [format!("{camel}{suffix}"), camel] {
+                    if let Some(&(m, c)) = classes.get(name.as_str()) {
+                        return fraction(m, c);
+                    }
+                }
+            }
+            system(fallback)
+        };
+        let weight = |base: u32, missed: f64| base * (100 + (300.0 * missed) as u32);
+        Self {
+            behaviours: BEHAVIOURS
+                .iter()
+                .map(|&(b, w)| weight(w, system(behaviour_system(b))))
+                .collect(),
+            mobs: MOBS.iter().map(|m| weight(1, id(m, "", "mobs"))).collect(),
+            items: ITEMS
+                .iter()
+                .map(|(i, _)| weight(1, id(i, "Item", "items")))
+                .collect(),
+            blocks: BLOCKS
+                .iter()
+                .map(|(b, _)| weight(1, id(b, "Block", "blocks")))
+                .collect(),
+            soft: SOFT
+                .iter()
+                .map(|b| weight(1, id(b, "Block", "blocks")))
+                .collect(),
+        }
+    }
+}
+
+/// An element of `list`, by `weights` if given.
+fn pick_by<'a, T>(rng: &mut Rng, list: &'a [T], weights: Option<&[u32]>) -> &'a T {
+    match weights {
+        Some(w) => &list[rng.weighted(w)],
+        None => rng.pick(list),
+    }
+}
+
 /// The scenario of `seed`.
 pub fn generate(seed: u64) -> Value {
+    generate_biased(seed, None)
+}
+
+/// The scenario of `seed`, its choices weighted by `bias` if given.
+pub fn generate_biased(seed: u64, bias: Option<&Bias>) -> Value {
     let mut rng = Rng::new(seed);
     let mut setup = Vec::new();
     let mut cells: HashMap<(i32, i32, i32), (Cell, String)> = HashMap::new();
@@ -612,10 +733,10 @@ pub fn generate(seed: u64) -> Value {
             let (dx, dz) = *rng.pick(&[(1, 0), (-1, 0), (0, 1), (0, -1)]);
             let pad = [x + dx, GROUND_TOP + 1, z + dz];
             if rng.chance(0.5) {
-                let (b, h) = *rng.pick(BLOCKS);
+                let (b, h) = *pick_by(&mut rng, BLOCKS, bias.map(|b| b.blocks.as_slice()));
                 put(&mut setup, &mut cells, "set", pad, b, Cell::Solid(h));
             } else {
-                let b = *rng.pick(SOFT);
+                let b = *pick_by(&mut rng, SOFT, bias.map(|b| b.soft.as_slice()));
                 put(&mut setup, &mut cells, "set", pad, b, Cell::Open);
             }
         }
@@ -664,10 +785,10 @@ pub fn generate(seed: u64) -> Value {
             continue;
         }
         if rng.chance(0.7) {
-            let (b, h) = *rng.pick(BLOCKS);
+            let (b, h) = *pick_by(&mut rng, BLOCKS, bias.map(|b| b.blocks.as_slice()));
             put(&mut setup, &mut cells, "set", p, b, Cell::Solid(h));
         } else {
-            let b = *rng.pick(SOFT);
+            let b = *pick_by(&mut rng, SOFT, bias.map(|b| b.soft.as_slice()));
             put(&mut setup, &mut cells, "set", p, b, Cell::Open);
         }
     }
@@ -695,13 +816,13 @@ pub fn generate(seed: u64) -> Value {
     let mut inventory = Vec::new();
     let stacks = rng.range(1, 6) as usize;
     for (slot, held) in hotbar.iter_mut().enumerate().take(stacks) {
-        let (item, count) = *rng.pick(ITEMS);
+        let (item, count) = *pick_by(&mut rng, ITEMS, bias.map(|b| b.items.as_slice()));
         *held = Some((item.to_owned(), count));
         inventory.push(json!([slot, item, count]));
     }
     // A few stacks in the main inventory for the clicks.
     for _ in 0..rng.range(0, 3) {
-        let (item, count) = *rng.pick(ITEMS);
+        let (item, count) = *pick_by(&mut rng, ITEMS, bias.map(|b| b.items.as_slice()));
         inventory.push(json!([rng.range(9, 35), item, count]));
     }
     let yaw = (rng.below(8) * 45) as f32;
@@ -715,7 +836,7 @@ pub fn generate(seed: u64) -> Value {
     let mut entities = vec![player];
     let mut mob_names = Vec::new();
     for i in 0..rng.range(0, 3) {
-        let kind = *rng.pick(MOBS);
+        let kind = *pick_by(&mut rng, MOBS, bias.map(|b| b.mobs.as_slice()));
         let name = format!("m{i}");
         let x = (start[0] + f64::from(rng.range(-4, 4)))
             .clamp(0.5, 15.5)
@@ -777,9 +898,12 @@ pub fn generate(seed: u64) -> Value {
         hotbar,
         using: None,
     };
+    let weights: Vec<u32> = bias.map_or_else(
+        || BEHAVIOURS.iter().map(|b| b.1).collect(),
+        |b| b.behaviours.clone(),
+    );
     let mut tick = 1;
     while tick <= w.ticks {
-        let weights: Vec<u32> = BEHAVIOURS.iter().map(|b| b.1).collect();
         let behaviour = BEHAVIOURS[rng.weighted(&weights)].0;
         tick = act(&mut rng, &mut w, &mut c, behaviour, tick, &mob_names);
     }

@@ -4,6 +4,7 @@
 //! those moves (see [`crate::riding`]).
 
 use vanillite_base::math::{ceil, floor};
+use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{Aabb, BlockPos, Vec3};
 use vanillite_data::entity::EntityTypeId;
 use vanillite_world::entity::{EntityFlags, EntityId, NetworkIds, NewEntity, Rotation};
@@ -101,6 +102,10 @@ pub struct BoatData {
     /// `LootTable` and `LootTableSeed` of a chest boat until the loot is rolled
     /// ([`crate::block::chest_loot::unpack_entity`]).
     pub loot_table: Option<(String, i64)>,
+    /// `paddlePositions`: the paddle angles for the paddle sounds.
+    pub paddle_positions: [f32; 2],
+    /// The boat's own random (`Entity.random`).
+    pub random: LegacyRandom,
     /// `DATA_ID_BUBBLE_TIME`, `isAboveBubbleColumn` and `bubbleColumnDirectionIsDown`.
     pub bubble_time: i32,
     pub above_bubble_column: bool,
@@ -110,8 +115,8 @@ pub struct BoatData {
 }
 
 impl BoatData {
-    /// A new boat.
-    pub fn new(kind: BoatKind) -> BoatData {
+    /// A new boat with its random seeded with `seed`.
+    pub fn new(kind: BoatKind, seed: i64) -> BoatData {
         BoatData {
             kind,
             status: Status::Unset,
@@ -134,6 +139,8 @@ impl BoatData {
                 Vec::new()
             },
             loot_table: None,
+            paddle_positions: [0.0; 2],
+            random: LegacyRandom::new(seed),
             bubble_time: 0,
             above_bubble_column: false,
             bubble_column_down: false,
@@ -453,8 +460,61 @@ pub fn tick_boat(
         bubble_columns(level, ents, env, id);
     }
     tick_bubble_column(ents, env, id);
+    paddle_sounds(level, ents, env, id);
     // Living entities pushed against a boat no player steers get in; the others are pushed.
     board_nearby(ents, env, id, !controlled);
+}
+
+/// `AbstractBoat.tick`'s paddle sounds: each paddle in use plays `getPaddleSound` (water or
+/// land) once per stroke beside the boat, then moves on by π/8.
+fn paddle_sounds(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: EntityId) {
+    use std::f32::consts::PI;
+    let Some(e) = ents.store.get(id) else {
+        return;
+    };
+    // Boats keep no `Silent` flag.
+    let (pos, rot, aabb) = (e.pos(), e.rot(), e.aabb());
+    let Some(b) = ents.boat_mut(id) else {
+        return;
+    };
+    let paddles = [b.paddles.0, b.paddles.1];
+    for (i, &on) in paddles.iter().enumerate() {
+        if !on {
+            b.paddle_positions[i] = 0.0;
+            continue;
+        }
+        let p = b.paddle_positions[i];
+        if p % (PI * 2.0) <= PI / 4.0 && (p + PI / 8.0) % (PI * 2.0) >= PI / 4.0 {
+            // `getPaddleSound` asks `getStatus()` where the boat is now.
+            let sound = match status(level, &aabb, b) {
+                Status::InWater | Status::UnderWater | Status::UnderFlowingWater => {
+                    Some("minecraft:entity.boat.paddle_water")
+                }
+                Status::OnLand => Some("minecraft:entity.boat.paddle_land"),
+                Status::InAir | Status::Unset => None,
+            };
+            if let Some(sound) = sound {
+                let view = crate::effect::living::view_vector(rot.x_rot, rot.y_rot);
+                let (dx, dz) = if i == 1 {
+                    (-view.z, view.x)
+                } else {
+                    (view.z, -view.x)
+                };
+                let pitch = 0.8 + 0.4 * b.random.next_float();
+                crate::survival::play_sound(
+                    env.out,
+                    None,
+                    Vec3::new(pos.x + dx, pos.y, pos.z + dz),
+                    sound,
+                    vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+                    1.0,
+                    pitch,
+                    crate::survival::sound_seed(),
+                );
+            }
+        }
+        b.paddle_positions[i] = p + PI / 8.0;
+    }
 }
 
 /// `BubbleColumnBlock.entityInside` (precise only) of the columns on the boat's way this tick:
@@ -498,12 +558,19 @@ fn bubble_columns(level: &Level, ents: &mut Entities, env: &mut Env<'_>, id: Ent
             if started {
                 b.bubble_time = 60;
             }
-            // The splash (sound and particle are the client's; the boat's own random).
+            // `onAboveBubbleColumn`: the splash sound and particle are the client's, but their
+            // pitch and offsets come from the boat's own random.
             let under = matches!(b.status, Status::UnderWater | Status::UnderFlowingWater);
+            let splash = !under && b.random.next_int_bounded(100) == 0;
+            if splash {
+                for _ in 0..3 {
+                    b.random.next_float();
+                }
+            }
             if started && let Some(mut e) = ents.store.get_mut(id) {
                 e.mark_data_dirty();
             }
-            if !under && crate::survival::sound_seed() % 100 == 0 {
+            if splash {
                 let rider = ents.riding.passengers_of(id).first().copied();
                 if let Some(p) = ents.store.get(id).map(|e| e.pos()) {
                     crate::survival::game_event(
@@ -778,6 +845,9 @@ pub fn hurt_boat(
     if cx.discarded.contains(&id) {
         return true;
     }
+    if crate::mob::entity_nbt::invulnerable_to(ents, env.types, id, &source) {
+        return false;
+    }
     let pos = ents.store.get(id).map(|e| e.pos());
     crate::minecart::damage_game_event(ents, cx, id, source.cause);
     let by_player = source.direct.filter(|&d| ents.player(d).is_some());
@@ -805,6 +875,10 @@ pub fn hurt_boat(
         e.set_flags(EntityFlags::HURT_MARKED, true);
     }
     if creative || destroy {
+        // `AbstractBoat.remove(KILLED or DISCARDED)`: the lead drops as an item.
+        if crate::mob::tame::leash_holder(ents, id).is_some() {
+            crate::mob::tame::drop_leash(ents, env, id, true);
+        }
         crate::riding::eject_passengers(ents, env, id);
         if let Some(mut e) = ents.store.get_mut(id) {
             e.set_flags(EntityFlags::HURT_MARKED, false);
@@ -817,9 +891,7 @@ pub fn hurt_boat(
         let stack = drop.map(|item| {
             let mut stack = ItemStack::new(item, 1);
             if let Some(n) = name {
-                stack
-                    .patch_mut()
-                    .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
+                stack.set_component(vanillite_protocol::components::ids::CUSTOM_NAME, n);
             }
             stack
         });
@@ -851,9 +923,7 @@ pub fn hurt_boat(
     {
         let mut stack = ItemStack::new(item, 1);
         if let Some(n) = name {
-            stack
-                .patch_mut()
-                .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
+            stack.set_component(vanillite_protocol::components::ids::CUSTOM_NAME, n);
         }
         let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
@@ -898,17 +968,53 @@ pub fn passenger_offset(
     Vec3::new(z * sin, b.kind.ride_height(), z * cos)
 }
 
-/// `BoatItem.use`: places a boat where the player looks at water or a block, facing like the
-/// player. Returns whether the item was used (the stack shrinks unless `infinite`).
+/// `CAN_BE_PICKED` of the entities that keep a boat from being placed: living entities that
+/// are not spectators, boats, minecarts, end crystals and the decorations.
+fn can_be_picked(ents: &Entities, id: EntityId) -> bool {
+    if let Some(p) = ents.player(id) {
+        return p.game_mode != vanillite_config::GameMode::Spectator;
+    }
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    ents.mob(id).is_some()
+        || BoatKind::of(kind).is_some()
+        || crate::minecart::MinecartKind::of(kind).is_some()
+        || kind == vanillite_data::entity::ids::END_CRYSTAL
+        || crate::decoration::pickable(ents, id)
+}
+
+/// `AbstractBoat.canCollideWith(other)` of a new boat: what it collides with
+/// (`canBeCollidedWith`: boats, minecarts, shulkers; or `isPushable`: living entities that are
+/// not spectators).
+fn blocks_boat(ents: &Entities, id: EntityId) -> bool {
+    if let Some(p) = ents.player(id) {
+        return p.game_mode != vanillite_config::GameMode::Spectator
+            && !p.survival.is_dead_or_dying();
+    }
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    if let Some(m) = ents.mob(id) {
+        return m.is_alive()
+            && (m.kind == crate::mob::Kind::Shulker || crate::decoration::stand::pushable(m));
+    }
+    BoatKind::of(kind).is_some() || crate::minecart::MinecartKind::of(kind).is_some()
+}
+
+/// `BoatItem.use`: places a boat where the player looks at a block (outline shapes) or fluid
+/// within its block interaction range, facing like the player, unless a pickable entity holds
+/// the player's eyes or the boat would collide with blocks, entities or the world border.
+/// Returns whether the item was used (the stack shrinks unless `infinite`).
 #[allow(clippy::too_many_arguments)]
 pub fn use_boat_item(
     level: &Level,
     ents: &mut Entities,
+    env: &mut Env<'_>,
     network_ids: &NetworkIds,
     player: EntityId,
     stack: &mut ItemStack,
     infinite: bool,
-    reach: f64,
 ) -> bool {
     let item_name = crate::item::item_id(stack).name();
     let Some(kind) = vanillite_data::registry::ENTITY_TYPE
@@ -918,18 +1024,22 @@ pub fn use_boat_item(
     else {
         return false;
     };
+    let reach = crate::mob::attack::player_attribute(
+        ents,
+        player,
+        "minecraft:block_interaction_range",
+        4.5,
+        0.0,
+        64.0,
+    );
     let Some(e) = ents.store.get(player) else {
         return false;
     };
     let rot = e.rot();
     let eye = e.pos() + Vec3::new(0.0, f64::from(e.kind().info().eye_height), 0.0);
-    let (yr, xr) = (
-        f64::from(rot.y_rot) * std::f64::consts::PI / 180.0,
-        f64::from(rot.x_rot) * std::f64::consts::PI / 180.0,
-    );
-    let look = Vec3::new(-yr.sin() * xr.cos(), -xr.sin(), yr.cos() * xr.cos());
+    let look = crate::mob::missile::direction_from_rotation(rot.x_rot, rot.y_rot, 0.0);
     let to = eye + look * reach;
-    let Some((_, hit)) = physics::clip_fluids(level, eye, to) else {
+    let Some((_, hit)) = physics::clip_outline_fluids(level, eye, to) else {
         return false;
     };
     // A pickable entity around the player's eyes blocks it.
@@ -939,9 +1049,8 @@ pub fn use_boat_item(
         .inflate(1.0, 1.0, 1.0);
     let mut blocked = false;
     ents.store.for_each_in(&view, false, |o| {
-        let pickable = ents.mob(o).is_some() || ents.boat(o).is_some();
         if o != player
-            && pickable
+            && can_be_picked(ents, o)
             && ents
                 .store
                 .get(o)
@@ -967,15 +1076,40 @@ pub fn use_boat_item(
     if !physics::no_collision(&level.view(), &boat_box, &mut scratch) {
         return false;
     }
-    let mut data = BoatData::new(kind);
+    // `Level.noCollision(boat, box)`: entities it collides with and the world border too.
+    let mut collides = false;
+    ents.store
+        .for_each_in(&boat_box.inflate(1.0e-7, 1.0e-7, 1.0e-7), false, |o| {
+            if blocks_boat(ents, o) {
+                collides = true;
+            }
+        });
+    if collides
+        || !level
+            .border
+            .is_within_bounds(boat_box.min_x, boat_box.min_z)
+        || !level
+            .border
+            .is_within_bounds(boat_box.max_x, boat_box.max_z)
+    {
+        return false;
+    }
+    let mut data = BoatData::new(kind, crate::mob::new_entity_seed());
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
         .map(Into::into);
-    let uuid = crate::mob::new_entity_uuid();
+    let uuid = crate::mob::new_uuid();
     let id = spawn_boat(ents, network_ids, uuid, hit, rot.y_rot, data);
     if !ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0) {
         return false;
     }
+    // `gameEvent(player, ENTITY_PLACE, hitLocation)`.
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().entity_place,
+        hit,
+        Some(player),
+    );
     if !infinite {
         stack.shrink(1);
     }
@@ -1004,7 +1138,7 @@ mod tests {
 
     #[test]
     fn two_passengers_sit_front_and_back() {
-        let b = BoatData::new(BoatKind::of(ids::OAK_BOAT).expect("boat"));
+        let b = BoatData::new(BoatKind::of(ids::OAK_BOAT).expect("boat"), 0);
         let front = passenger_offset(&b, 0.0, 2, 0, false);
         let back = passenger_offset(&b, 0.0, 2, 1, false);
         assert!((front.z - 0.2).abs() < 1e-6 && (back.z + 0.6).abs() < 1e-6);

@@ -434,19 +434,23 @@ impl ProtoChunk {
         let start = dense.index(x, bottom, z);
         let target = &mut dense.states[start..start + states.len()];
         // The column must still be air (then the counts below are right).
-        if target.iter().any(|&state| state != air.0) {
+        if target
+            .iter()
+            .fold(false, |any, &state| any | (state != air.0))
+        {
             return false;
         }
-        for (slot, state) in target.iter_mut().zip(states) {
-            *slot = state.0;
-        }
-        // Section by section.
+        // Section by section: copied and counted in one pass.
         let mut row = 0;
         while row < states.len() {
             let section = (bottom + row) >> 4;
             let end = (((section + 1) << 4) - bottom).min(states.len());
-            let count = states[row..end].iter().filter(|&&s| s != air).count();
-            dense.non_air[section] += count as u16;
+            let mut count = 0u16;
+            for (slot, state) in target[row..end].iter_mut().zip(&states[row..end]) {
+                *slot = state.0;
+                count += u16::from(state.0 != air.0);
+            }
+            dense.non_air[section] += count;
             row = end;
         }
         let (mut surface, mut ocean_floor) = (None, None);
@@ -507,6 +511,50 @@ impl ProtoChunk {
             }
             _ => false,
         }
+    }
+
+    /// [`Self::replace_solid`] for the run of blocks of column `x`, `z` from `from_y` up, whose
+    /// current blocks are `olds`: replaces all of them by `state` if it can replace each one,
+    /// otherwise none. Returns whether it did.
+    pub(crate) fn replace_solid_run(
+        &mut self,
+        x: i32,
+        z: i32,
+        from_y: i32,
+        olds: &[BlockState],
+        state: BlockState,
+    ) -> bool {
+        const HEIGHTMAPS: u8 = facts::AIR | facts::BLOCKS_MOTION | facts::FLUID;
+        let flags = facts::block_flags(state.0);
+        let Some(dense) = &mut self.dense else {
+            return false;
+        };
+        if self.terrain_done || from_y < self.min_y {
+            return false;
+        }
+        let row = (from_y - self.min_y) as usize;
+        if row + olds.len() > dense.height {
+            return false;
+        }
+        let start = dense.index(x, row, z);
+        let slots = &mut dense.states[start..start + olds.len()];
+        let mut checked = None;
+        for (&slot, old) in slots.iter().zip(olds) {
+            if slot != old.0 {
+                return false;
+            }
+            if checked != Some(slot) {
+                let old_flags = facts::block_flags(slot);
+                if old_flags & (facts::AIR | facts::FLUID) != 0
+                    || (old_flags ^ flags) & HEIGHTMAPS != 0
+                {
+                    return false;
+                }
+                checked = Some(slot);
+            }
+        }
+        slots.fill(state.0);
+        true
     }
 
     /// `getBlockState(pos)` with Vanilla's `VOID_AIR` outside the build height.

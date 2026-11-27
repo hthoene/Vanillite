@@ -24,6 +24,8 @@ use vanillite_game::level::Level;
 use vanillite_nbt::{Compound, Tag};
 use vanillite_protocol::codec::{DecodeLimited as _, Encode as _, Reader, write_varint};
 use vanillite_protocol::components::ids as component_ids;
+use vanillite_protocol::components_nbt;
+use vanillite_protocol::item::InstalledRegistries;
 use vanillite_protocol::text::{Arg, Color, Component, HoverEvent, NamedColor, OpaqueNbt};
 use vanillite_world::entity::EntityId;
 
@@ -45,8 +47,9 @@ fn error(key: &'static str, args: Vec<ErrArg>) -> CommandError {
 }
 
 /// What a system that does not exist yet answers (loot item modifiers, slot sources, item
-/// component types without an encoder).
-fn unsupported() -> CommandError {
+/// component predicates); logged so the cause is not lost behind the generic message.
+fn unsupported(what: &str) -> CommandError {
+    log::warn!("command failed: {what} is not supported yet");
     error("command.failed", vec![])
 }
 
@@ -164,8 +167,10 @@ fn qualify(id: &str) -> String {
     }
 }
 
-/// The wire value of a component written in an item argument. Only the common component
-/// types have an encoder; the others fail with [`unsupported`].
+/// The wire value of a component written in an item argument (`ItemParser.readComponent`: the
+/// persistent codec of the component type, see [`components_nbt::from_nbt`]). Text components
+/// are normalised like Vanilla re-encodes them; the ranges of the persistent codecs that the
+/// wire form does not check are checked here.
 fn encode_component(name: &str, value: &Tag, env: &Env<'_>) -> Result<Vec<u8>, CommandError> {
     let malformed = || {
         error(
@@ -187,6 +192,7 @@ fn encode_component(name: &str, value: &Tag, env: &Env<'_>) -> Result<Vec<u8>, C
     match name {
         "minecraft:max_stack_size" => write_varint(&mut out, int(value, 1, 99)?),
         "minecraft:max_damage" => write_varint(&mut out, int(value, 1, i32::MAX)?),
+        "minecraft:ominous_bottle_amplifier" => write_varint(&mut out, int(value, 0, 4)?),
         "minecraft:damage" | "minecraft:repair_cost" => {
             write_varint(&mut out, int(value, 0, i32::MAX)?);
         }
@@ -239,15 +245,21 @@ fn encode_component(name: &str, value: &Tag, env: &Env<'_>) -> Result<Vec<u8>, C
             }
             vanillite_nbt::write::write_network(value, &mut out).map_err(|_| malformed())?;
         }
-        _ => return Err(unsupported()),
+        _ => {
+            let type_id = DATA_COMPONENT_TYPE.id(name).ok_or_else(malformed)?;
+            return components_nbt::from_nbt(type_id, value, &InstalledRegistries)
+                .map(Vec::from)
+                .map_err(|e| {
+                    error(
+                        "arguments.item.component.malformed",
+                        vec![ErrArg::Str(name.to_owned()), ErrArg::Str(e.to_string())],
+                    )
+                });
+        }
     }
     let type_id = DATA_COMPONENT_TYPE.id(name).ok_or_else(malformed)?;
-    vanillite_protocol::components::validate(
-        type_id,
-        &out,
-        &vanillite_protocol::item::InstalledRegistries,
-    )
-    .map_err(|_| malformed())?;
+    vanillite_protocol::components::validate(type_id, &out, &InstalledRegistries)
+        .map_err(|_| malformed())?;
     Ok(out)
 }
 
@@ -277,19 +289,20 @@ impl ItemInput {
         let mut stack = ItemStack::new(item, 1);
         let mut nbt = Compound::new();
         for (component, value) in &arg.components {
-            let type_id = DATA_COMPONENT_TYPE.id(component).ok_or_else(unsupported)?;
+            let type_id = DATA_COMPONENT_TYPE
+                .id(component)
+                .ok_or_else(|| unsupported(&format!("item component {component}")))?;
             match value {
                 Some(value) => {
                     let bytes = encode_component(component, value, env)?;
-                    stack.patch_mut().set(type_id, bytes.into());
-                    nbt.insert(component.clone(), value.clone());
+                    // The hover text shows the decoded value, as Vanilla encodes the patch.
+                    let shown = components_nbt::to_nbt(type_id, &bytes, &InstalledRegistries)
+                        .unwrap_or_else(|_| value.clone());
+                    stack.set_component(type_id, bytes.into());
+                    nbt.insert(component.clone(), shown);
                 }
                 None => {
-                    let patch = stack.patch_mut();
-                    patch.unset(type_id);
-                    if let Err(i) = patch.removed.binary_search(&type_id) {
-                        patch.removed.insert(i, type_id);
-                    }
+                    stack.remove_component(type_id);
                     nbt.insert(format!("!{component}"), Compound::new());
                 }
             }
@@ -310,6 +323,15 @@ impl ItemInput {
                     ErrArg::Str(ITEM.name(self.stack.item).unwrap_or("").to_owned()),
                     ErrArg::Int(max),
                 ],
+            ));
+        }
+        // `ItemStack.validateComponents`.
+        if max > 1 && effective_component(&self.stack, component_ids::MAX_DAMAGE).is_some() {
+            return Err(error(
+                "arguments.item.malformed",
+                vec![ErrArg::Str(
+                    "Item cannot be both damageable and stackable".to_owned(),
+                )],
             ));
         }
         Ok(self.stack.with_count(count))
@@ -643,7 +665,9 @@ fn check(test: &ItemTest, env: &Env<'_>) -> Result<ItemCheck, CommandError> {
                 | "minecraft:attribute_modifiers"
                 | "minecraft:trim"
                 | "minecraft:jukebox_playable"
-                | "minecraft:villager/variant" => return Err(unsupported()),
+                | "minecraft:villager/variant" => {
+                    return Err(unsupported(&format!("item predicate {name}")));
+                }
                 // A component without a predicate type: its existence (`Unit`, `{}`).
                 _ => {
                     let t = vanillite_protocol::components_nbt::type_by_name(&name).ok_or_else(
@@ -950,8 +974,7 @@ pub(crate) fn slot_set(
             e,
             EquipmentSlot::Head | EquipmentSlot::MainHand | EquipmentSlot::OffHand
         );
-        let fits =
-            || EquipmentSlot::from_ordinal(item::item_id(&stack).info().equip_slot) == Some(e);
+        let fits = || item::equippable_slot(&stack) == Some(e);
         if !any && !stack.is_empty() && !fits() {
             return false;
         }
@@ -995,7 +1018,7 @@ fn slot_range(args: &Args, name: &str) -> Result<(String, Vec<i32>), CommandErro
         Some(GameValue::SlotSource(SlotSourceArg::Range(range, slots))) => {
             Ok((range.clone(), slots.clone()))
         }
-        Some(GameValue::SlotSource(SlotSourceArg::Source(_))) => Err(unsupported()),
+        Some(GameValue::SlotSource(SlotSourceArg::Source(_))) => Err(unsupported("slot source")),
         _ => Err(missing(name)),
     }
 }
@@ -1451,7 +1474,7 @@ pub(crate) fn enchant(
                 write_varint(&mut bytes, i32::try_from(e).unwrap_or(0));
                 write_varint(&mut bytes, l);
             }
-            stack.patch_mut().set(component, bytes.into());
+            stack.set_component(component, bytes.into());
         }
         if let Some(id) = target.entity {
             sync_inventory(entities, id);

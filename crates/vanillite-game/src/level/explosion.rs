@@ -627,10 +627,26 @@ impl Level {
             // through the mob system, items here (`ItemEntity.hurtServer`: health 5).
             let is_boat = crate::vehicle::BoatKind::of(kind).is_some()
                 || crate::minecart::MinecartKind::of(kind).is_some();
-            // `ItemEntity.hurtServer`: a mob's explosion spares items without `mob_griefing`.
+            // `ItemEntity.ignoreExplosion`: an explosion that does not affect block-like
+            // entities (wind charges; with `mob_griefing` off every explosion that keeps the
+            // blocks) neither hurts nor pushes items.
+            let affects_blocklike = if self.settings.mob_griefing {
+                !wind
+            } else {
+                destroys && !wind
+            };
+            if kind == entity_ids::ITEM && !affects_blocklike {
+                continue;
+            }
+            // `ItemEntity.hurtServer`: a mob's explosion spares items without `mob_griefing`,
+            // and `Invulnerable` items take none.
             let mob_spared = !self.settings.mob_griefing
                 && indirect.is_some_and(|i| self.entities.mob(i).is_some());
-            if kind == entity_ids::ITEM && style.damages_entities && !mob_spared {
+            let invulnerable = crate::mob::entity_nbt::is_invulnerable(&self.entities, id)
+                && !indirect
+                    .and_then(|i| self.entities.player(i))
+                    .is_some_and(|p| p.game_mode == vanillite_config::GameMode::Creative);
+            if kind == entity_ids::ITEM && style.damages_entities && !mob_spared && !invulnerable {
                 let double_radius = f64::from(double_radius);
                 let pow = (1.0 - dist) * f64::from(self.seen_percent(center, aabb));
                 #[allow(clippy::cast_possible_truncation)]
@@ -646,6 +662,16 @@ impl Level {
                     d.health = health;
                     health <= 0
                 });
+                if self.entities.item(id).is_some_and(|d| {
+                    crate::item::damage_resistant(&d.stack) != Some("minecraft:is_explosion")
+                }) {
+                    // `gameEvent(ENTITY_DAMAGE, source.getEntity())`.
+                    self.game_event(
+                        crate::level::game_event::events().entity_damage,
+                        pos,
+                        crate::level::game_event::GameEventContext::of(indirect),
+                    );
+                }
                 if destroyed {
                     // `Item.onDestroyed`: a bundle's or a container item's contents drop.
                     let contents = self
@@ -721,7 +747,21 @@ impl Level {
                 // Block-attached entities break when pushed; displays and markers do not move.
                 continue;
             }
-            let resistance = mob.map_or(0.0, |m| m.attrs.explosion_knockback_resistance);
+            // `EXPLOSION_KNOCKBACK_RESISTANCE` of any living entity, with its equipment (Blast
+            // Protection).
+            let name = "minecraft:explosion_knockback_resistance";
+            let resistance = match mob {
+                Some(m) => crate::mob::equipment::attribute(
+                    m,
+                    name,
+                    m.attrs.explosion_knockback_resistance,
+                    0.0,
+                    1.0,
+                ),
+                None => {
+                    crate::mob::attack::player_attribute(&self.entities, id, name, 0.0, 0.0, 1.0)
+                }
+            };
             let knockback =
                 direction * ((1.0 - dist) * exposure * style.knockback * (1.0 - resistance));
             // `onExplosionHit`: where the explosion hit the player and what caused it; a
@@ -753,8 +793,14 @@ impl Level {
                     continue;
                 }
             }
-            // `pushFromExplosion`.
-            if let Some(mut entity) = self.entities.store.get_mut(id)
+            // `pushFromExplosion`; `AbstractArrow.push` does nothing in the ground (arrows and
+            // tridents).
+            let stuck = self.entities.arrow(id).is_some_and(|a| a.in_ground)
+                || self.entities.missile(id).is_some_and(|d| {
+                    d.kind == crate::mob::missile::MissileKind::Trident && d.in_ground
+                });
+            if !stuck
+                && let Some(mut entity) = self.entities.store.get_mut(id)
                 && knockback.x.is_finite()
                 && knockback.y.is_finite()
                 && knockback.z.is_finite()

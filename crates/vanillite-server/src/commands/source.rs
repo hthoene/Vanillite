@@ -146,6 +146,19 @@ impl vanillite_command::Source for CommandSource {
         }
     }
 
+    fn permission_node_answer(&self, node: &str) -> Option<bool> {
+        match &self.kind {
+            SourceKind::Player { uuid, .. } => {
+                let operator = self.global.access.op_level(*uuid).is_some();
+                self.global.plugins.permission_answer(*uuid, node, operator)
+            }
+            SourceKind::Console
+            | SourceKind::Rcon(_)
+            | SourceKind::Server
+            | SourceKind::CommandBlock(_) => None,
+        }
+    }
+
     fn suggest_custom(
         &self,
         provider: &str,
@@ -506,7 +519,7 @@ impl CommandSource {
                     });
                 }
             }
-            SourceKind::Console => log::info!("{}", global.english(&message)),
+            SourceKind::Console => log::info!("{}", global.console_text(&message)),
             // `RconConsoleSource.sendSystemMessage`: appended without a separator.
             SourceKind::Rcon(buffer) => buffer
                 .lock()
@@ -594,7 +607,7 @@ impl CommandSource {
             }
         }
         if log_admin && !matches!(self.kind, SourceKind::Console) {
-            log::info!("{}", global.english(&broadcast));
+            log::info!("{}", global.console_text(&broadcast));
         }
     }
 

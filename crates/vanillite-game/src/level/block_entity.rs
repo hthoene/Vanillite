@@ -299,6 +299,23 @@ impl BlockEntities {
         }
     }
 
+    /// The number of block entities per chunk (`/vanillite chunks`).
+    pub fn per_chunk(&self) -> impl Iterator<Item = (ChunkPos, usize)> + '_ {
+        self.chunks.iter().map(|(pos, map)| (*pos, map.len()))
+    }
+
+    /// The block entities that tick.
+    pub fn ticking(&self) -> usize {
+        self.tickers.len()
+    }
+
+    /// Bytes of the block entities' entries (`/vanillite memory`; data behind them not
+    /// counted).
+    pub fn memory_bytes(&self) -> usize {
+        self.len() * (size_of::<Entry>() + size_of::<BlockPos>() + 8)
+            + self.tickers.capacity() * size_of::<(BlockPos, u32)>()
+    }
+
     /// The block entities of a chunk.
     pub fn in_chunk(&self, chunk: ChunkPos) -> impl Iterator<Item = (BlockPos, &BlockEntity)> {
         self.chunks
@@ -894,6 +911,10 @@ fn save(entity: &BlockEntity, state: BlockState, pos: BlockPos) -> Compound {
         BlockEntity::CreakingHeart(h) => h.save(&mut nbt),
         _ => {}
     }
+    // `saveWithoutMetadata` always stores the components, empty or not.
+    if nbt.get("components").is_none() {
+        nbt.insert("components", Tag::Compound(Compound::new()));
+    }
     nbt
 }
 
@@ -990,7 +1011,11 @@ impl Level {
     pub fn block_entity_nbt(&self, pos: BlockPos) -> Option<Compound> {
         let state = self.block(pos);
         if let Some(entity) = self.block_entities.get(pos) {
-            return Some(save(entity, state, pos));
+            let mut nbt = save(entity, state, pos);
+            if let Some(kept) = self.block_entities.kept_components(pos) {
+                nbt.insert("components", Tag::Compound(kept.clone()));
+            }
+            return Some(nbt);
         }
         let kind = state.block().info().block_entity;
         if kind == u16::MAX || modelled(state) {
@@ -1613,4 +1638,121 @@ pub fn load_component(nbt: &Compound, key: &str, type_id: u16) -> Option<Box<[u8
     )
     .ok()?;
     Some(wire.into_boxed_slice())
+}
+
+// --- Pick block ------------------------------------------------------------------------------
+
+/// A `block_state` component value with one property.
+fn block_state_property(key: &str, value: &str) -> Box<[u8]> {
+    let mut out = Vec::new();
+    vanillite_protocol::codec::write_varint(&mut out, 1);
+    vanillite_protocol::codec::write_str(&mut out, key);
+    vanillite_protocol::codec::write_str(&mut out, value);
+    out.into_boxed_slice()
+}
+
+/// The saved keys of the components a block entity collects (`removeComponentsFromTag`).
+const COMPONENT_KEYS: [(u16, &[&str]); 10] = [
+    (components::CUSTOM_NAME, &["CustomName"]),
+    (components::LOCK, &["lock"]),
+    (components::CONTAINER, &["Items", "item"]),
+    (components::CONTAINER_LOOT, &["LootTable", "LootTableSeed"]),
+    (components::BANNER_PATTERNS, &["patterns"]),
+    (components::PROFILE, &["profile"]),
+    (components::NOTE_BLOCK_SOUND, &["note_block_sound"]),
+    (components::POT_DECORATIONS, &["sherds"]),
+    (components::BEES, &["bees"]),
+    (components::BLOCK_STATE, &[]),
+];
+
+/// `BlockState.getCloneItemStack(level, pos, includeData)` and, with `include_data`,
+/// `ServerGamePacketListenerImpl.addBlockDataToItem`: the item a middle click picks, with the
+/// components of banners, decorated pots, copper golem statues, light blocks and beehives;
+/// with data, also the block entity's saved data and every component it collects.
+pub fn pick_stack(level: &Level, pos: BlockPos, item: u16, include_data: bool) -> ItemStack {
+    let state = level.block(pos);
+    let entity = level.block_entities.get(pos);
+    let kept = level.block_entities.kept_components(pos);
+    let mut stack = ItemStack::new(item, 1);
+    let collect_all = |stack: &mut ItemStack| {
+        if let Some(entity) = entity {
+            for (id, _) in COMPONENT_KEYS {
+                if let Some(v) = collect_component(entity, id) {
+                    stack.set_component(id, v);
+                }
+            }
+        }
+        if let Some(kept) = kept {
+            let patch = crate::item_nbt::patch_from_nbt(kept);
+            for (id, v) in patch.added {
+                stack.set_component(id, v);
+            }
+            for id in patch.removed {
+                stack.remove_component(id);
+            }
+        }
+    };
+    let block = state.block();
+    let name = block.name();
+    match entity {
+        // `BannerBlockEntity.getItem` and `CopperGolemStatueBlockEntity.getItem`.
+        Some(BlockEntity::Banner(_)) => collect_all(&mut stack),
+        Some(BlockEntity::CopperGolemStatue(_)) => {
+            collect_all(&mut stack);
+            if let Some(pose) = state.value("copper_golem_pose") {
+                stack.set_component(
+                    components::BLOCK_STATE,
+                    block_state_property("copper_golem_pose", pose),
+                );
+            }
+        }
+        // `createDecoratedPotInstance(decorations)`.
+        Some(BlockEntity::DecoratedPot(pot)) => {
+            if let Some(v) = pot.component(components::POT_DECORATIONS) {
+                stack.set_component(components::POT_DECORATIONS, v);
+            }
+        }
+        _ => {}
+    }
+    if name == "minecraft:light" {
+        if let Some(l) = state.value("level") {
+            stack.set_component(components::BLOCK_STATE, block_state_property("level", l));
+        }
+    } else if include_data
+        && matches!(name, "minecraft:beehive" | "minecraft:bee_nest")
+        && let Some(h) = state.value("honey_level")
+    {
+        stack.set_component(
+            components::BLOCK_STATE,
+            block_state_property("honey_level", h),
+        );
+    }
+    if include_data && let Some(entity) = entity {
+        // `saveCustomOnly` without the collected components, then `collectComponents`.
+        if let Some(mut nbt) = level.block_entity_nbt(pos) {
+            for key in ["id", "x", "y", "z", "components"] {
+                nbt.remove(key);
+            }
+            for (id, keys) in COMPONENT_KEYS {
+                if collect_component(entity, id).is_some() {
+                    for key in keys {
+                        nbt.remove(key);
+                    }
+                }
+            }
+            let kind = block.info().block_entity;
+            if nbt.is_empty() || kind == u16::MAX {
+                stack.remove_component(components::BLOCK_ENTITY_DATA);
+            } else {
+                nbt.sort_java_hash_order();
+                let mut wire = Vec::new();
+                vanillite_protocol::codec::write_varint(&mut wire, i32::from(kind));
+                if vanillite_nbt::write::write_network(&Tag::Compound(nbt), &mut wire).is_ok() {
+                    stack.set_component(components::BLOCK_ENTITY_DATA, wire.into_boxed_slice());
+                }
+            }
+        }
+        collect_all(&mut stack);
+    }
+    stack
 }

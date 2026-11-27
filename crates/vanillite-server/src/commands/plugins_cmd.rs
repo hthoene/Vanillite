@@ -15,9 +15,9 @@ const NATIVE_HEADER: Color = Color::Rgb(0x02_88_D1);
 /// Header colour of the `Bukkit` group.
 const BUKKIT_HEADER: Color = Color::Rgb(0xED_81_06);
 /// Author, website and licence of the server, shown by `/version`.
-const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
-const WEBSITE: &str = env!("CARGO_PKG_HOMEPAGE");
-const LICENSE: &str = env!("CARGO_PKG_LICENSE");
+pub(super) const AUTHOR: &str = env!("CARGO_PKG_AUTHORS");
+pub(super) const WEBSITE: &str = env!("CARGO_PKG_HOMEPAGE");
+pub(super) const LICENSE: &str = env!("CARGO_PKG_LICENSE");
 /// Plugin names per line of `/plugins`.
 const PER_LINE: usize = 10;
 

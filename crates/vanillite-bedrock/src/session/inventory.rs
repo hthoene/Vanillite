@@ -695,7 +695,7 @@ impl Session {
         value.extend_from_slice(&layers);
         vanillite_protocol::codec::write_varint(&mut value, pattern_id.saturating_add(1));
         vanillite_protocol::codec::write_varint(&mut value, i32::try_from(color).unwrap_or(0));
-        result.patch_mut().set(component, value.into_boxed_slice());
+        result.set_component(component, value.into_boxed_slice());
         self.inv.recipe = Some(result);
         Ok(())
     }
@@ -810,6 +810,11 @@ impl Session {
                 self.survival_action(a)
             };
             if r.is_err() {
+                log::debug!(
+                    "Bedrock {}: item stack request {} refused at {a:?}",
+                    self.peer,
+                    req.id
+                );
                 ok = false;
                 break;
             }

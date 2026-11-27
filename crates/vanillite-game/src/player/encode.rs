@@ -11,11 +11,11 @@ use vanillite_protocol::SharedPacket;
 use vanillite_protocol::codec::write_varint;
 use vanillite_protocol::packets::play::clientbound::{
     AddEntity, BundleDelimiter, EntityPositionSync, MoveEntityPos, MoveEntityPosRot, MoveEntityRot,
-    PositionPath, RemoveEntities, RotateHead, SetEntityData, SetEntityMotion, SetEquipment,
-    VecDelta,
+    PositionPath, ProjectilePower, RemoveEntities, RotateHead, SetEntityData, SetEntityMotion,
+    SetEquipment, VecDelta,
 };
 use vanillite_protocol::types::{self, LpVec3, RawBytes, Uuid, VarIntList};
-use vanillite_world::entity::{EntityRef, Pose};
+use vanillite_world::entity::{EntityId, EntityRef, Pose};
 use vanillite_world::tracking::{EntityUpdate, Message};
 
 use super::MainHand;
@@ -197,7 +197,11 @@ fn item(out: &mut Vec<u8>, id: u8, serializer: i32, value: impl FnOnce(&mut Vec<
 /// nothing is to be sent.
 fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(16);
-    let flags = entity.flags().shared_byte();
+    // `setSharedFlagOnFire`: clients also see the fire of `HasVisualFire`.
+    let visual_fire = entity
+        .flags()
+        .contains(vanillite_world::entity::EntityFlags::VISUAL_FIRE);
+    let flags = entity.flags().shared_byte() | u8::from(visual_fire);
     if all || flags != 0 {
         item(&mut out, data_id::SHARED_FLAGS, serializer::BYTE, |o| {
             o.push(flags);
@@ -243,7 +247,10 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             },
         );
     }
-    let name_visible = crate::decoration::name_visible(entities, entity.id());
+    let name_visible = crate::decoration::name_visible(entities, entity.id())
+        || entity
+            .flags()
+            .contains(vanillite_world::entity::EntityFlags::NAME_VISIBLE);
     if all || name_visible {
         item(&mut out, 3, serializer::BOOLEAN, |o| {
             o.push(u8::from(name_visible));
@@ -294,6 +301,7 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
             });
         }
         effect_data(&mut out, &player.survival.effects, all);
+        arrow_count(&mut out, player.survival.arrows.count, all);
         DataWriter::new(&mut out, all).optional_block_pos(14, player.survival.sleeping_pos);
         let hand = player.client.main_hand;
         if all || hand != MainHand::Right {
@@ -343,7 +351,11 @@ fn entity_data(entity: &EntityRef<'_>, entities: &Entities, all: bool) -> Option
         }
     }
     if let Some(mob) = entities.mob(entity.id()) {
-        mob_data(&mut out, mob, all);
+        let arrows = entities
+            .stuck_arrows
+            .get(&entity.id())
+            .map_or(0, |a| a.count);
+        mob_data(&mut out, mob, arrows, all);
     }
     if let Some(special) = entities.special(entity.id()) {
         crate::mob::boss::special::entity_data(&mut out, special, all);
@@ -607,6 +619,15 @@ impl<'a> DataWriter<'a> {
     }
 }
 
+/// `DATA_ARROW_COUNT_ID` of a living entity.
+fn arrow_count(out: &mut Vec<u8>, count: u16, all: bool) {
+    if all || count != 0 {
+        item(out, 12, serializer::INT, |o| {
+            write_varint(o, i32::from(count))
+        });
+    }
+}
+
 /// `DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` of a living entity.
 fn effect_data(out: &mut Vec<u8>, fx: &crate::effect::ActiveEffects, all: bool) {
     let any_visible = fx.iter().any(|e| e.visible);
@@ -626,7 +647,7 @@ fn effect_data(out: &mut Vec<u8>, fx: &crate::effect::ActiveEffects, all: bool) 
 }
 
 /// The synched data of a mob after the entity's own: health, mob flags and the kind's values.
-fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
+fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, arrows: u16, all: bool) {
     use crate::mob::Kind;
     let living = crate::mob::kinds::living_flags(mob);
     if all || living != 0 {
@@ -640,6 +661,7 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
         });
     }
     effect_data(out, &mob.effects, all);
+    arrow_count(out, arrows, all);
     let flags =
         u8::from(mob.no_ai) | (u8::from(mob.left_handed) << 1) | (u8::from(mob.aggressive) << 2);
     // Armor stands and mannequins are no `Mob`: their own data starts at 15.
@@ -783,6 +805,28 @@ pub const EQUIPMENT_SLOTS: [EquipmentSlot; 6] = [
     EquipmentSlot::Head,
 ];
 
+/// `AbstractHurtingProjectile.accelerationPower` of fireballs, wither skulls, dragon fireballs
+/// and wind charges; `None` for other entities.
+fn hurting_projectile_power(entities: &Entities, entity: EntityId) -> Option<f64> {
+    use crate::mob::boss::special::SpecialData;
+    use crate::mob::missile::MissileKind;
+    if let Some(m) = entities.missile(entity) {
+        return matches!(
+            m.kind,
+            MissileKind::SmallFireball
+                | MissileKind::Fireball
+                | MissileKind::WindCharge
+                | MissileKind::BreezeWindCharge
+        )
+        .then_some(m.acceleration);
+    }
+    match entities.special(entity)? {
+        SpecialData::WitherSkull(s) => Some(s.acceleration_power),
+        SpecialData::DragonFireball(f) => Some(f.acceleration_power),
+        _ => None,
+    }
+}
+
 /// Encodes one tracker message. `None` skips it (the entity is gone and nothing is left to
 /// send).
 pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> {
@@ -845,7 +889,12 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 .vehicle_of(message.entity)
                 .and_then(|v| crate::riding::passengers_packet(entities, v));
             let link = crate::mob::tame::link_pairing_packet(entities, message.entity);
+            let attributes = entities.mob(message.entity).and_then(|m| {
+                let given = &entities.extra(message.entity)?.attributes;
+                crate::effect::living::mob_pairing_attributes(id, m, given)
+            });
             if data.is_none()
+                && attributes.is_none()
                 && gear.is_none()
                 && passengers.is_none()
                 && riding.is_none()
@@ -860,6 +909,9 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                     entity_id: id,
                     items: RawBytes(items),
                 }));
+            }
+            if let Some(attributes) = attributes {
+                packets.push(SharedPacket::of(&attributes));
             }
             if let Some(gear) = gear {
                 packets.push(SharedPacket::of(&gear));
@@ -931,6 +983,25 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
             entity_id: id,
             movement: LpVec3(wire_vec(velocity)),
         })),
+        EntityUpdate::TrackedMotion(velocity) => {
+            let motion = SharedPacket::of(&SetEntityMotion {
+                entity_id: id,
+                movement: LpVec3(wire_vec(velocity)),
+            });
+            // `ServerEntity.sendChanges`: hurting projectiles bundle their acceleration power.
+            match hurting_projectile_power(entities, message.entity) {
+                Some(power) => Some(vec![
+                    SharedPacket::of(&BundleDelimiter),
+                    motion,
+                    SharedPacket::of(&ProjectilePower {
+                        entity_id: id,
+                        power,
+                    }),
+                    SharedPacket::of(&BundleDelimiter),
+                ]),
+                None => one(motion),
+            }
+        }
         EntityUpdate::Data => {
             let entity = entities.store.get(message.entity)?;
             let items = entity_data(&entity, entities, true)?;
@@ -973,7 +1044,7 @@ pub(crate) mod layout_tests {
             let name = kind.type_id().info().name;
             let fields = layout["types"][name].as_array().expect(name);
             WRITTEN.with_borrow_mut(Vec::clear);
-            super::mob_data(&mut Vec::new(), &crate::mob::MobData::new(kind, 1), true);
+            super::mob_data(&mut Vec::new(), &crate::mob::MobData::new(kind, 1), 0, true);
             for (id, serializer) in WRITTEN.take() {
                 let expected = fields.iter().find(|f| f[0].as_u64() == Some(u64::from(id)));
                 let actual = usize::try_from(serializer)

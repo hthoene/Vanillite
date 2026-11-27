@@ -84,7 +84,7 @@ pub(super) fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
                 if let Some(id) = vanillite_data::registry::DATA_COMPONENT_TYPE
                     .id("minecraft:suspicious_stew_effects")
                 {
-                    s.patch_mut().set(id, stew_component(effect, duration));
+                    s.set_component(id, stew_component(effect, duration));
                 }
                 (s, "minecraft:entity.mooshroom.suspicious_milk")
             }
@@ -204,12 +204,14 @@ pub(crate) fn shear(
     target: vanillite_world::entity::EntityId,
     source: SoundSource,
 ) {
-    sound_at(
+    crate::survival::play_entity_sound(
+        env.out,
         ents,
-        env,
+        None,
         target,
         "minecraft:entity.mooshroom.shear",
         source,
+        1.0,
         1.0,
     );
     let (Some(m), Some(e)) = (ents.mob(target), ents.store.get(target)) else {

@@ -1,0 +1,30 @@
+{
+  "description": "Mob effects (#242): a creeper with an active effect explodes and leaves an area effect cloud of it (spawnLingeringCloud) after its explosion, which does not push the cloud.",
+  "tier": "fast",
+  "dimensions": true,
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false",
+    "mob_griefing": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      20,
+      -55,
+      20
+    ]
+  ],
+  "ticks": 30,
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "summon minecraft:creeper 4.5 -60 4.5 {NoAI:1b,Fuse:2s,ignited:1b,active_effects:[{id:\"minecraft:speed\",amplifier:1b,duration:600}]}"
+    }
+  ]
+}
