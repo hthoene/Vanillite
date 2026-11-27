@@ -114,6 +114,12 @@ These apply to the whole server.
 | `cpu` | setting | yes | `0.0` | `0.0` | `0.0` | `0.0` | `0.0` | CPU cores the server may use. 0 = detect: the cgroup CPU quota (`cpu.max`, Docker `--cpus`, Pterodactyl's CPU limit) and the CPU affinity. Number from 0 to 1024. Environment: `VANILLITE_PERFORMANCE__BUDGET__CPU`. |
 | `memory` | setting | yes | `0` | `0` | `0` | `0` | `0` | Memory in MiB the server should stay far below; caches are sized from it. 0 = detect: the cgroup memory limit (`memory.max`), none without a container. Integer from 0 to 16777216. Environment: `VANILLITE_PERFORMANCE__BUDGET__MEMORY`. |
 
+#### `[performance.memory]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `release-when-empty` | setting |  | `60` | `60` | `60` | `60` | `60` | Seconds without players after which the server frees what it can build again: the tables of the world generators, structure templates and caches. They come back in the background when a player joins (new chunks then start a moment later, chunks from disk do not wait). In-game behaviour does not change; disabled keeps everything in memory. Integer from 1 to 86400. Also accepts `"disabled"`. Environment: `VANILLITE_PERFORMANCE__MEMORY__RELEASE_WHEN_EMPTY`. |
+
 #### `[performance.autosave]`
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
@@ -207,6 +213,8 @@ These apply to the whole server.
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
 | `test-bots` | setting | yes | `0` | `0` | `0` | `0` | `0` | In-process fake players (`TestBot`, `TestBot2`, ...) that join over virtual connections, walk in a circle around the spawn and sneak now and then, so a single tester sees other players. Virtual connections need no authentication, so keep this at 0 outside test servers. Integer from 0 to 16. Environment: `VANILLITE_DEBUG__TEST_BOTS`. |
+| `session-recording` | setting | yes | `false` | `false` | `false` | `false` | `false` | Records the players' sessions in the overworld for `cargo xtask parity replay`, which plays them again in Vanilla and Vanillite and compares both tick by tick. When the first player joins, the world is saved and the overworld's chunks are copied (the overworld tick waits for the copy); then every tick the players' serverbound play packets are written, until the last player has left. Chat, commands, signs, books and plugin messages are left out, and players get anonymous ids instead of their names, addresses and UUIDs. For test servers. Environment: `VANILLITE_DEBUG__SESSION_RECORDING`. |
+| `session-recording-dir` | setting | yes | `"recordings"` | `"recordings"` | `"recordings"` | `"recordings"` | `"recordings"` | Folder of the session recordings, relative to the server folder: one folder per session (`<start time>/` with `world/`, `meta.json`, `packets.jsonl`). Environment: `VANILLITE_DEBUG__SESSION_RECORDING_DIR`. |
 
 #### `[proxy]`
 
@@ -321,7 +329,7 @@ view-distance = 8
 | `max-block-ticks` | performance |  | `65536` | `65536` | `65536` | `65536` | `65536` | Scheduled block ticks run per tick. Integer from 1 to 1000000. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_BLOCK_TICKS`. |
 | `max-fluid-ticks` | performance |  | `65536` | `65536` | `65536` | `65536` | `65536` | Scheduled fluid ticks run per tick. Integer from 1 to 1000000. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_FLUID_TICKS`. |
 | `max-chained-neighbor-updates` | performance |  | `"vanilla"` | `"vanilla"` | `"vanilla"` | `"vanilla"` | `"vanilla"` | Chained neighbour and shape updates of one block change before the rest is skipped; "vanilla" uses `max-chained-neighbor-updates` of server.properties. Integer from 1 to 100000000. Also accepts `"vanilla"`. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_CHAINED_NEIGHBOR_UPDATES`. |
-| `max-relights-per-tick` | performance |  | `1024` | `1024` | `1024` | `1024` | `1024` | Chunks whose light is recomputed per tick after block changes, each as one background job over its 5 × 5 area. Lower values spread bursts over more ticks. Integer from 1 to 65536. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK`. |
+| `max-relights-per-tick` | performance |  | `1024` | `1024` | `1024` | `1024` | `1024` | Chunks whose light is updated together after block changes, in one background job that recomputes only the cells the changes reach; the rest follows in the next job. Lower values split bursts into smaller jobs. Integer from 1 to 65536. Environment: `VANILLITE_PERFORMANCE__SIMULATION__MAX_RELIGHTS_PER_TICK`. |
 
 #### `[performance.collisions]`
 
@@ -334,7 +342,39 @@ view-distance = 8
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
 |---|---|---|---|---|---|---|---|---|
 | `path-nodes-per-tick` | performance |  | `0` | `0` | `0` | `0` | `50000` | Path finding nodes all mobs of the world may visit per tick; searches over the budget fail and are retried later. 0 = unlimited (Vanilla). Integer from 0 to 10000000. Environment: `VANILLITE_PERFORMANCE__MOBS__PATH_NODES_PER_TICK`. |
-| `activation-range` | performance |  | `0` | `0` | `32` | `32` | `32` | Mobs farther than this many blocks from every player tick only every 20th tick (activation range). Saves most of the mob tick on servers with many mobs away from players. Deviation: such mobs move, path-find, grow up and breed at 1/20 of Vanilla's speed (farms and breeders outside the range slow down). 0 = off (Vanilla: every mob in simulation distance ticks). Integer from 0 to 512. Environment: `VANILLITE_PERFORMANCE__MOBS__ACTIVATION_RANGE`. |
+
+#### `[performance.activation-range]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `animals` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of animals (`creature` and `ambient` mobs: cows, sheep, bats, ...). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__ANIMALS`. |
+| `monsters` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of monsters (`monster` mobs that are no raiders or flyers). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__MONSTERS`. |
+| `raiders` | performance |  | `0` | `0` | `64` | `48` | `64` | Range of raiders (pillagers, vindicators, evokers, illusioners, witches and ravagers). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__RAIDERS`. |
+| `misc` | performance |  | `0` | `0` | `16` | `16` | `16` | Range of the other mobs (golems, armor stands, ...). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__MISC`. |
+| `water` | performance |  | `0` | `0` | `16` | `16` | `16` | Range of water mobs (fish, squid, dolphins, axolotls, ...). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WATER`. |
+| `villagers` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of villagers and wandering traders. Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS`. |
+| `flying` | performance |  | `0` | `0` | `32` | `32` | `32` | Range of flying monsters (ghasts, phantoms, blazes, vexes). Integer from 0 to 128. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__FLYING`. |
+| `villagers-work-immunity-after` | performance |  | `0` | `0` | `100` | `100` | `100` | Ticks an inactive villager must have been inactive before it becomes active while it works at its job site, so workstations keep restocking trades; 0 = never. Integer from 0 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_WORK_IMMUNITY_AFTER`. |
+| `villagers-work-immunity-for` | performance |  | `0` | `0` | `20` | `20` | `20` | Ticks a working villager then stays active. Integer from 0 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_WORK_IMMUNITY_FOR`. |
+| `villagers-active-for-panic` | performance |  | `false` | `false` | `true` | `true` | `true` | Panicking villagers stay active (they flee and alarm the village, which spawns iron golems). Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__VILLAGERS_ACTIVE_FOR_PANIC`. |
+| `inactive-mob-goal-selector-throttle` | performance |  | `"disabled"` | `"disabled"` | `10` | `"disabled"` | `"disabled"` | Ticks between the goal and target selector runs of an inactive mob between its full ticks: it notices targets, food and partners sooner, but does not move before its next full tick. Lower values cost more. "disabled": inactive mobs choose goals only in their full ticks (cheapest). Integer from 1 to 20. Also accepts `"disabled"`. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__INACTIVE_MOB_GOAL_SELECTOR_THROTTLE`. |
+
+#### `[performance.activation-range.wake-up-inactive]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `animals-max-per-tick` | performance |  | `0` | `0` | `4` | `4` | `4` | Animals woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_MAX_PER_TICK`. |
+| `animals-every` | performance |  | `1200` | `1200` | `1200` | `1200` | `1200` | Ticks animals must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_EVERY`. |
+| `animals-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up animals stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__ANIMALS_FOR`. |
+| `villagers-max-per-tick` | performance |  | `0` | `0` | `4` | `4` | `4` | Villagers woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_MAX_PER_TICK`. |
+| `villagers-every` | performance |  | `600` | `600` | `600` | `600` | `600` | Ticks villagers must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_EVERY`. |
+| `villagers-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up villagers stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__VILLAGERS_FOR`. |
+| `monsters-max-per-tick` | performance |  | `0` | `0` | `8` | `8` | `8` | Monsters woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_MAX_PER_TICK`. |
+| `monsters-every` | performance |  | `400` | `400` | `400` | `400` | `400` | Ticks monsters must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_EVERY`. |
+| `monsters-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up monsters stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__MONSTERS_FOR`. |
+| `flying-max-per-tick` | performance |  | `0` | `0` | `8` | `8` | `8` | Flying woken up per tick at most. Integer from 0 to 1000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_MAX_PER_TICK`. |
+| `flying-every` | performance |  | `200` | `200` | `200` | `200` | `200` | Ticks flying must have been inactive before they may be woken up. Integer from 1 to 1728000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_EVERY`. |
+| `flying-for` | performance |  | `100` | `100` | `100` | `100` | `100` | Ticks woken up flying stay active. Integer from 1 to 12000. Environment: `VANILLITE_PERFORMANCE__ACTIVATION_RANGE__WAKE_UP_INACTIVE__FLYING_FOR`. |
 
 #### `[performance.items]`
 
@@ -373,6 +413,12 @@ view-distance = 8
 | `transfer-cooldown` | gameplay |  | `8` | `8` | `8` | `8` | `8` | Ticks a hopper waits after it moved an item (Vanilla 8). Higher values move items more slowly. Integer from 1 to 64. Environment: `VANILLITE_PERFORMANCE__HOPPERS__TRANSFER_COOLDOWN`. |
 | `check-cooldown` | performance |  | `1` | `1` | `1` | `1` | `4` | Ticks a hopper waits after it found nothing to move (Vanilla 1: it tries every tick). Saves the container and item lookups of idle hoppers. Deviation: a hopper notices new items up to this many ticks later; item sorters and clocks built on hopper timing run differently. Integer from 1 to 64. Environment: `VANILLITE_PERFORMANCE__HOPPERS__CHECK_COOLDOWN`. |
 
+#### `[anticheat.digging]`
+
+| Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
+|---|---|---|---|---|---|---|---|---|
+| `fast-break-check` | fix |  | `false` | `false` | `true` | `true` | `true` | Validates "stop digging" against the server's own break progress: the time since the player started digging, the tool, Haste and Mining Fatigue, being in water and on the ground. Vanilla breaks a block whose progress falls short on the next tick once the player has been online for a while (it takes the start tick as the time spent), so a client that starts and at once stops digging breaks any block. On, a stop with too little progress waits for the progress to complete like a legit dig with latency and is rejected (the block is sent again, nothing drops) when it does not complete within the dig time seen so far plus one second. Instant mining, creative and normal digging with lag are not affected. Environment: `VANILLITE_ANTICHEAT__DIGGING__FAST_BREAK_CHECK`. |
+
 #### `[anticheat.anti-xray]`
 
 | Key | Kind | Restart | `vanilla` | `technical` | `paper` | `spigot` | `performance` | Description |
@@ -382,3 +428,22 @@ view-distance = 8
 | `replacement-blocks` | limit |  | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | `["minecraft:stone", "minecraft:deepslate", "minecraft:oak_planks", "minecraft:netherrack", "minecraft:end_stone"]` | Blocks that "obfuscate" also replaces with random hidden blocks (block ids). Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__REPLACEMENT_BLOCKS`. |
 | `max-block-height` | limit |  | `64` | `64` | `64` | `64` | `64` | Blocks at and above this height are always sent as they are. Integer from -2048 to 2048. Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__MAX_BLOCK_HEIGHT`. |
 | `update-radius` | limit |  | `2` | `2` | `2` | `2` | `2` | Distance in blocks around a changed block (mined, exploded, moved) within which hidden blocks are sent with their real state. Integer from 1 to 4. Environment: `VANILLITE_ANTICHEAT__ANTI_XRAY__UPDATE_RADIUS`. |
+
+### Extra worlds
+
+Worlds besides `level-name`, each with its own folder, `level.dat`, seed and generator (see [Worlds](worlds.md#extra-worlds)), are loaded at startup from one section each. Their rules come from `[worlds."minecraft:<name>"]`.
+
+```toml
+[extra-worlds.lobby]
+environment = "normal"
+generator = "flat"
+seed = ""
+generate-structures = true
+```
+
+| Key | Default | Values | Description |
+|---|---|---|---|
+| `environment` | `normal` | `normal`, `nether`, `the_end` | Its dimension type. |
+| `generator` | `normal` | `normal`, `flat`, `void`, `amplified`, `large_biomes`, a dimension key | The terrain of a new world; a dimension key takes that dimension's generator. |
+| `seed` | (empty) | text | The seed of a new world, like `level-seed`; empty for a random one. |
+| `generate-structures` | `true` | `true`, `false` | Whether a new world gets structures. |

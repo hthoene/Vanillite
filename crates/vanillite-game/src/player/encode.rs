@@ -52,6 +52,7 @@ mod data_id {
     pub const KIND_17: u8 = 17;
     pub const KIND_18: u8 = 18;
     pub const KIND_19: u8 = 19;
+    pub const KIND_20: u8 = 20;
     pub const ORB_VALUE: u8 = 8;
     pub const ARROW_FLAGS: u8 = 8;
     pub const ARROW_PIERCE_LEVEL: u8 = 9;
@@ -656,6 +657,13 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
             item(out, id, serializer, |o| write_varint(o, v));
         }
     };
+    // `DATA_SOUND_VARIANT_ID` of pigs, cows and chickens; the default is `classic`.
+    let sound = |out: &mut Vec<u8>, id: u8, serializer: i32| {
+        let v = mob.sound_variant;
+        if all || v != crate::mob::kinds::classic_sound_variant(mob.kind) {
+            item(out, id, serializer, |o| write_varint(o, i32::from(v)));
+        }
+    };
     if mob.kind.family() != crate::mob::Family::Classic {
         crate::mob::fam::encode_data(&mut DataWriter { out, all }, mob);
         return;
@@ -719,14 +727,21 @@ fn mob_data(out: &mut Vec<u8>, mob: &crate::mob::MobData, all: bool) {
                         });
                     }
                     variant(out, data_id::KIND_19, serializer::PIG_VARIANT, mob.variant);
+                    sound(out, data_id::KIND_20, serializer::PIG_SOUND_VARIANT);
                 }
-                Kind::Cow => variant(out, data_id::KIND_18, serializer::COW_VARIANT, mob.variant),
-                _ => variant(
-                    out,
-                    data_id::KIND_18,
-                    serializer::CHICKEN_VARIANT,
-                    mob.variant,
-                ),
+                Kind::Cow => {
+                    variant(out, data_id::KIND_18, serializer::COW_VARIANT, mob.variant);
+                    sound(out, data_id::KIND_19, serializer::COW_SOUND_VARIANT);
+                }
+                _ => {
+                    variant(
+                        out,
+                        data_id::KIND_18,
+                        serializer::CHICKEN_VARIANT,
+                        mob.variant,
+                    );
+                    sound(out, data_id::KIND_19, serializer::CHICKEN_SOUND_VARIANT);
+                }
             }
         }
         _ => {}

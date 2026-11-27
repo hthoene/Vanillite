@@ -7,8 +7,8 @@
 //! generated item data (the seven spears). A charge remembers the entities it hit with the game
 //! time (`recentKineticEnemies`) so each is hit once per contact cool-down.
 //!
-//! Not ported: the Lunge enchantment (`post_piercing_attack` effects), the spear advancement
-//! trigger and the item used statistic, dragon parts and interaction entities as targets.
+//! Not ported: the Lunge enchantment (`post_piercing_attack` effects), dragon parts and
+//! interaction entities as targets.
 
 use std::borrow::Cow;
 
@@ -655,6 +655,7 @@ pub fn stab_attack(
         affected = true;
         crate::riding::stop_riding(ents, env, target);
     }
+    crate::mob::attack::weapon_used_stat(ents, a.id, weapon, target);
     if dealt {
         post_attack(level, ents, env, cx, target, &source, Some(weapon));
     }
@@ -778,6 +779,26 @@ pub fn damage_entities(
                     event: 2,
                 }),
             });
+        }
+        // `SPEAR_MOBS_TRIGGER` with the living entities stabbed during this use (a killed mob
+        // stays in the world until its death animation ends; what is gone was no mob).
+        if a.is_player {
+            let count = ents.player(user).map_or(0, |p| {
+                p.survival
+                    .stabbed
+                    .iter()
+                    .filter(|(e, _)| {
+                        ents.store
+                            .get(*e)
+                            .is_some_and(|e| crate::block::plate::is_living(e.kind()))
+                    })
+                    .count()
+            });
+            let count = i32::try_from(count).unwrap_or(i32::MAX);
+            if let Some(p) = ents.player_mut(user) {
+                p.advancements
+                    .trigger(crate::advancements::trigger::Event::SpearMobs(count));
+            }
         }
     }
 }

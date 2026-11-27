@@ -271,6 +271,9 @@ pub struct Connection {
     /// The last action of the player (`ServerPlayer.lastActionTime`), for
     /// `player-idle-timeout`.
     pub last_action: std::time::Instant,
+    /// The packets handled since the session recording (`debug.session-recording`) last took
+    /// them; `None` while the player is not recorded.
+    pub recorded: Option<Vec<ServerboundPlay>>,
 }
 
 impl std::fmt::Debug for Connection {
@@ -332,6 +335,7 @@ impl Connection {
             play: Digging::new(),
             last_action: std::time::Instant::now(),
             is_virtual,
+            recorded: None,
         }
     }
 
@@ -349,6 +353,9 @@ impl Connection {
         taken.clear();
         let disconnected = self.inbound.take(budget, &mut taken).is_err();
         for inbound in taken.drain(..) {
+            if let Some(recorded) = &mut self.recorded {
+                recorded.push(inbound.packet.clone());
+            }
             play.actor.pos = state.body.pos;
             play.actor.y_rot = state.body.y_rot;
             play.actor.x_rot = state.body.x_rot;

@@ -1,0 +1,25 @@
+{
+  "description": "Grass spreading and sapling growth at dusk: their light checks (getMaxLocalRawBrightness >= 9) read the sky darkened by the day timeline (updateSkyBrightness before the block ticks), so once the sky darkening reaches 7 (day time 13015) grass blocks stop drawing their four spread positions from the level random and saplings stop rolling; under a roof of leaves (sky light 14) they stop earlier.",
+  "tier": "fast",
+  "world": {
+    "seed": 4711
+  },
+  "rules": {
+    "random_tick_speed": "100",
+    "advance_time": "true"
+  },
+  "time": 12985,
+  "level_rng": true,
+  "region": [
+    [0, -61, 0],
+    [15, -60, 15]
+  ],
+  "ticks": 60,
+  "setup": [
+    {"op": "fill", "from": [2, -61, 2], "to": [13, -61, 3], "block": "minecraft:dirt"},
+    {"op": "fill", "from": [2, -61, 8], "to": [13, -61, 9], "block": "minecraft:dirt"},
+    {"op": "fill", "from": [2, -58, 7], "to": [7, -58, 12], "block": "minecraft:oak_leaves[persistent=true]"},
+    {"op": "set", "pos": [4, -60, 12], "block": "minecraft:oak_sapling"},
+    {"op": "set", "pos": [10, -60, 12], "block": "minecraft:birch_sapling"}
+  ]
+}

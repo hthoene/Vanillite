@@ -29,7 +29,7 @@ use vanillite_data::block::{BlockId, BlockState};
 use vanillite_datapack::LoadedPacks;
 
 pub use bounding_box::BoundingBox;
-pub use manager::StructureTemplateManager;
+pub use manager::{StructureTemplateManager, TemplateRef};
 pub use processor::{ProcessorList, ProcessorLists, StructureProcessor};
 pub use settings::{LiquidSettings, SettingsRandom, StructurePlaceSettings, TemplateRandom};
 pub use structure::{StructureBlockInfo, StructureTemplate};
@@ -64,9 +64,9 @@ impl TemplateLoader {
         &self.templates
     }
 
-    /// `StructureTemplateManager.getOrCreate(id)`.
-    pub fn template(&self, id: &str) -> Result<Arc<StructureTemplate>, Error> {
-        self.templates.get_or_create(id)
+    /// The template `id`, read when it is used (`StructureTemplateManager.getOrCreate(id)`).
+    pub fn template(&self, id: &str) -> TemplateRef {
+        TemplateRef::new(&self.templates, id)
     }
 
     /// A `Holder<StructureProcessorList>`.
@@ -152,7 +152,7 @@ mod tests {
             assert!(size.x >= 0 && size.y >= 0 && size.z >= 0, "{id}");
             assert!(!template.palettes().is_empty(), "{id}");
         }
-        let fossil = loader.template("minecraft:fossil/spine_1").expect("fossil");
+        let fossil = loader.template("minecraft:fossil/spine_1").get();
         assert!(!fossil.palettes()[0].blocks().is_empty());
 
         let registry = packs

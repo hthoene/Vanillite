@@ -17,19 +17,14 @@ use vanillite_chunk::slots::{
     ChunkGeneratorProvider, ChunkStoreProvider, DimensionId, LightEngineProvider,
 };
 use vanillite_config::{Config, ConfigError, RuleSet, VANILLITE_FILE, VanillaOr};
-use vanillite_game::level::Level;
 use vanillite_light::BfsLightEngineProvider;
 use vanillite_storage::backup::BackupSettings;
 use vanillite_storage::player_data::{JsonFile, PlayerDataStore};
-use vanillite_storage::saved_data::SavedDataStore;
 use vanillite_storage::writer::FileWriter;
-use vanillite_storage::{
-    AnvilCodec, IoPool, KeepUnreadable, OwnCodec, RegionStoreProvider, StoreSettings, WorldFormat,
-    WorldLayout,
-};
-use vanillite_world::chunks::{ChunkSettings, ChunkSlots, Chunks, SaveSettings};
+use vanillite_storage::{IoPool, RegionStoreProvider, StoreSettings, WorldFormat, WorldLayout};
+use vanillite_world::chunks::SaveSettings;
 use vanillite_world::entity::NetworkIds;
-use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider, TrackerSettings};
+use vanillite_world::tracking::{ChunkTrackerProvider, EntityTrackerProvider};
 
 use crate::budget::{Budget, Limits};
 use crate::clock::Clock;
@@ -55,8 +50,9 @@ pub const VANILLA_DIMENSIONS: [&str; 3] = [
 const OVERLOADED_THRESHOLD: u64 = NANOS_PER_SECOND;
 /// Ticks between the hand-backs of freed memory to the system ([`Budget::release_memory`]).
 const MEMORY_RELEASE_TICKS: u64 = 600;
-/// `performance.chunks.max-jobs` at most on scarce hardware ([`Budget::scarce`]).
-const SCARCE_MAX_JOBS: usize = 16;
+/// Ticks after an empty server released its memory until what that freed (also in jobs that
+/// were still running) is handed back to the system.
+const EMPTY_RELEASE_SETTLE_TICKS: u32 = 100;
 /// Minimum time between two "Can't keep up!" warnings (plus 100 ticks).
 const OVERLOADED_WARNING_INTERVAL: u64 = 10 * NANOS_PER_SECOND;
 /// Vanilla's autosave period in seconds of game time.
@@ -115,7 +111,10 @@ enum WorldMsg {
         deadline: u64,
     },
     Task(WorldTask),
-    Stop,
+    /// Saves (chunks only with `save`) and ends the thread.
+    Stop {
+        save: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -124,12 +123,61 @@ enum Route {
     World(Sender<WorldMsg>),
 }
 
-/// Who owns the worlds.
+/// How tasks reach each world, by world index; `None` for unloaded worlds.
+type Routes = Arc<std::sync::RwLock<Vec<Option<Route>>>>;
+
+/// Who owns the worlds, by world index; `None` for unloaded extra worlds.
 enum Worlds {
     /// The server thread ticks all worlds one after another (exact Vanilla order).
-    Sequential(Vec<ServerWorld>),
+    Sequential(Vec<Option<ServerWorld>>),
     /// Each world has its own thread; the server thread coordinates.
-    Parallel(Vec<WorldThread>),
+    Parallel(Vec<Option<WorldThread>>),
+}
+
+/// Puts a built world into the slot of its index: on its own thread in parallel mode, with a
+/// chunk waker through the server thread in sequential mode.
+fn attach_world(
+    worlds: &mut Worlds,
+    routes: &Routes,
+    mut world: ServerWorld,
+    compute: &Compute,
+    global: &Arc<Global>,
+    sender: &Sender<ServerMsg>,
+    watch: &WatchState,
+) -> Result<(), StartError> {
+    let id = world.id();
+    let route = match worlds {
+        Worlds::Parallel(threads) => {
+            let heartbeat = Arc::new(Heartbeat::new(format!("World {}", world.dimension())));
+            watch.register(Arc::clone(&heartbeat));
+            let thread = spawn_world_thread(world, compute, global, sender.clone(), heartbeat)?;
+            let route = Route::World(thread.sender.clone());
+            put(threads, id, thread);
+            route
+        }
+        Worlds::Sequential(worlds) => {
+            let wake = sender.clone();
+            world.set_chunk_waker(Arc::new(move || {
+                let _ = wake.send(ServerMsg::WorldTask(id, Box::new(ServerWorld::pump_chunks)));
+            }));
+            put(worlds, id, world);
+            Route::Server
+        }
+    };
+    put(
+        &mut routes.write().unwrap_or_else(PoisonError::into_inner),
+        id,
+        route,
+    );
+    Ok(())
+}
+
+/// Sets the slot of a world, growing the list.
+fn put<T>(slots: &mut Vec<Option<T>>, id: WorldId, value: T) {
+    if slots.len() <= id.index() {
+        slots.resize_with(id.index() + 1, || None);
+    }
+    slots[id.index()] = Some(value);
 }
 
 struct WorldThread {
@@ -311,7 +359,7 @@ impl ServerBuilder {
             crate::net::prepare(&config, &dir, &level_dir, &self.vanilla_pack, &player_store)?;
         // The dimensions come from the data packs and `world_gen_settings.dat`; the layout and
         // the format are settled for all of them before a chunk is read.
-        let dimensions = prepared.world_gen.dimensions();
+        let dimensions = prepared.world_gen.dimensions(prepared.packs.as_ref());
         let names: Vec<&str> = dimensions.names().collect();
         let moved = vanillite_storage::layout::adopt_layout(&dir, &level_name, layout, &names)
             .map_err(|e| StartError::Io(format!("world layout of \"{level_name}\": {e}")))?;
@@ -391,22 +439,24 @@ impl ServerBuilder {
         let storage_rules = &config.server.storage;
         let io = IoPool::new(usize::from(storage_rules.io_threads))
             .map_err(|e| StartError::Io(format!("cannot start the storage IO threads: {e}")))?;
+        let store_settings = StoreSettings {
+            sync: config.properties.sync_chunk_writes,
+            read_ahead: storage_rules.read_ahead,
+            read_cache: (storage_rules.read_cache as usize) << 20,
+            max_open_files: storage_rules.max_open_files as usize,
+        };
         let (storage_provider, origin) = self.chunk_storage.take().unwrap_or_else(|| {
-            let settings = StoreSettings {
-                sync: config.properties.sync_chunk_writes,
-                read_ahead: storage_rules.read_ahead,
-                read_cache: (storage_rules.read_cache as usize) << 20,
-                max_open_files: storage_rules.max_open_files as usize,
-            };
             (
                 Box::new(RegionStoreProvider {
                     format: world_format,
                     pool: io.clone(),
-                    settings,
+                    settings: store_settings,
                 }),
                 Origin::BuiltIn,
             )
         });
+        let built_in_storage =
+            matches!(origin, Origin::BuiltIn).then(|| (io.clone(), store_settings));
         let save_settings = SaveSettings {
             dimension: DimensionId(0),
             tick_budget: Duration::from_micros(u64::from(
@@ -418,16 +468,32 @@ impl ServerBuilder {
         };
         slot("chunk-storage", &origin);
         let terrains = crate::world_setup::GeneratorsByDimension::default();
+        let extra_gens = crate::world_setup::ExtraWorldGens::default();
         log::info!("World format: {}", world_format.name());
+        // `StructureTemplateManager`: one cache for world generation, structure blocks and
+        // commands, like Vanilla's.
+        let templates = Arc::new(
+            vanillite_worldgen::template::StructureTemplateManager::for_world(
+                packs
+                    .as_deref()
+                    .map(|p| p.roots().to_vec())
+                    .unwrap_or_default(),
+                level_dir.join("generated"),
+            ),
+        );
         let built_in_generators = {
             let packs = packs.clone();
             let world_gen = prepared.world_gen;
             let created = Arc::clone(&terrains);
+            let extra = Arc::clone(&extra_gens);
+            let templates = Arc::clone(&templates);
             move || -> Box<dyn ChunkGeneratorProvider> {
                 Box::new(crate::world_setup::BuiltInGenerators {
                     packs,
                     world_gen,
                     created,
+                    extra: Arc::clone(&extra),
+                    templates: Arc::clone(&templates),
                 })
             }
         };
@@ -472,7 +538,6 @@ impl ServerBuilder {
         let level = crate::level::LevelState::load(
             &level_dir,
             packs.as_deref(),
-            &dimensions,
             crate::survival::difficulty(config.properties.difficulty),
             &level_setup,
             writer.clone(),
@@ -511,15 +576,7 @@ impl ServerBuilder {
                 Arc::clone(&random_sequences),
             ),
             packs: data_packs.with_loaded(packs.clone()),
-            templates: Arc::new(
-                vanillite_worldgen::template::StructureTemplateManager::for_world(
-                    packs
-                        .as_deref()
-                        .map(|p| p.roots().to_vec())
-                        .unwrap_or_default(),
-                    level_dir.join("generated"),
-                ),
-            ),
+            templates,
             tick_rate: std::sync::Mutex::new(TickRateManager::default()),
             tick_times: std::sync::Mutex::new(crate::tick_rate::TickTimes::default()),
             force_game_mode: config.properties.force_gamemode,
@@ -533,7 +590,7 @@ impl ServerBuilder {
         global
             .plugins
             .set_server(Arc::new(crate::plugins::Services::new(
-                &global, &compute, &config,
+                &global, &compute, &config, &dir,
             )));
         if let Some(packs) = packs.as_deref() {
             global.systems.set_tags(crate::packs::registry_tags(packs));
@@ -553,187 +610,61 @@ impl ServerBuilder {
         let (sender, receiver) = mpsc::channel();
 
         log::info!("Preparing level \"{level_name}\"");
+        let factory = crate::worlds::WorldFactory {
+            trees: crate::world_setup::tree_features(packs.as_deref(), seed),
+            packs: packs.clone(),
+            tracker: tracker_provider,
+            storage: storage_provider,
+            built_in_storage,
+            generator: generator_provider,
+            light: light_provider,
+            executor: executor as Arc<dyn vanillite_world::chunks::Executor>,
+            compression,
+            own_level,
+            save: save_settings,
+            scarce: budget.scarce(),
+            harness: self.harness,
+            behaviours,
+            terrains,
+            extra_gens,
+            writer: writer.clone(),
+            random_sequences,
+            spawn_table,
+            seed,
+            format: world_format,
+        };
         let mut worlds = Vec::with_capacity(dimensions.len());
-        let trees = crate::world_setup::tree_features(packs.as_deref(), seed);
-        for (WorldId(index), dimension, kind) in dimensions.iter() {
-            let rules = Arc::new(config.world_rules(dimension));
-            let view_distance = rules
-                .distances
-                .view_distance
-                .or(u8::try_from(config.properties.view_distance.clamp(2, 32)).unwrap_or(10));
-            let tracker_settings = TrackerSettings::new(
-                i32::from(view_distance),
-                config.properties.entity_broadcast_range_percentage,
-                &rules.tracking,
-            );
-            let tracker = tracker_provider.create(&tracker_settings);
-            let player_range = tracker_settings.range(vanillite_data::entity::ids::PLAYER);
-            let info = crate::world_setup::world_info(
-                packs.as_deref(),
-                layout.dimension_dir(&dir, &level_name, dimension),
-                dimension,
-                kind,
-                seed,
-            )?;
-            let slots = ChunkSlots {
-                store: storage_provider
-                    .create(&info, DimensionId(index))
-                    .map_err(|e| StartError::io(&info.dir, e))?,
-                // Records that fail to decode are copied aside before the chunk is generated
-                // again and saved over them (#142).
-                codec: match world_format {
-                    WorldFormat::Anvil => Arc::new(KeepUnreadable::new(
-                        AnvilCodec::new(&info, compression),
-                        info.dir.join("unreadable"),
-                    )),
-                    WorldFormat::Vanillite => Arc::new(KeepUnreadable::new(
-                        OwnCodec::new(&info, own_level).with_upgrades(Arc::clone(&upgrades)),
-                        info.dir.join("unreadable"),
-                    )),
-                },
-                generator: generator_provider
-                    .create(&info)
-                    .map_err(|e| StartError::Io(format!("chunk generator of {dimension}: {e}")))?,
-                light: light_provider.create(&info),
-                executor: Arc::clone(&executor) as _,
-            };
-            let generator = Arc::clone(&slots.generator);
-            slots
-                .executor
-                .spawn(0, Box::new(move || generator.prepare()));
-            let settings = ChunkSettings {
-                view_distance: i32::from(view_distance),
-                unload_delay: u64::from(rules.chunks.unload_delay),
-                // On scarce hardware fewer jobs wait in the queue, so the newest priorities
-                // (the chunks around the players now) come first.
-                max_jobs: if budget.scarce() {
-                    usize::from(rules.chunks.max_jobs).min(SCARCE_MAX_JOBS)
-                } else {
-                    usize::from(rules.chunks.max_jobs)
-                },
-                simulation_distance: i32::from(rules.distances.simulation_distance.or(
-                    u8::try_from(config.properties.simulation_distance.clamp(2, 32)).unwrap_or(10),
-                )),
-                max_relights: usize::try_from(rules.simulation.max_relights_per_tick)
-                    .unwrap_or(usize::MAX),
-                save: SaveSettings {
-                    dimension: DimensionId(index),
-                    ..save_settings
-                },
-                blocking_tickets: self.harness,
-            };
-            let level_settings = crate::world_setup::level_settings(
-                packs.as_deref(),
-                &info,
-                kind,
-                &rules,
-                &config.properties,
-            );
-            let climate = crate::world_setup::climate(packs.as_deref(), &world_gen, dimension);
+        for (id, dimension, kind) in dimensions.iter() {
             let players = world_players
                 .next()
                 .ok_or_else(|| StartError::Io("world setup missing".to_owned()))?;
-            let bounds = (info.min_y, info.height);
-            let data = SavedDataStore::new(info.dir.clone(), writer.clone());
-            let mut level = Level::new(
-                Chunks::new(info, settings, slots),
-                level_settings,
-                Arc::clone(&behaviours),
-                Arc::clone(&global.network_ids),
+            let place = crate::worlds::WorldPlace {
+                dir: layout.dimension_dir(&dir, &level_name, dimension),
                 seed,
-            );
-            level.set_game_time(global.level.game_time());
-            level.generation = terrains
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(dimension)
-                .cloned();
-            level.border = crate::border::load(
-                &data,
-                global.level.game_time(),
-                config.properties.max_world_size,
-            );
-            level.set_random_sequences(Arc::clone(&random_sequences));
-            if let Some(trees) = &trees {
-                level.set_tree_features(Arc::clone(trees));
-            }
-            level.set_maps(Arc::clone(&global.level.maps));
-            let block_commands = crate::commands::BlockCommands::new(&global, WorldId(index));
-            let lent_levels = block_commands.lent();
-            level.set_command_runner(Arc::new(block_commands));
-            if !global.plugins.plugins().is_empty() {
-                level.set_hooks(Arc::new(crate::plugins::WorldHooks::new(
-                    &global, dimension,
-                )));
-            }
-            level.set_structure_templates(Arc::clone(&global.templates));
-            if let Some(packs) = &packs {
-                level.set_data_packs(Arc::clone(packs));
-            }
-            let survival = crate::survival::WorldSurvival::new(
-                dimension,
-                &global.level,
-                &players.level,
-                bounds,
-                player_range,
-                climate,
-            );
-            let saved_tickets = crate::chunk_tickets::load(&data, &mut level);
-            let mobs = crate::mobs::WorldMobs::new(spawn_table.clone(), seed, &rules);
-            let mut world = ServerWorld::new(
-                WorldId(index),
-                dimension.to_owned(),
-                rules,
-                tracker,
-                players,
-                level,
-                survival,
-                mobs,
-                data,
-                global
-                    .level
-                    .dimension_types
-                    .get(usize::from(index))
-                    .is_some_and(|t| t.has_ender_dragon_fight),
-            );
-            world.set_lent_levels(lent_levels);
-            world.restore_tickets(saved_tickets);
-            worlds.push(world);
+                format: world_format,
+                upgrades: Arc::clone(&upgrades),
+                world_gen: &world_gen,
+            };
+            worlds.push(factory.build(&global, &config, id, (dimension, kind), &place, players)?);
         }
         if !spawn_known {
             initial_spawn(&mut worlds, &global, world_gen.flat_spawn_height());
         }
         prepare_levels(&mut worlds);
-        let (worlds, routes) = if parallel {
+        let mut owned = if parallel {
             log::info!("Dimensions tick in parallel");
-            let mut threads = Vec::with_capacity(worlds.len());
-            for world in worlds {
-                let heartbeat = Arc::new(Heartbeat::new(format!("World {}", world.dimension())));
-                watch.register(Arc::clone(&heartbeat));
-                threads.push(spawn_world_thread(
-                    world,
-                    &compute,
-                    &global,
-                    sender.clone(),
-                    heartbeat,
-                )?);
-            }
-            let routes = threads
-                .iter()
-                .map(|t| Route::World(t.sender.clone()))
-                .collect();
-            (Worlds::Parallel(threads), routes)
+            Worlds::Parallel(Vec::with_capacity(worlds.len()))
         } else {
             log::info!("Dimensions tick sequentially");
-            for world in &mut worlds {
-                let (wake, id) = (sender.clone(), world.id());
-                world.set_chunk_waker(Arc::new(move || {
-                    let _ = wake.send(ServerMsg::WorldTask(id, Box::new(ServerWorld::pump_chunks)));
-                }));
-            }
-            let routes = worlds.iter().map(|_| Route::Server).collect();
-            (Worlds::Sequential(worlds), routes)
+            Worlds::Sequential(Vec::with_capacity(worlds.len()))
         };
+        let routes = Arc::new(std::sync::RwLock::new(Vec::with_capacity(worlds.len())));
+        for world in worlds {
+            attach_world(
+                &mut owned, &routes, world, &compute, &global, &sender, &watch,
+            )?;
+        }
+        let worlds = owned;
 
         let net = NetState::start(
             &config,
@@ -764,6 +695,7 @@ impl ServerBuilder {
             tick_count: 0,
             next_tick: 0,
             empty_ticks: 0,
+            memory_settle_ticks: 0,
             ticks_until_autosave: 0,
             average_tick_nanos: 0.0,
             tick_log: open_tick_log(),
@@ -776,6 +708,9 @@ impl ServerBuilder {
             dupe_waiting: Vec::new(),
             layout,
             player_store,
+            factory,
+            extra_locks: vanillite_base::hash::FxHashMap::default(),
+            world_gen,
             next_backup: Instant::now(),
             backup: None,
             io,
@@ -792,6 +727,13 @@ impl ServerBuilder {
                 &server.global,
             );
             crate::admin::start_query(&server.config, &net.network, Arc::clone(&net.query));
+        }
+        for world in &server.config.extra_worlds.clone() {
+            let opened = crate::worlds::WorldSpec::from_config(world)
+                .and_then(|spec| server.open_world(&spec, true).map_err(|e| e.to_string()));
+            if let Err(e) = opened {
+                log::error!("Cannot load the extra world {:?}: {e}", world.name);
+            }
         }
         server.global.plugins.enable_all();
         let bots = server.config.server.debug.test_bots;
@@ -955,8 +897,8 @@ fn world_loop(
                 let _ = server.send(ServerMsg::WorldTicked(world.id(), outbox));
             }
             WorldMsg::Task(task) => task(world),
-            WorldMsg::Stop => {
-                world.save(true, false);
+            WorldMsg::Stop { save } => {
+                world.save(true, !save);
                 heartbeat.leave();
                 return;
             }
@@ -969,14 +911,12 @@ fn world_loop(
 #[derive(Clone)]
 pub struct ServerHandle {
     sender: Sender<ServerMsg>,
-    routes: Arc<[Route]>,
+    routes: Routes,
 }
 
 impl fmt::Debug for ServerHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ServerHandle")
-            .field("worlds", &self.routes.len())
-            .finish()
+        f.debug_struct("ServerHandle").finish_non_exhaustive()
     }
 }
 
@@ -1004,7 +944,14 @@ impl ServerHandle {
         task: impl FnOnce(&mut ServerWorld) + Send + 'static,
     ) -> bool {
         let task: WorldTask = Box::new(task);
-        match self.routes.get(world.index()) {
+        let route = self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(world.index())
+            .cloned()
+            .flatten();
+        match route {
             Some(Route::Server) => self.sender.send(ServerMsg::WorldTask(world, task)).is_ok(),
             Some(Route::World(sender)) => sender.send(WorldMsg::Task(task)).is_ok(),
             None => false,
@@ -1020,7 +967,7 @@ pub struct Server {
     budget: Arc<Budget>,
     global: Arc<Global>,
     worlds: Worlds,
-    routes: Arc<[Route]>,
+    routes: Routes,
     sender: Sender<ServerMsg>,
     receiver: Receiver<ServerMsg>,
     /// Console commands and global tasks waiting for the next global pre-phase.
@@ -1028,6 +975,9 @@ pub struct Server {
     tick_count: u64,
     next_tick: u64,
     empty_ticks: u64,
+    /// Ticks until the memory an empty server released is handed back to the system; 0 = no
+    /// hand-back is due.
+    memory_settle_ticks: u32,
     ticks_until_autosave: i64,
     average_tick_nanos: f64,
     /// Load test tick log (`VANILLITE_TICK_LOG`): one line with the duration in nanoseconds per
@@ -1046,6 +996,12 @@ pub struct Server {
     layout: WorldLayout,
     /// Player data files, written in the background.
     player_store: PlayerDataStore,
+    /// Builds the worlds that load while the server runs.
+    factory: crate::worlds::WorldFactory,
+    /// The `session.lock` of each loaded extra world's folder.
+    extra_locks: vanillite_base::hash::FxHashMap<WorldId, File>,
+    /// The default world's generator settings (extra worlds may take a dimension's generator).
+    world_gen: crate::world_setup::WorldGen,
     /// When the next automatic backup is due.
     next_backup: Instant,
     /// The thread of the running or last backup.
@@ -1189,14 +1145,15 @@ impl Server {
         self.heartbeat.enter(&clock);
         self.watch.progress.store(started, Ordering::Relaxed);
 
+        if self.global.players.count() == 0 && !self.global.tick_rate().is_sprinting() {
+            self.empty_ticks += 1;
+        } else {
+            self.empty_ticks = 0;
+        }
+        self.release_memory_when_empty();
         let pause_seconds =
             u64::try_from(self.config.properties.pause_when_empty_seconds).unwrap_or(0);
         if pause_seconds > 0 {
-            if self.global.players.count() == 0 && !self.global.tick_rate().is_sprinting() {
-                self.empty_ticks += 1;
-            } else {
-                self.empty_ticks = 0;
-            }
             let threshold = pause_seconds * 20;
             if self.empty_ticks >= threshold {
                 if self.empty_ticks == threshold {
@@ -1248,6 +1205,36 @@ impl Server {
                 .spawn_background(u32::MAX, move || budget.release_memory());
         }
         self.watch.progress.store(clock.now(), Ordering::Relaxed);
+    }
+
+    /// `performance.memory.release-when-empty`: after that time without players (and again
+    /// every such interval while the server stays empty) the worlds free what they can build
+    /// again, and a little later the allocator hands the freed memory back to the system.
+    fn release_memory_when_empty(&mut self) {
+        if self.empty_ticks == 0 {
+            self.memory_settle_ticks = 0;
+            return;
+        }
+        if self.memory_settle_ticks > 0 {
+            self.memory_settle_ticks -= 1;
+            if self.memory_settle_ticks == 0 {
+                // On this thread: nobody is online to notice, and the workers stay untouched.
+                self.budget.release_idle_memory();
+            }
+        }
+        let Some(seconds) = self.config.server.memory.release_when_empty.get() else {
+            return;
+        };
+        if !self.empty_ticks.is_multiple_of(u64::from(seconds) * 20) {
+            return;
+        }
+        log::debug!("Server empty: releasing memory");
+        self.global.templates.trim();
+        self.compute.release_memory();
+        for id in self.loaded_worlds() {
+            self.run_in_world(id, Box::new(ServerWorld::release_memory));
+        }
+        self.memory_settle_ticks = EMPTY_RELEASE_SETTLE_TICKS;
     }
 
     /// G1: console commands and global tasks, with `&mut` to everything because no world is
@@ -1431,14 +1418,21 @@ impl Server {
         let tick = self.tick_count;
         let runs_normally = self.global.tick_rate().runs_normally();
         let deadline = self.next_tick;
+        let slots = match &self.worlds {
+            Worlds::Sequential(worlds) => worlds.len(),
+            Worlds::Parallel(threads) => threads.len(),
+        };
         let mut outboxes: Vec<Vec<(WorldId, WorldTask)>> =
-            self.routes.iter().map(|_| Vec::new()).collect();
+            std::iter::repeat_with(Vec::new).take(slots).collect();
         match &mut self.worlds {
             Worlds::Sequential(worlds) => {
                 for (index, outbox) in outboxes.iter_mut().enumerate() {
                     let (before, rest) = worlds.split_at_mut(index);
                     let Some((world, after)) = rest.split_first_mut() else {
                         break;
+                    };
+                    let Some(world) = world else {
+                        continue;
                     };
                     let mut ctx = TickContext::new(
                         world.id(),
@@ -1454,14 +1448,14 @@ impl Server {
                 }
             }
             Worlds::Parallel(threads) => {
-                for thread in threads.iter() {
+                for thread in threads.iter().flatten() {
                     let _ = thread.sender.send(WorldMsg::Tick {
                         tick,
                         runs_normally,
                         deadline,
                     });
                 }
-                let mut remaining = threads.len();
+                let mut remaining = threads.iter().flatten().count();
                 while remaining > 0 {
                     let Ok(msg) = self.receiver.recv() else {
                         break;
@@ -1600,11 +1594,12 @@ impl Server {
     /// parallel mode.
     fn run_in_world(&mut self, id: WorldId, task: WorldTask) {
         match &mut self.worlds {
-            Worlds::Sequential(worlds) => match worlds.get_mut(id.index()) {
+            Worlds::Sequential(worlds) => match worlds.get_mut(id.index()).and_then(Option::as_mut)
+            {
                 Some(world) => task(world),
                 None => log::warn!("Task for unknown world {} dropped", id.0),
             },
-            Worlds::Parallel(threads) => match threads.get(id.index()) {
+            Worlds::Parallel(threads) => match threads.get(id.index()).and_then(Option::as_ref) {
                 Some(thread) => {
                     if thread.sender.send(WorldMsg::Task(task)).is_err() {
                         log::warn!("Task for stopped world {} dropped", id.0);
@@ -1699,6 +1694,19 @@ impl Server {
         self.save_everything(false, false, None);
     }
 
+    /// The ids of the loaded worlds.
+    fn loaded_worlds(&self) -> Vec<WorldId> {
+        match &self.worlds {
+            Worlds::Sequential(worlds) => worlds.iter().flatten().map(ServerWorld::id).collect(),
+            Worlds::Parallel(threads) => threads
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.is_some())
+                .filter_map(|(i, _)| u16::try_from(i).ok().map(WorldId))
+                .collect(),
+        }
+    }
+
     /// Vanilla's `saveEverything`: the players, `level.dat`, the saved data and the chunks of
     /// every world; after `/save-off` the chunks only when `force`d. Each world saves between
     /// its ticks; files are written in the background. `then` runs once every world has saved
@@ -1707,15 +1715,13 @@ impl Server {
         let skip_chunks = !force && !self.global.level.auto_save.load(Ordering::Relaxed);
         self.global.systems.save(&self.global.level.data);
         self.global.level.save();
+        let loaded = self.loaded_worlds();
         let done = Arc::new(SaveDone {
-            remaining: AtomicUsize::new(self.routes.len()),
+            remaining: AtomicUsize::new(loaded.len()),
             writer: flush.then(|| self.global.level.writer().clone()),
             then: Mutex::new(then),
         });
-        for index in 0..self.routes.len() {
-            let Ok(id) = u16::try_from(index).map(WorldId) else {
-                break;
-            };
+        for id in loaded {
             let done = Arc::clone(&done);
             // `then` (backups) waits until the world's save round is committed.
             self.run_in_world(
@@ -1749,8 +1755,15 @@ impl Server {
         };
         let level_name = self.config.properties.level_name.clone();
         let mut sources: Vec<PathBuf> = Vec::new();
-        for dimension in self.global.dimensions.names() {
-            let dir = self.layout.world_dir(&self.dir, &level_name, dimension);
+        for world in self.global.dimensions.worlds() {
+            let dir = match self.global.dimensions.folder(world) {
+                Some(folder) => self.dir.join(folder),
+                None => self.layout.world_dir(
+                    &self.dir,
+                    &level_name,
+                    self.global.dimensions.name_or_overworld(world),
+                ),
+            };
             if !sources.contains(&dir) {
                 sources.push(dir);
             }
@@ -1787,6 +1800,284 @@ impl Server {
         }
     }
 
+    /// Loads the extra world of `spec` from its folder; with `create` a missing world is created
+    /// from `spec` (an existing one keeps its seed and generator). Blocks the server thread
+    /// while the world opens, like Bukkit's `createWorld`.
+    pub(crate) fn open_world(
+        &mut self,
+        spec: &crate::worlds::WorldSpec,
+        create: bool,
+    ) -> Result<WorldId, StartError> {
+        let name = spec.name.as_str();
+        let key = crate::worlds::dimension_key(name).map_err(StartError::Io)?;
+        let level_name = &self.config.properties.level_name;
+        let dims = &self.global.dimensions;
+        let taken = dims
+            .worlds()
+            .filter(|&w| dims.folder(w).is_none())
+            .filter_map(|w| dims.name(w))
+            .map(|d| self.layout.world_dir(&self.dir, level_name, d))
+            .chain(std::iter::once(self.dir.join(level_name)))
+            .any(|d| {
+                d.file_name()
+                    .is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(name))
+            });
+        if taken {
+            return Err(StartError::Io(format!(
+                "{name} is a folder of the default world"
+            )));
+        }
+        let folder = self.dir.join(name);
+        let packs = self.factory.packs.clone();
+        let (kind, world_gen, files) = match crate::worlds::saved_world(&folder, &key)? {
+            Some(saved) => (saved.kind, saved.world_gen, saved.files),
+            None if !create => {
+                return Err(StartError::Io(format!("there is no world in {name}/")));
+            }
+            None => {
+                let used = fs::read_dir(&folder).is_ok_and(|mut d| d.next().is_some());
+                if used && !folder.join("level.dat").exists() {
+                    return Err(StartError::Io(format!("{name}/ exists and holds no world")));
+                }
+                fs::create_dir_all(&folder).map_err(|e| StartError::io(&folder, e))?;
+                let generator = spec
+                    .generator_json(packs.as_deref(), &self.world_gen)
+                    .map_err(StartError::Io)?;
+                let seed = spec.seed.unwrap_or_else(crate::world_setup::random_seed);
+                let kind = spec.environment.kind();
+                let world_gen = crate::world_setup::WorldGen::create_single(
+                    &folder,
+                    (&key, kind),
+                    generator,
+                    seed,
+                    spec.generate_structures,
+                )?;
+                log::info!(
+                    "New world {name}: {}, generator {}, seed {seed}",
+                    spec.environment.name(),
+                    spec.generator
+                );
+                (kind.to_owned(), world_gen, key.clone())
+            }
+        };
+        let id = dims
+            .register(&key, &kind, Some(name), packs.as_deref(), world_gen.seed)
+            .map_err(StartError::Io)?;
+        let lock = lock_world(&folder)?;
+        self.factory
+            .extra_gens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone(), world_gen.clone());
+        let built = self.build_extra(id, (&key, &kind), &folder, &files, &world_gen);
+        let world = match built {
+            Ok(world) => world,
+            Err(e) => {
+                self.factory
+                    .extra_gens
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&key);
+                return Err(e);
+            }
+        };
+        attach_world(
+            &mut self.worlds,
+            &self.routes,
+            world,
+            &self.compute,
+            &self.global,
+            &self.sender,
+            &self.watch,
+        )?;
+        self.global.dimensions.set_loaded(id, true);
+        self.extra_locks.insert(id, lock);
+        log::info!("Loaded world {name} ({key})");
+        let mut ev = vanillite_game::hooks::Event {
+            key,
+            text: name.to_owned(),
+            ..vanillite_game::hooks::Event::new(vanillite_abi::event::WORLD_LOAD)
+        };
+        crate::plugins::Hooks::of_world(&self.global, id).event(&mut ev);
+        Ok(id)
+    }
+
+    /// Builds the extra world `id` stored in `folder` (chunks in the folder of the dimension
+    /// `files`), with its spawn.
+    fn build_extra(
+        &mut self,
+        id: WorldId,
+        (key, kind): (&str, &str),
+        folder: &Path,
+        files: &str,
+        world_gen: &crate::world_setup::WorldGen,
+    ) -> Result<ServerWorld, StartError> {
+        let name = folder
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let packs = self.factory.packs.clone();
+        let dir = vanillite_storage::dimension_dir(folder, files);
+        let plan = crate::world_format::plan_in(
+            &self.config,
+            &self.dir,
+            &name,
+            std::slice::from_ref(&dir),
+        )?;
+        let format = if plan.convert_to.is_some() {
+            let info = crate::world_setup::world_info(
+                packs.as_deref(),
+                dir.clone(),
+                key,
+                kind,
+                world_gen.seed,
+            )?;
+            crate::world_format::convert_on_start(
+                plan,
+                &self.config,
+                &self.dir,
+                &name,
+                &[info],
+                self.compute.scheduler().workers(),
+            )
+        } else {
+            plan.format
+        };
+        let upgrades = match format {
+            WorldFormat::Vanillite => vanillite_storage::upgrade::Upgrades::load(folder)
+                .map_err(|e| StartError::Io(format!("world \"{name}\": {e}")))?,
+            WorldFormat::Anvil => vanillite_storage::upgrade::Upgrades::none(),
+        };
+        let mut level_data = vanillite_storage::level_dat::LevelData::read(folder)
+            .map_err(|e| StartError::io(folder, e))?;
+        let saved_spawn = level_data.as_ref().and_then(|l| l.spawn.clone());
+        let spawn = saved_spawn
+            .as_ref()
+            .map_or((vanillite_base::Vec3::ZERO, 0.0), |s| {
+                (
+                    vanillite_base::Vec3::new(
+                        f64::from(s.pos[0]) + 0.5,
+                        f64::from(s.pos[1]),
+                        f64::from(s.pos[2]) + 0.5,
+                    ),
+                    s.yaw,
+                )
+            });
+        let levels = self
+            .global
+            .dimensions
+            .names()
+            .chain(std::iter::once(key))
+            .filter_map(|d| vanillite_protocol::types::Identifier::new(d).ok())
+            .collect();
+        let level = crate::net::level_info(
+            &self.config,
+            packs.as_deref(),
+            levels,
+            (key, kind),
+            world_gen.seed,
+            world_gen.is_flat_of(key),
+            spawn,
+        );
+        let players = crate::players::WorldPlayers::new(level, self.player_store.clone());
+        let place = crate::worlds::WorldPlace {
+            dir,
+            seed: world_gen.seed,
+            format,
+            upgrades,
+            world_gen,
+        };
+        let mut world =
+            self.factory
+                .build(&self.global, &self.config, id, (key, kind), &place, players)?;
+        if saved_spawn.is_none() {
+            let pos = world.search_initial_spawn(world_gen.flat_spawn_height_of(key));
+            world.players.level.spawn = (
+                vanillite_base::Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y),
+                    f64::from(pos.z) + 0.5,
+                ),
+                0.0,
+            );
+            let data = level_data
+                .get_or_insert_with(|| vanillite_storage::level_dat::LevelData::new(&name));
+            data.spawn = Some(vanillite_storage::level_dat::Spawn {
+                dimension: key.to_owned(),
+                pos: [pos.x, pos.y, pos.z],
+                yaw: 0.0,
+                pitch: 0.0,
+            });
+            data.add_brand("vanillite", true);
+            data.write(folder).map_err(|e| StartError::io(folder, e))?;
+        }
+        prepare_levels(std::slice::from_mut(&mut world));
+        Ok(world)
+    }
+
+    /// Unloads the extra world `id`, its chunks saved first with `save` (Bukkit's
+    /// `unloadWorld`). Fails for the default world's dimensions, a world with players in it
+    /// and when a plugin cancels it.
+    pub(crate) fn unload_world(&mut self, id: WorldId, save: bool) -> Result<(), String> {
+        let dims = &self.global.dimensions;
+        let Some(name) = dims.folder(id).map(str::to_owned) else {
+            return Err("only extra worlds can be unloaded".to_owned());
+        };
+        if !dims.is_loaded(id) {
+            return Err(format!("world {name} is not loaded"));
+        }
+        if self.global.players.snapshot().iter().any(|p| p.world == id) {
+            return Err(format!("players are in world {name}"));
+        }
+        let key = dims.name_or_overworld(id).to_owned();
+        let mut ev = vanillite_game::hooks::Event {
+            key: key.clone(),
+            text: name.clone(),
+            flags: u32::from(save),
+            ..vanillite_game::hooks::Event::new(vanillite_abi::event::WORLD_UNLOAD)
+        };
+        crate::plugins::Hooks::of_world(&self.global, id).event(&mut ev);
+        if ev.cancelled {
+            return Err(format!("a plugin keeps world {name} loaded"));
+        }
+        dims.set_loaded(id, false);
+        if let Some(route) = self
+            .routes
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id.index())
+        {
+            *route = None;
+        }
+        match &mut self.worlds {
+            Worlds::Sequential(worlds) => {
+                if let Some(mut world) = worlds.get_mut(id.index()).and_then(Option::take) {
+                    world.save(true, !save);
+                }
+            }
+            Worlds::Parallel(threads) => {
+                if let Some(thread) = threads.get_mut(id.index()).and_then(Option::take) {
+                    let _ = thread.sender.send(WorldMsg::Stop { save });
+                    let _ = thread.handle.join();
+                }
+            }
+        }
+        self.global.level.writer().flush();
+        self.factory
+            .extra_gens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.factory
+            .terrains
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.extra_locks.remove(&id);
+        log::info!("Unloaded world {name} ({key})");
+        Ok(())
+    }
+
     /// Vanilla's `stopServer`: save everything with flush, stop the threads, release the world.
     fn shutdown(mut self) {
         // Saving may take long; the watchdog must not kill the process now.
@@ -1806,17 +2097,24 @@ impl Server {
         let level = &self.config.properties.level_name;
         match self.worlds {
             Worlds::Sequential(mut worlds) => {
-                for world in &mut worlds {
+                for world in worlds.iter_mut().flatten() {
                     log::info!("Saving chunks for level '{level}'/{}", world.dimension());
                     world.save(true, false);
                 }
             }
             Worlds::Parallel(threads) => {
-                for (thread, dimension) in threads.iter().zip(self.global.dimensions.names()) {
+                for (index, thread) in threads.iter().enumerate() {
+                    let Some(thread) = thread else {
+                        continue;
+                    };
+                    let dimension = u16::try_from(index)
+                        .ok()
+                        .and_then(|i| self.global.dimensions.name(WorldId(i)))
+                        .unwrap_or("?");
                     log::info!("Saving chunks for level '{level}'/{dimension}");
-                    let _ = thread.sender.send(WorldMsg::Stop);
+                    let _ = thread.sender.send(WorldMsg::Stop { save: true });
                 }
-                for thread in threads {
+                for thread in threads.into_iter().flatten() {
                     let _ = thread.handle.join();
                 }
             }
@@ -2011,7 +2309,7 @@ impl Server {
     /// If the dimensions tick in parallel or the world does not exist.
     pub fn world(&mut self, id: WorldId) -> &mut ServerWorld {
         match &mut self.worlds {
-            Worlds::Sequential(worlds) => &mut worlds[id.index()],
+            Worlds::Sequential(worlds) => worlds[id.index()].as_mut().expect("world not loaded"),
             Worlds::Parallel(_) => panic!("the harness needs sequential dimensions"),
         }
     }
@@ -2023,7 +2321,7 @@ impl Server {
     /// If the dimensions tick in parallel or the world does not exist.
     pub fn world_ref(&self, id: WorldId) -> &ServerWorld {
         match &self.worlds {
-            Worlds::Sequential(worlds) => &worlds[id.index()],
+            Worlds::Sequential(worlds) => worlds[id.index()].as_ref().expect("world not loaded"),
             Worlds::Parallel(_) => panic!("the harness needs sequential dimensions"),
         }
     }
@@ -2041,7 +2339,7 @@ impl Server {
             .game_time
             .store(time, std::sync::atomic::Ordering::Relaxed);
         if let Worlds::Sequential(worlds) = &mut self.worlds {
-            for world in worlds {
+            for world in worlds.iter_mut().flatten() {
                 world.level_mut().set_game_time(time);
             }
         }
@@ -2054,6 +2352,14 @@ impl Server {
         name: &str,
         uuid: u128,
     ) -> vanillite_protocol::InboundSender {
+        self.join_unread(name, uuid)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Server {
+    /// [`Server::join_without_network`].
+    fn join_unread(&mut self, name: &str, uuid: u128) -> vanillite_protocol::InboundSender {
         /// A connection nobody reads.
         struct Unread;
         impl vanillite_game::player::sink::PacketSink for Unread {
@@ -2096,3 +2402,7 @@ impl Server {
         tx
     }
 }
+
+#[cfg(test)]
+#[path = "server/extra_worlds_tests.rs"]
+mod extra_worlds_tests;

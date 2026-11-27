@@ -1,14 +1,20 @@
 //! `cargo xtask bench`: the benchmark suite. Every scenario runs against Vanillite and the
-//! reference servers (Paper, Vanilla, Pumpkin; Velocity for the proxy) on the test server with
+//! reference servers (Paper, Vanilla, Pumpkin; Velocity for the proxy) on the benchmark server
+//! vanillite-bench (#186; `VANILLITE_BENCH_HOST` overrides it) with
 //! the same settings (`vanillite-bench props`: seed, normal world, peaceful, view and
 //! simulation distance 10, offline mode) and a fresh world per scenario. The load bots
-//! (`tools/loadbot`) run here, as in `cargo xtask loadtest`.
+//! (`tools/loadbot`) run on the benchmark server too, as in `cargo xtask loadtest`.
 //!
 //! Results: `target/bench/<time>/results.json` (full), raw per-server files under
 //! /opt/vanillite/bench/suite/<time>/ on the test server, and with `--publish` the summaries in
 //! `benchmarks/results/latest.json` and `history.json` plus the generated
 //! `benchmarks/README.md` that the documentation reads. `bench nightly` runs the whole suite
 //! for a new dev commit in a worktree and pushes the results on a branch.
+//!
+//! Every server runs under the same fixed hardware profile (`vanillite-bench limit`, 4c8g; the
+//! weak scenario 1c1g), and every run records the test server's hardware and per server the
+//! host load. A hardware change starts a new baseline: runs are only compared within one, and
+//! runs on an overloaded host are marked unreliable.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -19,7 +25,9 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use crate::Result;
-use crate::loadtest::{self, Options, Session, Target, round, show};
+use crate::loadtest::{
+    self, Options, Session, Target, bench_cmd, bench_json, install, round, show,
+};
 
 const RESULTS: &str = "benchmarks/results";
 const REMOTE_RESULTS: &str = "/opt/vanillite/bench/suite";
@@ -62,11 +70,10 @@ enum Kind {
     Pregen,
     /// `save-all flush` after bots flew through new terrain.
     Save,
-    /// Small container: a CPU quota in percent of one core and a memory limit in MiB; idle
-    /// RSS, then one bot through the steps with the movement checks on.
+    /// Small container (a hardware profile of `vanillite-bench limit`); idle RSS, then one bot
+    /// through the steps with the movement checks on.
     Weak {
-        cpu_percent: u32,
-        memory_mib: u32,
+        limits: &'static str,
         steps: &'static [Step],
         settle: u64,
         hold: u64,
@@ -123,6 +130,57 @@ const SCENARIOS: &[Scenario] = &[
         headline: ("mean MSPT", "ms", Better::Lower),
         kind: Kind::Built {
             setup: mobs,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "farm",
+        title: "Animal farm: 4 000 animals in a pen",
+        what: "4 000 cows, sheep, pigs and chickens (1 000 each) 1.5 blocks apart in a walled \
+               96 × 96 grass pen under the observer (mob AI, collisions, breeding age, eggs, \
+               tracking for one player).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: farm,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "monsters",
+        title: "Monsters: 2 000 hostile mobs hunting villagers",
+        what: "Difficulty normal: about 2 000 persistent zombies, skeletons, creepers, spiders \
+               and slimes in a dark, closed 96 × 96 stone hall with 36 villagers in glass cells \
+               the zombies try to reach (targeting, path finding, collisions, despawn checks).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: monsters,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "villagers",
+        title: "Village: 400 villagers with beds and job sites",
+        what: "400 villagers on a walled 96 × 96 platform, each with a bed and a job site \
+               block next to it, and a bell in the middle (brains, sensors, points of \
+               interest, gossip, path finding).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: villagers,
+            cycle: None,
+        },
+    },
+    Scenario {
+        name: "mobs-far",
+        title: "Mobs without players nearby: 4 000 animals in force-loaded chunks",
+        what: "The animal farm in force-loaded chunks, with the only player 2 000 blocks away \
+               (mob ticks nobody watches: despawn checks, AI, collisions, no tracking).",
+        servers: WORLD_SERVERS,
+        headline: ("mean MSPT", "ms", Better::Lower),
+        kind: Kind::Built {
+            setup: mobs_far,
             cycle: None,
         },
     },
@@ -215,8 +273,7 @@ const SCENARIOS: &[Scenario] = &[
         servers: &["vanillite"],
         headline: ("MSPT max with one moving player", "ms", Better::Lower),
         kind: Kind::Weak {
-            cpu_percent: 100,
-            memory_mib: 1024,
+            limits: "1c1g",
             steps: &[(1, "straight:sprint", None), (1, "straight:10", None)],
             settle: 5,
             hold: 60,
@@ -350,6 +407,10 @@ struct Ctx<'a> {
     bin_dir: std::path::PathBuf,
     /// Version strings from the status pings.
     versions: BTreeMap<String, String>,
+    /// The test server's hardware (`loadtest::hardware`).
+    hardware: Value,
+    /// The hardware profile of the current server run (`vanillite-bench limit`).
+    limits: Value,
 }
 
 /// `cargo xtask bench ...`.
@@ -358,6 +419,18 @@ pub fn run(root: &Path, args: &[&str]) -> Result<()> {
         ["list"] => {
             for s in SCENARIOS {
                 println!("{:<11} {} ({})", s.name, s.title, s.servers.join(", "));
+            }
+            Ok(())
+        }
+        ["commands", name] => {
+            let scenario = SCENARIOS.iter().find(|s| s.name == *name);
+            let Some(Kind::Built { setup, .. }) = scenario.map(|s| &s.kind) else {
+                return Err(format!("{name}: not a command-built scenario"));
+            };
+            let (x, y, z) = AREA;
+            println!("tp {OBSERVER} {} {} {}", x + 32, y + 40, z + 32);
+            for line in setup(x, y, z) {
+                println!("{line}");
             }
             Ok(())
         }
@@ -431,12 +504,19 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
     }
     let stamp = loadtest::command_output(Command::new("date").args(["-u", "+%Y%m%dT%H%M%SZ"]))?;
     let mut ctx = Ctx {
-        host: std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into()),
+        host: loadtest::bench_host(),
         root,
-        bin_dir: root.join("target/release-fast"),
+        bin_dir: crate::target_dir(root).join("release-fast"),
         versions: BTreeMap::new(),
+        hardware: Value::Null,
+        limits: Value::Null,
     };
     let _lock = loadtest::Lock::take(&ctx.host, &format!("xtask bench from {}", root.display()))?;
+    ctx.hardware = loadtest::hardware(&ctx.host)?;
+    println!(
+        "hardware: {}",
+        ctx.hardware["baseline"].as_str().unwrap_or("?")
+    );
     prepare(&ctx, &scenarios, deploy)?;
 
     let out_dir = root.join("target/bench").join(&stamp);
@@ -451,6 +531,8 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
                 continue;
             }
             println!("== {} on {}", scenario.name, server);
+            ctx.limits = Value::Null;
+            let before = loadtest::load_sample(&ctx.host);
             let mut result = match run_one(&mut ctx, scenario, server) {
                 Ok(r) => r,
                 Err(e) => match e.strip_prefix("unsupported: ") {
@@ -460,6 +542,15 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
             };
             if result["status"].is_null() {
                 result["status"] = json!("ok");
+            }
+            result["limits"] = ctx.limits.take();
+            result["load"] =
+                loadtest::load_window(&before, &loadtest::load_sample(&ctx.host), &ctx.hardware);
+            if result["load"]["unreliable"] == true {
+                println!(
+                    "   host overloaded during the run (load {} per CPU): unreliable",
+                    result["load"]["host_load_per_cpu"]
+                );
             }
             result["headline"] = headline(scenario, &result);
             println!(
@@ -496,6 +587,7 @@ fn suite(root: &Path, args: &[&str]) -> Result<()> {
         "commit": commit,
         "code_commit": code_commit,
         "dirty": dirty,
+        "hardware": ctx.hardware,
         "environment": environment(&ctx),
         "scenarios": results,
     });
@@ -531,6 +623,7 @@ fn prepare(ctx: &Ctx, scenarios: &[&Scenario], deploy: bool) -> Result<()> {
         build.extend(["-p", "vanillite", "-p", "vanillite-proxy"]);
     }
     crate::devenv::run(Command::new(&cargo).current_dir(ctx.root).args(&build))?;
+    install(&ctx.host, "loadbot", &ctx.bin_dir.join("loadbot"))?;
     if deploy && scenarios.iter().any(|s| matches!(s.kind, Kind::Pregen)) {
         crate::devenv::run(Command::new(&cargo).current_dir(ctx.root).args([
             "build",
@@ -566,15 +659,6 @@ fn prepare(ctx: &Ctx, scenarios: &[&Scenario], deploy: bool) -> Result<()> {
     bench_cmd(&ctx.host, &["stop", "vanillite"]).map(drop)
 }
 
-fn install(host: &str, name: &str, file: &Path) -> Result<()> {
-    let f = std::fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    crate::devenv::run(
-        Command::new("ssh")
-            .args([host, "vanillite-bench", "install", name])
-            .stdin(Stdio::from(f)),
-    )
-}
-
 fn run_one(ctx: &mut Ctx, scenario: &Scenario, server: &str) -> Result<Value> {
     let (target, profile) = target_of(server)?;
     match &scenario.kind {
@@ -588,20 +672,11 @@ fn run_one(ctx: &mut Ctx, scenario: &Scenario, server: &str) -> Result<Value> {
         Kind::Pregen => pregen(ctx, target),
         Kind::Save => save(ctx, server, target),
         Kind::Weak {
-            cpu_percent,
-            memory_mib,
+            limits,
             steps,
             settle,
             hold,
-        } => weak(
-            ctx,
-            server,
-            target,
-            (*cpu_percent, *memory_mib),
-            steps,
-            *settle,
-            *hold,
-        ),
+        } => weak(ctx, server, target, limits, steps, *settle, *hold),
     }
 }
 
@@ -610,21 +685,12 @@ fn weak(
     ctx: &mut Ctx,
     server: &str,
     target: Target,
-    (cpu_percent, memory_mib): (u32, u32),
+    limits: &str,
     steps: &[Step],
     settle: u64,
     hold: u64,
 ) -> Result<Value> {
-    bench_cmd(&ctx.host, &["reset", target.name()])?;
-    bench_cmd(
-        &ctx.host,
-        &[
-            "limit",
-            target.name(),
-            &cpu_percent.to_string(),
-            &memory_mib.to_string(),
-        ],
-    )?;
+    reset(ctx, target.name(), limits)?;
     let result = (|| {
         let started = bench_json(&ctx.host, &["start", target.name()])?;
         if let Some(v) = started["version"].as_str() {
@@ -634,7 +700,7 @@ fn weak(
         let idle = bench_json(&ctx.host, &["idle", target.name(), "30"])?;
         let mut o = options(steps, settle, hold);
         o.join_rate = 1.0;
-        let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+        let mut session = Session::open(&ctx.host, target, &o, &[])?;
         let measured = loadtest::ramp(&o, &mut session);
         session.close();
         let measured = measured?;
@@ -647,8 +713,8 @@ fn weak(
             .filter_map(|s| s["bots"]["teleports"].as_u64())
             .sum();
         let mut result = json!({
-            "cpu_quota_percent": cpu_percent,
-            "memory_limit_mib": memory_mib,
+            "cpu_quota_percent": ctx.limits["cpu_quota_percent"],
+            "memory_limit_mib": ctx.limits["memory_max_mib"],
             "start_s": started["ready_s"],
             "idle_rss_mib": idle["rss_mib"],
             "idle_cpu_percent": idle["cpu_percent"],
@@ -666,6 +732,14 @@ fn weak(
     result
 }
 
+/// Stops `name`, gives it a fresh world and the hardware profile `limits` for its next start;
+/// keeps the profile for the result.
+fn reset(ctx: &mut Ctx, name: &str, limits: &str) -> Result<()> {
+    bench_cmd(&ctx.host, &["reset", name])?;
+    ctx.limits = bench_json(&ctx.host, &["limit", name, limits])?;
+    Ok(())
+}
+
 /// Fresh world, then start; records the version. With a proxy target the backend is
 /// Vanillite on 30901.
 fn fresh_start(
@@ -676,11 +750,10 @@ fn fresh_start(
 ) -> Result<Value> {
     let proxy = matches!(target, Target::Velocity | Target::VanilliteProxy);
     if proxy {
-        bench_cmd(&ctx.host, &["reset", "vanillite"])?;
+        reset(ctx, "vanillite", loadtest::LIMITS)?;
         bench_json(&ctx.host, &["start", "vanillite"])?;
-    } else {
-        bench_cmd(&ctx.host, &["reset", target.name()])?;
     }
+    reset(ctx, target.name(), loadtest::LIMITS)?;
     let mut args = vec!["start", target.name()];
     args.extend(profile);
     let started = bench_json(&ctx.host, &args)?;
@@ -729,8 +802,12 @@ fn options(steps: &[Step], settle: u64, hold: u64) -> Options {
         chat_interval: 0.0,
         view_distance: 10,
         profile: "release-fast",
+        limits: loadtest::LIMITS.to_owned(),
         deploy: false,
         gate: false,
+        binary: None,
+        plugins: Vec::new(),
+        fresh_players: false,
         rules: Vec::new(),
     }
 }
@@ -759,7 +836,7 @@ fn players(
         )?;
     }
     let o = options(steps, settle, hold);
-    let mut session = Session::open(&ctx.host, target, &ctx.bin_dir, &o, &[])?;
+    let mut session = Session::open(&ctx.host, target, &o, &[])?;
     let measured = loadtest::ramp(&o, &mut session);
     session.close();
     let measured = measured?;
@@ -839,13 +916,7 @@ fn built(
     let (x, y, z) = AREA;
     fresh_start(ctx, server, target, None)?;
     let o = options(&[(1, "still", None)], 0, 0);
-    let mut session = Session::open(
-        &ctx.host,
-        target,
-        &ctx.bin_dir,
-        &o,
-        &["--movement", "still"],
-    )?;
+    let mut session = Session::open(&ctx.host, target, &o, &["--movement", "still"])?;
     let result = (|| -> Result<Value> {
         session.bot("target 1")?;
         if !session.wait_online(1)? {
@@ -916,13 +987,7 @@ fn unsupported(reply: &Value) -> Value {
 fn save(ctx: &mut Ctx, server: &str, target: Target) -> Result<Value> {
     fresh_start(ctx, server, target, None)?;
     let o = options(&[(20, "straight:boat", None)], 0, 0);
-    let mut session = Session::open(
-        &ctx.host,
-        target,
-        &ctx.bin_dir,
-        &o,
-        &["--movement", "straight:boat"],
-    )?;
+    let mut session = Session::open(&ctx.host, target, &o, &["--movement", "straight:boat"])?;
     let flown = (|| -> Result<Value> {
         session.bot("target 20")?;
         session.wait_online(20)?;
@@ -961,6 +1026,8 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
     let chunks = f64::from((2 * RADIUS + 1).pow(2));
     match target {
         Target::Vanillite => {
+            // `vanillite-bench pregen` runs chunk_bench under this profile.
+            ctx.limits = bench_json(&ctx.host, &["profile", loadtest::LIMITS])?;
             let mut scaling = Map::new();
             let mut lines: Vec<Value> = Vec::new();
             for threads in ["1", "2", "4"] {
@@ -1009,7 +1076,7 @@ fn pregen(ctx: &mut Ctx, target: Target) -> Result<Value> {
             let mut cpu = Vec::new();
             let mut last_error = None;
             for _ in 0..REPS {
-                bench_cmd(&ctx.host, &["reset", "paper"])?;
+                reset(ctx, "paper", loadtest::LIMITS)?;
                 bench_cmd(&ctx.host, &["chunky", "on"])?;
                 let run = (|| -> Result<(f64, f64)> {
                     let started = bench_json(&ctx.host, &["start", "paper"])?;
@@ -1109,12 +1176,47 @@ fn headline(scenario: &Scenario, r: &Value) -> Value {
 }
 
 fn environment(ctx: &Ctx) -> Value {
+    let hw = &ctx.hardware;
+    let host = if hw.is_object() {
+        format!(
+            "benchmark server: {} CPUs ({}) of an {}, {} GiB RAM, Linux {} ({}) on a host with {} \
+             CPUs and {} GiB; nothing else runs on it during runs",
+            hw["cpus"],
+            hw["cpu_list"].as_str().unwrap_or("?"),
+            hw["cpu_model"].as_str().unwrap_or("?"),
+            (hw["mem_mib"].as_f64().unwrap_or(0.0) / 1024.0).round(),
+            hw["kernel"].as_str().unwrap_or("?"),
+            hw["virtualisation"].as_str().unwrap_or("?"),
+            hw["host_cpus"],
+            (hw["host_mem_mib"].as_f64().unwrap_or(0.0) / 1024.0).round(),
+        )
+    } else {
+        "test server: not recorded (runs before the hardware was recorded: 4 cores of an AMD \
+         Ryzen 9 5950X, 10 GiB RAM, no fixed limits)"
+            .to_owned()
+    };
     json!({
-        "host": "test server: 4 cores of an AMD Ryzen 9 5950X, 10 GiB RAM, Linux container (Ubuntu 26.04); other test instances on it stay mostly idle during runs",
-        "bots": "tools/loadbot on a separate machine in the same LAN (offline mode, no encryption)",
+        "host": host,
+        "limits": "every server (and the proxy's backend) runs in a cgroup pinned to the first 4 CPUs of the test server with a CPU quota of 400 % and 8 GiB memory, no swap (profile 4c8g; the weak scenario: 1 CPU, 1 GiB), so numbers stay comparable when the test server gets more cores or RAM",
+        "load": "host load per CPU during each server's run (mean of the 1-minute load averages at its start and end and the 5-minute one at its end); above 1 the run is marked unreliable (⚠) and not used as the base of comparisons",
+        "bots": format!(
+            "tools/loadbot{} (offline mode, no encryption)",
+            if hw["bots"]["same_machine"] == true {
+                format!(
+                    " on the same machine over 127.0.0.1, on {} CPUs ({}) the server's profile leaves free",
+                    hw["bots"]["cpus"],
+                    hw["bots"]["cpu_list"].as_str().unwrap_or("?")
+                )
+            } else {
+                hw["bots"]["cpus"]
+                    .as_u64()
+                    .map(|n| format!(" on a separate machine in the same LAN, {n} CPUs ({} in the host's numbering)", hw["bots"]["cpu_list"].as_str().unwrap_or("?")))
+                    .unwrap_or_default()
+            }
+        ),
         "settings": "seed -578941029922802438, normal world, peaceful, view distance 10, simulation distance 10, offline mode, pause-when-empty off, a new world per scenario",
         "servers": {
-            "vanillite": format!("Vanillite dev {}, release-fast build, rule profile vanilla (paper profile as extra rows); memory limit 6 GiB", ctx.versions.get("vanillite").map_or("", String::as_str)),
+            "vanillite": format!("Vanillite dev {}, release-fast build, rule profile vanilla (paper profile as extra rows)", ctx.versions.get("vanillite").map_or("", String::as_str)),
             "paper": format!("{} build 262, default configuration (Paper's own optimisations on), Java 25, -Xms1G -Xmx6G", ctx.versions.get("paper").map_or("Paper 26.3", String::as_str)),
             "vanilla": "Mojang's server.jar 26.3, Java 25, -Xms1G -Xmx6G",
             "pumpkin": "Pumpkin 0.2.2+26.3-26.60 release binary, defaults (no tick time report, so no MSPT)",
@@ -1147,24 +1249,6 @@ fn commands(host: &str, target: Target, lines: &[String]) -> Result<Value> {
         return Ok(json!({ "sent": 0, "failed": 1, "errors": ["the server has no console"] }));
     }
     Ok(v)
-}
-
-fn bench_cmd(host: &str, args: &[&str]) -> Result<String> {
-    let quoted: Vec<String> = args.iter().map(|a| sh_quote(a)).collect();
-    loadtest::command_output(
-        Command::new("ssh").args([host, &format!("vanillite-bench {}", quoted.join(" "))]),
-    )
-}
-
-fn bench_json(host: &str, args: &[&str]) -> Result<Value> {
-    let out = bench_cmd(host, args)?;
-    let line = out.lines().last().unwrap_or_default();
-    serde_json::from_str(line)
-        .map_err(|e| format!("vanillite-bench {}: {e}: {out}", args.join(" ")))
-}
-
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn first_line(s: &str) -> String {
@@ -1255,6 +1339,149 @@ fn mobs(x: i32, y: i32, z: i32) -> Vec<String> {
         let cz = f64::from(z) + 2.0 + f64::from(i / 25) * 3.0;
         c.push(format!("summon minecraft:cow {cx} {y} {cz}"));
     }
+    c
+}
+
+/// A walled 96 × 96 floor of `floor` blocks around the 64 × 64 build area (the observer hovers
+/// over its middle), with walls of `wall` blocks `height` high.
+fn hall(x: i32, y: i32, z: i32, floor: &str, wall: &str, height: i32) -> Vec<String> {
+    let (x0, z0, x1, z1) = (x - 16, z - 16, x + 79, z + 79);
+    let top = y + height - 1;
+    vec![
+        format!(
+            "fill {x0} {} {z0} {x1} {} {z1} minecraft:{floor}",
+            y - 1,
+            y - 1
+        ),
+        format!("fill {x0} {y} {z0} {x1} {top} {z0} minecraft:{wall}"),
+        format!("fill {x0} {y} {z1} {x1} {top} {z1} minecraft:{wall}"),
+        format!("fill {x0} {y} {z0} {x0} {top} {z1} minecraft:{wall}"),
+        format!("fill {x1} {y} {z0} {x1} {top} {z1} minecraft:{wall}"),
+    ]
+}
+
+fn farm(x: i32, y: i32, z: i32) -> Vec<String> {
+    const KINDS: [&str; 4] = ["cow", "sheep", "pig", "chicken"];
+    let mut c = hall(x, y, z, "grass_block", "glass", 2);
+    for i in 0..4000 {
+        let ax = f64::from(x) - 14.5 + f64::from(i % 64) * 1.45;
+        let az = f64::from(z) - 14.5 + f64::from(i / 64) * 1.45;
+        c.push(format!(
+            "summon minecraft:{} {ax:.2} {y} {az:.2}",
+            KINDS[(i % 4) as usize]
+        ));
+    }
+    c
+}
+
+fn monsters(x: i32, y: i32, z: i32) -> Vec<String> {
+    // Of every 20 mobs: 8 zombies, 4 skeletons, 3 creepers, 3 spiders, 2 slimes.
+    const KINDS: [&str; 20] = [
+        "zombie", "skeleton", "zombie", "creeper", "zombie", "spider", "zombie", "skeleton",
+        "slime", "zombie", "creeper", "zombie", "spider", "skeleton", "zombie", "creeper", "slime",
+        "zombie", "spider", "skeleton",
+    ];
+    let mut c = vec!["difficulty normal".to_owned()];
+    // A closed, dark hall: nothing burns in daylight and spiders stay inside.
+    c.extend(hall(x, y, z, "stone", "stone", 3));
+    c.push(format!(
+        "fill {} {} {} {} {} {} minecraft:stone",
+        x - 16,
+        y + 3,
+        z - 16,
+        x + 79,
+        y + 3,
+        z + 79
+    ));
+    // The bait: villagers in glass cells nothing can enter or see through.
+    let cell = |i: i32| (x - 16 + 12 + 14 * (i % 6), z - 16 + 12 + 14 * (i / 6));
+    for i in 0..36 {
+        let (cx, cz) = cell(i);
+        c.push(format!(
+            "fill {} {y} {} {} {} {} minecraft:glass",
+            cx - 1,
+            cz - 1,
+            cx + 1,
+            y + 2,
+            cz + 1
+        ));
+        c.push(format!(
+            "fill {cx} {y} {cz} {cx} {} {cz} minecraft:air",
+            y + 1
+        ));
+        c.push(format!("summon minecraft:villager {}.5 {y} {}.5", cx, cz));
+    }
+    let mut n = 0;
+    for i in 0..46 * 46 {
+        let (bx, bz) = (x - 16 + 2 + 2 * (i % 46), z - 16 + 2 + 2 * (i / 46));
+        let in_cell = (0..36).any(|j| {
+            let (cx, cz) = cell(j);
+            (bx - cx).abs() <= 1 && (bz - cz).abs() <= 1
+        });
+        if in_cell {
+            continue;
+        }
+        let kind = KINDS[n % KINDS.len()];
+        n += 1;
+        let nbt = if kind == "slime" {
+            "{PersistenceRequired:1b,Size:1}"
+        } else {
+            "{PersistenceRequired:1b}"
+        };
+        c.push(format!("summon minecraft:{kind} {bx}.5 {y} {bz}.5 {nbt}"));
+    }
+    c
+}
+
+fn villagers(x: i32, y: i32, z: i32) -> Vec<String> {
+    const JOBS: [&str; 10] = [
+        "composter",
+        "lectern",
+        "smoker",
+        "barrel",
+        "loom",
+        "cartography_table",
+        "brewing_stand",
+        "fletching_table",
+        "stonecutter",
+        "grindstone",
+    ];
+    let mut c = hall(x, y, z, "smooth_stone", "glass", 2);
+    c.push(format!("setblock {} {y} {} minecraft:bell", x + 32, z + 32));
+    for i in 0..400 {
+        // One plot of 4 × 4 blocks per villager: bed, job site and room to walk.
+        let (px, pz) = (x - 16 + 4 + 4 * (i % 20), z - 16 + 4 + 4 * (i / 20));
+        c.push(format!(
+            "setblock {px} {y} {pz} minecraft:white_bed[part=foot,facing=north] strict"
+        ));
+        c.push(format!(
+            "setblock {px} {y} {} minecraft:white_bed[part=head,facing=north] strict",
+            pz - 1
+        ));
+        c.push(format!(
+            "setblock {} {y} {pz} minecraft:{}",
+            px + 2,
+            JOBS[(i as usize) % JOBS.len()]
+        ));
+        c.push(format!(
+            "summon minecraft:villager {}.5 {y} {}.5",
+            px + 1,
+            pz + 1
+        ));
+    }
+    c
+}
+
+fn mobs_far(x: i32, y: i32, z: i32) -> Vec<String> {
+    let mut c = vec![format!(
+        "forceload add {} {} {} {}",
+        x - 32,
+        z - 32,
+        x + 95,
+        z + 95
+    )];
+    c.extend(farm(x, y, z));
+    c.push(format!("tp {OBSERVER} {} {} {}", x + 2032, y + 40, z + 32));
     c
 }
 
@@ -1375,7 +1602,7 @@ fn publish(root: &Path, source: &str) -> Result<()> {
     let run = if local.is_file() {
         crate::read_json(local)?
     } else {
-        let host = std::env::var("VANILLITE_TEST_HOST").unwrap_or_else(|_| "vanillite-test".into());
+        let host = loadtest::bench_host();
         let stamp = if source == "latest" {
             let out = loadtest::command_output(
                 Command::new("ssh").args([&host, &format!("ls -1 {REMOTE_RESULTS}")]),
@@ -1445,6 +1672,8 @@ fn remote_run(host: &str, stamp: &str) -> Result<Value> {
         root,
         bin_dir: root.to_path_buf(),
         versions,
+        hardware: Value::Null,
+        limits: Value::Null,
     };
     Ok(json!({
         "suite": 1,
@@ -1551,7 +1780,8 @@ fn metrics_of(name: &str) -> Vec<Metric> {
                 r["teleports"].clone()
             }),
         ],
-        "redstone" | "mobs" | "items" | "hoppers" | "tnt" | "fluids" | "light" => vec![
+        "redstone" | "mobs" | "farm" | "monsters" | "villagers" | "mobs-far" | "items"
+        | "hoppers" | "tnt" | "fluids" | "light" => vec![
             m("mspt_p95", "MSPT p95", "ms", Better::Lower, |r| {
                 r["mspt"]["p95"].clone()
             }),
@@ -1599,7 +1829,14 @@ fn publish_results(root: &Path, run: &Value) -> Result<()> {
             latest["date"]
         ));
     }
-    for key in ["suite", "date", "commit", "code_commit", "environment"] {
+    for key in [
+        "suite",
+        "date",
+        "commit",
+        "code_commit",
+        "hardware",
+        "environment",
+    ] {
         latest[key] = run[key].clone();
     }
     for (name, scenario) in run["scenarios"].as_object().into_iter().flatten() {
@@ -1626,12 +1863,16 @@ fn publish_results(root: &Path, run: &Value) -> Result<()> {
     history.retain(|h| h["date"].as_str() != Some(stamp));
     let mut headlines = Map::new();
     let mut metrics = Map::new();
+    let mut overloaded = Vec::new();
     for (name, scenario) in run["scenarios"].as_object().into_iter().flatten() {
         let defs = metrics_of(name);
         let mut per_server_headline = Map::new();
         let mut per_server_metrics = Map::new();
         for (server, r) in scenario["results"].as_object().into_iter().flatten() {
             per_server_headline.insert(server.clone(), r["headline"].clone());
+            if r["load"]["unreliable"] == true {
+                overloaded.push(json!(format!("{name}/{server}")));
+            }
             let values: Map<String, Value> = defs
                 .iter()
                 .filter(|_| r["status"] != "unsupported" && r["status"] != "error")
@@ -1645,12 +1886,19 @@ fn publish_results(root: &Path, run: &Value) -> Result<()> {
         headlines.insert(name.clone(), Value::Object(per_server_headline));
         metrics.insert(name.clone(), Value::Object(per_server_metrics));
     }
-    history.push(json!({
+    let mut entry = json!({
         "date": run["date"],
         "commit": run["code_commit"],
         "headline": headlines,
         "metrics": metrics,
-    }));
+    });
+    if let Some(b) = run["hardware"]["baseline"].as_str() {
+        entry["baseline"] = json!(b);
+    }
+    if !overloaded.is_empty() {
+        entry["unreliable"] = json!(overloaded);
+    }
+    history.push(entry);
     history.sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
     let skip = history.len().saturating_sub(HISTORY_MAX);
     let history: Vec<Value> = history.into_iter().skip(skip).collect();
@@ -1679,6 +1927,32 @@ fn publish_results(root: &Path, run: &Value) -> Result<()> {
     report(root)
 }
 
+/// The hardware baseline of a history entry ("" for runs before the hardware was recorded):
+/// only runs of the same baseline are compared or drawn as one line.
+fn baseline(h: &Value) -> &str {
+    h["baseline"].as_str().unwrap_or("")
+}
+
+/// Whether the host was overloaded while the history entry measured this scenario and server.
+fn unreliable(h: &Value, name: &str, server: &str) -> bool {
+    let key = format!("{name}/{server}");
+    h["unreliable"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(key.as_str())))
+}
+
+/// The entries of the newest baseline (the history is sorted by date).
+fn current_baseline(history: &[Value]) -> &[Value] {
+    let Some(newest) = history.last() else {
+        return history;
+    };
+    let first = history
+        .iter()
+        .rposition(|h| baseline(h) != baseline(newest))
+        .map_or(0, |i| i + 1);
+    &history[first..]
+}
+
 /// A change of one metric of one server against the previous run that measured it.
 struct Change {
     /// A Vanillite server (else a reference server).
@@ -1689,9 +1963,10 @@ struct Change {
 
 /// Changes of the newest history entry against the run before, beyond the noise: at least
 /// 10 % (and a small absolute step per unit), or 3 robust deviations of the last 10 runs
-/// where the metric is noisier than that.
+/// where the metric is noisier than that. Only runs of the same baseline on a quiet host
+/// serve as the base.
 fn changes(latest: &Value, history: &[Value]) -> Vec<Change> {
-    let Some((newest, before)) = history.split_last() else {
+    let Some((newest, before)) = current_baseline(history).split_last() else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -1728,6 +2003,7 @@ fn changes(latest: &Value, history: &[Value]) -> Vec<Change> {
                 let past: Vec<f64> = before
                     .iter()
                     .rev()
+                    .filter(|h| !unreliable(h, name, server))
                     .filter_map(|h| value_in(h, key))
                     .take(10)
                     .collect();
@@ -1781,12 +2057,17 @@ fn changes(latest: &Value, history: &[Value]) -> Vec<Change> {
                     ours: server.starts_with("vanillite"),
                     regression: worse,
                     text: format!(
-                        "{}, {title}: {label} {} → {} {unit} ({:+.0} %, noise threshold ±{:.0} %)",
+                        "{}, {title}: {label} {} → {} {unit} ({:+.0} %, noise threshold ±{:.0} %){}",
                         display(server),
                         num(&json!(prev)),
                         num(&json!(now)),
                         delta / prev * 100.0,
                         threshold * 100.0,
+                        if unreliable(newest, name, server) {
+                            " ⚠ host overloaded during this run"
+                        } else {
+                            ""
+                        },
                     ),
                 });
             }
@@ -1849,6 +2130,22 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
         pretty_date(latest["date"].as_str().unwrap_or("?")),
         latest["code_commit"].as_str().unwrap_or("unknown"),
     ));
+    let current = current_baseline(history);
+    if current.len() < history.len()
+        && let Some(first) = current.first()
+    {
+        s.push_str(&format!(
+            "**New baseline since {}:** {}. Earlier runs (other hardware, or before the fixed \
+             hardware limits) stay in `results/history.json` but are neither compared with \
+             these nor drawn on the same line.\n\n",
+            pretty_date(first["date"].as_str().unwrap_or("?")),
+            if baseline(first).is_empty() {
+                "hardware not recorded"
+            } else {
+                baseline(first)
+            },
+        ));
+    }
     let found = changes(latest, history);
     s.push_str(
         "## Regressions and improvements\n\nThe last run against the run before that measured \
@@ -1900,6 +2197,11 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
         env["bots"].as_str().unwrap_or("?"),
         env["settings"].as_str().unwrap_or("?"),
     ));
+    for (key, label) in [("limits", "Fixed hardware limits"), ("load", "Host load")] {
+        if let Some(text) = env[key].as_str() {
+            s.push_str(&format!("- **{label}:** {text}.\n"));
+        }
+    }
     s.push_str("- **Versions and configuration:**\n");
     for (id, name) in SERVERS {
         if let Some(v) = env["servers"][id].as_str() {
@@ -1964,16 +2266,20 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
             }
             let mut text = cell(r, &r["headline"]);
             let date = sc["date"].as_str().unwrap_or("");
-            let before = history
+            let before = current
                 .iter()
                 .rev()
                 .filter(|h| h["date"].as_str().is_some_and(|d| d < date))
+                .filter(|h| !unreliable(h, name, c))
                 .find_map(|h| h["headline"][*name][*c].as_f64());
             if let (Some(now), Some(before)) = (r["headline"].as_f64(), before)
                 && r["measured"].is_null()
                 && before != 0.0
             {
                 text.push_str(&format!(" ({:+.0} %)", (now - before) / before * 100.0));
+            }
+            if r["load"]["unreliable"] == true {
+                text.push_str(" ⚠");
             }
             s.push_str(&format!(" {text} |"));
         }
@@ -1991,7 +2297,7 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
         ));
         s.push_str(&details(name, sc));
         s.push_str(&bar_chart(sc));
-        s.push_str(&history_chart(name, sc, history));
+        s.push_str(&history_chart(name, sc, current));
         let notes: Vec<String> = servers_of(sc)
             .iter()
             .flat_map(|id| {
@@ -2007,7 +2313,14 @@ fn markdown(latest: &Value, history: &[Value]) -> String {
                 let note = r["note"]
                     .as_str()
                     .map(|n| format!("- {}: {n}", display(id)));
-                older.into_iter().chain(note)
+                let overloaded = (r["load"]["unreliable"] == true).then(|| {
+                    format!(
+                        "- {}: ⚠ unreliable, the host was overloaded during the run (load {} per CPU)",
+                        display(id),
+                        num(&r["load"]["host_load_per_cpu"]),
+                    )
+                });
+                older.into_iter().chain(note).chain(overloaded)
             })
             .collect();
         if !notes.is_empty() {
@@ -2292,7 +2605,7 @@ fn bar_chart(sc: &Value) -> String {
     )
 }
 
-/// The summary number of Vanillite and Paper over the last 30 runs.
+/// The summary number of Vanillite and Paper over the last 30 runs of the current baseline.
 fn history_chart(name: &str, sc: &Value, history: &[Value]) -> String {
     let runs: Vec<&Value> = history
         .iter()
@@ -2387,7 +2700,8 @@ fn pretty_date(stamp: &str) -> String {
 
 /// `cargo xtask bench nightly [--no-push]`: when dev has new code since the published results,
 /// runs the whole suite on it in the worktree target/bench/tree and commits the results there
-/// on the branch `bench/results-<date>` (pushed unless --no-push). Prints the branch.
+/// on the branch `bench/results-<date>` (pushed unless --no-push). Prints the branch. Then the
+/// load test of #88 on the same commit: 1000, 2000 and 5000 players on a quiet host at night.
 fn nightly(root: &Path, args: &[&str]) -> Result<()> {
     let push = match args {
         [] => true,
@@ -2441,22 +2755,16 @@ fn nightly(root: &Path, args: &[&str]) -> Result<()> {
         ]))?;
     }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    crate::devenv::run(
-        Command::new(&cargo)
-            .current_dir(&tree)
-            .env("CARGO_TARGET_DIR", root.join("target"))
-            .args([
-                "run",
-                "--locked",
-                "-q",
-                "-p",
-                "xtask",
-                "--",
-                "bench",
-                "all",
-                "--publish",
-            ]),
-    )?;
+    let xtask = |args: &[&str]| {
+        crate::devenv::run(
+            Command::new(&cargo)
+                .current_dir(&tree)
+                .env("CARGO_TARGET_DIR", crate::target_dir(root))
+                .args(["run", "--locked", "-q", "-p", "xtask", "--"])
+                .args(args),
+        )
+    };
+    xtask(&["bench", "all", "--publish"])?;
     let date = loadtest::command_output(Command::new("date").args(["-u", "+%Y-%m-%d"]))?;
     let branch = format!("bench/results-{date}");
     let git = |args: &[&str]| crate::devenv::run(Command::new("git").current_dir(&tree).args(args));
@@ -2480,5 +2788,7 @@ fn nightly(root: &Path, args: &[&str]) -> Result<()> {
         "results committed on branch {branch}{}",
         if push { " (pushed)" } else { "" }
     );
-    Ok(())
+    // Its results stay on the test server (/opt/vanillite/bench/results); a regression of the
+    // gate fails the nightly run after the suite results are committed.
+    xtask(&["loadtest", "--steps", "1000,2000,5000"])
 }

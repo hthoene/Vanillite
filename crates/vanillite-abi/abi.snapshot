@@ -1,4 +1,4 @@
-abi 1.7
+abi 1.9
 type Status = i32
 type PluginId = u32
 type EntryFn = unsafeextern"C"fn()->*constPluginInfo
@@ -115,6 +115,8 @@ const event::WORLD_SAVE: u32 = 76
 const event::WEATHER_CHANGE: u32 = 77
 const event::TIME_SKIP: u32 = 78
 const event::PORTAL_CREATE: u32 = 79
+const event::WORLD_LOAD: u32 = 80
+const event::WORLD_UNLOAD: u32 = 81
 const event::INVENTORY_OPEN: u32 = 90
 const event::INVENTORY_CLICK: u32 = 91
 const event::INVENTORY_DRAG: u32 = 92
@@ -324,6 +326,14 @@ const explode_flag::FIRE: u32 = 2
 const portal_kind::NETHER: u32 = 0
 const portal_kind::END: u32 = 1
 const portal_kind::END_GATEWAY: u32 = 2
+const environment::NORMAL: u32 = 0
+const environment::NETHER: u32 = 1
+const environment::THE_END: u32 = 2
+const environment::CUSTOM: u32 = 3
+const world_create_flag::SEED: u32 = 1
+const world_create_flag::NO_STRUCTURES: u32 = 2
+const world_flag::LOADED: u32 = 1
+const world_flag::EXTRA: u32 = 2
 const transform_reason::UNKNOWN: u32 = 0
 const transform_reason::CURED: u32 = 1
 const transform_reason::INFECTION: u32 = 2
@@ -722,6 +732,24 @@ struct GameEvent size=344 align=8
   value: i64 @320
   extra: i64 @328
   flags: u32 @336
+struct WorldCreate size=64 align=8
+  size: u32 @0
+  name: Str @8
+  environment: u32 @24
+  generator: Str @32
+  seed: i64 @48
+  flags: u32 @56
+struct EntityInfo size=56 align=8
+  uuid: Uuid @0
+  pos: Vec3 @16
+  yaw: f32 @40
+  pitch: f32 @44
+  kind: u32 @48
+struct WorldDetails size=24 align=8
+  size: u32 @0
+  environment: u32 @4
+  flags: u32 @8
+  seed: i64 @16
 struct BorderInfo size=72 align=8
   size: u32 @0
   center_x: f64 @8
@@ -810,7 +838,7 @@ struct PacketEvent size=80 align=8
   player: Uuid @40
   body: Bytes @56
   out: *constPacketOut @72
-struct HostApi size=1208 align=8
+struct HostApi size=1280 align=8
   size: u32 @0
   abi_major: u16 @4
   abi_minor: u16 @6
@@ -964,3 +992,12 @@ struct HostApi size=1208 align=8
   packet_name: unsafeextern"C"fn(PluginId,u32,u32,i32,*mutStrBuf)->Status @1184
   packet_send: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @1192
   protocol_version: unsafeextern"C"fn(PluginId,*muti32)->Status @1200
+  world_create: unsafeextern"C"fn(PluginId,*constWorldCreate,*mutu32)->Status @1208
+  world_load: unsafeextern"C"fn(PluginId,Str,*mutu32)->Status @1216
+  world_unload: unsafeextern"C"fn(PluginId,u32,u32)->Status @1224
+  world_count: unsafeextern"C"fn(PluginId,*mutu32)->Status @1232
+  world_info: unsafeextern"C"fn(PluginId,u32,*mutWorldDetails,*mutStrBuf)->Status @1240
+  player_move: unsafeextern"C"fn(PluginId,Uuid,*constLocation)->Status @1248
+  packet_receive: unsafeextern"C"fn(PluginId,Uuid,Bytes,u32)->Status @1256
+  entities_in_box: unsafeextern"C"fn(*mutContext,u32,Vec3,Vec3,Str,*mutEntityInfo,usize,*mutusize,)->Status @1264
+  entity_type_name: unsafeextern"C"fn(PluginId,u32,*mutStrBuf)->Status @1272

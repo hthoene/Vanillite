@@ -127,6 +127,8 @@ pub struct ServerWorld {
     kept_tickets: Vec<vanillite_nbt::Tag>,
     /// The portal tickets changed since the last save.
     tickets_dirty: bool,
+    /// [`ServerWorld::release_memory`] ran and no player has been here since.
+    memory_released: bool,
     /// Players arriving from other worlds or respawning, waiting for their destination.
     arrivals: Vec<travel::Waiting>,
     /// Entities besides players arriving through portals, waiting for their destination.
@@ -242,6 +244,7 @@ impl ServerWorld {
             data,
             kept_tickets: Vec::new(),
             tickets_dirty: false,
+            memory_released: false,
             arrivals: Vec::new(),
             entity_arrivals: Vec::new(),
             gateway_waits: Vec::new(),
@@ -563,11 +566,19 @@ impl ServerWorld {
     pub(crate) fn tick(&mut self, ctx: &mut TickContext<'_>) {
         debug_assert_eq!(ctx.world, self.id);
         self.place_ready_spawns(ctx.global);
+        if self.memory_released && self.level.entities.players.iter().next().is_some() {
+            // Players are back: the generator is built ahead, off the tick.
+            self.memory_released = false;
+            self.level.chunks.prepare_generator();
+        }
         let plugins = ctx.global.plugins.clone();
         let positions = plugins
             .wants(vanillite_abi::event::PLAYERS_MOVED)
             .then(|| self.player_positions());
         let started = Instant::now();
+        if self.players.recording.wants_start(&self.level.entities) {
+            self.start_session_recording(ctx.global);
+        }
         self.players.handle_packets(
             &mut self.level,
             &self.rules,
@@ -646,6 +657,12 @@ impl ServerWorld {
                 .settings
                 .apply_game_rules(&ctx.global.level.rules());
             self.skip_night(ctx.global);
+            self.mobs.update_environment(
+                &mut self.level,
+                &self.survival,
+                ctx.global,
+                &self.dimension,
+            );
             self.level.settings.difficulty = ctx.global.level.difficulty();
             self.level.settings.overworld_clock_time =
                 crate::mobs::overworld_clock_time(ctx.global);
@@ -708,7 +725,6 @@ impl ServerWorld {
             });
             self.mobs.spawn(
                 level,
-                &self.survival,
                 ctx.global,
                 &self.dimension,
                 spawn_point,
@@ -789,13 +805,17 @@ impl ServerWorld {
             vanillite_game::survival::sleep::tick_players(&mut self.level, &hooks);
         }
         self.survival.do_tick(
-            &mut self.level.entities,
-            &self.level.chunks,
-            &self.level.border,
-            &self.level.block_entities,
+            &mut self.level,
+            self.mobs.cx_mut(),
             ctx.global,
             &self.dimension,
             &mut portals,
+        );
+        self.mobs.after_player_ticks(
+            &mut self.level,
+            &mut self.survival,
+            ctx.global,
+            &self.dimension,
         );
         self.mobs.tick_player_items(
             &mut self.level,
@@ -854,7 +874,9 @@ impl ServerWorld {
         let origin = level
             .generation
             .as_ref()
-            .map_or(vanillite_base::ChunkPos::new(0, 0), |g| g.terrain.origin());
+            .map_or(vanillite_base::ChunkPos::new(0, 0), |g| {
+                g.terrain().origin()
+            });
         let min_y = level.min_y();
         let mut height =
             flat_height.map_or(64, |layers| min_y + layers.min(level.max_y() - min_y + 1));
@@ -907,12 +929,7 @@ impl ServerWorld {
                 rules.bool(Rule::ADVANCE_WEATHER),
             )
         };
-        let clock = global
-            .level
-            .default_clocks
-            .get(self.id.index())
-            .copied()
-            .flatten();
+        let clock = global.dimensions.default_clock(self.id);
         if advance_time && let Some(clock) = clock {
             let moved = if global.plugins.wants(vanillite_abi::event::TIME_SKIP) {
                 self.time_skip(global, clock)
@@ -1075,6 +1092,17 @@ impl ServerWorld {
         self.level.entities.store.clear_sync_flags();
     }
 
+    /// Frees what this world can build again (`performance.memory.release-when-empty`).
+    pub(crate) fn release_memory(&mut self) {
+        self.level.chunks.release_memory();
+        self.packets.release_memory();
+        let entities = &mut self.level.entities;
+        entities.mobs.shrink_to_fit();
+        entities.items.shrink_to_fit();
+        entities.players.shrink_to_fit();
+        self.memory_released = true;
+    }
+
     /// Runs `then` once the running save round of this world is committed.
     pub(crate) fn when_saved(&mut self, then: vanillite_world::chunks::SavedCallback) {
         self.level.chunks.when_saved(then);
@@ -1090,6 +1118,40 @@ impl ServerWorld {
     pub(crate) fn prepare_step(&mut self) -> usize {
         self.level.chunks.tick();
         self.level.chunks.pending_full()
+    }
+
+    /// Starts a session recording (`debug.session-recording`): saves the world and waits until
+    /// it is written, then the recording copies it.
+    fn start_session_recording(&mut self, global: &Global) {
+        self.save(true, false);
+        let day_time = global
+            .level
+            .clocks()
+            .clocks
+            .iter()
+            .find(|c| c.id == "minecraft:overworld")
+            .map_or(0, |c| c.total_ticks);
+        let weather = &self.survival.weather;
+        let start = crate::session_recording::SessionStart {
+            seed: self.level.chunks.info().seed,
+            day_time,
+            game_time: self.level.game_time(),
+            weather: if weather.thunder_level > 0.0 {
+                "thunder"
+            } else if weather.rain_level > 0.0 {
+                "rain"
+            } else {
+                "clear"
+            },
+            difficulty: match global.level.difficulty() {
+                vanillite_game::survival::rules::Difficulty::Peaceful => "peaceful",
+                vanillite_game::survival::rules::Difficulty::Easy => "easy",
+                vanillite_game::survival::rules::Difficulty::Normal => "normal",
+                vanillite_game::survival::rules::Difficulty::Hard => "hard",
+            },
+        };
+        let dir = self.level.chunks.info().dir.clone();
+        self.players.recording.start(&dir, &start);
     }
 
     /// Saves the world like Vanilla (`saveEverything`): the players always, the chunks and the
@@ -1199,8 +1261,8 @@ pub struct TickContext<'a> {
 }
 
 struct OtherWorlds<'a> {
-    before: &'a mut [ServerWorld],
-    after: &'a mut [ServerWorld],
+    before: &'a mut [Option<ServerWorld>],
+    after: &'a mut [Option<ServerWorld>],
 }
 
 impl fmt::Debug for TickContext<'_> {
@@ -1236,11 +1298,11 @@ impl<'a> TickContext<'a> {
     }
 
     /// Gives the context direct access to the other worlds (sequential mode). `before` holds
-    /// the worlds with lower ids, `after` those with higher ids.
+    /// the worlds with lower ids, `after` those with higher ids (`None` where unloaded).
     pub(crate) fn with_others(
         mut self,
-        before: &'a mut [ServerWorld],
-        after: &'a mut [ServerWorld],
+        before: &'a mut [Option<ServerWorld>],
+        after: &'a mut [Option<ServerWorld>],
     ) -> Self {
         self.others = Some(OtherWorlds { before, after });
         self
@@ -1250,8 +1312,14 @@ impl<'a> TickContext<'a> {
     /// they are at hand (sequential mode); nothing otherwise.
     pub(crate) fn other_levels(&mut self) -> impl Iterator<Item = Option<&mut Level>> {
         self.others.iter_mut().flat_map(|others| {
-            let before = others.before.iter_mut().map(|w| Some(&mut w.level));
-            let after = others.after.iter_mut().map(|w| Some(&mut w.level));
+            let before = others
+                .before
+                .iter_mut()
+                .map(|w| w.as_mut().map(|w| &mut w.level));
+            let after = others
+                .after
+                .iter_mut()
+                .map(|w| w.as_mut().map(|w| &mut w.level));
             before.chain(std::iter::once(None)).chain(after)
         })
     }
@@ -1285,6 +1353,7 @@ impl<'a> TickContext<'a> {
                     .checked_sub(current + 1)
                     .and_then(|i| others.after.get_mut(i))
             }
+            .and_then(Option::as_mut)
         });
         match world {
             Some(world) => op(world),

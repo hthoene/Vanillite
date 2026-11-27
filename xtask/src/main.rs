@@ -10,9 +10,13 @@
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
 //! cargo xtask golden bless <scenario>...
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
+//! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
+//! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
 //! cargo xtask dev [--release] [-- <server args>]
-//! cargo xtask deploy [--port <port>] [--release]
-//! cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask deploy [--host <host>] [--port <port>] [--release]
+//! cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
+//! cargo xtask testserver [--host <host>] run [--fetch <path>]... -- <xtask args>
+//! cargo xtask testserver [--host <host>] nightly [status | fetch [<run>]]
 //! cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
 //! cargo xtask docker [--push] [--in-docker] [--tag <tag>]...
 //! cargo xtask egg [--check] | egg smoke [--image <ref>]
@@ -20,6 +24,7 @@
 //! cargo xtask loadtest [--server vanillite|paper|both] [--steps <n,...>] [--hold <s>] ...
 //! cargo xtask bench all|<scenario>... [--servers <a,b>] [--publish] [--no-deploy]
 //! cargo xtask bench list | report | publish <time|latest|results.json> | nightly [--no-push]
+//! cargo xtask bench commands <scenario>
 //! cargo xtask setup [--global] | regen
 //! ```
 
@@ -88,20 +93,47 @@ pub const USAGE: &str = "usage:
       and summary.md. --adopt copies the found scenarios into crates/vanillite-test/scenarios/
       and records their goldens (then add scenarios/divergences/<name>.toml with the cause).
       Also: --replay <scenario.json> runs given scenarios without generating.
+  cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N] [--jobs N]
+      Replay a recorded server session (debug.session-recording, #152) in Vanilla and
+      Vanillite on its world snapshot and compare them tick by tick; a divergence is shrunk
+      like a random one. `30001:latest` (or `30001:<name>`) fetches a recording of the test
+      server into target/recordings/ first. --ticks replays only the first N ticks. Writes
+      target/parity-fuzz/ (sessions/<name>.json, found/, summary.md).
+  cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
+      Soak parity runs (#166): the long scenarios of crates/vanillite-test/scenarios/soak/
+      (game days with random ticks, mob spawning, day cycle and weather) against Vanilla.
+      Vanilla's per-tick checksums are recorded once per golden key into $VANILLITE_GOLDENS/
+      <key>/soak/; Vanillite stops at the first differing tick, Vanilla is re-run to that
+      tick and the full diff goes to target/parity-soak/<scenario>.md (summary.md lists all).
+      Runs nightly on vanillite-test2 (scripts/testserver/nightly.sh).
   cargo xtask golden bless <scenario>...|all
       Run the scenarios in Vanillite and store their traces as the expected goldens in
       crates/vanillite-test/goldens/blessed/ (intended differences, non-vanilla profiles).
   cargo xtask dev [--release] [-- <server args>]
       Build and run the server in ./run (debug build; --release uses the release-fast profile).
-  cargo xtask deploy [--port <port>] [--release]
+  cargo xtask deploy [--host <host>] [--port <port>] [--release]
       Build the server (release-fast; --release for the full release profile) and install it on
       the test server as vanillite@<port>.service. <port> is 30003-30999, default 30003
       (30001, 30002 and the proxy follow dev automatically).
-      The SSH host is vanillite-test, or VANILLITE_TEST_HOST.
-  cargo xtask testserver provision|status|logs|start|stop|restart [<port>]
-      provision runs scripts/testserver/provision.sh on the test server (idempotent);
-      status lists the services, ports, the last auto-deploys and incidents; the others act on
-      vanillite@<port> (default 30001).
+      The SSH host is --host, else VANILLITE_TEST_HOST, else vanillite-test (vanillite-test2:
+      the internal server for experiments, offline mode).
+  cargo xtask testserver [--host <host>] provision|status|logs|start|stop|restart [<port>]
+      provision runs scripts/testserver/provision.sh on the test server (idempotent; on
+      vanillite-test2 scripts/testserver/provision-test2.sh; on vanillite-bench, the benchmark
+      server, provision.sh with the role bench: benchmark instances and hardening only); status
+      lists the services, ports,
+      the last auto-deploys and incidents (vanillite-test2: lock, disk, last nightly run); the
+      others act on vanillite@<port> (default 30001). Host as for deploy.
+  cargo xtask testserver [--host <host>] run [--fetch <path>]... -- <xtask args>
+      Heavy tests and experiments on vanillite-test2 (default host): wait for its lock, copy
+      this checkout (without target/ and .git/) to /opt/vanillite-work/src there, run
+      `cargo xtask <xtask args>` in it, then copy the --fetch paths (relative to the checkout,
+      e.g. target/parity-fuzz) back. Example: testserver run --fetch target/parity-fuzz --
+      parity fuzz --minutes 30.
+  cargo xtask testserver [--host <host>] nightly [status | fetch [<run>]]
+      The nightly heavy tests on vanillite-test2 (scripts/testserver/nightly.sh, 00:30
+      Europe/Berlin): summaries of the newest runs, or download one run (default the newest)
+      into target/nightly/.
   cargo xtask testserver incidents [list [<count>] | show <id> | fetch [<id>...]]
       Crashes and suspicious disconnects that vanillite-incidents saved on the test server:
       list the newest (default 20), show one (summary and backtrace), or download bundles into
@@ -131,12 +163,18 @@ pub const USAGE: &str = "usage:
                        [--movement <movement>] [--hold <s>] [--settle <s>]
                        [--join-rate <per s>] [--chat <s>]
                        [--view-distance <n>] [--release] [--no-deploy] [--no-gate]
-                       [--rule <key>=<value>]...
-      Scaling benchmark: tools/loadbot bots (here) against vanillite@30901 (deployed from this
-      checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the test
-      server and only running during the run. Steps default to 50,100,250,500,1000,2000,5000,
+                       [--limits 4c8g|1c1g] [--rule <key>=<value>]...
+                       [--fresh-players] [--binary <file>]
+                       [--plugin <dir> [--plugin-set <toml line>]...]...
+      Scaling benchmark: tools/loadbot bots against vanillite@30901 (deployed from this
+      checkout) and the Paper reference paper-loadtest on 30900, both offline mode on the
+      benchmark server vanillite-bench (VANILLITE_BENCH_HOST overrides it) and only running
+      during the run; the bots run there too, on the CPUs the server's profile leaves free. Steps default to 50,100,250,500,1000,2000,5000,
       each held 60 s after --settle seconds (default 0); chat is off by default (--chat sets
-      seconds between messages per bot).
+      seconds between messages per bot). The server runs under the fixed hardware profile
+      --limits (default 4c8g: 4 pinned CPUs, 8 GiB; 1c1g: 1 CPU, 1 GiB); every result records
+      the test server's hardware and the host load, and runs on an overloaded host (load per
+      CPU above 1) are marked unreliable and neither gate nor serve as a baseline.
       Movement (default for all steps: --movement, per step: <players>@<movement>; counts
       must not decrease): random (walk around the spawn) or straight:<speed>[:<turn s>],
       straight flight at y 300 in a random direction per bot at <speed> blocks/s or a preset
@@ -148,32 +186,48 @@ pub const USAGE: &str = "usage:
       Writes target/loadtest/<time>/{vanillite,paper}.json, report.md and chart.svg, keeps
       results of clean checkouts under /opt/vanillite/bench/results on the test server and
       fails when p95 MSPT or RSS per player of a step is more than 10 % above the median of
-      the last 5 runs (--no-gate skips the check). --rule sets a rule of vanillite.toml for
+      the last 5 runs on the same hardware and limits (--no-gate skips the check). --rule sets a rule of vanillite.toml for
       the Vanillite instance of this run (e.g. performance.region-threading.enabled=true);
       such runs are experiments: no regression check, not kept as a baseline.
+      --binary deploys that server binary instead of building one (before/after comparisons).
+      --plugin installs a plugin folder on vanillite@30901 for the run and removes it
+      afterwards: plugin.toml, the library it names (from the folder, or built from the
+      folder's crate, e.g. examples/packet-bench) and config.toml with each --plugin-set line set (e.g. --plugin-set 'mode = \"receiver\"').
+      Runs with --plugin or --binary are not kept in the results history. --fresh-players
+      deletes the players vanillite@30901 saved, so the bots start at the spawn and not where
+      an earlier run (e.g. a bench spread scenario) left them.
   cargo xtask loadtest report <run.json>...
       Writes report.md and chart.svg for earlier runs next to the first file.
   cargo xtask bench all|<scenario>... [--servers <server,...>] [--publish] [--no-deploy]
       Benchmark suite (`bench list` shows the scenarios): every scenario against Vanillite
       (vanillite@30901, deployed from this checkout; also with the paper rule profile), Paper,
       Vanilla and Pumpkin (taking turns on 30900), or the proxies Velocity and vanillite-proxy,
-      with the same settings and a new world each (`vanillite-bench` on the test server). Player
-      load from tools/loadbot here; command-built scenarios (redstone, mobs, items, hoppers,
-      TNT, fluids, light) use console commands and one observer bot. A server that lacks a
+      with the same settings and a new world each (`vanillite-bench` on the benchmark server
+      vanillite-bench, VANILLITE_BENCH_HOST overrides it). Player load from tools/loadbot
+      there; command-built scenarios (redstone, mobs, farm, monsters, villagers, mobs-far,
+      items, hoppers, TNT, fluids, light) use console commands and one observer bot. A server
+      that lacks a
       command is reported as n/a. Writes target/bench/<time>/results.json and keeps the raw
       results under /opt/vanillite/bench/suite on the test server; --publish also updates
       benchmarks/results/ (latest.json, history.json, runs/<time>.json) and regenerates
       benchmarks/README.md with regressions and improvements against the previous run.
       --servers limits the run to these servers; --no-deploy uses the binaries installed there.
+      Every server runs under the same fixed hardware profile (4c8g; the weak scenario 1c1g),
+      and the run records the test server's hardware and the host load per server.
   cargo xtask bench publish <time|latest|results.json>
       Publishes a finished run like --publish: a local results.json or the suite directory
       /opt/vanillite/bench/suite/<time>/ on the test server (latest: the newest).
   cargo xtask bench report
       Regenerates benchmarks/README.md from benchmarks/results/.
+  cargo xtask bench commands <scenario>
+      Prints the console commands of a command-built scenario (the observer's teleport first),
+      to build it on a local server for profiling.
   cargo xtask bench nightly [--no-push]
       When origin/dev has code newer than the published results: runs `bench all --publish` in
       the worktree target/bench/tree and commits the results on the branch
       bench/results-<date> (pushed unless --no-push; then hand it to the normal landing).
+      Then runs `loadtest --steps 1000,2000,5000` on the same commit (#88 is judged from these
+      quiet night runs; results under /opt/vanillite/bench/results on the test server).
   cargo xtask setup [--global]
       Install the git merge driver `vanillite` for the files .gitattributes marks (Cargo.lock,
       golden KEYS.toml, the egg, Cargo.toml, module lists, the rule catalogue): parallel
@@ -196,6 +250,8 @@ fn main() -> ExitCode {
         ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
         ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
+        ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
+        ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
         ["dev", rest @ ..] => devenv::dev(&repo_root(), rest),
         ["deploy", rest @ ..] => devenv::deploy(&repo_root(), rest),
         ["testserver", rest @ ..] => devenv::testserver(&repo_root(), rest),
@@ -240,6 +296,11 @@ pub fn repo_root() -> PathBuf {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Cargo's target directory of a checkout: `CARGO_TARGET_DIR` when set, else `<root>/target`.
+pub fn target_dir(root: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), |d| root.join(d))
 }
 
 /// Reads a file to a string with the path in the error.

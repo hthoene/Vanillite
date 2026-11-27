@@ -140,6 +140,26 @@ pub fn is_skull(block: BlockId) -> bool {
     block_entity_type(block) == "minecraft:skull"
 }
 
+/// `AbstractSkullBlock.neighborChanged`: `powered` follows the redstone signal (dragon and
+/// piglin heads move while powered).
+pub(super) fn skull_neighbor_changed(
+    level: &mut crate::level::Level,
+    state: vanillite_data::block::BlockState,
+    pos: vanillite_base::BlockPos,
+    _source: BlockId,
+    _moved: bool,
+) {
+    let signal = level.has_neighbor_signal(pos);
+    use vanillite_worldgen::behaviour::StateExt;
+    if state.flag("powered") != signal {
+        level.set_block(
+            pos,
+            state.set_flag("powered", signal),
+            crate::level::update::CLIENTS,
+        );
+    }
+}
+
 /// Whether a block has a `BannerBlockEntity`.
 pub fn is_banner(block: BlockId) -> bool {
     block_entity_type(block) == "minecraft:banner"

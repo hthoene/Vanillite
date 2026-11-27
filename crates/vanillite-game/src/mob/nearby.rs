@@ -1,7 +1,8 @@
-//! The players near each chunk for natural spawning: an index from every chunk within
-//! [`RADIUS`] chunks of a player's chunk (`DistanceManager.hasPlayersNearby`) to those
-//! players, updated when a player changes chunk, so spawning asks only the players around a
-//! chunk instead of all of them.
+//! The players near each chunk: an index from every chunk within a radius of a player's chunk
+//! to those players, updated when a player changes chunk, so a system asks only the players
+//! around a chunk instead of all of them. Natural spawning uses [`RADIUS`]
+//! (`DistanceManager.hasPlayersNearby`), the activation range its own radius
+//! ([`super::activation`]).
 
 use vanillite_base::hash::FxHashMap;
 use vanillite_base::{BlockPos, ChunkPos, Vec3};
@@ -23,10 +24,14 @@ struct Player {
     live: bool,
 }
 
-/// The players of one world by chunk. Players are known by a slot that stays theirs while
-/// they are in the index.
-#[derive(Debug, Default)]
+/// The players of one world (or one region) by chunk. Players are known by a slot that stays
+/// theirs while they are in the index.
+#[derive(Debug)]
 pub struct NearbyPlayers {
+    /// Chunk radius of the square around a player's chunk.
+    radius: i32,
+    /// Whether [`Self::nearest_distance_sqr`] gets a grid for crowds.
+    crowd_grid: bool,
     slots: FxHashMap<EntityId, u32>,
     players: Vec<Player>,
     free: Vec<u32>,
@@ -36,8 +41,15 @@ pub struct NearbyPlayers {
     stamp: u32,
 }
 
-fn within(a: ChunkPos, b: ChunkPos) -> bool {
-    (a.x - b.x).abs() <= RADIUS && (a.z - b.z).abs() <= RADIUS
+fn within(a: ChunkPos, b: ChunkPos, radius: i32) -> bool {
+    (a.x - b.x).abs() <= radius && (a.z - b.z).abs() <= radius
+}
+
+impl Default for NearbyPlayers {
+    /// The index of natural spawning: [`RADIUS`], with the crowd grid.
+    fn default() -> Self {
+        NearbyPlayers::new(RADIUS, true)
+    }
 }
 
 /// `ChunkMap.euclideanDistanceSquared`: from the chunk's centre to a position.
@@ -50,6 +62,38 @@ pub fn chunk_center_distance_sqr(chunk: ChunkPos, pos: Vec3) -> f64 {
 }
 
 impl NearbyPlayers {
+    /// An empty index of the chunks within `radius` chunks of a player's chunk; `crowd_grid`
+    /// prepares [`Self::nearest_distance_sqr`] for crowds of players.
+    pub fn new(radius: i32, crowd_grid: bool) -> NearbyPlayers {
+        NearbyPlayers {
+            radius: radius.max(0),
+            crowd_grid,
+            slots: FxHashMap::default(),
+            players: Vec::new(),
+            free: Vec::new(),
+            chunks: FxHashMap::default(),
+            grid: Grid::default(),
+            stamp: 0,
+        }
+    }
+
+    /// The chunk radius.
+    pub fn radius(&self) -> i32 {
+        self.radius
+    }
+
+    /// Changes the chunk radius; the index is empty until the next [`Self::update`].
+    pub fn set_radius(&mut self, radius: i32) {
+        if radius.max(0) != self.radius {
+            *self = NearbyPlayers::new(radius, self.crowd_grid);
+        }
+    }
+
+    /// Whether a player is in the index.
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
     /// Takes the tick's players (unique ids) and their positions: players that changed
     /// chunk move in the index, new ones are added and missing ones removed.
     pub fn update(&mut self, players: &[(EntityId, Vec3)]) {
@@ -99,16 +143,19 @@ impl NearbyPlayers {
                 self.move_square(slot, Some(chunk), None);
             }
         }
-        self.grid.build(&self.players);
+        if self.crowd_grid {
+            self.grid.build(&self.players);
+        }
     }
 
     /// Moves a slot from the chunks around `old` to the chunks around `new`.
     fn move_square(&mut self, slot: u32, old: Option<ChunkPos>, new: Option<ChunkPos>) {
+        let r = self.radius;
         if let Some(o) = old {
-            for x in o.x - RADIUS..=o.x + RADIUS {
-                for z in o.z - RADIUS..=o.z + RADIUS {
+            for x in o.x - r..=o.x + r {
+                for z in o.z - r..=o.z + r {
                     let key = ChunkPos::new(x, z);
-                    if new.is_some_and(|n| within(key, n)) {
+                    if new.is_some_and(|n| within(key, n, r)) {
                         continue;
                     }
                     if let Some(list) = self.chunks.get_mut(&key) {
@@ -123,10 +170,10 @@ impl NearbyPlayers {
             }
         }
         if let Some(n) = new {
-            for x in n.x - RADIUS..=n.x + RADIUS {
-                for z in n.z - RADIUS..=n.z + RADIUS {
+            for x in n.x - r..=n.x + r {
+                for z in n.z - r..=n.z + r {
                     let key = ChunkPos::new(x, z);
-                    if old.is_some_and(|o| within(key, o)) {
+                    if old.is_some_and(|o| within(key, o, r)) {
                         continue;
                     }
                     self.chunks.entry(key).or_default().push(slot);
@@ -168,6 +215,16 @@ impl NearbyPlayers {
     /// The slots of the players whose chunk is within [`RADIUS`] of `chunk`, in no order.
     pub fn around(&self, chunk: ChunkPos) -> &[u32] {
         self.chunks.get(&chunk).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether a player stands at most `range` blocks from `pos` on both the X and the Z axis
+    /// (any height). `range` must not reach past the radius: at most 16 × radius blocks.
+    pub fn any_within_xz(&self, pos: Vec3, range: f64) -> bool {
+        let chunk = BlockPos::containing(pos.x, pos.y, pos.z).chunk();
+        self.around(chunk).iter().any(|&s| {
+            let p = self.players[s as usize].pos;
+            (p.x - pos.x).abs() <= range && (p.z - pos.z).abs() <= range
+        })
     }
 
     /// Whether a player is close enough to `chunk` for spawning

@@ -26,7 +26,6 @@ use super::PluginWorld;
 use crate::commands::exec;
 use crate::commands::items::{self, EntitySlot};
 use crate::commands::{CommandSource, Env, SourceKind};
-use crate::world::WorldId;
 
 type Result<T> = std::result::Result<T, i32>;
 
@@ -39,10 +38,7 @@ const MAX_EXHAUSTION: f32 = 40.0;
 
 /// A player or another entity of this world by UUID.
 pub(super) fn any_entity(entities: &Entities, uuid: u128) -> Result<EntityId> {
-    entities
-        .player_by_uuid(uuid)
-        .or_else(|| crate::commands::find_uuid(entities, uuid))
-        .ok_or(status::NOT_FOUND)
+    entities.store.by_uuid(uuid).ok_or(status::NOT_FOUND)
 }
 
 /// A player of this world by UUID.
@@ -296,17 +292,14 @@ pub(super) fn teleport(w: &mut PluginWorld<'_>, entity: u128, to: Location) -> R
         )
         .map_err(|_| status::INVALID_ARGUMENT);
     }
-    let destination = u16::try_from(to.world)
-        .ok()
-        .filter(|&i| usize::from(i) < w.1.dimensions.len())
-        .ok_or(status::INVALID_ARGUMENT)?;
+    let destination = exec::plugin_world(w.1, to.world).ok_or(status::INVALID_ARGUMENT)?;
     if !target.is_player() {
         return Err(status::UNSUPPORTED);
     }
     exec::move_to_world(
         w.1,
         &target,
-        WorldId(destination),
+        destination,
         pos,
         Some((to.yaw, to.pitch)),
         Some(vanillite_abi::teleport_cause::PLUGIN),
@@ -355,6 +348,39 @@ pub(super) fn remove_entity(w: &mut PluginWorld<'_>, entity: u128) -> Result<()>
     }
     entities.despawn(id);
     Ok(())
+}
+
+/// The entities whose bounding box intersects the box from `min` to `max`, in section order.
+pub(super) fn entities_in_box(
+    w: &PluginWorld<'_>,
+    min: [f64; 3],
+    max: [f64; 3],
+    kind: Option<&str>,
+    found: &mut dyn FnMut(vanillite_plugin_host::EntityInfo),
+) {
+    let kind = match kind {
+        Some(name) => match EntityTypeId::by_name(&qualified(name)) {
+            Some(kind) => Some(kind),
+            None => return,
+        },
+        None => None,
+    };
+    let store = &w.0.entities().store;
+    let area = vanillite_base::Aabb::new(min[0], min[1], min[2], max[0], max[1], max[2]);
+    store.for_each_in(&area, false, |id| {
+        if let Some(e) = store.get(id)
+            && kind.is_none_or(|k| e.kind() == k)
+        {
+            let (pos, rot) = (e.pos(), e.rot());
+            found(vanillite_plugin_host::EntityInfo {
+                uuid: e.uuid(),
+                pos: [pos.x, pos.y, pos.z],
+                yaw: rot.y_rot,
+                pitch: rot.x_rot,
+                kind: u32::from(e.kind().0),
+            });
+        }
+    });
 }
 
 /// The entities whose position lies within `radius` of `center`, nearest first, through the

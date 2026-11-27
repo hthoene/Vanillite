@@ -818,8 +818,16 @@ impl LootTables {
                     .name
                     .split_once(':')
                     .unwrap_or(("minecraft", info.name));
+                // `Blocks.wallVariant`: wall torches, signs, heads, banners and coral fans
+                // use the table of their standing block (`overrideLootTable`).
                 by_name
                     .get(format!("{ns}:blocks/{path}").as_str())
+                    .or_else(|| {
+                        path.contains("wall_").then(|| {
+                            by_name
+                                .get(format!("{ns}:blocks/{}", path.replace("wall_", "")).as_str())
+                        })?
+                    })
                     .copied()
                     .unwrap_or(u32::MAX)
             })
@@ -967,8 +975,9 @@ enum EntryKind {
         expand: bool,
     },
     Empty,
-    /// Block entity contents (`dynamic`): not available yet.
-    Dynamic,
+    /// Block entity contents (`dynamic`, `LootContext.addDynamicDrops`): `minecraft:sherds`
+    /// are the sides of a decorated pot; other names drop nothing.
+    Dynamic(Box<str>),
     /// A `loot_table` entry.
     Tables {
         tables: Vec<TableRef>,
@@ -1472,10 +1481,7 @@ impl Parser<'_> {
                 expand,
             },
             "minecraft:empty" => EntryKind::Empty,
-            "minecraft:dynamic" => {
-                string(field(o, "name")?)?;
-                EntryKind::Dynamic
-            }
+            "minecraft:dynamic" => EntryKind::Dynamic(qualify(string(field(o, "name")?)?).into()),
             "minecraft:loot_table" => EntryKind::Tables {
                 tables: self.table_refs(field(o, "value")?)?,
                 expand,
@@ -2286,7 +2292,7 @@ impl<'t> Eval<'t, '_> {
         let pushed = entry.modifier.as_ref().map(|m| chain.push(m)).is_some();
         let weight = entry_weight(entry, self.ctx.luck);
         let result = match &entry.kind {
-            EntryKind::Item(_) | EntryKind::Empty | EntryKind::Dynamic => {
+            EntryKind::Item(_) | EntryKind::Empty | EntryKind::Dynamic(_) => {
                 if weight > 0 {
                     out.push(Candidate {
                         leaf: Leaf::Entry(entry),
@@ -2397,6 +2403,18 @@ impl<'t> Eval<'t, '_> {
                 EntryKind::Tables { tables, .. } => {
                     for table in tables {
                         self.nested(table);
+                    }
+                }
+                EntryKind::Dynamic(name) if &**name == "minecraft:sherds" => {
+                    // `DecoratedPotBlock.getDrops`: left, back, front, right.
+                    let decorations = self
+                        .ctx
+                        .block_entity
+                        .and_then(|f| f(vanillite_protocol::components::ids::POT_DECORATIONS));
+                    if let Some(value) = decorations {
+                        for stack in crate::block::pot::sherds_of(&value) {
+                            self.emit(stack);
+                        }
                     }
                 }
                 _ => {}

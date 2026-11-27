@@ -2,6 +2,7 @@
 //! network layer hands over connections; the handlers themselves live in
 //! `vanillite_game::player`.
 
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use vanillite_game::entities::PERSISTENT_DATA;
 
@@ -28,14 +29,14 @@ use vanillite_game::player::{
 use vanillite_game::stats::{Stat, StatType, StatsCounter, custom};
 use vanillite_game::survival::player::Survival;
 use vanillite_nbt::{List, Tag};
-use vanillite_net::{Latency, Outbound};
+use vanillite_net::{Injector, Latency, Outbound};
 use vanillite_protocol::compress::Codec;
 use vanillite_protocol::frame::encode_frame;
 use vanillite_protocol::packets::play::clientbound::{
-    BlockChangedAck, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
+    BlockChangedAck, Disconnect, SetEquipment, SetHeldSlot, SwingAnimation, TakeItemEntity,
 };
 use vanillite_protocol::packets::play::serverbound::Hand;
-use vanillite_protocol::tap::{PacketTap, Verdict};
+use vanillite_protocol::tap::{BatchMark, PacketTap, Stage, Verdict, packet_id};
 use vanillite_protocol::text::Component;
 use vanillite_protocol::{Direction, SharedPacket, State};
 use vanillite_storage::player_data::{self, JsonFile, PlayerDataStore};
@@ -134,6 +135,10 @@ impl FanOut {
         // Packet listeners: the broadcast stage runs here, once per encoded packet; the
         // viewers' writers run the stage per receiver on their batches.
         let tapped = tap.active(Direction::Clientbound);
+        // Whether a writer has to look into the batches for packet types with a listener per
+        // receiver: only if this tick's packets hold one (#169).
+        let receivers = tapped && tap.listens(Stage::Receiver);
+        let mut mark = tap.batch_mark();
 
         // Encode once into runs.
         self.arena.clear();
@@ -159,6 +164,13 @@ impl FanOut {
                 } else {
                     packet
                 };
+                if receivers
+                    && mark != BatchMark::UNKNOWN
+                    && packet_id(packet.body())
+                        .is_none_or(|id| tap.wants_at(Stage::Receiver, State::Play, id))
+                {
+                    mark = BatchMark::UNKNOWN;
+                }
                 let before = self.arena.len();
                 if encode_frame(packet.body(), threshold, &mut self.codec, &mut self.arena).is_err()
                 {
@@ -286,7 +298,7 @@ impl FanOut {
                     let batch = std::mem::take(&mut batches[i]);
                     sizes[i] = batch.len();
                     if !batch.is_empty() {
-                        sink.send_batch(batch, threshold);
+                        sink.send_batch(batch, threshold, mark);
                     }
                 }
             }
@@ -310,29 +322,74 @@ impl FanOut {
 pub(crate) struct NetSink {
     out: Outbound,
     latency: Latency,
+    injector: Injector,
+    /// The play `login` packet is queued. The player is in the player list before its world
+    /// sends `login` (the world may run on another thread), so broadcasts and plugins can reach
+    /// the connection first: those packets are dropped, like Vanilla, which lists a player only
+    /// after `login`. The client would fail on them without a level (#199).
+    playing: AtomicBool,
 }
 
 impl NetSink {
-    pub(crate) fn new(out: Outbound, latency: Latency) -> NetSink {
-        NetSink { out, latency }
+    pub(crate) fn new(out: Outbound, latency: Latency, injector: Injector) -> NetSink {
+        NetSink {
+            out,
+            latency,
+            injector,
+            playing: AtomicBool::new(false),
+        }
     }
+
+    /// Whether a packet may go out now.
+    fn passes(&self, body: &[u8]) -> bool {
+        passes_gate(self.playing.load(AtomicOrdering::Acquire), body)
+    }
+}
+
+/// Whether a packet body may go to a client: all once `login` is queued, before it only
+/// `disconnect`.
+fn passes_gate(playing: bool, body: &[u8]) -> bool {
+    playing || packet_id(body) == Some(<Disconnect as vanillite_protocol::Packet>::ID)
 }
 
 impl PacketSink for NetSink {
     fn send_body(&self, body: Vec<u8>) -> bool {
+        if !self.passes(&body) {
+            return !self.out.is_closed();
+        }
         self.out.send_body(body)
     }
 
     fn send_shared(&self, packet: &Arc<SharedPacket>) -> bool {
+        if !self.playing.load(AtomicOrdering::Acquire) {
+            return !self.out.is_closed();
+        }
         self.out.send_shared(packet)
     }
 
-    fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>) -> bool {
-        self.out.send_batch(frames, threshold)
+    fn send_batch(&self, frames: Vec<u8>, threshold: Option<usize>, mark: BatchMark) -> bool {
+        if !self.playing.load(AtomicOrdering::Acquire) {
+            return !self.out.is_closed();
+        }
+        self.out.send_batch(frames, threshold, mark)
     }
 
     fn send_untapped(&self, body: Vec<u8>) -> bool {
+        if !self.passes(&body) {
+            return !self.out.is_closed();
+        }
         self.out.send_untapped(body)
+    }
+
+    fn send_login(&self, body: Vec<u8>) -> bool {
+        // Queued before the flag flips: whoever sees `playing` queues behind `login`.
+        let open = self.out.send_body(body);
+        self.playing.store(true, AtomicOrdering::Release);
+        open
+    }
+
+    fn inject(&self, body: Vec<u8>, skip_listeners: bool) -> bool {
+        self.injector.inject(body, skip_listeners)
     }
 
     fn frame_threshold(&self) -> Option<usize> {
@@ -384,6 +441,8 @@ pub(crate) struct WorldPlayers {
     chatting: Vec<EntityId>,
     /// Dead players that asked to respawn this tick.
     respawns: Vec<EntityId>,
+    /// `debug.session-recording` (overworld only).
+    pub(crate) recording: crate::session_recording::SessionRecording,
 }
 
 fn chunk_of(pos: Vec3) -> ChunkPos {
@@ -403,6 +462,7 @@ impl WorldPlayers {
             left: Vec::new(),
             chatting: Vec::new(),
             respawns: Vec::new(),
+            recording: crate::session_recording::SessionRecording::default(),
         }
     }
 
@@ -700,6 +760,7 @@ impl WorldPlayers {
         // The player kind data leaves the level while the packets are handled, so the block
         // handlers can change the level (`setBlock` with its updates) meanwhile. Nothing in
         // between adds or removes players.
+        self.recording.begin_tick(&mut level.entities);
         let mut players = std::mem::take(&mut level.entities.players);
         let spectators: FxHashSet<EntityId> = players
             .iter()
@@ -708,6 +769,7 @@ impl WorldPlayers {
             .collect();
         let mut swings: Vec<(EntityId, Hand)> = Vec::new();
         for (id, player) in players.iter_mut() {
+            player.connection.play.fast_break_check = rules.digging.fast_break_check;
             let Some(entity) = level.entities.store.get(id) else {
                 continue;
             };
@@ -825,6 +887,7 @@ impl WorldPlayers {
                 }
                 handled
             };
+            self.recording.packets(id, player, &level.entities);
             swings.extend(hands.into_iter().map(|h| (id, h)));
             // `player-idle-timeout` (`ServerGamePacketListenerImpl.tick`; not while the end
             // credits show).
@@ -961,6 +1024,7 @@ impl WorldPlayers {
         for (id, reason) in std::mem::take(&mut self.leaving) {
             self.leave(level, global, id, reason);
         }
+        self.recording.end_tick(&level.entities);
     }
 
     /// Spawn protection of this world for this tick (`isUnderSpawnProtection`).
@@ -1136,10 +1200,13 @@ impl WorldPlayers {
                 };
                 player.connection.play.tick(&mut play, sink.as_ref());
             }
-            // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1).
+            // `Player.aiStep` → `touch`: item entities in the box grown by (1, 0.5, 1), where
+            // the player's server-side travel took it (as its push and the cubes' touch,
+            // `player_ai_step_end`).
+            let step = player.survival.server_step;
+            let reach = aabb.offset(step.x, step.y, step.z).inflate(1.0, 0.5, 1.0);
             if player.game_mode != GameMode::Spectator {
                 let store = &level.entities.store;
-                let reach = aabb.inflate(1.0, 0.5, 1.0);
                 let mut near = Vec::new();
                 store.for_each_non_player_in(&reach, |e| {
                     if crate::blocks::is_item(store, e) {
@@ -1227,7 +1294,7 @@ impl WorldPlayers {
                     id,
                     &mut player.survival,
                     &mut player.inventory,
-                    &aabb.inflate(1.0, 0.5, 1.0),
+                    &reach,
                     global,
                     &mut taken_orbs,
                 );
@@ -1242,7 +1309,7 @@ impl WorldPlayers {
                     has_ceiling: global
                         .dimensions
                         .world(dimension_name)
-                        .and_then(|w| global.level.dimension_types.get(w.index()))
+                        .and_then(|w| global.dimensions.facts(w))
                         .is_some_and(|t| t.has_ceiling),
                 };
                 vanillite_game::carried::tick(level, owner, player);
@@ -2020,5 +2087,31 @@ fn touch_orb(
                 1.0,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use vanillite_protocol::frame::encode_body;
+    use vanillite_protocol::packets::play::clientbound::Disconnect;
+    use vanillite_protocol::text::Component;
+
+    /// #199: before `login` a client has no level; a broadcast `set_time` that reached it there
+    /// ended in "Network Protocol Error". Only a kick passes the gate before `login`.
+    #[test]
+    fn only_disconnect_reaches_a_client_before_login() {
+        let kick = encode_body(&Disconnect {
+            reason: Component::text("bye"),
+        });
+        let chat = encode_body(
+            &vanillite_protocol::packets::play::clientbound::SystemChat {
+                content: Component::text("hi"),
+                overlay: false,
+            },
+        );
+        assert!(super::passes_gate(false, &kick));
+        assert!(!super::passes_gate(false, &chat));
+        assert!(super::passes_gate(true, &chat));
+        assert!(super::passes_gate(true, &kick));
     }
 }

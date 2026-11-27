@@ -184,6 +184,7 @@ pub fn particle_name(java: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -209,5 +210,45 @@ mod tests {
             biome_id("minecraft:the_void"),
             biome_id("minecraft:the_void")
         );
+    }
+
+    /// `creative_content` parses to its end; the shield's user data carries its blocking tick
+    /// (the client fails to decode the packet otherwise, #182).
+    #[test]
+    fn creative_content_parses() {
+        use crate::io::Reader;
+        let shield_java = vanillite_data::registry::ITEM
+            .id("minecraft:shield")
+            .unwrap();
+        for p in [&V26_40, &V26_50, &V26_60] {
+            let shield = p.items().bedrock(shield_java).0;
+            let mut r = Reader::new(p.creative);
+            let mut shields = 0;
+            let mut item = |r: &mut Reader<'_>| {
+                let id = r.vari32().unwrap();
+                if id == 0 {
+                    return;
+                }
+                r.take(2).unwrap();
+                r.varu32().unwrap();
+                r.vari32().unwrap();
+                let user = r.bytes("user data", 1 << 16).unwrap();
+                let expected = if id == i32::from(shield) { 18 } else { 10 };
+                shields += usize::from(id == i32::from(shield));
+                assert_eq!(user.len(), expected, "{} item {id}", p.name);
+            };
+            for _ in 0..r.varu32().unwrap() {
+                r.u8().unwrap();
+                r.string("group", 1 << 16).unwrap();
+                item(&mut r);
+            }
+            for _ in 0..r.varu32().unwrap() {
+                r.varu32().unwrap();
+                item(&mut r);
+                r.varu32().unwrap();
+            }
+            assert_eq!(r.remaining(), 0, "{}", p.name);
+            assert!(shields > 0, "{}", p.name);
+        }
     }
 }

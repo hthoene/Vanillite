@@ -122,7 +122,7 @@ impl fmt::Display for Stats {
 /// How the compared chunk is lit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// `LightEngine::relight` of the center (after block changes).
+    /// `BfsLightEngine::relight_area` of the center (the reference of light after block changes).
     Relight,
     /// `initialize_light` and `light_chunks` of the whole area (world generation).
     Generation,
@@ -175,7 +175,7 @@ impl World {
         assert!(vanilla.light_on, "{center:?} has no light");
         let engine = BfsLightEngine::new(&world_info(Path::new("")));
         match mode {
-            Mode::Relight => engine.relight(&[center], &mut Neighbours::new(&mut area)),
+            Mode::Relight => engine.relight_area(center, &mut Neighbours::new(&mut area)),
             Mode::Generation => {
                 // Like generation: every chunk gets fresh layers, then each chunk propagates its
                 // own sources through its 3 × 3 area.

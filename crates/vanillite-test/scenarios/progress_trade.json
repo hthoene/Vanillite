@@ -1,0 +1,79 @@
+{
+  "description": "A player trades with a wandering trader: the interaction counts talked_to_villager and generates the offers, select_trade moves the price of the first offer from the inventory into the payment slots, the shift-click on the result trades while the emeralds last (villager_trade completes What a Deal!, traded_with_villager and the crafted result count).",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_triggers",
+  "progress_state": true,
+  "player_state": true,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -56,
+      7
+    ]
+  ],
+  "ticks": 6,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        -90,
+        0
+      ]
+    },
+    {
+      "name": "trader",
+      "type": "minecraft:wandering_trader",
+      "pos": [
+        4.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        90,
+        0
+      ],
+      "seed": 3
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "interact",
+      "entity": "steve",
+      "target": "trader",
+      "item": "minecraft:emerald",
+      "count": 64
+    },
+    {
+      "tick": 3,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "select_trade",
+      "data": "00",
+      "what": "SelectTrade { item: 0 }"
+    },
+    {
+      "tick": 4,
+      "op": "packet",
+      "entity": "steve",
+      "packet": "container_click",
+      "data": "0100000200010000",
+      "what": "ContainerClick { container 1, slot 2 (result), QUICK_MOVE }"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

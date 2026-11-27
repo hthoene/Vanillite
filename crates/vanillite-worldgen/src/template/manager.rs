@@ -25,6 +25,9 @@ pub struct StructureTemplateManager {
     generated: Option<PathBuf>,
     /// Loaded templates; `None` for ids without a file.
     cache: RwLock<FxHashMap<String, Entry>>,
+    /// Outlines read by [`Self::outline`]: small (size and jigsaw blocks), so they stay and a
+    /// generator that is built again does not read every template file again.
+    outlines: RwLock<FxHashMap<String, Arc<StructureTemplate>>>,
     /// Bytes the file-loaded templates of the cache may take.
     cache_limit: AtomicUsize,
     /// Use counter for the least recently used order.
@@ -42,6 +45,30 @@ struct Entry {
     /// Whether the entry came from a file and may be evicted.
     reloadable: bool,
     used: AtomicU64,
+}
+
+/// A template of a manager by id: read when it is used and again after the cache dropped it, so
+/// its holders (structure types, features) keep no template in memory.
+#[derive(Clone, Debug)]
+pub struct TemplateRef {
+    id: Arc<str>,
+    manager: Arc<StructureTemplateManager>,
+}
+
+impl TemplateRef {
+    /// The template `id` of `manager`.
+    pub fn new(manager: &Arc<StructureTemplateManager>, id: &str) -> Self {
+        Self {
+            id: qualify(id).into(),
+            manager: Arc::clone(manager),
+        }
+    }
+
+    /// `getOrCreate(id)`. A file that cannot be read counts as an empty template (Vanilla's
+    /// `tryLoad` treats it as missing).
+    pub fn get(&self) -> Arc<StructureTemplate> {
+        self.manager.get_or_create(&self.id).unwrap_or_default()
+    }
 }
 
 impl Entry {
@@ -67,6 +94,7 @@ impl StructureTemplateManager {
             roots: RwLock::new(roots),
             generated: None,
             cache: RwLock::new(FxHashMap::default()),
+            outlines: RwLock::new(FxHashMap::default()),
             cache_limit: AtomicUsize::new(DEFAULT_CACHE_LIMIT),
             clock: AtomicU64::new(0),
         }
@@ -78,6 +106,13 @@ impl StructureTemplateManager {
         self.cache_limit.store(bytes, Ordering::Relaxed);
         let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
         Self::evict(&mut cache, bytes);
+    }
+
+    /// Drops every template that can be read again from its file (an idle server keeps none).
+    pub fn trim(&self) {
+        let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
+        cache.retain(|_, e| !e.reloadable);
+        cache.shrink_to_fit();
     }
 
     /// Drops least recently used file-loaded templates until they take at most `limit` bytes.
@@ -106,8 +141,8 @@ impl StructureTemplateManager {
     }
 
     /// The template of `id` for reading its outline (size and jigsaw blocks): the cached one,
-    /// or one read from the files with only its jigsaw blocks, which is not cached. Missing
-    /// ids behave as in [`Self::get_or_create`].
+    /// or one read from the files with only its jigsaw blocks, kept as outline. Missing ids
+    /// behave as in [`Self::get_or_create`].
     pub fn outline(&self, id: &str) -> Result<Arc<StructureTemplate>, Error> {
         let id = qualify(id);
         if let Some(entry) = self
@@ -119,8 +154,22 @@ impl StructureTemplateManager {
         {
             return Ok(Arc::clone(template));
         }
+        if let Some(outline) = self
+            .outlines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+        {
+            return Ok(Arc::clone(outline));
+        }
         match self.load(&id, true)? {
-            Some(template) => Ok(template),
+            Some(template) => Ok(Arc::clone(
+                self.outlines
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entry(id)
+                    .or_insert(template),
+            )),
             None => self.get_or_create(&id),
         }
     }
@@ -137,6 +186,10 @@ impl StructureTemplateManager {
     pub fn reload(&self, roots: Vec<PathBuf>) {
         *self.roots.write().unwrap_or_else(PoisonError::into_inner) = roots;
         self.cache
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.outlines
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
@@ -157,18 +210,30 @@ impl StructureTemplateManager {
 
     /// Puts `template` into the cache as `id` (`getOrCreate(id)` filled in place).
     pub fn put(&self, id: &str, template: StructureTemplate) {
+        let id = qualify(id);
+        self.forget_outline(&id);
         self.cache
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(qualify(id), Entry::fixed(Some(Arc::new(template))));
+            .insert(id, Entry::fixed(Some(Arc::new(template))));
     }
 
     /// `remove(id)`: drops the cached template, the next `get` reads the files again.
     pub fn remove(&self, id: &str) {
+        let id = qualify(id);
+        self.forget_outline(&id);
         self.cache
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(&qualify(id));
+            .remove(&id);
+    }
+
+    /// The files of `id` may have changed: its outline is read again.
+    fn forget_outline(&self, id: &str) {
+        self.outlines
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
     }
 
     /// `save(id)`: writes the cached template of `id` to the world's `generated` directory.
@@ -200,6 +265,7 @@ impl StructureTemplateManager {
             std::fs::create_dir_all(parent).map_err(|e| failed(&e))?;
         }
         std::fs::write(&file, bytes).map_err(|e| failed(&e))?;
+        self.forget_outline(&id);
         Ok(true)
     }
 

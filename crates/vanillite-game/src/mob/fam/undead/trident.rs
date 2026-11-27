@@ -396,16 +396,24 @@ fn hit_block_effects(t: &mut MissileTick<'_, '_>, d: &MissileData, block: BlockP
         clamp(at.z, block.z),
     );
     for (effect, _) in effects {
-        run_block_effect(t, &effect, pos);
+        run_block_effect(t, d, &effect, pos);
     }
 }
 
-fn run_block_effect(t: &mut MissileTick<'_, '_>, effect: &crate::enchant::EntityEffect, pos: Vec3) {
+fn run_block_effect(
+    t: &mut MissileTick<'_, '_>,
+    d: &MissileData,
+    effect: &crate::enchant::EntityEffect,
+    pos: Vec3,
+) {
     use crate::enchant::EntityEffect;
     match effect {
-        EntityEffect::SummonLightning => t.cx.actions.push(crate::mob::WorldAction::Level(
-            crate::mob::boss::warden::LevelAction::Lightning { pos },
-        )),
+        EntityEffect::SummonLightning => {
+            let cause = d.owner.filter(|&o| t.ents.player(o).is_some());
+            t.cx.actions.push(crate::mob::WorldAction::Level(
+                crate::mob::boss::warden::LevelAction::Lightning { pos, cause },
+            ));
+        }
         EntityEffect::PlaySound {
             sound: s,
             volume,
@@ -424,7 +432,7 @@ fn run_block_effect(t: &mut MissileTick<'_, '_>, effect: &crate::enchant::Entity
         }
         EntityEffect::AllOf(list) => {
             for e in list {
-                run_block_effect(t, e, pos);
+                run_block_effect(t, d, e, pos);
             }
         }
         _ => {}

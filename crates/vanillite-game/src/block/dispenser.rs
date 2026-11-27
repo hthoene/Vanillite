@@ -653,9 +653,8 @@ pub(super) fn spawn_dispensed(
     let mut y = f64::from(pos.y) + 0.5 + 0.7 * f64::from(dy);
     let z = f64::from(pos.z) + 0.5 + 0.7 * f64::from(dz);
     y -= if dy != 0 { 0.125 } else { 0.156_25 };
-    // `new ItemEntity(level, x, y, z, stack)` draws a velocity first.
-    level.random().next_double();
-    level.random().next_double();
+    // `new ItemEntity(level, x, y, z, stack)` draws its first velocity from the entity's own
+    // random, not the level's.
     let pow = level.random().next_double() * 0.1 + 0.2;
     let spread = 0.017_227_5 * 6.0;
     let mut triangle = |mode: f64| {
@@ -737,7 +736,10 @@ pub(crate) fn empty_bucket_contents_by(
         && (super::can_be_replaced(state) || !super::is_solid(state));
     let water = fluid == ids::WATER;
     let waterloggable = state.value("waterlogged").is_some();
-    let place_liquid = may_replace || (water && waterloggable && !state.flag("waterlogged"));
+    // `LiquidBlockContainer.canPlaceLiquid`: any water for waterloggable blocks, also when they
+    // hold water already (the bucket then empties without effect); not double slabs.
+    let place_liquid =
+        may_replace || (water && waterloggable && !super::fluid::is_double_slab(state));
     if !(state.is_air() || (place_liquid && (!sneaking || hit.is_none()))) {
         return hit.is_some_and(|(clicked, face)| {
             empty_bucket_contents_by(
@@ -1052,9 +1054,33 @@ fn place_shulker_box(level: &mut Level, source: Source, stack: &mut ItemStack) -
     true
 }
 
+/// `Entity.blocksBuilding` of a live entity that is no spectator: living entities (not marker
+/// armor stands), minecarts, boats, end crystals, falling blocks and primed TNT.
+pub fn blocks_building(level: &Level, id: vanillite_world::entity::EntityId) -> bool {
+    let ents = &level.entities;
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    if kind == entity_ids::PLAYER {
+        return ents
+            .player(id)
+            .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
+    }
+    if kind == entity_ids::ARMOR_STAND {
+        return !ents
+            .mob(id)
+            .is_some_and(crate::decoration::stand::is_marker);
+    }
+    super::plate::is_living(kind)
+        || super::rail::is_minecart(kind)
+        || ents.boat(id).is_some()
+        || kind == entity_ids::END_CRYSTAL
+        || kind == entity_ids::FALLING_BLOCK
+        || kind == entity_ids::TNT
+}
+
 /// `Level.isUnobstructed(state, pos, CollisionContext.empty())`: no entity that blocks
-/// building (players that are no spectators, primed TNT, falling blocks) in the block's
-/// collision shape.
+/// building ([`blocks_building`]) in the block's collision shape.
 fn is_unobstructed(level: &Level, state: BlockState, pos: BlockPos) -> bool {
     let (dx, dy, dz) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
     for b in state.collision_shape() {
@@ -1068,18 +1094,7 @@ fn is_unobstructed(level: &Level, state: BlockState, pos: BlockPos) -> bool {
         );
         let mut blocked = false;
         level.entities.store.for_each_in(&shape, false, |id| {
-            let Some(entity) = level.entities.store.get(id) else {
-                return;
-            };
-            let kind = entity.kind();
-            if kind == entity_ids::PLAYER {
-                blocked |= level
-                    .entities
-                    .player(id)
-                    .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
-            } else if kind == entity_ids::TNT || kind == entity_ids::FALLING_BLOCK {
-                blocked = true;
-            }
+            blocked |= blocks_building(level, id);
         });
         if blocked {
             return false;

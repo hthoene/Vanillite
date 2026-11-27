@@ -174,6 +174,13 @@ pub(crate) fn sendable(body: &[u8]) -> bool {
             .is_some_and(|id| id < names(Direction::Clientbound, State::Play).len())
 }
 
+/// Whether `body` is a serverbound play packet that decodes (the connection decodes it again
+/// after the packet listeners).
+pub(crate) fn receivable(body: &[u8]) -> bool {
+    body.len() <= abi::packet_limits::MAX_BODY as usize
+        && vanillite_protocol::sets::ServerboundPlay::decode(body).is_ok()
+}
+
 impl Packets {
     /// Publishes the packet types with listeners to the tap.
     fn publish(&self, tables: &[List; 10]) {

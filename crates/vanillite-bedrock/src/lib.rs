@@ -316,6 +316,15 @@ async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
     let guid = shared.guid;
     let port = socket.local_addr().map_or(0, |a| a.port());
     let mut pongs = (Instant::now(), 0u32);
+    // Refused handshakes are logged at most every few seconds (spoofed floods cannot spam).
+    let mut refusal_logged: Option<Instant> = None;
+    let mut log_refusal = |now: Instant, message: std::fmt::Arguments<'_>| {
+        if refusal_logged.is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_secs(5))
+        {
+            refusal_logged = Some(now);
+            log::warn!("{message}");
+        }
+    };
     loop {
         let (n, from) = tokio::select! {
             r = socket.recv_from(&mut buf) => match r {
@@ -364,6 +373,13 @@ async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
                     continue;
                 };
                 if protocol != raknet::PROTOCOL {
+                    log_refusal(
+                        now,
+                        format_args!(
+                            "Bedrock client {from} uses RakNet protocol {protocol}, not {}",
+                            raknet::PROTOCOL
+                        ),
+                    );
                     let _ = socket.try_send_to(&raknet::incompatible(guid), from);
                     continue;
                 }
@@ -375,6 +391,7 @@ async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
                     continue;
                 };
                 if !cookies.check(from, cookie) {
+                    log::debug!("Bedrock handshake from {from} with a stale cookie");
                     continue;
                 }
                 let mtu = mtu.clamp(raknet::MIN_MTU, raknet::MAX_MTU);
@@ -382,6 +399,17 @@ async fn listen(socket: Arc<UdpSocket>, shared: Arc<session::Shared>) {
                     let full = u32::try_from(peers.len()).unwrap_or(u32::MAX)
                         >= shared.config.max_connections;
                     if full || !per_ip.admit(from.ip(), shared.config.max_connections_per_ip) {
+                        log_refusal(
+                            now,
+                            format_args!(
+                                "Bedrock connection from {from} refused: {}",
+                                if full {
+                                    "too many connections"
+                                } else {
+                                    "too many connections from this address"
+                                }
+                            ),
+                        );
                         continue;
                     }
                     let (tx, rx) = mpsc::channel(512);

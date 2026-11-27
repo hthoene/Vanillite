@@ -31,6 +31,7 @@ mod plugins;
 mod progress;
 mod scoreboard;
 mod server;
+mod session_recording;
 pub mod slot;
 mod spectator;
 mod survival;
@@ -42,6 +43,7 @@ mod world;
 mod world_format;
 mod world_setup;
 mod world_updates;
+mod worlds;
 
 pub use blocks::{ItemScratch, ItemSettings, LevelEffects, WorldLevel, game_data, tick_item};
 pub use clock::Clock;

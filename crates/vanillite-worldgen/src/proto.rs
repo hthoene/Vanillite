@@ -133,23 +133,23 @@ pub struct ProtoChunk {
     dense: Option<DenseBlocks>,
 }
 
-/// Block states of all sections as plain arrays (section after section, each in
-/// `PalettedContainer` index order), with the non-air count per section: the terrain stage
-/// writes nearly every block of a chunk, which is much cheaper here than in paletted sections.
+/// Block states of the whole chunk as one plain array, column after column (`x + z * 16`),
+/// each bottom up, with the non-air count per section: the terrain stage writes nearly every
+/// block of a chunk, column by column, which is much cheaper here than in paletted sections.
 #[derive(Clone, Debug)]
 struct DenseBlocks {
     states: Vec<u16>,
     non_air: Vec<u16>,
+    /// Blocks per column.
+    height: usize,
 }
 
 impl DenseBlocks {
-    /// The index of a position (local x/z, section index, local y).
+    /// The index of a position: x/z (any, the low four bits count) and `row`, the Y above the
+    /// chunk's bottom (below `height`).
     #[inline]
-    fn index(section: usize, x: i32, y: i32, z: i32) -> usize {
-        (section << 12)
-            | (((y & 15) as usize) << 8)
-            | (((z & 15) as usize) << 4)
-            | (x & 15) as usize
+    fn index(&self, x: i32, row: usize, z: i32) -> usize {
+        ((((z & 15) as usize) << 4) | (x & 15) as usize) * self.height + row
     }
 
     /// Sets the state at `index` of `section` and returns the previous one.
@@ -178,19 +178,33 @@ impl ProtoChunk {
         if self.dense.is_some() {
             return;
         }
+        let air = BlockState::AIR.0;
+        let height = self.sections.len() << 4;
         let mut states = SPARE_DENSE.take();
         states.clear();
-        states.reserve(self.sections.len() << 12);
+        states.resize(height << 8, air);
         let mut non_air = Vec::with_capacity(self.sections.len());
-        for section in &self.sections {
+        let mut unpacked = [0u16; 4096];
+        for (index, section) in self.sections.iter().enumerate() {
             let blocks = section.blocks();
-            let start = states.len();
-            states.resize(start + 4096, 0);
-            blocks.copy_to(&mut states[start..]);
-            let air = BlockState::AIR.0;
-            non_air.push(states[start..].iter().filter(|&&s| s != air).count() as u16);
+            if blocks.single() == Some(air) {
+                non_air.push(0);
+                continue;
+            }
+            // Entry `(y << 8) | column` of the section.
+            blocks.copy_to(&mut unpacked);
+            for (column, states) in states.chunks_exact_mut(height).enumerate() {
+                for (y, slot) in states[index << 4..][..16].iter_mut().enumerate() {
+                    *slot = unpacked[(y << 8) | column];
+                }
+            }
+            non_air.push(unpacked.iter().filter(|&&s| s != air).count() as u16);
         }
-        self.dense = Some(DenseBlocks { states, non_air });
+        self.dense = Some(DenseBlocks {
+            states,
+            non_air,
+            height,
+        });
     }
 
     /// Packs the dense buffer of [`Self::begin_dense`] back into the sections.
@@ -198,13 +212,21 @@ impl ProtoChunk {
         let Some(dense) = self.dense.take() else {
             return;
         };
-        for (section, states) in self
-            .sections
-            .iter_mut()
-            .zip(dense.states.as_chunks::<4096>().0)
-        {
+        let mut packed = [0u16; 4096];
+        for (index, section) in self.sections.iter_mut().enumerate() {
+            let blocks = if dense.non_air[index] == 0 {
+                PalettedContainer::new(BlockState::AIR.0)
+            } else {
+                // Entry `(y << 8) | column` of the section.
+                for (column, states) in dense.states.chunks_exact(dense.height).enumerate() {
+                    for (y, &state) in states[index << 4..][..16].iter().enumerate() {
+                        packed[(y << 8) | column] = state;
+                    }
+                }
+                PalettedContainer::from_values(&packed)
+            };
             let biomes = std::mem::replace(section.biomes_mut(), PalettedContainer::new(0));
-            *section = Section::from_containers(PalettedContainer::from_values(states), biomes);
+            *section = Section::from_containers(blocks, biomes);
         }
         SPARE_DENSE.set(dense.states);
     }
@@ -349,7 +371,7 @@ impl ProtoChunk {
             return BlockState::AIR;
         }
         if let Some(dense) = &self.dense {
-            return BlockState(dense.states[DenseBlocks::index(self.section_index(y), x, y, z)]);
+            return BlockState(dense.states[dense.index(x, (y - self.min_y) as usize, z)]);
         }
         BlockState(self.sections[self.section_index(y)].block(
             (x & 15) as u32,
@@ -369,14 +391,11 @@ impl ProtoChunk {
         let (from, to) = (min_y.max(bottom), max_y.min(top));
         out.extend((min_y..from.min(max_y + 1)).map(|_| BlockState::AIR));
         if from <= to {
-            let column = (((z & 15) as usize) << 4) | (x & 15) as usize;
-            let start = (((from - bottom) as usize) << 8) | column;
+            let start = dense.index(x, (from - bottom) as usize, z);
             let count = (to - from + 1) as usize;
             out.extend(
-                dense.states[start..]
+                dense.states[start..start + count]
                     .iter()
-                    .step_by(256)
-                    .take(count)
                     .map(|&state| BlockState(state)),
             );
         }
@@ -402,35 +421,43 @@ impl ProtoChunk {
         let bottom = min_y - self.min_y;
         if self.terrain_done
             || bottom < 0
-            || (bottom as usize + states.len()) << 8 > dense.states.len()
+            || bottom as usize + states.len() > dense.height
             || self.heightmaps[HeightmapKind::WorldSurfaceWg.id() as usize][column] != self.min_y
             || self.heightmaps[HeightmapKind::OceanFloorWg.id() as usize][column] != self.min_y
         {
             return false;
         }
         let air = BlockState::AIR;
-        let start = ((bottom as usize) << 8) | column;
+        let bottom = bottom as usize;
+        let start = dense.index(x, bottom, z);
+        let target = &mut dense.states[start..start + states.len()];
         // The column must still be air (then the counts below are right).
-        if dense.states[start..]
-            .iter()
-            .step_by(256)
-            .take(states.len())
-            .any(|&state| state != air.0)
-        {
+        if target.iter().any(|&state| state != air.0) {
             return false;
+        }
+        for (slot, state) in target.iter_mut().zip(states) {
+            *slot = state.0;
+        }
+        // Section by section.
+        let mut row = 0;
+        while row < states.len() {
+            let section = (bottom + row) >> 4;
+            let end = (((section + 1) << 4) - bottom).min(states.len());
+            let count = states[row..end].iter().filter(|&&s| s != air).count();
+            dense.non_air[section] += count as u16;
+            row = end;
         }
         let (mut surface, mut ocean_floor) = (None, None);
         for (row, &state) in states.iter().enumerate().rev() {
             if state == air {
                 continue;
             }
-            let y = bottom as usize + row;
-            dense.states[(y << 8) | column] = state.0;
-            dense.non_air[y >> 4] += 1;
-            if ocean_floor.is_none() {
-                let flags = facts::block_flags(state.0);
-                surface = surface.or(HeightmapKind::WorldSurfaceWg.matches(flags).then_some(y));
-                ocean_floor = HeightmapKind::OceanFloorWg.matches(flags).then_some(y);
+            let y = bottom + row;
+            let flags = facts::block_flags(state.0);
+            surface = surface.or(HeightmapKind::WorldSurfaceWg.matches(flags).then_some(y));
+            ocean_floor = HeightmapKind::OceanFloorWg.matches(flags).then_some(y);
+            if ocean_floor.is_some() {
+                break;
             }
         }
         for (kind, top) in [
@@ -466,11 +493,11 @@ impl ProtoChunk {
             || old_flags & (facts::AIR | facts::FLUID) != 0
             || (old_flags ^ flags) & HEIGHTMAPS != 0
             || y < self.min_y
+            || (y - self.min_y) as usize >= dense.height
         {
             return false;
         }
-        let index =
-            (((y - self.min_y) as usize) << 8) | (((z & 15) as usize) << 4) | (x & 15) as usize;
+        let index = dense.index(x, (y - self.min_y) as usize, z);
         match dense.states.get_mut(index) {
             Some(slot) if *slot == old.0 => {
                 *slot = state.0;
@@ -503,7 +530,8 @@ impl ProtoChunk {
             if dense.non_air[index] == 0 && state == BlockState::AIR {
                 return state;
             }
-            BlockState(dense.set(index, DenseBlocks::index(index, x, y, z), state.0))
+            let at = dense.index(x, (y - self.min_y) as usize, z);
+            BlockState(dense.set(index, at, state.0))
         } else {
             let section = &mut self.sections[index];
             if section.summary().is_empty() && state == BlockState::AIR {
@@ -593,7 +621,8 @@ impl ProtoChunk {
     pub fn set_block_raw(&mut self, x: i32, y: i32, z: i32, state: BlockState) {
         let index = self.section_index(y);
         let old = if let Some(dense) = &mut self.dense {
-            dense.set(index, DenseBlocks::index(index, x, y, z), state.0)
+            let at = dense.index(x, (y - self.min_y) as usize, z);
+            dense.set(index, at, state.0)
         } else {
             self.sections[index].set_block(
                 (x & 15) as u32,
@@ -736,7 +765,8 @@ impl ProtoChunk {
     ) -> BlockState {
         let index = self.section_index(y);
         let old = if let Some(dense) = &mut self.dense {
-            dense.set(index, DenseBlocks::index(index, x, y, z), state.0)
+            let at = dense.index(x, (y - self.min_y) as usize, z);
+            dense.set(index, at, state.0)
         } else {
             self.sections[index].set_block(
                 (x & 15) as u32,

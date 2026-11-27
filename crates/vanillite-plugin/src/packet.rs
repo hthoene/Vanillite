@@ -493,6 +493,42 @@ impl Server {
         })
     }
 
+    /// Feeds a serverbound play packet body (`id` + fields) into a player's connection as if
+    /// the client sent it (ProtocolLib's `receiveClientPacket`): packet listeners see it, it
+    /// is validated, counts against the player's rate limits and is handled in order with
+    /// the client's packets. Since ABI 1.8.
+    pub fn receive_packet(&self, player: Uuid, body: &[u8]) -> Result<(), Error> {
+        self.receive_packet_flags(player, body, 0)
+    }
+
+    /// [`Server::receive_packet`] past every packet listener. Since ABI 1.8.
+    pub fn receive_packet_unlistened(&self, player: Uuid, body: &[u8]) -> Result<(), Error> {
+        self.receive_packet_flags(player, body, abi::packet_send::SKIP_LISTENERS)
+    }
+
+    fn receive_packet_flags(&self, player: Uuid, body: &[u8], flags: u32) -> Result<(), Error> {
+        // SAFETY: valid host function and bytes.
+        Error::check(unsafe {
+            (self.host().api.packet_receive)(
+                self.host().id,
+                player.to_abi(),
+                abi::Bytes::new(body),
+                flags,
+            )
+        })
+    }
+
+    /// Feeds a typed serverbound play packet of `vanillite-protocol` into a player's
+    /// connection ([`Server::receive_packet`]). Since ABI 1.8.
+    #[cfg(feature = "packets")]
+    pub fn receive<P: vanillite_protocol::Packet>(
+        &self,
+        player: Uuid,
+        packet: &P,
+    ) -> Result<(), Error> {
+        self.receive_packet(player, &vanillite_protocol::frame::encode_body(packet))
+    }
+
     /// Sends a typed play packet of `vanillite-protocol` to a player
     /// ([`Server::send_packet`]). Since ABI 1.7.
     #[cfg(feature = "packets")]

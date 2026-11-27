@@ -14,7 +14,9 @@ use vanillite_abi::{self as abi, Status, status};
 use vanillite_nbt::Tag;
 
 mod v16;
+mod v18;
 use v16::*;
+use v18::*;
 
 use crate::{
     AccessOp, BlockBox, BossBarOp, Inner, Location, Particles, Plugin, ScoreReply, ScoreboardOp,
@@ -176,6 +178,15 @@ pub(crate) static HOST_API: abi::HostApi = abi::HostApi {
     packet_name,
     packet_send,
     protocol_version,
+    world_create,
+    world_load,
+    world_unload,
+    world_count,
+    world_info,
+    player_move,
+    packet_receive,
+    entities_in_box,
+    entity_type_name,
 };
 
 /// What a callback may touch: when the call runs on a world's owner, that world.
@@ -2403,6 +2414,65 @@ unsafe extern "C" fn entities_near(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn entities_in_box(
+    raw: *mut abi::Context,
+    world: u32,
+    min: abi::Vec3,
+    max: abi::Vec3,
+    kind: abi::Str,
+    out: *mut abi::EntityInfo,
+    cap: usize,
+    count: *mut usize,
+) -> Status {
+    on_world(raw, world, |w| {
+        let Ok(kind) = opt_arg(kind) else {
+            return status::INVALID_ARGUMENT;
+        };
+        let (min, max) = ([min.x, min.y, min.z], [max.x, max.y, max.z]);
+        let sides_ok = (0..3).all(|i| max[i] >= min[i] && max[i] - min[i] <= 2048.0);
+        if !valid_pos(min) || !valid_pos(max) || !sides_ok || (cap > 0 && out.is_null()) {
+            return status::INVALID_ARGUMENT;
+        }
+        let mut n = 0usize;
+        w.entities_in_box(min, max, kind, &mut |e| {
+            if n < cap {
+                let record = abi::EntityInfo {
+                    uuid: abi::Uuid::from_u128(e.uuid),
+                    pos: abi::Vec3 {
+                        x: e.pos[0],
+                        y: e.pos[1],
+                        z: e.pos[2],
+                    },
+                    yaw: e.yaw,
+                    pitch: e.pitch,
+                    kind: e.kind,
+                };
+                // SAFETY: the plugin passes `cap` writable entries.
+                unsafe { out.add(n).write(record) };
+            }
+            n += 1;
+        });
+        write(count, n)
+    })
+}
+
+unsafe extern "C" fn entity_type_name(
+    id: abi::PluginId,
+    kind: u32,
+    out: *mut abi::StrBuf,
+) -> Status {
+    with(id, |_, _| {
+        let info = usize::try_from(kind)
+            .ok()
+            .and_then(|k| vanillite_data::entity::ENTITY_TYPES.get(k));
+        match info {
+            Some(info) => write_str(out, info.name),
+            None => status::INVALID_ARGUMENT,
+        }
+    })
+}
+
 unsafe extern "C" fn entity_nbt(
     raw: *mut abi::Context,
     world: u32,
@@ -2656,6 +2726,31 @@ unsafe extern "C" fn packet_send(
             status::OK
         } else {
             status::NOT_FOUND
+        }
+    })
+}
+
+unsafe extern "C" fn packet_receive(
+    id: abi::PluginId,
+    player: abi::Uuid,
+    body: abi::Bytes,
+    flags: u32,
+) -> Status {
+    with(id, |inner, _| {
+        if flags & !abi::packet_send::SKIP_LISTENERS != 0 {
+            return status::UNSUPPORTED;
+        }
+        // SAFETY: the plugin passes bytes valid for the call.
+        let Some(body) = (unsafe { bytes(body) }) else {
+            return status::INVALID_ARGUMENT;
+        };
+        if !crate::packets::receivable(body) {
+            return status::INVALID_ARGUMENT;
+        }
+        let skip = flags & abi::packet_send::SKIP_LISTENERS != 0;
+        match server!(inner).receive_packet(player.to_u128(), body.to_vec(), skip) {
+            Ok(()) => status::OK,
+            Err(s) => s,
         }
     })
 }

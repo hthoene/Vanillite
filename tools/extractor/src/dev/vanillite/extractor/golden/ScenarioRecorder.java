@@ -83,6 +83,11 @@ import net.minecraft.world.ticks.ScheduledTick;
  *
  * <p>Usage: {@code java -cp ... dev.vanillite.extractor.golden.ScenarioRecorder (<scenario.json>
  * <trace.json>)...}
+ *
+ * <p>{@code --stream <scenario.json> [<ticks>]} (soak runs, {@code cargo xtask parity soak}): the
+ * trace goes to standard output while it is recorded, one JSON line per frame after a header line
+ * {@code {"format":1,"region":[...]}}; a frame carries the palette entries it adds first as {@code
+ * "palette":[...]}. {@code <ticks>} records only that many ticks of the scenario.
  */
 public final class ScenarioRecorder {
   /** Trace format version; the Rust reader rejects other versions. */
@@ -137,6 +142,10 @@ public final class ScenarioRecorder {
   public static void main(String[] args) throws Exception {
     if (args.length == 1 && args[0].equals("--serve")) {
       serve();
+      return;
+    }
+    if ((args.length == 2 || args.length == 3) && args[0].equals("--stream")) {
+      stream(Path.of(args[1]), args.length == 3 ? Integer.parseInt(args[2]) : -1);
       return;
     }
     if (args.length == 0 || args.length % 2 != 0) {
@@ -194,20 +203,60 @@ public final class ScenarioRecorder {
     System.exit(0);
   }
 
+  /** {@code --stream}: the trace of one scenario to standard output, frame by frame. */
+  private static void stream(Path scenarioFile, int ticks) throws Exception {
+    // The bootstrap sends System.out to the log; the trace goes to the real output.
+    java.io.PrintStream out =
+        new java.io.PrintStream(
+            new java.io.BufferedOutputStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), 1 << 16),
+            false,
+            StandardCharsets.UTF_8);
+    // Logging that writes to the standard output (the console appender) goes to the error
+    // output instead.
+    System.setOut(System.err);
+    SharedConstants.tryDetectVersion();
+    Bootstrap.bootStrap();
+    JsonObject scenario = JsonParser.parseString(Files.readString(scenarioFile)).getAsJsonObject();
+    if (ticks >= 0) {
+      scenario.addProperty("ticks", ticks);
+    }
+    int status = 0;
+    try {
+      record(scenario, scenarioFile.toAbsolutePath().getParent(), out);
+    } catch (Exception | AssertionError e) {
+      e.printStackTrace();
+      status = 1;
+    }
+    out.flush();
+    // The server leaves worker threads behind.
+    System.exit(out.checkError() ? 1 : status);
+  }
+
   static String record(JsonObject scenario) throws Exception {
     return record(scenario, null);
   }
 
+  static String record(JsonObject scenario, Path scenarioDir) throws Exception {
+    return record(scenario, scenarioDir, null);
+  }
+
   /**
    * Records a scenario; its {@code datapack} is {@code ../datapacks/<name>} of {@code
-   * scenarioDir}.
+   * scenarioDir}. With {@code stream} the frames go there as they are recorded (see {@code
+   * --stream}) and the result is empty.
    */
-  static String record(JsonObject scenario, Path scenarioDir) throws Exception {
+  static String record(JsonObject scenario, Path scenarioDir, java.io.PrintStream stream)
+      throws Exception {
     JsonObject world = scenario.has("world") ? scenario.getAsJsonObject("world") : new JsonObject();
     long seed = world.has("seed") ? world.get("seed").getAsLong() : 0;
     String biome = world.has("biome") ? world.get("biome").getAsString() : "minecraft:plains";
-    List<ParityServer.Layer> layers = new ArrayList<>();
-    if (world.has("layers")) {
+    // A session replay (#152): the recorded world's chunks instead of flat layers; missing
+    // chunks come from the normal generator.
+    Path snapshot = world.has("snapshot") ? Path.of(world.get("snapshot").getAsString()) : null;
+    List<ParityServer.Layer> layers = snapshot != null ? null : new ArrayList<>();
+    if (snapshot != null) {
+      // No layers.
+    } else if (world.has("layers")) {
       for (JsonElement l : world.getAsJsonArray("layers")) {
         JsonArray a = l.getAsJsonArray();
         layers.add(new ParityServer.Layer(a.get(0).getAsString(), a.get(1).getAsInt()));
@@ -222,6 +271,12 @@ public final class ScenarioRecorder {
     Path dir = Files.createTempDirectory("vanillite-parity");
     // Across dimensions: the Nether and the End are flat too, and players load chunks.
     boolean dimensions = scenario.has("dimensions") && scenario.get("dimensions").getAsBoolean();
+    if (snapshot != null) {
+      Path overworld = dir.resolve("world").resolve("dimensions/minecraft/overworld");
+      for (String folder : new String[] {"region", "poi"}) {
+        copyTree(snapshot.resolve(folder), overworld.resolve(folder));
+      }
+    }
     Path datapack = null;
     if (scenario.has("datapack")) {
       if (!dimensions || scenarioDir == null) {
@@ -248,7 +303,32 @@ public final class ScenarioRecorder {
       JsonArray region = scenario.getAsJsonArray("region");
       BlockPos min = pos(region.get(0));
       BlockPos max = pos(region.get(1));
-      loadRegion(server, level, min, max);
+      // A soak run (`stream`) loads without warm-up ticks (see `loadRegion`); the scenario
+      // goldens keep the warm-up they were recorded with, which Vanillite's scenario world
+      // matches (its first ticks have no draws of the custom spawners).
+      boolean warmUp = dimensions || stream == null;
+      if (snapshot != null) {
+        // Without game ticks: the snapshot's scheduled ticks keep their delays from game time
+        // 0, like in Vanillite's new level (a warm-up would move them later).
+        Area loading = new Area(min, max);
+        for (int cx = loading.minX; cx <= loading.maxX; cx++) {
+          for (int cz = loading.minZ; cz <= loading.maxZ; cz++) {
+            level.setChunkForced(cx, cz, true);
+          }
+        }
+        settle(server, level, loading);
+      } else {
+        loadRegion(server, level, min, max, warmUp);
+      }
+      if (snapshot != null) {
+        // What chunk generation spawned: entity randoms and ids cannot match Vanillite's.
+        List<Entity> spawned = new ArrayList<>();
+        level.getAllEntities().forEach(spawned::add);
+        for (Entity e : spawned) {
+          e.discard();
+        }
+        server.drainEveryTask();
+      }
       List<View> views = new ArrayList<>();
       if (scenario.has("views")) {
         if (!dimensions) {
@@ -258,7 +338,7 @@ public final class ScenarioRecorder {
           JsonObject view = v.getAsJsonObject();
           JsonArray r = view.getAsJsonArray("region");
           View w = new View(view.get("dimension").getAsString(), pos(r.get(0)), pos(r.get(1)));
-          loadRegion(server, server.level(w.dimension), w.min, w.max);
+          loadRegion(server, server.level(w.dimension), w.min, w.max, warmUp);
           views.add(w);
         }
       }
@@ -286,15 +366,19 @@ public final class ScenarioRecorder {
       timeAndDifficulty(server, level, scenario);
       entities = new ScenarioEntities(server, server.overworld());
       entities.loadingPlayers = dimensions;
+      entities.clientTickEnd =
+          !scenario.has("client_tick_end") || scenario.get("client_tick_end").getAsBoolean();
       entities.playerState =
           scenario.has("player_state") && scenario.get("player_state").getAsBoolean();
       entities.sleepState =
           scenario.has("sleep_state") && scenario.get("sleep_state").getAsBoolean();
+      entities.progressState =
+          scenario.has("progress_state") && scenario.get("progress_state").getAsBoolean();
       JsonArray specs = scenario.has("entities") ? scenario.getAsJsonArray("entities") : new JsonArray();
       // Players join first; then the level random starts from the world seed and the mobs come.
       for (int i = 0; i < specs.size(); i++) {
         JsonObject spec = specs.get(i).getAsJsonObject();
-        if (spec.get("type").getAsString().equals("minecraft:player")) {
+        if (spec.get("type").getAsString().equals("minecraft:player") && !spec.has("join")) {
           entities.player(spec, i);
         }
       }
@@ -314,11 +398,17 @@ public final class ScenarioRecorder {
 
       boolean light = scenario.has("light") && scenario.get("light").getAsBoolean();
       boolean levelRng = scenario.has("level_rng") && scenario.get("level_rng").getAsBoolean();
-      Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views);
+      Trace trace = new Trace(min, max, entities, light, levelRng, dimension, views, stream);
       trace.frame(level, 0, true);
       int ticks = scenario.get("ticks").getAsInt();
       JsonArray actions = scenario.has("actions") ? scenario.getAsJsonArray("actions") : null;
       for (int tick = 1; tick <= ticks; tick++) {
+        for (int i = 0; i < specs.size(); i++) {
+          JsonObject spec = specs.get(i).getAsJsonObject();
+          if (spec.has("join") && spec.get("join").getAsInt() == tick) {
+            entities.player(spec, i);
+          }
+        }
         entities.clientBegin();
         if (actions != null) {
           boolean acted = false;
@@ -445,8 +535,17 @@ public final class ScenarioRecorder {
             + (scenario.has("difficulty") ? scenario.get("difficulty").getAsString() : "normal"));
   }
 
-  /** Loads the region's chunks and their neighbours and steps until they all tick. */
-  private static void loadRegion(ParityServer server, ServerLevel level, BlockPos min, BlockPos max) {
+  /**
+   * Loads the region's chunks and their neighbours until they all tick. With {@code ticks} the
+   * server steps meanwhile (warm-up ticks); otherwise only the chunk system and the entity
+   * manager run ({@link #runChunkSystem}) and no game tick comes before the scenario. Over a
+   * soak run's tens of thousands of ticks the warm-up's count would show: it moves Vanilla's
+   * tick counters (autosave, the custom spawners, weather) by a number that depends on how fast
+   * the machine loads the chunks.
+   */
+  private static void loadRegion(
+      ParityServer server, ServerLevel level, BlockPos min, BlockPos max, boolean ticks)
+      throws Exception {
     List<Long> chunks = new ArrayList<>();
     for (int cx = (min.getX() >> 4) - 1; cx <= (max.getX() >> 4) + 1; cx++) {
       for (int cz = (min.getZ() >> 4) - 1; cz <= (max.getZ() >> 4) + 1; cz++) {
@@ -456,23 +555,35 @@ public final class ScenarioRecorder {
       }
     }
     // Entities load asynchronously on the IO worker, which can be slow on a busy machine: wait
-    // by wall time, not by a number of warm-up ticks.
+    // by wall time.
     long deadline = System.nanoTime() + 60_000_000_000L;
     while (true) {
+      if (!ticks) {
+        runChunkSystem(server, level);
+      }
       if (chunks.stream().allMatch(c -> level.shouldTickBlocksAt(c) && level.areEntitiesLoaded(c))) {
         return;
       }
       if (System.nanoTime() > deadline) {
         throw new IllegalStateException("the scenario region does not become ticking");
       }
-      server.step();
-      try {
-        Thread.sleep(1);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new IllegalStateException("interrupted while loading the scenario region", e);
+      if (ticks) {
+        server.step();
       }
+      Thread.sleep(1);
     }
+  }
+
+  /**
+   * One round of the chunk system (distance manager, loads, unloads and saves), the entity
+   * manager and every queued task, without a game tick.
+   */
+  private static void runChunkSystem(ParityServer server, ServerLevel level) throws Exception {
+    Field managerField = ServerLevel.class.getDeclaredField("entityManager");
+    managerField.setAccessible(true);
+    level.getChunkSource().tick(() -> true, false);
+    ((PersistentEntitySectionManager<?>) managerField.get(level)).tick();
+    server.drainEveryTask();
   }
 
   /** The chunks a settle checks: around every chunk a scenario forced or unforced. */
@@ -504,27 +615,48 @@ public final class ScenarioRecorder {
    * dropped above the highest loaded level.
    */
   private static void settle(ParityServer server, ServerLevel level, Area area) throws Exception {
-    Field managerField = ServerLevel.class.getDeclaredField("entityManager");
-    managerField.setAccessible(true);
-    PersistentEntitySectionManager<?> entities =
-        (PersistentEntitySectionManager<?>) managerField.get(level);
     Method holder = ChunkMap.class.getDeclaredMethod("getVisibleChunkIfPresent", long.class);
     holder.setAccessible(true);
     ServerChunkCache source = level.getChunkSource();
     long deadline = System.nanoTime() + 20_000_000_000L;
-    while (true) {
-      source.tick(() -> true, false);
-      entities.tick();
-      server.drainEveryTask();
-      String reason = unsettled(level, source, holder, area);
-      if (reason == null) {
-        return;
+    // Chunk entity loads wait until every chunk is loaded or unloaded, then run in chunk order:
+    // the entities take their ids (which `ItemEntity.tick` reads) in the same order every run.
+    ParityHooks.deferEntityLoads(true);
+    try {
+      while (true) {
+        runChunkSystem(server, level);
+        if (ParityHooks.hasDeferredEntityLoads() && chunksSettled(source, area)) {
+          ParityHooks.flushEntityLoads();
+          continue;
+        }
+        String reason = unsettled(level, source, holder, area);
+        if (reason == null && !ParityHooks.hasDeferredEntityLoads()) {
+          return;
+        }
+        if (System.nanoTime() > deadline) {
+          throw new IllegalStateException("the chunk system does not settle: " + reason);
+        }
+        Thread.sleep(1);
       }
-      if (System.nanoTime() > deadline) {
-        throw new IllegalStateException("the chunk system does not settle: " + reason);
-      }
-      Thread.sleep(1);
+    } finally {
+      ParityHooks.deferEntityLoads(false);
+      ParityHooks.flushEntityLoads();
     }
+  }
+
+  /** Whether every chunk of the area is accessible exactly when its ticket level is full. */
+  private static boolean chunksSettled(ServerChunkCache source, Area area) {
+    int margin = SETTLE_MARGIN;
+    for (int x = area.minX - margin; x <= area.maxX + margin; x++) {
+      for (int z = area.minZ - margin; z <= area.maxZ + margin; z++) {
+        int ticketLevel = source.chunkMap.getDistanceManager().getChunkLevel(ChunkPos.pack(x, z), false);
+        boolean full = ticketLevel <= ChunkLevel.byStatus(FullChunkStatus.FULL);
+        if ((source.getChunkNow(x, z) != null) != full) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   /** Why the area is not settled yet, {@code null} once it is. */
@@ -631,6 +763,20 @@ public final class ScenarioRecorder {
     return p.getName(state.getValue(p));
   }
 
+  private static void copyTree(Path from, Path to) throws IOException {
+    Files.createDirectories(to);
+    if (!Files.isDirectory(from)) {
+      return;
+    }
+    try (Stream<Path> files = Files.list(from)) {
+      for (Path f : files.toList()) {
+        if (Files.isRegularFile(f)) {
+          Files.copy(f, to.resolve(f.getFileName().toString()));
+        }
+      }
+    }
+  }
+
   private static void deleteTree(Path dir) throws IOException {
     try (Stream<Path> paths = Files.walk(dir)) {
       for (Path p : paths.sorted(Comparator.reverseOrder()).toList()) {
@@ -646,6 +792,11 @@ public final class ScenarioRecorder {
     private final Map<String, Integer> palette = new HashMap<>();
     private final List<String> paletteOrder = new ArrayList<>();
     private final List<String> frames = new ArrayList<>();
+    /** Palette index per block state (states are canonical objects). */
+    private final Map<BlockState, Integer> stateIndex = new java.util.IdentityHashMap<>();
+    /** Streamed traces: where the frames go, and how many palette entries went out. */
+    private final java.io.PrintStream stream;
+    private int streamedPalette;
     private final boolean light;
     private final boolean levelRng;
     private int[] last;
@@ -661,7 +812,9 @@ public final class ScenarioRecorder {
         boolean light,
         boolean levelRng,
         String dimension,
-        List<View> views) {
+        List<View> views,
+        java.io.PrintStream stream) {
+      this.stream = stream;
       this.min = min;
       this.max = max;
       this.names = names;
@@ -669,6 +822,24 @@ public final class ScenarioRecorder {
       this.levelRng = levelRng;
       this.dimension = dimension;
       this.views = views;
+      if (stream != null) {
+        stream.print("{\"format\":" + FORMAT + ",\"region\":");
+        stream.println(region() + "}");
+      }
+    }
+
+    private String region() {
+      return "[[" + min.getX() + ',' + min.getY() + ',' + min.getZ() + "],["
+          + max.getX() + ',' + max.getY() + ',' + max.getZ() + "]]";
+    }
+
+    private int index(BlockState state) {
+      Integer i = stateIndex.get(state);
+      if (i == null) {
+        i = index(stateName(state));
+        stateIndex.put(state, i);
+      }
+      return i;
     }
 
     private int index(String state) {
@@ -693,11 +864,19 @@ public final class ScenarioRecorder {
             p.set(min.getX() + x, min.getY() + y, min.getZ() + z);
             // Reading a position of a chunk that is not accessible would load it.
             boolean loaded = level.getChunkSource().getChunkNow(p.getX() >> 4, p.getZ() >> 4) != null;
-            blocks[i++] = index(loaded ? stateName(level.getBlockState(p)) : UNLOADED);
+            blocks[i++] = loaded ? index(level.getBlockState(p)) : index(UNLOADED);
           }
         }
       }
       StringBuilder sb = new StringBuilder("{\"tick\":").append(tick);
+      if (stream != null && streamedPalette < paletteOrder.size()) {
+        sb.append(",\"palette\":[");
+        for (int j = streamedPalette; j < paletteOrder.size(); j++) {
+          sb.append(j == streamedPalette ? "" : ",").append('"').append(paletteOrder.get(j)).append('"');
+        }
+        sb.append(']');
+        streamedPalette = paletteOrder.size();
+      }
       if (full) {
         // Run-length pairs (count, palette index) in y, z, x order.
         sb.append(",\"blocks\":[");
@@ -748,7 +927,14 @@ public final class ScenarioRecorder {
       if (names.hasEntities() || levelRng) {
         sb.append(",\"level_rng\":").append(ScenarioEntities.state(level.getRandom()));
       }
-      frames.add(sb.append('}').toString());
+      if (stream != null) {
+        stream.println(sb.append('}'));
+        if (stream.checkError()) {
+          throw new IOException("the trace stream is closed");
+        }
+      } else {
+        frames.add(sb.append('}').toString());
+      }
     }
 
     /**
@@ -913,19 +1099,10 @@ public final class ScenarioRecorder {
 
     String finish() {
       StringBuilder sb = new StringBuilder("{\"format\":").append(FORMAT);
-      sb.append(",\n\"region\":[[")
-          .append(min.getX())
-          .append(',')
-          .append(min.getY())
-          .append(',')
-          .append(min.getZ())
-          .append("],[")
-          .append(max.getX())
-          .append(',')
-          .append(max.getY())
-          .append(',')
-          .append(max.getZ())
-          .append("]],\n\"palette\":[");
+      if (stream != null) {
+        return "";
+      }
+      sb.append(",\n\"region\":").append(region()).append(",\n\"palette\":[");
       for (int i = 0; i < paletteOrder.size(); i++) {
         sb.append(i == 0 ? "\n" : ",\n").append('"').append(paletteOrder.get(i)).append('"');
       }

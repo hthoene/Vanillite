@@ -28,6 +28,7 @@ use vanillite_chunk::{Chunk, Heightmap, HeightmapKind, Section};
 use vanillite_data::block::BlockId;
 use vanillite_data::registry::BLOCK_ENTITY_TYPE;
 
+use crate::generator::TerrainMemo;
 use crate::proto::ProtoTick;
 use crate::structure::long_set::LongOpenHashSet;
 use crate::structure::start::ChunkStarts;
@@ -38,10 +39,115 @@ use crate::{NeighbourBiomes, ProtoChunk, TerrainGenerator, TerrainJob};
 /// them when they are needed again.
 const MAX_KEPT_STARTS: usize = 1 << 18;
 
+/// Builds the terrain generator of a world.
+type Build = Box<dyn Fn() -> Result<TerrainGenerator, crate::Error> + Send + Sync>;
+
+/// The terrain generator of a world, shared by the chunk generator slot and the world's
+/// simulation (`/locate`, maps, jigsaw blocks).
+///
+/// One made with [`SharedTerrain::rebuildable`] can be [released](SharedTerrain::release) while
+/// nobody needs it (an empty server frees its tables that way). The next use builds it again
+/// from the same data; what the old one had searched for (spawn origin, stronghold rings) is
+/// taken over, so nothing it answers changes.
+#[derive(Clone)]
+pub struct SharedTerrain(Arc<TerrainSlot>);
+
+struct TerrainSlot {
+    build: Option<Build>,
+    current: Mutex<Option<Arc<TerrainGenerator>>>,
+    memo: Mutex<TerrainMemo>,
+}
+
+impl std::fmt::Debug for SharedTerrain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedTerrain")
+            .field("rebuildable", &self.0.build.is_some())
+            .field("built", &self.is_built())
+            .finish()
+    }
+}
+
+impl From<TerrainGenerator> for SharedTerrain {
+    /// A generator that stays in memory.
+    fn from(generator: TerrainGenerator) -> Self {
+        Self(Arc::new(TerrainSlot {
+            build: None,
+            current: Mutex::new(Some(Arc::new(generator))),
+            memo: Mutex::default(),
+        }))
+    }
+}
+
+impl SharedTerrain {
+    /// A generator made by `build` now and again after every [`Self::release`]. `build` must
+    /// return the same generator every time (same packs, dimension and seed).
+    pub fn rebuildable(
+        build: impl Fn() -> Result<TerrainGenerator, crate::Error> + Send + Sync + 'static,
+    ) -> Result<Self, crate::Error> {
+        let generator = build()?;
+        Ok(Self(Arc::new(TerrainSlot {
+            build: Some(Box::new(build)),
+            current: Mutex::new(Some(Arc::new(generator))),
+            memo: Mutex::default(),
+        })))
+    }
+
+    /// The generator; built first if it was released (other callers wait for that build).
+    ///
+    /// # Panics
+    /// If the build that worked before fails now (the data pack files changed below the
+    /// running server).
+    pub fn get(&self) -> Arc<TerrainGenerator> {
+        let mut current = self
+            .0
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(generator) = &*current {
+            return Arc::clone(generator);
+        }
+        let build = self.0.build.as_ref().expect("only rebuildable is released");
+        let generator = match build() {
+            Ok(generator) => Arc::new(generator),
+            Err(e) => panic!("cannot build the terrain generator again: {e}"),
+        };
+        generator.restore(&self.0.memo.lock().unwrap_or_else(PoisonError::into_inner));
+        *current = Some(Arc::clone(&generator));
+        generator
+    }
+
+    /// Whether the generator is in memory.
+    pub fn is_built(&self) -> bool {
+        self.0
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Frees the generator if it can be built again; jobs that use it right now keep it until
+    /// they end. Returns whether it was freed.
+    pub fn release(&self) -> bool {
+        if self.0.build.is_none() {
+            return false;
+        }
+        let mut current = self
+            .0
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(generator) = current.take() else {
+            return false;
+        };
+        *self.0.memo.lock().unwrap_or_else(PoisonError::into_inner) = generator.memo();
+        true
+    }
+}
+
 /// Vanilla's `NoiseBasedChunkGenerator` in the `chunk-generator` slot.
 #[derive(Debug)]
 pub struct VanillaChunkGenerator {
-    generator: Arc<TerrainGenerator>,
+    terrain: SharedTerrain,
     world: WorldInfo,
     /// `WorldOptions.generateStructures`.
     structures: bool,
@@ -52,9 +158,9 @@ pub struct VanillaChunkGenerator {
 impl VanillaChunkGenerator {
     /// The slot implementation for one world; `generator` must be built for the same dimension
     /// height and biome registry as `world`. Structures are generated.
-    pub fn new(generator: TerrainGenerator, world: WorldInfo) -> Self {
+    pub fn new(generator: impl Into<SharedTerrain>, world: WorldInfo) -> Self {
         Self {
-            generator: Arc::new(generator),
+            terrain: generator.into(),
             world,
             structures: true,
             starts: Mutex::default(),
@@ -68,13 +174,13 @@ impl VanillaChunkGenerator {
     }
 
     /// The wrapped generator.
-    pub fn generator(&self) -> &TerrainGenerator {
-        &self.generator
+    pub fn generator(&self) -> Arc<TerrainGenerator> {
+        self.terrain.get()
     }
 
     /// The wrapped generator, shared (for `/locate` on the world's thread).
-    pub fn shared(&self) -> Arc<TerrainGenerator> {
-        Arc::clone(&self.generator)
+    pub fn shared(&self) -> SharedTerrain {
+        self.terrain.clone()
     }
 
     /// `WorldOptions.generateStructures`.
@@ -294,7 +400,7 @@ impl VanillaChunkGenerator {
         let mut tags = extra(chunk);
         tags.insert(
             "structures",
-            structure_data(self.generator.structures(), &proto),
+            structure_data(self.terrain.get().structures(), &proto),
         );
         if !proto.entities().is_empty() {
             let entities = proto
@@ -323,7 +429,8 @@ impl VanillaChunkGenerator {
         else {
             return;
         };
-        let registry = self.generator.structures();
+        let generator = self.terrain.get();
+        let registry = generator.structures();
         for (name, value) in references.iter() {
             let (Some(structure), Tag::LongArray(keys)) = (registry.structure_id(name), value)
             else {
@@ -359,9 +466,9 @@ impl VanillaChunkGenerator {
             .and_then(Tag::as_compound)
             .is_some_and(|starts| !starts.is_empty());
         let starts = if stored {
-            let mut proto = self.generator.new_chunk(chunk.pos);
-            self.generator
-                .generate_structure_starts(std::slice::from_mut(&mut proto));
+            let generator = self.terrain.get();
+            let mut proto = generator.new_chunk(chunk.pos);
+            generator.generate_structure_starts(std::slice::from_mut(&mut proto));
             proto.structure_starts().clone()
         } else {
             ChunkStarts::new()
@@ -408,9 +515,17 @@ impl ChunkGenerator for VanillaChunkGenerator {
         slots::ProtoChunk::empty(pos, &self.world)
     }
 
+    fn release_memory(&self) {
+        self.terrain.release();
+        // Starts are a function of the seed and of what the chunks store: forgotten ones are
+        // made again when a chunk needs them (as beyond `MAX_KEPT_STARTS`).
+        *self.kept_starts() = FxHashMap::default();
+    }
+
     fn prepare(&self) {
+        let terrain = self.terrain.get();
         if self.structures {
-            self.generator.prepare_structures();
+            terrain.prepare_structures();
         }
     }
 
@@ -423,7 +538,7 @@ impl ChunkGenerator for VanillaChunkGenerator {
         match status {
             ChunkStatus::Biomes => {
                 let mut batch: Vec<ProtoChunk> = targets.iter().map(take).collect();
-                self.generator.generate_biomes(&mut batch);
+                self.terrain.get().generate_biomes(&mut batch);
                 for (target, mut chunk) in targets.iter_mut().zip(batch) {
                     let sections = chunk.take_sections().into_iter().map(Arc::new).collect();
                     target.chunk = Chunk::from_sections(
@@ -437,7 +552,8 @@ impl ChunkGenerator for VanillaChunkGenerator {
                 for target in targets.iter_mut() {
                     let mut proto = self.take(target);
                     if self.structures {
-                        self.generator
+                        self.terrain
+                            .get()
                             .generate_structure_starts(std::slice::from_mut(&mut proto));
                         let starts = proto.structure_starts().clone();
                         if !starts.is_empty() {
@@ -460,7 +576,8 @@ impl ChunkGenerator for VanillaChunkGenerator {
                         }
                     });
                     let mut proto = self.take(target);
-                    self.generator
+                    self.terrain
+                        .get()
                         .generate_structure_references(&mut proto, &starts);
                     self.put(target, proto);
                 }
@@ -480,7 +597,7 @@ impl ChunkGenerator for VanillaChunkGenerator {
                         }
                     })
                     .collect();
-                self.generator.generate_terrain(&mut batch);
+                self.terrain.get().generate_terrain(&mut batch);
                 for (target, job) in targets.iter_mut().zip(batch) {
                     self.put(target, job.chunk);
                 }
@@ -517,7 +634,8 @@ impl VanillaChunkGenerator {
             self.start_at(target, neighbours, pos, s)
         });
         let [a0, a1, a2, a3, a4, a5, a6, a7, a8] = &mut area;
-        self.generator
+        self.terrain
+            .get()
             .generate_features([a0, a1, a2, a3, a4, a5, a6, a7, a8], &structures);
         for (i, proto) in area.into_iter().enumerate() {
             if i == 4 {

@@ -1,0 +1,55 @@
+{
+  "description": "A player falls along the side of a honey block column: it slides down (slow fall, no fall damage) and the slide at a game time divisible by 20 completes Sticky Situation (slide_down_block). The region covers the player's view distance, so every chunk around it ticks from the start like in Vanillite.",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_triggers",
+  "progress_state": true,
+  "player_state": true,
+  "region": [
+    [
+      -48,
+      -61,
+      -48
+    ],
+    [
+      63,
+      -50,
+      63
+    ]
+  ],
+  "ticks": 60,
+  "setup": [
+    {
+      "op": "fill",
+      "from": [
+        3,
+        -60,
+        2
+      ],
+      "to": [
+        3,
+        -52,
+        2
+      ],
+      "block": "minecraft:honey_block"
+    }
+  ],
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        4.2375,
+        -53.0,
+        2.5
+      ],
+      "rot": [
+        90,
+        0
+      ]
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

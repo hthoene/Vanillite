@@ -221,7 +221,7 @@ fn with_context(
     let generation = level.generation.clone();
     let maps = level.maps_shared();
     let (min_y, height) = (level.min_y(), level.max_y() - level.min_y() + 1);
-    let sea_level = generation.as_ref().map_or(63, |g| g.terrain.sea_level());
+    let sea_level = generation.as_ref().map_or(63, |g| g.terrain().sea_level());
     let explore = |request: &crate::loot::ExplorationMap, origin: Vec3| {
         crate::map::exploration_map(
             generation.as_ref()?,

@@ -343,7 +343,14 @@ pub(crate) fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
         vanillite_base::math::sin(f64::from(rot.y_rot) * deg),
         vanillite_base::math::cos(f64::from(rot.y_rot) * deg),
     );
-    let random = level.random();
+    // The player's own random (`createItemStackToDrop`).
+    let Some(random) = level
+        .entities
+        .player_mut(id)
+        .map(|p| &mut p.survival.random)
+    else {
+        return;
+    };
     let dir = random.next_float() * std::f32::consts::TAU;
     let pow2 = 0.02 * random.next_float();
     let spread = random.next_float() - random.next_float();

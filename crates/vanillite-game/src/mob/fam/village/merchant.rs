@@ -632,7 +632,6 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
         set_unhappy(ix);
         return Interaction::Success;
     }
-    // The talked-to statistic is not kept (no statistics yet).
     ensure_offers_in(ix.level, ix.ents, target);
     let no_offers = ix.ents.mob(target).is_none_or(|m| {
         state(m)
@@ -641,12 +640,15 @@ pub fn interact(ix: &mut Interact<'_, '_>) -> Interaction {
             .as_ref()
             .is_none_or(|o| o.0.is_empty())
     });
-    if no_offers {
-        if kind == Kind::Villager
-            && ix.hand == vanillite_protocol::packets::play::serverbound::Hand::MainHand
-        {
+    if ix.hand == vanillite_protocol::packets::play::serverbound::Hand::MainHand {
+        if no_offers && kind == Kind::Villager {
             set_unhappy(ix);
         }
+        if let Some(p) = ix.ents.player_mut(ix.player) {
+            p.stats.award(crate::stats::custom::TALKED_TO_VILLAGER, 1);
+        }
+    }
+    if no_offers {
         return Interaction::Consume;
     }
     // `startTrading`: special prices, the trading player, the screen.

@@ -48,6 +48,44 @@ pub(crate) struct Prepared {
     pub(crate) spawn_known: bool,
 }
 
+/// What the players of the world `(dimension, dimension type)` are told of it: `levels` all
+/// dimension keys, `seed` its seed, `spawn` its spawn.
+pub(crate) fn level_info(
+    config: &Config,
+    packs: Option<&LoadedPacks>,
+    levels: Vec<Identifier>,
+    (dimension, kind): (&str, &str),
+    seed: i64,
+    is_flat: bool,
+    spawn: (Vec3, f32),
+) -> LevelInfo {
+    let properties = &config.properties;
+    let rules = config.world_rules(dimension);
+    let view_distance = rules
+        .distances
+        .view_distance
+        .or(u8::try_from(properties.view_distance.clamp(2, 32)).unwrap_or(10));
+    let simulation_distance = rules
+        .distances
+        .simulation_distance
+        .or(u8::try_from(properties.simulation_distance.clamp(2, 32)).unwrap_or(10));
+    LevelInfo {
+        levels,
+        dimension: Identifier::new(dimension).unwrap_or_else(|_| Identifier::vanilla("overworld")),
+        dimension_type: i32::try_from(registry_index(packs, "minecraft:dimension_type", kind))
+            .unwrap_or(0),
+        hashed_seed: vanillite_worldgen::biome::obfuscate_seed(seed),
+        is_flat,
+        sea_level: 63,
+        spawn,
+        max_players: properties.max_players,
+        view_distance: i32::from(view_distance),
+        simulation_distance: i32::from(simulation_distance),
+        hardcore: properties.hardcore,
+        online_mode: properties.online_mode,
+    }
+}
+
 /// Where new players spawn: `spawn` of `level.dat`, else on top of the flat layers, or above
 /// the noise terrain until the server searched the new world's spawn
 /// (`crate::world::initial_spawn`). The flag says whether `level.dat` had one.
@@ -170,44 +208,37 @@ pub(crate) fn prepare(
     let is_flat = world_gen.is_flat();
     let (spawn, spawn_known) = world_spawn(level_dir, is_flat);
 
-    let dimensions = world_gen.dimensions();
+    let dimensions = world_gen.dimensions(packs.as_ref());
     let levels: Vec<Identifier> = dimensions
         .names()
         .map(|d| Identifier::new(d).unwrap_or_else(|_| Identifier::vanilla("overworld")))
+        .chain(
+            config
+                .extra_worlds
+                .iter()
+                .filter_map(|w| crate::worlds::dimension_key(&w.name).ok())
+                .filter_map(|k| Identifier::new(&k).ok()),
+        )
         .collect();
     let worlds = dimensions
         .iter()
-        .zip(&levels)
-        .map(|((_, dimension, kind), id)| {
-            let rules = config.world_rules(dimension);
-            let view_distance = rules
-                .distances
-                .view_distance
-                .or(u8::try_from(properties.view_distance.clamp(2, 32)).unwrap_or(10));
-            let simulation_distance = rules
-                .distances
-                .simulation_distance
-                .or(u8::try_from(properties.simulation_distance.clamp(2, 32)).unwrap_or(10));
-            let level = LevelInfo {
-                levels: levels.clone(),
-                dimension: id.clone(),
-                dimension_type: i32::try_from(registry_index(
-                    packs.as_ref(),
-                    "minecraft:dimension_type",
-                    kind,
-                ))
-                .unwrap_or(0),
-                hashed_seed: vanillite_worldgen::biome::obfuscate_seed(world_gen.seed),
+        .map(|(_, dimension, kind)| {
+            let level = level_info(
+                config,
+                packs.as_ref(),
+                levels.clone(),
+                (dimension, kind),
+                world_gen.seed,
                 is_flat,
-                sea_level: 63,
                 spawn,
-                max_players: properties.max_players,
-                view_distance: i32::from(view_distance),
-                simulation_distance: i32::from(simulation_distance),
-                hardcore: properties.hardcore,
-                online_mode: properties.online_mode,
-            };
-            WorldPlayers::new(level, player_store.clone())
+            );
+            let mut players = WorldPlayers::new(level, player_store.clone());
+            if dimension == "minecraft:overworld" && config.server.debug.session_recording {
+                players.recording = crate::session_recording::SessionRecording::new(Some(
+                    dir.join(&config.server.debug.session_recording_dir),
+                ));
+            }
+            players
         })
         .collect();
     let chat_type = |name: &str| {
@@ -473,7 +504,11 @@ pub(crate) fn arrival(
     default_mode: vanillite_config::GameMode,
     force_game_mode: bool,
 ) -> (Arrival, Arc<dyn PacketSink>) {
-    let sink: Arc<dyn PacketSink> = Arc::new(NetSink::new(joined.outbound, joined.latency));
+    let sink: Arc<dyn PacketSink> = Arc::new(NetSink::new(
+        joined.outbound,
+        joined.latency,
+        joined.injector,
+    ));
     let saved_mode = saved.as_ref().and_then(|s| match s.game_mode {
         0 => Some(vanillite_config::GameMode::Survival),
         1 => Some(vanillite_config::GameMode::Creative),

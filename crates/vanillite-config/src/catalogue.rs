@@ -40,6 +40,16 @@ rules! {
             /// detect: the cgroup memory limit (`memory.max`), none without a container.
             memory: u32 = "memory", Setting, range = [0, 16_777_216], restart = true, vanilla = 0;
         }
+        /// Memory of an empty server.
+        memory: MemoryRules = "performance.memory" {
+            /// Seconds without players after which the server frees what it can build again:
+            /// the tables of the world generators, structure templates and caches. They come
+            /// back in the background when a player joins (new chunks then start a moment
+            /// later, chunks from disk do not wait). In-game behaviour does not change;
+            /// disabled keeps everything in memory.
+            release_when_empty: DisabledOr<u32> = "release-when-empty", Setting,
+                range = [1, 86_400], vanilla = DisabledOr::Value(60);
+        }
         /// Saving.
         autosave: AutosaveRules = "performance.autosave" {
             /// Ticks between autosaves. Vanilla saves every 5 minutes of game time.
@@ -232,6 +242,19 @@ rules! {
             /// single tester sees other players. Virtual connections need no authentication,
             /// so keep this at 0 outside test servers.
             test_bots: u8 = "test-bots", Setting, range = [0, 16], restart = true, vanilla = 0;
+            /// Records the players' sessions in the overworld for `cargo xtask parity replay`,
+            /// which plays them again in Vanilla and Vanillite and compares both tick by tick.
+            /// When the first player joins, the world is saved and the overworld's chunks are
+            /// copied (the overworld tick waits for the copy); then every tick the players'
+            /// serverbound play packets are written, until the last player has left. Chat,
+            /// commands, signs, books and plugin messages are left out, and players get
+            /// anonymous ids instead of their names, addresses and UUIDs. For test servers.
+            session_recording: bool = "session-recording", Setting, restart = true,
+                vanilla = false;
+            /// Folder of the session recordings, relative to the server folder: one folder per
+            /// session (`<start time>/` with `world/`, `meta.json`, `packets.jsonl`).
+            session_recording_dir: String = "session-recording-dir", Setting, restart = true,
+                vanilla = "recordings".to_owned();
         }
         /// Player info forwarding from a proxy in front of the server (Velocity "modern"
         /// forwarding, also used by `vanillite-proxy`).
@@ -457,8 +480,9 @@ rules! {
             /// skipped; "vanilla" uses `max-chained-neighbor-updates` of server.properties.
             max_chained_neighbor_updates: VanillaOr<u32> = "max-chained-neighbor-updates",
                 Performance, range = [1, 100_000_000], vanilla = VanillaOr::Vanilla;
-            /// Chunks whose light is recomputed per tick after block changes, each as one
-            /// background job over its 5 × 5 area. Lower values spread bursts over more ticks.
+            /// Chunks whose light is updated together after block changes, in one background
+            /// job that recomputes only the cells the changes reach; the rest follows in the
+            /// next job. Lower values split bursts into smaller jobs.
             max_relights_per_tick: u32 = "max-relights-per-tick", Performance,
                 range = [1, 65536], vanilla = 1024;
         }
@@ -478,13 +502,97 @@ rules! {
             /// budget fail and are retried later. 0 = unlimited (Vanilla).
             path_nodes_per_tick: u32 = "path-nodes-per-tick", Performance,
                 range = [0, 10_000_000], vanilla = 0, performance = 50_000;
-            /// Mobs farther than this many blocks from every player tick only every 20th tick
-            /// (activation range). Saves most of the mob tick on servers with many mobs away
-            /// from players. Deviation: such mobs move, path-find, grow up and breed at 1/20 of
-            /// Vanilla's speed (farms and breeders outside the range slow down). 0 = off
-            /// (Vanilla: every mob in simulation distance ticks).
-            activation_range: u16 = "activation-range", Performance, range = [0, 512],
-                vanilla = 0, paper = 32, spigot = 32, performance = 32;
+        }
+        /// Activation range: mobs farther from every player than their group's range (in
+        /// blocks on the X and Z axes, at any height; spectators do not count) are inactive.
+        /// An inactive mob gets a full tick only every 20th tick; in between it only ages
+        /// (babies grow up and breeding cooldowns end in time). Saves most of the mob tick on
+        /// servers with many mobs away from players. Deviation: inactive mobs move,
+        /// path-find and breed at about 1/20 of Vanilla's speed. Mobs stay active while
+        /// they are new (10 seconds), leashed, burning, hurt, in water, falling, riding or
+        /// ridden, have a target, were attacked recently or are in love, and villagers while
+        /// they panic or work (see below). Bosses always tick. 0 = the group always ticks
+        /// (Vanilla); at most 128.
+        activation: ActivationRules = "performance.activation-range" {
+            /// Range of animals (`creature` and `ambient` mobs: cows, sheep, bats, ...).
+            animals: u16 = "animals", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Range of monsters (`monster` mobs that are no raiders or flyers).
+            monsters: u16 = "monsters", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Range of raiders (pillagers, vindicators, evokers, illusioners, witches and ravagers).
+            raiders: u16 = "raiders", Performance, range = [0, 128], vanilla = 0,
+                paper = 64, spigot = 48, performance = 64;
+            /// Range of the other mobs (golems, armor stands, ...).
+            misc: u16 = "misc", Performance, range = [0, 128], vanilla = 0,
+                paper = 16, spigot = 16, performance = 16;
+            /// Range of water mobs (fish, squid, dolphins, axolotls, ...).
+            water: u16 = "water", Performance, range = [0, 128], vanilla = 0,
+                paper = 16, spigot = 16, performance = 16;
+            /// Range of villagers and wandering traders.
+            villagers: u16 = "villagers", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Range of flying monsters (ghasts, phantoms, blazes, vexes).
+            flying: u16 = "flying", Performance, range = [0, 128], vanilla = 0,
+                paper = 32, spigot = 32, performance = 32;
+            /// Ticks an inactive villager must have been inactive before it becomes active
+            /// while it works at its job site, so workstations keep restocking trades; 0 =
+            /// never.
+            villagers_work_immunity_after: u16 = "villagers-work-immunity-after", Performance,
+                range = [0, 12000], vanilla = 0, paper = 100, spigot = 100, performance = 100;
+            /// Ticks a working villager then stays active.
+            villagers_work_immunity_for: u16 = "villagers-work-immunity-for", Performance,
+                range = [0, 12000], vanilla = 0, paper = 20, spigot = 20, performance = 20;
+            /// Panicking villagers stay active (they flee and alarm the village, which spawns
+            /// iron golems).
+            villagers_active_for_panic: bool = "villagers-active-for-panic", Performance,
+                vanilla = false, paper = true, spigot = true, performance = true;
+            /// Ticks between the goal and target selector runs of an inactive mob between its
+            /// full ticks: it notices targets, food and partners sooner, but does not move
+            /// before its next full tick. Lower values cost more. "disabled": inactive mobs
+            /// choose goals only in their full ticks (cheapest).
+            inactive_mob_goal_selector_throttle: DisabledOr<u32> =
+                "inactive-mob-goal-selector-throttle", Performance, range = [1, 20],
+                vanilla = DisabledOr::Disabled, paper = DisabledOr::Value(10);
+        }
+        /// Wake-up plan of the activation range: mobs of a group that were inactive for
+        /// `<group>-every` ticks tick fully for `<group>-for` ticks, so breeders, villages and
+        /// far mobs still progress a little. About one mob per group and tick is woken up,
+        /// at most `<group>-max-per-tick` in one tick after ticks without any. A max of 0
+        /// wakes none.
+        wake_up: WakeUpRules = "performance.activation-range.wake-up-inactive" {
+            /// Animals woken up per tick at most.
+            animals_max_per_tick: u16 = "animals-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 4, spigot = 4, performance = 4;
+            /// Ticks animals must have been inactive before they may be woken up.
+            animals_every: u32 = "animals-every", Performance, range = [1, 1_728_000],
+                vanilla = 1200;
+            /// Ticks woken up animals stay active.
+            animals_for: u16 = "animals-for", Performance, range = [1, 12000], vanilla = 100;
+            /// Villagers woken up per tick at most.
+            villagers_max_per_tick: u16 = "villagers-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 4, spigot = 4, performance = 4;
+            /// Ticks villagers must have been inactive before they may be woken up.
+            villagers_every: u32 = "villagers-every", Performance, range = [1, 1_728_000],
+                vanilla = 600;
+            /// Ticks woken up villagers stay active.
+            villagers_for: u16 = "villagers-for", Performance, range = [1, 12000], vanilla = 100;
+            /// Monsters woken up per tick at most.
+            monsters_max_per_tick: u16 = "monsters-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 8, spigot = 8, performance = 8;
+            /// Ticks monsters must have been inactive before they may be woken up.
+            monsters_every: u32 = "monsters-every", Performance, range = [1, 1_728_000],
+                vanilla = 400;
+            /// Ticks woken up monsters stay active.
+            monsters_for: u16 = "monsters-for", Performance, range = [1, 12000], vanilla = 100;
+            /// Flying woken up per tick at most.
+            flying_max_per_tick: u16 = "flying-max-per-tick", Performance, range = [0, 1000],
+                vanilla = 0, paper = 8, spigot = 8, performance = 8;
+            /// Ticks flying must have been inactive before they may be woken up.
+            flying_every: u32 = "flying-every", Performance, range = [1, 1_728_000],
+                vanilla = 200;
+            /// Ticks woken up flying stay active.
+            flying_for: u16 = "flying-for", Performance, range = [1, 12000], vanilla = 100;
         }
         /// Item entities (dropped items).
         items: ItemRules = "performance.items" {
@@ -569,6 +677,20 @@ rules! {
             /// hopper timing run differently.
             check_cooldown: u8 = "check-cooldown", Performance, range = [1, 64],
                 vanilla = 1, performance = 4;
+        }
+        /// Server-side checks of block breaking.
+        digging: DiggingRules = "anticheat.digging" {
+            /// Validates "stop digging" against the server's own break progress: the time since
+            /// the player started digging, the tool, Haste and Mining Fatigue, being in water and
+            /// on the ground. Vanilla breaks a block whose progress falls short on the next tick
+            /// once the player has been online for a while (it takes the start tick as the time
+            /// spent), so a client that starts and at once stops digging breaks any block. On, a
+            /// stop with too little progress waits for the progress to complete like a legit
+            /// dig with latency and is rejected (the block is sent again, nothing drops) when it
+            /// does not complete within the dig time seen so far plus one second. Instant
+            /// mining, creative and normal digging with lag are not affected.
+            fast_break_check: bool = "fast-break-check", Fix, vanilla = false, paper = true,
+                spigot = true, performance = true;
         }
         /// Anti-Xray: ores and other hidden blocks that touch no transparent block are kept from
         /// clients, so x-ray clients and texture packs cannot find them. Chunk packets stay

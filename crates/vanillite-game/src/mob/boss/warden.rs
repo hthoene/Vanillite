@@ -94,8 +94,9 @@ pub enum LevelAction {
     },
     /// A mob died next to a sculk catalyst: the catalyst takes its experience.
     SculkDeath { pos: Vec3, experience: i32 },
-    /// A lightning bolt at `pos` (`summon_entity` of Channeling).
-    Lightning { pos: Vec3 },
+    /// A lightning bolt at `pos` (`summon_entity` of Channeling); `cause` is the player who
+    /// owns the enchanted item (`setCause`).
+    Lightning { pos: Vec3, cause: Option<EntityId> },
 }
 
 impl LevelAction {
@@ -119,8 +120,11 @@ impl LevelAction {
             LevelAction::SculkDeath { pos, experience } => {
                 crate::block::sculk_catalyst::on_mob_death(level, pos, experience);
             }
-            LevelAction::Lightning { pos } => {
-                crate::lightning::spawn(level, pos, false);
+            LevelAction::Lightning { pos, cause } => {
+                let bolt = crate::lightning::spawn(level, pos, false);
+                if let Some(b) = level.entities.bolt_mut(bolt) {
+                    b.cause = cause;
+                }
             }
         }
     }

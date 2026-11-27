@@ -343,7 +343,7 @@ impl Climates {
                     has_precipitation: b.has_precipitation,
                     frozen_temperature_modifier: b.frozen_temperature_modifier,
                     carvers: Vec::new(),
-                    json: Value::Null,
+                    features: Vec::new(),
                 })
                 .collect(),
         )

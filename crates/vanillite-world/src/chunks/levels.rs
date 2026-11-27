@@ -81,6 +81,11 @@ impl Default for TicketLevels {
 }
 
 impl TicketLevels {
+    /// Gives back the room of chunks that have no ticket any more.
+    pub fn shrink_to_fit(&mut self) {
+        self.counts.shrink_to_fit();
+    }
+
     /// Levels that track only chunks up to `max` (at most [`MAX_LEVEL`]): the simulation
     /// distance needs levels up to [`BLOCK_TICKING_LEVEL`].
     pub fn with_max(max: u8) -> Self {

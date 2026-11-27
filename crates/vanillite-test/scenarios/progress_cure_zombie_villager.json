@@ -1,0 +1,78 @@
+{
+  "description": "A player feeds a golden apple to a zombie villager with Weakness; with its conversion time cut to one tick it becomes a villager, which completes Zombie Doctor (cured_zombie_villager).",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_triggers",
+  "progress_state": true,
+  "player_state": true,
+  "time": 18000,
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      7,
+      -56,
+      7
+    ]
+  ],
+  "ticks": 6,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        -90,
+        0
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie_villager",
+      "pos": [
+        4.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        90,
+        0
+      ],
+      "seed": 5
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:zombie_villager,limit=1] {NoAI:1b}"
+    },
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "effect give @e[type=minecraft:zombie_villager,limit=1] minecraft:weakness 10 0"
+    },
+    {
+      "tick": 2,
+      "op": "interact",
+      "entity": "steve",
+      "target": "zombie",
+      "item": "minecraft:golden_apple"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "data merge entity @e[type=minecraft:zombie_villager,limit=1] {ConversionTime:1}"
+    }
+  ],
+  "rules": {
+    "spawn_monsters": "false"
+  }
+}

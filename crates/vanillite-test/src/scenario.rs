@@ -93,7 +93,9 @@
 //!   A copper golem takes the oxidation `weather_state` (`CopperGolem.setWeatherState`).
 //! - `entity_seed`: every entity created while the scenario runs (arrows, drops, orbs, babies,
 //!   spawned mobs) seeds its random with the next `nextLong()` of a legacy random seeded with
-//!   it, in creation order (default: the world seed). The Java recorder enforces this in
+//!   it, in creation order (default: the world seed). An entity loaded from storage (a
+//!   reloaded chunk's entities) takes the low 64 bits of its UUID xor the game time instead,
+//!   independent of the order the loads complete in. The Java recorder enforces this in
 //!   Vanilla with its agent (`ParityAgent.java`).
 //!
 //! Commands: `{"tick": 2, "op": "command", "command": "fill 0 1 0 3 1 3 stone"}` runs the line
@@ -126,7 +128,12 @@
 //!   (`ServerPlayerGameMode.useItemOn`). `attack`: the
 //!   player starts to break the block (`START_DESTROY_BLOCK`). `"player_state": true` adds
 //!   the players' food and hands to the frames, `"sleep_state": true` their sleeping position,
-//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`).
+//!   sleep timer, pose id and respawn point (`[x, y, z, forced]`). `"progress_state": true`
+//!   (with `dimensions`: only the server evaluates advancements) adds the players' completed
+//!   advancement criteria (`adv`: sorted `advancement#criterion`) and their non-zero statistics
+//!   (`stats`: `minecraft.used:minecraft.crossbow` and so on) without the time statistics
+//!   (`play_time`, `total_world_time`, `time_since_death`, `time_since_rest`, `crouch_time`) and
+//!   the distances (`*_one_cm`).
 //! - `effect` action: `addEffect` on the entity `entity` with the mob effect `effect`,
 //!   `duration` ticks and `amplifier` (default 0).
 //! - `use_item` action: the player `entity` gets `count` (default 1) of the item `item` (SNBT
@@ -165,6 +172,21 @@
 //!   `attack`, `interact`, `player_command`, `pick_item_from_entity`) is replaced by the
 //!   network id of the scenario entity `target` when the packet is sent. `what` is a readable
 //!   form for people; nobody reads it.
+//!
+//! Session replays (`cargo xtask parity replay`, #152) run on a copy of a recorded world:
+//!
+//! - `world.snapshot`: a folder with the `region/` and `poi/` files (Anvil) of an overworld
+//!   instead of flat layers. Its chunks load from there; missing chunks are generated from the
+//!   seed by the normal overworld generator without structures on both sides. The snapshot's
+//!   entities are not loaded, and entities that chunk generation spawns are removed before
+//!   frame 0: their randoms and network ids cannot match between the two servers.
+//! - Players: `"game_mode"` (`survival` default, `creative`, `adventure`, `spectator`), and
+//!   `"join": tick` to join before the actions of that tick instead of at the start.
+//! - `"client_tick_end": false`: the harness sends no `client_tick_end` after each tick; the
+//!   recorded ones are among the `packet` actions, where the client sent them.
+//! - `target` of a `packet` action may also be `uuid:<32 hex digits>` (an entity of the
+//!   snapshot) or `none`; a target that does not exist is the id -1 (an unknown entity). For
+//!   `spectator_action` the target's UUID replaces the body.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -190,6 +212,8 @@ pub enum Tier {
 #[derive(Clone, Debug)]
 pub struct WorldSpec {
     pub seed: i64,
+    /// A recorded world (`world.snapshot`) instead of the flat layers.
+    pub snapshot: Option<std::path::PathBuf>,
     pub biome: String,
     /// Layers bottom up: block name and thickness.
     pub layers: Vec<(String, u32)>,
@@ -203,8 +227,9 @@ pub struct WorldSpec {
     pub region: (BlockPos, BlockPos),
     /// Chunks forced before the setup: the region's chunks and one chunk around them.
     pub forced: Vec<ChunkPos>,
-    /// Whether the world computes light: with entities (mobs see it) or `"light": true`.
-    /// Block-only scenarios run without it, which is much faster.
+    /// Whether the world computes light: with entities (mobs see it), random ticks (crops,
+    /// grass and saplings check it) or `"light": true`. Other block-only scenarios run
+    /// without it, which is much faster.
     pub light: bool,
     /// Whether frames observe light (`"light": true`).
     pub observe_light: bool,
@@ -216,6 +241,9 @@ pub struct WorldSpec {
     pub level_rng: bool,
     /// Whether frames hold the players' food and hands.
     pub player_state: bool,
+    /// Whether the harness sends `client_tick_end` for every client after each tick's packets
+    /// (`"client_tick_end"`, default `true`).
+    pub client_tick_end: bool,
     /// Runs with all three dimensions in Vanilla's order (`"dimensions": true`).
     pub dimensions: bool,
     /// The dimension of the region.
@@ -226,6 +254,8 @@ pub struct WorldSpec {
     pub sleep_state: bool,
     /// The data pack in the world from the start (`datapacks/<name>/` of this crate).
     pub datapack: Option<String>,
+    /// Whether frames hold the players' completed advancement criteria and statistics.
+    pub progress_state: bool,
 }
 
 /// The overworld's dimension id.
@@ -295,11 +325,15 @@ pub struct PacketOp {
 }
 
 impl PacketOp {
-    /// The body with the network id of the target (if any) in place of its leading VarInt.
-    pub fn body(&self, target_id: Option<i32>) -> Result<Vec<u8>, String> {
-        let Some(id) = target_id else {
+    /// The body with the network id of the target (if any) in place of its leading VarInt
+    /// (`spectator_action`: the target's UUID as the body).
+    pub fn body(&self, target: Option<(i32, u128)>) -> Result<Vec<u8>, String> {
+        let Some((id, uuid)) = target else {
             return Ok(self.data.clone());
         };
+        if self.packet == "spectator_action" {
+            return Ok(uuid.to_be_bytes().to_vec());
+        }
         let skip = self
             .data
             .iter()
@@ -447,6 +481,10 @@ pub struct EntitySpec {
     pub inventory: Vec<(usize, String, i32)>,
     /// The player's food level at the start (`"food"`).
     pub food: Option<i32>,
+    /// The player's game mode (`"game_mode"`, default survival).
+    pub game_mode: Option<String>,
+    /// The tick before whose actions the player joins (`"join"`); `None` = at the start.
+    pub join: Option<u32>,
 }
 
 impl EntitySpec {
@@ -552,8 +590,17 @@ impl Scenario {
 
     /// Every scenario, sorted by name.
     pub fn all() -> Result<Vec<Self>, String> {
-        let dir = Self::dir();
-        let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        Self::all_in(&Self::dir())
+    }
+
+    /// Directory of the soak scenarios (`cargo xtask parity soak`, [`crate::soak`]).
+    pub fn soak_dir() -> std::path::PathBuf {
+        Self::dir().join("soak")
+    }
+
+    /// Every scenario of a directory, sorted by name.
+    pub fn all_in(dir: &Path) -> Result<Vec<Self>, String> {
+        let mut paths: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|e| e == "json"))
@@ -601,7 +648,7 @@ impl Scenario {
                 ("minecraft:grass_block".to_owned(), 1),
             ],
         };
-        let rules = v
+        let rules: BTreeMap<String, String> = v
             .get("rules")
             .and_then(Value::as_object)
             .map(|r| {
@@ -613,6 +660,9 @@ impl Scenario {
                     .collect()
             })
             .unwrap_or_default();
+        let random_ticks = rules
+            .get("random_tick_speed")
+            .is_some_and(|speed| speed != "0");
         let region = v.get("region").ok_or("region is missing")?;
         let (min, max) = (pos(region.get(0))?, pos(region.get(1))?);
         let forced = forced_around(min, max);
@@ -656,6 +706,13 @@ impl Scenario {
                     .to_owned(),
             );
         }
+        let progress_state = v
+            .get("progress_state")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if progress_state && !dimensions {
+            return Err("\"progress_state\" needs \"dimensions\"".to_owned());
+        }
         let ops = |key: &str, actions: bool| -> Result<Vec<Op>, String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -676,6 +733,10 @@ impl Scenario {
                     .and_then(|w| w.get("seed"))
                     .and_then(Value::as_i64)
                     .unwrap_or(0),
+                snapshot: world
+                    .and_then(|w| w.get("snapshot"))
+                    .and_then(Value::as_str)
+                    .map(std::path::PathBuf::from),
                 biome: world
                     .and_then(|w| w.get("biome"))
                     .and_then(Value::as_str)
@@ -692,6 +753,7 @@ impl Scenario {
                 region: (pos(region.get(0))?, pos(region.get(1))?),
                 forced,
                 light: v.get("entities").is_some()
+                    || random_ticks
                     || v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 observe_light: v.get("light").and_then(Value::as_bool).unwrap_or(false),
                 difficulty: v
@@ -705,6 +767,10 @@ impl Scenario {
                     .unwrap_or("clear")
                     .to_owned(),
                 level_rng: v.get("level_rng").and_then(Value::as_bool).unwrap_or(false),
+                client_tick_end: v
+                    .get("client_tick_end")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
                 player_state: v
                     .get("player_state")
                     .and_then(Value::as_bool)
@@ -717,6 +783,7 @@ impl Scenario {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 datapack,
+                progress_state,
             },
             min,
             max,
@@ -852,6 +919,12 @@ fn entity(v: &Value) -> Result<EntitySpec, String> {
             .get("food")
             .and_then(Value::as_i64)
             .and_then(|f| i32::try_from(f).ok()),
+        game_mode: s("game_mode"),
+        join: match v.get("join").and_then(Value::as_u64) {
+            Some(t) if t >= 1 && kind == "minecraft:player" => u32::try_from(t).ok(),
+            Some(_) => return Err("join needs a player and a tick >= 1".to_owned()),
+            None => None,
+        },
         kind,
     })
 }

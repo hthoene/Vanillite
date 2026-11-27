@@ -1001,6 +1001,25 @@ impl<P: Plugin> Registrar<P> {
         self.on_event(abi::event::WORLD_SAVE, priority, f)
     }
 
+    /// A world was loaded (an extra world). See [`abi::event::WORLD_LOAD`]. Since ABI 1.8.
+    pub fn on_world_load(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::WORLD_LOAD, priority, f)
+    }
+
+    /// An extra world is about to be unloaded; cancellable. See [`abi::event::WORLD_UNLOAD`].
+    /// Since ABI 1.8.
+    pub fn on_world_unload(
+        &mut self,
+        priority: i32,
+        f: impl FnMut(&mut P, &mut Ctx<'_>, &mut GameEvent<'_>) + Send + 'static,
+    ) -> &mut Self {
+        self.on_event(abi::event::WORLD_UNLOAD, priority, f)
+    }
+
     /// A world's weather is about to change; cancellable. See [`abi::event::WEATHER_CHANGE`]. Since ABI 1.6.
     pub fn on_weather_change(
         &mut self,

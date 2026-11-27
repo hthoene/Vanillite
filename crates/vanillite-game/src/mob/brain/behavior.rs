@@ -1207,11 +1207,13 @@ pub fn entity_pos(t: &Tick<'_, '_>, id: EntityId) -> Option<Vec3> {
 
 /// Whether the entity exists and is alive.
 pub fn is_alive(t: &Tick<'_, '_>, id: EntityId) -> bool {
-    if t.ents.player(id).is_some() || t.ents.mob(id).is_some() {
-        t.other(id).is_some()
-    } else {
-        t.ents.store.get(id).is_some()
+    if let Some(m) = t.ents.mob(id) {
+        return m.is_alive();
     }
+    if let Some(p) = t.ents.player(id) {
+        return !p.survival.is_dead_or_dying();
+    }
+    t.ents.store.get(id).is_some()
 }
 
 /// `PositionTracker.currentPosition`.

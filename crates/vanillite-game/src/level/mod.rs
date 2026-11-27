@@ -387,11 +387,19 @@ pub struct LevelOutput {
 /// The terrain generator of a world (`getChunkSource().getGenerator()`).
 #[derive(Clone)]
 pub struct Generation {
-    pub terrain: Arc<vanillite_worldgen::generator::TerrainGenerator>,
+    /// Released while the server is empty; [`Generation::terrain`] builds it again.
+    pub shared: vanillite_worldgen::SharedTerrain,
     /// The dimension it generates.
     pub dimension: String,
     /// `WorldOptions.generateStructures`.
     pub structures: bool,
+}
+
+impl Generation {
+    /// The generator.
+    pub fn terrain(&self) -> Arc<vanillite_worldgen::generator::TerrainGenerator> {
+        self.shared.get()
+    }
 }
 
 impl std::fmt::Debug for Generation {
@@ -468,6 +476,9 @@ pub struct Level {
     weather: crate::survival::weather::LevelWeather,
     game_time: i64,
     output: LevelOutput,
+    /// The block phase of the last explosion, waiting for the entities it hit to take their
+    /// damage ([`Level::finish_explosion`]).
+    pending_blast: Option<explosion::PendingBlast>,
     /// Menus blocks asked to open for the player that used them (`player.openMenu`); taken
     /// by the player handlers.
     menu_requests: Vec<crate::menu::container::MenuRequest>,
@@ -598,6 +609,7 @@ impl Level {
             weather: crate::survival::weather::LevelWeather::default(),
             game_time: 0,
             output: LevelOutput::default(),
+            pending_blast: None,
             menu_requests: Vec::new(),
             sign_editors: Vec::new(),
             player_block_uses: Vec::new(),
@@ -1003,6 +1015,17 @@ impl Level {
         }
     }
 
+    /// [`Level::block`] if the position is loaded ([`Level::is_loaded`]), with one chunk
+    /// lookup inside the build height.
+    #[inline]
+    pub fn loaded_block(&self, pos: BlockPos) -> Option<BlockState> {
+        if self.in_height(pos.y) {
+            self.chunks.accessible_block(pos).map(BlockState)
+        } else {
+            self.is_loaded(pos).then_some(block::VOID_AIR)
+        }
+    }
+
     /// The pure read view ([`view`]): reads without side effects for collision, path finding
     /// and code on other threads.
     #[inline]
@@ -1095,9 +1118,10 @@ impl Level {
     }
 
     /// `getMaxLocalRawBrightness(pos)`: like [`Self::raw_brightness`] with the sky darkened by
-    /// the time of day. The simulation has no day cycle yet, so this is the daytime value.
+    /// this tick's `skyDarken` (the time of day and the weather).
     pub fn max_local_raw_brightness(&self, pos: BlockPos) -> i32 {
-        self.raw_brightness(pos)
+        let (sky, block) = self.light(pos);
+        (sky - self.spawner_env.env.sky_darken).max(block)
     }
 
     // --- Scheduled ticks and events --------------------------------------------------------
@@ -1338,7 +1362,12 @@ impl Level {
             block::drops::drop_resources(self, pos, state, breaker);
         }
         let fluid = self.fluid(pos);
-        self.set_block_depth(pos, fluid.block_state(), update::ALL, limit)
+        let destroyed = self.set_block_depth(pos, fluid.block_state(), update::ALL, limit);
+        if destroyed {
+            let context = game_event::GameEventContext::with_state(breaker, state);
+            self.game_event_block(game_event::events().block_destroy, pos, context);
+        }
+        destroyed
     }
 
     /// `sendBlockUpdated`: the position goes to the clients that see its chunk.

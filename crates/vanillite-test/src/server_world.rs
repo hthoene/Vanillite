@@ -270,6 +270,13 @@ impl ServerWorld {
         for (k, v) in rules {
             world.server.command(&format!("gamerule {k} {v}"));
         }
+        // The recorder's time of day and difficulty (`ScenarioRecorder.timeAndDifficulty`).
+        if let Some(time) = spec.time {
+            world.server.command(&format!("time set {time}"));
+        }
+        world
+            .server
+            .command(&format!("difficulty {}", spec.difficulty));
         // The regions' chunks, forced like `/forceload`, until they tick with their entities.
         let mut areas = vec![(world.selected, spec.forced.clone())];
         for view in &spec.views {
@@ -415,6 +422,8 @@ impl ServerWorld {
                 y_head_rot: spec.rot[0],
             });
             e.set_old_pos();
+            // A new player is not on the ground before its first move.
+            e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, false);
         }
         if let Some(p) = overworld.entities.player_mut(id) {
             p.survival.simulate_movement = true;
@@ -425,6 +434,79 @@ impl ServerWorld {
             vanillite_base::random::RandomSource::next_float(&mut p.survival.random);
         }
         Ok(())
+    }
+}
+
+impl ServerWorld {
+    /// The network id of the scenario entity `name` in any world.
+    fn network_id(&self, name: &str) -> Result<i32, String> {
+        let uuid = self
+            .names
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(u, _)| *u)
+            .ok_or_else(|| format!("no scenario entity `{name}`"))?;
+        self.network_id_of(uuid)
+            .ok_or_else(|| format!("the entity `{name}` is in no world"))
+    }
+
+    /// The network id of the entity `uuid` in any world.
+    fn network_id_of(&self, uuid: u128) -> Option<i32> {
+        self.server.global().dimensions.worlds().find_map(|id| {
+            let columns = self.server.world_ref(id).level().entities.store.columns();
+            let row = columns.uuid.iter().position(|&u| u == uuid)?;
+            columns.network_id.get(row).map(|n| n.0)
+        })
+    }
+
+    /// The network id and UUID of a packet target: a scenario entity, `uuid:<hex>` or `none`
+    /// (a target that does not exist is the id -1).
+    fn packet_target(&self, name: &str) -> Result<(i32, u128), String> {
+        if name == "none" {
+            return Ok((-1, 0));
+        }
+        if let Some(hex) = name.strip_prefix("uuid:") {
+            let uuid = u128::from_str_radix(hex, 16).map_err(|_| format!("bad target `{name}`"))?;
+            return Ok((self.network_id_of(uuid).unwrap_or(-1), uuid));
+        }
+        let uuid = self
+            .names
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(u, _)| *u)
+            .ok_or_else(|| format!("no scenario entity `{name}`"))?;
+        Ok((self.network_id(name)?, uuid))
+    }
+
+    /// Queues a packet of the scenario player `name`; the server handles it in its next tick.
+    /// The player counts as loaded from then on: the recorder calls the game code of an
+    /// action directly, without `hasClientLoaded`.
+    fn send(
+        &mut self,
+        name: &str,
+        packet: vanillite_protocol::sets::ServerboundPlay,
+    ) -> Result<(), String> {
+        let id = self.player(name)?;
+        if let Some(p) = self
+            .server
+            .world(self.selected_player)
+            .level_mut()
+            .entities
+            .player_mut(id)
+        {
+            p.connection.movement.mark_client_loaded();
+        }
+        let tx = self
+            .players
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, tx)| tx)
+            .ok_or("no packet queue")?;
+        if tx.try_send(vanillite_protocol::Inbound { seq: 0, packet }) {
+            Ok(())
+        } else {
+            Err(format!("the packet of `{name}` was dropped"))
+        }
     }
 }
 
@@ -519,6 +601,12 @@ impl ScenarioWorld for ServerWorld {
                     .get_or_insert_with(serde_json::Map::new)
                     .insert("dim".into(), json!(dimension));
             }
+            if self.spec.progress_state
+                && let Some(p) = ents.player(core.id[row])
+            {
+                let d = detail.get_or_insert_with(serde_json::Map::new);
+                progress_detail(p, d);
+            }
             out.push(EntityObs {
                 kind: core.kind[row].name().to_owned(),
                 pos: [pos.x, pos.y, pos.z],
@@ -573,17 +661,34 @@ impl ScenarioWorld for ServerWorld {
         Ok(())
     }
 
-    /// The player's `use_item` packet with the stack in its main hand.
+    /// The packet a client sends for the action: `use_item` (or `interact` on `target`,
+    /// `attack`, the `RELEASE_USE_ITEM` and `STAB` player actions) after the stack, the
+    /// inventory, the food and the fall distance are set.
     fn use_item(&mut self, op: &crate::scenario::UseItemOp) -> Result<(), String> {
-        use vanillite_protocol::packets::play::serverbound::{Hand, UseItem};
+        use crate::scenario::UseMode;
+        use vanillite_protocol::packets::play::serverbound::{
+            DigAction, Hand, PlayerActionPacket, UseItem,
+        };
+        use vanillite_protocol::sets::ServerboundPlay;
         let id = self.player(&op.entity)?;
-        // Without `item` the hand stays as it is.
-        let item = match &op.item {
-            Some(name) => Some(
-                vanillite_data::item::ItemId::by_name(name)
-                    .ok_or_else(|| format!("unknown item {name}"))?,
-            ),
-            None => None,
+        let stack = op
+            .item
+            .as_deref()
+            .map(|item| scenario_stack(item, op.count, op.components.as_deref()))
+            .transpose()?;
+        let slots = op
+            .inventory
+            .iter()
+            .map(|s| {
+                Ok((
+                    s.slot,
+                    scenario_stack(&s.item, s.count, s.components.as_deref())?,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let target = match (&op.target, &op.mode) {
+            (Some(t), _) | (None, UseMode::Attack(t)) => Some(self.network_id(t)?),
+            _ => None,
         };
         let level = self.server.world(self.selected_player).level_mut();
         let rot = level
@@ -593,32 +698,213 @@ impl ScenarioWorld for ServerWorld {
             .map(|e| e.rot())
             .ok_or("the player is gone")?;
         let p = level.entities.player_mut(id).ok_or("the player is gone")?;
-        if let Some(item) = item {
+        if let Some(stack) = stack {
             let slot = p.inventory.selected;
-            p.inventory
-                .set(slot, vanillite_game::item::ItemStack::new(item.0, op.count));
+            p.inventory.set(slot, stack);
         }
-        let tx = self
-            .players
-            .iter()
-            .find(|(n, _)| *n == op.entity)
-            .map(|(_, tx)| tx)
-            .ok_or("no packet queue")?;
-        let sent = tx.try_send(vanillite_protocol::Inbound {
-            seq: 0,
-            packet: vanillite_protocol::sets::ServerboundPlay::UseItem(UseItem {
-                hand: Hand::MainHand,
+        for (slot, stack) in slots {
+            p.inventory.set(slot, stack);
+        }
+        if let Some(food) = op.food {
+            p.survival.food.food_level = food;
+        }
+        if let Some(fall) = op.fall_distance {
+            p.survival.fall_distance = fall;
+        }
+        let action = |action| {
+            ServerboundPlay::PlayerAction(PlayerActionPacket {
+                action,
+                pos: vanillite_protocol::types::BlockPos { x: 0, y: 0, z: 0 },
+                direction: 0,
                 sequence: 0,
-                y_rot: rot.y_rot,
-                x_rot: rot.x_rot,
-            }),
-        });
-        if sent {
-            Ok(())
+            })
+        };
+        let packet =
+            match (&op.mode, target) {
+                (UseMode::Release, _) => action(DigAction::ReleaseUseItem),
+                (UseMode::Stab, _) => action(DigAction::Stab),
+                (UseMode::Attack(_), Some(entity_id)) => ServerboundPlay::Attack(
+                    vanillite_protocol::packets::play::serverbound::Attack { entity_id },
+                ),
+                (UseMode::Use, Some(entity_id)) => ServerboundPlay::Interact(
+                    vanillite_protocol::packets::play::serverbound::Interact {
+                        entity_id,
+                        hand: Hand::MainHand,
+                        location: Default::default(),
+                        using_secondary_action: false,
+                    },
+                ),
+                _ => ServerboundPlay::UseItem(UseItem {
+                    hand: Hand::MainHand,
+                    sequence: 0,
+                    y_rot: rot.y_rot,
+                    x_rot: rot.x_rot,
+                }),
+            };
+        self.send(&op.entity, packet)
+    }
+
+    /// The `use_item_on` packet of a block click (`attack`: `START_DESTROY_BLOCK`).
+    fn player_use(&mut self, click: &crate::scenario::PlayerUse) -> Result<(), String> {
+        use vanillite_protocol::packets::play::serverbound::{
+            DigAction, Hand, PlayerActionPacket, UseItemOn,
+        };
+        use vanillite_protocol::sets::ServerboundPlay;
+        let id = self.player(&click.entity)?;
+        let face: u8 = match click.face.as_str() {
+            "down" => 0,
+            "up" => 1,
+            "north" => 2,
+            "south" => 3,
+            "west" => 4,
+            "east" => 5,
+            other => return Err(format!("unknown face {other}")),
+        };
+        let stack = click
+            .item
+            .as_deref()
+            .map(|item| scenario_stack(item, click.count, click.components.as_deref()))
+            .transpose()?;
+        let level = self.server.world(self.selected_player).level_mut();
+        let p = level.entities.player_mut(id).ok_or("the player is gone")?;
+        if let Some(food) = click.food {
+            p.survival.food.food_level = food;
+        }
+        if let Some(stack) = stack {
+            if click.offhand {
+                p.inventory.offhand = stack;
+            } else {
+                let slot = p.inventory.selected;
+                p.inventory.set(slot, stack);
+            }
+        }
+        if click.sneak {
+            return Err("sneaking clicks are not sent by the server harness".to_owned());
+        }
+        let packet = if click.attack {
+            ServerboundPlay::PlayerAction(PlayerActionPacket {
+                action: DigAction::StartDestroyBlock,
+                pos: vanillite_protocol::types::BlockPos {
+                    x: click.pos.x,
+                    y: click.pos.y,
+                    z: click.pos.z,
+                },
+                direction: face,
+                sequence: 0,
+            })
         } else {
-            Err("the use_item packet was dropped".to_owned())
+            // The face's centre unless `hit` says otherwise.
+            let [x, y, z] = click.hit.unwrap_or(match face {
+                0 => [0.5, 0.0, 0.5],
+                1 => [0.5, 1.0, 0.5],
+                2 => [0.5, 0.5, 0.0],
+                3 => [0.5, 0.5, 1.0],
+                4 => [0.0, 0.5, 0.5],
+                _ => [1.0, 0.5, 0.5],
+            });
+            #[allow(clippy::cast_possible_truncation)]
+            ServerboundPlay::UseItemOn(UseItemOn {
+                hand: if click.offhand {
+                    Hand::OffHand
+                } else {
+                    Hand::MainHand
+                },
+                pos: vanillite_protocol::types::BlockPos {
+                    x: click.pos.x,
+                    y: click.pos.y,
+                    z: click.pos.z,
+                },
+                face: i32::from(face),
+                cursor_x: x as f32,
+                cursor_y: y as f32,
+                cursor_z: z as f32,
+                inside: false,
+                world_border_hit: false,
+                sequence: 0,
+            })
+        };
+        self.send(&click.entity, packet)
+    }
+
+    /// A raw serverbound play packet of a scenario player.
+    fn packet(&mut self, op: &crate::scenario::PacketOp) -> Result<(), String> {
+        let target = op
+            .target
+            .as_deref()
+            .map(|t| self.packet_target(t))
+            .transpose()?;
+        let packet_id = vanillite_protocol::ids::play::serverbound::NAMES
+            .iter()
+            .position(|n| n.strip_prefix("minecraft:").unwrap_or(n) == op.packet)
+            .ok_or_else(|| format!("unknown serverbound play packet `{}`", op.packet))?;
+        let mut bytes = Vec::new();
+        vanillite_protocol::codec::write_varint(
+            &mut bytes,
+            i32::try_from(packet_id).map_err(|e| e.to_string())?,
+        );
+        bytes.extend(op.body(target)?);
+        let packet = vanillite_protocol::sets::ServerboundPlay::decode(&bytes)
+            .map_err(|e| format!("`{}` does not decode: {e}", op.packet))?;
+        self.send(&op.entity, packet)
+    }
+}
+
+/// Time statistics and distances `progress_state` leaves out.
+fn traced_stat(name: &str) -> bool {
+    const TIMES: [&str; 5] = [
+        "minecraft.custom:minecraft.play_time",
+        "minecraft.custom:minecraft.total_world_time",
+        "minecraft.custom:minecraft.time_since_death",
+        "minecraft.custom:minecraft.time_since_rest",
+        "minecraft.custom:minecraft.crouch_time",
+    ];
+    !TIMES.contains(&name) && !name.ends_with("_one_cm")
+}
+
+/// `adv` (the completed criteria as `advancement#criterion`, sorted) and `stats` (the non-zero
+/// statistics by name) of a player (`"progress_state": true`).
+fn progress_detail(
+    p: &vanillite_game::player::PlayerData,
+    d: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let progress = &p.advancements;
+    let mut adv = Vec::new();
+    for (index, a) in progress.advancements().iter() {
+        for (c, criterion) in (0u16..).zip(&a.criteria) {
+            if progress.criterion_done(index, c) {
+                adv.push(format!("{}#{}", a.id, criterion.name));
+            }
         }
     }
+    adv.sort();
+    let stats: std::collections::BTreeMap<String, i32> = p
+        .stats
+        .iter()
+        .filter(|(_, v)| *v != 0)
+        .map(|(s, v)| (s.name(), v))
+        .filter(|(n, _)| traced_stat(n))
+        .collect();
+    d.insert("adv".into(), json!(adv));
+    d.insert("stats".into(), json!(stats));
+}
+
+/// A stack like the recorder's `ScenarioEntities.stack`: item, count, SNBT components.
+fn scenario_stack(
+    item: &str,
+    count: i32,
+    components: Option<&str>,
+) -> Result<vanillite_game::item::ItemStack, String> {
+    if item == "minecraft:air" {
+        return Ok(vanillite_game::item::ItemStack::EMPTY);
+    }
+    let mut c = vanillite_nbt::Compound::new();
+    c.insert("id", vanillite_nbt::Tag::String(item.to_owned()));
+    c.insert("count", vanillite_nbt::Tag::Int(count));
+    if let Some(snbt) = components {
+        let components = vanillite_nbt::snbt::parse_compound(snbt).map_err(|e| e.to_string())?;
+        c.insert("components", vanillite_nbt::Tag::Compound(components));
+    }
+    Ok(vanillite_game::item_nbt::stack_from_nbt(&c))
 }
 
 /// The scenario world of a scenario: across dimensions on the server, else the headless

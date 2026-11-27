@@ -393,11 +393,12 @@ fn use_instrument(
         && item::is_damageable(s)
     {
         let d = item::damage(s).saturating_add(instrument.durability_damage);
-        if d >= item::max_damage(s) {
-            s.shrink(1);
-        } else {
-            item::set_damage(s, d);
-        }
+        crate::advancements::view::apply_damage(
+            Some(&mut p.advancements),
+            Some(&mut p.stats),
+            s,
+            d,
+        );
     }
     if instrument.use_duration > 0.0 {
         #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]

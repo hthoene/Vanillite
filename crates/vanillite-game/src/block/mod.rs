@@ -294,7 +294,9 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
             b.random_tick = Some(growth::bamboo_random_tick);
         }
         Class::BambooSapling => b.random_tick = Some(growth::bamboo_sapling_random_tick),
-        Class::ChorusPlant | Class::HangingMoss => b.tick = Some(destroy_unless_survives),
+        Class::ChorusPlant | Class::HangingMoss | Class::BigDripleafStem => {
+            b.tick = Some(destroy_unless_survives);
+        }
         Class::Kelp | Class::WeepingVines | Class::TwistingVines | Class::CaveVines => {
             b.tick = Some(destroy_unless_survives);
             b.random_tick = Some(growth::growing_plant_head_random_tick);
@@ -356,11 +358,17 @@ fn vanilla_behaviour(block: BlockId) -> BlockBehaviour {
     } else if block == ids::REDSTONE_ORE || block == ids::DEEPSLATE_REDSTONE_ORE {
         b.random_tick = Some(weather::redstone_ore_random_tick);
         b.attack = Some(weather::redstone_ore_attack);
+        b.use_item_on = Some(weather::redstone_ore_use_item_on);
     } else if block == ids::SPONGE {
         b.on_place = Some(fluid::sponge_on_place);
         b.neighbor_changed = Some(fluid::sponge_neighbor_changed);
+    } else if block == ids::WET_SPONGE {
+        b.on_place = Some(fluid::wet_sponge_on_place);
     } else if weather::weathers(block) {
         b.random_tick = Some(weather::copper_random_tick);
+    }
+    if decor::is_skull(block) {
+        b.neighbor_changed = Some(decor::skull_neighbor_changed);
     }
     redstone::fill(block, &mut b);
     piston::fill(block, &mut b);
@@ -467,7 +475,12 @@ pub fn sound_id(name: &str) -> u16 {
 
 /// `ItemStack.hurtAndBreak(amount, …)` of a held tool: `minecraft:unbreaking` skips each point
 /// with chance `level / (level + 1)`; the stack breaks at its maximum damage.
-pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: i32) {
+pub fn hurt_item(
+    level: &mut Level,
+    stack: &mut crate::item::ItemStack,
+    amount: i32,
+    player: EntityId,
+) {
     use crate::item;
     if !item::is_damageable(stack) {
         return;
@@ -488,8 +501,15 @@ pub fn hurt_item(level: &mut Level, stack: &mut crate::item::ItemStack, amount: 
         return;
     }
     let damage = item::damage(stack).saturating_add(taken);
+    // `applyDamage`: `ITEM_DURABILITY_CHANGED`, and `ITEM_BROKEN` when it breaks.
+    level.trigger(
+        player,
+        crate::advancements::trigger::Event::ItemDurabilityChanged(stack.clone(), damage),
+    );
     if damage >= item::max_damage(stack) {
+        let broken = crate::stats::Stat::of(crate::stats::StatType::Broken, stack.item);
         stack.shrink(1);
+        level.award_stat(player, broken, 1);
     } else {
         item::set_damage(stack, damage);
     }

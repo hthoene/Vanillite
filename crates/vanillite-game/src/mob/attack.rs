@@ -346,6 +346,7 @@ pub fn player_attack(
     if smash {
         mace_hurt_enemy(ents, env, cx, attacker, target, fall_distance);
     }
+    weapon_used_stat(ents, attacker, &weapon, target);
     post_attack(level, ents, env, cx, target, &source, Some(&weapon));
     hurt_weapon(ents, env, attacker, &weapon);
     if smash && let Some(p) = ents.player_mut(attacker) {
@@ -908,8 +909,11 @@ fn run_entity_effect(
         }
         EntityEffect::SummonLightning => {
             if let Some(pos) = ents.store.get(target).map(|e| e.pos()) {
+                let cause = item
+                    .map(|(owner, _)| owner)
+                    .filter(|&o| ents.player(o).is_some());
                 cx.actions.push(super::WorldAction::Level(
-                    super::boss::warden::LevelAction::Lightning { pos },
+                    super::boss::warden::LevelAction::Lightning { pos, cause },
                 ));
             }
         }
@@ -1112,6 +1116,26 @@ pub fn ignite(ents: &mut Entities, id: EntityId, ticks: i32) {
         && p.survival.fire_ticks < ticks
     {
         p.survival.fire_ticks = ticks;
+    }
+}
+
+/// `ItemStack.hurtEnemy` on a living target: a player's weapon (an item with the `weapon`
+/// component) counts as used.
+pub fn weapon_used_stat(
+    ents: &mut Entities,
+    attacker: EntityId,
+    weapon: &ItemStack,
+    target: EntityId,
+) {
+    let living = ents.mob(target).is_some() || ents.player(target).is_some();
+    if living
+        && item::item_id(weapon).info().weapon.is_some()
+        && let Some(p) = ents.player_mut(attacker)
+    {
+        p.stats.award(
+            crate::stats::Stat::of(crate::stats::StatType::Used, weapon.item),
+            1,
+        );
     }
 }
 
