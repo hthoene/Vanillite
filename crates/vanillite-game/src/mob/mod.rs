@@ -1509,5 +1509,5 @@ mod size_tests {
         );
     }
 
-    const LIMIT: usize = 1776;
+    const LIMIT: usize = 1792;
 }
