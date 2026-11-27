@@ -391,6 +391,10 @@ pub struct DamageSource {
     /// The motion of the projectile that hit, which the knockback follows
     /// (`Projectile.calculateHorizontalHurtKnockbackDirection`).
     pub projectile_motion: Option<Vec3>,
+    /// The player responsible for the damage (`resolvePlayerResponsibleForDamage`): the
+    /// causing player, or the owner of a tame wolf that caused it. Set by the callers that
+    /// have the entities ([`crate::mob::combat::hurt`]).
+    pub responsible_player: Option<EntityId>,
 }
 
 impl DamageSource {
@@ -406,6 +410,7 @@ impl DamageSource {
             disable_shield_seconds: 0.0,
             piercing_arrow: false,
             projectile_motion: None,
+            responsible_player: None,
         }
     }
 

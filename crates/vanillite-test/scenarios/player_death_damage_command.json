@@ -1,0 +1,101 @@
+{
+  "description": "Client players killed by /damage (#211): one by generic damage without a killer, one by mob_attack damage of a zombie (kill credit: killed_by zombie, entity_killed_player). Both drop their items and XP and count a death. All chunks in the players' simulation distance are forced (no asynchronous loads in Vanilla).",
+  "tier": "fast",
+  "dimensions": true,
+  "datapack": "progress_triggers",
+  "progress_state": true,
+  "player_state": true,
+  "time": 6000,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      -16,
+      -62,
+      -16
+    ],
+    [
+      31,
+      -55,
+      31
+    ]
+  ],
+  "ticks": 22,
+  "entities": [
+    {
+      "name": "steve",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "inventory": [
+        [
+          0,
+          "minecraft:cobblestone",
+          16
+        ]
+      ]
+    },
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        11.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        0,
+        0
+      ],
+      "inventory": [
+        [
+          0,
+          "minecraft:oak_planks",
+          8
+        ]
+      ]
+    },
+    {
+      "name": "zombie",
+      "type": "minecraft:zombie",
+      "pos": [
+        11.5,
+        -60.0,
+        14.5
+      ],
+      "rot": [
+        180,
+        0
+      ],
+      "seed": 5,
+      "finalize": false
+    }
+  ],
+  "actions": [
+    {
+      "tick": 1,
+      "op": "command",
+      "command": "xp add alex 3 levels"
+    },
+    {
+      "tick": 3,
+      "op": "command",
+      "command": "damage steve 50 minecraft:generic"
+    },
+    {
+      "tick": 4,
+      "op": "command",
+      "command": "damage alex 50 minecraft:mob_attack by @e[type=minecraft:zombie,limit=1]"
+    }
+  ]
+}

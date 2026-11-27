@@ -169,6 +169,9 @@ pub struct ServerWorld {
     players: Vec<(String, vanillite_protocol::InboundSender)>,
     /// The world of the player [`ServerWorld::player`] found last.
     selected_player: WorldId,
+    /// The packet-level players (`"client": true`) and whether their client finished the
+    /// join (accepted the first teleport, sent `player_loaded`).
+    clients: Vec<(String, bool)>,
 }
 
 impl std::fmt::Debug for ServerWorld {
@@ -252,6 +255,7 @@ impl ServerWorld {
             names: Vec::new(),
             players: Vec::new(),
             selected_player: WorldId(0),
+            clients: Vec::new(),
         };
         // The recorder's rules (`ScenarioRecorder.rules`).
         let mut rules: Vec<(String, String)> = [
@@ -426,12 +430,29 @@ impl ServerWorld {
             e.set_flags(vanillite_world::entity::EntityFlags::ON_GROUND, false);
         }
         if let Some(p) = overworld.entities.player_mut(id) {
-            p.survival.simulate_movement = true;
+            // A client player moves by its packets; the server moves the others, like
+            // Vanilla's.
+            p.survival.simulate_movement = !spec.client;
+            for (slot, item, count) in &spec.inventory {
+                let item = vanillite_data::item::ItemId::by_name(item)
+                    .ok_or_else(|| format!("unknown item {item}"))?;
+                if let Some(s) = p.inventory.get_mut(*slot) {
+                    *s = vanillite_game::item::ItemStack::new(item.0, *count);
+                }
+            }
+            if let Some(food) = spec.food {
+                p.survival.food.food_level = food;
+            }
             p.survival.y_body_rot = spec.rot[0];
             // The recorder seeds the player's own random with its `seed` at the end of the
             // `Entity` constructor; the `LivingEntity` constructor then draws the yaw.
             p.survival.random = vanillite_base::random::LegacyRandom::new(spec.seed);
             vanillite_base::random::RandomSource::next_float(&mut p.survival.random);
+        }
+        if spec.client {
+            // The join teleport above waits for the client: it accepts and reports the world
+            // loaded at the start of its first tick ([`ScenarioWorld::client_begin`]).
+            self.clients.push((spec.name.clone(), false));
         }
         Ok(())
     }
@@ -572,6 +593,8 @@ impl ScenarioWorld for ServerWorld {
         let ents = &level.entities;
         let core = ents.store.columns();
         let name_of = |id: EntityId| ents.store.get(id).and_then(|e| self.name_of(e.uuid()));
+        let is_client =
+            |id: EntityId| name_of(id).is_some_and(|n| self.clients.iter().any(|(c, _)| *c == n));
         for row in 0..core.id.len() {
             let pos = core.pos[row];
             let block = BlockPos::new(
@@ -580,6 +603,13 @@ impl ScenarioWorld for ServerWorld {
                 pos.z.floor() as i32,
             );
             if !inside(block, min, max) {
+                continue;
+            }
+            // `tickDeath` removed a dead player from the level (its connection still ticks it).
+            if ents
+                .player(core.id[row])
+                .is_some_and(|p| p.survival.removed)
+            {
                 continue;
             }
             // A player moves by its client: its server-side motion is not part of the trace.
@@ -592,7 +622,7 @@ impl ScenarioWorld for ServerWorld {
                 ents,
                 row,
                 &name_of,
-                &|_| false,
+                &is_client,
                 self.spec.player_state,
                 self.spec.sleep_state,
             );
@@ -846,6 +876,65 @@ impl ScenarioWorld for ServerWorld {
         let packet = vanillite_protocol::sets::ServerboundPlay::decode(&bytes)
             .map_err(|e| format!("`{}` does not decode: {e}", op.packet))?;
         self.send(&op.entity, packet)
+    }
+
+    /// The start of a client tick: every client accepts the teleport the server waits for; a
+    /// client that has just joined then reports the world loaded.
+    fn client_begin(&mut self) -> Result<(), String> {
+        use vanillite_protocol::packets::play::serverbound::{AcceptTeleportation, PlayerLoaded};
+        use vanillite_protocol::sets::ServerboundPlay;
+        for i in 0..self.clients.len() {
+            let name = self.clients[i].0.clone();
+            // A dead player leaves the world 20 ticks after its death (`tickDeath`).
+            let Ok(id) = self.player(&name) else {
+                continue;
+            };
+            let level = self.server.world_ref(self.selected_player).level();
+            let pending = level
+                .entities
+                .player(id)
+                .and_then(|p| p.connection.movement.pending_teleport());
+            if let Some((teleport, to)) = pending {
+                let rot = level
+                    .entities
+                    .store
+                    .get(id)
+                    .map(|e| e.rot())
+                    .ok_or("the player is gone")?;
+                self.send(
+                    &name,
+                    ServerboundPlay::AcceptTeleportation(AcceptTeleportation {
+                        id: teleport,
+                        x: to.x,
+                        y: to.y,
+                        z: to.z,
+                        y_rot: rot.y_rot,
+                        x_rot: rot.x_rot,
+                    }),
+                )?;
+            }
+            if !std::mem::replace(&mut self.clients[i].1, true) {
+                self.send(&name, ServerboundPlay::PlayerLoaded(PlayerLoaded))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The end of a client tick: `client_tick_end` of every client; the server handles the
+    /// packets in its next tick.
+    fn client_end(&mut self) -> Result<(), String> {
+        use vanillite_protocol::packets::play::serverbound::ClientTickEnd;
+        use vanillite_protocol::sets::ServerboundPlay;
+        if !self.spec.client_tick_end {
+            return Ok(());
+        }
+        for i in 0..self.clients.len() {
+            let name = self.clients[i].0.clone();
+            if self.player(&name).is_ok() {
+                self.send(&name, ServerboundPlay::ClientTickEnd(ClientTickEnd))?;
+            }
+        }
+        Ok(())
     }
 }
 
