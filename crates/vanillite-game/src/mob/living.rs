@@ -457,6 +457,22 @@ pub fn fluid_currents(
             return (contact, currents);
         }
     }
+    // Sections without a fluid add nothing; skipping their blocks only drops reads, which have
+    // no effect while reads are pure.
+    if level.chunks.reads_are_pure() {
+        let view = level.view().chunks();
+        let dry = (x0 >> 4..=x1 >> 4).all(|cx| {
+            (z0 >> 4..=z1 >> 4).all(|cz| {
+                (y0 >> 4..=y1 >> 4).all(|sy| {
+                    view.section_summary(vanillite_base::ChunkPos::new(cx, cz), sy)
+                        .is_none_or(|summary| summary.fluids == 0)
+                })
+            })
+        });
+        if dry {
+            return (contact, currents);
+        }
+    }
     let (eye_x, eye_z) = (floor(eye.x), floor(eye.z));
     let (mut water_height, mut lava_height) = (0.0_f64, 0.0_f64);
     for x in x0..=x1 {
