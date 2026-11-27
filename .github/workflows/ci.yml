@@ -50,17 +50,20 @@ jobs:
       - run: rustup toolchain install --profile minimal --component clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          # Only dev writes the cache; branches and PRs read it.
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          # Dev (and manual runs, to measure a branch warm) write the cache; others read it.
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' }}
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-  # The tests run in four parallel jobs: the world generation goldens, the game and world
-  # crates (menu fuzz and chunk level tests), the test harness (parity scenarios) and all other
-  # crates. Together they run every test of the workspace; the doc tests and the codegen checks
-  # run in a job of their own.
+  # The tests run in parallel jobs: the world generation goldens and the game and world crates
+  # (menu fuzz and chunk level tests) in two slices each (nextest --partition slice), the test
+  # harness (parity scenarios) and all other crates. Together they run every test of the
+  # workspace; the doc tests and the codegen checks run in a job of their own.
   test:
     name: Tests (all other crates)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
@@ -73,7 +76,12 @@ jobs:
       - run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' }}
+      # The workspace crates through sccache (GitHub cache): crates a change does not touch, above
+      # all the optimised world generation, come from the cache instead of being rebuilt.
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
       # that its post step saves before rust-cache cleans target/ (which drops this directory).
       - uses: actions/cache@v4
@@ -92,8 +100,15 @@ jobs:
           path: target/nextest/ci/junit.xml
 
   test-game:
-    name: Tests (game and world)
+    name: Tests (game and world ${{ matrix.slice }}/2)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
@@ -106,7 +121,12 @@ jobs:
       - run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' }}
+      # The workspace crates through sccache (GitHub cache): crates a change does not touch, above
+      # all the optimised world generation, come from the cache instead of being rebuilt.
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
       # that its post step saves before rust-cache cleans target/ (which drops this directory).
       - uses: actions/cache@v4
@@ -117,16 +137,21 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Tests
-        run: cargo nextest run -p vanillite-game -p vanillite-world --all-features --locked --profile ci --no-tests=warn
+        run: >-
+          cargo nextest run -p vanillite-game -p vanillite-world --all-features --locked --profile ci
+          --no-tests=warn --partition slice:${{ matrix.slice }}/2
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: junit-game
+          name: junit-game-${{ matrix.slice }}
           path: target/nextest/ci/junit.xml
 
   test-parity:
     name: Tests (parity scenarios)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
@@ -139,7 +164,12 @@ jobs:
       - run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' }}
+      # The workspace crates through sccache (GitHub cache): crates a change does not touch, above
+      # all the optimised world generation, come from the cache instead of being rebuilt.
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
       # that its post step saves before rust-cache cleans target/ (which drops this directory).
       - uses: actions/cache@v4
@@ -165,6 +195,9 @@ jobs:
   codegen:
     name: Doc tests and codegen
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
@@ -177,7 +210,12 @@ jobs:
       - run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' }}
+      # The workspace crates through sccache (GitHub cache): crates a change does not touch, above
+      # all the optimised world generation, come from the cache instead of being rebuilt.
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       # The Vanilla data pack the tests extract from the pinned server jar. After rust-cache so
       # that its post step saves before rust-cache cleans target/ (which drops this directory).
       - uses: actions/cache@v4
@@ -194,8 +232,15 @@ jobs:
         run: cargo test --workspace --all-features --locked --doc
 
   test-worldgen:
-    name: Tests (world generation)
+    name: Tests (world generation ${{ matrix.slice }}/2)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       # The pinned toolchain (rust-toolchain.toml) from the cache: faster than rustup's download.
@@ -208,7 +253,12 @@ jobs:
       - run: rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' }}
+      # The workspace crates through sccache (GitHub cache): crates a change does not touch, above
+      # all the optimised world generation, come from the cache instead of being rebuilt.
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       - uses: actions/cache@v4
         with:
           path: target/vanilla-cache
@@ -217,11 +267,13 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Tests
-        run: cargo nextest run -p vanillite-worldgen --all-features --locked --profile ci --no-tests=warn
+        run: >-
+          cargo nextest run -p vanillite-worldgen --all-features --locked --profile ci --no-tests=warn
+          --partition slice:${{ matrix.slice }}/2
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: junit-worldgen
+          name: junit-worldgen-${{ matrix.slice }}
           path: target/nextest/ci/junit.xml
 
   deny:
