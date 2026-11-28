@@ -347,14 +347,18 @@ impl ItemInput {
 /// `LivingEntity.createItemStackToDrop(stack, false, false)` with `setNoPickUpDelay` and the
 /// player as the only one to pick it up (`GiveCommand`).
 pub(crate) fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
-    let Some((pos, rot, uuid)) = level
-        .entities
-        .store
-        .get(id)
-        .map(|e| (e.pos(), e.rot(), e.uuid()))
-    else {
-        return;
-    };
+    let uuid = level.entities.store.get(id).map(|e| e.uuid());
+    if let Some(item) = create_drop(level, id, stack)
+        && let Some(data) = level.entities.item_mut(item)
+    {
+        data.target = uuid;
+    }
+}
+
+/// `createItemStackToDrop(stack, false, false)` of a player: the item at its eyes - 0.3 with
+/// the motion from the player's random, no pickup delay.
+fn create_drop(level: &mut Level, id: EntityId, stack: ItemStack) -> Option<EntityId> {
+    let (pos, rot) = level.entities.store.get(id).map(|e| (e.pos(), e.rot()))?;
     let eye = f64::from(entity_ids::PLAYER.info().eye_height);
     let deg = std::f64::consts::PI / 180.0;
     let (sin_x, cos_x) = (
@@ -366,13 +370,10 @@ pub(crate) fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
         vanillite_base::math::cos(f64::from(rot.y_rot) * deg),
     );
     // The player's own random (`createItemStackToDrop`).
-    let Some(random) = level
+    let random = level
         .entities
         .player_mut(id)
-        .map(|p| &mut p.survival.random)
-    else {
-        return;
-    };
+        .map(|p| &mut p.survival.random)?;
     let dir = random.next_float() * std::f32::consts::TAU;
     let pow2 = 0.02 * random.next_float();
     let spread = random.next_float() - random.next_float();
@@ -382,12 +383,7 @@ pub(crate) fn drop_for(level: &mut Level, id: EntityId, stack: ItemStack) {
         f64::from(cos_y * cos_x * 0.3) + f64::from(dir).sin() * f64::from(pow2),
     );
     let at = Vec3::new(pos.x, pos.y + eye - 0.3, pos.z);
-    if let Some(item) =
-        vanillite_game::block::drops::spawn_item(level, at, stack, velocity, 0, None)
-        && let Some(data) = level.entities.item_mut(item)
-    {
-        data.target = Some(uuid);
-    }
+    vanillite_game::block::drops::spawn_item(level, at, stack, velocity, 0, None)
 }
 
 /// `GiveCommand.giveItem` for one player: stacks into the inventory, the rest dropped.
@@ -408,7 +404,35 @@ pub(crate) fn give_to(
         };
         let infinite = player.game_mode == vanillite_config::GameMode::Creative;
         let added = player.inventory.add(None, &mut stack, infinite);
-        if !(added && stack.is_empty()) {
+        if added && stack.is_empty() {
+            // A fake item (`makeFakeItem`: never picked up, gone after one tick) and the
+            // pickup sound with the player's random pitch.
+            if let Some(fake) = create_drop(level, id, prototype.with_count(1))
+                && let Some(data) = level.entities.item_mut(fake)
+            {
+                data.pickup_delay = vanillite_game::item_entity::NEVER_PICK_UP;
+                data.age = 5999;
+            }
+            let Some(pos) = level.entities.store.get(id).map(|e| e.pos()) else {
+                return;
+            };
+            let Some(pitch) = level.entities.player_mut(id).map(|p| {
+                let r = &mut p.survival.random;
+                ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0
+            }) else {
+                return;
+            };
+            level.play_sound(
+                None,
+                pos.x,
+                pos.y,
+                pos.z,
+                vanillite_game::block::sound_id("minecraft:entity.item.pickup"),
+                vanillite_game::level::SOUND_PLAYERS,
+                0.2,
+                pitch,
+            );
+        } else {
             drop_for(level, id, stack);
         }
     }

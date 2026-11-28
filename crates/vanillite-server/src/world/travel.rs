@@ -646,6 +646,14 @@ impl ServerWorld {
         if cooldown > 0 {
             self.level.entities.portals.entry(id).or_default().cooldown = cooldown;
         }
+        crate::blocks::merge_after_teleport(
+            &mut self.level.entities,
+            id,
+            crate::blocks::ItemSettings {
+                lifetime: i16::try_from(self.rules.items.despawn_ticks).unwrap_or(i16::MAX),
+                merge_radius: self.rules.items.merge_radius,
+            },
+        );
         if let Some(pos) = landing.ticket {
             self.place_portal_ticket(pos);
         }

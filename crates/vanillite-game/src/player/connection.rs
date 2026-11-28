@@ -96,6 +96,9 @@ pub enum EntityAction {
     StartFallFlying,
     /// `punch`: the swing resets the attack strength (`resetAttackStrengthTicker`).
     Punch,
+    /// `stopUsingItem` (a new hotbar slot while the main hand is in use: `main_hand_only`; a
+    /// hand swap: any hand).
+    StopUsing { main_hand_only: bool },
 }
 
 /// What a player sends to steer its vehicle.
@@ -834,6 +837,12 @@ impl Connection {
                             slot: i32::try_from(old).unwrap_or(0),
                         });
                     } else {
+                        // `handleSetCarriedItem`: another slot stops a main hand use.
+                        if slot != old && self.entity_actions.len() < 16 {
+                            self.entity_actions.push(EntityAction::StopUsing {
+                                main_hand_only: true,
+                            });
+                        }
                         play.inventory.selected = slot;
                     }
                 }
@@ -1106,12 +1115,22 @@ impl Connection {
                     .is_some_and(|e| e.cancelled)
                 {
                     play.inventory.swap_hands();
+                    if self.entity_actions.len() < 16 {
+                        self.entity_actions.push(EntityAction::StopUsing {
+                            main_hand_only: false,
+                        });
+                    }
                 }
             }
             DigAction::DropItem | DigAction::DropAllItems => {
+                // `ServerPlayer.drop(all)`: the swing comes with a dropped stack
+                // (`LivingEntity.drop`), then `resetAttackStrengthTicker`.
+                let spectator = play.actor.game_mode == vanillite_config::GameMode::Spectator;
                 self.play
                     .drop_selected(play, p.action == DigAction::DropAllItems);
-                play.swings.push(Hand::MainHand);
+                if !spectator && self.entity_actions.len() < 16 {
+                    self.entity_actions.push(EntityAction::Punch);
+                }
             }
             DigAction::ReleaseUseItem => {
                 if self.entity_actions.len() < 16 {
