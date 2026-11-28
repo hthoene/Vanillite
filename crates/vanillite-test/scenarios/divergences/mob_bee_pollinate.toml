@@ -1,0 +1,3 @@
+tick = 6
+cause = "an angry bee hit by a player: Vanilla runs BeeHurtByOtherGoal (Vanillite HurtByTargetGoal) and keeps the head pitch at 90, Vanillite turns it"
+owner = "gameplay-developer #267"
