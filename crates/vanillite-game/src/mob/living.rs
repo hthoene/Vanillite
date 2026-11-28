@@ -2722,9 +2722,8 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         t.cx.ids = ids;
         return;
     }
-    let pushable_self = t.mob_ref().is_alive()
-        && !on_climbable(t)
-        && t.ents.riding.passengers_of(id).is_empty();
+    let pushable_self =
+        t.mob_ref().is_alive() && !on_climbable(t) && t.ents.riding.passengers_of(id).is_empty();
     let root = super::root_vehicle(t.ents, id);
     // `max-entity-collisions`: only the first ones push.
     let limit =

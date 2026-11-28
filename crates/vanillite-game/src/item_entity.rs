@@ -1124,7 +1124,11 @@ fn collision_full_block(block: &dyn crate::mob::physics::Blocks, pos: BlockPos) 
     xs.windows(2).all(|x| {
         ys.windows(2).all(|y| {
             zs.windows(2).all(|z| {
-                let p = [(x[0] + x[1]) / 2.0, (y[0] + y[1]) / 2.0, (z[0] + z[1]) / 2.0];
+                let p = [
+                    (x[0] + x[1]) / 2.0,
+                    (y[0] + y[1]) / 2.0,
+                    (z[0] + z[1]) / 2.0,
+                ];
                 boxes
                     .iter()
                     .any(|b| (0..3).all(|a| b[a] < p[a] && p[a] < b[a + 3]))

@@ -100,7 +100,10 @@ impl PacketSink for NoSink {
 }
 
 /// Blocks of the level's chunks (and the moving pistons' block entities) for survival code.
-struct ChunkBlocks<'a>(&'a Chunks, &'a vanillite_game::level::block_entity::BlockEntities);
+struct ChunkBlocks<'a>(
+    &'a Chunks,
+    &'a vanillite_game::level::block_entity::BlockEntities,
+);
 
 impl BlockAccess for ChunkBlocks<'_> {
     fn block_state(&self, pos: BlockPos) -> Option<BlockState> {

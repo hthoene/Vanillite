@@ -1696,6 +1696,7 @@ pub(crate) fn fastutil_map_order(keys: &[BlockPos]) -> Vec<usize> {
         }
     }
     slots.into_iter().rev().flatten().collect()
+}
 
 // --- Pick block ------------------------------------------------------------------------------
 

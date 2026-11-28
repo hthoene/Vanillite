@@ -116,7 +116,11 @@ impl Activity {
     }
 }
 
-type LastFrame = (Vec<u32>, std::collections::BTreeMap<String, u64>, Vec<String>);
+type LastFrame = (
+    std::sync::Arc<Vec<u32>>,
+    std::collections::BTreeMap<String, u64>,
+    Vec<String>,
+);
 
 /// Counts the [`Activity`] of a stream of frames.
 #[derive(Default)]
@@ -137,7 +141,7 @@ impl ActivityMeter {
             a.ticks += 1;
             a.blocks += blocks
                 .iter()
-                .zip(&frame.blocks)
+                .zip(frame.blocks.iter())
                 .filter(|(x, y)| x != y)
                 .count() as u64;
             // Both lists are sorted: the entries only on one side.
