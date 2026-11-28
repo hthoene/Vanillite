@@ -521,6 +521,10 @@ impl PlayLevel for WorldLevel<'_> {
         self.level.random().next_double()
     }
 
+    fn random_gaussian(&mut self) -> f64 {
+        self.level.random().next_gaussian()
+    }
+
     fn random_boolean(&mut self) -> bool {
         self.level.random().next_boolean()
     }

@@ -850,33 +850,10 @@ pub(super) fn spawn_dispensed(
     );
 }
 
-/// `ItemStack.hurtAndBreak(amount, level, null, ...)`: durability loss (`minecraft:unbreaking`
-/// removes each point with chance `level / (level + 1)`); the stack breaks at its maximum.
+/// `ItemStack.hurtAndBreak(amount, level, null, ...)`: durability loss through the
+/// `item_damage` effects (Unbreaking) from the level random; the stack breaks at its maximum.
 fn hurt_and_break(level: &mut Level, stack: &mut ItemStack, amount: i32) {
-    if !item::is_damageable(stack) {
-        return;
-    }
-    let unbreaking = crate::player::play::game_data()
-        .map_or(0, |d| d.enchantment_level(stack, "minecraft:unbreaking"));
-    let mut amount = amount;
-    if unbreaking > 0 {
-        let chance = unbreaking as f32 / (unbreaking as f32 + 1.0);
-        let mut removed = 0;
-        for _ in 0..amount {
-            if level.random().next_float() < chance {
-                removed += 1;
-            }
-        }
-        amount -= removed;
-    }
-    if amount <= 0 {
-        return;
-    }
-    let damage = item::damage(stack) + amount;
-    item::set_damage(stack, damage);
-    if damage >= item::max_damage(stack) {
-        stack.shrink(1);
-    }
+    crate::durability::hurt_and_break(stack, amount, level.random());
 }
 
 // --- Buckets ---------------------------------------------------------------------------------

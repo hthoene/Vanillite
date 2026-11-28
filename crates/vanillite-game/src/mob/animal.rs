@@ -531,7 +531,8 @@ pub fn fill_held(
     }
 }
 
-/// `hurtAndBreak(amount, player, hand)` of the stack in a hand.
+/// `hurtAndBreak(amount, player, hand)` of the stack in a hand: the `item_damage` effects
+/// (Unbreaking) from the level random, and the break event of the hand when it breaks.
 pub fn hurt_held(
     ents: &mut Entities,
     env: &mut Env<'_>,
@@ -539,23 +540,16 @@ pub fn hurt_held(
     hand: Hand,
     amount: i32,
 ) {
-    if infinite(ents, player) {
+    let n = crate::durability::change(
+        &held(ents, player, hand),
+        amount,
+        infinite(ents, player),
+        env.random,
+    );
+    if n == 0 {
         return;
     }
-    let unbreaking = crate::player::play::game_data().map_or(0, |d| {
-        d.enchantment_level(&held(ents, player, hand), "minecraft:unbreaking")
-    });
-    let mut n = 0;
-    for _ in 0..amount {
-        #[allow(clippy::cast_precision_loss)]
-        let level = unbreaking.max(0) as f32;
-        // `remove_binomial`: the draw removes the point below level / (level + 1).
-        if unbreaking <= 0 || env.random.next_float() >= level / (level + 1.0) {
-            n += 1;
-        }
-    }
     let i = hand_index(ents, player, hand);
-    let pos = ents.store.get(player).map(|e| e.pos());
     let Some(p) = ents.player_mut(player) else {
         return;
     };
@@ -568,24 +562,13 @@ pub fn hurt_held(
     let Some(s) = inventory.get_mut(i) else {
         return;
     };
-    if n == 0 || !item::is_damageable(s) {
-        return;
-    }
     let d = item::damage(s) + n;
-    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d)
-        && let Some(pos) = pos
-    {
-        let seed = crate::survival::sound_seed();
-        play_sound(
-            env.out,
-            None,
-            pos,
-            "minecraft:entity.item.break",
-            SoundSource::Players,
-            0.8,
-            0.8 + env.random.next_float() * 0.4,
-            seed,
-        );
+    if crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d) {
+        let slot = match hand {
+            Hand::MainHand => item::EquipmentSlot::MainHand,
+            Hand::OffHand => item::EquipmentSlot::OffHand,
+        };
+        crate::durability::broken_in_env(ents, env, player, slot);
     }
 }
 
