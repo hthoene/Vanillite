@@ -3847,6 +3847,10 @@ impl crate::mob::physics::Blocks for MoveBlocks<'_> {
     fn border(&self) -> Option<&crate::level::border::WorldBorder> {
         self.1
     }
+
+    fn moving_piston_boxes(&self, pos: BlockPos, out: &mut Vec<[f64; 6]>) {
+        self.0.moving_piston_boxes(pos, out);
+    }
 }
 
 /// `Entity.move(MoverType.SELF, delta)` of a player the server moves: collisions with step up,

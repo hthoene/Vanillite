@@ -188,13 +188,8 @@ pub fn load_special(
     let data = super::boss::special::load(kind, tag)?;
     let pos = vec3_of(tag, "Pos")?;
     let velocity = entity_nbt::motion(tag.get("Motion")).unwrap_or(Vec3::ZERO);
-    let rot = entity_nbt::rotation(tag.get("Rotation")).map_or_else(Rotation::default, |(y, x)| {
-        Rotation {
-            y_rot: y,
-            x_rot: x,
-            y_head_rot: y,
-        }
-    });
+    let rot = entity_nbt::rotation(tag.get("Rotation"))
+        .map_or_else(Rotation::default, |(y, x)| loaded_rotation(y, x));
     // Generated entities (the pillars' crystals) have no UUID yet.
     let uuid = uuid_of(tag).unwrap_or_else(|| {
         let mut r = vanillite_base::random::LegacyRandom::new(seed);
@@ -372,15 +367,12 @@ pub fn load_mob(tag: &Compound, seed: i64) -> Option<LoadedMob> {
     });
     let mut m = MobData::new(kind, seed);
     read_mob(&mut m, tag);
-    m.y_body_rot = y_rot;
+    // `setYBodyRot(getYRot())`: an armor stand's override sets the old rotations only.
+    m.y_body_rot = if kind == Kind::ArmorStand { 0.0 } else { y_rot };
     Some(LoadedMob {
         pos,
         velocity,
-        rot: Rotation {
-            y_rot,
-            x_rot,
-            y_head_rot: y_rot,
-        },
+        rot: loaded_rotation(y_rot, x_rot),
         uuid,
         on_ground: boolean(tag, "OnGround"),
         data: m,
@@ -595,17 +587,22 @@ pub struct LoadedEntity {
     pub on_ground: bool,
 }
 
+/// `Entity.load`: the head takes the stored yaw, then `setRot` keeps yaw and pitch `% 360`.
+fn loaded_rotation(y_rot: f32, x_rot: f32) -> Rotation {
+    Rotation {
+        y_rot: y_rot % 360.0,
+        x_rot: x_rot % 360.0,
+        y_head_rot: y_rot,
+    }
+}
+
 fn load_entity(tag: &Compound) -> Option<LoadedEntity> {
     let pos = vec3_of(tag, "Pos")?;
     let (y_rot, x_rot) = entity_nbt::rotation(tag.get("Rotation")).unwrap_or_default();
     Some(LoadedEntity {
         pos,
         velocity: entity_nbt::motion(tag.get("Motion")).unwrap_or(Vec3::ZERO),
-        rot: Rotation {
-            y_rot,
-            x_rot,
-            y_head_rot: y_rot,
-        },
+        rot: loaded_rotation(y_rot, x_rot),
         uuid: uuid_of(tag)?,
         on_ground: boolean(tag, "OnGround"),
     })
