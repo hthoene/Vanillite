@@ -830,6 +830,17 @@ pub fn load_boat(tag: &Compound, seed: i64) -> Option<(LoadedEntity, crate::vehi
     Some((e, b))
 }
 
+/// `Entity.load` on a boat (`/data`, `entity_data`): its name and chest contents from `tag`.
+pub fn apply_boat(b: &mut crate::vehicle::BoatData, tag: &Compound) {
+    b.custom_name = tag.get("CustomName").and_then(tag_component);
+    if b.kind.chest {
+        b.items
+            .iter_mut()
+            .for_each(|s| *s = crate::item::ItemStack::EMPTY);
+        b.loot_table = load_chest_vehicle(tag, &mut b.items);
+    }
+}
+
 /// `ContainerEntity.addChestVehicleSaveData`: the loot table, or the items.
 fn save_chest_vehicle(
     items: &[crate::item::ItemStack],

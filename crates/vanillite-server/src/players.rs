@@ -886,6 +886,13 @@ impl WorldPlayers {
                 );
                 actor = play.actor;
                 for mut drop in drops {
+                    // `LivingEntity.drop`: a stack to drop swings the main hand.
+                    if !drop.stack.is_empty() {
+                        hands.push((
+                            vanillite_protocol::packets::play::serverbound::Hand::MainHand,
+                            false,
+                        ));
+                    }
                     // Bukkit's `PlayerDropItemEvent`: cancelled, the stack goes back into the
                     // inventory (what no longer fits still falls).
                     if drop.thrown

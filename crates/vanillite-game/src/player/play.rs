@@ -264,7 +264,6 @@ pub struct PlayContext<'a> {
     pub spawn_protected: &'a dyn Fn(BlockPos) -> bool,
     /// Stacks the player drops this tick.
     pub drops: &'a mut Vec<Drop>,
-    /// Hand swings other players must see.
     /// Hand swings with whether they use the main hand's `attack_animation` (a punch; else
     /// `SwingAnimation.DEFAULT`).
     pub swings: &'a mut Vec<(Hand, bool)>,
@@ -1585,11 +1584,19 @@ impl Digging {
         let creative = ctx.actor.creative();
         let player = ctx.actor.entity;
         let y_rot = ctx.actor.y_rot;
+        let spectators = ctx.level.spectators();
         let level = ctx.level.level_mut()?;
         let mut held = stack.clone();
         let result = if kind == vanillite_data::entity::ids::ARMOR_STAND {
             if crate::decoration::stand::use_on(
-                level, pos, face, y_rot, &mut held, player, creative,
+                level,
+                pos,
+                face,
+                y_rot,
+                &mut held,
+                player,
+                creative,
+                &spectators,
             ) {
                 Placed::Success
             } else {
@@ -1919,11 +1926,13 @@ impl Digging {
                 let sound = crate::block::sound_id(sound);
                 level.play_block_sound(None, target, sound, crate::level::SOUND_BLOCKS, 1.0, 1.0);
             }
-            // `SignItem.updateCustomBlockEntityTag`: the editor of the front opens.
+            // `SignBlock.setPlacedBy`: the editor of the front opens unless the sign is waxed
+            // or its front has text that is not plain.
             if crate::block::sign::is_sign(placed.block())
-                && stack.component(ids::BLOCK_ENTITY_DATA).is_none()
                 && let Some(player) = ctx.actor.entity
                 && let Some(crate::level::BlockEntity::Sign(sign)) = level.block_entity_mut(target)
+                && !sign.waxed
+                && sign.front.has_editable_text()
             {
                 sign.editor = Some(ctx.actor.uuid);
                 level.request_sign_editor(player, target, true);

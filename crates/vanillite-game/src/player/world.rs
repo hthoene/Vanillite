@@ -87,6 +87,10 @@ pub trait PlayLevel {
     }
     /// `WorldBorder.isWithinBounds(pos)` of this world: the border part of
     /// `ServerLevel.mayInteract`.
+    /// The players in spectator mode (out of the entities while players are handled).
+    fn spectators(&self) -> Vec<vanillite_world::entity::EntityId> {
+        Vec::new()
+    }
     fn within_border(&self, _pos: BlockPos) -> bool {
         true
     }

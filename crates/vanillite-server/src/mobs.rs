@@ -1881,6 +1881,7 @@ pub fn player_entity_action(
             pos,
             face,
             location,
+            op,
         } => {
             if usable {
                 item_use::use_item_on(
@@ -1893,6 +1894,7 @@ pub fn player_entity_action(
                     pos,
                     face,
                     location,
+                    op,
                 );
             }
         }
@@ -1914,6 +1916,16 @@ pub fn player_entity_action(
         EntityAction::Stab => {
             if usable {
                 vanillite_game::spear::player_stab(level, ents, env, cx, player);
+            }
+        }
+        EntityAction::StopUsing { main_hand_only } => {
+            let using = ents.player(player).and_then(|p| p.survival.using_item);
+            if let Some(u) = using
+                && (!main_hand_only
+                    || u.hand == vanillite_protocol::packets::play::serverbound::Hand::MainHand)
+            {
+                let stack = vanillite_game::item::ItemStack::new(u.item, 1);
+                vanillite_game::player::using::stop(ents, env, player, &stack);
             }
         }
         EntityAction::ReleaseUseItem => {

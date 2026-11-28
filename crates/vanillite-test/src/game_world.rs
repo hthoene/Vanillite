@@ -629,6 +629,7 @@ impl GameWorld {
                     at,
                     direction,
                     location,
+                    false,
                 );
             });
         }
