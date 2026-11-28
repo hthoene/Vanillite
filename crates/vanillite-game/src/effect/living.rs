@@ -431,7 +431,9 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                     });
                 }
                 EffectEvent::Sound(sound) => {
-                    let seed = env.random.next_long();
+                    // `Level.playSound`: the seed comes from `soundSeedGenerator`, not the
+                    // level random.
+                    let seed = crate::survival::sound_seed();
                     play_sound(
                         env.out,
                         None,

@@ -152,10 +152,12 @@ fn score_of(
 
 /// `LootItemCondition.test` of a predicate argument (`ResourceOrIdArgument.lootPredicate`)
 /// with `this` as `THIS_ENTITY` at `origin` (`LootContextParamSets.COMMAND` and `SELECTOR`);
-/// `weather` is the level's (raining, thundering).
+/// `weather` is the level's (raining, thundering); `chunks` are the level's blocks for
+/// `location_check` (without them a block predicate holds).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn test_predicate(
     entities: &vanillite_game::entities::Entities,
+    chunks: Option<&vanillite_world::chunks::Chunks>,
     global: &crate::global::Global,
     this: Option<EntityId>,
     origin: Vec3,
@@ -180,9 +182,18 @@ pub(crate) fn test_predicate(
     let item_in_tag = |item: u16, tag: &str| data.item_in_tag(item, tag);
     let holder_set = |registry: &str, entry: &str| data.holder_set(registry, entry);
     let score = |id: EntityId, objective: &str| score_of(global, entities, id, objective);
+    // `LocationCheck`: the block at the origin moved by the offset, if loaded.
+    let at = BlockPos::containing(origin.x, origin.y, origin.z);
+    let neighbour = |dx: i32, dy: i32, dz: i32| {
+        chunks
+            .and_then(|c| c.block(at.offset(dx, dy, dz)))
+            .map(vanillite_data::block::BlockState)
+    };
+    let neighbour: &dyn Fn(i32, i32, i32) -> Option<vanillite_data::block::BlockState> = &neighbour;
     let ctx = LootContext {
         origin: Some(origin),
         this_entity: this,
+        neighbour: chunks.map(|_| neighbour),
         item_in_tag: &item_in_tag,
         enchanting: Some(&data.enchanting),
         holder_set: &holder_set,
@@ -471,7 +482,7 @@ fn output(
                             let infinite = p.game_mode == vanillite_config::GameMode::Creative;
                             let mut s = stack;
                             let added = p.inventory.add(None, &mut s, infinite);
-                            items::sync_inventory(&mut env.level.entities, id);
+                            items::send_inventory(&mut env.level.entities, id);
                             added
                         }
                         None => {
@@ -481,7 +492,7 @@ fn output(
                                         p.game_mode == vanillite_config::GameMode::Creative;
                                     let mut s = stack;
                                     p.inventory.add(None, &mut s, infinite);
-                                    items::sync_inventory(&mut level.entities, id);
+                                    items::send_inventory(&mut level.entities, id);
                                 }
                             });
                             true

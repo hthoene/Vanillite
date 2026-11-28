@@ -71,6 +71,17 @@ public final class ParityHooks {
   }
 
   /**
+   * Replaces {@code RandomSource.create()} in the {@code Raid} constructors: once the entity seed
+   * stream runs, a raid's random is seeded with its next value (Vanillite's {@code Raid::new}
+   * takes the next entity seed). The unique seed is still taken, so the seeds of all other
+   * randoms stay the same.
+   */
+  public static synchronized RandomSource raidRandom() {
+    long seed = uniqueSeed();
+    return RandomSource.create(stream != null ? stream.nextLong() : seed);
+  }
+
+  /**
    * Replaces {@code Collections.shuffle(list)}, which draws from an unseeded JVM wide random:
    * while a scenario runs, every such shuffle uses a new {@code java.util.Random} seeded with
    * {@link #SHUFFLE_SEED}, as Vanillite's scenario world does.
