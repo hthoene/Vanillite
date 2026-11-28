@@ -57,12 +57,37 @@ impl Default for SignText {
 }
 
 impl SignText {
+    /// `hasEditableText`: every line is empty or plain text.
+    pub fn has_editable_text(&self) -> bool {
+        self.messages
+            .iter()
+            .all(|m| matches!(m.content, vanillite_protocol::text::Content::Text(_)))
+    }
+
+    /// The `sign_text_front`/`sign_text_back` component value of `stack` (`SignText.EMPTY`
+    /// without it).
+    pub fn of_component(stack: &ItemStack, id: u16) -> SignText {
+        stack
+            .component(id)
+            .and_then(|w| crate::item_nbt::component_to_nbt(id, w))
+            .and_then(|t| match t {
+                Tag::Compound(c) => Some(SignText::load(&c)),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// This side as a `sign_text_front`/`sign_text_back` component value.
+    pub fn component(&self, id: u16) -> Option<Box<[u8]>> {
+        crate::item_nbt::component_from_nbt(id, &Tag::Compound(self.save()))
+    }
+
     /// `hasMessage`: any non-empty line.
     fn has_message(&self) -> bool {
         self.messages.iter().any(|m| !m.plain().is_empty())
     }
 
-    fn save(&self) -> Compound {
+    pub(crate) fn save(&self) -> Compound {
         let mut c = Compound::new();
         let mut list = List::new();
         for m in &self.messages {
@@ -75,7 +100,7 @@ impl SignText {
         c
     }
 
-    fn load(c: &Compound) -> SignText {
+    pub(crate) fn load(c: &Compound) -> SignText {
         let mut text = SignText::default();
         if let Some(Tag::List(list)) = c.get("messages") {
             for (slot, tag) in text.messages.iter_mut().zip(&list.0) {

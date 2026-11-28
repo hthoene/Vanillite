@@ -1305,7 +1305,10 @@ fn place_shulker_box(level: &mut Level, source: Source, stack: &mut ItemStack) -
             level.set_block(target, updated, update::CLIENTS);
             placed = updated;
         }
-        super::container::apply_item_components(level, target, stack);
+        // `BlockItem.place` without a player: `updateCustomBlockEntityTag` (no operator-only
+        // kinds) and `applyComponentsFromItemStack` (name, lock, contents, loot).
+        crate::level::block_entity::apply_block_entity_data(level, target, stack, false);
+        crate::level::block_entity::apply_components(level, target, stack);
     }
     let sound = placed.block().sound();
     level.play_block_sound(

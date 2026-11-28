@@ -149,6 +149,9 @@ pub mod ids {
     pub const LODESTONE_TRACKER: u16 = find("minecraft:lodestone_tracker");
     pub const EQUIPPABLE: u16 = find("minecraft:equippable");
     pub const BEES: u16 = find("minecraft:bees");
+    pub const SIGN_TEXT_FRONT: u16 = find("minecraft:sign_text_front");
+    pub const SIGN_TEXT_BACK: u16 = find("minecraft:sign_text_back");
+    pub const WAXED: u16 = find("minecraft:waxed");
     pub const CHARGED_PROJECTILES: u16 = find("minecraft:charged_projectiles");
     pub const INTANGIBLE_PROJECTILE: u16 = find("minecraft:intangible_projectile");
     pub const CUSTOM_DATA: u16 = find("minecraft:custom_data");
