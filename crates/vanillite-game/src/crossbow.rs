@@ -482,7 +482,6 @@ pub fn shoot(
             let arrow = crate::mob::projectile::shoot_arrow(
                 ents,
                 network_ids,
-                random,
                 start,
                 to_vec3(dir),
                 power,

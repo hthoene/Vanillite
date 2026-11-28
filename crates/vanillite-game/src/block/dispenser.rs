@@ -1761,11 +1761,10 @@ pub fn spawn_projectile_item(
     let id = item::item_id(stack);
     if [items::ARROW, items::TIPPED_ARROW, items::SPECTRAL_ARROW].contains(&id) {
         // `new Arrow(level, x, y, z, stack, null)` with `pickup = ALLOWED`.
-        let (entities, _, random) = level.entity_parts();
+        let (entities, _, _) = level.entity_parts();
         return Some(crate::mob::projectile::shoot_arrow(
             entities,
             &network_ids,
-            random,
             at,
             dir,
             power,

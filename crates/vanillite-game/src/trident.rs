@@ -162,8 +162,12 @@ pub fn release(
         let start = Vec3::new(pos.x, pos.y + eye - f64::from(0.1_f32), pos.z);
         let mut data = MissileData::new(MissileKind::Trident);
         data.ints[3] = crate::mob::fam::undead::trident::loyalty(&thrown);
+        data.foil = crate::mob::fam::undead::trident::has_foil(&thrown);
+        // `AbstractArrow`: an `intangible_projectile` stack makes it creative only, like a
+        // creative player's throw.
+        let intangible = crate::crossbow::is_intangible(&thrown);
         data.item = thrown;
-        data.pickup = if creative { 2 } else { 1 };
+        data.pickup = if creative || intangible { 2 } else { 1 };
         let id = crate::mob::missile::spawn_from_rotation(
             ents,
             network_ids,
@@ -316,14 +320,20 @@ pub fn tick_spin_attacks(
         else {
             continue;
         };
+        // `getEntities(this, box)`: no spectators.
         let mut found = Vec::new();
         ents.store.for_each_in(&spin.swept, false, |e| {
-            if e != player {
+            let spectator = ents
+                .player(e)
+                .is_some_and(|p| p.game_mode == GameMode::Spectator);
+            if e != player && !spectator {
                 found.push(e);
             }
         });
         found.sort_unstable();
         let mut ticks = spin.ticks;
+        // A wall ends the spin only when the box holds no entity at all.
+        let any = !found.is_empty();
         let hit = found
             .into_iter()
             .find(|&e| ents.mob(e).is_some() || ents.player(e).is_some());
@@ -335,7 +345,7 @@ pub fn tick_spin_attacks(
                 let v = e.as_ref().velocity();
                 e.set_velocity(v * -0.2);
             }
-        } else if spin.horizontal_collision {
+        } else if !any && spin.horizontal_collision {
             ticks = 0;
         }
         let Entities { store, players, .. } = &mut *ents;

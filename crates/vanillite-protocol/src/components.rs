@@ -151,6 +151,7 @@ pub mod ids {
     pub const BEES: u16 = find("minecraft:bees");
     pub const CHARGED_PROJECTILES: u16 = find("minecraft:charged_projectiles");
     pub const INTANGIBLE_PROJECTILE: u16 = find("minecraft:intangible_projectile");
+    pub const ENCHANTMENT_GLINT_OVERRIDE: u16 = find("minecraft:enchantment_glint_override");
     pub const CUSTOM_DATA: u16 = find("minecraft:custom_data");
     pub const BUCKET_ENTITY_DATA: u16 = find("minecraft:bucket_entity_data");
     pub const WEAPON: u16 = find("minecraft:weapon");

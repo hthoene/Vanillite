@@ -794,7 +794,7 @@ impl WorldPlayers {
             .filter(|(_, p)| p.game_mode == GameMode::Spectator)
             .map(|(id, _)| id)
             .collect();
-        let mut swings: Vec<(EntityId, Hand)> = Vec::new();
+        let mut swings: Vec<(EntityId, (Hand, bool))> = Vec::new();
         for (id, player) in players.iter_mut() {
             player.connection.play.fast_break_check = rules.digging.fast_break_check;
             let Some(entity) = level.entities.store.get(id) else {
@@ -843,7 +843,7 @@ impl WorldPlayers {
             let protected = |pos: BlockPos| protection.protects(pos, op);
             let (aabb, dims) = (entity.aabb(), entity.dims());
             let mut drops: Vec<Drop> = Vec::new();
-            let mut hands: Vec<Hand> = Vec::new();
+            let mut hands: Vec<(Hand, bool)> = Vec::new();
             let handled = {
                 let mut level = WorldLevel {
                     level: &mut *level,
@@ -1032,15 +1032,27 @@ impl WorldPlayers {
         }
         let entities = &mut level.entities;
         // Hand swings go to the players that see the swinging one (`sendToTrackingPlayers`).
-        for (id, hand) in swings {
+        for (id, (hand, attack)) in swings {
             let Some(network_id) = entities.store.get(id).map(|e| e.network_id().0) else {
+                continue;
+            };
+            // `LivingEntity.swing(hand, animation, false)`: only when `startIfAble` lets it.
+            let Some((kind, duration)) = entities.player_mut(id).and_then(|p| {
+                let animation = if attack {
+                    vanillite_game::item::attack_animation(p.inventory.selected_item())
+                } else {
+                    (1, 6)
+                };
+                vanillite_game::survival::player::start_swing(&mut p.survival, animation.1)
+                    .then_some(animation)
+            }) else {
                 continue;
             };
             let packet = SharedPacket::of(&SwingAnimation {
                 entity_id: network_id,
                 hand,
-                kind: 1,
-                duration: 6,
+                kind,
+                duration,
             });
             for viewer in blocks.tracker.seen_by(id) {
                 if let Some(p) = entities.player(*viewer) {

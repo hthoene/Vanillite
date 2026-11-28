@@ -681,8 +681,8 @@ fn attack_hit(
     if enemy {
         hurt_weapon(ents, env, attacker, weapon);
         if smash && let Some(p) = ents.player_mut(attacker) {
-            // `MaceItem.postHurtEnemy`: `resetFallDistance`.
-            p.survival.fall_distance = 0.0;
+            // `MaceItem.postHurtEnemy`: `resetFallDistance` (`FALL_FROM_HEIGHT`).
+            crate::advancements::tracking::reset_fall_distance(p);
         }
     }
     damage_stats_and_hearts(ents, cx, attacker, target, old_health);
@@ -852,6 +852,9 @@ fn mace_hurt_enemy(
     }) else {
         return;
     };
+    if t_on_ground && let Some(p) = ents.player_mut(attacker) {
+        p.survival.spawn_extra_particles_on_fall = true;
+    }
     let sound = if t_on_ground {
         if fall_distance > 5.0 {
             "minecraft:item.mace.smash_ground_heavy"
@@ -873,20 +876,26 @@ fn mace_hurt_enemy(
     let mut near = Vec::new();
     ents.store
         .for_each_in(&tbox.inflate(3.5, 3.5, 3.5), false, |e| near.push(e));
+    let target_uuid = ents.store.get(target).map(|e| e.uuid());
     for nearby in near {
+        // `knockbackPredicate`: living, no spectator, neither attacker nor target, not allied
+        // to the attacker, no tamed animal of the target, no marker armor stand, no flying
+        // creative player.
         if nearby == attacker || nearby == target {
             continue;
         }
-        let living = ents.mob(nearby).is_some_and(super::MobData::is_alive)
-            || ents
-                .player(nearby)
-                .is_some_and(|p| p.game_mode != vanillite_config::GameMode::Spectator);
-        if !living {
+        let living = ents.mob(nearby).is_some()
+            || ents.player(nearby).is_some_and(|p| {
+                p.game_mode != vanillite_config::GameMode::Spectator
+                    && !(p.game_mode == vanillite_config::GameMode::Creative && p.survival.flying)
+            });
+        if !living || is_allied(ents, env, attacker, nearby) {
             continue;
         }
-        // Tamed animals of the attacker stay.
         if ents.mob(nearby).is_some_and(|m| {
-            m.owner.is_some() && m.owner == ents.store.get(attacker).map(|e| e.uuid())
+            (m.tame && m.owner.is_some() && m.owner == target_uuid)
+                || (crate::decoration::stand::is_stand(m.kind)
+                    && crate::decoration::stand::is_marker(m))
         }) {
             continue;
         }

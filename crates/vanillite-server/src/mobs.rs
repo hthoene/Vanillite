@@ -1775,7 +1775,7 @@ pub fn player_entity_action(
             if !usable {
                 return;
             }
-            let Some(target) = in_reach(ents, player, network_id) else {
+            let Some(target) = attack_target(level, ents, player, network_id) else {
                 return;
             };
             if player_entity_event(env.hooks, ents, player, target, None) {
@@ -1795,7 +1795,7 @@ pub fn player_entity_action(
             sneaking,
             location,
         } => {
-            let Some(target) = in_reach(ents, player, entity) else {
+            let Some(target) = in_reach_bordered(level, ents, player, entity) else {
                 return;
             };
             if player_entity_event(env.hooks, ents, player, target, Some((hand, location))) {
@@ -1914,7 +1914,7 @@ pub fn player_entity_action(
             vanillite_game::player::using::release(ents, env, network_ids, player);
         }
         EntityAction::Spectate(network_id) => {
-            if let Some(target) = in_reach(ents, player, network_id) {
+            if let Some(target) = in_reach_bordered(level, ents, player, network_id) {
                 crate::spectator::spectate(ents, &level.border, env.hooks, player, target);
             }
         }
@@ -1959,15 +1959,13 @@ pub fn player_vehicle_input(
     }
 }
 
-/// The entity with `network_id` if `player` can reach it (`isWithinEntityInteractionRange`:
-/// 3 blocks plus 3 from the eyes to its box).
-/// A dragon part (`getEntityOrPart`) is reached by its own box; the hit goes to the dragon.
-fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<EntityId> {
+/// The entity (or dragon part) with `network_id` other than `player` and its box: a dragon
+/// part (`getEntityOrPart`) is reached by its own box; the hit goes to the dragon.
+fn entity_or_part(ents: &Entities, player: EntityId, network_id: i32) -> Option<(EntityId, Aabb)> {
     let target = ents.by_network_id(network_id)?;
     if target == player {
         return None;
     }
-    let pe = ents.store.get(player)?;
     let te = ents.store.get(target)?;
     let target_box = match dragon::part_of(ents, target, network_id) {
         Some(i) => ents
@@ -1976,12 +1974,113 @@ fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<Entity
             .map_or(te.aabb(), |s| s.part_box(i)),
         None => te.aabb(),
     };
-    let eye = Vec3::new(
+    Some((target, target_box))
+}
+
+/// `getEyePosition` of a player.
+fn eye_of(ents: &Entities, player: EntityId) -> Option<Vec3> {
+    let pe = ents.store.get(player)?;
+    Some(Vec3::new(
         pe.pos().x,
         pe.pos().y + f64::from(pe.kind().info().eye_height) * f64::from(pe.dims().height / 1.8),
         pe.pos().z,
+    ))
+}
+
+/// The player's `entityInteractionRange()`.
+fn entity_range(ents: &Entities, player: EntityId) -> f64 {
+    ents.player(player).map_or(3.0, |p| {
+        vanillite_game::player::play::interaction_ranges(&p.inventory, p.game_mode).1
+    })
+}
+
+/// `level.getWorldBorder().isWithinBounds(target.blockPosition())`.
+fn in_border(level: &Level, ents: &Entities, target: EntityId) -> bool {
+    ents.store.get(target).is_some_and(|e| {
+        let p = BlockPos::containing(e.pos().x, e.pos().y, e.pos().z);
+        level
+            .border
+            .is_within_bounds(f64::from(p.x), f64::from(p.z))
+    })
+}
+
+/// The entity with `network_id` if `player` can reach it (`isWithinEntityInteractionRange`
+/// with a buffer of 3: the entity interaction range plus 3 from the eyes to its box).
+fn in_reach(ents: &Entities, player: EntityId, network_id: i32) -> Option<EntityId> {
+    let (target, target_box) = entity_or_part(ents, player, network_id)?;
+    let max = entity_range(ents, player) + 3.0;
+    (distance_sqr_to_box(&target_box, eye_of(ents, player)?) < max * max).then_some(target)
+}
+
+/// [`in_reach`] inside the world border (`handleInteract`, `handleSpectatorAction`).
+fn in_reach_bordered(
+    level: &Level,
+    ents: &Entities,
+    player: EntityId,
+    network_id: i32,
+) -> Option<EntityId> {
+    in_reach(ents, player, network_id).filter(|&t| in_border(level, ents, t))
+}
+
+/// `handleAttack`'s checks: the target is inside the world border and within the main hand's
+/// `attack_range` (`isWithinAttackRange(mainHand, box, 3)`), the main hand holds no
+/// `piercing_weapon` and its `minimum_attack_charge` is reached (`cannotAttackWithItem(5)`);
+/// items, experience orbs and arrows that cannot be attacked are refused.
+fn attack_target(
+    level: &Level,
+    ents: &Entities,
+    player: EntityId,
+    network_id: i32,
+) -> Option<EntityId> {
+    let (target, target_box) = entity_or_part(ents, player, network_id)?;
+    if !in_border(level, ents, target) {
+        return None;
+    }
+    let p = ents.player(player)?;
+    let main_hand = p.inventory.selected_item();
+    let range = vanillite_game::spear::attack_range(
+        main_hand,
+        // `AttackRange.defaultFor`: the entity interaction range.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            entity_range(ents, player) as f32
+        },
     );
-    (distance_sqr_to_box(&target_box, eye) < 36.0).then_some(target)
+    let creative = p.game_mode == GameMode::Creative;
+    let (min, max) = if creative {
+        (range.min_creative_reach, range.max_creative_reach)
+    } else {
+        (range.min_reach, range.max_reach)
+    };
+    let distance = distance_sqr_to_box(&target_box, eye_of(ents, player)?).sqrt();
+    let margin = f64::from(range.hitbox_margin);
+    if distance < f64::from(min) - margin - 3.0 || distance > f64::from(max) + margin + 3.0 {
+        return None;
+    }
+    if vanillite_game::spear::piercing_weapon(main_hand).is_some() {
+        return None;
+    }
+    let kind = ents.store.get(target)?.kind();
+    if [
+        ids::ITEM,
+        ids::EXPERIENCE_ORB,
+        ids::ARROW,
+        ids::SPECTRAL_ARROW,
+        ids::TRIDENT,
+    ]
+    .contains(&kind)
+    {
+        return None;
+    }
+    // `cannotAttackWithItem(mainHand, 5)`.
+    let required = vanillite_game::spear::minimum_attack_charge(main_hand);
+    #[allow(clippy::cast_precision_loss)]
+    let optimistic = (p.survival.attack_ticker as f32 + 5.0)
+        / vanillite_game::mob::attack::attack_strength_delay(ents, player);
+    if required > 0.0 && optimistic < required {
+        return None;
+    }
+    Some(target)
 }
 
 /// `Entity.getPickResult`: a mob's spawn egg, or the item of a vehicle or decoration.

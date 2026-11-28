@@ -273,6 +273,10 @@ pub struct Survival {
     pub in_powder_snow: bool,
     /// `lastHurtMob` with the tick it was hit (`lastHurtMobTimestamp`).
     pub last_hurt_mob: Option<(vanillite_world::entity::EntityId, i32)>,
+    /// `swingState`: the ticks of the running swing and its duration.
+    pub swing: Option<(i32, i32)>,
+    /// `spawnExtraParticlesOnFall`: the next landing bursts block particles (mace smash).
+    pub spawn_extra_particles_on_fall: bool,
     /// `lastHurtByMob` with the tick it hit (`lastHurtByMobTimestamp`).
     pub last_hurt_by_mob: Option<(vanillite_world::entity::EntityId, i32)>,
     /// `lastHurtByPlayer` with the ticks it is still remembered (`lastHurtByPlayerMemoryTime`).
@@ -404,6 +408,8 @@ impl Default for Survival {
             ticks_frozen: 0,
             in_powder_snow: false,
             last_hurt_mob: None,
+            spawn_extra_particles_on_fall: false,
+            swing: None,
             last_hurt_by_mob: None,
             last_hurt_by_player: None,
             last_hurt_by_names: (None, None),
@@ -643,6 +649,8 @@ impl Survival {
             s.raid_omen.position = Some(BlockPos::new(*x, *y, *z));
         }
         s.tracking = crate::advancements::tracking::Tracking::load(data);
+        s.spawn_extra_particles_on_fall =
+            matches!(data.get("spawn_extra_particles_on_fall"), Some(Tag::Byte(b)) if *b != 0);
         if let Some(Tag::Compound(loc)) = data.get("LastDeathLocation")
             && let (Some(Tag::String(dim)), Some(Tag::IntArray(pos))) =
                 (loc.get("dimension"), loc.get("pos"))
@@ -702,6 +710,10 @@ impl Survival {
         self.portal.save(out);
         self.tracking.save(out);
         self.food.save(out);
+        out.insert(
+            "spawn_extra_particles_on_fall",
+            Tag::Byte(i8::from(self.spawn_extra_particles_on_fall)),
+        );
         out.remove("raid_omen_position");
         if let Some(p) = self.raid_omen.position {
             out.insert("raid_omen_position", Tag::IntArray(vec![p.x, p.y, p.z]));
@@ -1966,6 +1978,29 @@ pub enum TickResult {
     Credits,
 }
 
+/// `LivingEntity.swing`'s `swingState.startIfAble` with `getModifiedSwingDuration`: refused
+/// while a swing is in its first half; returns whether the swing starts (and is sent).
+pub fn start_swing(s: &mut Survival, duration: i32) -> bool {
+    if let Some((ticks, current)) = s.swing
+        && ticks > 0
+        && ticks <= current / 2
+    {
+        return false;
+    }
+    let duration = if s.effects.has_dig_speed() {
+        duration - (1 + s.effects.dig_speed_amplification())
+    } else if let Some(fatigue) = s
+        .effects
+        .amplifier(crate::effect::MobEffect::MINING_FATIGUE)
+    {
+        duration + (1 + fatigue) * 2
+    } else {
+        duration
+    };
+    s.swing = Some((0, duration));
+    true
+}
+
 /// `ServerPlayer.tick`'s survival part (once per world tick, with the entities).
 pub fn tick_entity(player: &mut PlayerData) {
     let s = &mut player.survival;
@@ -1973,6 +2008,10 @@ pub fn tick_entity(player: &mut PlayerData) {
         s.damage_cooldown -= 1;
     }
     s.attack_ticker = s.attack_ticker.saturating_add(1);
+    // `SwingState.tick`.
+    if let Some((ticks, duration)) = s.swing {
+        s.swing = (ticks <= duration).then_some((ticks.saturating_add(1), duration));
+    }
     if s.take_xp_delay > 0 {
         s.take_xp_delay -= 1;
     }
@@ -3187,6 +3226,36 @@ fn check_fall_damage(
     if !player.survival.fluids.in_water() && dy < 0.0 {
         player.survival.fall_distance -= dy;
     }
+    // `ServerPlayer.checkFallDamage`: the landing after a mace smash on the ground bursts
+    // block particles.
+    if player.survival.spawn_extra_particles_on_fall
+        && on_ground
+        && player.survival.fall_distance > 0.0
+    {
+        let center = Vec3::new(
+            f64::from(on_pos.x) + 0.5,
+            f64::from(on_pos.y) + 1.0,
+            f64::from(on_pos.z) + 0.5,
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        let count = (50.0 * player.survival.fall_distance).clamp(0.0, 200.0) as i32;
+        let mut particle = crate::level::particles::simple("minecraft:block");
+        vanillite_protocol::codec::write_varint(&mut particle.options, i32::from(on_state.0));
+        let packet = crate::level::particles::packet(
+            particle,
+            center,
+            count,
+            Vec3::new(0.3, 0.3, 0.3),
+            f64::from(0.15_f32),
+        );
+        env.out.push(Effect::Nearby {
+            pos: center,
+            range: 32.0,
+            except: None,
+            packet: SharedPacket::of(&packet),
+        });
+        player.survival.spawn_extra_particles_on_fall = false;
+    }
     if on_ground {
         let fall = player.survival.fall_distance;
         if fall > 0.0 {
@@ -4011,6 +4080,22 @@ fn decrease_air(player: &mut PlayerData, air: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// `SwingState.startIfAble`: a new swing starts unless the current one is in its first
+    /// half; Haste shortens the duration (#272, I3-16).
+    #[test]
+    fn swing_starts_only_after_half_the_current_one() {
+        let mut s = Survival::default();
+        assert!(start_swing(&mut s, 6));
+        assert_eq!(s.swing, Some((0, 6)));
+        // In the same tick (ticks 0) it starts again.
+        assert!(start_swing(&mut s, 6));
+        s.swing = Some((3, 6));
+        assert!(!start_swing(&mut s, 6));
+        s.swing = Some((4, 6));
+        assert!(start_swing(&mut s, 6));
+    }
+
     use super::*;
 
     /// `calculateFallDamage` of Vanilla 26.3: `floor(distance + 1e-6 - 3)`.

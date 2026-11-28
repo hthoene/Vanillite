@@ -300,6 +300,7 @@ fn powered_wither_ignores_arrows() {
         ),
         ArrowData {
             owner: None,
+            owner_uuid: None,
             base_damage: 2.0,
             in_ground: false,
             life: 0,

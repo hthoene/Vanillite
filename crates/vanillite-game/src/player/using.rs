@@ -1200,7 +1200,6 @@ fn shoot_bow(
     crate::mob::projectile::shoot_arrow(
         ents,
         network_ids,
-        env.random,
         eye,
         dir,
         power * 3.0,
@@ -1211,6 +1210,29 @@ fn shoot_bow(
         power >= 1.0,
         pickup,
     );
+    // `ProjectileWeaponItem.shoot`: the bow's `hurtAndBreak` comes before the sound.
+    if !creative {
+        // The bow loses one durability (with Unbreaking).
+        let unbreaking = crate::player::play::game_data()
+            .map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
+        let level = f32::from(i16::try_from(unbreaking.clamp(0, 255)).unwrap_or(0));
+        let keeps = unbreaking > 0 && env.random.next_float() >= 1.0 / (level + 1.0);
+        let i = hand_index(ents, player, u.hand);
+        if !keeps && let Some(p) = ents.player_mut(player) {
+            let crate::player::PlayerData {
+                inventory,
+                advancements,
+                stats,
+                ..
+            } = p;
+            if let Some(s) = inventory.get_mut(i)
+                && item::is_damageable(s)
+            {
+                let d = item::damage(s).saturating_add(1);
+                crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d);
+            }
+        }
+    }
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
     let pitch = 1.0 / (env.random.next_float() * 0.4 + 1.2) + power * 0.5;
     let seed = crate::survival::sound_seed();
@@ -1236,28 +1258,6 @@ fn shoot_bow(
         && let Some(s) = p.inventory.get_mut(i)
     {
         s.shrink(1);
-    }
-    if !creative {
-        // The bow loses one durability (with Unbreaking).
-        let unbreaking = crate::player::play::game_data()
-            .map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
-        let level = f32::from(i16::try_from(unbreaking.clamp(0, 255)).unwrap_or(0));
-        let keeps = unbreaking > 0 && env.random.next_float() >= 1.0 / (level + 1.0);
-        let i = hand_index(ents, player, u.hand);
-        if !keeps && let Some(p) = ents.player_mut(player) {
-            let crate::player::PlayerData {
-                inventory,
-                advancements,
-                stats,
-                ..
-            } = p;
-            if let Some(s) = inventory.get_mut(i)
-                && item::is_damageable(s)
-            {
-                let d = item::damage(s).saturating_add(1);
-                crate::advancements::view::apply_damage(Some(advancements), Some(stats), s, d);
-            }
-        }
     }
 }
 
