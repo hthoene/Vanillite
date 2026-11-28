@@ -939,7 +939,11 @@ impl GameWorld {
             }
             self.finish_removals();
         }
-        // `rideTick`: passengers follow their vehicles (as the server's `WorldMobs`).
+        // `rideTick`: sneaking players get off, passengers follow their vehicles (as the
+        // server's `WorldMobs`).
+        self.with_env(|_, ents, env, _| {
+            vanillite_game::riding::stop_riding_sneaking_players(ents, env);
+        });
         vanillite_game::riding::ride_tick(&mut self.level.entities);
         // Leads after the entities (`WorldMobs` of the server): orphaned leads, gone knots.
         let discarded = self.with_env(|level, ents, env, _| {
@@ -1573,11 +1577,15 @@ fn running(kind: Kind, slots: &[Slot]) -> Value {
 fn goal_name(kind: Kind, goal: &Goal) -> &'static str {
     match goal {
         Goal::Float => "FloatGoal",
+        Goal::Panic { .. } if matches!(kind, Kind::Horse | Kind::Donkey | Kind::Mule) => {
+            "MountPanicGoal"
+        }
         Goal::Panic { .. } => "PanicGoal",
         Goal::Stroll { .. } => "WaterAvoidingRandomStrollGoal",
         Goal::LookAtPlayer { .. } if kind == Kind::Fox => "FoxLookAtPlayerGoal",
         Goal::LookAtPlayer { .. } => "LookAtPlayerGoal",
         Goal::RandomLook { .. } => "RandomLookAroundGoal",
+        Goal::Melee { .. } if kind == Kind::Bee => "BeeAttackGoal",
         Goal::Melee { kind, .. } => match kind {
             MeleeKind::Plain => "MeleeAttackGoal",
             MeleeKind::Zombie => "ZombieAttackGoal",
@@ -1592,9 +1600,12 @@ fn goal_name(kind: Kind, goal: &Goal) -> &'static str {
         Goal::FollowParent { .. } => "FollowParentGoal",
         Goal::NearestTarget { spider: true, .. } => "SpiderTargetGoal",
         Goal::NearestTarget { .. } => "NearestAttackableTargetGoal",
+        Goal::HurtBy { .. } if kind == Kind::Bee => "BeeHurtByOtherGoal",
+        Goal::HurtBy { .. } if kind == Kind::Panda => "PandaHurtByTargetGoal",
         Goal::HurtBy { .. } => "HurtByTargetGoal",
         Goal::EndermanFreeze { .. } => "EndermanFreezeWhenLookedAt",
         Goal::EndermanStare { .. } => "EndermanLookForPlayerGoal",
+        Goal::Breed { .. } if kind == Kind::Panda => "PandaBreedGoal",
         Goal::Breed { .. } => "BreedGoal",
         Goal::Tempt { .. } => "TemptGoal",
         Goal::SitWhenOrdered => "SitWhenOrderedToGoal",
@@ -1603,6 +1614,9 @@ fn goal_name(kind: Kind, goal: &Goal) -> &'static str {
         Goal::FollowOwner { .. } => "FollowOwnerGoal",
         Goal::OwnerHurtBy { .. } => "OwnerHurtByTargetGoal",
         Goal::OwnerHurt { .. } => "OwnerHurtTargetGoal",
+        Goal::Common(CommonGoal::NearestAttackable { .. }) if kind == Kind::Bee => {
+            "BeeBecomeAngryTargetGoal"
+        }
         Goal::Common(c) => common_goal_name(c),
         Goal::Fam(f) => fam_goal_name(kind, f),
         Goal::Guardian(g) => {
@@ -1738,6 +1752,7 @@ fn fam_goal_name(kind: Kind, goal: &FamGoal) -> &'static str {
             ("Fox", "Avoid") => "AvoidEntityGoal",
             ("Fox", "Pounce") => "FoxPounceGoal",
             ("Fox", "EatBerries") => "FoxEatBerriesGoal",
+            ("Fox", "StrollThroughVillage") => "FoxStrollThroughVillageGoal",
             ("Fox", "SearchForItems") => "FoxSearchForItemsGoal",
             ("Fox", "DefendTrusted") => "DefendTrustedTargetGoal",
             ("Panda", "BreedCheck") => "PandaBreedGoal",

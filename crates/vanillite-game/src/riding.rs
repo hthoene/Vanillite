@@ -859,6 +859,23 @@ pub fn position_all_riders(ents: &mut Entities) {
     }
 }
 
+/// `Player.rideTick`'s `wantsToStopRiding`: a player who holds sneak (its last `player_input`)
+/// gets off its vehicle after the vehicles ticked, before the passengers are placed.
+pub fn stop_riding_sneaking_players(ents: &mut Entities, env: &mut Env<'_>) {
+    if ents.riding.is_empty() {
+        return;
+    }
+    let sneaking: Vec<EntityId> = ents
+        .players
+        .iter()
+        .filter(|(id, p)| p.connection.vehicle.input.shift && ents.riding.vehicle_of(*id).is_some())
+        .map(|(id, _)| id)
+        .collect();
+    for player in sneaking {
+        stop_riding(ents, env, player);
+    }
+}
+
 /// `rideTick` of every passenger: [`position_all_riders`] with the riding statistics of the
 /// players (`ServerPlayer.checkRidingStatistics`).
 pub fn ride_tick(ents: &mut Entities) {

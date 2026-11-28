@@ -842,6 +842,7 @@ pub fn mob_spawn_part_last(kind: Kind) -> bool {
             | Kind::Vex
             | Kind::Axolotl
             | Kind::Fox
+            | Kind::Panda
     )
 }
 

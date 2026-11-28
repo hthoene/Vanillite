@@ -953,8 +953,16 @@ impl FamilyHooks for Hooks {
     }
 
     fn look_control(t: &mut Tick<'_, '_>) -> bool {
-        // `BeeLookControl`: angry bees do not turn their heads.
-        t.mob_ref().kind == Kind::Bee && bee::is_angry(t)
+        if t.mob_ref().kind != Kind::Bee {
+            return false;
+        }
+        // `BeeLookControl`: angry bees do not turn their heads; a pollinating bee keeps its
+        // pitch (`resetXRotOnTick`).
+        if !bee::is_angry(t) {
+            let reset = !bee::is_pollinating(t.mob_ref());
+            crate::mob::nav::default_look_tick(t, reset);
+        }
+        true
     }
 
     fn do_hurt_target(t: &mut Tick<'_, '_>, target: EntityId) -> Option<bool> {

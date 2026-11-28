@@ -335,10 +335,41 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         out.insert("Brain", brain);
     }
     if out.get("attributes").is_none() {
-        out.insert("attributes", vanillite_nbt::List(Vec::new()));
+        out.insert("attributes", vanillite_nbt::List(created_attributes(m)));
     }
     out.insert("current_impulse_context_reset_grace_time", 0);
     out
+}
+
+/// The attribute instances `AttributeMap.pack` has of a mob that nothing else touched: the
+/// follow range `Mob.finalizeSpawn` gave its `random_spawn_bonus` and the movement speed
+/// `LivingEntity.aiStep`'s `removeFrost` looks up from the first tick on.
+fn created_attributes(m: &MobData) -> Vec<Tag> {
+    let mut list = Vec::new();
+    if m.spawn_bonus != 0.0 {
+        let mut bonus = Compound::new();
+        bonus.insert("id", "minecraft:random_spawn_bonus");
+        bonus.insert("amount", m.spawn_bonus);
+        bonus.insert("operation", "add_multiplied_base");
+        let mut c = Compound::new();
+        c.insert("id", "minecraft:follow_range");
+        c.insert("base", super::Attrs::of(m.kind.type_id()).follow_range);
+        c.insert("modifiers", vanillite_nbt::List(vec![Tag::Compound(bonus)]));
+        list.push(Tag::Compound(c));
+    }
+    if m.tick_count > 0 {
+        let base = crate::effect::living::mob_attribute_base(
+            m,
+            crate::effect::attribute::Attribute::MOVEMENT_SPEED,
+        );
+        if let Some(base) = base {
+            let mut c = Compound::new();
+            c.insert("id", "minecraft:movement_speed");
+            c.insert("base", base);
+            list.push(Tag::Compound(c));
+        }
+    }
+    list
 }
 
 fn variant_name(v: i32) -> &'static str {
