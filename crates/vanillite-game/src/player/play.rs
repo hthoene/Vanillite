@@ -1828,7 +1828,11 @@ impl Digging {
         if !ctx.level.set_block(target, state, update::ALL_IMMEDIATE) {
             return false;
         }
-        ctx.trigger(Event::PlacedBlock(target, stack.clone()));
+        // `PLACED_BLOCK` only while the placed block is still there (`placedState.is(block)`:
+        // not for concrete powder that hardened or TNT that primed at once).
+        if ctx.level.block(target).block() == state.block() {
+            ctx.trigger(Event::PlacedBlock(target, stack.clone()));
+        }
         if ctx.level.block(target).block() == state.block() {
             if let Some(updated) = apply_block_state_component(stack, state) {
                 ctx.level.set_block(target, updated, update::CLIENTS);

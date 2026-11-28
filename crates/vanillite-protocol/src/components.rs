@@ -161,6 +161,8 @@ pub mod ids {
     pub const GLIDER: u16 = find("minecraft:glider");
     pub const PROVIDES_TRIM_MATERIAL: u16 = find("minecraft:provides_trim_material");
     pub const BLOCK_TRANSFORMER: u16 = find("minecraft:block_transformer");
+    pub const COMPOSTABLE: u16 = find("minecraft:compostable");
+    pub const COOKING_FUEL: u16 = find("minecraft:cooking_fuel");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of

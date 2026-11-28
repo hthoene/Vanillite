@@ -128,6 +128,8 @@ pub struct EntityView<'a> {
     pub fall_flying: bool,
     pub in_water: bool,
     pub baby: bool,
+    /// A `LivingEntity` (players, mobs, armor stands, mannequins).
+    pub living: bool,
     /// Head, chest, legs, feet, body, main hand, off hand.
     pub equipment: [Cow<'a, ItemStack>; 7],
     /// The team name.
@@ -233,6 +235,7 @@ impl<'a> EntityView<'a> {
             fall_flying: false,
             in_water: false,
             baby: false,
+            living: false,
             equipment: std::array::from_fn(|_| Cow::Owned(ItemStack::EMPTY)),
             team: None,
             player: None,
@@ -400,6 +403,23 @@ enum SubPredicate {
     Present(u16),
     /// `potion_contents` with `effects`: the potions and the collection of all effects.
     PotionEffects(Option<IdSet>, CollectionPredicate<MobEffectsPredicate>),
+    /// `firework_explosion`.
+    FireworkExplosion(ExplosionTest),
+    /// `fireworks`: the explosions and the flight duration.
+    Fireworks(Option<CollectionPredicate<ExplosionTest>>, Bounds),
+    /// `writable_book_content`: the raw page texts.
+    WritableBook(Option<CollectionPredicate<String>>),
+    /// `written_book_content`: pages (raw text components), author, title, generation,
+    /// resolved.
+    WrittenBook {
+        pages: Option<CollectionPredicate<vanillite_nbt::Tag>>,
+        author: Option<String>,
+        title: Option<String>,
+        generation: Bounds,
+        resolved: Option<bool>,
+    },
+    /// `attribute_modifiers`: the modifier entries.
+    AttributeModifiers(Option<CollectionPredicate<ModifierTest>>),
     /// `container` (`nonEmptyItems`) or `bundle_contents` (`items`).
     Items {
         bundle: bool,
@@ -482,11 +502,54 @@ impl SubPredicate {
                 }
             }
             "minecraft:villager/variant" => SubPredicate::VillagerVariant(IdSet::parse(v)?),
-            "minecraft:firework_explosion"
-            | "minecraft:fireworks"
-            | "minecraft:writable_book_content"
-            | "minecraft:written_book_content"
-            | "minecraft:attribute_modifiers" => SubPredicate::Unsupported,
+            "minecraft:firework_explosion" => {
+                SubPredicate::FireworkExplosion(ExplosionTest::parse(v)?)
+            }
+            "minecraft:fireworks" => {
+                let o = o()?;
+                SubPredicate::Fireworks(
+                    o.get("explosions")
+                        .map(|e| CollectionPredicate::parse(e, ExplosionTest::parse))
+                        .transpose()?,
+                    Bounds::field(o, "flight_duration")?,
+                )
+            }
+            "minecraft:writable_book_content" => {
+                SubPredicate::WritableBook(
+                    o()?.get("pages")
+                        .map(|p| {
+                            CollectionPredicate::parse(p, |e| {
+                                Ok(string(object(e)?.get("contents").ok_or("no contents")?)?
+                                    .to_owned())
+                            })
+                        })
+                        .transpose()?,
+                )
+            }
+            "minecraft:written_book_content" => {
+                let o = o()?;
+                SubPredicate::WrittenBook {
+                    pages: o
+                        .get("pages")
+                        .map(|p| {
+                            CollectionPredicate::parse(p, |e| {
+                                Ok(text_nbt(&crate::item_nbt::json_to_nbt(
+                                    object(e)?.get("contents").ok_or("no contents")?,
+                                )))
+                            })
+                        })
+                        .transpose()?,
+                    author: o.get("author").map(string).transpose()?.map(str::to_owned),
+                    title: o.get("title").map(string).transpose()?.map(str::to_owned),
+                    generation: Bounds::field(o, "generation")?,
+                    resolved: o.get("resolved").and_then(Value::as_bool),
+                }
+            }
+            "minecraft:attribute_modifiers" => SubPredicate::AttributeModifiers(
+                o()?.get("modifiers")
+                    .map(|m| CollectionPredicate::parse(m, ModifierTest::parse))
+                    .transpose()?,
+            ),
             other => match vanillite_protocol::components_nbt::type_by_name(other) {
                 Some(t) => SubPredicate::Present(t),
                 None => return Err(format!("unknown item sub-predicate {other}")),
@@ -625,6 +688,88 @@ impl SubPredicate {
                     })
                     .collect();
                 potion_ok && effects.test(&all, |p, e| p.test(e))
+            }
+            SubPredicate::FireworkExplosion(test) => {
+                matches!(nbt(ids::FIREWORK_EXPLOSION), Some(vanillite_nbt::Tag::Compound(c)) if test.test(&c))
+            }
+            SubPredicate::Fireworks(explosions, flight) => {
+                let Some(vanillite_nbt::Tag::Compound(c)) = nbt(ids::FIREWORKS) else {
+                    return false;
+                };
+                let list = compounds(c.get("explosions"));
+                let duration = c
+                    .get("flight_duration")
+                    .and_then(vanillite_nbt::Tag::as_i64)
+                    .and_then(|v| i32::try_from(v).ok())
+                    .map_or(0.0, f64::from);
+                explosions
+                    .as_ref()
+                    .is_none_or(|e| e.test(&list, |t, c| t.test(c)))
+                    && flight.matches(duration)
+            }
+            SubPredicate::WritableBook(pages) => {
+                let Some(vanillite_nbt::Tag::Compound(c)) = nbt(ids::WRITABLE_BOOK_CONTENT) else {
+                    return false;
+                };
+                let raw: Vec<String> = pages_of(c.get("pages"))
+                    .into_iter()
+                    .filter_map(|t| t.as_str().map(str::to_owned))
+                    .collect();
+                pages
+                    .as_ref()
+                    .is_none_or(|p| p.test(&raw, |want, have| want == have))
+            }
+            SubPredicate::WrittenBook {
+                pages,
+                author,
+                title,
+                generation,
+                resolved,
+            } => {
+                let Some(vanillite_nbt::Tag::Compound(c)) = nbt(ids::WRITTEN_BOOK_CONTENT) else {
+                    return false;
+                };
+                let str_of = |k: &str| c.get(k).and_then(vanillite_nbt::Tag::as_str);
+                let title_raw = pages_of(
+                    c.get("title")
+                        .map(|t| vanillite_nbt::Tag::List(vanillite_nbt::List(vec![t.clone()])))
+                        .as_ref(),
+                )
+                .into_iter()
+                .next();
+                let raw: Vec<vanillite_nbt::Tag> =
+                    pages_of(c.get("pages")).iter().map(text_nbt).collect();
+                author
+                    .as_deref()
+                    .is_none_or(|a| str_of("author") == Some(a))
+                    && title.as_deref().is_none_or(|t| {
+                        title_raw.as_ref().and_then(vanillite_nbt::Tag::as_str) == Some(t)
+                    })
+                    && generation.matches(
+                        c.get("generation")
+                            .and_then(vanillite_nbt::Tag::as_i64)
+                            .and_then(|v| i32::try_from(v).ok())
+                            .map_or(0.0, f64::from),
+                    )
+                    && resolved.is_none_or(|r| {
+                        (c.get("resolved")
+                            .and_then(vanillite_nbt::Tag::as_i64)
+                            .unwrap_or(0)
+                            != 0)
+                            == r
+                    })
+                    && pages
+                        .as_ref()
+                        .is_none_or(|p| p.test(&raw, |want, have| want == have))
+            }
+            SubPredicate::AttributeModifiers(modifiers) => {
+                let Some(list) = nbt(ids::ATTRIBUTE_MODIFIERS) else {
+                    return false;
+                };
+                let entries = compounds(Some(&list));
+                modifiers
+                    .as_ref()
+                    .is_none_or(|m| m.test(&entries, |t, e| t.test(e, world)))
             }
             SubPredicate::Items { bundle, items } => {
                 let list = if *bundle {
@@ -810,6 +955,122 @@ impl<P> CollectionPredicate<P> {
         self.contains
             .iter()
             .chain(self.counts.iter().map(|(p, _)| p))
+    }
+}
+
+/// The compounds of a list tag.
+fn compounds(tag: Option<&vanillite_nbt::Tag>) -> Vec<vanillite_nbt::Compound> {
+    match tag {
+        Some(vanillite_nbt::Tag::List(l)) => {
+            l.0.iter()
+                .filter_map(|t| match t {
+                    vanillite_nbt::Tag::Compound(c) => Some(c.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The raw values of a list of `Filterable`s (a value, or `{raw, filtered}`).
+fn pages_of(tag: Option<&vanillite_nbt::Tag>) -> Vec<vanillite_nbt::Tag> {
+    match tag {
+        Some(vanillite_nbt::Tag::List(l)) => l
+            .0
+            .iter()
+            .filter_map(|t| match t {
+                vanillite_nbt::Tag::Compound(c) if c.get("raw").is_some() => c.get("raw").cloned(),
+                other => Some(other.clone()),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A text component in one comparable form: a plain string becomes `{text: ...}`.
+fn text_nbt(tag: &vanillite_nbt::Tag) -> vanillite_nbt::Tag {
+    match tag {
+        vanillite_nbt::Tag::String(s) => {
+            vanillite_nbt::Tag::Compound(vanillite_nbt::Compound::new().with("text", s.as_str()))
+        }
+        other => other.clone(),
+    }
+}
+
+/// `FireworkExplosionPredicate.FireworkPredicate` on an explosion in its persistent form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplosionTest {
+    shape: Option<String>,
+    twinkle: Option<bool>,
+    trail: Option<bool>,
+}
+
+impl ExplosionTest {
+    fn parse(v: &Value) -> Res<ExplosionTest> {
+        let o = object(v)?;
+        Ok(ExplosionTest {
+            shape: o.get("shape").map(string).transpose()?.map(str::to_owned),
+            twinkle: o.get("has_twinkle").and_then(Value::as_bool),
+            trail: o.get("has_trail").and_then(Value::as_bool),
+        })
+    }
+
+    fn test(&self, c: &vanillite_nbt::Compound) -> bool {
+        let flag = |k: &str| c.get(k).and_then(vanillite_nbt::Tag::as_i64).unwrap_or(0) != 0;
+        self.shape
+            .as_deref()
+            .is_none_or(|s| c.get("shape").and_then(vanillite_nbt::Tag::as_str) == Some(s))
+            && self.twinkle.is_none_or(|t| flag("has_twinkle") == t)
+            && self.trail.is_none_or(|t| flag("has_trail") == t)
+    }
+}
+
+/// `AttributeModifiersPredicate.EntryPredicate` on a modifier entry in its persistent form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModifierTest {
+    attribute: Option<IdSet>,
+    id: Option<String>,
+    amount: Bounds,
+    operation: Option<String>,
+    slot: Option<String>,
+}
+
+impl ModifierTest {
+    fn parse(v: &Value) -> Res<ModifierTest> {
+        let o = object(v)?;
+        let s = |k: &str| -> Res<Option<String>> {
+            Ok(o.get(k).map(string).transpose()?.map(str::to_owned))
+        };
+        Ok(ModifierTest {
+            attribute: o.get("attribute").map(IdSet::parse).transpose()?,
+            id: s("id")?.map(|i| qualify(&i)),
+            amount: Bounds::field(o, "amount")?,
+            operation: s("operation")?,
+            slot: s("slot")?,
+        })
+    }
+
+    fn test(&self, e: &vanillite_nbt::Compound, world: &dyn World) -> bool {
+        let s = |k: &str| e.get(k).and_then(vanillite_nbt::Tag::as_str);
+        self.attribute.as_ref().is_none_or(|set| {
+            s("type").is_some_and(|a| set.contains("minecraft:attribute", &qualify(a), world))
+        }) && self
+            .id
+            .as_deref()
+            .is_none_or(|i| s("id").map(qualify).as_deref() == Some(i))
+            && self.amount.matches(match e.get("amount") {
+                Some(vanillite_nbt::Tag::Double(d)) => *d,
+                _ => 0.0,
+            })
+            && self
+                .operation
+                .as_deref()
+                .is_none_or(|o| s("operation") == Some(o))
+            && self
+                .slot
+                .as_deref()
+                .is_none_or(|slot| s("slot").unwrap_or("any") == slot)
     }
 }
 
@@ -1915,6 +2176,9 @@ impl EntityPredicate {
             EntityPart::Type(types) => types.contains("minecraft:entity_type", e.kind, world),
             EntityPart::Location(l) => l.matches(world, e.pos),
             EntityPart::SteppingOn(l) => {
+                if !e.on_ground {
+                    return false;
+                }
                 let below =
                     crate::player::play::block_pos_of(Vec3::new(e.pos.x, e.pos.y - 0.2, e.pos.z));
                 let center = Vec3::new(
@@ -1932,7 +2196,11 @@ impl EntityPredicate {
                     "is_sneaking" => e.crouching,
                     "is_sprinting" => e.sprinting,
                     "is_swimming" => e.swimming,
-                    "is_flying" => e.flying || e.fall_flying,
+                    // `LivingEntity.isFallFlying` or `abilities.flying`.
+                    "is_flying" => e.living && (e.flying || e.fall_flying),
+                    // Not tested on entities that are not living.
+                    "is_fall_flying" if !e.living => return true,
+                    "is_baby" if !e.living => return true,
                     "is_fall_flying" => e.fall_flying,
                     "is_in_water" => e.in_water,
                     "is_baby" => e.baby,
@@ -1940,11 +2208,14 @@ impl EntityPredicate {
                 };
                 have == *want
             }),
-            EntityPart::Equipment(slots) => slots.iter().all(|(slot, p)| {
-                e.equipment
-                    .get(*slot)
-                    .is_some_and(|stack| p.test(stack, world))
-            }),
+            EntityPart::Equipment(slots) => {
+                e.living
+                    && slots.iter().all(|(slot, p)| {
+                        e.equipment
+                            .get(*slot)
+                            .is_some_and(|stack| p.test(stack, world))
+                    })
+            }
             EntityPart::Team(team) => e.team.as_deref() == Some(team.as_str()),
             EntityPart::Player(part) => e.player.is_some_and(|p| part.matches(&p, e.pos, world)),
             EntityPart::Vehicle(p) => e
@@ -2413,5 +2684,82 @@ mod tests {
         // No block entity.
         assert!(!partial.matches(&Named, BlockPos::new(0, -2, 0)));
         assert!(!partial.matches_state(Flat.block(at).unwrap(), &Named));
+    }
+
+    /// `EntityFlagsPredicate`, `EntityEquipmentPredicate` and `SteppingOnPredicate` on living and
+    /// other entities (A-18 of #272).
+    #[test]
+    fn flags_equipment_and_stepping_on_by_entity_kind() {
+        let flags =
+            EntityPredicate::parse(&json!({"flags": {"is_baby": true, "is_flying": false}}))
+                .unwrap();
+        let mut boat = EntityView::new("minecraft:oak_boat", Vec3::new(0.5, 0.0, 0.5));
+        // Not living: `is_baby` is not tested, and it never flies.
+        assert!(flags.matches(&boat, &Flat, None));
+        boat.flying = true;
+        assert!(flags.matches(&boat, &Flat, None));
+        let mut player = EntityView::new("minecraft:player", Vec3::ZERO);
+        player.living = true;
+        player.baby = true;
+        player.flying = true;
+        assert!(!flags.matches(&player, &Flat, None));
+        let equipment =
+            EntityPredicate::parse(&json!({"equipment": {"mainhand": {"count": 0}}})).unwrap();
+        assert!(equipment.matches(&player, &Flat, None));
+        assert!(!equipment.matches(&boat, &Flat, None));
+        let stepping = EntityPredicate::parse(
+            &json!({"stepping_on": {"block": {"blocks": "minecraft:stone"}}}),
+        )
+        .unwrap();
+        assert!(!stepping.matches(&player, &Flat, None));
+        player.on_ground = true;
+        assert!(stepping.matches(&player, &Flat, None));
+    }
+
+    /// The item sub-predicates `fireworks`, `firework_explosion`, `writable_book_content` and
+    /// `attribute_modifiers` (the rest of A-05 of #272).
+    #[test]
+    fn firework_book_and_modifier_sub_predicates() {
+        use vanillite_protocol::components::ids;
+        let with = |item: &str, t: u16, snbt: &str| {
+            let mut stack = ItemStack::new(registry::ITEM.id(item).unwrap(), 1);
+            let tag = vanillite_nbt::snbt::parse(snbt).unwrap();
+            stack.set_component(t, crate::item_nbt::component_from_nbt(t, &tag).unwrap());
+            stack
+        };
+        let rocket = with(
+            "minecraft:firework_rocket",
+            ids::FIREWORKS,
+            "{flight_duration:2b,explosions:[{shape:\"star\",has_trail:1b}]}",
+        );
+        let p = |v: Value| ItemPredicate::parse(&json!({"predicates": v})).unwrap();
+        let fw = p(
+            json!({"fireworks": {"flight_duration": 2, "explosions": {"contains": [{"shape": "star", "has_trail": true}]}}}),
+        );
+        assert!(fw.is_supported() && fw.test(&rocket, &Flat));
+        assert!(!p(json!({"fireworks": {"flight_duration": 1}})).test(&rocket, &Flat));
+        assert!(
+            !p(json!({"fireworks": {"explosions": {"contains": [{"has_twinkle": true}]}}}))
+                .test(&rocket, &Flat)
+        );
+        let book = with(
+            "minecraft:writable_book",
+            ids::WRITABLE_BOOK_CONTENT,
+            "{pages:[\"hello\",{raw:\"world\"}]}",
+        );
+        assert!(p(json!({"writable_book_content": {"pages": {"contains": [{"contents": "world"}], "size": 2}}})).test(&book, &Flat));
+        assert!(
+            !p(json!({"writable_book_content": {"pages": {"contains": [{"contents": "nope"}]}}}))
+                .test(&book, &Flat)
+        );
+        let sword = with(
+            "minecraft:stick",
+            ids::ATTRIBUTE_MODIFIERS,
+            "[{type:\"minecraft:attack_damage\",id:\"minecraft:test\",amount:3.0d,operation:\"add_value\",slot:\"mainhand\"}]",
+        );
+        let m = |v: Value| p(json!({"attribute_modifiers": {"modifiers": {"contains": [v]}}}));
+        assert!(m(json!({"attribute": "minecraft:attack_damage", "amount": {"min": 2.0}, "slot": "mainhand"})).test(&sword, &Flat));
+        assert!(!m(json!({"operation": "add_multiplied_base"})).test(&sword, &Flat));
+        assert!(!m(json!({"id": "other"})).test(&sword, &Flat));
     }
 }

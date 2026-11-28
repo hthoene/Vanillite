@@ -1806,6 +1806,12 @@ pub fn player_entity_action(
             let interacted = TriggerKind::PLAYER_INTERACTED_WITH_ENTITY;
             let used =
                 view::listens(ents, player, interacted).then(|| animal::held(ents, player, hand));
+            // The target as it was, for a target the interaction removes (a bucketed fish
+            // still matches: Vanilla passes the removed entity object).
+            let before = used
+                .is_some()
+                .then(|| view::snapshot(ents, target))
+                .flatten();
             let r = if ents
                 .store
                 .get(target)
@@ -1839,7 +1845,7 @@ pub fn player_entity_action(
                 && let Some(used) = used
             {
                 view::fire(ents, player, interacted, |ents| {
-                    Event::EntityItem(interacted, view::snapshot(ents, target), used)
+                    Event::EntityItem(interacted, view::snapshot(ents, target).or(before), used)
                 });
             }
             if r == animal::Interaction::Success

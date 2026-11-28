@@ -261,18 +261,11 @@ impl EffectHost for MobHost<'_, '_, '_> {
         self.t.mob_ref().tick_count
     }
     fn play_sound(&mut self, sound: &str) {
+        // `onEffectAdded`: the mob's own sound source (`getSoundSource`).
         let pos = self.t.pos();
         let seed = crate::survival::sound_seed();
-        play_sound(
-            self.t.env.out,
-            None,
-            pos,
-            sound,
-            SoundSource::Neutral,
-            1.0,
-            1.0,
-            seed,
-        );
+        let source = self.t.mob_ref().kind.sound_source();
+        play_sound(self.t.env.out, None, pos, sound, source, 1.0, 1.0, seed);
     }
 }
 
@@ -315,14 +308,21 @@ fn send_to_passengers(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) 
         .copied()
         .filter(|&p| ents.player(p).is_some())
         .collect();
-    let Some(network_id) = ents.store.get(id).map(|e| e.network_id().0) else {
+    let Some((network_id, pos)) = ents.store.get(id).map(|e| (e.network_id().0, e.pos())) else {
         return;
     };
     let Some(m) = ents.mob_mut(id) else {
         return;
     };
+    let source = m.kind.sound_source();
     for event in m.effects.take_events() {
         let packet = match event {
+            // `onEffectAdded` of an effect added outside the mob's tick.
+            EffectEvent::Sound(sound) => {
+                let seed = crate::survival::sound_seed();
+                play_sound(out, None, pos, &sound, source, 1.0, 1.0, seed);
+                continue;
+            }
             EffectEvent::Update {
                 instance, blend, ..
             } => SharedPacket::of(&update_packet(network_id, &instance, blend)),
@@ -333,7 +333,6 @@ fn send_to_passengers(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) 
                 entity_id: network_id,
                 effect: i32::from(effect.0),
             }),
-            _ => continue,
         };
         for &player in &riders {
             out.push(Effect::To {
@@ -431,7 +430,8 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                     });
                 }
                 EffectEvent::Sound(sound) => {
-                    let seed = env.random.next_long();
+                    // `playSound(null, ...)` seeds from `threadSafeRandom`, not the level random.
+                    let seed = crate::survival::sound_seed();
                     play_sound(
                         env.out,
                         None,
@@ -827,6 +827,10 @@ impl EffectHost for BareMobHost<'_> {
     }
     fn tick_count(&self) -> i32 {
         self.m.tick_count
+    }
+    fn play_sound(&mut self, sound: &str) {
+        // Played with the mob's next tick ([`send_to_passengers`]).
+        self.m.effects.push_sound(sound);
     }
 }
 
@@ -1404,7 +1408,11 @@ mod tests {
     #[test]
     fn infested_silverfish_play_their_hurt_sound() {
         let mut fx = ActiveEffects::default();
-        fx.force_add(crate::effect::EffectInstance::new(MobEffect::INFESTED, 100, 0));
+        fx.force_add(crate::effect::EffectInstance::new(
+            MobEffect::INFESTED,
+            100,
+            0,
+        ));
         let mut out = Vec::new();
         // A seed whose first float is at most 0.1 (the 10 % chance).
         let seed = (0..10_000_i64)
@@ -1421,8 +1429,14 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
             &mut out,
         );
-        let spawned = out.iter().filter(|e| matches!(e, Effect::SpawnMob { .. })).count();
-        let sounds = out.iter().filter(|e| matches!(e, Effect::Nearby { .. })).count();
+        let spawned = out
+            .iter()
+            .filter(|e| matches!(e, Effect::SpawnMob { .. }))
+            .count();
+        let sounds = out
+            .iter()
+            .filter(|e| matches!(e, Effect::Nearby { .. }))
+            .count();
         assert!(spawned >= 1);
         assert_eq!(spawned, sounds);
     }

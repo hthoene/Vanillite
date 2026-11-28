@@ -793,9 +793,15 @@ mod tests {
             ..Host::default()
         };
         assert!(host.fx.refills_air());
-        add(&mut host, EffectInstance::new(MobEffect::BREATH_OF_THE_NAUTILUS, 100, 0));
+        add(
+            &mut host,
+            EffectInstance::new(MobEffect::BREATH_OF_THE_NAUTILUS, 100, 0),
+        );
         assert!(!host.fx.refills_air());
-        add(&mut host, EffectInstance::new(MobEffect::CONDUIT_POWER, 100, 0));
+        add(
+            &mut host,
+            EffectInstance::new(MobEffect::CONDUIT_POWER, 100, 0),
+        );
         assert!(host.fx.refills_air());
     }
 

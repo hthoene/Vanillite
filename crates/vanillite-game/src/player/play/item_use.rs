@@ -891,14 +891,13 @@ fn block_predicate(
         let entity = level.and_then(|level| level.block_entity_nbt(pos));
         matches &= entity.is_some_and(|e| nbt_contains(&Tag::Compound(e), &tag));
     }
-    // Component matchers: blocks are matched against their block entity's components, which
-    // are not collected for predicates; a predicate with any never matches.
+    // Component matchers: `matches(BlockInWorld)` tests only the state and the NBT, so
+    // `AdventureModePredicate` ignores them.
     let exact = r.varint().ok()?;
     for _ in 0..exact.clamp(0, 256) {
         let type_id = u16::try_from(r.varint().ok()?).ok()?;
         let len = vanillite_protocol::components::value_len(type_id, r.rest()).ok()?;
         r.skip(len).ok()?;
-        matches = false;
     }
     let partial = r.varint().ok()?;
     for _ in 0..partial.clamp(0, 64) {
@@ -910,7 +909,6 @@ fn block_predicate(
         vanillite_nbt::read::read_network(&mut input, &mut budget).ok()?;
         let consumed = r.rest().len().saturating_sub(input.len());
         r.skip(consumed).ok()?;
-        matches = false;
     }
     Some(matches)
 }
@@ -1583,13 +1581,11 @@ fn glass_bottle(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32) -
         .store
         .for_each_in(&area, false, |id| clouds.push(id));
     let cloud = clouds.into_iter().find(|&id| {
-        level.entities.cloud(id).is_some_and(|c| {
-            c.owner.is_some_and(|o| {
-                level
-                    .entities
-                    .mob(o)
-                    .is_some_and(|m| m.kind == crate::mob::Kind::EnderDragon)
-            })
+        crate::effect::cloud::owner(&mut level.entities, id).is_some_and(|o| {
+            level
+                .entities
+                .mob(o)
+                .is_some_and(|m| m.kind == crate::mob::Kind::EnderDragon)
         })
     });
     if let Some(cloud) = cloud {

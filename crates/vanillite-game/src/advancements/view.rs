@@ -161,7 +161,10 @@ fn base_inner(ents: &Entities, id: EntityId, with_target: bool) -> Option<Entity
     if let Some(b) = ents.missile(id).and_then(|d| d.bobber.as_deref()) {
         v.open_water = Some(b.open_water);
     }
+    v.living = matches!(v.kind, "minecraft:armor_stand" | "minecraft:mannequin");
     if let Some(m) = ents.mob(id) {
+        v.living = true;
+        v.in_water = m.fluids.in_water();
         v.baby = m.baby;
         v.fall_distance = m.fall_distance;
         v.tick_count = m.tick_count;
@@ -213,6 +216,8 @@ fn base_inner(ents: &Entities, id: EntityId, with_target: bool) -> Option<Entity
             Cow::Owned(inv.selected_item().clone()),
             Cow::Owned(inv.offhand.clone()),
         ];
+        v.living = true;
+        v.flying = p.survival.flying;
         v.on_fire = p.survival.fire_ticks > 0;
         v.in_water = p.survival.fluids.in_water();
         v.fall_distance = p.survival.fall_distance;
