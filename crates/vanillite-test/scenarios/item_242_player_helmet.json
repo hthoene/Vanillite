@@ -1,0 +1,75 @@
+{
+  "description": "A player in survival (#242): a falling anvil hurts a player with an iron helmet by three quarters and wears the helmet (#damages_helmet), and flint and steel lighting fire next to a sculk sensor posts block_place at the clicked block.",
+  "tier": "fast",
+  "player_state": true,
+  "level_rng": true,
+  "rules": {
+    "spawn_monsters": "false",
+    "fire_spread_radius_around_player": "-1"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -50,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "entities": [
+    {
+      "name": "alex",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        2.5,
+        -60.0,
+        2.5
+      ],
+      "rot": [
+        0,
+        0
+      ]
+    }
+  ],
+  "setup": [
+    {
+      "op": "set",
+      "pos": [
+        10,
+        -60,
+        6
+      ],
+      "block": "minecraft:sculk_sensor"
+    }
+  ],
+  "actions": [
+    {
+      "tick": 2,
+      "op": "use_item",
+      "entity": "alex",
+      "item": "minecraft:iron_helmet"
+    },
+    {
+      "tick": 5,
+      "op": "command",
+      "command": "setblock 2 -54 2 minecraft:anvil"
+    },
+    {
+      "tick": 30,
+      "op": "use",
+      "entity": "alex",
+      "pos": [
+        6,
+        -61,
+        6
+      ],
+      "face": "up",
+      "item": "minecraft:flint_and_steel"
+    }
+  ]
+}

@@ -733,6 +733,9 @@ impl World for WithProgress<'_> {
     fn structure_at(&self, pos: BlockPos, structures: &IdSet) -> bool {
         self.world.structure_at(pos, structures)
     }
+    fn block_entity_nbt(&self, pos: BlockPos) -> Option<vanillite_nbt::Compound> {
+        self.world.block_entity_nbt(pos)
+    }
     fn smokey(&self, pos: BlockPos) -> bool {
         self.world.smokey(pos)
     }

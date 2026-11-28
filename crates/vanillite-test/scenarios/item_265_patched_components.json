@@ -1,0 +1,100 @@
+{
+  "description": "Patched item components (#265): a stick with its own attribute_modifiers (+3 attack damage) hits a pig harder, a stick with an equippable component goes to the head slot on use while a leather helmet without its equippable component stays in the hand, and stacks whose component equals the item default (rockets with flight_duration 1, ominous bottles with amplifier 0) picked up from the ground stack with plain ones.",
+  "tier": "fast",
+  "player_state": true,
+  "rules": {
+    "spawn_monsters": "false"
+  },
+  "region": [
+    [
+      0,
+      -61,
+      0
+    ],
+    [
+      15,
+      -55,
+      15
+    ]
+  ],
+  "ticks": 60,
+  "entities": [
+    {
+      "name": "p",
+      "type": "minecraft:player",
+      "client": true,
+      "pos": [
+        4.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        -90,
+        0
+      ]
+    },
+    {
+      "name": "pig",
+      "type": "minecraft:pig",
+      "pos": [
+        6.5,
+        -60.0,
+        4.5
+      ],
+      "rot": [
+        90,
+        0
+      ],
+      "seed": 1
+    }
+  ],
+  "actions": [
+    {
+      "tick": 10,
+      "op": "use_item",
+      "entity": "p",
+      "item": "minecraft:stick",
+      "components": "{\"minecraft:attribute_modifiers\":[{\"type\":\"minecraft:attack_damage\",\"id\":\"minecraft:test\",\"amount\":3.0,\"operation\":\"add_value\",\"slot\":\"mainhand\"}]}"
+    },
+    {
+      "tick": 25,
+      "op": "attack_entity",
+      "entity": "p",
+      "target": "pig"
+    },
+    {
+      "tick": 34,
+      "op": "use_item",
+      "entity": "p",
+      "item": "minecraft:stick",
+      "components": "{\"minecraft:equippable\":{\"slot\":\"head\"}}"
+    },
+    {
+      "tick": 36,
+      "op": "use_item",
+      "entity": "p",
+      "item": "minecraft:leather_helmet",
+      "components": "{\"!minecraft:equippable\":{}}"
+    },
+    {
+      "tick": 38,
+      "op": "command",
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:firework_rocket\",count:3}}"
+    },
+    {
+      "tick": 40,
+      "op": "command",
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:firework_rocket\",count:2,components:{\"minecraft:fireworks\":{flight_duration:1b}}}}"
+    },
+    {
+      "tick": 42,
+      "op": "command",
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:ominous_bottle\",count:1}}"
+    },
+    {
+      "tick": 44,
+      "op": "command",
+      "command": "summon minecraft:item 4.5 -60 4.5 {PickupDelay:0s,Item:{id:\"minecraft:ominous_bottle\",count:1,components:{\"minecraft:ominous_bottle_amplifier\":0}}}"
+    }
+  ]
+}

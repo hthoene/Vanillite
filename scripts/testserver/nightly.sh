@@ -47,7 +47,7 @@ started_at=$(date +%s)
 
 rustup toolchain install --profile minimal > /dev/null 2>&1
 step build 30 bash -c 'cargo build --locked -q -p xtask -p vanillite-test --bins &&
-    cargo build --locked -q --profile release-fast -p vanillite-test --bin parity_soak &&
+    cargo build --locked -q --profile release-fast -p vanillite-test --bin parity_soak --bin parity_fuzz &&
     cargo test --locked -q --release -p vanillite-worldgen --test vanilla_sweep --no-run &&
     cargo test --locked -q --release -p vanillite-light --test vanilla_light_sweep --no-run'
 
@@ -71,6 +71,10 @@ step parity-worlds 40 cargo xtask parity worlds --jobs 3 --minutes 25
 step light-sweep 20 cargo xtask light sweep --seed "$(($(date -u +%s) / 86400 + 500000))" --seeds 4
 [ -f target/light-sweep/summary.md ] && cp target/light-sweep/summary.md "$out/light-sweep.md"
 
+# Session replays (#152, #257): the recordings of the players on vanillite-test 30001 that no
+# nightly replayed yet, against Vanilla.
+step session-replay 50 env VANILLITE_PARITY_PROFILE=release-fast bash scripts/testserver/replay-recordings.sh "$HOME/recordings" "$out"
+
 # Soak parity runs (#166): game days against Vanilla, per-tick checksums; Vanilla's run is
 # recorded once per golden key, so only a new jar, harness or scenario costs its recording.
 soak=$(($(minutes_left) / 2))
@@ -93,6 +97,9 @@ if [ -f "$out/worldgen-sweep.md" ]; then
 fi
 if [ -f "$out/light-sweep.md" ]; then
     { echo; echo "## light sweep"; sed '1d' "$out/light-sweep.md"; } >> "$out/summary.md"
+fi
+if [ -f "$out/session-replay/summary.md" ]; then
+    { echo; echo "## session replay"; sed '1d' "$out/session-replay/summary.md"; } >> "$out/summary.md"
 fi
 if [ -f "$out/parity-worlds.md" ]; then
     { echo; echo "## parity worlds"; sed '1d' "$out/parity-worlds.md"; } >> "$out/summary.md"

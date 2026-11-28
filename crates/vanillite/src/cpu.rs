@@ -1,7 +1,8 @@
 //! CPU level dispatch: the Linux x86-64 release archives and the Docker image ship the baseline
 //! build (`vanillite`, runs on every x86-64 CPU) and an x86-64-v3 build (`vanillite-x86-64-v3`,
-//! AVX2/BMI2/FMA, bit-identical results, fewer instructions). The baseline build starts the v3
+//! AVX2/BMI2/FMA, bit-identical results, fewer instructions). The static baseline build starts the v3
 //! build in its place when the CPU has its features; `VANILLITE_CPU=baseline` turns that off.
+//! `vanillite-gnu` (plugins, see runtime.rs) never does: it runs as it is.
 
 /// The CPU level this binary was built for.
 pub fn level() -> &'static str {
@@ -19,6 +20,7 @@ pub fn level() -> &'static str {
 /// `None` where there is nothing to choose.
 #[cfg(all(
     target_os = "linux",
+    target_env = "musl",
     target_arch = "x86_64",
     not(target_feature = "avx2")
 ))]
@@ -55,6 +57,7 @@ pub fn dispatch() -> Option<String> {
 
 #[cfg(not(all(
     target_os = "linux",
+    target_env = "musl",
     target_arch = "x86_64",
     not(target_feature = "avx2")
 )))]

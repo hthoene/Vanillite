@@ -953,7 +953,7 @@ mod tests {
             &|_| Vec::new(),
         );
         let mut pick = ItemStack::new(items::DIAMOND_PICKAXE.0, 1);
-        pick.patch_mut().set(
+        pick.set_component(
             vanillite_protocol::components::ids::ENCHANTMENTS,
             crate::enchant::write(&[(0, 1)]),
         );

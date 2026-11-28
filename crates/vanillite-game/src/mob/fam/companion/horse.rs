@@ -491,7 +491,7 @@ pub fn on_die(h: &mut Hurt<'_, '_>) {
     };
     let mut drops: Vec<ItemStack> = std::mem::take(&mut st_mut(m).inventory)
         .into_iter()
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !equipment::prevents_drop(s))
         .collect();
     if st(m).chest {
         st_mut(m).chest = false;

@@ -109,9 +109,8 @@ pub(super) fn use_on(
 ) -> Option<Used> {
     let stack = held(ctx, click.hand);
     let id = item::item_id(&stack);
-    let info = id.info();
-    let kind = if !info.block_transformer.is_empty() {
-        UseOn::Transform(info.block_transformer)
+    let kind = if let Some(transformer) = item::block_transformer(&stack) {
+        UseOn::Transform(transformer)
     } else if id == items::BONE_MEAL {
         UseOn::BoneMeal
     } else if id == items::HONEYCOMB {
@@ -142,7 +141,7 @@ pub(super) fn use_on(
         UseOn::Shears => shears(ctx, click),
         UseOn::FireCharge => fire_charge(ctx, click),
         UseOn::Potion => water_bottle_on_mud(ctx, click),
-        UseOn::DebugStick => debug_stick(ctx, click.pos, true, sink),
+        UseOn::DebugStick => debug_stick(ctx, click.pos, true, click.hand, sink),
     };
     if creative {
         // `ServerPlayerGameMode.useItemOn`: creative players keep the count.
@@ -454,11 +453,14 @@ fn bone_meal(ctx: &mut PlayContext<'_>, click: Click) -> Used {
     let Some(at_pos) = grown else {
         return Used::Pass;
     };
-    level.game_event(
-        events().item_interact_finish,
-        at,
-        GameEventContext::of(player),
-    );
+    // `causeUseVibration`: the stack's `use_effects` (an emptied stack has none).
+    if !stack.is_empty() && crate::consumable::use_vibrations(&stack) {
+        level.game_event(
+            events().item_interact_finish,
+            at,
+            GameEventContext::of(player),
+        );
+    }
     level.level_event(None, 1505, at_pos, 15);
     set_held(ctx, click.hand, stack);
     Used::Success
@@ -649,6 +651,7 @@ pub(super) fn debug_stick(
     ctx: &mut PlayContext<'_>,
     pos: BlockPos,
     cycle: bool,
+    hand: Hand,
     sink: &dyn super::PacketSink,
 ) -> Used {
     use vanillite_protocol::packets::play::clientbound::SystemChat;
@@ -656,7 +659,6 @@ pub(super) fn debug_stick(
     if !(ctx.actor.creative() && ctx.actor.permission_level >= 2) {
         return Used::Fail;
     }
-    let hand = Hand::MainHand;
     let state = ctx.level.block(pos);
     let block = state.block();
     let properties = block.info().properties;
@@ -724,9 +726,7 @@ pub(super) fn debug_stick(
         };
         selected.retain(|(b, _)| *b != block.name());
         selected.push((block.name().to_owned(), property.name.to_owned()));
-        stack
-            .patch_mut()
-            .set(ids::DEBUG_STICK_STATE, encode_debug_stick_state(&selected));
+        stack.set_component(ids::DEBUG_STICK_STATE, encode_debug_stick_state(&selected));
         set_held(ctx, hand, stack);
         let value = state.value(property.name).unwrap_or_default();
         message(
@@ -738,36 +738,40 @@ pub(super) fn debug_stick(
     Used::Success
 }
 
-/// The `minecraft:debug_stick_state` component: block name to selected property name.
+/// The `minecraft:debug_stick_state` component: block name to selected property name. It has
+/// only a persistent codec, so the wire carries it as one NBT compound
+/// (`{"minecraft:<block>": "<property>"}`).
 fn debug_stick_state(stack: &ItemStack) -> Option<Vec<(String, String)>> {
     let Some(data) = stack.component(ids::DEBUG_STICK_STATE) else {
         // The debug stick's default component is an empty map.
         return (item::item_id(stack) == items::DEBUG_STICK).then(Vec::new);
     };
-    let mut r = Reader::new(data);
-    let n = r.varint().ok()?;
-    let mut out = Vec::new();
-    for _ in 0..n.clamp(0, 4096) {
-        let block = r.varint().ok()?;
-        let property = r.string(32767).ok()?;
-        let name = u16::try_from(block).ok().map(|b| BlockId(b).name())?;
-        out.push((name.to_owned(), property.to_owned()));
-    }
-    Some(out)
+    let mut input = data;
+    let mut budget = vanillite_nbt::Budget::file();
+    let Ok(Some(vanillite_nbt::Tag::Compound(c))) =
+        vanillite_nbt::read::read_network(&mut input, &mut budget)
+    else {
+        return None;
+    };
+    Some(
+        c.iter()
+            .filter_map(|(block, property)| match property {
+                vanillite_nbt::Tag::String(p) => Some((block.to_owned(), p.clone())),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 fn encode_debug_stick_state(selected: &[(String, String)]) -> Box<[u8]> {
-    use vanillite_protocol::codec::{write_str, write_varint};
-    let mut out = Vec::new();
-    let entries: Vec<(u16, &str)> = selected
-        .iter()
-        .filter_map(|(b, p)| BlockId::by_name(b).map(|id| (id.0, p.as_str())))
-        .collect();
-    write_varint(&mut out, i32::try_from(entries.len()).unwrap_or(0));
-    for (block, property) in entries {
-        write_varint(&mut out, i32::from(block));
-        write_str(&mut out, property);
+    let mut c = vanillite_nbt::Compound::new();
+    for (block, property) in selected {
+        if BlockId::by_name(block).is_some() {
+            c.insert(block.clone(), vanillite_nbt::Tag::String(property.clone()));
+        }
     }
+    let mut out = Vec::new();
+    let _ = vanillite_nbt::write::write_network_compound(&c, &mut out);
     out.into()
 }
 
@@ -1321,7 +1325,9 @@ pub(super) fn use_item(
         let (pos, face, hit) = pov_hit(ctx, y_rot, x_rot, true)?;
         return Some(UseAir::PlaceOnWater(pos.relative(Direction::Up), face, hit));
     }
-    if id.info().equip_swappable && stack.component(ids::CONSUMABLE).is_none() {
+    if item::equippable(&stack).is_some_and(|e| e.swappable)
+        && stack.component(ids::CONSUMABLE).is_none()
+    {
         return Some(UseAir::Done(swap_with_equipment_slot(ctx, hand)));
     }
     None
@@ -1411,9 +1417,10 @@ fn bucket(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32, content
     let player = ctx.actor.entity;
     let stack = held(ctx, hand);
     let relative = pos.relative(face);
-    // `level.mayInteract` (spawn protection, world border) and `player.mayUseItemAt`.
+    // `level.mayInteract` (spawn protection, world border) and `player.mayUseItemAt`, which
+    // tests `can_place_on` against the clicked block.
     let may_build = ctx.actor.game_mode != vanillite_config::GameMode::Adventure
-        || can_place_on(ctx, &stack, relative);
+        || can_place_on(ctx, &stack, pos);
     if (ctx.spawn_protected)(pos) || !may_build || !ctx.level.is_loaded(pos) {
         return Used::Fail;
     }
@@ -1591,10 +1598,11 @@ fn glass_bottle(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32) -
         let sound = sound_id("item.bottle.fill_dragonbreath");
         level.play_sound(None, at.x, at.y, at.z, sound, SOUND_NEUTRAL, 1.0, 1.0);
         level.game_event(events().fluid_pickup, at, GameEventContext::of(player));
+        let target = crate::advancements::view::snapshot(&level.entities, cloud);
         let stack = held(ctx, hand);
         ctx.trigger(Event::EntityItem(
             TriggerKind::PLAYER_INTERACTED_WITH_ENTITY,
-            None,
+            target,
             stack.clone(),
         ));
         used_stat(ctx, stack.item);
@@ -1626,6 +1634,12 @@ fn glass_bottle(ctx: &mut PlayContext<'_>, hand: Hand, y_rot: f32, x_rot: f32) -
 /// the hand.
 fn swap_with_equipment_slot(ctx: &mut PlayContext<'_>, hand: Hand) -> Used {
     let in_hand = held(ctx, hand);
+    // `canBeEquippedBy(player)`.
+    if !item::equippable(&in_hand)
+        .is_some_and(|e| e.can_be_equipped_by(vanillite_data::entity::ids::PLAYER.0))
+    {
+        return Used::Pass;
+    }
     let slot = item::equipment_slot(&in_hand);
     let index = match slot {
         EquipmentSlot::Feet => 36,
@@ -1693,15 +1707,14 @@ fn on_equip_item(ctx: &mut PlayContext<'_>, slot: EquipmentSlot, old: &ItemStack
     let Some(level) = ctx.level.level_mut() else {
         return;
     };
-    let info = item::item_id(new).info();
-    // `equip_slot` 255: no `equippable` component.
-    let equippable = !new.is_empty() && info.equip_slot != u8::MAX;
-    if equippable && info.equip_slot == slot.ordinal() {
+    let equippable = item::equippable(new);
+    if let Some(e) = equippable.as_ref().filter(|e| e.slot == slot) {
         let id = vanillite_data::registry::SOUND_EVENT
-            .id(info.equip_sound)
+            .id(&e.equip_sound)
             .unwrap_or(0);
         level.play_sound(None, at.x, at.y, at.z, id, SOUND_PLAYERS, 1.0, 1.0);
     }
+    let equippable = equippable.is_some();
     // `Player.doesEmitEquipEvent`: armour slots only, which these all are.
     let event = if equippable {
         events().equip

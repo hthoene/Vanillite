@@ -237,9 +237,16 @@ fn install_java(runtime: &Path) -> Result<String> {
             .ok_or_else(|| format!("{api}: no {name} for {os}/{arch}"))
     };
     let (link, sha256, name) = (field("link")?, field("checksum")?, field("name")?);
-    if !name.ends_with(".tar.gz") {
-        return Err(format!("{name}: only .tar.gz runtimes are unpacked"));
-    }
+    // Windows runtimes come as .zip, the others as .tar.gz.
+    let Some(base) = name
+        .strip_suffix(".tar.gz")
+        .or_else(|| name.strip_suffix(".zip"))
+        .map(str::to_owned)
+    else {
+        return Err(format!(
+            "{name}: only .tar.gz and .zip runtimes are unpacked"
+        ));
+    };
     let staging = runtime.with_extension("part");
     let archive = runtime.with_file_name(&name);
     log::info!("Downloading {link}");
@@ -254,7 +261,7 @@ fn install_java(runtime: &Path) -> Result<String> {
     unpacked?;
     remove_dir(runtime)?;
     fs::rename(&staging, runtime).map_err(|e| format!("{}: {e}", runtime.display()))?;
-    Ok(name.trim_end_matches(".tar.gz").to_owned())
+    Ok(base)
 }
 
 /// Whether the layer in `layer` finds a Java runtime the way it searches: `jvm.java-home` of
@@ -279,7 +286,7 @@ fn java_found(layer: &Path) -> bool {
     }
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path)
-            .map(|dir| dir.join("java"))
+            .map(|dir| dir.join(format!("java{}", std::env::consts::EXE_SUFFIX)))
             .filter(|java| java.is_file())
             .filter_map(|java| fs::canonicalize(java).ok())
             .any(|java| {
@@ -290,7 +297,8 @@ fn java_found(layer: &Path) -> bool {
     })
 }
 
-/// The Java home in `runtime` (itself or one directory below, as an archive unpacks).
+/// The Java home in `runtime` (itself or one directory below, as an archive unpacks; macOS
+/// runtimes below that in `Contents/Home`).
 fn runtime_home(runtime: &Path) -> Option<PathBuf> {
     if usable_java(runtime) {
         return Some(runtime.to_owned());
@@ -298,15 +306,15 @@ fn runtime_home(runtime: &Path) -> Option<PathBuf> {
     fs::read_dir(runtime)
         .ok()?
         .flatten()
-        .map(|e| e.path())
+        .flat_map(|e| [e.path().join("Contents/Home"), e.path()])
         .find(|home| usable_java(home))
 }
 
-/// Whether `home` is a Java home with `libjvm` of at least Java [`JAVA`] (by its `release`
-/// file; a home without one is taken as it is).
+/// Whether `home` is a Java home with `libjvm` (`bin/server/jvm.dll` on Windows) of at least
+/// Java [`JAVA`] (by its `release` file; a home without one is taken as it is).
 fn usable_java(home: &Path) -> bool {
     let libjvm = home
-        .join("lib")
+        .join(if cfg!(windows) { "bin" } else { "lib" })
         .join("server")
         .join(loader::library_file("jvm"));
     if !libjvm.is_file() {
@@ -362,11 +370,16 @@ fn download(url: &str, to: &Path) -> Result<()> {
     result
 }
 
-/// Unpacks a `.tar.gz` into `dir` (emptied first); entries cannot leave `dir`.
+/// Unpacks a `.tar.gz` or `.zip` into `dir` (emptied first); entries cannot leave `dir`.
 fn unpack(archive: &Path, dir: &Path) -> Result<()> {
     remove_dir(dir)?;
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let file = fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
+    if archive.extension().is_some_and(|e| e == "zip") {
+        return zip::ZipArchive::new(std::io::BufReader::new(file))
+            .and_then(|mut zip| zip.extract(dir))
+            .map_err(|e| format!("{}: {e}", archive.display()));
+    }
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(std::io::BufReader::new(file)));
     tar.set_preserve_permissions(true);
     tar.unpack(dir)

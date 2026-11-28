@@ -1426,12 +1426,12 @@ pub fn creative_shulker_drop(
     if let Some(kept) = level.block_entities.kept_components(pos) {
         let patch = crate::item_nbt::patch_from_nbt(kept);
         for (id, value) in patch.added {
-            stack.patch_mut().set(id, value);
+            stack.set_component(id, value);
         }
     }
     for id in [ids::CUSTOM_NAME, ids::LOCK, ids::CONTAINER] {
         if let Some(value) = crate::level::block_entity::collect_component(entity, id) {
-            stack.patch_mut().set(id, value);
+            stack.set_component(id, value);
         }
     }
     super::drops::spawn_item_moving(level, super::furnace::center(pos), stack, None, 10, None);

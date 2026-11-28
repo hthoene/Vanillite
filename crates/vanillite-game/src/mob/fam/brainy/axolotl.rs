@@ -510,7 +510,7 @@ fn bucket_stack(m: &MobData, item: &str) -> crate::item::ItemStack {
         {
             let mut v = Vec::new();
             vanillite_protocol::codec::write_varint(&mut v, s.variant);
-            stack.patch_mut().set(id, v.into());
+            stack.set_component(id, v.into());
         }
         data.insert("Age", m.age);
         data.insert("AgeLocked", m.age_locked);

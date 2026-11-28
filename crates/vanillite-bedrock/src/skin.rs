@@ -33,13 +33,22 @@ const DEFAULT_PATCH: &str = r#"{"geometry":{"default":"geometry.humanoid.custom"
 /// The slim model.
 const SLIM_PATCH: &str = r#"{"geometry":{"default":"geometry.humanoid.customSlim"}}"#;
 
+/// The model of player heads: the head cube and the hat layer around the origin.
+const SKULL_PATCH: &str = r#"{"geometry":{"default":"geometry.vanillite.skull"}}"#;
+const SKULL_GEOMETRY: &str = r#"{"format_version":"1.10.0","geometry.vanillite.skull":{"texturewidth":64,"textureheight":64,"visible_bounds_width":2,"visible_bounds_height":1,"visible_bounds_offset":[0,0,0],"bones":[{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[-4,0,-4],"size":[8,8,8],"uv":[0,0]}]},{"name":"hat","parent":"head","pivot":[0,24,0],"cubes":[{"origin":[-4,0,-4],"size":[8,8,8],"uv":[32,0],"inflate":0.5}]}]}}"#;
+
 /// Where Java skins may be loaded from.
 const TEXTURE_HOST: &str = "http://textures.minecraft.net/texture/";
 
 /// The skin URL and model (slim) of a Java profile's `textures` property.
 pub fn java_texture(properties: &[vanillite_protocol::types::Property]) -> Option<(String, bool)> {
     let p = properties.iter().find(|p| p.name == "textures")?;
-    let json = STANDARD.decode(p.value.as_bytes()).ok()?;
+    texture_of(&p.value)
+}
+
+/// The skin URL and model (slim) of a `textures` property value.
+pub fn texture_of(value: &str) -> Option<(String, bool)> {
+    let json = STANDARD.decode(value.as_bytes()).ok()?;
     let v: Value = serde_json::from_slice(&json).ok()?;
     let skin = field(field(&v, "textures"), "SKIN");
     let url = skin.get("url")?.as_str()?;
@@ -127,6 +136,21 @@ impl Skin {
             geometry_version: b"0.0.0".to_vec(),
             slim,
         })
+    }
+
+    /// The head of this skin on a model of only the head and hat, for player heads (the model
+    /// as Geyser (MIT) builds its skull skins).
+    pub fn skull(&self) -> Self {
+        Self {
+            id: format!("{}.skull", self.id),
+            resource_patch: SKULL_PATCH.as_bytes().to_vec(),
+            width: self.width,
+            height: self.height,
+            data: self.data.clone(),
+            geometry: SKULL_GEOMETRY.as_bytes().to_vec(),
+            geometry_version: b"0.0.0".to_vec(),
+            slim: false,
+        }
     }
 
     /// The skin of a Bedrock client's login data, if it is well-formed.

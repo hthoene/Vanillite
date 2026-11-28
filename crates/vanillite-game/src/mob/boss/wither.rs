@@ -1741,7 +1741,11 @@ fn skull_hit_entity(t: &mut SpecialTick<'_, '_>, skull: &Skull, target: EntityId
                 || t.ents
                     .player(target)
                     .is_some_and(|p| !p.survival.is_dead_or_dying());
-            if !alive && let Some(m) = t.ents.mob_mut(owner) {
+            if alive {
+                crate::mob::attack::post_attack_effects(
+                    t.level, t.ents, t.env, t.cx, target, &source,
+                );
+            } else if let Some(m) = t.ents.mob_mut(owner) {
                 // `livingOwner.heal(5.0F)`.
                 if m.health > 0.0 {
                     let max = m.max_health();

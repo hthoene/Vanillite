@@ -349,6 +349,41 @@ public final class ParityServer extends MinecraftServer {
     }
   }
 
+  /**
+   * The levels in a fixed order: overworld, Nether, End, then the others by name. Vanilla creates
+   * them in the order of the dimension registry's hash map, which changes from run to run (the
+   * keys hash by identity): it decides the dimension list of the login packet and the order the
+   * levels tick in.
+   */
+  @Override
+  protected void createLevels() {
+    super.createLevels();
+    try {
+      java.lang.reflect.Field f = MinecraftServer.class.getDeclaredField("levels");
+      f.setAccessible(true);
+      @SuppressWarnings("unchecked")
+      java.util.Map<ResourceKey<net.minecraft.world.level.Level>, ServerLevel> levels =
+          (java.util.Map<ResourceKey<net.minecraft.world.level.Level>, ServerLevel>) f.get(this);
+      List<ResourceKey<net.minecraft.world.level.Level>> builtIn =
+          List.of(
+              net.minecraft.world.level.Level.OVERWORLD,
+              net.minecraft.world.level.Level.NETHER,
+              net.minecraft.world.level.Level.END);
+      List<java.util.Map.Entry<ResourceKey<net.minecraft.world.level.Level>, ServerLevel>> sorted =
+          new java.util.ArrayList<>(levels.entrySet());
+      sorted.sort(
+          java.util.Comparator.<java.util.Map.Entry<ResourceKey<net.minecraft.world.level.Level>, ServerLevel>>comparingInt(
+                  e -> builtIn.contains(e.getKey()) ? builtIn.indexOf(e.getKey()) : builtIn.size())
+              .thenComparing(e -> e.getKey().identifier().toString()));
+      levels.clear();
+      for (java.util.Map.Entry<ResourceKey<net.minecraft.world.level.Level>, ServerLevel> e : sorted) {
+        levels.put(e.getKey(), e.getValue());
+      }
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
   @Override
   protected boolean shouldRun(TickTask task) {
     return runEveryTask || super.shouldRun(task);

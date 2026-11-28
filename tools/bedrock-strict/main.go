@@ -1,7 +1,8 @@
 // Command bedrock-strict is a headless Bedrock test client that fails on anything the real client could
 // reject: it joins a server with gophertunnel's codec (every packet decoded, no unread bytes, no unknown
 // packets), checks the value ranges the real client enforces, stays in the world, walks, chats, opens and
-// closes its inventory, and exits non-zero on the first problem.
+// closes its inventory, and then plays a whole session (break and place, a chest, crafting, combat with a
+// mob, commands, the Nether and back, death and respawn). It exits non-zero if anything went wrong.
 //
 //	go run . -network raknet -addr 127.0.0.1:19132 -duration 60s
 //	go run . -network nethernet -addr http://127.0.0.1:19132
@@ -13,13 +14,14 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-gl/mathgl/mgl32"
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
@@ -151,10 +153,12 @@ func check(p *problems, pk packet.Packet) {
 	}
 }
 
+var verbose = flag.Bool("v", false, "print the packets the session steps look at")
+
 func main() {
 	network := flag.String("network", "raknet", "transport: raknet or nethernet")
 	addr := flag.String("addr", "127.0.0.1:19132", "server address (nethernet: http://host:port)")
-	duration := flag.Duration("duration", 60*time.Second, "time to stay in the world after spawning")
+	duration := flag.Duration("duration", 10*time.Second, "time to walk around at the end of the session")
 	name := flag.String("name", "StrictBot", "player name")
 	flag.Parse()
 
@@ -182,111 +186,43 @@ func main() {
 	data := conn.GameData()
 	fmt.Printf("spawned after %v at %v\n", time.Since(start).Round(time.Millisecond), data.PlayerPosition)
 
-	var (
-		mu         sync.Mutex
-		pos        = data.PlayerPosition
-		counts     = map[string]int{}
-		openWindow = -1
-		opened     bool
-		closed     bool
-		readErr    error
-	)
-	done := make(chan struct{})
+	in := make(chan packet.Packet, 4096)
+	var readErr error
 	go func() {
-		defer close(done)
+		defer close(in)
 		for {
 			pk, err := conn.ReadPacket()
 			if err != nil {
-				mu.Lock()
 				readErr = err
-				mu.Unlock()
 				return
 			}
-			check(p, pk)
-			mu.Lock()
-			counts[fmt.Sprintf("%T", pk)]++
-			switch pk := pk.(type) {
-			case *packet.MovePlayer:
-				if pk.EntityRuntimeID == data.EntityRuntimeID {
-					pos = pk.Position
-				}
-			case *packet.ContainerOpen:
-				openWindow, opened = int(pk.WindowID), true
-			case *packet.ContainerClose:
-				closed = true
-			}
-			mu.Unlock()
+			in <- pk
 		}
 	}()
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-	end := time.Now().Add(*duration)
-	var tick uint64
-	step := mgl32.Vec3{0.1, 0, 0}
-	inventoryAt, closeAt, chatAt := 3*time.Second, 5*time.Second, 7*time.Second
+	s := newSession(conn, p, *name, in)
 	spawned := time.Now()
-loop:
-	for time.Now().Before(end) {
-		select {
-		case <-done:
-			break loop
-		case <-ticker.C:
-		}
-		tick++
-		mu.Lock()
-		if tick%100 == 0 {
-			step = step.Mul(-1)
-		}
-		pos = pos.Add(step)
-		cur := pos
-		window := openWindow
-		mu.Unlock()
-		flags := protocol.NewInputFlags(packet.InputFlagCount)
-		flags.Set(packet.InputFlagUp)
-		_ = conn.WritePacket(&packet.PlayerAuthInput{
-			Position:         cur,
-			MoveVector:       mgl32.Vec2{0, 1},
-			InputData:        flags,
-			InputMode:        packet.InputModeMouse,
-			PlayMode:         packet.PlayModeNormal,
-			InteractionModel: packet.InteractionModelCrosshair,
-			Tick:             tick,
-			Delta:            step,
-		})
-		since := time.Since(spawned)
-		switch {
-		case since >= inventoryAt && since < inventoryAt+50*time.Millisecond:
-			_ = conn.WritePacket(&packet.Interact{ActionType: packet.InteractActionOpenInventory, TargetEntityRuntimeID: data.EntityRuntimeID})
-		case since >= closeAt && since < closeAt+50*time.Millisecond && window >= 0:
-			_ = conn.WritePacket(&packet.ContainerClose{WindowID: byte(window)})
-		case since >= chatAt && since < chatAt+50*time.Millisecond:
-			_ = conn.WritePacket(&packet.Text{TextType: packet.TextTypeChat, SourceName: *name, Message: "strict client check", XUID: ""})
-		}
-	}
+	s.run(*duration)
 	_ = conn.Close()
-	<-done
+	for pk := range in {
+		s.observe(pk)
+	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	names := make([]string, 0, len(counts))
+	names := make([]string, 0, len(s.counts))
 	total := 0
-	for n, c := range counts {
+	for n, c := range s.counts {
 		names = append(names, n)
 		total += c
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		fmt.Printf("  %-40s %d\n", n, counts[n])
+		fmt.Printf("  %-40s %d\n", n, s.counts[n])
 	}
 	fmt.Printf("received %d packets after spawn in %v\n", total, time.Since(spawned).Round(time.Millisecond))
-	if !opened {
-		p.add("no ContainerOpen after opening the inventory")
-	} else if !closed {
-		p.add("no ContainerClose after closing the inventory")
+	if readErr != nil && !s.closed && !errors.Is(readErr, context.Canceled) && !errors.Is(readErr, net.ErrClosed) && !strings.Contains(readErr.Error(), "closed") {
+		p.add("connection ended: %v", readErr)
 	}
-	if readErr != nil && time.Now().Before(end) && !errors.Is(readErr, context.Canceled) {
-		p.add("connection ended early: %v", readErr)
+	if s.counts["*packet.UpdateSoftEnum"] == 0 {
+		p.add("no server suggestions (update_soft_enum) for the command tree")
 	}
 	if n := p.count(); n > 0 {
 		fmt.Printf("FAIL: %d problems\n", n)

@@ -19,6 +19,13 @@ pub fn apply_spawn_item(ents: &mut Entities, id: EntityId, stack: &ItemStack) {
 /// `Entity.applyComponentsFromItemStack` of a mob (the custom name is set by the callers):
 /// the setters of the components, nothing else of the mob changes.
 pub fn apply_components(ents: &mut Entities, id: EntityId, stack: &ItemStack) {
+    // `Entity.applyImplicitComponents`: `custom_data` of any entity.
+    if let Some(t) = vanillite_protocol::components_nbt::type_by_name("minecraft:custom_data")
+        && let Some(wire) = stack.component(t)
+        && let Some(vanillite_nbt::Tag::Compound(data)) = crate::item_nbt::component_to_nbt(t, wire)
+    {
+        ents.set_custom_data(id, Some(data));
+    }
     let Some(m) = ents.mob_mut(id) else {
         return;
     };

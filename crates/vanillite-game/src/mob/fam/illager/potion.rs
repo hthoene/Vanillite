@@ -111,7 +111,7 @@ pub fn stack(item: &str, potion: Potion) -> ItemStack {
     if !s.is_empty()
         && let Some(c) = contents(potion)
     {
-        s.patch_mut().set(ids::POTION_CONTENTS, c);
+        s.set_component(ids::POTION_CONTENTS, c);
     }
     s
 }

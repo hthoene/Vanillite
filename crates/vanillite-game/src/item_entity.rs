@@ -809,6 +809,25 @@ pub struct TickInput {
     pub lifetime: i16,
     /// The dimension's `fast_lava` attribute: lava pushes three times as hard.
     pub fast_lava: bool,
+    /// `NoGravity`: `getGravity()` is 0.
+    pub no_gravity: bool,
+}
+
+/// `Entity.getBlockSpeedFactor`: the block at the item, else (when that is neither water nor
+/// a bubble column and has the factor 1) the block below that affects its movement.
+fn block_speed_factor(block: &dyn crate::mob::physics::Blocks, pos: Vec3) -> f32 {
+    let state = block.state(BlockPos::containing(pos.x, pos.y, pos.z));
+    let here = state.block().info().speed_factor;
+    let name = state.block().name();
+    if here != 1.0 || name == "minecraft:water" || name == "minecraft:bubble_column" {
+        return here;
+    }
+    let below = BlockPos::new(
+        floor(pos.x),
+        floor(pos.y - f64::from(0.500_001_f32)),
+        floor(pos.z),
+    );
+    block.state(below).block().info().speed_factor
 }
 
 /// `getOnPosLegacy` of an item (the block 0.2 below its feet).
@@ -894,7 +913,7 @@ pub fn tick(
             0.0
         };
         v = Vec3::new(v.x * m, v.y + rise, v.z * m);
-    } else {
+    } else if !input.no_gravity {
         // `applyGravity`: `add(0, -0.04, 0)`, which turns Java's -0.0 into 0.0.
         v = Vec3::new(v.x + 0.0, v.y - 0.04, v.z + 0.0);
     }
@@ -1002,6 +1021,11 @@ pub fn tick(
         }
         if !no_physics && let Some(movement) = data.last_movement {
             inside_blocks_fire(data, movement, out.pos, fire, burn, &mut v);
+        }
+        // `Entity.move`: `getBlockSpeedFactor` (soul sand, honey) slows the horizontal motion.
+        if !no_physics {
+            let factor = f64::from(block_speed_factor(block, out.pos));
+            v = Vec3::new(v.x * factor, v.y, v.z * factor);
         }
         // `getAirDrag()` and the ground friction are floats, widened to double.
         let air_drag = 0.98_f32;

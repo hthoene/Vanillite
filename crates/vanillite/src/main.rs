@@ -107,9 +107,10 @@ fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
             }
         }
     }
-    // The plugin runtime first: with plugins, the static build gives way to `vanillite-gnu`.
-    let runtime = runtime::dispatch(&dir, &version());
+    // The CPU build first, then the plugin runtime: with plugins, the static build gives way to
+    // `vanillite-gnu`. In this order the process that logs is the one that decided.
     let baseline = cpu::dispatch();
+    let runtime = runtime::dispatch(&dir, &version());
     logger::init();
     runtime.log();
     match baseline {

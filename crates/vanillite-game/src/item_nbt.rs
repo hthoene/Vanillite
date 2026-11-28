@@ -35,54 +35,11 @@ pub fn component_from_nbt(type_id: u16, tag: &Tag) -> Option<Box<[u8]>> {
     conv::from_nbt(type_id, tag, &InstalledRegistries).ok()
 }
 
-/// JSON as NBT for the component codecs (numbers as int, long or double; `null` as an empty
-/// compound).
-pub fn json_to_nbt(v: &serde_json::Value) -> Tag {
-    use serde_json::Value;
-    match v {
-        Value::Null => Tag::Compound(Compound::new()),
-        Value::Bool(b) => Tag::Byte(i8::from(*b)),
-        Value::Number(n) => match n.as_i64() {
-            Some(i) => i32::try_from(i).map_or(Tag::Long(i), Tag::Int),
-            None => Tag::Double(n.as_f64().unwrap_or(0.0)),
-        },
-        Value::String(s) => Tag::String(s.clone()),
-        Value::Array(a) => Tag::List(vanillite_nbt::List(a.iter().map(json_to_nbt).collect())),
-        Value::Object(o) => {
-            let mut c = Compound::new();
-            for (k, v) in o {
-                c.insert(k.clone(), json_to_nbt(v));
-            }
-            Tag::Compound(c)
-        }
-    }
-}
-
-/// The `items.json` line (the default components Vanilla's data generator writes, one item
-/// per line) of each item by name, read on first use.
-fn item_lines() -> &'static std::collections::HashMap<&'static str, &'static str> {
-    static LINES: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static str>> =
-        std::sync::OnceLock::new();
-    LINES.get_or_init(|| {
-        vanillite_data::raw::ITEMS_JSON
-            .lines()
-            .filter_map(|line| {
-                let rest = line.strip_prefix("{\"name\":\"")?;
-                let name = &rest[..rest.find('"')?];
-                Some((name, line.trim_end_matches(',')))
-            })
-            .collect()
-    })
-}
+pub use vanillite_protocol::item_defaults::json_to_nbt;
 
 /// The wire value of an item type's default component, if it has one.
-pub fn default_component(item: u16, type_id: u16) -> Option<Box<[u8]>> {
-    let name = vanillite_data::registry::ITEM.name(item)?;
-    let component = conv::type_name(type_id)?;
-    let line = item_lines().get(name)?;
-    let json: serde_json::Value = serde_json::from_str(line).ok()?;
-    let value = json.get("components")?.get(component)?;
-    component_from_nbt(type_id, &json_to_nbt(value))
+pub fn default_component(item: u16, type_id: u16) -> Option<std::borrow::Cow<'static, [u8]>> {
+    vanillite_protocol::item_defaults::default_component(item, type_id)
 }
 
 /// `ItemStack.get(type)`: the wire value of the stack's patch, else the item's default
@@ -99,7 +56,7 @@ pub fn effective_component(stack: &ItemStack, type_id: u16) -> Option<std::borro
             return None;
         }
     }
-    default_component(stack.item, type_id).map(|v| std::borrow::Cow::Owned(v.into_vec()))
+    default_component(stack.item, type_id)
 }
 
 /// `NbtUtils.compareNbt(expected, actual, true)`: every key of an expected compound matches,
@@ -254,6 +211,7 @@ pub fn stack_from_nbt(c: &Compound) -> ItemStack {
             }
         }
     }
+    stack.normalize();
     stack
 }
 
@@ -271,10 +229,8 @@ mod tests {
     #[test]
     fn stack_round_trips_in_vanilla_form() {
         let mut stack = ItemStack::new(1, 5);
-        stack.patch_mut().set(ids::CUSTOM_NAME, text("Hello"));
-        stack
-            .patch_mut()
-            .set(ids::DAMAGE, vec![3].into_boxed_slice());
+        stack.set_component(ids::CUSTOM_NAME, text("Hello"));
+        stack.set_component(ids::DAMAGE, vec![3].into_boxed_slice());
         stack.patch_mut().removed.push(ids::MAX_STACK_SIZE);
         let nbt = stack_to_nbt(&stack);
         let components = nbt.get("components").and_then(Tag::as_compound).unwrap();
@@ -298,10 +254,8 @@ mod tests {
         value.extend([0, 0]); // no title, no author
         let t = conv::type_by_name("minecraft:painting/variant").unwrap();
         let mut stack = ItemStack::new(1, 1);
-        stack.patch_mut().set(t, value.into_boxed_slice());
-        stack
-            .patch_mut()
-            .set(ids::DAMAGE, vec![7].into_boxed_slice());
+        stack.set_component(t, value.into_boxed_slice());
+        stack.set_component(ids::DAMAGE, vec![7].into_boxed_slice());
         let nbt = stack_to_nbt(&stack);
         assert!(nbt.get(LEGACY_KEY).is_some());
         assert_eq!(stack_from_nbt(&nbt), stack);
@@ -310,7 +264,7 @@ mod tests {
     #[test]
     fn reads_the_earlier_wire_only_form() {
         let mut stack = ItemStack::new(1, 2);
-        stack.patch_mut().set(ids::CUSTOM_NAME, text("Old"));
+        stack.set_component(ids::CUSTOM_NAME, text("Old"));
         let mut bytes = Vec::new();
         stack.encode_untrusted(&mut bytes);
         let mut r = Reader::new(&bytes);

@@ -1228,6 +1228,29 @@ fn explode_creeper(t: &mut Tick<'_, '_>) {
         resistance: crate::level::explosion::BlockResistance::Default,
         fire: false,
     }));
+    // `spawnLingeringCloud`: a cloud with a copy of every active effect.
+    let effects: Vec<_> = t.mob_ref().effects.iter().cloned().collect();
+    if !effects.is_empty() {
+        let (radius, duration) = (2.5_f32, 300);
+        #[allow(clippy::cast_precision_loss)]
+        let data = crate::effect::cloud::CloudData {
+            radius,
+            radius_on_use: -0.5,
+            wait_time: 10,
+            duration,
+            duration_scale: 0.25,
+            radius_per_tick: -radius / duration as f32,
+            contents: crate::effect::potion::PotionContents {
+                custom_effects: effects,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        t.cx.actions
+            .push(WorldAction::SpawnCloud(pos, Box::new(data)));
+    }
+    // `triggerOnDeathMobEffects(KILLED)`.
+    crate::effect::living::on_mob_killed(t);
 }
 
 /// Kind specific work after `LivingEntity.tick` (`Spider.tick`'s climbing flag).
