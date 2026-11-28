@@ -306,9 +306,17 @@ pub struct LootTables {
     broken: Vec<String>,
     /// Unsupported features met while parsing, with the first file using each.
     unsupported: Vec<String>,
+    /// The block tags of the same packs (sorted block ids by tag id), for block predicates
+    /// with a tag; `None`: the installed game data's.
+    block_tags: Option<std::sync::Arc<HashMap<String, Vec<u16>>>>,
 }
 
 impl LootTables {
+    /// Sets the block tags of the packs these tables came from ([`BlockSet::Tag`]).
+    pub fn set_block_tags(&mut self, tags: std::sync::Arc<HashMap<String, Vec<u16>>>) {
+        self.block_tags = Some(tags);
+    }
+
     /// Loads every `data/<ns>/loot_table/**.json` of the packs in `roots` (each root contains
     /// `data/`; later roots override earlier ones), like the reloadable `loot_table` registry.
     /// Broken tables are logged and skipped.
@@ -911,6 +919,7 @@ impl LootTables {
             modifier_ids,
             broken,
             unsupported,
+            block_tags: None,
         }
     }
 }
@@ -1158,8 +1167,32 @@ impl Bounds {
 
 #[derive(Debug)]
 struct BlockPredicate {
-    blocks: Option<Box<[BlockId]>>,
+    blocks: Option<BlockSet>,
     state: Box<[(Box<str>, ValueMatcher)]>,
+}
+
+/// The `blocks` holder set of a block predicate.
+#[derive(Debug)]
+enum BlockSet {
+    Ids(Box<[BlockId]>),
+    /// A block tag (without `#`), resolved against the loaded data packs.
+    Tag(Box<str>),
+}
+
+impl BlockSet {
+    fn contains(&self, block: BlockId, tags: Option<&HashMap<String, Vec<u16>>>) -> bool {
+        match self {
+            BlockSet::Ids(ids) => ids.contains(&block),
+            BlockSet::Tag(tag) => match tags {
+                Some(tags) => tags
+                    .get(&**tag)
+                    .is_some_and(|v| v.binary_search(&block.0).is_ok()),
+                None => {
+                    crate::player::play::game_data().is_some_and(|d| d.block_in_tag(block.0, tag))
+                }
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1923,16 +1956,13 @@ impl Parser<'_> {
     fn block_predicate(&mut self, o: &Map<String, Value>) -> Res<Option<BlockPredicate>> {
         let blocks = match o.get("blocks").map(id_set).transpose()? {
             None => None,
-            Some(IdSet::Ids(names)) => Some(
+            Some(IdSet::Ids(names)) => Some(BlockSet::Ids(
                 names
                     .iter()
                     .map(|n| block_id(n))
                     .collect::<Res<Box<[_]>>>()?,
-            ),
-            Some(IdSet::Tag(tag)) => {
-                self.unsupported(format!("block tag #{tag} in match_block (false)"));
-                return Ok(None);
-            }
+            )),
+            Some(IdSet::Tag(tag)) => Some(BlockSet::Tag(tag.into())),
         };
         let mut state = Vec::new();
         if let Some(s) = o.get("state") {
@@ -2743,12 +2773,12 @@ impl<'t> Eval<'t, '_> {
             Cond::MatchBlock(p) => self
                 .ctx
                 .block_state
-                .is_some_and(|state| block_matches(p, state)),
+                .is_some_and(|state| block_matches(p, state, self.tables.block_tags.as_deref())),
             // Without level access the neighbour is assumed to be as Vanilla left it.
-            Cond::LocationBlock([dx, dy, dz], p) => self
-                .ctx
-                .neighbour
-                .is_none_or(|at| at(*dx, *dy, *dz).is_some_and(|s| block_matches(p, s))),
+            Cond::LocationBlock([dx, dy, dz], p) => self.ctx.neighbour.is_none_or(|at| {
+                at(*dx, *dy, *dz)
+                    .is_some_and(|s| block_matches(p, s, self.tables.block_tags.as_deref()))
+            }),
             Cond::Biome(biomes) => {
                 self.ctx.origin.is_some()
                     && self
@@ -3481,10 +3511,14 @@ fn read_stew_effects(data: Option<&[u8]>) -> Vec<(u32, i32)> {
 }
 
 /// `BlockPredicate.matchesState`.
-fn block_matches(p: &BlockPredicate, state: BlockState) -> bool {
+fn block_matches(
+    p: &BlockPredicate,
+    state: BlockState,
+    tags: Option<&HashMap<String, Vec<u16>>>,
+) -> bool {
     let block = state.block();
     if let Some(blocks) = &p.blocks
-        && !blocks.contains(&block)
+        && !blocks.contains(block, tags)
     {
         return false;
     }
