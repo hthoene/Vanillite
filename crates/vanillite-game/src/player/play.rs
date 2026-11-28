@@ -1353,12 +1353,16 @@ impl Digging {
             return false;
         }
         let used = item::item_id(&stack);
+        // `ItemStack.useOn`: adventure players use items only on blocks `can_place_on`
+        // allows (map on a banner, compass on a lodestone, decorations).
+        let may_build =
+            ctx.actor.game_mode != GameMode::Adventure || item_use::can_place_on(ctx, &stack, pos);
         if crate::map::is_map_item(used.0)
+            && may_build
             && let Some(level) = ctx.level.level_mut()
             && let Some(ok) = crate::map::use_on_banner(level, &stack, pos)
         {
-            // `MapItem.useOn` on a banner (any game mode: it runs before `useOn`'s build check
-            // in Vanilla's `ItemStack.useOn` only for the item itself).
+            // `MapItem.useOn` on a banner.
             if ok {
                 ctx.award_stat(Stat::of(StatType::Used, stack.item), 1);
                 ctx.trigger(Event::ItemUsedOnBlock(pos, stack));
@@ -1367,7 +1371,7 @@ impl Digging {
             return ok;
         }
         if used == vanillite_data::item::ids::COMPASS
-            && ctx.actor.game_mode != GameMode::Adventure
+            && may_build
             && ctx.level.block(pos).block() == vanillite_data::block::ids::LODESTONE
         {
             // `CompassItem.useOn`.
@@ -1580,8 +1584,8 @@ impl Digging {
         } else {
             return None;
         };
-        // `ItemStack.useOn`: adventure players cannot build.
-        if ctx.actor.game_mode == GameMode::Adventure {
+        // `ItemStack.useOn`: adventure players only where `can_place_on` allows.
+        if ctx.actor.game_mode == GameMode::Adventure && !item_use::can_place_on(ctx, stack, pos) {
             return Some(false);
         }
         let creative = ctx.actor.creative();

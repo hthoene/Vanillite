@@ -439,7 +439,12 @@ pub fn tick(
         let unshot = t
             .ents
             .missile(id)
-            .filter(|d| !d.has_been_shot && d.kind != MissileKind::EvokerFangs)
+            // Evoker fangs and eyes of ender are no projectile.
+            .filter(|d| {
+                !d.has_been_shot
+                    && d.kind != MissileKind::EvokerFangs
+                    && d.kind != MissileKind::EyeOfEnder
+            })
             .map(|d| d.owner);
         if let Some(owner) = unshot {
             if let Some(pos) = t.ents.store.get(id).map(|e| e.pos()) {
