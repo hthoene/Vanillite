@@ -1,0 +1,3 @@
+tick = 1
+cause = "the foxes draw from their random differently in the first tick (Vanilla: StalkPreyGoal on the chicken at once, Vanillite FoxEatBerriesGoal)"
+owner = "gameplay-developer #267"

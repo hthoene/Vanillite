@@ -1,0 +1,3 @@
+tick = 18
+cause = "after the player dismounts (shift) from a boat it lifted into the air with move_vehicle, Vanilla's boat starts falling one tick later"
+owner = "gameplay-developer #267"
