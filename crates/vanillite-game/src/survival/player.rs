@@ -266,6 +266,10 @@ pub struct Survival {
     /// The equipment's and the location-based enchantments' attribute modifiers as last sent
     /// to the client (`collectEquipmentChanges`).
     pub equipment_modifiers: crate::effect::attribute::Modifiers,
+    /// The attribute instances a command or plugin changed (`AttributeMap`): their base
+    /// values and permanent modifiers, saved as `attributes`; the values live in the effects'
+    /// modifiers.
+    pub attributes: crate::mob::entity_nbt::NbtAttributes,
     /// The location-based modifiers changed: the attributes are synced again.
     pub equipment_dirty: bool,
     /// `getTicksFrozen` and `isInPowderSnow`.
@@ -400,6 +404,7 @@ impl Default for Survival {
             world_actions: Vec::new(),
             location: crate::enchant::location::LocationState::default(),
             equipment_modifiers: crate::effect::attribute::Modifiers::default(),
+            attributes: crate::mob::entity_nbt::NbtAttributes::default(),
             equipment_dirty: false,
             ticks_frozen: 0,
             in_powder_snow: false,
@@ -608,6 +613,7 @@ impl Survival {
         // The effects (with their modifiers) first: Health Boost raises the maximum.
         s.effects.load(data.get("active_effects"));
         s.effects.resend_all();
+        s.load_attributes(data.get("attributes"));
         let max = s.max_health();
         s.health = float(data, "Health").unwrap_or(max).clamp(0.0, max);
         s.absorption = float(data, "AbsorptionAmount")
@@ -697,6 +703,7 @@ impl Survival {
                 out.remove("active_effects");
             }
         }
+        out.insert("attributes", self.attributes.to_list());
         self.portal.save(out);
         self.tracking.save(out);
         self.food.save(out);
@@ -745,7 +752,35 @@ impl Survival {
             s.score = self.score;
         }
         s.xp.seed = self.xp.seed;
+        // `assignBaseValues`: the base values carry over, the permanent modifiers do not.
+        s.attributes = self.attributes.clone();
+        for a in &mut s.attributes.0 {
+            a.modifiers.clear();
+        }
+        for (a, v) in self.effects.modifiers.bases() {
+            s.effects.modifiers.set_base(a, v);
+        }
+        s.effects.modifiers.take_dirty();
+        s.health = s.max_health();
         s
+    }
+
+    /// `AttributeMap.apply` of a player's `attributes` list: base values and permanent
+    /// modifiers, kept for the save.
+    fn load_attributes(&mut self, tag: Option<&Tag>) {
+        use vanillite_data::entity::ids;
+        for a in crate::mob::entity_nbt::read_attributes(ids::PLAYER, tag) {
+            let base = a.attribute.sanitize(a.base);
+            if base.to_bits() != a.attribute.base_of(ids::PLAYER).to_bits() {
+                self.effects.modifiers.set_base(a.attribute, base);
+            }
+            for x in &a.modifiers {
+                self.effects
+                    .modifiers
+                    .set(a.attribute, &x.id, x.amount, x.operation);
+            }
+            self.attributes.0.push(a);
+        }
     }
 
     /// The player was moved without walking (teleport, portal): the blocks it touches next
@@ -2287,7 +2322,11 @@ pub fn do_tick_end(
     if player.survival.impulse_grace > 0 {
         player.survival.impulse_grace -= 1;
     }
-    crate::elytra::update_player_pose(entity, player.survival.spin_attack.is_some());
+    crate::elytra::update_player_pose(
+        entity,
+        player.survival.spin_attack.is_some(),
+        crate::effect::attribute_map::scale_of(&player.survival.effects.modifiers),
+    );
     player.survival.last_box = Some(entity.as_ref().aabb());
     // `Player.aiStep`: `handleShoulderEntities`.
     let sleeping = player.survival.sleeping_pos.is_some();

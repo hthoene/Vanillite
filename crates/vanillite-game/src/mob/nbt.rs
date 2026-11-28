@@ -327,6 +327,17 @@ pub fn save_mob(core: &EntityRef<'_>, m: &MobData) -> Compound {
         Kind::Spider => {}
         _ => super::fam::save(m, &mut out),
     }
+    // `LivingEntity.addAdditionalSaveData`: every living entity writes its brain (empty
+    // without memories), its attribute instances and the impulse grace time.
+    if out.get("Brain").is_none() {
+        let mut brain = Compound::new();
+        brain.insert("memories", Compound::new());
+        out.insert("Brain", brain);
+    }
+    if out.get("attributes").is_none() {
+        out.insert("attributes", vanillite_nbt::List(Vec::new()));
+    }
+    out.insert("current_impulse_context_reset_grace_time", 0);
     out
 }
 
