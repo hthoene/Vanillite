@@ -84,6 +84,10 @@ func (s *session) observe(pk packet.Packet) {
 			}
 		case *packet.AddActor:
 			fmt.Printf("    AddActor %s %d\n", pk.EntityType, pk.EntityRuntimeID)
+		case *packet.BlockActorData:
+			fmt.Printf("    BlockActorData %v %v\n", pk.Position, pk.NBTData)
+		case *packet.UpdateBlock:
+			fmt.Printf("    UpdateBlock %v %d layer %d\n", pk.Position, pk.NewBlockRuntimeID, pk.Layer)
 		case *packet.ActorEvent:
 			fmt.Printf("    ActorEvent %d %d\n", pk.EntityRuntimeID, pk.EventType)
 		}
@@ -498,8 +502,9 @@ func (s *session) run(idle time.Duration) {
 			p := s.pos
 			s.command(fmt.Sprintf("worldborder center %d %d", int(p[0])+3, int(p[2])))
 			ok := s.commandThen("worldborder set 8", is(func(e *packet.LevelEvent) bool { return e.EventType == packet.LevelEventParticleDenyBlock }))
-			// Walking through the border: the client is stopped at it (half a player inside).
-			edge := float32(int(p[0])+3+4) - 0.3
+			// Walking through the border: the client is stopped at it (half a player inside;
+			// the command centres the border on the block).
+			edge := float32(int(p[0])+3) + 0.5 + 4 - 0.3
 			s.pos[0] = edge + 2
 			s.input(nil)
 			ok = ok && s.wait("border stop", 5*time.Second, is(func(m *packet.MovePlayer) bool {

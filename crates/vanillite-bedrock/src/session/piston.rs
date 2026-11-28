@@ -1,16 +1,16 @@
-//! Pistons. Java moves blocks as `moving_piston` blocks without block entity data: the Java
-//! client animates them itself from `block_event`. Bedrock draws the arm from the piston's
-//! `PistonArm` block actor and moved blocks from `MovingBlock` actors, so the session animates
-//! both over the two ticks of a move (the approach of Geyser's `PistonBlockEntity`, MIT,
-//! Copyright (c) 2019-2026 GeyserMC). `moving_piston` updates are not shown: the client keeps
-//! what it shows until the move ends.
+//! Pistons. The server moves blocks as `moving_piston` blocks it does not send: the Java client
+//! works the move out from `block_event` and its own world. Bedrock draws the arm from the
+//! piston's `PistonArm` block actor and moved blocks from `MovingBlock` actors, so the session
+//! animates both over the two ticks of a move (the approach of Geyser's `PistonBlockEntity`, MIT,
+//! Copyright (c) 2019-2026 GeyserMC).
 //!
 //! The moved blocks come from a small memory of Java block states: the blocks in front of the
-//! pistons of each chunk and recent block updates. A moved block it does not know stays where it
-//! was until the server sends the block at its new place.
+//! pistons of each chunk and recent block updates. Only the row in front of the piston is
+//! animated; blocks glued on sideways by slime or honey, and blocks the memory does not know,
+//! jump to their place when the server sends the end of the move.
 
 use rustc_hash::FxHashMap;
-use vanillite_data::block::BlockState;
+use vanillite_data::block::{BlockState, PushReaction, flags};
 
 use super::Session;
 use crate::nbt::Compound;
@@ -19,22 +19,12 @@ use crate::packets::{self as bp, id};
 /// Most remembered block states (a full memory is cleared; misses only cost the animation).
 const MEMORY_MAX: usize = 16_384;
 
-/// Farthest block a piston moves (12 pushed blocks plus the head).
-const REACH: i32 = 13;
+/// Most blocks a piston moves (`PistonStructureResolver.MAX_PUSH_DEPTH`).
+const PUSH_LIMIT: usize = 12;
 
 /// Java `block_event` types of pistons.
 const EXTEND: u8 = 0;
 const CONTRACT: u8 = 1;
-
-/// A remembered Java block state.
-#[derive(Debug, Clone, Copy)]
-struct Known {
-    state: u32,
-    /// The state before the current tick (a piston's block updates of a tick come before its
-    /// `block_event`, so this is the block that moved).
-    before: u32,
-    tick: u32,
-}
 
 /// A piston moving on the client.
 #[derive(Debug)]
@@ -51,11 +41,9 @@ struct Moving {
 /// The pistons of a session.
 #[derive(Debug, Default)]
 pub(super) struct Pistons {
-    memory: FxHashMap<[i32; 3], Known>,
-    /// Positions of this tick's `moving_piston` updates.
-    pending: Vec<[i32; 3]>,
+    /// Java states of the blocks in front of pistons and of recent block updates.
+    memory: FxHashMap<[i32; 3], u32>,
     active: Vec<Moving>,
-    tick: u32,
 }
 
 impl Pistons {
@@ -63,51 +51,19 @@ impl Pistons {
         if self.memory.len() >= MEMORY_MAX && !self.memory.contains_key(&pos) {
             self.memory.clear();
         }
-        let tick = self.tick;
-        let k = self.memory.entry(pos).or_insert(Known {
-            state,
-            before: state,
-            tick,
-        });
-        if k.tick != tick {
-            k.before = k.state;
-            k.tick = tick;
-        }
-        k.state = state;
-    }
-
-    /// The state a block had before this tick.
-    fn before(&self, pos: [i32; 3]) -> Option<u32> {
-        self.memory.get(&pos).map(|k| {
-            if k.tick == self.tick {
-                k.before
-            } else {
-                k.state
-            }
-        })
+        self.memory.insert(pos, state);
     }
 
     /// Forgets everything (another dimension).
     pub(super) fn clear(&mut self) {
         self.memory.clear();
-        self.pending.clear();
         self.active.clear();
     }
 
     /// Blocks in front of a chunk's pistons ([`crate::chunk::translate`]).
     pub(super) fn remember_chunk(&mut self, blocks: &[([i32; 3], u32)]) {
         for &(pos, state) in blocks {
-            if self.memory.len() >= MEMORY_MAX {
-                self.memory.clear();
-            }
-            self.memory.insert(
-                pos,
-                Known {
-                    state,
-                    before: state,
-                    tick: self.tick.wrapping_sub(1),
-                },
-            );
+            self.remember(pos, state);
         }
     }
 
@@ -169,12 +125,70 @@ fn piston_arm(m: &Moving, attached: &[i32]) -> Vec<u8> {
     bp::block_actor_data(m.pos, &c.root())
 }
 
+/// Whether a piston moves a block of this state (`PistonBaseBlock.isPushable`, without the
+/// world height and border checks): `pull` for a sticky piston pulling it.
+fn movable(state: u32, pull: bool) -> bool {
+    let Ok(s) = u16::try_from(state) else {
+        return false;
+    };
+    let s = BlockState(s);
+    if !s.is_valid() || s.misc().destroy_speed < 0.0 || s.has(flags::HAS_BLOCK_ENTITY) {
+        return false;
+    }
+    if crate::blockentity::piston_facing(state).is_some() {
+        return s.value("extended") != Some("true");
+    }
+    match s.misc().push_reaction {
+        PushReaction::PushPull => true,
+        PushReaction::Push => !pull,
+        PushReaction::Immoveable | PushReaction::Popped => false,
+    }
+}
+
+impl Pistons {
+    /// The blocks a piston moves, start positions and states (`PistonStructureResolver` for a
+    /// row of blocks; blocks glued on by slime or honey and unknown blocks are left out).
+    fn resolve(
+        &self,
+        pos: [i32; 3],
+        facing: [i32; 3],
+        extending: bool,
+        pulls: bool,
+    ) -> Vec<([i32; 3], u32)> {
+        let known = |p: [i32; 3]| self.memory.get(&p).copied();
+        let mut out = Vec::new();
+        if extending {
+            let mut p = add(pos, facing);
+            while let Some(state) = known(p) {
+                let air = u16::try_from(state).is_ok_and(|s| BlockState(s).is_air());
+                if air || !movable(state, false) {
+                    break;
+                }
+                if out.len() >= PUSH_LIMIT {
+                    // The piston would not move: Java sent the event, so the memory is stale.
+                    return Vec::new();
+                }
+                out.push((p, state));
+                p = add(p, facing);
+            }
+        } else if pulls {
+            let p = add(add(pos, facing), facing);
+            if let Some(state) = known(p)
+                && !u16::try_from(state).is_ok_and(|s| BlockState(s).is_air())
+                && movable(state, true)
+            {
+                out.push((p, state));
+            }
+        }
+        out
+    }
+}
+
 impl Session {
-    /// A Java block update: `moving_piston` is not shown (the move is animated instead).
-    /// Returns whether the update is done.
+    /// A Java block update: `moving_piston` is not shown (the move is animated instead; Vanilla
+    /// does not send it either). Returns whether the update is done.
     pub(super) fn piston_block_update(&mut self, pos: [i32; 3], state: u32) -> bool {
         if is_moving_piston(state) {
-            self.pistons.pending.push(pos);
             return true;
         }
         self.pistons.remember(pos, state);
@@ -186,56 +200,39 @@ impl Session {
         self.pistons.animating(pos)
     }
 
-    /// A piston's `block_event`: start the arm and the moved blocks.
+    /// A piston's `block_event` (the server moves the blocks without telling the client):
+    /// start the arm and the moved blocks.
     pub(super) fn piston_event(&mut self, pos: [i32; 3], action: u8, direction: u8, sticky: bool) {
         let extending = action == EXTEND;
         let facing = crate::blockentity::direction_step(direction);
-        // Extending pushes along the facing; a sticky piston contracting pulls one block back.
+        // Extending pushes along the facing; a sticky piston contracting pulls a block back.
         let pulls = action == CONTRACT && sticky;
         let movement = if extending {
             facing
         } else {
             sub([0; 3], facing)
         };
-        let head = add(pos, facing);
-        let pending = std::mem::take(&mut self.pistons.pending);
-        let mut moved: Vec<([i32; 3], [i32; 3], u32)> = Vec::new();
-        let mut rest = Vec::new();
-        for d in pending {
-            let near = (0..3).all(|i| {
-                d.get(i)
-                    .zip(pos.get(i))
-                    .is_some_and(|(a, b)| a.wrapping_sub(*b).abs() <= REACH)
-            });
-            let ours = near && d != pos && (extending || pulls) && !(extending && d == head);
-            if !ours {
-                rest.push(d);
-                continue;
-            }
-            let origin = sub(d, movement);
-            match self.pistons.before(origin) {
-                Some(state) if state != 0 && !is_moving_piston(state) => {
-                    moved.push((origin, d, state));
-                }
-                _ => {}
-            }
-        }
-        self.pistons.pending = rest;
+        let moved = self.pistons.resolve(pos, facing, extending, pulls);
         let palette = self.version.palette;
         let blocks = palette.blocks();
         let states = palette.states();
         let mut attached = Vec::with_capacity(moved.len().saturating_mul(3));
         if let Some(moving_block) = states.moving_block {
-            for &(origin, _, _) in &moved {
-                self.send(id::UPDATE_BLOCK, &bp::update_block(origin, blocks.air, 0));
-                self.send(id::UPDATE_BLOCK, &bp::update_block(origin, blocks.air, 1));
+            let ends: Vec<[i32; 3]> = moved.iter().map(|&(p, _)| add(p, movement)).collect();
+            for &(origin, _) in &moved {
+                // The start of one block is the end of the next in a row.
+                if !ends.contains(&origin) {
+                    self.send(id::UPDATE_BLOCK, &bp::update_block(origin, blocks.air, 0));
+                    self.send(id::UPDATE_BLOCK, &bp::update_block(origin, blocks.air, 1));
+                }
             }
-            for &(origin, d, state) in &moved {
+            for &(origin, state) in &moved {
                 let rid = u32::from(blocks.entry(state) & !crate::data::WATERLOGGED);
                 let Some(block) = states.get(rid) else {
                     continue;
                 };
                 attached.extend_from_slice(&origin);
+                let d = add(origin, movement);
                 let [x, y, z] = d;
                 let mut c = Compound::default();
                 c.string("id", "MovingBlock")
@@ -271,8 +268,6 @@ impl Session {
     /// One client tick: advance the moving pistons (half a block per tick, like Java).
     pub(super) fn piston_tick(&mut self) {
         let p = &mut self.pistons;
-        p.tick = p.tick.wrapping_add(1);
-        p.pending.clear();
         if p.active.is_empty() {
             return;
         }
@@ -303,16 +298,37 @@ impl Session {
 mod tests {
     use super::*;
 
+    fn state(name: &str) -> u32 {
+        let id = vanillite_data::registry::BLOCK.id(name).unwrap();
+        u32::from(vanillite_data::block::BlockId(id).default_state().0)
+    }
+
     #[test]
-    fn memory_keeps_the_state_before_the_tick() {
+    fn resolves_a_row_and_a_pulled_block() {
         let mut p = Pistons::default();
-        p.remember([0, 0, 0], 5);
-        p.tick = 1;
-        p.remember([0, 0, 0], 0);
-        assert_eq!(p.before([0, 0, 0]), Some(5));
-        p.tick = 2;
-        assert_eq!(p.before([0, 0, 0]), Some(0));
-        p.remember_chunk(&[([1, 2, 3], 7)]);
-        assert_eq!(p.before([1, 2, 3]), Some(7));
+        let (planks, stone, air) = (
+            state("minecraft:oak_planks"),
+            state("minecraft:stone"),
+            state("minecraft:air"),
+        );
+        p.remember_chunk(&[
+            ([1, 0, 0], planks),
+            ([2, 0, 0], stone),
+            ([3, 0, 0], air),
+            ([0, 0, 5], state("minecraft:obsidian")),
+        ]);
+        let east = [1, 0, 0];
+        assert_eq!(
+            p.resolve([0, 0, 0], east, true, false),
+            vec![([1, 0, 0], planks), ([2, 0, 0], stone)]
+        );
+        // Contracting: a sticky piston pulls the block two in front back.
+        assert_eq!(
+            p.resolve([0, 0, 0], east, false, true),
+            vec![([2, 0, 0], stone)]
+        );
+        assert!(p.resolve([0, 0, 0], east, false, false).is_empty());
+        // Obsidian does not move.
+        assert!(p.resolve([0, 0, 4], [0, 0, 1], true, false).is_empty());
     }
 }
