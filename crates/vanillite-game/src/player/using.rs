@@ -1212,7 +1212,6 @@ fn shoot_bow(
     crate::mob::projectile::shoot_arrow(
         ents,
         network_ids,
-        env.random,
         eye,
         dir,
         power * 3.0,
@@ -1223,6 +1222,14 @@ fn shoot_bow(
         power >= 1.0,
         pickup,
     );
+    // `ProjectileWeaponItem.shoot`: the bow's `hurtAndBreak(1, player, hand)` comes before
+    // the sound.
+    if !creative {
+        let i = hand_index(ents, player, u.hand);
+        if hurt_held(ents, env.random, player, i, 1) {
+            crate::durability::broken_in_env(ents, env, player, hand_slot(u.hand));
+        }
+    }
     let pos = ents.store.get(player).map_or(Vec3::ZERO, |e| e.pos());
     let pitch = 1.0 / (env.random.next_float() * 0.4 + 1.2) + power * 0.5;
     let seed = crate::survival::sound_seed();
@@ -1248,13 +1255,6 @@ fn shoot_bow(
         && let Some(s) = p.inventory.get_mut(i)
     {
         s.shrink(1);
-    }
-    if !creative {
-        // `hurtAndBreak(1, player, hand)` of the bow.
-        let i = hand_index(ents, player, u.hand);
-        if hurt_held(ents, env.random, player, i, 1) {
-            crate::durability::broken_in_env(ents, env, player, hand_slot(u.hand));
-        }
     }
 }
 

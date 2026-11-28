@@ -265,7 +265,9 @@ pub struct PlayContext<'a> {
     /// Stacks the player drops this tick.
     pub drops: &'a mut Vec<Drop>,
     /// Hand swings other players must see.
-    pub swings: &'a mut Vec<Hand>,
+    /// Hand swings with whether they use the main hand's `attack_animation` (a punch; else
+    /// `SwingAnimation.DEFAULT`).
+    pub swings: &'a mut Vec<(Hand, bool)>,
     /// Plugin hooks (block breaking and placing).
     pub hooks: &'a dyn crate::hooks::GameHooks,
     /// The player's statistics (`None` in tests).
@@ -1142,8 +1144,8 @@ impl Digging {
             } else if self.use_item_on_block(ctx, p.hand, pos, face, hit, p.inside, sink) {
                 // Vanilla 26.3 swings twice for a successful use (two branches of
                 // `handleUseItemOn` both call `swingAndResetAttackStrength`).
-                ctx.swings.push(p.hand);
-                ctx.swings.push(p.hand);
+                ctx.swings.push((p.hand, false));
+                ctx.swings.push((p.hand, false));
             }
             block_update(sink, ctx.level, pos);
             block_update(sink, ctx.level, relative(pos, face));
@@ -2070,7 +2072,7 @@ impl Digging {
             None => false,
             Some(item_use::UseAir::Done(result)) => {
                 if result == item_use::Used::Success {
-                    ctx.swings.push(hand);
+                    ctx.swings.push((hand, false));
                 }
                 true
             }
@@ -2092,7 +2094,7 @@ impl Digging {
                     place::update_placement_context(&place_ctx, &LevelReader(&*ctx.level))
                     && self.place_block(ctx, hand, &stack, &place_ctx)
                 {
-                    ctx.swings.push(hand);
+                    ctx.swings.push((hand, false));
                 }
                 true
             }

@@ -806,7 +806,8 @@ impl Connection {
                         None,
                     );
                 if swing {
-                    play.swings.push(Hand::MainHand);
+                    // `handlePunch`: the main hand's `attack_animation`.
+                    play.swings.push((Hand::MainHand, true));
                 }
                 if self.entity_actions.len() < 16 {
                     self.entity_actions.push(EntityAction::Punch);
@@ -1108,7 +1109,7 @@ impl Connection {
             DigAction::DropItem | DigAction::DropAllItems => {
                 self.play
                     .drop_selected(play, p.action == DigAction::DropAllItems);
-                play.swings.push(Hand::MainHand);
+                play.swings.push((Hand::MainHand, false));
             }
             DigAction::ReleaseUseItem => {
                 if self.entity_actions.len() < 16 {
