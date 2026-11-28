@@ -522,6 +522,7 @@ impl WorldMobs {
         dimension: &str,
         spawn_point: Option<BlockPos>,
         tiles: Option<&vanillite_game::level::tiles::TileRun<'_>>,
+        phases: &vanillite_game::level::tiles::Phases<'_>,
     ) {
         let env = level.spawner_env.env;
         let Some(table) = self.table.clone() else {
@@ -580,9 +581,17 @@ impl WorldMobs {
         };
         match tiles {
             Some(run) => {
-                spawn::tick_tiled(level, &table, &mut self.spawner, &input, persistent, run);
+                spawn::tick_tiled(
+                    level,
+                    &table,
+                    &mut self.spawner,
+                    &input,
+                    persistent,
+                    run,
+                    phases,
+                );
             }
-            None => spawn::tick(level, &table, &mut self.spawner, &input, persistent),
+            None => spawn::tick(level, &table, &mut self.spawner, &input, persistent, phases),
         }
         // `tickChunks`: the custom spawners only run with `doMobSpawning`.
         if dimension == "minecraft:overworld" && rules.bool(Rule::SPAWN_MOBS) {
