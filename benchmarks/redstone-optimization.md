@@ -89,9 +89,10 @@ run these updates in the same order and can only make each one cheaper.
 
 ## `alternate-current`
 
-`performance.redstone.implementation = "alternate-current"` already exists (the `paper` profile
-sets it). Final wire powers match Vanilla, **the order of neighbour and shape updates does
-not**; some piston and observer builds can behave differently.
+`performance.redstone.implementation = "alternate-current"` already existed; the `paper` profile
+set it when these runs were made. Since this branch only the `performance` profile does. Final
+wire powers match Vanilla, **the order of neighbour and shape updates does not**; some piston
+and observer builds can behave differently.
 
 | Server scenario, branch | mean | p50 | p95 | p99 | max |
 |---|---:|---:|---:|---:|---:|
