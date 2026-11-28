@@ -1070,6 +1070,45 @@ pub fn tick(
     out
 }
 
+/// `state.isCollisionShapeFullBlock(level, pos)`: a moving piston's shape comes from its block
+/// entity (it has a dynamic shape), so it is full only where the moved block stands whole.
+fn collision_full_block(block: &dyn crate::mob::physics::Blocks, pos: BlockPos) -> bool {
+    let state = block.state(pos);
+    if state.block() != vanillite_data::block::ids::MOVING_PISTON {
+        return state.has(block_flags::COLLISION_FULL_BLOCK);
+    }
+    let mut boxes = Vec::new();
+    block.moving_piston_boxes(pos, &mut boxes);
+    // `Block.isShapeFullBlock`: the union is exactly the unit cube.
+    if boxes
+        .iter()
+        .any(|b| b[0] < 0.0 || b[1] < 0.0 || b[2] < 0.0 || b[3] > 1.0 || b[4] > 1.0 || b[5] > 1.0)
+    {
+        return false;
+    }
+    let cuts = |axis: usize| {
+        let mut c = vec![0.0, 1.0];
+        for b in &boxes {
+            c.push(b[axis]);
+            c.push(b[axis + 3]);
+        }
+        c.sort_by(f64::total_cmp);
+        c.dedup();
+        c
+    };
+    let (xs, ys, zs) = (cuts(0), cuts(1), cuts(2));
+    xs.windows(2).all(|x| {
+        ys.windows(2).all(|y| {
+            zs.windows(2).all(|z| {
+                let p = [(x[0] + x[1]) / 2.0, (y[0] + y[1]) / 2.0, (z[0] + z[1]) / 2.0];
+                boxes
+                    .iter()
+                    .any(|b| (0..3).all(|a| b[a] < p[a] && p[a] < b[a + 3]))
+            })
+        })
+    })
+}
+
 /// `Entity.moveTowardsClosestSpace`: pushes an entity stuck in a block out of it.
 pub(crate) fn move_towards_closest_space(
     pos: Vec3,
@@ -1100,7 +1139,7 @@ pub(crate) fn move_towards_closest_space(
             base.y.wrapping_add(dy),
             base.z.wrapping_add(dz),
         );
-        if !block.state(n).has(block_flags::COLLISION_FULL_BLOCK) {
+        if !collision_full_block(block, n) {
             let axis_delta = delta.get(axis).copied().unwrap_or(0.0);
             let distance = if positive {
                 1.0 - axis_delta

@@ -467,16 +467,19 @@ impl GameWorld {
                     .filter(|r| r.dimension == "minecraft:overworld")
                     .map(|r| r.pos),
                 leads_mobs: self.level.entities.leashes.values().any(|&h| h == id),
-                // The recorder calls `ServerPlayerGameMode.useItemOn` itself, without the
-                // packet handler's reach check: any block is in reach.
-                ranges: (
-                    f64::from(i32::MAX),
-                    vanillite_game::player::play::interaction_ranges(
+                ranges: {
+                    let ranges = vanillite_game::player::play::interaction_ranges(
                         &player.inventory,
                         player.game_mode,
-                    )
-                    .1,
-                ),
+                    );
+                    // The recorder calls `ServerPlayerGameMode.useItemOn` itself, without the
+                    // packet handler's reach check: a clicked block is in reach.
+                    if click.air || click.attack {
+                        ranges
+                    } else {
+                        (10_000.0, ranges.1)
+                    }
+                },
             };
             let mut effects = vanillite_server::LevelEffects::default();
             let spectators = vanillite_base::hash::FxHashSet::default();
