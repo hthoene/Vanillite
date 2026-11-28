@@ -16,6 +16,8 @@
 #   benchmark on vanillite-test, which shares the Proxmox host) runs scripts/testserver/nightly.sh
 #   of the newest green dev commit under the lock; results in /var/lib/vanillite-nightly/<run>/
 #   (`vanillite-nightly status`, `cargo xtask testserver --host vanillite-test2 nightly`).
+#   Its session replay step copies the new recordings of vanillite-test (ssh host
+#   vanillite-recordings of vanillite-work, read-only key; provision vanillite-test after this).
 # - Vanilla 26.3 reference server /opt/vanilla (vanilla.service, port 30900, RCON 25578) and
 #   Paper 26.3 /opt/paper (paper.service, port 30000, RCON 25575) for comparisons and plugin
 #   spikes: offline mode, started only on demand (`systemctl start paper`, stop afterwards).
@@ -169,6 +171,27 @@ case "${1:-}" in
         ;;
 esac
 EOF
+
+echo "== session recordings of vanillite-test (nightly replay, #257)"
+# The nightly copies the new recordings of Vanillite 30001 on vanillite-test with this key
+# (ssh host vanillite-recordings of user vanillite-work); vanillite-test lets it only read them
+# (`cargo xtask testserver provision` there authorizes the key, here it passes the address).
+install -d -m 700 -o vanillite-work -g vanillite-work /opt/vanillite-work/.ssh
+if [ ! -f /opt/vanillite-work/.ssh/recordings ]; then
+    runuser -u vanillite-work -- ssh-keygen -q -t ed25519 -N '' -C vanillite-test2-recordings \
+        -f /opt/vanillite-work/.ssh/recordings
+fi
+if [ -n "${VANILLITE_RECORDINGS_HOST:-}" ]; then
+    write_if_changed /opt/vanillite-work/.ssh/config <<EOF
+Host vanillite-recordings
+    HostName $VANILLITE_RECORDINGS_HOST
+    User root
+    IdentityFile ~/.ssh/recordings
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking accept-new
+EOF
+fi
 
 echo "== nightly heavy tests (vanillite-nightly.timer, 00:30 Europe/Berlin)"
 install -d /var/lib/vanillite-nightly

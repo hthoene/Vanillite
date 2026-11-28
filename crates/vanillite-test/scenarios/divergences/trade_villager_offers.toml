@@ -1,0 +1,3 @@
+tick = 10
+cause = "the shift-click trade spawns experience orbs (rewardTradeXp) in Vanillite that the Vanilla recording does not have; offers, uses and villager xp match"
+owner = "game-systems-developer #267"

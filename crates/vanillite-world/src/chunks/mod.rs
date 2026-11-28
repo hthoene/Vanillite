@@ -913,10 +913,12 @@ impl Chunks {
         }
     }
 
-    /// The ticket level that keeps a player's view full: Vanilla's view (`ChunkTrackingView`)
-    /// reaches one chunk past the view distance.
+    /// The ticket level of a player's load ticket at its centre chunk: Vanilla's
+    /// `PlayerTicketTracker` puts a `PLAYER_LOADING` ticket at entity-ticking level (31) on
+    /// every chunk within the view distance, so chunks one further block tick (and are spawn
+    /// candidates) and two further are full.
     pub fn player_ticket_level(&self) -> u8 {
-        FULL_LEVEL - (self.settings.view_distance as u8 + 1)
+        ENTITY_TICKING_LEVEL.saturating_sub(self.settings.view_distance as u8)
     }
 
     /// The ticket level of a chunk (above [`MAX_TICKET_LEVEL`]: no ticket reaches it).

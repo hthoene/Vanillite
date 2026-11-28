@@ -58,6 +58,8 @@ pub fn stream(
     // Palette index per block state, filled as states show up.
     let mut cache = vec![u32::MAX; 1 << 16];
     let frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, 0)?;
+    // Frames without block changes share the blocks of the frame before (see `Frame::blocks`).
+    let mut last = std::sync::Arc::clone(&frame.blocks);
     if !sink(&trace, frame)? {
         return Ok(trace);
     }
@@ -78,7 +80,12 @@ pub fn stream(
         }
         world.client_end()?;
         world.step();
-        let frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, tick)?;
+        let mut frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, tick)?;
+        if frame.blocks == last {
+            frame.blocks = std::sync::Arc::clone(&last);
+        } else {
+            last = std::sync::Arc::clone(&frame.blocks);
+        }
         if !sink(&trace, frame)? {
             break;
         }
@@ -180,11 +187,7 @@ fn observe(
 ) -> Result<Frame, String> {
     let light = scenario.world.observe_light;
     let volume: usize = trace.size().iter().product();
-    let mut frame = Frame {
-        tick,
-        blocks: Vec::with_capacity(volume),
-        ..Frame::default()
-    };
+    let mut blocks = Vec::with_capacity(volume);
     for i in 0..volume {
         let pos = trace.pos_of(i);
         let index = if world.is_loaded(pos) {
@@ -197,8 +200,13 @@ fn observe(
         } else {
             trace.intern(crate::scenario::UNLOADED)
         };
-        frame.blocks.push(index);
+        blocks.push(index);
     }
+    let mut frame = Frame {
+        tick,
+        blocks: std::sync::Arc::new(blocks),
+        ..Frame::default()
+    };
     world.block_ticks(trace.min, trace.max, &mut frame.block_ticks);
     world.fluid_ticks(trace.min, trace.max, &mut frame.fluid_ticks);
     world.entities(trace.min, trace.max, &mut frame.entities);

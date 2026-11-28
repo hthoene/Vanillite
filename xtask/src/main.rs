@@ -11,11 +11,12 @@
 //! cargo xtask golden regen [--all] [--bulk] [<name>...]
 //! cargo xtask golden bless <scenario>...
 //! cargo xtask parity fuzz [--seed N] [--count N] [--minutes N] [--adopt]
-//! cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N]
+//! cargo xtask parity replay <recording dir | port:name | port:latest>... [--ticks N]
 //! cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
 //! cargo xtask parity quick
 //! cargo xtask parity worlds [--ticks N] [--jobs N] [--minutes N] [--prepare-only] [<world>...]
-//! cargo xtask parity coverage [--jobs N] [--fuzz-minutes N] [--report-only] [<scenario>...]
+//! cargo xtask parity coverage [--jobs N] [--heap SIZE] [--fuzz-minutes N] [--report-only] [--history FILE] [<scenario>...]
+//! cargo xtask parity coverage --trend [FILE]
 //! cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask light sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
 //! cargo xtask dev [--release] [-- <server args>]
@@ -110,12 +111,13 @@ pub const USAGE: &str = "usage:
       target/parity-coverage/coverage.json (parity coverage) the generator picks behaviours,
       mobs, items and blocks whose Vanilla code is least exercised more often (--no-coverage:
       not).
-  cargo xtask parity replay <recording dir | port:name | port:latest> [--ticks N] [--jobs N]
-      Replay a recorded server session (debug.session-recording, #152) in Vanilla and
+  cargo xtask parity replay <recording dir | port:name | port:latest>... [--ticks N] [--jobs N]
+      Replay recorded server sessions (debug.session-recording, #152) in Vanilla and
       Vanillite on its world snapshot and compare them tick by tick; a divergence is shrunk
       like a random one. `30001:latest` (or `30001:<name>`) fetches a recording of the test
       server into target/recordings/ first. --ticks replays only the first N ticks. Writes
-      target/parity-fuzz/ (sessions/<name>.json, found/, summary.md).
+      target/parity-fuzz/ (sessions/<name>.json, found/, summary.md with one line per
+      session and the distinct divergences).
   cargo xtask parity soak [--jobs N] [--minutes N] [<scenario>...]
       Soak parity runs (#166): the long scenarios of crates/vanillite-test/scenarios/soak/
       (game days with random ticks, mob spawning, day cycle and weather) against Vanilla.
@@ -134,7 +136,9 @@ pub const USAGE: &str = "usage:
       ~/.cache/vanillite/parity-worlds/ (SHA-256 checked), upgraded or pasted by the pinned
       Vanilla server, then run like soak scenarios (blocks, ticks, entities and block entities
       per tick). Writes target/parity-worlds/summary.md and <world>.md. Runs nightly.
-  cargo xtask parity coverage [--jobs N] [--fuzz-minutes N] [--report-only] [<scenario>...]
+  cargo xtask parity coverage [--jobs N] [--heap SIZE] [--fuzz-minutes N] [--report-only]
+                              [--history FILE] [<scenario>...]
+  cargo xtask parity coverage --trend [FILE]
       Which Vanilla code the parity scenarios exercise (#257): the recorder plays every
       Vanilla-recorded scenario (fast and bulk) on the pinned jar under the JaCoCo agent
       (downloaded into target/vanilla/jacoco/), on --jobs JVMs; --fuzz-minutes adds a parity
@@ -142,7 +146,10 @@ pub const USAGE: &str = "usage:
       summary.md (gameplay coverage, per system, the 30 biggest uncovered classes and
       packages), coverage.json (also per class, read by parity fuzz) and html/ (per package,
       class and method). --report-only re-reads the coverage data of the last run; scenario
-      names record just those.
+      names record just those. --heap sets each recorder JVM's -Xmx (default 4g). --history
+      appends the run's gameplay and per-system figures (instructions/branches %) as one JSON
+      line to FILE (the nightly: /var/lib/vanillite-nightly/coverage-history.jsonl); --trend
+      prints that history as Markdown (default FILE target/parity-coverage/history.jsonl).
   cargo xtask worldgen sweep [--seed N] [--seeds N] [--world-seed N]... [--size N] [--kinds a,b] [--keep]
       World generation against Vanilla (#223): for --seeds world seeds (default 3, derived from
       --seed, default the day number; or the given --world-seed values) and every kind
@@ -309,7 +316,7 @@ fn main() -> ExitCode {
         ["golden", "regen", rest @ ..] => golden::regen(&repo_root(), rest),
         ["golden", "bless", names @ ..] => golden::bless(&repo_root(), names),
         ["parity", "fuzz", rest @ ..] => parity::fuzz(&repo_root(), rest),
-        ["parity", "replay", recording, rest @ ..] => parity::replay(&repo_root(), recording, rest),
+        ["parity", "replay", rest @ ..] => parity::replay(&repo_root(), rest),
         ["parity", "soak", rest @ ..] => parity::soak(&repo_root(), rest),
         ["parity", "quick"] => parity::quick(&repo_root()),
         ["parity", "worlds", rest @ ..] => parity_worlds::worlds(&repo_root(), rest),

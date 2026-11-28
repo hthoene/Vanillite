@@ -40,8 +40,10 @@ rules! {
             network: u16 = "network", Setting, range = [0, 64], restart = true, vanilla = 0;
             /// Threads that share a parallel phase of a world's tick (in crowds: the entity
             /// packets, the delivery of sounds and particles, the advancement checks; the tiles
-            /// of `region-threading`), the tick thread included. 0 = the compute workers plus the tick thread; 1 = the tick
-            /// thread alone. The result is the same with any number, only the speed differs.
+            /// of `region-threading`), the tick thread included. 0 = one per core the server may
+            /// use; 1 = the tick thread alone. The other threads are tick helpers at the tick
+            /// threads' OS priority (not the compute workers, which run below it). The result is
+            /// the same with any number, only the speed differs.
             tick_phases: u16 = "tick-phases", Setting, range = [0, 1024], restart = true,
                 vanilla = 0;
         }

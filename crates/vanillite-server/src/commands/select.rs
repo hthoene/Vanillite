@@ -338,11 +338,16 @@ fn filter_matches(filter: &Filter, target: &Target, ctx: &Ctx<'_>) -> bool {
             let mut rng = vanillite_base::random::LegacyRandom::new(
                 ctx.global.level.game_time() ^ (target.uuid as i64),
             );
+            let weather = {
+                let w = ctx.global.level.weather();
+                (w.raining, w.thundering)
+            };
             let passes = super::loot_cmd::test_predicate(
                 ctx.entities,
                 ctx.global,
                 target.entity,
                 origin,
+                weather,
                 &(Some(id.clone()), None),
                 &mut rng,
             )
