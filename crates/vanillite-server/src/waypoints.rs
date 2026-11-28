@@ -615,13 +615,19 @@ impl Waypoints {
         compute.parts(&mut rows, RECEIVERS_PER_PART, |_, part| {
             let mut codec = Codec::default();
             let mut batch = Vec::new();
+            // Receivers in a crowd get batches of similar size: each starts with the capacity
+            // of the last one instead of growing from empty.
             for (receiver, kinds, angles) in part.iter_mut() {
                 ctx.receiver(*receiver, kinds, angles, &mut codec, &mut batch);
                 if !batch.is_empty()
                     && let Some((_, r)) = &ctx.now[*receiver as usize]
                 {
-                    r.sink
-                        .send_batch(std::mem::take(&mut batch), threshold, mark);
+                    let size = batch.len();
+                    r.sink.send_batch(
+                        std::mem::replace(&mut batch, Vec::with_capacity(size)),
+                        threshold,
+                        mark,
+                    );
                 }
             }
         });

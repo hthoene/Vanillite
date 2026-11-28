@@ -341,8 +341,18 @@ impl ServerBuilder {
         let (scheduler, origin) = match self.scheduler.take() {
             Some(filled) => filled,
             None => {
-                let pool = ComputePool::with_budget(workers, Arc::clone(&budget))
-                    .map_err(|e| StartError::io(&dir, e))?;
+                // Tick helpers for the parallel tick phases: one per core besides the tick
+                // thread, at the tick threads' priority (the workers run below it).
+                let phase_threads = match config.server.threads.tick_phases {
+                    0 => budget.limits().default_workers(),
+                    n => usize::from(n),
+                };
+                let pool = ComputePool::with_budget(
+                    workers,
+                    phase_threads.saturating_sub(1),
+                    Arc::clone(&budget),
+                )
+                .map_err(|e| StartError::io(&dir, e))?;
                 (Box::new(pool) as Box<dyn Scheduler>, Origin::BuiltIn)
             }
         };
