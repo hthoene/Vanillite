@@ -927,6 +927,7 @@ fn finalize_spawn_inner(m: &mut MobData, ctx: &mut fam::SpawnContext<'_>) {
     let mob_part = |m: &mut MobData| {
         let bonus = m.random.triangle(0.0, 0.114_850_000_000_000_01);
         m.attrs.follow_range *= 1.0 + bonus;
+        m.spawn_bonus = bonus;
         m.left_handed = m.random.next_float() < 0.05;
     };
     if !m.kind.classic() {

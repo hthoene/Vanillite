@@ -245,6 +245,9 @@ pub struct MobData {
     pub can_pick_up_loot: bool,
     /// `isLeftHanded`.
     pub left_handed: bool,
+    /// The amount of the `random_spawn_bonus` follow range modifier `Mob.finalizeSpawn` added
+    /// (folded into `attrs.follow_range`; 0 without one), for the saved `attributes`.
+    pub spawn_bonus: f64,
     /// `PathfinderMob.restrictTo`: the home position and radius (`-1` = none).
     pub restrict_center: BlockPos,
     pub restrict_radius: i32,
@@ -385,6 +388,7 @@ impl MobData {
             equipment: equipment::Equipment::default(),
             can_pick_up_loot: false,
             left_handed: false,
+            spawn_bonus: 0.0,
             restrict_center: BlockPos::new(0, 0, 0),
             restrict_radius: -1,
             brain: None,
@@ -1717,5 +1721,5 @@ mod size_tests {
         );
     }
 
-    const LIMIT: usize = 1808;
+    const LIMIT: usize = 1824;
 }
