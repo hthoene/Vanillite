@@ -128,7 +128,7 @@ pub fn use_item(
     } else if name == "minecraft:carrot_on_a_stick" || name == "minecraft:warped_fungus_on_a_stick"
     {
         // `FoodOnAStickItem.use` counts the use only when nothing was boosted.
-        if !crate::riding::boost(ents, env, player, &mut stack, creative) {
+        if !crate::riding::boost(ents, env, player, &mut stack, creative, hand) {
             award_used(ents, player, item);
         }
         Used::Success

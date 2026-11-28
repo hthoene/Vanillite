@@ -1050,25 +1050,17 @@ impl Digging {
             }
             ctx.data.tools.damage_per_block(tool)
         };
-        if damage == 0 || !item::is_damageable(ctx.inventory.selected_item()) {
-            return;
-        }
-        let unbreaking = ctx
-            .data
-            .enchantment_level(ctx.inventory.selected_item(), "minecraft:unbreaking");
-        let mut amount: i32 = 0;
-        for _ in 0..damage {
-            #[allow(clippy::as_conversions)]
-            let level = unbreaking.max(0) as f32;
-            // `remove_binomial`: the draw removes the point below level / (level + 1).
-            if unbreaking <= 0 || ctx.level.random_float() >= level / (level + 1.0) {
-                amount = amount.saturating_add(1);
-            }
-        }
+        let infinite = ctx.actor.creative();
+        let amount = crate::durability::change(
+            ctx.inventory.selected_item(),
+            i32::try_from(damage).unwrap_or(i32::MAX),
+            infinite,
+            &mut LevelRandom(&mut *ctx.level),
+        );
         let Some(tool) = ctx.inventory.selected_item_mut() else {
             return;
         };
-        if amount == 0 || !item::is_damageable(tool) {
+        if amount == 0 {
             return;
         }
         let new_damage = item::damage(tool).saturating_add(amount);
@@ -2293,26 +2285,16 @@ fn use_ender_eye(ctx: &mut PlayContext<'_>, hand: Hand, pos: BlockPos) -> bool {
 /// `ItemStack.hurtAndBreak(amount, player, hand)`: the item in `hand` loses durability (the
 /// unbreaking enchantment may save each point); creative players' items do not.
 fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
-    if ctx.actor.creative() {
-        return;
-    }
     let stack = match hand {
         Hand::MainHand => ctx.inventory.selected_item().clone(),
         Hand::OffHand => ctx.inventory.offhand.clone(),
     };
-    if stack.is_empty() || !item::is_damageable(&stack) {
-        return;
-    }
-    let unbreaking = ctx.data.enchantment_level(&stack, "minecraft:unbreaking");
-    let mut damage: i32 = 0;
-    for _ in 0..amount {
-        #[allow(clippy::as_conversions)]
-        let level = unbreaking.max(0) as f32;
-        // `remove_binomial`: the draw removes the point below level / (level + 1).
-        if unbreaking <= 0 || ctx.level.random_float() >= level / (level + 1.0) {
-            damage = damage.saturating_add(1);
-        }
-    }
+    let damage = crate::durability::change(
+        &stack,
+        amount,
+        ctx.actor.creative(),
+        &mut LevelRandom(&mut *ctx.level),
+    );
     let slot = match hand {
         Hand::MainHand => ctx.inventory.selected_item_mut(),
         Hand::OffHand => Some(&mut ctx.inventory.offhand),
@@ -2335,21 +2317,26 @@ fn hurt_and_break(ctx: &mut PlayContext<'_>, hand: Hand, amount: i32) {
     }
 }
 
+/// The world's random source as the enchantment effects draw from it.
+impl crate::enchant::FloatRandom for LevelRandom<'_> {
+    fn next_float(&mut self) -> f32 {
+        self.0.random_float()
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        self.0.random_gaussian()
+    }
+}
+
 /// `LivingEntity.onEquippedItemBroken`: entity event 47 (main hand) or 48 (off hand), the
 /// break sound and particles for the player and everyone tracking it.
 fn equipment_broken(ctx: &mut PlayContext<'_>, hand: Hand) {
-    let event = match hand {
-        Hand::MainHand => 47,
-        Hand::OffHand => 48,
+    let slot = match hand {
+        Hand::MainHand => crate::item::EquipmentSlot::MainHand,
+        Hand::OffHand => crate::item::EquipmentSlot::OffHand,
     };
     let (network_id, pos) = (ctx.actor.network_id, ctx.actor.pos);
     if let Some(level) = ctx.level.level_mut() {
-        let packet = vanillite_protocol::SharedPacket::of(
-            &vanillite_protocol::packets::play::clientbound::EntityEvent {
-                entity_id: network_id,
-                event,
-            },
-        );
+        let packet = crate::durability::break_packet(network_id, slot);
         level.output().nearby_packets.push((pos, 128.0, packet));
     }
 }

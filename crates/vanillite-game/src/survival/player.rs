@@ -18,6 +18,7 @@ use super::damage::{DamageKind, DamageSource, DamageTypes, tag};
 use super::food::{FoodAction, FoodData, exhaustion};
 use super::rules::{Difficulty, GameRules, Rule};
 use super::{Effect, play_sound};
+use crate::item::EquipmentSlot;
 use crate::player::PlayerData;
 use crate::scoreboard::CriteriaKind;
 use crate::stats::custom;
@@ -1107,7 +1108,7 @@ pub fn hurt_with(
     // `#damages_helmet` (falling anvils, blocks, stalactites) with a helmet on: `hurtHelmet`
     // (`doHurtEquipment(HEAD)`) and three quarters of the damage.
     if types.is(kind, tag::DAMAGES_HELMET) && !player.inventory.get(39).is_empty() {
-        hurt_armor(player, env, &source, damage, 39..40);
+        hurt_armor(entity, player, env, &source, damage, 39..40);
         damage *= 0.75;
     }
     if !damage.is_finite() {
@@ -1328,7 +1329,7 @@ fn actually_hurt(
     let mut damage = damage;
     if !types.is(kind, tag::BYPASSES_ARMOR) {
         // `hurtArmor`, then `getDamageAfterArmorAbsorb` with the equipment's armour.
-        hurt_armor(player, env, &source, damage, 36..40);
+        hurt_armor(entity, player, env, &source, damage, 36..40);
         let (armor, toughness) = armor_values(player);
         damage = combat::damage_after_absorb_with(damage, armor, toughness, armor_effectiveness);
     }
@@ -1410,8 +1411,10 @@ pub fn armor_values(player: &PlayerData) -> (f32, f32) {
     )
 }
 
-/// `hurtArmor` → `doHurtEquipment`: each armour piece loses `max(1, damage / 4)` durability.
+/// `hurtArmor` → `doHurtEquipment`: each armour piece takes `hurtAndBreak(max(1, damage / 4))`
+/// (Unbreaking through the `item_damage` effects, the break event of its slot).
 fn hurt_armor(
+    entity: &EntityMut<'_>,
     player: &mut PlayerData,
     env: &mut Env<'_>,
     source: &DamageSource,
@@ -1424,9 +1427,6 @@ fn hurt_armor(
     #[allow(clippy::cast_possible_truncation)]
     let amount = (damage / 4.0).max(1.0) as i32;
     for index in slots {
-        let unbreaking = crate::player::play::game_data().map_or(0, |d| {
-            d.enchantment_level(player.inventory.get(index), "minecraft:unbreaking")
-        });
         let Some(stack) = player.inventory.get_mut(index) else {
             continue;
         };
@@ -1439,23 +1439,29 @@ fn hurt_armor(
         {
             continue;
         }
-        let mut n = 0;
-        for _ in 0..amount {
-            // Unbreaking on armour: a chance of 60 % + 40 % / (level + 1) to take damage.
-            #[allow(clippy::cast_precision_loss)]
-            let chance = 0.6 + 0.4 / (unbreaking.max(0) as f32 + 1.0);
-            if unbreaking <= 0 || env.random.next_float() < chance {
-                n += 1;
-            }
-        }
-        if n > 0 {
+        let n = crate::durability::change(stack, amount, false, env.random);
+        if n != 0 {
             let d = crate::item::damage(stack) + n;
-            crate::advancements::view::apply_damage(
+            let broke = crate::advancements::view::apply_damage(
                 Some(&mut player.advancements),
                 Some(&mut player.stats),
                 stack,
                 d,
             );
+            let slot = match index {
+                36 => EquipmentSlot::Feet,
+                37 => EquipmentSlot::Legs,
+                38 => EquipmentSlot::Chest,
+                _ => EquipmentSlot::Head,
+            };
+            if broke {
+                let e = entity.as_ref();
+                env.out.push(Effect::Tracking {
+                    entity: e.id(),
+                    with_self: true,
+                    packet: crate::durability::break_packet(e.network_id().0, slot),
+                });
+            }
         }
     }
 }
@@ -1605,20 +1611,11 @@ fn apply_item_blocking(
         crate::stats::Stat::of(crate::stats::StatType::Used, stack.item),
         1,
     );
-    let mut points = blocks.item_damage(blocked);
-    if points > 0 && player.game_mode != GameMode::Creative && crate::item::is_damageable(&stack) {
-        // Unbreaking (`item_damage`: `remove_binomial`) saves each point with level / (level + 1).
-        let unbreaking = crate::player::play::game_data()
-            .map_or(0, |d| d.enchantment_level(&stack, "minecraft:unbreaking"));
-        if unbreaking > 0 {
-            #[allow(clippy::cast_precision_loss)]
-            let level = unbreaking as f32;
-            let saved = (0..points)
-                .filter(|_| env.random.next_float() < level / (level + 1.0))
-                .count();
-            points -= i32::try_from(saved).unwrap_or(points);
-        }
-        if points > 0
+    let points = blocks.item_damage(blocked);
+    if points > 0 {
+        let creative = player.game_mode == GameMode::Creative;
+        let points = crate::durability::change(&stack, points, creative, env.random);
+        if points != 0
             && let Some(s) = player.inventory.get_mut(index)
         {
             let d = crate::item::damage(s) + points;
@@ -1628,10 +1625,24 @@ fn apply_item_blocking(
                 s,
                 d,
             );
-            if broke && let Some(u) = player.survival.using_item.as_mut() {
-                // Vanilla keeps using the emptied stack (`onEquippedItemBroken` does not
-                // stop it).
-                u.emptied = true;
+            if broke {
+                // `onEquippedItemBroken`: the shield's break event (sound and particles).
+                let slot = if index == crate::inventory::OFFHAND {
+                    EquipmentSlot::OffHand
+                } else {
+                    EquipmentSlot::MainHand
+                };
+                let e = entity.as_ref();
+                env.out.push(Effect::Tracking {
+                    entity: e.id(),
+                    with_self: true,
+                    packet: crate::durability::break_packet(e.network_id().0, slot),
+                });
+                if let Some(u) = player.survival.using_item.as_mut() {
+                    // Vanilla keeps using the emptied stack (`onEquippedItemBroken` does not
+                    // stop it).
+                    u.emptied = true;
+                }
             }
         }
     }

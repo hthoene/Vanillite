@@ -171,32 +171,53 @@ impl ValueEffect {
             ValueEffect::Add(v) => value + v.calculate(level),
             ValueEffect::Multiply(v) => value * v.calculate(level),
             ValueEffect::Set(v) => v.calculate(level),
-            ValueEffect::RemoveBinomial(chance) => {
-                let chance = chance.calculate(level);
-                let mut removed = 0;
-                #[allow(clippy::cast_possible_truncation)]
-                for _ in 0..(value as i32).max(0) {
-                    if random.next_float() < chance {
-                        removed += 1;
-                    }
-                }
-                #[allow(clippy::cast_precision_loss)]
-                let r = value - removed as f32;
-                r
-            }
+            ValueEffect::RemoveBinomial(chance) => remove_binomial(chance.calculate(level), random, value),
             ValueEffect::AllOf(list) => list.iter().fold(value, |v, e| e.process(level, random, v)),
         }
     }
 }
 
+/// `RemoveBinomial.process(level, random, n)` with chance `p`: above 128 points (when both
+/// sides of the split are at least 20) one Gaussian draw, else one float draw per point that
+/// removes it below `p`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    clippy::neg_cmp_op_on_partial_ord
+)]
+pub fn remove_binomial(p: f32, random: &mut dyn FloatRandom, n: f32) -> f32 {
+    let mut drop: i32 = 0;
+    if !(n <= 128.0) && !(n * p < 20.0) && !(n * (1.0 - p) < 20.0) {
+        let miu = f64::from(n * p).floor();
+        let sigma = f64::from(n * p * (1.0 - p)).sqrt();
+        // `(int) Math.round(double)`, then `Math.clamp(long, 0, (int) n)`.
+        let rounded = (miu + random.next_gaussian() * sigma + 0.5).floor() as i64;
+        drop = rounded.clamp(0, i64::from(n as i32)) as i32;
+    } else {
+        let mut y = 0;
+        while (y as f32) < n {
+            if random.next_float() < p {
+                drop += 1;
+            }
+            y += 1;
+        }
+    }
+    n - drop as f32
+}
+
 /// The random numbers effects draw.
 pub trait FloatRandom {
     fn next_float(&mut self) -> f32;
+    fn next_gaussian(&mut self) -> f64;
 }
 
 impl<R: RandomSource> FloatRandom for R {
     fn next_float(&mut self) -> f32 {
         RandomSource::next_float(self)
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        RandomSource::next_gaussian(self)
     }
 }
 
@@ -749,6 +770,8 @@ pub struct Enchantment {
     pub projectile_spread: Vec<Conditional<ValueEffect>>,
     pub projectile_piercing: Vec<Conditional<ValueEffect>>,
     pub ammo_use: Vec<Conditional<ValueEffect>>,
+    /// `minecraft:item_damage` (Unbreaking).
+    pub item_damage: Vec<Conditional<ValueEffect>>,
     /// `minecraft:trident_spin_attack_strength` (Riptide).
     pub trident_spin_attack_strength: Option<ValueEffect>,
     /// `minecraft:trident_sound`, one sound per level.
@@ -878,6 +901,7 @@ impl Enchantment {
             projectile_spread: values("minecraft:projectile_spread"),
             projectile_piercing: values("minecraft:projectile_piercing"),
             ammo_use: values("minecraft:ammo_use"),
+            item_damage: values("minecraft:item_damage"),
             trident_spin_attack_strength: get("minecraft:trident_spin_attack_strength")
                 .and_then(ValueEffect::parse),
             trident_sound: get("minecraft:trident_sound")
@@ -1177,6 +1201,19 @@ impl Enchantments {
         #[allow(clippy::cast_possible_truncation)]
         let v = self.run_item(weapon, |e| &e.projectile_piercing, Some(ammo), random, 0.0) as i32;
         v.max(0)
+    }
+
+    /// `EnchantmentHelper.processDurabilityChange(stack, amount)` (`MutableFloat.intValue`):
+    /// the `item_damage` effects in the item's context (the stack is the tool).
+    pub fn durability_change(
+        &self,
+        stack: &ItemStack,
+        random: &mut dyn FloatRandom,
+        amount: i32,
+    ) -> i32 {
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        let v = self.run_item(stack, |e| &e.item_damage, Some(stack), random, amount as f32) as i32;
+        v
     }
 
     /// `EnchantmentHelper.processAmmoUse(weapon, ammo, amount)`.

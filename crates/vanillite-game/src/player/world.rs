@@ -71,6 +71,10 @@ pub trait PlayLevel {
     fn random_float(&mut self) -> f32;
     /// A uniform random double in `[0, 1)` from the world's random source.
     fn random_double(&mut self) -> f64;
+    /// `nextGaussian()` of the world's random source.
+    fn random_gaussian(&mut self) -> f64 {
+        0.0
+    }
     /// A uniform random boolean from the world's random source.
     fn random_boolean(&mut self) -> bool;
     /// `nextInt(bound)` of the world's random source; `bound` is at least 1.
