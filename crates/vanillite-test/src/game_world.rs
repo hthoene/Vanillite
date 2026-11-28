@@ -2156,7 +2156,7 @@ impl ScenarioWorld for GameWorld {
         level.tick_chunk_runtime();
         level.post_process();
         let mut scratch = Vec::new();
-        level.tick_chunks(&mut scratch);
+        level.tick_chunks(&mut scratch, &vanillite_game::level::tiles::Phases::INLINE);
         level.run_block_events();
         self.tick_entities();
         let level = &mut self.level;
@@ -2948,7 +2948,12 @@ impl GameWorld {
                     Pose::Standing
                 };
                 entity.set_pose(pose);
-                entity.set_dims(vanillite_game::player::dimensions(pose));
+                entity.set_dims(vanillite_game::player::scaled_dimensions(
+                    pose,
+                    vanillite_game::effect::attribute_map::scale_of(
+                        &player.survival.effects.modifiers,
+                    ),
+                ));
             }
         }
         self.level.entities.players = players;

@@ -634,6 +634,22 @@ pub fn experience_reward(m: &mut MobData) -> i32 {
 /// The dimensions of a mob: its family's when they depend on state, else the type's (babies
 /// at half size).
 pub fn mob_dimensions(m: &MobData) -> Dimensions {
+    let d = unscaled_dimensions(m);
+    // `getDimensions(pose).scale(getScale())` with the `minecraft:scale` attribute.
+    let scale = crate::effect::attribute_map::scale_of(&m.effects.modifiers);
+    if scale == 1.0 {
+        return d;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let s = scale as f32;
+    Dimensions {
+        width: d.width * s,
+        height: d.height * s,
+    }
+}
+
+/// [`mob_dimensions`] without the `minecraft:scale` attribute.
+fn unscaled_dimensions(m: &MobData) -> Dimensions {
     if m.kind == Kind::Zombie {
         // `Zombie.BABY_DIMENSIONS` of the classic zombie.
         if let Some(d) = fam::undead::zombies::dimensions(m) {

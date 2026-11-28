@@ -570,6 +570,11 @@ pub(crate) fn summon_for(
             };
             if let Some(rider) = rider.entity {
                 super::entities_cmd::mount(env.level, env.global, dimension, rider, vehicle);
+                // `startRiding` leaves the passenger where it was made: its first `rideTick`
+                // places it on the vehicle.
+                if let Some(mut e) = env.level.entities.store.get_mut(rider) {
+                    e.set_pos(pos);
+                }
             }
         }
     }
