@@ -1,3 +1,0 @@
-tick = 12
-cause = "the level random differs from tick 12 because the recorder's Vanilla server loads the client player's view chunks asynchronously (throttled player_loading tickets): after the death more chunks become spawn candidates and Util.shuffle in ServerChunkCache.tickChunks draws more (36 -> 45 -> 49 chunks), at a tick that changes between regens (13 or 14), so the golden's level random is not reproducible; Vanillite keeps 36 chunks (#238); the barrel closing and the cursor drop on respawn match Vanilla"
-owner = "tooling-developer #238"
