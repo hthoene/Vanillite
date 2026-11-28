@@ -367,7 +367,15 @@ pub fn hurt_filter(h: &mut Hurt<'_, '_>, amount: f32) -> Option<f32> {
     // `Crackiness.WOLF_ARMOR` of the armour now (none once it broke).
     let after = if broke { 0 } else { crack(d) };
     if crack(before) != after {
-        crate::mob::combat::mob_sound(h.ents, h.env, h.target, "minecraft:entity.wolf.armor_crack");
+        // `playSound(WOLF_ARMOR_CRACK)`: volume and pitch 1, no voice pitch draws.
+        crate::mob::animal::sound_at(
+            h.ents,
+            h.env,
+            h.target,
+            "minecraft:entity.wolf.armor_crack",
+            vanillite_protocol::packets::play::clientbound::SoundSource::Neutral,
+            1.0,
+        );
     }
     Some(0.0)
 }

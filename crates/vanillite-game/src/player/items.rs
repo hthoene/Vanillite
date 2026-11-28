@@ -402,7 +402,12 @@ fn use_instrument(
     ));
     // `hurtAndBreak(durabilityDamage, player, hand)`.
     let change = if instrument.durability_damage > 0 {
-        crate::durability::change(p.inventory.get(i), instrument.durability_damage, creative, env.random)
+        crate::durability::change(
+            p.inventory.get(i),
+            instrument.durability_damage,
+            creative,
+            env.random,
+        )
     } else {
         0
     };

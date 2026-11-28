@@ -1107,8 +1107,12 @@ pub fn boost(
     if d >= crate::item::max_damage(stack) {
         // `onEquippedItemBroken`.
         let slot = match hand {
-            vanillite_protocol::packets::play::serverbound::Hand::MainHand => crate::item::EquipmentSlot::MainHand,
-            vanillite_protocol::packets::play::serverbound::Hand::OffHand => crate::item::EquipmentSlot::OffHand,
+            vanillite_protocol::packets::play::serverbound::Hand::MainHand => {
+                crate::item::EquipmentSlot::MainHand
+            }
+            vanillite_protocol::packets::play::serverbound::Hand::OffHand => {
+                crate::item::EquipmentSlot::OffHand
+            }
         };
         crate::durability::broken_in_env(ents, env, player, slot);
         // `hurtAndConvertOnBreak(cost, FISHING_ROD)`: the components stay, the damage resets.

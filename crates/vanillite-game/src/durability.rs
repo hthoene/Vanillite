@@ -67,7 +67,11 @@ pub fn break_packet(network_id: i32, slot: EquipmentSlot) -> std::sync::Arc<Shar
 }
 
 /// `onEquippedItemBroken` on a level: the break event to the entity's trackers and itself.
-pub fn broken_on_level(level: &mut crate::level::Level, owner: vanillite_world::entity::EntityId, slot: EquipmentSlot) {
+pub fn broken_on_level(
+    level: &mut crate::level::Level,
+    owner: vanillite_world::entity::EntityId,
+    slot: EquipmentSlot,
+) {
     level.broadcast_entity_event(owner, break_event(slot));
 }
 

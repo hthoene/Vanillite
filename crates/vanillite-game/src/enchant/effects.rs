@@ -171,7 +171,9 @@ impl ValueEffect {
             ValueEffect::Add(v) => value + v.calculate(level),
             ValueEffect::Multiply(v) => value * v.calculate(level),
             ValueEffect::Set(v) => v.calculate(level),
-            ValueEffect::RemoveBinomial(chance) => remove_binomial(chance.calculate(level), random, value),
+            ValueEffect::RemoveBinomial(chance) => {
+                remove_binomial(chance.calculate(level), random, value)
+            }
             ValueEffect::AllOf(list) => list.iter().fold(value, |v, e| e.process(level, random, v)),
         }
     }
@@ -1212,7 +1214,13 @@ impl Enchantments {
         amount: i32,
     ) -> i32 {
         #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-        let v = self.run_item(stack, |e| &e.item_damage, Some(stack), random, amount as f32) as i32;
+        let v = self.run_item(
+            stack,
+            |e| &e.item_damage,
+            Some(stack),
+            random,
+            amount as f32,
+        ) as i32;
         v
     }
 
