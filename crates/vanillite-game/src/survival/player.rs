@@ -900,6 +900,7 @@ fn check_totem(
         .filter(|e| matches!(e, crate::consumable::ConsumeEffect::Apply(..)))
         .map(|_| player.survival.random.next_float())
         .collect();
+    let mut sounds = Vec::new();
     {
         let mut host = crate::effect::living::PlayerHost {
             entity: &mut *entity,
@@ -915,6 +916,16 @@ fn check_totem(
             vanillite_data::entity::ids::PLAYER,
             &mut host,
             &mut roll,
+            &mut |s| sounds.push(s.to_owned()),
+        );
+    }
+    let at = entity.as_ref().pos();
+    for s in sounds {
+        crate::totem::play_consume_sound(
+            env.out,
+            at,
+            &s,
+            vanillite_protocol::packets::play::clientbound::SoundSource::Players,
         );
     }
     let (id, network_id) = (entity.as_ref().id(), entity.as_ref().network_id().0);

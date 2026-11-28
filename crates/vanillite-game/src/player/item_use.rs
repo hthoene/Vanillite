@@ -274,6 +274,7 @@ pub fn use_item_on(
             face,
             &mut stack,
             creative,
+            player,
         )
     } else if item::item_id(&stack).name() == "minecraft:lead" {
         tame::use_lead_on_fence(level, ents, env, player, pos)

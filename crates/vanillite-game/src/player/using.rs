@@ -413,8 +413,10 @@ fn brush_hit(
     level: &crate::level::Level,
     player: EntityId,
 ) -> Option<(vanillite_base::BlockPos, vanillite_base::Direction)> {
-    /// The `block_interaction_range` attribute of players.
-    const RANGE: f64 = 4.5;
+    // `blockInteractionRange()`: the attribute (creative players have its +0.5 modifier).
+    let range = level.entities.player(player).map_or(4.5, |p| {
+        crate::player::play::interaction_ranges(&p.inventory, p.game_mode).0
+    });
     let e = level.entities.store.get(player)?;
     let info = e.kind().info();
     let eye_height =
@@ -424,9 +426,9 @@ fn brush_hit(
     let eye = Vec3::new(p.x, p.y + eye_height, p.z);
     let view = crate::mob::view_vector(rot.x_rot, rot.y_rot);
     let to = Vec3::new(
-        eye.x + view.x * RANGE,
-        eye.y + view.y * RANGE,
-        eye.z + view.z * RANGE,
+        eye.x + view.x * range,
+        eye.y + view.y * range,
+        eye.z + view.z * range,
     );
     let (pos, at) = crate::mob::physics::clip(level, eye, to)?;
     // An entity on the way is hit first (`getEntityHitResult` with `isPickable`).

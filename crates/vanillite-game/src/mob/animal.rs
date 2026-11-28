@@ -1521,7 +1521,13 @@ pub fn use_spawn_egg_on(
     face: vanillite_base::Direction,
     stack: &mut ItemStack,
     infinite: bool,
+    player: EntityId,
 ) -> bool {
+    // `EntityType.canSpawn`: no monsters in Peaceful (FAIL, the egg is kept).
+    if env.difficulty == crate::survival::rules::Difficulty::Peaceful && !kind.allowed_in_peaceful()
+    {
+        return false;
+    }
     let state = level.block(pos);
     // An empty collision shape: spawn inside, else on the face.
     let spawn_pos = if state.collision_shape().is_empty() {
@@ -1564,6 +1570,17 @@ pub fn use_spawn_egg_on(
     if !infinite {
         stack.shrink(1);
     }
+    // `spawnMob`: `gameEvent(user, ENTITY_PLACE, spawnPos)`.
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().entity_place,
+        Vec3::new(
+            f64::from(spawn_pos.x) + 0.5,
+            f64::from(spawn_pos.y) + 0.5,
+            f64::from(spawn_pos.z) + 0.5,
+        ),
+        Some(player),
+    );
     true
 }
 
@@ -1616,6 +1633,9 @@ pub fn spawn_from_item(
     let (ents, network_ids, _) = level.entity_parts();
     let id = super::spawn(ents, network_ids, uuid, p, rot, m);
     super::item_components::apply_spawn_item(ents, id, stack);
+    if reason == super::fam::SpawnReason::Bucket {
+        super::fam::load_bucket_flags(ents, id, stack);
+    }
     if !ents.spawned(id, reason.abi(), 0) {
         return None;
     }

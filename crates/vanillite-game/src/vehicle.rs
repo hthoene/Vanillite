@@ -1024,14 +1024,10 @@ pub fn use_boat_item(
     else {
         return false;
     };
-    let reach = crate::mob::attack::player_attribute(
-        ents,
-        player,
-        "minecraft:block_interaction_range",
-        4.5,
-        0.0,
-        64.0,
-    );
+    // `blockInteractionRange()` with the creative mode modifier.
+    let reach = ents.player(player).map_or(4.5, |p| {
+        crate::player::play::interaction_ranges(&p.inventory, p.game_mode).0
+    });
     let Some(e) = ents.store.get(player) else {
         return false;
     };
