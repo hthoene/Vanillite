@@ -163,6 +163,7 @@ pub mod ids {
     pub const BLOCK_TRANSFORMER: u16 = find("minecraft:block_transformer");
     pub const COMPOSTABLE: u16 = find("minecraft:compostable");
     pub const COOKING_FUEL: u16 = find("minecraft:cooking_fuel");
+    pub const VILLAGER_FOOD: u16 = find("minecraft:villager_food");
 }
 
 /// Validates one component value: `data` must be exactly one value of the stream codec of
