@@ -430,7 +430,8 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
                     });
                 }
                 EffectEvent::Sound(sound) => {
-                    // `playSound(null, ...)` seeds from `threadSafeRandom`, not the level random.
+                    // `Level.playSound`: the seed comes from `soundSeedGenerator`, not the
+                    // level random.
                     let seed = crate::survival::sound_seed();
                     play_sound(
                         env.out,
@@ -454,6 +455,11 @@ pub fn sync_player(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
         return;
     }
     let dirty = fx.modifiers.take_dirty();
+    if dirty.contains(&Attribute::SCALE) {
+        let scale = super::attribute_map::scale_of(&fx.modifiers);
+        let pose = entity.as_ref().pose();
+        entity.set_dims(crate::player::scaled_dimensions(pose, scale));
+    }
     let s = &mut player.survival;
     for &a in &dirty {
         if a == Attribute::MAX_HEALTH {
@@ -498,6 +504,7 @@ fn push_attributes(
         .map(|&a| {
             let value = base
                 .and_then(|b| attr_field_ref(b, a))
+                .or_else(|| fx.modifiers.base(a))
                 .unwrap_or_else(|| a.base_of(kind));
             (a, value)
         })
@@ -559,6 +566,10 @@ pub fn player_equipment_update(
     let new = player_equipment_modifiers(player);
     let old = &player.survival.equipment_modifiers;
     let mut changed: Vec<Attribute> = Vec::new();
+    if full {
+        // The base values a command or plugin set (`getSyncableAttributes`).
+        changed.extend(player.survival.effects.modifiers.bases().map(|(a, _)| a));
+    }
     for m in old.iter().chain(new.iter()) {
         if changed.contains(&m.attribute) {
             continue;
@@ -571,10 +582,11 @@ pub fn player_equipment_update(
     }
     player.survival.equipment_modifiers = new;
     player.survival.equipment_dirty = false;
+    let own = &player.survival.effects.modifiers;
     let synced: Vec<(Attribute, f64)> = changed
         .iter()
         .filter(|a| a.syncable())
-        .map(|&a| (a, a.base_of(ids::PLAYER)))
+        .map(|&a| (a, own.base(a).unwrap_or_else(|| a.base_of(ids::PLAYER))))
         .collect();
     if synced.is_empty() {
         return None;
@@ -683,6 +695,13 @@ pub fn sync_mob(ents: &mut Entities, out: &mut Vec<Effect>, id: EntityId) {
     if m.health > 0.0 {
         entity.mark_data_dirty();
     }
+    // `onAttributeUpdated(SCALE)`: `refreshDimensions`.
+    if dirty.contains(&Attribute::SCALE) {
+        let dims = crate::mob::kinds::mob_dimensions(m);
+        if entity.as_ref().dims() != dims {
+            entity.set_dims(dims);
+        }
+    }
     push_attributes(&entity, &dirty, &m.effects, kind, Some(&base), out);
 }
 
@@ -724,14 +743,42 @@ pub fn mob_pairing_attributes(
     m: &crate::mob::MobData,
     given: &crate::mob::entity_nbt::NbtAttributes,
 ) -> Option<UpdateAttributes> {
+    let kind = m.kind.type_id();
     let synced: Vec<(Attribute, f64)> = given
         .0
         .iter()
         .filter(|a| a.attribute.syncable())
-        .filter_map(|a| Some((a.attribute, mob_attribute_base(m, a.attribute)?)))
+        .map(|a| {
+            let base = mob_attribute_base(m, a.attribute)
+                .or_else(|| m.effects.modifiers.base(a.attribute))
+                .unwrap_or_else(|| a.attribute.base_of(kind));
+            (a.attribute, base)
+        })
         .collect();
     (!synced.is_empty()).then(|| UpdateAttributes {
         body: attribute::encode_update(network_id, &synced, &m.effects.modifiers),
+    })
+}
+
+/// The `update_attributes` of the attributes a command or plugin changed on a player, for the
+/// players that start to see it (`ServerEntity.sendPairingData`).
+pub fn player_pairing_attributes(network_id: i32, p: &PlayerData) -> Option<UpdateAttributes> {
+    let own = &p.survival.effects.modifiers;
+    let synced: Vec<(Attribute, f64)> = p
+        .survival
+        .attributes
+        .0
+        .iter()
+        .filter(|a| a.attribute.syncable())
+        .map(|a| {
+            let base = own
+                .base(a.attribute)
+                .unwrap_or_else(|| a.attribute.base_of(ids::PLAYER));
+            (a.attribute, base)
+        })
+        .collect();
+    (!synced.is_empty()).then(|| UpdateAttributes {
+        body: attribute::encode_update(network_id, &synced, own),
     })
 }
 

@@ -987,7 +987,12 @@ impl WorldPlayers {
                     Pose::Standing
                 };
                 entity.set_pose(pose);
-                entity.set_dims(vanillite_game::player::dimensions(pose));
+                entity.set_dims(vanillite_game::player::scaled_dimensions(
+                    pose,
+                    vanillite_game::effect::attribute_map::scale_of(
+                        &player.survival.effects.modifiers,
+                    ),
+                ));
             }
             if let Some(client) = state.client {
                 if client.model_customisation != player.client.model_customisation

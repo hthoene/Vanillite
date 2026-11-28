@@ -45,6 +45,7 @@ use std::sync::Arc;
 use vanillite_base::hash::{FxHashMap, FxHashSet};
 use vanillite_base::random::{LegacyRandom, RandomSource};
 use vanillite_base::{BlockPos, ChunkPos, Direction, SectionPos};
+use vanillite_chunk::ProtoChunk;
 use vanillite_data::block::{BlockId, BlockState};
 use vanillite_data::fluid::FluidState;
 use vanillite_world::chunks::Chunks;
@@ -910,6 +911,12 @@ impl Level {
     /// `getBiome(pos)`: the noise biome the biome manager picks for `pos`; the default biome
     /// outside live chunks.
     pub fn biome(&self, pos: BlockPos) -> u16 {
+        self.biome_near(pos, None)
+    }
+
+    /// [`Level::biome`] with a full chunk already looked up (`near`), used when the biome
+    /// lies in it.
+    pub fn biome_near(&self, pos: BlockPos, near: Option<&ProtoChunk>) -> u16 {
         let default = self.chunks.info().default_biome;
         let Some(climate) = &self.climate else {
             return default;
@@ -917,7 +924,12 @@ impl Level {
         climate
             .manager
             .get_biome(pos.x, pos.y, pos.z, &mut |qx: i32, qy: i32, qz: i32| {
-                let Some(chunk) = self.chunks.chunk(ChunkPos::new(qx >> 2, qz >> 2)) else {
+                let at = ChunkPos::new(qx >> 2, qz >> 2);
+                let found = match near {
+                    Some(c) if c.pos == at => Some(c),
+                    _ => self.chunks.chunk(at).map(|c| &**c),
+                };
+                let Some(chunk) = found else {
                     return default;
                 };
                 // `LevelChunk.getNoiseBiome`: the quart Y is clamped to the chunk.
@@ -952,6 +964,11 @@ impl Level {
     /// The level random (`level.getRandom()`).
     pub fn random(&mut self) -> &mut LegacyRandom {
         &mut self.random
+    }
+
+    /// The level random, to read (e.g. to draw ahead on a copy).
+    pub fn random_ref(&self) -> &LegacyRandom {
+        &self.random
     }
 
     /// Lends the level random out for an [`Env`](crate::survival::player::Env) while the level is
@@ -1792,6 +1809,10 @@ impl BlockLevel for Level {
     #[inline]
     fn block(&self, pos: BlockPos) -> BlockState {
         Level::block(self, pos)
+    }
+
+    fn moving_piston_boxes(&self, pos: BlockPos, out: &mut Vec<[f64; 6]>) {
+        block::piston::collision_boxes_at(&self.block_entities, pos, out);
     }
 
     fn min_y(&self) -> i32 {

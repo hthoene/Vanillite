@@ -94,6 +94,17 @@ pub(crate) fn sync_inventory(entities: &mut Entities, id: EntityId) {
     if let Some(player) = entities.player_mut(id) {
         let sink = std::sync::Arc::clone(&player.connection.sink);
         player.inventory.broadcast_changes(sink.as_ref());
+        // The inventory's container listener (`slotChanged`): `inventory_changed` at once.
+        player.advancements.check_inventory(&player.inventory);
+    }
+}
+
+/// [`sync_inventory`] without the container listener: the slots only (`Inventory.add` of
+/// `/loot give`, which leaves `inventory_changed` to the player's next tick like Vanilla).
+pub(crate) fn send_inventory(entities: &mut Entities, id: EntityId) {
+    if let Some(player) = entities.player_mut(id) {
+        let sink = std::sync::Arc::clone(&player.connection.sink);
+        player.inventory.broadcast_changes(sink.as_ref());
     }
 }
 

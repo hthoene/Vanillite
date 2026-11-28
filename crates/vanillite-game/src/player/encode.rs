@@ -894,10 +894,14 @@ pub fn encode_update(message: &Message, entities: &Entities) -> Option<Encoded> 
                 .vehicle_of(message.entity)
                 .and_then(|v| crate::riding::passengers_packet(entities, v));
             let link = crate::mob::tame::link_pairing_packet(entities, message.entity);
-            let attributes = entities.mob(message.entity).and_then(|m| {
-                let given = &entities.extra(message.entity)?.attributes;
-                crate::effect::living::mob_pairing_attributes(id, m, given)
-            });
+            let attributes = match entities.mob(message.entity) {
+                Some(m) => entities.extra(message.entity).and_then(|x| {
+                    crate::effect::living::mob_pairing_attributes(id, m, &x.attributes)
+                }),
+                None => entities
+                    .player(message.entity)
+                    .and_then(|p| crate::effect::living::player_pairing_attributes(id, p)),
+            };
             if data.is_none()
                 && attributes.is_none()
                 && gear.is_none()

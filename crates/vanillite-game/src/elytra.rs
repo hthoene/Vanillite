@@ -217,7 +217,7 @@ pub fn fly_into_wall_damage(last_speed: f64, new_speed: f64) -> Option<f32> {
 
 /// `Player.updatePlayerPose` without the fit test: sleeping and dying stay, then swimming, fall
 /// flying, the riptide spin, crouching, standing.
-pub fn update_player_pose(entity: &mut EntityMut<'_>, spin_attack: bool) {
+pub fn update_player_pose(entity: &mut EntityMut<'_>, spin_attack: bool, scale: f64) {
     let current = entity.as_ref().pose();
     if matches!(current, Pose::Sleeping | Pose::Dying) {
         return;
@@ -236,7 +236,7 @@ pub fn update_player_pose(entity: &mut EntityMut<'_>, spin_attack: bool) {
     };
     if pose != current {
         entity.set_pose(pose);
-        entity.set_dims(crate::player::dimensions(pose));
+        entity.set_dims(crate::player::scaled_dimensions(pose, scale));
     }
 }
 

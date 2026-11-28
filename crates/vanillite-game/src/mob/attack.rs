@@ -182,11 +182,15 @@ pub fn player_attribute(
         item::attribute_modifiers(p.inventory.equipment(slot), slot, name, &mut mods);
     }
     let effects = &p.survival.effects.modifiers;
+    let mut base = base;
     if !effects.is_empty()
         && let Some(id) = item::attribute_id(name)
         && let Ok(id) = u8::try_from(id)
     {
-        for m in effects.of(crate::effect::attribute::Attribute(id)) {
+        // A base value set by a command or plugin.
+        let attribute = crate::effect::attribute::Attribute(id);
+        base = effects.base(attribute).unwrap_or(base);
+        for m in effects.of(attribute) {
             #[allow(clippy::as_conversions)]
             mods.push((m.operation as u8, m.amount));
         }

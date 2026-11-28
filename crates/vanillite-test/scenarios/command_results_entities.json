@@ -82,7 +82,7 @@
     {"tick": 4, "op": "command", "command": "data modify block 0 -60 0 Items[0].components.\"minecraft:custom_data\" set from storage t:p"},
     {"tick": 5, "op": "command", "command": "execute store result storage t:p k1 int 1 run kill @e[type=minecraft:item]"},
     {"tick": 5, "op": "command", "command": "execute store result storage t:p k2 int 1 run kill @e[type=minecraft:experience_orb]"},
-    {"tick": 5, "op": "command", "command": "execute store success storage t:p c1 int 1 run recipe give steve *"},
+    {"tick": 5, "op": "command", "command": "execute store result storage t:p c1 int 1 run recipe give steve *"},
     {"tick": 5, "op": "command", "command": "execute store result storage t:p c2 int 1 run recipe take steve minecraft:stone_bricks"},
     {"tick": 5, "op": "command", "command": "execute store success storage t:p c3 int 1 run recipe take steve minecraft:stone_bricks"},
     {"tick": 5, "op": "command", "command": "execute store result storage t:p s1 int 1 run spawnpoint steve 2 -60 2 90"},

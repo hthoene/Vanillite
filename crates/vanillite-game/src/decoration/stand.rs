@@ -940,9 +940,9 @@ fn pop_resource(env: &mut Env<'_>, pos: vanillite_base::BlockPos, stack: ItemSta
     }
     let r = &mut *env.random;
     use vanillite_base::random::RandomSource;
-    let x = f64::from(pos.x) + 0.5 + r.next_double() * 0.5 - 0.25;
-    let y = f64::from(pos.y) + 0.5 + r.next_double() * 0.5 - 0.25 - 0.125;
-    let z = f64::from(pos.z) + 0.5 + r.next_double() * 0.5 - 0.25;
+    let x = f64::from(pos.x) + 0.5 + (r.next_double() * 0.5 - 0.25);
+    let y = f64::from(pos.y) + 0.5 + (r.next_double() * 0.5 - 0.25) - 0.125;
+    let z = f64::from(pos.z) + 0.5 + (r.next_double() * 0.5 - 0.25);
     super::spawn_item(env, Vec3::new(x, y, z), stack);
 }
 

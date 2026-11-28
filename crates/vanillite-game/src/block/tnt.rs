@@ -243,7 +243,10 @@ pub fn tick_entity(level: &mut Level, id: EntityId) {
     } else {
         GRAVITY
     };
-    velocity.y -= gravity;
+    // Added as a vector: a -0.0 of x or z becomes 0.0 like in Java.
+    if gravity != 0.0 {
+        velocity = velocity + Vec3::new(0.0, -gravity, 0.0);
+    }
     // `wasTouchingWater` of the last `updateFluidInteraction`, which resets the fall distance.
     let in_water = crate::experience_orb::touching_water(level, &aabb);
     let moved = move_self(level, id, pos, aabb, velocity, gravity);

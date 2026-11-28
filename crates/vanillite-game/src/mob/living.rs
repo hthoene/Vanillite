@@ -2722,7 +2722,8 @@ fn push_entities(t: &mut Tick<'_, '_>) {
         t.cx.ids = ids;
         return;
     }
-    let climbing = on_climbable(t);
+    let pushable_self =
+        t.mob_ref().is_alive() && !on_climbable(t) && t.ents.riding.passengers_of(id).is_empty();
     let root = super::root_vehicle(t.ents, id);
     // `max-entity-collisions`: only the first ones push.
     let limit =
@@ -2799,14 +2800,18 @@ fn push_entities(t: &mut Tick<'_, '_>) {
             .ents
             .player(other)
             .is_none_or(|p| p.survival.simulate_movement);
-        if let Some(mut e) = t.ents.store.get_mut(other) {
+        // `Entity.push(entity)`: each side moves only if it is pushable and carries nobody (a
+        // dying mob pushes but stays where it is).
+        if t.ents.riding.passengers_of(other).is_empty()
+            && let Some(mut e) = t.ents.store.get_mut(other)
+        {
             let v = e.as_ref().velocity();
             e.set_velocity(Vec3::new(v.x - xa, v.y, v.z - za));
             if synced {
                 e.set_flags(EntityFlags::HAS_IMPULSE, true);
             }
         }
-        if !climbing {
+        if pushable_self {
             let v = t.velocity();
             t.set_velocity(Vec3::new(v.x + xa, v.y, v.z + za));
             t.core_mut().set_flags(EntityFlags::HAS_IMPULSE, true);
