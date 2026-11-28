@@ -317,10 +317,15 @@ fn transmit_range(player: &vanillite_game::player::PlayerData, crouching: bool) 
         // `ServerPlayer.WAYPOINT_TRANSMIT_RANGE_CROUCH_MODIFIER`.
         modifiers.push((ADD_MULTIPLIED_TOTAL, -1.0));
     }
-    let base = attribute.base_of(PLAYER);
+    // The base value a command or plugin set and the effects' and commands' modifiers.
+    let own = &player.survival.effects.modifiers;
+    let base = own
+        .base(attribute)
+        .unwrap_or_else(|| attribute.base_of(PLAYER));
+    #[allow(clippy::as_conversions)]
+    modifiers.extend(own.of(attribute).map(|m| (m.operation as u8, m.amount)));
     let (min, max) = (0.0, attribute.sanitize(f64::MAX));
-    let value = vanillite_game::item::attribute_value(base, &modifiers, min, max);
-    player.survival.effects.attribute(attribute, value)
+    vanillite_game::item::attribute_value(base, &modifiers, min, max)
 }
 
 /// What the skip check of a pair reads of its source, by slot.

@@ -522,6 +522,7 @@ impl WorldMobs {
         dimension: &str,
         spawn_point: Option<BlockPos>,
         tiles: Option<&vanillite_game::level::tiles::TileRun<'_>>,
+        phases: &vanillite_game::level::tiles::Phases<'_>,
     ) {
         let env = level.spawner_env.env;
         let Some(table) = self.table.clone() else {
@@ -580,9 +581,17 @@ impl WorldMobs {
         };
         match tiles {
             Some(run) => {
-                spawn::tick_tiled(level, &table, &mut self.spawner, &input, persistent, run);
+                spawn::tick_tiled(
+                    level,
+                    &table,
+                    &mut self.spawner,
+                    &input,
+                    persistent,
+                    run,
+                    phases,
+                );
             }
-            None => spawn::tick(level, &table, &mut self.spawner, &input, persistent),
+            None => spawn::tick(level, &table, &mut self.spawner, &input, persistent, phases),
         }
         // `tickChunks`: the custom spawners only run with `doMobSpawning`.
         if dimension == "minecraft:overworld" && rules.bool(Rule::SPAWN_MOBS) {
@@ -1056,8 +1065,6 @@ impl WorldMobs {
         }
         self.entity_profile = profile;
         boss::wither::sweep_boss_bars(&mut self.cx, &ents, &mut survival.effects);
-        // `rideTick`: passengers follow their vehicles; leads of knots and loaded mobs.
-        riding::ride_tick(&mut ents);
         let mut random = level.lend_random();
         {
             let blocks = WorldBlocks(&level.chunks);
@@ -1077,6 +1084,10 @@ impl WorldMobs {
                 &names,
                 &teams,
             );
+            // `rideTick`: sneaking players get off, passengers follow their vehicles; leads of
+            // knots and loaded mobs.
+            riding::stop_riding_sneaking_players(&mut ents, &mut env);
+            riding::ride_tick(&mut ents);
             let mut discarded = Vec::new();
             tame::tick_leashes(level, &mut ents, &mut env, &mut discarded);
             for d in discarded {
@@ -1953,10 +1964,8 @@ pub fn player_vehicle_input(
     if let Some(strength) = input.jump {
         riding::riding_jump(ents, env, player, strength);
     }
-    // `wantsToStopRiding`: sneaking gets a player off its vehicle.
-    if input.input.shift && ents.vehicle_of(player).is_some() {
-        riding::stop_riding(ents, env, player);
-    }
+    // Sneaking gets a player off its vehicle in its `rideTick` after the vehicles ticked
+    // (`riding::stop_riding_sneaking_players`).
 }
 
 /// The entity with `network_id` if `player` can reach it (`isWithinEntityInteractionRange`:

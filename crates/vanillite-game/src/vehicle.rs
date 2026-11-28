@@ -798,11 +798,12 @@ fn move_boat(level: &Level, ents: &mut Entities, cx: &mut MobContext, id: Entity
     let mut v = delta;
     // `Mth.equal`: a difference below 1e-5 is no collision.
     let eps = f64::from(1.0e-5_f32);
+    // `restituteMovementAfterCollisions` without bounciness: `-v * 0.0` keeps the sign bit.
     if (movement.x - delta.x).abs() >= eps {
-        v.x = 0.0;
+        v.x = -v.x * 0.0;
     }
     if (movement.z - delta.z).abs() >= eps {
-        v.z = 0.0;
+        v.z = -v.z * 0.0;
     }
     let landed = delta.y != movement.y && delta.y < 0.0;
     if delta.y != movement.y {

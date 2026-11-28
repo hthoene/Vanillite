@@ -5,7 +5,7 @@
 //! (`NumericTag`); a floating point value read as an integer is floored.
 
 use vanillite_base::Vec3;
-use vanillite_data::entity::ids;
+use vanillite_data::entity::{EntityTypeId, ids};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_world::entity::{EntityFlags, EntityId};
 
@@ -333,11 +333,10 @@ fn namespaced(id: &str) -> String {
     }
 }
 
-fn attribute_of(kind: Kind, name: &str) -> Option<Attribute> {
+fn attribute_of(kind: EntityTypeId, name: &str) -> Option<Attribute> {
     let id = vanillite_data::registry::ATTRIBUTE.id(&namespaced(name))?;
     // `AttributeMap.apply`: only the attributes the type has.
-    kind.type_id()
-        .info()
+    kind.info()
         .attributes
         .iter()
         .any(|&(a, _)| a == id)
@@ -358,8 +357,8 @@ fn read_modifier(attribute: Attribute, tag: &Tag) -> Option<Modifier> {
     })
 }
 
-/// The entries of the `attributes` list for the attributes a mob of `kind` has.
-fn read_attributes(kind: Kind, tag: Option<&Tag>) -> Vec<NbtAttribute> {
+/// The entries of the `attributes` list for the attributes an entity of `kind` has.
+pub fn read_attributes(kind: EntityTypeId, tag: Option<&Tag>) -> Vec<NbtAttribute> {
     let Some(Tag::List(List(list))) = tag else {
         return Vec::new();
     };
@@ -386,11 +385,15 @@ fn read_attributes(kind: Kind, tag: Option<&Tag>) -> Vec<NbtAttribute> {
 }
 
 /// `AttributeMap.apply` of the `attributes` list: base values replace, modifiers are added.
-/// Attributes the game keeps no value of change nothing (they are only kept for the save).
+/// Base values of attributes without an `Attrs` field go to the modifiers' own base values.
 pub fn load_attributes(m: &mut MobData, tag: Option<&Tag>) {
-    for a in read_attributes(m.kind, tag) {
+    for a in read_attributes(m.kind.type_id(), tag) {
         let base = a.attribute.sanitize(a.base);
-        crate::effect::living::set_mob_attribute_base(m, a.attribute, base);
+        if !crate::effect::living::set_mob_attribute_base(m, a.attribute, base)
+            && base != a.attribute.base_of(m.kind.type_id())
+        {
+            m.effects.modifiers.set_base(a.attribute, base);
+        }
         for x in &a.modifiers {
             m.effects
                 .modifiers
@@ -410,6 +413,11 @@ pub fn load_attributes(m: &mut MobData, tag: Option<&Tag>) {
 impl NbtAttributes {
     /// Keeps what the `attributes` list of a mob of `kind` says, for its save.
     pub fn read(&mut self, kind: Kind, tag: Option<&Tag>) {
+        self.read_type(kind.type_id(), tag);
+    }
+
+    /// [`Self::read`] for an entity type (players).
+    pub fn read_type(&mut self, kind: EntityTypeId, tag: Option<&Tag>) {
         for a in read_attributes(kind, tag) {
             let entry = self.entry(a.attribute, a.base);
             entry.base = a.base;
@@ -453,6 +461,34 @@ impl NbtAttributes {
             }
         }
         out.insert("attributes", List(list));
+    }
+}
+
+impl NbtAttributes {
+    /// The entry of `attribute`, if the entity has an instance of it.
+    pub fn get_mut(&mut self, attribute: Attribute) -> Option<&mut NbtAttribute> {
+        self.0.iter_mut().find(|a| a.attribute == attribute)
+    }
+
+    /// The `attributes` list of a player (`AttributeMap.pack`), with the current base values.
+    pub fn to_list(&self) -> List {
+        List(
+            self.0
+                .iter()
+                .map(|a| {
+                    let mut c = Compound::new();
+                    c.insert("id", a.attribute.name());
+                    c.insert("base", a.base);
+                    if !a.modifiers.is_empty() {
+                        c.insert(
+                            "modifiers",
+                            List(a.modifiers.iter().map(modifier_tag).collect()),
+                        );
+                    }
+                    Tag::Compound(c)
+                })
+                .collect(),
+        )
     }
 }
 
