@@ -311,6 +311,9 @@ struct Holder {
     unneeded: Option<Arc<AtomicBool>>,
     /// The step whose missing neighbours were last added as dependencies.
     planned: Option<ChunkStatus>,
+    /// Where the last check of the planned step stopped in its scan of the neighbours (index
+    /// into the square around the chunk): the next check resumes there.
+    scan_from: u16,
     /// The chunk's stored entities are live (`ChunkLoadStatus.LOADED`); set by the entity
     /// storage at the end of the level tick, required for scheduled ticks.
     entities_loaded: bool,
@@ -1912,44 +1915,62 @@ impl Chunks {
             self.due_next_tick.insert(pos);
             return Check::Done;
         }
-        // Requirements by radius.
+        // Requirements by radius. A later check resumes at the neighbour the last one was
+        // blocked on and wraps around, so every neighbour is still checked once before the
+        // step runs, but a chunk woken by each of its neighbours in turn does not scan the
+        // whole square every time.
         let radius = next.requirement_radius() as i32;
+        let side = 2 * radius + 1;
+        let cells = (side * side) as usize;
+        let resume = if plan {
+            0
+        } else {
+            usize::from(holder.scan_from).min(cells)
+        };
+        let mut needs = [None; 16];
+        for (distance, need) in needs.iter_mut().enumerate().take(radius as usize + 1) {
+            *need = next.direct_requirement_at(distance as u32);
+        }
         let mut blocked = None;
-        for dz in -radius..=radius {
-            for dx in -radius..=radius {
-                if dx == 0 && dz == 0 {
-                    continue;
-                }
-                let distance = dx.unsigned_abs().max(dz.unsigned_abs());
-                let Some(needed) = next.direct_requirement_at(distance) else {
-                    continue;
-                };
-                let other = ChunkPos::new(pos.x + dx, pos.z + dz);
-                let other_holder = self.holders.get(&other);
-                if other_holder
-                    .and_then(Holder::status)
-                    .is_some_and(|status| status >= needed)
-                {
-                    continue;
-                }
-                match other_holder {
-                    None => self.add_dependency(pos, other),
-                    // Kept only by a generation ticket that is gone: this chunk's own
-                    // ticket keeps it.
-                    Some(other) if required_status(other.level) < Some(needed) => {
-                        self.add_generation_ticket(pos);
-                    }
-                    Some(_) => {}
-                }
-                if !plan {
-                    return Check::Blocked(other);
-                }
-                blocked.get_or_insert(other);
+        for i in (resume..cells).chain(0..resume) {
+            let (dz, dx) = (i as i32 / side - radius, i as i32 % side - radius);
+            if dx == 0 && dz == 0 {
+                continue;
             }
+            let distance = dx.unsigned_abs().max(dz.unsigned_abs());
+            let Some(needed) = needs[distance as usize] else {
+                continue;
+            };
+            let other = ChunkPos::new(pos.x + dx, pos.z + dz);
+            let other_holder = self.holders.get(&other);
+            if other_holder
+                .and_then(Holder::status)
+                .is_some_and(|status| status >= needed)
+            {
+                continue;
+            }
+            match other_holder {
+                None => self.add_dependency(pos, other),
+                // Kept only by a generation ticket that is gone: this chunk's own
+                // ticket keeps it.
+                Some(other) if required_status(other.level) < Some(needed) => {
+                    self.add_generation_ticket(pos);
+                }
+                Some(_) => {}
+            }
+            if !plan {
+                if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
+                    holder.scan_from = i as u16;
+                }
+                return Check::Blocked(other);
+            }
+            blocked.get_or_insert((i, other));
         }
         if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
             holder.planned = Some(next);
+            holder.scan_from = blocked.map_or(0, |(i, _)| i as u16);
         }
+        let blocked = blocked.map(|(_, other)| other);
         if let Some(other) = blocked {
             return Check::Blocked(other);
         }
