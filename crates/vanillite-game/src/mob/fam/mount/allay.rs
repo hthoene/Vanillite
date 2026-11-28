@@ -339,10 +339,14 @@ pub fn on_die(h: &mut Hurt<'_, '_>) {
         return;
     };
     let inv = std::mem::take(&mut allay_mut(m).inventory);
-    let held = m.equipment.get(EquipmentSlot::MainHand).clone();
-    m.equipment
-        .set(EquipmentSlot::MainHand, ItemStack::default());
-    // The held item is guaranteed (`dropEquipment`), not by chance.
+    let mut held = m.equipment.get(EquipmentSlot::MainHand).clone();
+    // The held item is guaranteed (`dropEquipment`), not by chance, unless it vanishes.
+    if crate::mob::equipment::prevents_drop(&held) {
+        held = ItemStack::default();
+    } else {
+        m.equipment
+            .set(EquipmentSlot::MainHand, ItemStack::default());
+    }
     m.equipment.set_drop_chance(EquipmentSlot::MainHand, 0.0);
     for stack in [inv, held] {
         drop_at(h.env, pos, stack);

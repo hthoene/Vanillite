@@ -1885,6 +1885,18 @@ for dir in /opt/vanillite/*/recordings; do
     ls -1d "$dir"/*/ 2>/dev/null | sort -r | tail -n +41 | xargs -r rm -rf
 done
 EOF
+# vanillite-test2 copies the recordings for its nightly replay (#257) with its own key, which
+# may only read them (rrsync -ro). `cargo xtask testserver provision` passes the key.
+if [ -n "${VANILLITE_RECORDINGS_READER:-}" ]; then
+    reader="restrict,command=\"/usr/bin/rrsync -ro /opt/vanillite/30001/recordings\" $VANILLITE_RECORDINGS_READER"
+    install -d -m 700 /root/.ssh
+    touch /root/.ssh/authorized_keys
+    if ! grep -qxF "$reader" /root/.ssh/authorized_keys; then
+        sed -i '/ vanillite-test2-recordings$/d' /root/.ssh/authorized_keys
+        echo "$reader" >> /root/.ssh/authorized_keys
+        echo "updated /root/.ssh/authorized_keys (recordings reader)"
+    fi
+fi
 install -d /etc/systemd/system/vanillite@30001.service.d
 write_if_changed /etc/systemd/system/vanillite@30001.service.d/session-recording.conf <<'EOF'
 [Service]

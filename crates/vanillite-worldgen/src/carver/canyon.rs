@@ -6,7 +6,7 @@ use vanillite_base::math::{cos, sin};
 use vanillite_base::random::{LegacyRandom, RandomSource};
 
 use super::providers::{FloatProvider, HeightProvider, WorldGenerationContext, random_between};
-use super::{CarvingMask, RANGE, block_x, block_z, can_reach, carve_ellipsoid, probability};
+use super::{Cuts, RANGE, Skip, block_x, block_z, probability};
 use crate::Error;
 
 /// `CanyonWorldCarver.Shape`.
@@ -70,14 +70,13 @@ impl CanyonCarver {
         })
     }
 
-    /// `carve(context, random, chunkPos, sourceChunkPos, output)`.
+    /// `carve(context, random, chunkPos, sourceChunkPos, output)`: the ellipsoids go to `cuts`.
     pub(super) fn carve<R: RandomSource>(
         &self,
         context: &WorldGenerationContext,
         random: &mut R,
-        chunk: ChunkPos,
         source: ChunkPos,
-        output: &mut CarvingMask,
+        cuts: &mut impl Cuts,
     ) {
         let max_distance = (RANGE * 2 - 1) * 16;
         let x = f64::from(block_x(source, random.next_int_bounded(16)));
@@ -90,7 +89,6 @@ impl CanyonCarver {
         let distance = (max_distance as f32 * self.shape.distance_factor.sample(random)) as i32;
         self.do_carve(
             context,
-            chunk,
             random.next_long(),
             x,
             f64::from(y),
@@ -101,7 +99,7 @@ impl CanyonCarver {
             0,
             distance,
             y_scale,
-            output,
+            cuts,
         );
     }
 
@@ -110,7 +108,6 @@ impl CanyonCarver {
     fn do_carve(
         &self,
         context: &WorldGenerationContext,
-        chunk: ChunkPos,
         tunnel_seed: i64,
         mut x: f64,
         mut y: f64,
@@ -121,17 +118,15 @@ impl CanyonCarver {
         step: i32,
         distance: i32,
         y_scale: f64,
-        output: &mut CarvingMask,
+        cuts: &mut impl Cuts,
     ) {
+        let start = cuts.mark();
         // `RandomSource.createThreadLocalInstance(seed)`: the same LCG as the legacy source.
         let mut random = LegacyRandom::new(tunnel_seed);
         let width_factor_per_height = self.init_width_factors(context, &mut random);
-        let min_gen_y = context.min_gen_y();
-        let should_skip = |xd: f64, yd: f64, zd: f64, y: i32| {
-            let y_index = y - min_gen_y;
-            (xd * xd + zd * zd) * f64::from(width_factor_per_height[(y_index - 1) as usize])
-                + yd * yd / 6.0
-                >= 1.0
+        let skip = Skip::Canyon {
+            width_factor_per_height: &width_factor_per_height,
+            min_gen_y: context.min_gen_y(),
         };
         let mut y_rota = 0.0_f32;
         let mut x_rota = 0.0_f32;
@@ -162,22 +157,22 @@ impl CanyonCarver {
             y_rota *= 0.5;
             x_rota += (random.next_float() - random.next_float()) * random.next_float() * 2.0;
             y_rota += (random.next_float() - random.next_float()) * random.next_float() * 4.0;
-            if random.next_int_bounded(4) != 0 {
-                if !can_reach(chunk, x, z, current_step, distance, thickness) {
-                    return;
-                }
-                carve_ellipsoid(
-                    chunk,
+            if random.next_int_bounded(4) != 0
+                && !cuts.step(
+                    (current_step, distance, thickness),
                     x,
                     y,
                     z,
                     horizontal_radius,
                     vertical_radius,
-                    output,
-                    should_skip,
-                );
+                    skip,
+                )
+            {
+                return;
             }
         }
+        let end = cuts.mark();
+        cuts.close(start, end);
     }
 
     /// `initWidthFactors(context, random)`: squared width factor per Y above the minimum.

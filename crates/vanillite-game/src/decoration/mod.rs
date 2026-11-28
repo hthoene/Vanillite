@@ -477,7 +477,7 @@ pub(crate) fn stack_of(name: &str) -> Option<ItemStack> {
 /// `item.set(CUSTOM_NAME, getCustomName())` of a dropped item.
 pub(crate) fn with_name(mut stack: ItemStack, name: Option<&[u8]>) -> ItemStack {
     if let Some(name) = name {
-        stack.patch_mut().set(
+        stack.set_component(
             vanillite_protocol::components::ids::CUSTOM_NAME,
             name.into(),
         );

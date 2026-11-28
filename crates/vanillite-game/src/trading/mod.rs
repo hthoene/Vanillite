@@ -29,7 +29,7 @@ impl ItemCost {
     pub fn item_stack(&self) -> ItemStack {
         let mut stack = ItemStack::new(self.item, self.count);
         for (t, v) in &self.components {
-            stack.patch_mut().set(*t, v.clone());
+            stack.set_component(*t, v.clone());
         }
         stack
     }

@@ -113,6 +113,10 @@ pub(crate) fn read(target: &DataTarget, env: &Env<'_>) -> Result<Compound, Comma
             .block_entity_nbt(*pos)
             .ok_or_else(|| CommandError::new("commands.data.block.invalid", vec![])),
     }
+    .map(|mut c| {
+        c.positive_zeros();
+        c
+    })
 }
 
 /// `DataAccessor.setData`.
@@ -191,6 +195,30 @@ fn vec3_list(v: Vec3) -> Tag {
 /// `Entity.saveWithoutId` for the data the server keeps for every entity, with the kind's own
 /// data for players and items.
 pub(crate) fn entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> {
+    let mut nbt = own_entity_nbt(entities, id)?;
+    // `saveWithoutId`: the passengers as `saveAsPassenger` writes them (players are left out).
+    let passengers: Vec<Tag> = entities
+        .riding
+        .passengers_of(id)
+        .iter()
+        .filter(|&&p| entities.player(p).is_none())
+        .filter_map(|&p| {
+            let kind = entities.store.get(p)?.kind();
+            let mut c = Compound::new();
+            c.insert("id", Tag::String(kind.name().to_owned()));
+            for (k, v) in entity_nbt(entities, p)?.iter() {
+                c.insert(k, v.clone());
+            }
+            Some(Tag::Compound(c))
+        })
+        .collect();
+    if !passengers.is_empty() {
+        nbt.insert("Passengers", Tag::List(List(passengers)));
+    }
+    Some(nbt)
+}
+
+fn own_entity_nbt(entities: &Entities, id: EntityId) -> Option<Compound> {
     let e = entities.store.get(id)?;
     // Decorations, mobs (armor stands and mannequins too) and minecarts with all their
     // stored data.

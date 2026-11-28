@@ -226,7 +226,7 @@ pub fn behaviour_of(stack: &ItemStack) -> Behaviour {
     let name = id.name();
     if is_shulker_box(id) {
         Behaviour::ShulkerBox
-    } else if id.info().equip_slot != u8::MAX {
+    } else if item::equippable_slot(stack).is_some() {
         Behaviour::Equipment
     } else if name.ends_with("_spawn_egg") {
         // `SpawnEggItemBehavior` (spawn eggs carry `entity_data`).
@@ -1259,7 +1259,7 @@ fn glass_bottle(
 pub(crate) fn water_potion() -> ItemStack {
     let mut stack = ItemStack::new(items::POTION.0, 1);
     if let Some(water) = vanillite_data::registry::POTION.id("minecraft:water") {
-        stack.patch_mut().set(
+        stack.set_component(
             vanillite_protocol::components::ids::POTION_CONTENTS,
             crate::recipe::potion_contents(water),
         );
@@ -1385,7 +1385,9 @@ fn is_unobstructed(level: &Level, state: BlockState, pos: BlockPos) -> bool {
 /// The equipment slot a player wears the item in, if players can wear it
 /// (`canUseSlot(equippable.slot())`; body and saddle slots are for mobs).
 fn player_slot(stack: &ItemStack) -> Option<EquipmentSlot> {
-    EquipmentSlot::from_ordinal(item::item_id(stack).info().equip_slot)
+    item::equippable(stack)
+        .filter(|e| e.can_be_equipped_by(vanillite_data::entity::ids::PLAYER.0))
+        .map(|e| e.slot)
         .filter(|s| !matches!(s, EquipmentSlot::Body | EquipmentSlot::Saddle))
 }
 
@@ -1393,7 +1395,7 @@ fn player_slot(stack: &ItemStack) -> Option<EquipmentSlot> {
 /// front that can wear the item (`canEquipWithDispenser`) gets one; a mob drops it for sure
 /// and no longer despawns.
 fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) -> bool {
-    let Some(slot) = EquipmentSlot::from_ordinal(item::item_id(stack).info().equip_slot) else {
+    let Some(slot) = item::equippable_slot(stack) else {
         return false;
     };
     let target = source.target();
@@ -1433,7 +1435,7 @@ fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) 
         let slot = player_slot(stack).unwrap_or(slot);
         // An armor stand: `setItemSlot`, the equip sound and the equipment packet.
         let equip = stack.split(1);
-        let sound = sound_id(equip_sound(&equip));
+        let sound = sound_id(&equip_sound(&equip));
         let silent = level.entities.mob(id).is_some_and(|m| m.silent);
         if let Some(m) = level.entities.mob_mut(id) {
             m.equipment.set(slot, equip);
@@ -1472,7 +1474,7 @@ fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) 
         return true;
     }
     let equip = stack.split(1);
-    let sound = sound_id(equip_sound(&equip));
+    let sound = sound_id(&equip_sound(&equip));
     if let Some(player) = level.entities.player_mut(id) {
         let inv = &mut player.inventory;
         match slot {
@@ -1501,31 +1503,11 @@ fn dispense_equipment(level: &mut Level, source: Source, stack: &mut ItemStack) 
 /// `canDispenserEquipIntoSlot`.
 fn mob_can_equip(m: &crate::mob::MobData, stack: &ItemStack, slot: EquipmentSlot) -> bool {
     use crate::mob::Kind as K;
-    use crate::predicate::EntityTags;
     if m.kind == K::ArmorStand || !m.is_alive() || !crate::mob::animal::can_use_slot(m, slot) {
         return false;
     }
-    let name = item::item_id(stack).name();
-    let in_tag = |tag: &str| {
-        crate::player::play::game_data().is_some_and(|d| d.entity_in_tag(m.kind.type_id(), tag))
-    };
-    // `Equippable.allowedEntities` of the default components.
-    let allowed = if name == "minecraft:saddle" {
-        in_tag("minecraft:can_equip_saddle")
-    } else if name.ends_with("_harness") {
-        in_tag("minecraft:can_equip_harness")
-    } else if name.ends_with("_horse_armor") {
-        in_tag("minecraft:can_wear_horse_armor")
-    } else if name.ends_with("_nautilus_armor") {
-        in_tag("minecraft:can_wear_nautilus_armor")
-    } else if name == "minecraft:wolf_armor" {
-        m.kind == K::Wolf
-    } else if name.ends_with("_carpet") {
-        matches!(m.kind, K::Llama | K::TraderLlama)
-    } else {
-        true
-    };
-    if !allowed {
+    // `Equippable.allowedEntities`.
+    if !item::equippable(stack).is_some_and(|e| e.can_be_equipped_by(m.kind.type_id().0)) {
         return false;
     }
     let empty = if m.kind == K::Pig && slot == EquipmentSlot::Saddle {
@@ -1577,7 +1559,12 @@ fn equip_mob(level: &mut Level, id: EntityId, slot: EquipmentSlot, equip: ItemSt
             "minecraft:item.nautilus_saddle_underwater_equip"
         }
         K::Nautilus | K::ZombieNautilus if saddle => "minecraft:item.nautilus_saddle_equip",
-        _ => item::item_id(&equip).info().equip_sound,
+        _ => "",
+    };
+    let sound = if sound.is_empty() {
+        equip_sound(&equip)
+    } else {
+        std::borrow::Cow::Borrowed(sound)
     };
     if m.kind == K::Pig && saddle {
         // The pig keeps its saddle as a flag.
@@ -1590,7 +1577,7 @@ fn equip_mob(level: &mut Level, id: EntityId, slot: EquipmentSlot, equip: ItemSt
     let source = m.kind.sound_source();
     let seed = (!m.silent).then(|| m.random.next_long());
     if let Some(seed) = seed {
-        let sound = sound_id(sound.strip_prefix("minecraft:").unwrap_or(sound));
+        let sound = sound_id(sound.strip_prefix("minecraft:").unwrap_or(&sound));
         level.play_seeded_sound(
             None,
             pos.x,
@@ -1607,30 +1594,16 @@ fn equip_mob(level: &mut Level, id: EntityId, slot: EquipmentSlot, equip: ItemSt
     level.entities.equipment_updates.push(id);
 }
 
-/// `equippable.equipSound()` of the items players can wear.
-pub(crate) fn equip_sound(stack: &ItemStack) -> &'static str {
-    let name = item::item_id(stack).name();
-    let path = name.strip_prefix("minecraft:").unwrap_or(name);
-    if path == "elytra" {
-        "item.armor.equip_elytra"
-    } else if path == "turtle_helmet" {
-        "item.armor.equip_turtle"
-    } else if path.starts_with("leather_") {
-        "item.armor.equip_leather"
-    } else if path.starts_with("copper_") {
-        "item.armor.equip_copper"
-    } else if path.starts_with("chainmail_") {
-        "item.armor.equip_chain"
-    } else if path.starts_with("iron_") {
-        "item.armor.equip_iron"
-    } else if path.starts_with("diamond_") {
-        "item.armor.equip_diamond"
-    } else if path.starts_with("golden_") {
-        "item.armor.equip_gold"
-    } else if path.starts_with("netherite_") {
-        "item.armor.equip_netherite"
-    } else {
-        "item.armor.equip_generic"
+/// `equippable.equipSound()` without the `minecraft:` namespace.
+pub(crate) fn equip_sound(stack: &ItemStack) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow;
+    match item::equippable(stack).map(|e| e.equip_sound) {
+        Some(Cow::Borrowed(s)) => Cow::Borrowed(s.strip_prefix("minecraft:").unwrap_or(s)),
+        Some(Cow::Owned(s)) => match s.strip_prefix("minecraft:") {
+            Some(path) => Cow::Owned(path.to_owned()),
+            None => Cow::Owned(s),
+        },
+        None => Cow::Borrowed("item.armor.equip_generic"),
     }
 }
 

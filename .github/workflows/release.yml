@@ -59,7 +59,8 @@ jobs:
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
       # zig's clang turns off evex512 for the x86-64 baseline; libdeflate's AVX-512 code needs it.
       CFLAGS_x86_64_unknown_linux_musl: -mevex512
-      CFLAGS_x86_64_unknown_linux_gnu: -mevex512
+      # Only for the x86-64 job: in the aarch64 job it would reach the runner's gcc (build scripts).
+      CFLAGS_x86_64_unknown_linux_gnu: ${{ matrix.arch == 'x86_64' && '-mevex512' || '' }}
     steps:
       # Scripts and text files keep LF line ends on Windows (package.sh converts the texts).
       - run: git config --global core.autocrlf false
@@ -154,7 +155,7 @@ jobs:
               echo "**Vanillite $VERSION for Minecraft Java Edition $MC.**"
             fi
             echo
-            echo "Download the archive for your system, unpack it and start \`vanillite\` (\`vanillite.exe\` on Windows); the README.txt inside explains the first start. Docker: \`docker pull thoenehannes/vanillite:${VERSION}-mc${MC}\`. Checksums: SHA256SUMS. The Windows binary is signed after publishing; if the Windows zip was downloaded in the first hours after the release, its \`vanillite.exe\` may still be unsigned."
+            echo "Download the archive for your system, unpack it and start \`vanillite\` (\`vanillite.exe\` on Windows); the README.txt inside explains the first start. Docker: \`docker pull thoenehannes/vanillite:${VERSION}-mc${MC}\`. Checksums: SHA256SUMS. \`vanillite.exe\` is not code-signed: Windows SmartScreen may warn on the first start (More info > Run anyway)."
             # The version's section of CHANGELOG.md, without its heading.
             changes="$(awk -v v="## $VERSION" '$0 == v { on = 1; next } on && /^## / { exit } on' CHANGELOG.md)"
             if [[ -n "${changes//[[:space:]]/}" ]]; then

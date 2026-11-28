@@ -531,6 +531,12 @@ pub fn take(t: &mut Tick<'_, '_>, item: EntityId, amount: i32) {
     }
 }
 
+/// `EnchantmentHelper.has(stack, PREVENT_EQUIPMENT_DROP)`: Curse of Vanishing.
+pub fn prevents_drop(stack: &ItemStack) -> bool {
+    crate::player::play::game_data()
+        .is_some_and(|d| d.enchantment_level(stack, "minecraft:vanishing_curse") > 0)
+}
+
 /// `Mob.dropCustomDeathLoot`'s equipment part: each slot drops with its chance when a player
 /// killed the mob (preserved slots always), damaged unless preserved.
 pub fn death_drops(
@@ -539,7 +545,6 @@ pub fn death_drops(
     looting: f32,
     out: &mut Vec<ItemStack>,
 ) {
-    let data = crate::player::play::game_data();
     for slot in SLOTS {
         let i = usize::from(slot.ordinal());
         let chance = m.equipment.drop_chances[i];
@@ -550,9 +555,7 @@ pub fn death_drops(
         // `EnchantmentHelper.processEquipmentDropChance`: Looting of the killing player.
         let chance = chance + looting;
         // `PREVENT_EQUIPMENT_DROP` (Curse of Vanishing).
-        let vanishes = data.as_ref().is_some_and(|d| {
-            d.enchantment_level(&m.equipment.items[i], "minecraft:vanishing_curse") > 0
-        });
+        let vanishes = prevents_drop(&m.equipment.items[i]);
         if m.equipment.items[i].is_empty()
             || vanishes
             || !(killed_by_player || preserve)

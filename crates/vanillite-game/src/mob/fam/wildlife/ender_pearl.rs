@@ -359,6 +359,10 @@ fn pearl_event(
 /// [`land`].
 fn arrive(ents: &mut Entities, env: &mut Env<'_>, player: EntityId, pos: Vec3, turn: (f32, f32)) {
     let rotation = relative::Y_ROT | relative::X_ROT;
+    // `ServerPlayer.teleport`: not `asPassenger`, so `removeVehicle` first.
+    if ents.riding.vehicle_of(player).is_some() {
+        crate::riding::stop_riding(ents, env, player);
+    }
     if crate::player::movement::teleport_within_world(ents, player, pos, turn.0, turn.1, rotation)
         .is_some()
     {

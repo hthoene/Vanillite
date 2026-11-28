@@ -1,7 +1,9 @@
 //! `MaterialSystem`: builds the surface of a chunk by running the material rule tree down every
 //! column, plus the eroded badlands pillars and frozen ocean icebergs.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use rustc_hash::FxHashMap;
 
 use vanillite_base::math::{floor, floor_div, java_min};
 use vanillite_base::random::{PositionalRandomFactory, RandomSource};
@@ -68,6 +70,22 @@ impl OreVeinFns {
     }
 }
 
+/// What the per-Y tables of `build_surface` depend on.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FoldKey {
+    biome_folds: Vec<Option<bool>>,
+    ore_present: u32,
+    min_y: i32,
+    height: i32,
+    max_y: i32,
+}
+
+/// The per-Y tables of `build_surface` (below the surface, deep in stone).
+type FoldTables = Arc<(Vec<FoldedY>, Vec<FoldedY>)>;
+
+/// Most fold tables kept; a full cache starts over.
+const FOLD_CACHE_MAX: usize = 64;
+
 /// The surface builder of one world's noise settings (`MaterialSystem`) together with its
 /// parsed material rule (`NoiseGeneratorSettings.material_rule`).
 ///
@@ -117,6 +135,8 @@ pub struct MaterialSystem {
     water: BlockId,
     snow_block: BlockState,
     packed_ice: BlockState,
+    /// The per-Y tables of `build_surface` by what they depend on.
+    fold_cache: Mutex<FxHashMap<FoldKey, FoldTables>>,
 }
 
 impl MaterialSystem {
@@ -203,6 +223,7 @@ impl MaterialSystem {
             water: BlockId::by_name("minecraft:water").expect("water block"),
             snow_block: default_state("minecraft:snow_block"),
             packed_ice: default_state("minecraft:packed_ice"),
+            fold_cache: Mutex::default(),
         })
     }
 
@@ -291,14 +312,38 @@ impl MaterialSystem {
                 .map(|y| rules.fold_at(&self.rules, &generation, ore_present, mode, y))
                 .collect()
         };
-        let below_surface = fold(FoldMode::BelowSurface);
+        // Both tables depend on the chunk's biome folds and ore veins alone: neighbouring
+        // chunks share them.
+        let key = FoldKey {
+            biome_folds: context.biome_folds.clone(),
+            ore_present,
+            min_y,
+            height: chunk.height(),
+            max_y,
+        };
+        let cached = self
+            .fold_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&key).cloned());
+        let tables = cached.unwrap_or_else(|| {
+            let tables = Arc::new((fold(FoldMode::BelowSurface), fold(FoldMode::DeepInStone)));
+            if let Ok(mut cache) = self.fold_cache.lock() {
+                if cache.len() >= FOLD_CACHE_MAX {
+                    cache.clear();
+                }
+                cache.insert(key, tables.clone());
+            }
+            tables
+        });
+        let below_surface = &tables.0;
         // Per Y: how many blocks from it down (itself included) the tree provably does nothing
         // to, whatever the column (no ore vein to test).
         // The same in a column where no ore vein may place a block inside the expected volume
         // (`MaterialRuleContext::column_ore_free`).
         let runs = |quiet: &dyn Fn(i32, &FoldedY) -> bool| -> Vec<u32> {
             let mut runs: Vec<u32> = Vec::with_capacity(below_surface.len());
-            for (y, folded) in (end_y..).zip(&below_surface) {
+            for (y, folded) in (end_y..).zip(below_surface) {
                 let run = if matches!(folded.outcome, BelowSurface::Nothing) && quiet(y, folded) {
                     runs.last().map_or(1, |run| run + 1)
                 } else {
@@ -310,9 +355,32 @@ impl MaterialSystem {
         };
         let quiet_below = runs(&|_, folded| folded.ores == 0);
         let quiet_ore_free = runs(&|y, folded| folded.ores == 0 || context.in_expected_rows(y));
+        // Per Y: how many blocks from it down (itself included) the tree places one and the
+        // same block on, as Y alone decides it (no ore vein to test), in the two kinds of column.
+        let place_runs = |quiet: &dyn Fn(i32, &FoldedY) -> bool| -> Vec<u32> {
+            let mut runs: Vec<u32> = Vec::with_capacity(below_surface.len());
+            let mut last = None;
+            for (y, folded) in (end_y..).zip(below_surface) {
+                let placed = match folded.outcome {
+                    BelowSurface::Place(state) if quiet(y, folded) => Some(state),
+                    _ => None,
+                };
+                let run = match placed {
+                    Some(state) if last == Some(state) => runs.last().map_or(1, |run| run + 1),
+                    Some(_) => 1,
+                    None => 0,
+                };
+                last = placed;
+                runs.push(run);
+            }
+            runs
+        };
+        let place_below = place_runs(&|_, folded| folded.ores == 0);
+        let place_ore_free =
+            place_runs(&|y, folded| folded.ores == 0 || context.in_expected_rows(y));
         // The same for blocks so deep in stone that every stone depth condition is false:
         // most blocks between a column's surface layers and its minimum surface level.
-        let deep_in_stone = fold(FoldMode::DeepInStone);
+        let deep_in_stone = &tables.1;
         let mut column: Vec<BlockState> = Vec::new();
         let mut kinds: Vec<u8> = Vec::new();
 
@@ -331,10 +399,10 @@ impl MaterialSystem {
                 let gradient_z = surface_gradient_z(chunk, x, z);
                 context.update_xz(block_x, block_z, gradient_x, gradient_z);
                 let (floor_reach, ceiling_reach) = context.stone_depth_reach(rules.stone_depths());
-                let quiet_runs = if context.column_ore_free() {
-                    &quiet_ore_free
+                let (quiet_runs, place_runs) = if context.column_ore_free() {
+                    (&quiet_ore_free, &place_ore_free)
                 } else {
-                    &quiet_below
+                    (&quiet_below, &place_below)
                 };
                 let mut stone_above_depth = 0;
                 let mut water_height = i32::MIN;
@@ -414,11 +482,35 @@ impl MaterialSystem {
                                     match folded.outcome {
                                         BelowSurface::Nothing => {}
                                         BelowSurface::Place(state) => {
-                                            let old = column[(y - (end_y - 1)) as usize];
-                                            if !chunk.replace_solid(block_x, y, block_z, old, state)
+                                            // The run of the same block below, down to the
+                                            // bottom of the stone run: placed at once.
+                                            let run = place_runs[(y - end_y) as usize] as i32;
+                                            let lowest =
+                                                (y - run + 1).max(next_ceiling_stone_y).max(end_y);
+                                            let from = (lowest.min(y) - (end_y - 1)) as usize;
+                                            let to = (y - (end_y - 1)) as usize;
+                                            if to - from < 1
+                                                || !chunk.replace_solid_run(
+                                                    block_x,
+                                                    block_z,
+                                                    lowest,
+                                                    &column[from..=to],
+                                                    state,
+                                                )
                                             {
-                                                set_column_block(chunk, block_x, y, block_z, state);
+                                                for at in (lowest.min(y)..=y).rev() {
+                                                    let old = column[(at - (end_y - 1)) as usize];
+                                                    if !chunk.replace_solid(
+                                                        block_x, at, block_z, old, state,
+                                                    ) {
+                                                        set_column_block(
+                                                            chunk, block_x, at, block_z, state,
+                                                        );
+                                                    }
+                                                }
                                             }
+                                            stone_above_depth += y - lowest.min(y);
+                                            y = lowest.min(y);
                                         }
                                         BelowSurface::Unknown => break,
                                     }

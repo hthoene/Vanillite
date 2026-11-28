@@ -95,9 +95,7 @@ pub fn set_charged(stack: &mut ItemStack, projectiles: &[ItemStack]) {
     for s in projectiles {
         s.encode_template(&mut out);
     }
-    stack
-        .patch_mut()
-        .set(ids::CHARGED_PROJECTILES, out.into_boxed_slice());
+    stack.set_component(ids::CHARGED_PROJECTILES, out.into_boxed_slice());
 }
 
 /// `CrossbowItem.getChargeDuration`: 25 ticks, shortened by Quick Charge.
@@ -177,9 +175,7 @@ pub fn use_tick(flags: &mut UseFlags, used: i32, duration: i32) -> UseTick {
 
 /// The intangible marker (`intangible_projectile`, a unit as an empty compound tag).
 fn set_intangible(stack: &mut ItemStack) {
-    stack
-        .patch_mut()
-        .set(ids::INTANGIBLE_PROJECTILE, vec![10, 0].into_boxed_slice());
+    stack.set_component(ids::INTANGIBLE_PROJECTILE, vec![10, 0].into_boxed_slice());
 }
 
 /// Whether the stack was drawn for free (`intangible_projectile`).

@@ -404,7 +404,19 @@ impl Enchanting {
 
     /// `provides_trim_material` of an item: the `trim_material` id.
     pub fn trim_material(&self, stack: &ItemStack) -> Option<u32> {
-        self.trim_materials.get(&stack.item).copied()
+        use crate::item::{Patched, patched};
+        match patched(
+            stack,
+            vanillite_protocol::components::ids::PROVIDES_TRIM_MATERIAL,
+        ) {
+            // A registry holder (id + 1); an inline material has no registry id.
+            Patched::Value(v) => {
+                let id = vanillite_protocol::codec::Reader::new(v).varint().ok()?;
+                u32::try_from(id.checked_sub(1)?).ok()
+            }
+            Patched::Removed => None,
+            Patched::Default => self.trim_materials.get(&stack.item).copied(),
+        }
     }
 
     /// The `trim_pattern` id of a pattern name.
@@ -450,6 +462,9 @@ impl Enchanting {
     pub fn enchantable(&self, stack: &ItemStack) -> i32 {
         if stack.is_empty() {
             return 0;
+        }
+        if let Some(patched) = crate::item::patched_enchantable(stack) {
+            return patched.unwrap_or(0);
         }
         self.enchantable.get(&stack.item).copied().unwrap_or(0)
     }
@@ -552,7 +567,7 @@ impl Enchanting {
                 None => list.push((e, level)),
             }
         }
-        stack.patch_mut().set(id, write(&list));
+        stack.set_component(id, write(&list));
     }
 
     /// `EnchantmentHelper.modifyDurabilityToRepairFromXp(level, stack, durability)`: the
@@ -574,11 +589,20 @@ impl Enchanting {
 
     /// `ItemStack.isValidRepairItem(addition)`: the `repairable` component.
     pub fn is_valid_repair_item(&self, stack: &ItemStack, addition: &ItemStack) -> bool {
-        !addition.is_empty()
-            && self
+        if addition.is_empty() {
+            return false;
+        }
+        match crate::item::patched_repairable(stack) {
+            Some(Some(crate::consumable::HolderSet::Ids(ids))) => ids.contains(&addition.item),
+            Some(Some(crate::consumable::HolderSet::Tag(tag))) => {
+                crate::player::play::game_data().is_some_and(|d| d.item_in_tag(addition.item, &tag))
+            }
+            Some(None) => false,
+            None => self
                 .repairable
                 .get(&stack.item)
-                .is_some_and(|items| items.binary_search(&addition.item).is_ok())
+                .is_some_and(|items| items.binary_search(&addition.item).is_ok()),
+        }
     }
 }
 

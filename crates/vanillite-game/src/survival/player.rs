@@ -194,6 +194,8 @@ pub struct Survival {
     pub fire_ticks: i32,
     pub fall_distance: f64,
     pub hurt_time: i32,
+    /// `DATA_ARROW_COUNT_ID`, `removeArrowTime`.
+    pub arrows: crate::mob::projectile::StuckArrows,
     /// `damageCooldownTime`.
     pub damage_cooldown: i32,
     /// `lastHurt`.
@@ -363,6 +365,7 @@ impl Default for Survival {
             fire_ticks: 0,
             fall_distance: 0.0,
             hurt_time: 0,
+            arrows: crate::mob::projectile::StuckArrows::default(),
             damage_cooldown: 0,
             last_hurt: 0.0,
             death_time: 0,
@@ -876,8 +879,18 @@ fn check_totem(
         .advancements
         .trigger(crate::advancements::trigger::Event::Item(
             crate::advancements::trigger::TriggerKind::USED_TOTEM,
-            used,
+            used.clone(),
         ));
+    // `causeUseVibration(ITEM_INTERACT_FINISH)`.
+    if crate::consumable::use_vibrations(&used) {
+        let e = entity.as_ref();
+        crate::survival::game_event(
+            env.out,
+            crate::level::game_event::events().item_interact_finish,
+            e.pos(),
+            Some(e.id()),
+        );
+    }
     set_health(entity, &mut player.survival, 1.0);
     // `ApplyStatusEffectsConsumeEffect`: one roll of the player's random per entry.
     let rolls: Vec<f32> = effects
@@ -1089,6 +1102,12 @@ pub fn hurt_with(
     let (blocked_amount, blocker) = apply_item_blocking(entity, player, env, &source, damage);
     damage -= blocked_amount;
     let blocked = blocked_amount > 0.0;
+    // `#damages_helmet` (falling anvils, blocks, stalactites) with a helmet on: `hurtHelmet`
+    // (`doHurtEquipment(HEAD)`) and three quarters of the damage.
+    if types.is(kind, tag::DAMAGES_HELMET) && !player.inventory.get(39).is_empty() {
+        hurt_armor(player, env, &source, damage, 39..40);
+        damage *= 0.75;
+    }
     if !damage.is_finite() {
         damage = f32::MAX;
     }
@@ -1307,7 +1326,7 @@ fn actually_hurt(
     let mut damage = damage;
     if !types.is(kind, tag::BYPASSES_ARMOR) {
         // `hurtArmor`, then `getDamageAfterArmorAbsorb` with the equipment's armour.
-        hurt_armor(player, env, &source, damage);
+        hurt_armor(player, env, &source, damage, 36..40);
         let (armor, toughness) = armor_values(player);
         damage = combat::damage_after_absorb_with(damage, armor, toughness, armor_effectiveness);
     }
@@ -1390,13 +1409,19 @@ pub fn armor_values(player: &PlayerData) -> (f32, f32) {
 }
 
 /// `hurtArmor` → `doHurtEquipment`: each armour piece loses `max(1, damage / 4)` durability.
-fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource, damage: f32) {
+fn hurt_armor(
+    player: &mut PlayerData,
+    env: &mut Env<'_>,
+    source: &DamageSource,
+    damage: f32,
+    slots: std::ops::Range<usize>,
+) {
     if damage <= 0.0 || player.game_mode == GameMode::Creative {
         return;
     }
     #[allow(clippy::cast_possible_truncation)]
     let amount = (damage / 4.0).max(1.0) as i32;
-    for index in 36..40 {
+    for index in slots {
         let unbreaking = crate::player::play::game_data().map_or(0, |d| {
             d.enchantment_level(player.inventory.get(index), "minecraft:unbreaking")
         });
@@ -1407,7 +1432,7 @@ fn hurt_armor(player: &mut PlayerData, env: &mut Env<'_>, source: &DamageSource,
         // `canBeHurtBy` the source (`damage_resistant`, e.g. netherite against fire).
         if stack.is_empty()
             || !crate::item::is_damageable(stack)
-            || !crate::item::item_id(stack).info().equip_damage_on_hurt
+            || !crate::item::equippable(stack).is_some_and(|e| e.damage_on_hurt)
             || !crate::item::can_be_hurt_by(stack, env.types, source.kind)
         {
             continue;
@@ -2114,6 +2139,9 @@ pub fn base_tick_after_portal(
         if s.hurt_time > 0 {
             s.hurt_time -= 1;
         }
+        if s.arrows.tick() {
+            entity.mark_data_dirty();
+        }
     }
     if player.survival.is_dead_or_dying() {
         // `tickDeath`.
@@ -2121,6 +2149,14 @@ pub fn base_tick_after_portal(
         s.death_time += 1;
         if s.death_time >= 20 && !s.removed {
             s.removed = true;
+            // `remove(KILLED)` → `triggerOnDeathMobEffects`.
+            if !s.effects.is_empty() {
+                let cramming = env
+                    .rules
+                    .get(crate::survival::rules::Rule::MAX_ENTITY_CRAMMING);
+                s.world_actions
+                    .push(crate::mob::WorldAction::PlayerDeathEffects(id, cramming));
+            }
             env.out.push(Effect::Tracking {
                 entity: id,
                 with_self: true,
@@ -2184,8 +2220,14 @@ pub fn do_tick_ai(
     }
     // `Player.aiStep`: peaceful regeneration (`ServerPlayer.tickRegeneration`).
     if env.difficulty == Difficulty::Peaceful && env.rules.bool(Rule::NATURAL_HEALTH_REGENERATION) {
-        if player.survival.tick_count % 20 == 0 && player.survival.is_hurt() {
-            heal(entity, player, 1.0);
+        if player.survival.tick_count % 20 == 0 {
+            if player.survival.is_hurt() {
+                heal(entity, player, 1.0);
+            }
+            let food = &mut player.survival.food;
+            if food.saturation < 20.0 {
+                food.saturation += 1.0;
+            }
         }
         let s = &mut player.survival;
         if s.food.needs_food() && s.tick_count % 10 == 0 {
@@ -2599,6 +2641,10 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
     crate::survival::inside::finish(&mut path, pos, pos);
     let mut honey = Vec::new();
     let mut bubbles = Vec::new();
+    // `Player.onInsideBlock`: `enter_block` for every block the box is inside on its way.
+    let enter_block = crate::advancements::trigger::TriggerKind::ENTER_BLOCK;
+    let listens = player.advancements.listens(enter_block);
+    let mut entered = Vec::new();
     let inside = blocks::inside_blocks(
         env.blocks,
         env.facts,
@@ -2606,6 +2652,9 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
         player.survival.fall_distance > 2.5,
         &path,
         |cell| {
+            if listens && cell.in_block {
+                entered.push(cell.state);
+            }
             if cell.state.block() == vanillite_data::block::ids::HONEY_BLOCK {
                 honey.push((cell.pos, cell.state));
             } else if cell.state.block() == vanillite_data::block::ids::BUBBLE_COLUMN
@@ -2632,6 +2681,11 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
                 crate::advancements::tracking::reset_fall_distance(player);
             }
         }
+    }
+    for state in entered {
+        player
+            .advancements
+            .trigger(crate::advancements::trigger::Event::EnterBlock(state));
     }
     path.clear();
     player.connection.movement.path = path;
@@ -2710,14 +2764,14 @@ fn apply_block_effects(entity: &mut EntityMut<'_>, player: &mut PlayerData, env:
                 s.fire_ticks += env.random.next_int_between(1, 3);
             }
             if s.fire_ticks >= 0 {
-                ignite_for_ticks(s, 160);
+                ignite_for_ticks(player, 160);
             }
             let source = DamageSource::of(env.types.in_fire);
             hurt(entity, player, env, source, damage);
         }
         if step.lava_blocks > 0 && !player.survival.is_dead_or_dying() {
             // `lavaIgnite`, then `lavaHurt`.
-            ignite_for_ticks(&mut player.survival, 300);
+            ignite_for_ticks(player, 300);
             let source = DamageSource::of(env.types.lava);
             if hurt(entity, player, env, source, 4.0) {
                 let pitch = 2.0 + env.random.next_float() * 0.4;
@@ -2822,10 +2876,16 @@ fn tick_freezing(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mut 
 }
 
 /// `igniteForTicks`.
-fn ignite_for_ticks(s: &mut Survival, ticks: i32) {
+fn ignite_for_ticks(player: &mut PlayerData, ticks: i32) {
+    let burning =
+        crate::player::play::equipment_attribute(&player.inventory, "minecraft:burning_time", 1.0);
+    let ticks = crate::mob::attack::burning_ticks(ticks, burning);
+    let s = &mut player.survival;
     if s.fire_ticks < ticks {
         s.fire_ticks = ticks;
     }
+    // `clearFreeze`.
+    s.ticks_frozen = 0;
 }
 
 /// `Entity.thunderHit`: one more fire tick, eight seconds of fire when that reached zero, and
@@ -2834,7 +2894,7 @@ pub fn thunder_hit(entity: &mut EntityMut<'_>, player: &mut PlayerData, env: &mu
     let s = &mut player.survival;
     s.fire_ticks = s.fire_ticks.saturating_add(1);
     if s.fire_ticks == 0 {
-        ignite_for_ticks(s, 160);
+        ignite_for_ticks(player, 160);
     }
     let source = DamageSource::of(env.types.lightning_bolt);
     hurt(entity, player, env, source, 5.0);

@@ -168,7 +168,7 @@ fn is_water_potion(stack: &ItemStack) -> bool {
 fn water_potion() -> ItemStack {
     let mut stack = ItemStack::new(items::POTION.0, 1);
     if let Some(water) = vanillite_data::registry::POTION.id("minecraft:water") {
-        stack.patch_mut().set(
+        stack.set_component(
             components::POTION_CONTENTS,
             crate::recipe::potion_contents(water),
         );
@@ -294,7 +294,7 @@ fn banner(
     match rest {
         // The banner's default: no layers.
         None => cleaned.patch_mut().unset(components::BANNER_PATTERNS),
-        Some(bytes) => cleaned.patch_mut().set(components::BANNER_PATTERNS, bytes),
+        Some(bytes) => cleaned.set_component(components::BANNER_PATTERNS, bytes),
     }
     filled_result(level, ctx, stack, cleaned, false);
     level.award_stat(ctx.player, Stat::custom_named("minecraft:clean_banner"), 1);

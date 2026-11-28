@@ -175,6 +175,51 @@ impl TrialConfig {
         }
     }
 
+    /// `TrialSpawnerConfig.CODEC` to NBT (every field written).
+    pub fn to_nbt(&self) -> Compound {
+        let mut c = Compound::new();
+        c.insert("spawn_range", self.spawn_range);
+        c.insert("total_mobs", self.total_mobs);
+        c.insert("simultaneous_mobs", self.simultaneous_mobs);
+        c.insert(
+            "total_mobs_added_per_player",
+            self.total_mobs_added_per_player,
+        );
+        c.insert(
+            "simultaneous_mobs_added_per_player",
+            self.simultaneous_mobs_added_per_player,
+        );
+        c.insert("ticks_between_spawn", self.ticks_between_spawn);
+        c.insert("spawn_potentials", self.spawn_potentials.to_nbt());
+        let loot: Vec<Tag> = self
+            .loot_tables_to_eject
+            .iter()
+            .map(|(id, weight)| {
+                let mut e = Compound::new();
+                e.insert("data", Tag::String(id.clone()));
+                e.insert("weight", *weight);
+                Tag::Compound(e)
+            })
+            .collect();
+        c.insert("loot_tables_to_eject", Tag::List(vanillite_nbt::List(loot)));
+        c.insert(
+            "items_to_drop_when_ominous",
+            Tag::String(self.items_to_drop_when_ominous.clone()),
+        );
+        c
+    }
+
+    /// `withSpawning(type)`: only `type` spawns (`SpawnData` with just the entity id).
+    #[must_use]
+    pub fn with_spawning(mut self, entity: &str) -> TrialConfig {
+        let mut e = Compound::new();
+        e.insert("id", Tag::String(entity.to_owned()));
+        let mut data = Compound::new();
+        data.insert("entity", e);
+        self.spawn_potentials = SpawnPotentials(vec![(SpawnData(data), 1)]);
+        self
+    }
+
     /// A registry entry (`data/<ns>/trial_spawner/**.json`).
     pub fn from_json(json: &Value) -> TrialConfig {
         match json_to_nbt(json) {
@@ -464,6 +509,17 @@ impl TrialSpawner {
         self.total_mobs_spawned = 0;
         self.next_mob_spawns_at = 0;
         self.cooldown_ends_at = 0;
+    }
+
+    /// `TrialSpawner.overrideEntityToSpawn(type)` without the state change: both
+    /// configurations spawn only `entity`, and the data is reset.
+    pub fn override_entity(&mut self, entity: &str) {
+        self.reset();
+        for config in [&mut self.normal_config, &mut self.ominous_config] {
+            let c = config.get().with_spawning(entity);
+            let nbt = c.to_nbt();
+            *config = ConfigRef::Inline(Box::new(c), nbt);
+        }
     }
 
     /// `reset`.
@@ -935,6 +991,16 @@ fn eject_reward(level: &mut Level, pos: BlockPos, table: &str) {
         spawn_item_up(level, item, 2, at);
     }
     level.level_event(None, 3014, pos, 0);
+}
+
+/// `TrialSpawnerBlockEntity.setEntityId` (a spawn egg used on it): the override, then
+/// `setState(INACTIVE)`.
+pub fn set_entity_id(level: &mut Level, pos: BlockPos, entity: &str) {
+    let Some(s) = spawner_mut(level, pos) else {
+        return;
+    };
+    s.override_entity(entity);
+    set_state(level, pos, TrialState::Inactive);
 }
 
 /// `setState`.

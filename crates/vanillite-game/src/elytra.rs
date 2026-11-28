@@ -18,23 +18,13 @@ use crate::survival::player::Env;
 
 /// Whether the stack has the `glider` component (elytras).
 pub fn is_glider(stack: &ItemStack) -> bool {
-    if stack.is_empty() {
-        return false;
-    }
-    let Some(id) = vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:glider") else {
-        return false;
-    };
-    match stack.patch() {
-        Some(p) if p.get(id).is_some() => true,
-        Some(p) if p.is_removed(id) => false,
-        _ => item::item_id(stack).name() == "minecraft:elytra",
-    }
+    item::has_glider(stack)
 }
 
 /// `canGlideUsing(stack, slot)`: a glider worn in its slot that the next damage does not break.
 pub fn can_glide_using(stack: &ItemStack, slot: EquipmentSlot) -> bool {
     is_glider(stack)
-        && item::equipment_slot(stack) == slot
+        && item::equippable_slot(stack) == Some(slot)
         && !(item::is_damageable(stack) && item::damage(stack) >= item::max_damage(stack) - 1)
 }
 
@@ -105,12 +95,24 @@ pub fn update_fall_flying(entity: &mut EntityMut<'_>, player: &mut PlayerData, e
     if ticks % 10 != 0 {
         return;
     }
-    if (ticks / 10) % 2 == 0
-        && let Some(&slot) = glider_slots(player).first()
-    {
+    if (ticks / 10) % 2 == 0 {
         // `Util.getRandom(slots, random)` draws from the player's own random.
-        hurt_slot(entity, player, env, slot);
+        let slots = glider_slots(player);
+        if !slots.is_empty() {
+            let n = i32::try_from(slots.len()).unwrap_or(i32::MAX);
+            let i = player.survival.random.next_int_bounded(n);
+            if let Some(&slot) = slots.get(usize::try_from(i).unwrap_or(0)) {
+                hurt_slot(entity, player, env, slot);
+            }
+        }
     }
+    let e = entity.as_ref();
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().elytra_glide,
+        e.pos(),
+        Some(e.id()),
+    );
 }
 
 /// `ItemStack.hurtAndBreak(1, player, slot)` of a worn glider: Unbreaking may save the point
@@ -260,12 +262,8 @@ pub fn update_player_pose(entity: &mut EntityMut<'_>, spin_attack: bool) {
 
 /// The equipment slot a right click puts the stack in (`equippable` with `swappable`).
 pub fn swappable_slot(stack: &ItemStack) -> Option<EquipmentSlot> {
-    if stack.is_empty() {
-        return None;
-    }
-    let info = item::item_id(stack).info();
-    let slot = EquipmentSlot::from_ordinal(info.equip_slot)?;
-    (slot.is_armor() && info.equip_swappable).then_some(slot)
+    let e = item::equippable(stack)?;
+    (e.slot.is_armor() && e.swappable).then_some(e.slot)
 }
 
 /// `Equippable.swapWithEquipmentSlot`: the held item and the worn one change places (a stack

@@ -37,8 +37,10 @@ enum Entry {
 
 /// Bedrock's hard-coded crafting and cartography recipes (multi recipes, by their fixed UUIDs):
 /// the client shows their results only when the server lists them. The Java server's special
-/// recipes decide the real result.
-const MULTI_RECIPES: [u128; 10] = [
+/// recipes decide the real result. The list is the one of the vanilla Bedrock server (the
+/// public `special_hardcoded` recipe list); the four without a note cover the remaining special
+/// recipes (banners, firework stars, dyeing, shield decoration).
+const MULTI_RECIPES: [u128; 14] = [
     0xd1ca6b84_338e_4f2f_9c6b_76cc8b4bd98d, // book cloning
     0x00000000_0000_0000_0000_000000000001, // repairing in the grid
     0xd392b075_4ba1_40ae_8789_af868d56f6ce, // map extending
@@ -49,6 +51,10 @@ const MULTI_RECIPES: [u128; 10] = [
     0x442d85ed_8272_4543_a6f1_418f90ded05d, // cartography: map cloning
     0x98c84b38_1085_46bd_b1ce_dd38c159e6cc, // cartography: map upgrading
     0x602234e4_cac1_4353_8bb7_b1ebff70024b, // cartography: map locking
+    0x00000000_0000_0000_0000_0000000000c8,
+    0xaecd2294_4b94_434b_8667_4499bb2c9327,
+    0xb5c5d105_75a2_4076_af2b_923ea2bf4bf0,
+    0xd81aaeaf_e172_4440_9225_868df030d27b,
 ];
 
 /// One stonecutter recipe of `update_recipes`: the items it takes and its result.

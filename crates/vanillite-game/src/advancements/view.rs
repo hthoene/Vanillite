@@ -108,8 +108,18 @@ fn has_variant_component(kind: Kind) -> bool {
     )
 }
 
+/// The view of a mob's target (without its own target, vehicle or passengers).
+fn target_view(ents: &Entities, id: EntityId) -> Option<Box<EntityView<'static>>> {
+    base_inner(ents, id, false).map(Box::new)
+}
+
 /// The view of one entity without vehicle and passengers.
 fn base(ents: &Entities, id: EntityId) -> Option<EntityView<'static>> {
+    base_inner(ents, id, true)
+}
+
+/// [`base`]; `with_target` follows a mob's target one level.
+fn base_inner(ents: &Entities, id: EntityId, with_target: bool) -> Option<EntityView<'static>> {
     let e = ents.store.get(id)?;
     let flags = e.flags();
     let mut v = EntityView::new(e.kind().name(), e.pos());
@@ -122,8 +132,31 @@ fn base(ents: &Entities, id: EntityId) -> Option<EntityView<'static>> {
     if let Some(bolt) = ents.bolt(id) {
         v.lightning_fires = Some(bolt.blocks_set_on_fire);
     }
+    let m = crate::spear::known_movement(ents, id);
+    v.movement = vanillite_base::Vec3::new(m.x * 20.0, m.y * 20.0, m.z * 20.0);
+    if let Some(b) = ents.missile(id).and_then(|d| d.bobber.as_deref()) {
+        v.open_water = Some(b.open_water);
+    }
     if let Some(m) = ents.mob(id) {
         v.baby = m.baby;
+        v.fall_distance = m.fall_distance;
+        v.tick_count = m.tick_count;
+        if m.kind == Kind::Sheep {
+            v.sheared = Some(m.sheared);
+        }
+        if matches!(m.kind, Kind::Slime | Kind::MagmaCube | Kind::SulfurCube) {
+            v.cube_size = Some(crate::mob::fam::undead::cubes::size(m));
+        }
+        if m.kind.is_raider() {
+            use crate::mob::fam::illager::{raider, st};
+            let s = st(m);
+            let captain =
+                s.patrol_leader && raider::is_ominous_banner(m.equipment.get(EquipmentSlot::Head));
+            v.raider = Some((s.raid.is_some(), captain));
+        }
+        if with_target {
+            v.target = m.target.and_then(|t| target_view(ents, t));
+        }
         v.on_fire = m.is_on_fire();
         for (slot, s) in v.equipment.iter_mut().zip(VIEW_SLOTS) {
             *slot = Cow::Owned(m.equipment.get(s).clone());
@@ -158,6 +191,8 @@ fn base(ents: &Entities, id: EntityId) -> Option<EntityView<'static>> {
         ];
         v.on_fire = p.survival.fire_ticks > 0;
         v.in_water = p.survival.fluids.in_water();
+        v.fall_distance = p.survival.fall_distance;
+        v.tick_count = p.survival.tick_count;
         v.player = Some(PlayerFacts {
             game_mode: p.game_mode,
             level: p.survival.xp.level,
@@ -309,6 +344,9 @@ pub fn apply_damage(
             Event::ItemDurabilityChanged(stack.clone(), new_damage)
         });
     }
+    // `applyDamage`: the damage is set before a broken stack shrinks, so the rest of a stack
+    // of several keeps it.
+    crate::item::set_damage(stack, new_damage);
     if new_damage >= crate::item::max_damage(stack) {
         let item = stack.item;
         stack.shrink(1);
@@ -320,7 +358,6 @@ pub fn apply_damage(
         }
         true
     } else {
-        crate::item::set_damage(stack, new_damage);
         false
     }
 }

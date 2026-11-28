@@ -144,13 +144,27 @@ pub fn testserver(root: &Path, args: &[&str]) -> Result<()> {
             let file =
                 std::fs::File::open(&script).map_err(|e| format!("{}: {e}", script.display()))?;
             let role = if host == BENCH_HOST { "bench" } else { "test" };
+            // The nightly session replay on vanillite-test2 copies the recordings of
+            // vanillite-test with its own key, read-only (#257): test2 learns the address of
+            // vanillite-test, vanillite-test the key of test2.
+            let recordings = if host == HEAVY_HOST {
+                ssh_output(&["-G", DEFAULT_HOST])
+                    .lines()
+                    .find_map(|l| l.strip_prefix("hostname ").map(str::to_owned))
+                    .map(|h| format!("VANILLITE_RECORDINGS_HOST={h}"))
+            } else if role == "test" {
+                let key = ssh_output(&[HEAVY_HOST, "cat /opt/vanillite-work/.ssh/recordings.pub"]);
+                let key = key.trim();
+                (key.starts_with("ssh-") && !key.contains('\''))
+                    .then(|| format!("VANILLITE_RECORDINGS_READER='{key}'"))
+            } else {
+                None
+            };
             run(Command::new("ssh")
-                .args([
-                    host.as_str(),
-                    &format!("VANILLITE_TESTSERVER_ROLE={role}"),
-                    "bash",
-                    "-s",
-                ])
+                .arg(host.as_str())
+                .arg(format!("VANILLITE_TESTSERVER_ROLE={role}"))
+                .args(recordings)
+                .args(["bash", "-s"])
                 .stdin(Stdio::from(file)))
         }
         ["status"] if host == BENCH_HOST => ssh(
@@ -402,4 +416,16 @@ fn parse_port(arg: Option<&str>) -> Result<u16> {
             PORTS.end()
         ))
     }
+}
+
+/// The standard output of `ssh <args>`, empty when it fails.
+fn ssh_output(args: &[&str]) -> String {
+    Command::new("ssh")
+        .args(args)
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }

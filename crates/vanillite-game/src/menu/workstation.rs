@@ -94,7 +94,7 @@ pub fn set_crafting_enchantments(stack: &mut ItemStack, list: &[(u32, i32)]) {
     if list.is_empty() {
         stack.patch_mut().unset(id);
     } else {
-        stack.patch_mut().set(id, enchant::write(list));
+        stack.set_component(id, enchant::write(list));
     }
 }
 
@@ -112,9 +112,7 @@ fn set_repair_cost(stack: &mut ItemStack, cost: i32) {
     if cost == 0 {
         stack.patch_mut().unset(components::REPAIR_COST);
     } else {
-        stack
-            .patch_mut()
-            .set(components::REPAIR_COST, enchant::write_int(cost));
+        stack.set_component(components::REPAIR_COST, enchant::write_int(cost));
     }
 }
 
@@ -133,9 +131,7 @@ fn set_custom_name(stack: &mut ItemStack, name: Option<&str>) {
         Some(name) => {
             let mut out = Vec::new();
             Component::text(name).encode(&mut out);
-            stack
-                .patch_mut()
-                .set(components::CUSTOM_NAME, out.into_boxed_slice());
+            stack.set_component(components::CUSTOM_NAME, out.into_boxed_slice());
         }
         None => stack.patch_mut().unset(components::CUSTOM_NAME),
     }
@@ -770,8 +766,7 @@ fn grindstone_result(input: &ItemStack, additional: &ItemStack) -> ItemStack {
     let mut out = input.with_count(count);
     if item::is_damageable(&out) {
         if durability != item::max_damage(&out) {
-            out.patch_mut()
-                .set(components::MAX_DAMAGE, enchant::write_int(durability));
+            out.set_component(components::MAX_DAMAGE, enchant::write_int(durability));
         }
         item::set_damage(&mut out, (durability - remaining).max(0));
     }
@@ -913,8 +908,7 @@ fn smithing_result(
                         return ItemStack::EMPTY;
                     }
                     let mut out = base.with_count(1);
-                    out.patch_mut()
-                        .set(components::TRIM, value.into_boxed_slice());
+                    out.set_component(components::TRIM, value.into_boxed_slice());
                     return out;
                 }
             }

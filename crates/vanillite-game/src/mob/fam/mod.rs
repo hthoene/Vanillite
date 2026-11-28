@@ -1082,7 +1082,7 @@ pub fn reload_brain(m: &mut MobData, tag: &Compound) {
 pub(crate) fn bucket_default(m: &MobData, item: &str) -> (ItemStack, Compound) {
     let mut stack = super::equipment::stack(item);
     if let Some(name) = m.custom_name.as_deref() {
-        stack.patch_mut().set(
+        stack.set_component(
             vanillite_protocol::components::ids::CUSTOM_NAME,
             name.into(),
         );
@@ -1107,7 +1107,7 @@ pub(crate) fn set_bucket_data(stack: &mut ItemStack, data: Compound) {
         vanillite_data::registry::DATA_COMPONENT_TYPE.id("minecraft:bucket_entity_data"),
         crate::mob::nbt::tag_component(&vanillite_nbt::Tag::Compound(data)),
     ) {
-        stack.patch_mut().set(id, bytes);
+        stack.set_component(id, bytes);
     }
 }
 

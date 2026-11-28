@@ -1150,7 +1150,9 @@ fn charge_tick(t: &mut Tick<'_, '_>, velocity: Vec3, b: &mut Behavior, now: i64)
     let damage = t.mob_ref().attrs.attack_damage;
     let source = crate::mob::combat::entity_source(t.ents, t.env.types.mob_attack, me, me);
     #[allow(clippy::cast_possible_truncation)]
-    crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, victim, source, damage as f32);
+    if crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, victim, source, damage as f32) {
+        crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, victim, &source);
+    }
     // `dealKnockBack`: the speed effects change the push.
     let effects = &t.mob_ref().effects;
     let level = |e| effects.amplifier(e).map_or(0, |a| a + 1);

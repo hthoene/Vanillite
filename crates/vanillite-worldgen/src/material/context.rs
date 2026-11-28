@@ -117,8 +117,21 @@ impl<'a> MaterialRuleContext<'a> {
                 let values = volume.filter(|_| !absent).map(|volume| {
                     let mut density = vec![0.0; volume.len()];
                     program.sample_volume(samplers, fns.density, &mut density, &volume);
+                    // The richness is only read where the density is above zero (or NaN, which
+                    // passes that test), and nothing else reads its cache cells.
+                    let mask: Vec<bool> = density.iter().map(|&d| d > 0.0 || d.is_nan()).collect();
                     let mut richness = vec![0.0; volume.len()];
-                    program.sample_volume(samplers, fns.richness, &mut richness, &volume);
+                    if !system.ore_cells_private {
+                        program.sample_volume(samplers, fns.richness, &mut richness, &volume);
+                    } else if mask.contains(&true) {
+                        program.sample_volume_masked(
+                            samplers,
+                            fns.richness,
+                            &mut richness,
+                            &volume,
+                            &mask,
+                        );
+                    }
                     [density, richness]
                 });
                 OreBuffers {

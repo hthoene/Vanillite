@@ -127,6 +127,9 @@ pub struct Entities {
     /// Plugins' persistent data (`BukkitValues`, as Paper saves it) of the entities that have
     /// any.
     persistent: std::collections::HashMap<EntityId, vanillite_nbt::Compound>,
+    /// `DATA_ARROW_COUNT_ID` and `removeArrowTime` of the mobs with arrows stuck in them
+    /// (players keep theirs in their survival state).
+    pub stuck_arrows: FxHashMap<EntityId, crate::mob::projectile::StuckArrows>,
     /// Rare `Entity` and `Mob` NBT state of the entities that have any.
     extras: std::collections::HashMap<EntityId, EntityExtra>,
     /// Area effect cloud kind data.
@@ -672,6 +675,19 @@ impl Entities {
         Some(self.persistent.entry(id).or_default())
     }
 
+    /// `Entity.customData` of an entity (NBT `data`), if it has any.
+    pub fn custom_data(&self, id: EntityId) -> Option<&vanillite_nbt::Compound> {
+        self.extras.get(&id).and_then(|x| x.data.as_ref())
+    }
+
+    /// Replaces `Entity.customData` of an entity (loading, `custom_data` of the item it was
+    /// made from).
+    pub fn set_custom_data(&mut self, id: EntityId, data: Option<vanillite_nbt::Compound>) {
+        let mut extra = self.extra(id).cloned().unwrap_or_default();
+        extra.data = data.filter(|d| !d.is_empty());
+        self.set_extra(id, extra);
+    }
+
     /// Replaces the plugins' persistent data of an entity (loading, travelling).
     pub fn set_persistent_data(&mut self, id: EntityId, data: Option<vanillite_nbt::Compound>) {
         match data.filter(|d| !d.is_empty()) {
@@ -841,6 +857,9 @@ impl Entities {
         self.tags.remove(&id);
         self.persistent.remove(&id);
         self.extras.remove(&id);
+        if !self.stuck_arrows.is_empty() {
+            self.stuck_arrows.remove(&id);
+        }
         if !self.plugin_goals.is_empty() {
             // Dropping them frees the plugins' data.
             self.plugin_goals.remove_mob(id);
@@ -873,6 +892,9 @@ impl Entities {
         self.tags.remove(&id);
         self.persistent.remove(&id);
         self.extras.remove(&id);
+        if !self.stuck_arrows.is_empty() {
+            self.stuck_arrows.remove(&id);
+        }
         if self.by_network_id.get(&removed.network_id.0) == Some(&id) {
             self.by_network_id.remove(&removed.network_id.0);
         }

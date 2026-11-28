@@ -86,7 +86,7 @@ impl VillagerTrade {
             .unwrap_or(1);
         let mut stack = ItemStack::new(gives_item, count);
         for (t, value) in components(gives.get("components"))? {
-            stack.patch_mut().set(t, value);
+            stack.set_component(t, value);
         }
         let int = |key: &str, default: i32| -> Result<LootInt, String> {
             o.get(key)

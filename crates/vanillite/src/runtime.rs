@@ -17,6 +17,7 @@ pub enum Outcome {
     /// Nothing to say.
     None,
     /// An info line.
+    #[cfg_attr(all(target_os = "linux", target_env = "musl"), allow(dead_code))]
     Info(String),
     /// A warning: the server starts without plugins.
     #[cfg_attr(not(all(target_os = "linux", target_env = "musl")), allow(dead_code))]
@@ -84,13 +85,23 @@ pub fn dispatch(dir: &Path, version: &str) -> Outcome {
     // Both builds must come from the same commit.
     let gnu_version = std::process::Command::new(&gnu).arg("version").output();
     match gnu_version {
+        // The first line of `vanillite version` names the build.
         Ok(out)
-            if out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == version => {}
+            if out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .map(str::trim)
+                    == Some(version) => {}
         Ok(out) => {
             return without_plugins(format!(
                 "{} is another build ({:?}, this one is {version:?})",
                 gnu.display(),
-                String::from_utf8_lossy(&out.stdout).trim()
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
             ));
         }
         Err(e) => return without_plugins(format!("cannot start {}: {e}", gnu.display())),

@@ -876,6 +876,10 @@ pub fn hurt_boat(
         e.set_flags(EntityFlags::HURT_MARKED, true);
     }
     if creative || destroy {
+        // `AbstractBoat.remove(KILLED or DISCARDED)`: the lead drops as an item.
+        if crate::mob::tame::leash_holder(ents, id).is_some() {
+            crate::mob::tame::drop_leash(ents, env, id, true);
+        }
         crate::riding::eject_passengers(ents, env, id);
         if let Some(mut e) = ents.store.get_mut(id) {
             e.set_flags(EntityFlags::HURT_MARKED, false);
@@ -888,9 +892,7 @@ pub fn hurt_boat(
         let stack = drop.map(|item| {
             let mut stack = ItemStack::new(item, 1);
             if let Some(n) = name {
-                stack
-                    .patch_mut()
-                    .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
+                stack.set_component(vanillite_protocol::components::ids::CUSTOM_NAME, n);
             }
             stack
         });
@@ -922,9 +924,7 @@ pub fn hurt_boat(
     {
         let mut stack = ItemStack::new(item, 1);
         if let Some(n) = name {
-            stack
-                .patch_mut()
-                .set(vanillite_protocol::components::ids::CUSTOM_NAME, n);
+            stack.set_component(vanillite_protocol::components::ids::CUSTOM_NAME, n);
         }
         let (uuid, y_rot, velocity, item_random) = crate::mob::new_item_entity();
         env.out.push(Effect::DropItem {
@@ -969,17 +969,53 @@ pub fn passenger_offset(
     Vec3::new(z * sin, b.kind.ride_height(), z * cos)
 }
 
-/// `BoatItem.use`: places a boat where the player looks at water or a block, facing like the
-/// player. Returns whether the item was used (the stack shrinks unless `infinite`).
+/// `CAN_BE_PICKED` of the entities that keep a boat from being placed: living entities that
+/// are not spectators, boats, minecarts, end crystals and the decorations.
+fn can_be_picked(ents: &Entities, id: EntityId) -> bool {
+    if let Some(p) = ents.player(id) {
+        return p.game_mode != vanillite_config::GameMode::Spectator;
+    }
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    ents.mob(id).is_some()
+        || BoatKind::of(kind).is_some()
+        || crate::minecart::MinecartKind::of(kind).is_some()
+        || kind == vanillite_data::entity::ids::END_CRYSTAL
+        || crate::decoration::pickable(ents, id)
+}
+
+/// `AbstractBoat.canCollideWith(other)` of a new boat: what it collides with
+/// (`canBeCollidedWith`: boats, minecarts, shulkers; or `isPushable`: living entities that are
+/// not spectators).
+fn blocks_boat(ents: &Entities, id: EntityId) -> bool {
+    if let Some(p) = ents.player(id) {
+        return p.game_mode != vanillite_config::GameMode::Spectator
+            && !p.survival.is_dead_or_dying();
+    }
+    let Some(kind) = ents.store.get(id).map(|e| e.kind()) else {
+        return false;
+    };
+    if let Some(m) = ents.mob(id) {
+        return m.is_alive()
+            && (m.kind == crate::mob::Kind::Shulker || crate::decoration::stand::pushable(m));
+    }
+    BoatKind::of(kind).is_some() || crate::minecart::MinecartKind::of(kind).is_some()
+}
+
+/// `BoatItem.use`: places a boat where the player looks at a block (outline shapes) or fluid
+/// within its block interaction range, facing like the player, unless a pickable entity holds
+/// the player's eyes or the boat would collide with blocks, entities or the world border.
+/// Returns whether the item was used (the stack shrinks unless `infinite`).
 #[allow(clippy::too_many_arguments)]
 pub fn use_boat_item(
     level: &Level,
     ents: &mut Entities,
+    env: &mut Env<'_>,
     network_ids: &NetworkIds,
     player: EntityId,
     stack: &mut ItemStack,
     infinite: bool,
-    reach: f64,
 ) -> bool {
     let item_name = crate::item::item_id(stack).name();
     let Some(kind) = vanillite_data::registry::ENTITY_TYPE
@@ -989,18 +1025,22 @@ pub fn use_boat_item(
     else {
         return false;
     };
+    let reach = crate::mob::attack::player_attribute(
+        ents,
+        player,
+        "minecraft:block_interaction_range",
+        4.5,
+        0.0,
+        64.0,
+    );
     let Some(e) = ents.store.get(player) else {
         return false;
     };
     let rot = e.rot();
     let eye = e.pos() + Vec3::new(0.0, f64::from(e.kind().info().eye_height), 0.0);
-    let (yr, xr) = (
-        f64::from(rot.y_rot) * std::f64::consts::PI / 180.0,
-        f64::from(rot.x_rot) * std::f64::consts::PI / 180.0,
-    );
-    let look = Vec3::new(-yr.sin() * xr.cos(), -xr.sin(), yr.cos() * xr.cos());
+    let look = crate::mob::missile::direction_from_rotation(rot.x_rot, rot.y_rot, 0.0);
     let to = eye + look * reach;
-    let Some((_, hit)) = physics::clip_fluids(level, eye, to) else {
+    let Some((_, hit)) = physics::clip_outline_fluids(level, eye, to) else {
         return false;
     };
     // A pickable entity around the player's eyes blocks it.
@@ -1010,9 +1050,8 @@ pub fn use_boat_item(
         .inflate(1.0, 1.0, 1.0);
     let mut blocked = false;
     ents.store.for_each_in(&view, false, |o| {
-        let pickable = ents.mob(o).is_some() || ents.boat(o).is_some();
         if o != player
-            && pickable
+            && can_be_picked(ents, o)
             && ents
                 .store
                 .get(o)
@@ -1038,6 +1077,24 @@ pub fn use_boat_item(
     if !physics::no_collision(&level.view(), &boat_box, &mut scratch) {
         return false;
     }
+    // `Level.noCollision(boat, box)`: entities it collides with and the world border too.
+    let mut collides = false;
+    ents.store
+        .for_each_in(&boat_box.inflate(1.0e-7, 1.0e-7, 1.0e-7), false, |o| {
+            if blocks_boat(ents, o) {
+                collides = true;
+            }
+        });
+    if collides
+        || !level
+            .border
+            .is_within_bounds(boat_box.min_x, boat_box.min_z)
+        || !level
+            .border
+            .is_within_bounds(boat_box.max_x, boat_box.max_z)
+    {
+        return false;
+    }
     let mut data = BoatData::new(kind, crate::mob::new_entity_seed());
     data.custom_name = stack
         .component(vanillite_protocol::components::ids::CUSTOM_NAME)
@@ -1047,6 +1104,13 @@ pub fn use_boat_item(
     if !ents.spawned(id, vanillite_abi::spawn_reason::DEFAULT, 0) {
         return false;
     }
+    // `gameEvent(player, ENTITY_PLACE, hitLocation)`.
+    crate::survival::game_event(
+        env.out,
+        crate::level::game_event::events().entity_place,
+        hit,
+        Some(player),
+    );
     if !infinite {
         stack.shrink(1);
     }

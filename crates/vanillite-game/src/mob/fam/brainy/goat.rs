@@ -754,7 +754,9 @@ fn ram_tick(t: &mut Tick<'_, '_>, direction: Vec3) {
         // `noAggroMobAttack`.
         let kind = t.env.types.named("minecraft:mob_attack_no_aggro");
         let source = crate::mob::combat::entity_source(t.ents, kind, t.id, t.id);
-        crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage);
+        if crate::mob::combat::hurt(t.level, t.ents, t.env, t.cx, target, source, damage) {
+            crate::mob::attack::post_attack_effects(t.level, t.ents, t.env, t.cx, target, &source);
+        }
         if !t.exists() {
             return;
         }
@@ -1132,7 +1134,7 @@ fn create_horn(uuid: u128, screaming: bool) -> crate::item::ItemStack {
             &mut out,
             i32::try_from(id).unwrap_or(-1).wrapping_add(1),
         );
-        stack.patch_mut().set(
+        stack.set_component(
             vanillite_protocol::components::ids::INSTRUMENT,
             out.into_boxed_slice(),
         );

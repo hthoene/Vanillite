@@ -23,7 +23,8 @@ data/<palette version>/:
 - creative.bin: the body of `creative_content` (groups and items, Bedrock's creative order).
 - creative_java.bin: u32 count, then per creative item network id (1-based, in order): u16 Java
   item id, u8 kind and u8 length of the Java component data of variants (potions, tipped arrows,
-  enchanted books, fireworks, goat horns, ominous bottles; see `creative_extra`), the data.
+  enchanted books, fireworks, firework stars, goat horns, ominous bottles, suspicious stews,
+  banners; see `creative_extra`), the data.
 - pots.bin: u32 count, then per potted plant: u16 Java block state id of the pot, u16 length and
   the network NBT payload (a compound with name, states and version) of the plant's Bedrock block
   state.
@@ -293,8 +294,11 @@ def creative_extra(entry, damage, java_item):
     """The Java item and the component data of a creative item whose Bedrock metadata or NBT
     names a variant: (Java item id or None, (kind, data)). Kinds: 0 none; 1 potion (u8 Bedrock
     potion id); 2 stored enchantments (u8 count, then u8 Bedrock enchantment id + u8 level each);
-    3 firework flight (u8); 4 instrument (u8 Bedrock goat horn metadata); 5 ominous bottle
-    amplifier (u8)."""
+    3 firework flight (u8), then optionally the explosion count and explosions; 4 instrument (u8
+    Bedrock goat horn metadata); 5 ominous bottle amplifier (u8); 6 firework star (one
+    explosion); 7 suspicious stew (u8 Bedrock metadata); 8 the ominous banner. An explosion is
+    u8 shape, u8 flags (1 trail, 2 twinkle), u8 colour count and colours, u8 fade count and fades
+    (Bedrock dye indices)."""
     name = entry['id']
     if name in ('minecraft:potion', 'minecraft:splash_potion', 'minecraft:lingering_potion'):
         return java_item.get(name), (1, bytes([damage]))
@@ -304,6 +308,8 @@ def creative_extra(entry, damage, java_item):
         return java_item.get(name), (4, bytes([damage]))
     if name == 'minecraft:ominous_bottle':
         return java_item.get(name), (5, bytes([damage]))
+    if name == 'minecraft:suspicious_stew':
+        return java_item.get(name), (7, bytes([damage]))
     if not entry.get('nbt_b64'):
         return None, (0, b'')
     tag = LeReader(base64.b64decode(entry['nbt_b64'])).root()
@@ -316,10 +322,35 @@ def creative_extra(entry, damage, java_item):
     if name == 'minecraft:firework_rocket':
         fireworks = compound_get(tag, 'Fireworks', ('c', []))
         explosions = compound_get(fireworks, 'Explosions', ('list', 0, []))[2]
-        if explosions:
-            return None, (0, b'')
-        return java_item.get(name), (3, bytes([compound_get(fireworks, 'Flight', ('b', 1))[1]]))
+        flight = compound_get(fireworks, 'Flight', ('b', 1))[1]
+        if not explosions:
+            return java_item.get(name), (3, bytes([flight]))
+        data = bytes([flight, len(explosions)]) + b''.join(explosion(e) for e in explosions)
+        return java_item.get(name), (3, data)
+    if name == 'minecraft:firework_star':
+        return java_item.get(name), (6, explosion(compound_get(tag, 'FireworksItem', ('c', []))))
+    if name == 'minecraft:banner':
+        # Bedrock banner metadata is the dye index (black 0 ... white 15), Java ids run backwards.
+        java = java_item.get(f'minecraft:{JAVA_DYES[15 - damage]}_banner')
+        if compound_get(tag, 'Type', ('i', 0))[1] == 1:
+            return java, (8, b'')
+        return java, (0, b'')
     return None, (0, b'')
+
+
+JAVA_DYES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray',
+             'light_gray', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black']
+
+
+def explosion(e):
+    """A Bedrock firework explosion compound in the creative_java.bin form."""
+    def colours(key):
+        values = bytes(b & 0xff for b in compound_get(e, key, ('ba', b''))[1])
+        return bytes([len(values)]) + values
+    flags = (1 if compound_get(e, 'FireworkTrail', ('b', 0))[1] else 0) | \
+        (2 if compound_get(e, 'FireworkFlicker', ('b', 0))[1] else 0)
+    return bytes([compound_get(e, 'FireworkType', ('b', 0))[1], flags]) + \
+        colours('FireworkColor') + colours('FireworkFade')
 
 
 def write_release(root, mappings, resources, version, fallbacks, item_fallbacks, wet, pots):

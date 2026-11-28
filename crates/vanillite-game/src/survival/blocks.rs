@@ -55,6 +55,20 @@ mod special {
         [ids::FARMLAND, ids::SOUL_SAND, ids::DIRT_PATH, ids::MUD];
 }
 
+/// Blocks whose `isSuffocating` is `never` though they are in `#causes_suffocation` with a
+/// full cube: glass (plain, stained and tinted), leaves, mangrove roots, copper grates and the
+/// moving piston.
+pub fn never_suffocating(block: BlockId) -> bool {
+    let name = block.info().name;
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    matches!(
+        name,
+        "glass" | "tinted_glass" | "mangrove_roots" | "moving_piston"
+    ) || name.ends_with("_stained_glass")
+        || name.ends_with("_leaves")
+        || name.ends_with("copper_grate")
+}
+
 /// `Block.getBounceRestitution`: slime blocks, beds and shelf mushrooms bounce entities that
 /// land on them.
 pub fn bounce_restitution(block: BlockId) -> f32 {
@@ -179,7 +193,9 @@ impl BlockFacts {
         {
             return state.value("extended") == Some("false");
         }
-        Self::has(&self.causes_suffocation, block) && state.has(flags::COLLISION_FULL_BLOCK)
+        Self::has(&self.causes_suffocation, block)
+            && state.has(flags::COLLISION_FULL_BLOCK)
+            && !never_suffocating(block)
     }
 
     /// `Block.fallOn` of a block.

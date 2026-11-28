@@ -601,7 +601,8 @@ fn place_template(
             vec![ErrArg::Str(id.clone())],
         )
     };
-    let (_, generator) = generation(env).ok_or_else(invalid)?;
+    // Without a generator (a world of fixed chunks) the template goes into the loaded chunks.
+    let generator = generation(env).map(|(_, g)| g);
     // `getStructureTemplateManager().get(id)`: the world's `generated/` templates first.
     let template = env.level.structure_template(id).ok_or_else(invalid)?;
     let rotation = args
@@ -649,10 +650,39 @@ fn place_template(
     };
     let mut random = vanillite_base::random::LegacyRandom::new(seed);
     let flags = 2 | if strict { 816 } else { 0 };
-    let mut area = PlaceArea::copy(env.level, &generator, min, max);
-    let placed = area.run(&generator, |region| {
-        template.place_in_world(region, pos, pos, &settings, &mut random, flags)
-    });
+    // The rotated and mirrored template and its neighbour updates may reach past
+    // `pos..pos + size` (Vanilla places into the level itself).
+    let reach = |v: i32| v.saturating_add(1);
+    let (min, max) = (
+        BlockPos::new(
+            pos.x.saturating_sub(reach(size.x)),
+            pos.y,
+            pos.z.saturating_sub(reach(size.z)),
+        )
+        .chunk(),
+        BlockPos::new(
+            pos.x.saturating_add(reach(size.x)),
+            pos.y,
+            pos.z.saturating_add(reach(size.z)),
+        )
+        .chunk(),
+    );
+    let (area, placed) = match &generator {
+        Some(generator) => {
+            let mut area = PlaceArea::copy(env.level, generator, min, max);
+            let placed = area.run(generator, |region| {
+                template.place_in_world(region, pos, pos, &settings, &mut random, flags)
+            });
+            (area, placed)
+        }
+        None => {
+            let mut area = PlaceArea::copy_plain(env.level, min, max);
+            let placed = area.run_plain(env.level.seed(), |region| {
+                template.place_in_world(region, pos, pos, &settings, &mut random, flags)
+            });
+            (area, placed)
+        }
+    };
     area.apply(env.level);
     if !placed {
         return Err(CommandError::new("commands.place.template.failed", vec![]));

@@ -34,6 +34,7 @@ vanillite-abi.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true
+zip.workspace = true
 ureq.workspace = true
 
 [features]

@@ -9,6 +9,9 @@
 //! `VANILLITE_SCENARIO=<scenario>,...` runs only those scenarios.
 //! `VANILLITE_SCENARIO_SHARD=<k>/<n>` runs only part k of n (CI jobs side by side): the
 //! scenarios in name order, every n-th from the k-th on, so the parts together run all of them.
+//!
+//! [`check_quick`] is the quick tier (`cargo xtask parity quick`, part of the quick check): the
+//! fast scenarios without the slow ones listed in `scenarios/quick-skip.txt`.
 
 use std::path::PathBuf;
 
@@ -55,6 +58,8 @@ pub fn stream(
     // Palette index per block state, filled as states show up.
     let mut cache = vec![u32::MAX; 1 << 16];
     let frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, 0)?;
+    // Frames without block changes share the blocks of the frame before (see `Frame::blocks`).
+    let mut last = std::sync::Arc::clone(&frame.blocks);
     if !sink(&trace, frame)? {
         return Ok(trace);
     }
@@ -75,7 +80,12 @@ pub fn stream(
         }
         world.client_end()?;
         world.step();
-        let frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, tick)?;
+        let mut frame = observe(world.as_mut(), scenario, &mut trace, &mut cache, tick)?;
+        if frame.blocks == last {
+            frame.blocks = std::sync::Arc::clone(&last);
+        } else {
+            last = std::sync::Arc::clone(&frame.blocks);
+        }
         if !sink(&trace, frame)? {
             break;
         }
@@ -177,11 +187,7 @@ fn observe(
 ) -> Result<Frame, String> {
     let light = scenario.world.observe_light;
     let volume: usize = trace.size().iter().product();
-    let mut frame = Frame {
-        tick,
-        blocks: Vec::with_capacity(volume),
-        ..Frame::default()
-    };
+    let mut blocks = Vec::with_capacity(volume);
     for i in 0..volume {
         let pos = trace.pos_of(i);
         let index = if world.is_loaded(pos) {
@@ -194,8 +200,13 @@ fn observe(
         } else {
             trace.intern(crate::scenario::UNLOADED)
         };
-        frame.blocks.push(index);
+        blocks.push(index);
     }
+    let mut frame = Frame {
+        tick,
+        blocks: std::sync::Arc::new(blocks),
+        ..Frame::default()
+    };
     world.block_ticks(trace.min, trace.max, &mut frame.block_ticks);
     world.fluid_ticks(trace.min, trace.max, &mut frame.fluid_ticks);
     world.entities(trace.min, trace.max, &mut frame.entities);
@@ -367,6 +378,38 @@ fn shard(v: &str) -> Option<(usize, usize)> {
 
 /// Checks every scenario of a tier; returns one message per failing scenario.
 pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
+    check_where(tier, factory, &[])
+}
+
+/// Checks the quick tier: the fast scenarios except those in `scenarios/quick-skip.txt` (one
+/// name per line, `#` comments). The full fast tier still runs them all.
+pub fn check_quick(factory: WorldFactory) -> Vec<String> {
+    let path = Scenario::dir().join("quick-skip.txt");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return vec![format!("{}: {e}", path.display())],
+    };
+    let skip: Vec<&str> = text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let stale: Vec<&str> = skip
+        .iter()
+        .copied()
+        .filter(|n| !Scenario::dir().join(format!("{n}.json")).is_file())
+        .collect();
+    if !stale.is_empty() {
+        return vec![format!(
+            "{}: no such scenarios (remove them): {}",
+            path.display(),
+            stale.join(", ")
+        )];
+    }
+    check_where(Tier::Fast, factory, &skip)
+}
+
+fn check_where(tier: Tier, factory: WorldFactory, skip: &[&str]) -> Vec<String> {
     let scenarios = match Scenario::all() {
         Ok(s) => s,
         Err(e) => return vec![e],
@@ -385,7 +428,7 @@ pub fn check_tier(tier: Tier, factory: WorldFactory) -> Vec<String> {
     };
     let todo: Vec<&Scenario> = scenarios
         .iter()
-        .filter(|s| s.tier == tier)
+        .filter(|s| s.tier == tier && !skip.contains(&s.name.as_str()))
         .filter(|s| {
             only.as_deref()
                 .is_none_or(|o| o.split(',').any(|n| n.trim() == s.name))
