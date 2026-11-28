@@ -854,12 +854,12 @@ fn scenario(w: &World, p: &Prepared, ticks: Option<u32>) -> Value {
         }
         v
     };
-    // A real server's random ticks and mob spawning (both need the player around).
-    let mut rules: serde_json::Map<String, Value> =
-        [("random_tick_speed", "3"), ("spawn_mobs", "true")]
-            .into_iter()
-            .map(|(k, v)| (k.to_owned(), json!(v)))
-            .collect();
+    // A real server's random ticks. Natural spawning stays off unless a world turns it on: the
+    // scenario world without dimensions has no custom spawners (phantoms, cats, patrols).
+    let mut rules: serde_json::Map<String, Value> = [("random_tick_speed", "3")]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), json!(v)))
+        .collect();
     rules.extend(w.rules.iter().map(|(k, v)| {
         let text = match v {
             toml::Value::String(s) => s.clone(),

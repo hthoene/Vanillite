@@ -463,9 +463,15 @@ impl GameWorld {
                     .filter(|r| r.dimension == "minecraft:overworld")
                     .map(|r| r.pos),
                 leads_mobs: self.level.entities.leashes.values().any(|&h| h == id),
-                ranges: vanillite_game::player::play::interaction_ranges(
-                    &player.inventory,
-                    player.game_mode,
+                // The recorder calls `ServerPlayerGameMode.useItemOn` itself, without the
+                // packet handler's reach check: any block is in reach.
+                ranges: (
+                    f64::from(i32::MAX),
+                    vanillite_game::player::play::interaction_ranges(
+                        &player.inventory,
+                        player.game_mode,
+                    )
+                    .1,
                 ),
             };
             let mut effects = vanillite_server::LevelEffects::default();
