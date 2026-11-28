@@ -26,6 +26,24 @@ pub fn floor_i32(v: f64) -> i32 {
     v.floor() as i32
 }
 
+/// The index of the colour of `palette` nearest to `rgb` (squared RGB distance).
+pub fn nearest_colour(rgb: u32, palette: &[u32]) -> usize {
+    let distance = |c: u32| -> u32 {
+        [16u32, 8, 0]
+            .iter()
+            .map(|&s| {
+                let d = (rgb >> s & 0xFF).abs_diff(c >> s & 0xFF);
+                d.saturating_mul(d)
+            })
+            .fold(0u32, u32::saturating_add)
+    };
+    palette
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, c)| distance(**c))
+        .map_or(0, |(i, _)| i)
+}
+
 /// A Java protocol angle byte in degrees.
 #[inline]
 pub fn angle_deg(b: i8) -> f32 {

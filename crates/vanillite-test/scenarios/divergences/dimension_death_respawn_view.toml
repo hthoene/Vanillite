@@ -1,3 +1,0 @@
-tick = 14
-cause = "after the player died in the Nether (tick 10) the level random stops changing from tick 14 on while Vanilla's goes on drawing (client view #196)"
-owner = "gameplay-developer #196"

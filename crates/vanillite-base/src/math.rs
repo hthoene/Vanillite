@@ -337,6 +337,7 @@ pub fn length_squared(x: f64, y: f64, z: f64) -> f64 {
 /// Scale of `Mth.sin`/`Mth.cos`: table entries per radian (65536 / 2π).
 const SIN_SCALE: f64 = 10430.378350470453;
 
+#[inline]
 fn sin_table() -> &'static [f32; 65536] {
     static TABLE: OnceLock<Box<[f32; 65536]>> = OnceLock::new();
     TABLE.get_or_init(|| {

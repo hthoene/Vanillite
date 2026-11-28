@@ -483,6 +483,20 @@ impl Program {
         self.volume(ctx, f.0, out, volume);
     }
 
+    /// [`Self::sample_volume`] where only the points of `mask` must be right.
+    pub fn sample_volume_masked(
+        &self,
+        ctx: &mut SamplerContext,
+        f: super::FnId,
+        out: &mut [f32],
+        volume: &DensityVolume,
+        mask: &[bool],
+    ) {
+        assert_eq!(out.len(), volume.len(), "buffer size must match the volume");
+        assert_eq!(mask.len(), volume.len(), "mask size must match the volume");
+        self.volume_masked(ctx, f.0, out, volume, Some(mask));
+    }
+
     fn noise(&self, index: u32) -> &Noise {
         &self.noises[index as usize]
     }

@@ -1903,6 +1903,13 @@ fn open_level(
         spec.seed,
     );
     level.set_tree_features(Arc::clone(TREES.get().expect("installed")));
+    // Structure blocks and `/place template`: the data packs' templates and what the scenario
+    // saves (in memory, its own per world).
+    level.set_structure_templates(Arc::new(
+        vanillite_worldgen::template::StructureTemplateManager::from_roots(
+            PACKS.get().map(|p| p.roots().to_vec()).unwrap_or_default(),
+        ),
+    ));
     level.set_climate(Arc::new(Climate {
         biomes: BIOMES.get().expect("installed").clone(),
         manager: vanillite_worldgen::biome::BiomeManager::for_world_seed(spec.seed),
@@ -2185,23 +2192,7 @@ impl ScenarioWorld for GameWorld {
     }
 
     fn block_entities(&self, min: BlockPos, max: BlockPos, out: &mut Vec<String>) {
-        for y in min.y..=max.y {
-            for z in min.z..=max.z {
-                for x in min.x..=max.x {
-                    let pos = BlockPos::new(x, y, z);
-                    if !self.is_loaded(pos)
-                        || self.level.block(pos).block().info().block_entity == u16::MAX
-                    {
-                        continue;
-                    }
-                    if let Some(nbt) = self.level.block_entity_nbt(pos) {
-                        let mut s = format!("{x},{y},{z} ");
-                        crate::trace::canonical_nbt(&mut s, &vanillite_nbt::Tag::Compound(nbt));
-                        out.push(s);
-                    }
-                }
-            }
-        }
+        observe_block_entities(&self.level, |p| self.is_loaded(p), min, max, out);
     }
 
     fn light(&mut self, min: BlockPos, max: BlockPos, out: &mut Vec<u8>) {
@@ -2641,6 +2632,32 @@ pub(crate) fn inside(p: BlockPos, min: BlockPos, max: BlockPos) -> bool {
 }
 
 /// Pending ticks inside `min..=max` in drain order, delays relative to the game time.
+/// The block entities of the loaded positions inside `min..=max` as `x,y,z <canonical nbt>`
+/// ([`crate::world::ScenarioWorld::block_entities`]).
+pub(crate) fn observe_block_entities(
+    level: &Level,
+    is_loaded: impl Fn(BlockPos) -> bool,
+    min: BlockPos,
+    max: BlockPos,
+    out: &mut Vec<String>,
+) {
+    for y in min.y..=max.y {
+        for z in min.z..=max.z {
+            for x in min.x..=max.x {
+                let pos = BlockPos::new(x, y, z);
+                if !is_loaded(pos) || level.block(pos).block().info().block_entity == u16::MAX {
+                    continue;
+                }
+                if let Some(nbt) = level.block_entity_nbt(pos) {
+                    let mut s = format!("{x},{y},{z} ");
+                    crate::trace::canonical_nbt(&mut s, &vanillite_nbt::Tag::Compound(nbt));
+                    out.push(s);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn observe_ticks(
     level: &Level,
     ticks: &LevelTicks,

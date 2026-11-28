@@ -7,7 +7,7 @@ use vanillite_base::ChunkPos;
 use vanillite_base::random::LegacyRandom;
 use vanillite_worldgen::carver::providers::{FloatProvider, HeightProvider, IntProvider};
 use vanillite_worldgen::carver::{
-    CarverId, CarverRandom, CarverRegistry, WorldGenerationContext, carve_chunk,
+    CarverId, CarverPlans, CarverRandom, CarverRegistry, WorldGenerationContext, carve_chunk,
 };
 
 fn int(v: &Value) -> i64 {
@@ -51,7 +51,14 @@ fn carving_masks_match_vanilla() {
         let seed = int(&run["seed"]);
         let pos = ChunkPos::new(int(&run["x"]) as i32, int(&run["z"]) as i32);
         let lookup = |_: ChunkPos| ids.as_slice();
-        let mask = carve_chunk(&registry, &lookup, seed, pos, ctx);
+        let mask = carve_chunk(&registry, &lookup, seed, pos, ctx, None);
+        // The same from the shared per-source plans.
+        let plans = CarverPlans::default();
+        assert_eq!(
+            carve_chunk(&registry, &lookup, seed, pos, ctx, Some(&plans)),
+            mask,
+            "{set} seed {seed} chunk {pos:?}: planned carving differs"
+        );
 
         assert_eq!(i64::from(mask.min_y()), int(&run["min_y"]));
         assert_eq!(i64::from(mask.max_y()), int(&run["max_y"]));

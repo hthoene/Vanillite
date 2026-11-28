@@ -975,12 +975,14 @@ fn test(
                 .filter(|e| e.world == env.world)
                 .and_then(|e| e.id);
             let level = &mut *env.level;
+            let weather = (level.is_raining(), level.is_thundering());
             let entities = std::mem::take(&mut level.entities);
             let result = super::loot_cmd::test_predicate(
                 &entities,
                 env.global,
                 this,
                 source.pos,
+                weather,
                 &predicate,
                 level.random(),
             );

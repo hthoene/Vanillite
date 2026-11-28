@@ -1,6 +1,7 @@
 //! `cargo xtask parity fuzz`: random parity scenarios against Vanilla (#132); `cargo xtask
 //! parity replay`: recorded server sessions against Vanilla (#152); `cargo xtask parity
-//! soak`: long scenarios against Vanilla (#166).
+//! soak`: long scenarios against Vanilla (#166); `cargo xtask parity quick`: the quick tier of
+//! the parity scenarios for the quick check (#257).
 //!
 //! Compiles the Java recorder on the pinned jar (like `golden regen`) and runs the
 //! `parity_fuzz` binary of `vanillite-test` with its class path; that binary generates (or
@@ -24,21 +25,35 @@ const RECORDER: &[&str] = &[
     "ParityAgent",
 ];
 
-/// `cargo xtask parity replay <recording> [args]`: a local recording folder, or
+/// `cargo xtask parity replay <recording>... [args]`: local recording folders, or
 /// `<port>:<name>` / `<port>:latest` of the test server, fetched into `target/recordings/`.
-pub fn replay(root: &Path, recording: &str, args: &[&str]) -> Result<()> {
-    let dir = match recording.split_once(':') {
-        Some((port, name)) if port.parse::<u16>().is_ok() && !Path::new(recording).exists() => {
-            fetch_recording(root, port, name)?
-        }
-        _ => std::path::PathBuf::from(recording),
-    };
-    if !dir.join("packets.jsonl").is_file() {
-        return Err(format!("{} is no session recording", dir.display()));
+pub fn replay(root: &Path, args: &[&str]) -> Result<()> {
+    let split = args
+        .iter()
+        .position(|a| a.starts_with("--"))
+        .unwrap_or(args.len());
+    let (recordings, args) = args.split_at(split);
+    if recordings.is_empty() {
+        return Err("usage: cargo xtask parity replay <recording>... [--ticks N]".to_owned());
     }
-    let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let session = dir.to_string_lossy().into_owned();
-    let mut pass = vec!["--session", session.as_str()];
+    let mut sessions = Vec::new();
+    for recording in recordings {
+        let dir = match recording.split_once(':') {
+            Some((port, name)) if port.parse::<u16>().is_ok() && !Path::new(recording).exists() => {
+                fetch_recording(root, port, name)?
+            }
+            _ => std::path::PathBuf::from(recording),
+        };
+        if !dir.join("packets.jsonl").is_file() {
+            return Err(format!("{} is no session recording", dir.display()));
+        }
+        let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        sessions.push(dir.to_string_lossy().into_owned());
+    }
+    let mut pass = Vec::new();
+    for session in &sessions {
+        pass.extend(["--session", session.as_str()]);
+    }
     pass.extend_from_slice(args);
     driver(root, &pass, None)
 }
@@ -138,6 +153,31 @@ pub fn soak(root: &Path, args: &[&str]) -> Result<()> {
     )
 }
 
+/// `cargo xtask parity quick`: the fast scenarios without the slow ones of
+/// `crates/vanillite-test/scenarios/quick-skip.txt` against their goldens (no Java needed), with
+/// the world crate at opt-level 1 like CI's parity jobs.
+pub fn quick(root: &Path) -> Result<()> {
+    run(
+        Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
+            .current_dir(root)
+            .args([
+                "test",
+                "-q",
+                "-p",
+                "vanillite-test",
+                "--locked",
+                "--config",
+                "profile.dev.package.vanillite-world.opt-level=1",
+                "--test",
+                "parity",
+                "--",
+                "--ignored",
+                "--exact",
+                "quick_scenarios",
+            ]),
+    )
+}
+
 pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
     let adopt = args.contains(&"--adopt");
     let mut pass: Vec<&str> = args
@@ -161,11 +201,13 @@ pub fn fuzz(root: &Path, args: &[&str]) -> Result<()> {
 }
 
 /// Runs the `parity_fuzz` driver with the recorder's class path, with an extra environment
-/// variable (the coverage agent of `parity coverage`) if given.
+/// variable (the coverage agent of `parity coverage`) if given; built with the cargo profile
+/// `VANILLITE_PARITY_PROFILE` (default `dev`; the nightly replays with `release-fast`).
 pub(crate) fn driver(root: &Path, pass: &[&str], env: Option<(&str, String)>) -> Result<()> {
     let (classpath, agent, work_dir) = recorder(root)?;
     let out = root.join("target/parity-fuzz");
     remove_dir(&out)?;
+    let profile = std::env::var("VANILLITE_PARITY_PROFILE").unwrap_or_else(|_| "dev".to_owned());
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()));
     if let Some((k, v)) = env {
         cmd.env(k, v);
@@ -175,6 +217,8 @@ pub(crate) fn driver(root: &Path, pass: &[&str], env: Option<(&str, String)>) ->
         .args([
             "run",
             "-q",
+            "--profile",
+            &profile,
             "-p",
             "vanillite-test",
             "--bin",

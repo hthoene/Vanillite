@@ -88,6 +88,27 @@ impl Session {
             match a.action {
                 // Hitting a frame block hits the Java item frame.
                 action::START_BREAK if frame.is_some() => self.attack(frame.unwrap_or(0)),
+                // Hitting a lectern with a book takes the book on Bedrock: the Java lectern
+                // menu's take button (`LecternMenu` button 3) once the menu opens.
+                action::START_BREAK
+                    if self.world.as_ref().is_some_and(|w| {
+                        w.lecterns.contains(&a.pos) && w.game_mode != GameMode::Adventure
+                    }) =>
+                {
+                    self.taking_book = true;
+                    let sequence = self.next_sequence();
+                    self.java_send(&psb::UseItemOn {
+                        hand: Hand::MainHand,
+                        pos: java_pos(a.pos),
+                        face: 0,
+                        cursor_x: 0.0,
+                        cursor_y: 0.0,
+                        cursor_z: 0.0,
+                        inside: false,
+                        world_border_hit: false,
+                        sequence,
+                    });
+                }
                 action::START_BREAK => {
                     if let Some(w) = &mut self.world {
                         w.breaking = Some(a.pos);
@@ -396,6 +417,49 @@ impl Session {
                 &bp::level_sound_event("break", pos, i32::try_from(block).unwrap_or(0)),
             );
         }
+        // 1010/1011: a jukebox starts or stops its song (Bedrock's `record.<song>` sounds).
+        if e.event == 1010 {
+            use vanillite_protocol::components_nbt::RegistryNames;
+            let Some(song) = usize::try_from(e.data).ok().and_then(|i| {
+                vanillite_protocol::item::InstalledRegistries
+                    .entry_name("minecraft:jukebox_song", i)
+            }) else {
+                return;
+            };
+            let name = format!("record.{}", song.strip_prefix("minecraft:").unwrap_or(song));
+            let pos = block_center(e.pos);
+            self.send(
+                id::PLAY_SOUND,
+                &bp::play_sound(&name, pos, 4.0, 1.0, self.version),
+            );
+            if self.records.len() < 64 {
+                self.records.insert([e.pos.x, e.pos.y, e.pos.z], name);
+            }
+        } else if e.event == 1011
+            && let Some(name) = self.records.remove(&[e.pos.x, e.pos.y, e.pos.z])
+        {
+            self.send(id::STOP_SOUND, &bp::stop_sound(&name, false));
+        }
+    }
+
+    /// `sound` with a direct sound event (`/playsound`), which the packet set does not decode.
+    pub(super) fn java_sound_direct(&mut self, body: &[u8]) -> bool {
+        use vanillite_protocol::ids::play::clientbound as ids;
+        let mut r = JReader::new(body);
+        if r.varint().ok() != Some(ids::SOUND) {
+            return false;
+        }
+        let Ok(s) = pcb::SoundDirect::decode(&mut r) else {
+            return false;
+        };
+        if let Some(name) = crate::data::sound_name(s.sound.as_str()) {
+            let pos = [s.x, s.y, s.z].map(|v| f32_of(f64::from(v) / 8.0));
+            self.send(
+                id::PLAY_SOUND,
+                &bp::play_sound(name, pos, s.volume, s.pitch, self.version),
+            );
+        }
+        true
     }
 
     pub(super) fn java_sound(&mut self, s: &pcb::Sound) {
@@ -457,6 +521,7 @@ impl Session {
                     head_yaw: entity.head_yaw,
                     game_mode: if mode == 6 { 0 } else { mode },
                     sneaking: false,
+                    skull: false,
                 },
                 self.version,
             );
@@ -530,6 +595,7 @@ impl Session {
                         head_yaw: entity.head_yaw,
                         game_mode: 0,
                         sneaking: false,
+                        skull: false,
                     },
                     self.version,
                 );
@@ -1043,7 +1109,7 @@ impl Session {
             .as_ref()
             .is_some_and(|w| w.java_id == k.player_id)
         {
-            let text = k.message.plain();
+            let text = self.text(&k.message);
             self.send(id::DEATH_INFO, &bp::death_info(&text));
         }
     }
@@ -1186,6 +1252,7 @@ impl Session {
         mode: GameMode,
         switch: bool,
     ) {
+        self.clear_heads();
         let Some(w) = &mut self.world else {
             return;
         };
@@ -1196,6 +1263,7 @@ impl Session {
             .map(|(&id, _)| id)
             .collect();
         w.entities.clear();
+        w.lecterns.clear();
         w.cracking.clear();
         w.passengers.clear();
         w.vehicle = None;
@@ -1264,7 +1332,12 @@ impl Session {
         if r.varint().is_err() {
             return;
         }
-        let text = |r: &mut JReader<'_>| entity::component(r).map(|c| c.plain()).ok();
+        let language = std::sync::Arc::clone(&self.shared.config.language);
+        let text = |r: &mut JReader<'_>| {
+            entity::component(r)
+                .map(|c| crate::text::render(&c, &language))
+                .ok()
+        };
         match packet {
             ids::SET_TITLE_TEXT => {
                 if let Some(t) = text(&mut r) {
@@ -1366,6 +1439,26 @@ impl Session {
                     self.send(id::CRAFTING_DATA, &body);
                 }
             }
+            ids::STOP_SOUND => self.java_stop_sound(&mut r),
+            ids::TRANSFER => self.java_transfer(&mut r),
+            ids::INITIALIZE_BORDER
+            | ids::SET_BORDER_CENTER
+            | ids::SET_BORDER_LERP_SIZE
+            | ids::SET_BORDER_SIZE
+            | ids::SET_BORDER_WARNING_DISTANCE => self.java_border(packet, &mut r),
+            ids::SHOW_DIALOG => {
+                if let Ok(d) = pcb::ShowDialog::decode(&mut r) {
+                    self.java_show_dialog(d.dialog);
+                }
+            }
+            ids::CLEAR_DIALOG => self.clear_dialog(),
+            ids::SERVER_LINKS => {
+                if let Ok(l) = pcb::ServerLinks::decode(&mut r) {
+                    self.java_server_links(&l.links);
+                }
+            }
+            // Bedrock has no header or footer in its player list.
+            ids::TAB_LIST => {}
             ids::RECIPE_BOOK_ADD => {
                 if let Ok(book) = pcb::RecipeBookAdd::decode(&mut r) {
                     let items = self.version.palette.items();
@@ -1518,6 +1611,7 @@ impl Session {
     }
 
     fn java_boss(&mut self, r: &mut JReader<'_>) {
+        let language = std::sync::Arc::clone(&self.shared.config.language);
         let (Ok(uuid), Ok(op)) = (r.u128(), r.varint()) else {
             return;
         };
@@ -1526,7 +1620,8 @@ impl Session {
         };
         match op {
             0 => {
-                let Ok(title) = entity::component(r).map(|c| c.plain()) else {
+                let Ok(title) = entity::component(r).map(|c| crate::text::render(&c, &language))
+                else {
                     return;
                 };
                 let (Ok(health), Ok(colour)) = (r.f32(), r.varint()) else {
@@ -1588,7 +1683,8 @@ impl Session {
                     b.2 = h;
                     4
                 } else {
-                    let Ok(t) = entity::component(r).map(|c| c.plain()) else {
+                    let Ok(t) = entity::component(r).map(|c| crate::text::render(&c, &language))
+                    else {
                         return;
                     };
                     b.1 = t;
@@ -1615,6 +1711,11 @@ impl Session {
         let Some((url, slim)) = crate::skin::java_texture(properties) else {
             return;
         };
+        self.fetch_skin(uuid, url, slim);
+    }
+
+    /// Loads a Java skin in the background (once per texture) for `uuid`.
+    pub(super) fn fetch_skin(&mut self, uuid: u128, url: String, slim: bool) {
         let cached = self.shared.java_skins.lock().ok().and_then(|mut cache| {
             if let Some(s) = cache.get(&url) {
                 return Some(s.clone());
@@ -1656,6 +1757,9 @@ impl Session {
 
     /// A loaded Java skin.
     pub(super) fn apply_skin(&mut self, uuid: u128, skin: &crate::skin::Skin) {
+        if self.head_skin(uuid, skin) {
+            return;
+        }
         if self
             .world
             .as_ref()
