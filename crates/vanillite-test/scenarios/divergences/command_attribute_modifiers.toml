@@ -1,3 +1,0 @@
-tick = 2
-cause = "no attribute map yet: /attribute base set and modifier add/value/remove fail (return 0, not applied); mob saved data lacks Brain, attributes and current_impulse_context_reset_grace_time; the passenger sits lower (no scale attribute)"
-owner = "architect + gameplay-developer #267"

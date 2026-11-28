@@ -1171,6 +1171,17 @@ pub fn is_lava(state: BlockState) -> bool {
 
 /// `getEyeHeight` of a mob: the type's eye height, scaled for babies.
 pub fn eye_height(mob: &MobData) -> f64 {
+    let eye = unscaled_eye_height(mob);
+    // The `minecraft:scale` attribute scales the eye height with the dimensions.
+    let scale = crate::effect::attribute_map::scale_of(&mob.effects.modifiers);
+    if scale == 1.0 {
+        return eye;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    f64::from(eye as f32 * scale as f32)
+}
+
+fn unscaled_eye_height(mob: &MobData) -> f64 {
     if let Some(eye) = fam::undead::zombies::baby_eye_height(mob) {
         return f64::from(eye);
     }
