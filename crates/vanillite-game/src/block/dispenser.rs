@@ -424,10 +424,7 @@ fn execute(
             let Some(kind) = crate::minecart::MinecartKind::of_item(item::item_id(&stack)) else {
                 return default_execute(level, source, stack);
             };
-            let name = stack
-                .component(vanillite_protocol::components::ids::CUSTOM_NAME)
-                .map(Into::into);
-            if crate::minecart::dispense(level, kind, source.pos, source.facing, name) {
+            if crate::minecart::dispense(level, kind, source.pos, source.facing, &stack) {
                 stack.shrink(1);
                 stack
             } else {
@@ -732,6 +729,7 @@ fn dispense_boat(level: &mut Level, source: Source, mut stack: ItemStack) -> Ite
         yaw,
         data,
     );
+    crate::vehicle::apply_stack_entity_data(ents, id, &stack, false);
     if ents.spawned(id, vanillite_abi::spawn_reason::DISPENSER, 0) {
         stack.shrink(1);
     }
@@ -1181,7 +1179,7 @@ fn shear_entity(level: &mut Level, pos: BlockPos) -> bool {
     let sheared = crate::level::mob_env::with_mob_env(level, |level, ents, env, cx| {
         let blocks = vanillite_protocol::packets::play::clientbound::SoundSource::Blocks;
         for id in candidates {
-            if crate::mob::tame::shear_off_all_leash_connections(ents, env, id) {
+            if crate::mob::tame::shear_off_all_leash_connections(ents, env, id, None) {
                 return Some(false);
             }
             let Some(m) = ents.mob(id) else {

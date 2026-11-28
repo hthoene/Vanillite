@@ -237,6 +237,7 @@ pub fn use_item_on(
     pos: BlockPos,
     face: Direction,
     location: Vec3,
+    op: bool,
 ) {
     let mut stack = take_held(ents, player, hand);
     if is_on_cooldown(ents, player, &stack) {
@@ -265,7 +266,7 @@ pub fn use_item_on(
         crate::firework::use_on(ents, env, network_ids, player, &mut stack, face, location)
     } else {
         let placed =
-            crate::minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative);
+            crate::minecart::use_item_on(level, ents, network_ids, pos, &mut stack, creative, op);
         if placed {
             // `gameEvent(ENTITY_PLACE, pos, Context.of(player, blockBelow))`.
             crate::survival::game_event(

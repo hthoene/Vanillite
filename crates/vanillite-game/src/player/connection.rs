@@ -73,6 +73,8 @@ pub enum EntityAction {
         face: vanillite_base::Direction,
         /// The clicked point (`BlockHitResult.getLocation`).
         location: Vec3,
+        /// The player is an operator (`entity_data` of op-only entity types).
+        op: bool,
     },
     /// `FenceBlock.useWithoutItem`: the player's leashed mobs get tied to the fence.
     BindToFence(vanillite_base::BlockPos),
@@ -763,6 +765,7 @@ impl Connection {
                                 f64::from(pos.y) + f64::from(p.cursor_y),
                                 f64::from(pos.z) + f64::from(p.cursor_z),
                             ),
+                            op: play.actor.permission_level > 0,
                         });
                     }
                 }

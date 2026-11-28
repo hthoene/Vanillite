@@ -3,6 +3,7 @@
 //! tick (gravity, fluids, fire, effects, equipment) is the mobs'; this module has what they
 //! do differently: poses and flags, equipment swapping, hits, storage and synched data.
 
+use vanillite_base::random::RandomSource;
 use vanillite_base::{Vec3, math::floor};
 use vanillite_nbt::{Compound, List, Tag};
 use vanillite_protocol::SharedPacket;
@@ -223,16 +224,17 @@ pub fn use_on(
         .block(pos)
         .has(vanillite_data::block::flags::REPLACEABLE);
     let at = if replace { pos } else { pos.relative(face) };
-    let spawn = Vec3::new(
+    let bottom = Vec3::new(
         f64::from(at.x) + 0.5,
         f64::from(at.y),
         f64::from(at.z) + 0.5,
     );
-    let aabb = Dimensions::of(vanillite_data::entity::ids::ARMOR_STAND).bounding_box(spawn);
+    let aabb = Dimensions::of(vanillite_data::entity::ids::ARMOR_STAND).bounding_box(bottom);
     let mut scratch = Vec::new();
     if !crate::mob::physics::no_collision(&level.view(), &aabb, &mut scratch) {
         return false;
     }
+    // `getEntities(null, box)`: spectators do not count.
     let mut any = false;
     let ents = &level.entities;
     ents.store.for_each_in(&aabb, false, |o| {
@@ -240,6 +242,9 @@ pub fn use_on(
             .store
             .get(o)
             .is_some_and(|e| e.aabb().intersects(&aabb))
+            && ents
+                .player(o)
+                .is_none_or(|p| p.game_mode != vanillite_config::GameMode::Spectator)
         {
             any = true;
         }
@@ -247,6 +252,11 @@ pub fn use_on(
     if any {
         return false;
     }
+    // `EntityType.create(.., tryMoveDown, movedUp)`: down onto the collisions of the block
+    // and the one below (`getYOffset`), and the level random's yaw (replaced below).
+    let y_offset = crate::mob::animal::spawn_y_offset(level, at, true, Kind::ArmorStand);
+    let spawn = Vec3::new(bottom.x, f64::from(at.y) + y_offset, bottom.z);
+    let _ = level.random().next_float();
     let wrapped = vanillite_base::math::wrap_degrees_f(y_rot - 180.0);
     #[allow(clippy::cast_precision_loss)]
     let yaw = floor(f64::from((wrapped + 22.5) / 45.0)) as f32 * 45.0;

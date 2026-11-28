@@ -1875,6 +1875,7 @@ pub fn player_entity_action(
             pos,
             face,
             location,
+            op,
         } => {
             if usable {
                 item_use::use_item_on(
@@ -1887,6 +1888,7 @@ pub fn player_entity_action(
                     pos,
                     face,
                     location,
+                    op,
                 );
             }
         }
