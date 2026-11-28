@@ -90,7 +90,23 @@ pub fn use_item(
     }) {
         return;
     }
+    let before = ents
+        .player(player)
+        .map(|p| p.inventory.get(i).clone())
+        .unwrap_or_default();
+    let using_before = ents
+        .player(player)
+        .is_some_and(|p| p.survival.using_item.is_some());
     if crate::player::items::use_item(level, ents, env, network_ids, player, hand) {
+        // `ItemStack.use` of an instantly used item (books, knowledge book, empty map):
+        // `applyAfterUseComponentSideEffects` puts its `use_cooldown` group on cooldown.
+        let started = !using_before
+            && ents
+                .player(player)
+                .is_some_and(|p| p.survival.using_item.is_some());
+        if !started {
+            apply_use_cooldown(ents, player, &before);
+        }
         return;
     }
     let held = ents
