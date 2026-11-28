@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/*", "tools/loadbot", "xtask"]
+members = ["crates/*", "examples/*", "tools/loadbot", "tools/microbench", "xtask"]
 default-members = ["crates/*"]
 
 [workspace.package]
@@ -14,6 +14,7 @@ homepage = "https://vanillite.org"
 
 [workspace.dependencies]
 # Internal crates.
+microbench = { path = "tools/microbench" }
 vanillite-abi = { path = "crates/vanillite-abi", version = "0.1.0-beta.3" }
 vanillite-base = { path = "crates/vanillite-base", version = "0.1.0-beta.3" }
 vanillite-bedrock = { path = "crates/vanillite-bedrock", version = "0.1.0-beta.3" }
@@ -41,7 +42,6 @@ vanillite-worldgen = { path = "crates/vanillite-worldgen", version = "0.1.0-beta
 
 # External crates.
 bumpalo = { version = "3.20", features = ["collections"] }
-criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 libc = "0.2"
 libloading = "0.8"
