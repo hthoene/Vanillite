@@ -140,6 +140,11 @@ pub enum ValueEffect {
     Multiply(LevelBased),
     Set(LevelBased),
     RemoveBinomial(LevelBased),
+    /// `exponential` (`ScaleExponentially`): `value · base^exponent`.
+    Exponential {
+        base: LevelBased,
+        exponent: LevelBased,
+    },
     AllOf(Vec<ValueEffect>),
 }
 
@@ -153,6 +158,10 @@ impl ValueEffect {
                 "multiply" => ValueEffect::Multiply(lb("factor")?),
                 "set" => ValueEffect::Set(lb("value")?),
                 "remove_binomial" => ValueEffect::RemoveBinomial(lb("chance")?),
+                "exponential" => ValueEffect::Exponential {
+                    base: lb("base")?,
+                    exponent: lb("exponent")?,
+                },
                 "all_of" => ValueEffect::AllOf(
                     o.get("effects")?
                         .as_array()?
@@ -173,6 +182,14 @@ impl ValueEffect {
             ValueEffect::Set(v) => v.calculate(level),
             ValueEffect::RemoveBinomial(chance) => {
                 remove_binomial(chance.calculate(level), random, value)
+            }
+            ValueEffect::Exponential { base, exponent } => {
+                // `(float) (inputValue * Math.pow(base, exponent))` in double.
+                let pow =
+                    f64::from(base.calculate(level)).powf(f64::from(exponent.calculate(level)));
+                #[allow(clippy::cast_possible_truncation)]
+                let v = (f64::from(value) * pow) as f32;
+                v
             }
             ValueEffect::AllOf(list) => list.iter().fold(value, |v, e| e.process(level, random, v)),
         }
@@ -1084,13 +1101,14 @@ impl Enchantments {
     /// `EnchantmentHelper.getFishingTimeReduction` (Lure), in seconds.
     pub fn fishing_time_reduction(&self, rod: &ItemStack, random: &mut dyn FloatRandom) -> f32 {
         self.run_item(rod, |e| &e.fishing_time_reduction, None, random, 0.0)
+            .max(0.0)
     }
 
     /// `EnchantmentHelper.getFishingLuckBonus` (Luck of the Sea).
     pub fn fishing_luck_bonus(&self, rod: &ItemStack, random: &mut dyn FloatRandom) -> i32 {
         #[allow(clippy::cast_possible_truncation)]
         let v = self.run_item(rod, |e| &e.fishing_luck_bonus, None, random, 0.0) as i32;
-        v
+        v.max(0)
     }
 
     /// `EnchantmentHelper.onHitBlock`: the `hit_block` effects whose requirements hold, with
@@ -1459,5 +1477,19 @@ mod tests {
                 .is_some_and(|q| q.test(&cx, 2, &mut r))
         );
         assert!((c.effect.process(2, &mut r, 7.0) - 12.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::*;
+
+    /// `ScaleExponentially.process`: 10 · 2^3 = 80 (I4-11 of #272).
+    #[test]
+    fn exponential_value_effect() {
+        let e = serde_json::json!({"type": "minecraft:exponential", "base": 2.0, "exponent": 3.0});
+        let parsed = ValueEffect::parse(&e).expect("exponential");
+        let mut r = vanillite_base::random::LegacyRandom::new(0);
+        assert!((parsed.process(1, &mut r, 10.0) - 80.0).abs() < 1e-6);
     }
 }
