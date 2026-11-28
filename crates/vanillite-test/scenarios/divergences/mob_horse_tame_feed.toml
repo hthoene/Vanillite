@@ -1,0 +1,3 @@
+tick = 2
+cause = "mounting a horse by interacting: the harness client turns the player to the horse (pitch -2.86) where the Vanilla recorder calls interactOn without turning; then the ridden horse's rearing (body yaw) and MountPanicGoal (Vanillite PanicGoal) differ"
+owner = "gameplay-developer #267"

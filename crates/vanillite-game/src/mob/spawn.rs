@@ -2493,8 +2493,10 @@ mod tests {
     /// The number of mobs, the digest of their types and positions and the level random's
     /// next value after 60 rounds.
     /// (#217: `checkSpawnObstruction` tests entities that block building, pack members no
-    /// longer spawn inside each other.)
-    const EXPECTED_WORLD_ROUND: (usize, u64, i32) = (85, 13_380_462_405_938_920_257, 1_076_452_858);
+    /// longer spawn inside each other; #257: the player ticket makes one more chunk ring block
+    /// ticking and a spawn candidate.)
+    const EXPECTED_WORLD_ROUND: (usize, u64, i32) =
+        (85, 15_489_036_134_221_526_530, -2_082_463_062);
 
     /// Packs wander up to 20 blocks from their start, across the 32-block tiles of this test:
     /// the mobs land in several tiles, only in ticking chunks, and the tiles together respect
@@ -2513,8 +2515,9 @@ mod tests {
             seen.insert(TilePos::of(chunk, 2));
         }
         assert!(seen.len() >= 3, "tiles {seen:?}");
-        // The monster cap is 70; four tiles can overshoot it by a tick's packs.
-        assert!(mobs.len() <= 70 + 4 * 12, "{} mobs", mobs.len());
+        // The monster cap is 70; the tiles that spawn in the same tick can overshoot it by
+        // their packs (a few of the tiles over the 9 × 9 block-ticking chunks of view 3).
+        assert!(mobs.len() <= 70 + 6 * 12, "{} mobs", mobs.len());
     }
 
     /// One thread or many: the same mobs at the same places.
