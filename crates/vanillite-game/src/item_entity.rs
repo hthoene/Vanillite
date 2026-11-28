@@ -944,7 +944,10 @@ pub fn tick(
             moved
         };
         out.pos = moved.pos;
-        out.on_ground = moved.hit_y && delta.y < 0.0;
+        // `Entity.move` with `noPhysics` leaves the ground flag as it was.
+        if !no_physics {
+            out.on_ground = moved.hit_y && delta.y < 0.0;
+        }
         // `checkFallDamage` (not in `noPhysics` moves).
         if !no_physics {
             if !data.in_water && moved.movement.y < 0.0 {

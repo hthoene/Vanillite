@@ -10,6 +10,9 @@ use vanillite_worldgen::behaviour::StateExt;
 pub trait BlockAccess {
     /// The block state at `pos`.
     fn block_state(&self, pos: BlockPos) -> Option<BlockState>;
+    /// The collision boxes (relative to `pos`) of the moving piston at `pos`, from its block
+    /// entity; none without one or without access to block entities.
+    fn moving_piston_boxes(&self, _pos: BlockPos, _out: &mut Vec<[f64; 6]>) {}
     /// [`BlockAccess::block_state`] of every position in the box from `min` to `max`
     /// (inclusive) in X, then Z, then Y order (Y varies fastest).
     fn block_states_in(&self, min: BlockPos, max: BlockPos, f: &mut dyn FnMut(Option<BlockState>)) {

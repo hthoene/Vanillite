@@ -26,9 +26,9 @@
 #   e.g. {tick = 20, op = "place", pos = [3, 1, 0], block = "minecraft:redstone_block"} to
 #   press the input. For schematics `pos`, `from` and `to` are relative to the pasted corner.
 # - player: where the scripted player (survival, named "player") stands, [x, y, z] (relative
-#   for schematics), or "none". Default: a world's saved player position, above the middle of a
-#   schematic (out of the region). Actions use it by that name; the default trigger also makes
-#   it press every button of a schematic.
+#   for schematics), or "none". Default: a world's saved player position, or on a barrier block
+#   next to a schematic's minimum corner (out of the region). Actions use it by that name; the
+#   default trigger also makes it press every button of a schematic.
 # - Every world runs with random ticks (random_tick_speed 3) and mob spawning (spawn_mobs) like a
 #   server, unless rules say otherwise. summary.md flags a world in whose region nothing changes
 #   (no block, block entity or entity count) as inactive.

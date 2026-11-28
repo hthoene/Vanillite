@@ -99,12 +99,16 @@ impl PacketSink for NoSink {
     }
 }
 
-/// Blocks of the level's chunks for survival code.
-struct ChunkBlocks<'a>(&'a Chunks);
+/// Blocks of the level's chunks (and the moving pistons' block entities) for survival code.
+struct ChunkBlocks<'a>(&'a Chunks, &'a vanillite_game::level::block_entity::BlockEntities);
 
 impl BlockAccess for ChunkBlocks<'_> {
     fn block_state(&self, pos: BlockPos) -> Option<BlockState> {
         self.0.block(pos).map(BlockState)
+    }
+
+    fn moving_piston_boxes(&self, pos: BlockPos, out: &mut Vec<[f64; 6]>) {
+        vanillite_game::block::piston::collision_boxes_at(self.1, pos, out);
     }
 }
 
@@ -744,7 +748,7 @@ impl GameWorld {
         let (types, facts) = PACK.get().expect("installed");
         let r = {
             let level = &self.level;
-            let blocks = ChunkBlocks(&level.chunks);
+            let blocks = ChunkBlocks(&level.chunks, &level.block_entities);
             let raining = |pos| level.is_raining_at(pos);
             let mut no_gateway = |_| false;
             let names = |name: &str, _| vanillite_protocol::text::Component::text(name.to_owned());
@@ -875,7 +879,7 @@ impl GameWorld {
                         },
                         &mut self.item_scratch,
                         &vanillite_game::item_entity::FireWorld {
-                            blocks: &ChunkBlocks(&level.chunks),
+                            blocks: &ChunkBlocks(&level.chunks, &level.block_entities),
                             facts,
                             types,
                             raining_at: &raining,

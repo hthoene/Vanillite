@@ -880,17 +880,27 @@ fn scenario(w: &World, p: &Prepared, ticks: Option<u32>) -> Value {
         "ticks": ticks.or(w.ticks).unwrap_or(TICKS),
         "block_entities": true,
     });
-    // The scripted player (survival): by default at a world's saved player position, or above
-    // the middle of a schematic, out of the observed region.
+    // The scripted player (survival; the server moves it like Vanilla's mock player): by default
+    // at a world's saved player position, or on a barrier block next to a schematic's minimum
+    // corner, out of the observed region but in its forced chunks.
+    let mut platform = None;
     let player = match w.player {
         Some(Some(at)) => Some(shift(&json!({"pos": at}))["pos"].clone()),
         Some(None) => None,
         None => Some(match (p.pasted, p.focus) {
-            (Some([min, max]), _) => json!([
-                f64::from(min[0] + max[0]) / 2.0 + 0.5,
-                f64::from(region[1][1] + 3),
-                f64::from(min[2] + max[2]) / 2.0 + 0.5
-            ]),
+            (Some([min, _]), _) => {
+                let at = [
+                    min[0] - REGION_MARGIN - 2,
+                    min[1],
+                    min[2] - REGION_MARGIN - 2,
+                ];
+                platform = Some(at);
+                json!([
+                    f64::from(at[0]) + 0.5,
+                    f64::from(at[1] + 1),
+                    f64::from(at[2]) + 0.5
+                ])
+            }
             (None, f) => {
                 let f = f.unwrap_or([0, 64, 0]);
                 json!([
@@ -901,6 +911,9 @@ fn scenario(w: &World, p: &Prepared, ticks: Option<u32>) -> Value {
             }
         }),
     };
+    if let Some(at) = platform {
+        s["setup"] = json!([{"op": "set", "pos": at, "block": "minecraft:barrier"}]);
+    }
     let mut entities: Vec<Value> = w.entities.iter().map(shift).collect();
     let has_player = entities.iter().any(|e| e["type"] == "minecraft:player");
     let player_name = entities
@@ -908,6 +921,7 @@ fn scenario(w: &World, p: &Prepared, ticks: Option<u32>) -> Value {
         .find(|e| e["type"] == "minecraft:player")
         .and_then(|e| e["name"].as_str())
         .map_or_else(|| "player".to_owned(), str::to_owned);
+    let scripted = player.is_some() && !has_player;
     if let (Some(pos), false) = (player, has_player) {
         entities.insert(
             0,
@@ -935,6 +949,22 @@ fn scenario(w: &World, p: &Prepared, ticks: Option<u32>) -> Value {
         if !actions.is_empty() {
             s["actions"] = Value::Array(actions);
         }
+    }
+    if scripted {
+        // The scripted player survives what the machine does to it (a dead player would leave
+        // the recorder's mock connection): resistance V and fire resistance from the start.
+        let duration = s["ticks"].as_u64().unwrap_or(u64::from(TICKS)) + 100;
+        let mut actions: Vec<Value> = ["minecraft:resistance", "minecraft:fire_resistance"]
+            .into_iter()
+            .map(|effect| {
+                json!({"tick": 1, "op": "effect", "entity": "player", "effect": effect,
+                       "duration": duration, "amplifier": 4})
+            })
+            .collect();
+        if let Some(Value::Array(rest)) = s.get_mut("actions").map(Value::take) {
+            actions.extend(rest);
+        }
+        s["actions"] = Value::Array(actions);
     }
     if !entities.is_empty() {
         s["entities"] = Value::Array(entities);
