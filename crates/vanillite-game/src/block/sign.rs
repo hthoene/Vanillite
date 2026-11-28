@@ -489,3 +489,40 @@ pub fn tick(level: &mut Level, pos: BlockPos, _state: BlockState) {
         sign.editor = None;
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use vanillite_protocol::components::ids;
+
+    /// `sign_text_front`/`sign_text_back` round trip (`SignText.DIRECT_CODEC`) and
+    /// `SignText.hasEditableText` (#272, I6-32).
+    #[test]
+    fn sign_text_components() {
+        let mut text = SignText {
+            color: "red",
+            glowing: true,
+            ..SignText::default()
+        };
+        text.messages[1] = Component::text("hi");
+        let mut stack = ItemStack::new(
+            vanillite_data::registry::ITEM
+                .id("minecraft:oak_sign")
+                .unwrap(),
+            1,
+        );
+        stack.set_component(
+            ids::SIGN_TEXT_FRONT,
+            text.component(ids::SIGN_TEXT_FRONT).unwrap(),
+        );
+        assert_eq!(SignText::of_component(&stack, ids::SIGN_TEXT_FRONT), text);
+        assert_eq!(
+            SignText::of_component(&stack, ids::SIGN_TEXT_BACK),
+            SignText::default()
+        );
+        assert!(text.has_editable_text());
+        text.messages[2] = Component::translatable("block.minecraft.stone", Vec::new());
+        assert!(!text.has_editable_text());
+    }
+}

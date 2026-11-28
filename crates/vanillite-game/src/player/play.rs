@@ -1587,11 +1587,19 @@ impl Digging {
         let creative = ctx.actor.creative();
         let player = ctx.actor.entity;
         let y_rot = ctx.actor.y_rot;
+        let spectators = ctx.level.spectators();
         let level = ctx.level.level_mut()?;
         let mut held = stack.clone();
         let result = if kind == vanillite_data::entity::ids::ARMOR_STAND {
             if crate::decoration::stand::use_on(
-                level, pos, face, y_rot, &mut held, player, creative,
+                level,
+                pos,
+                face,
+                y_rot,
+                &mut held,
+                player,
+                creative,
+                &spectators,
             ) {
                 Placed::Success
             } else {

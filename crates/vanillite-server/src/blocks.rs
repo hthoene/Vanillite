@@ -338,6 +338,10 @@ pub struct WorldLevel<'a> {
 }
 
 impl PlayLevel for WorldLevel<'_> {
+    fn spectators(&self) -> Vec<EntityId> {
+        self.spectators.iter().copied().collect()
+    }
+
     fn level_mut(&mut self) -> Option<&mut Level> {
         Some(self.level)
     }

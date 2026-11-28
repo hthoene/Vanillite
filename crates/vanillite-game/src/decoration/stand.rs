@@ -216,6 +216,7 @@ pub fn use_on(
     stack: &mut ItemStack,
     player: Option<EntityId>,
     infinite: bool,
+    spectators: &[EntityId],
 ) -> bool {
     if face == vanillite_base::Direction::Down {
         return false;
@@ -242,6 +243,7 @@ pub fn use_on(
             .store
             .get(o)
             .is_some_and(|e| e.aabb().intersects(&aabb))
+            && !spectators.contains(&o)
             && ents
                 .player(o)
                 .is_none_or(|p| p.game_mode != vanillite_config::GameMode::Spectator)
@@ -304,7 +306,8 @@ pub fn spawn_stand(
     stack: &ItemStack,
     reason: u32,
 ) -> EntityId {
-    let mut m = MobData::new(Kind::ArmorStand, crate::mob::new_entity_seed());
+    let seed = crate::mob::new_entity_seed();
+    let mut m = MobData::new(Kind::ArmorStand, seed);
     state_mut(&mut m);
     m.y_body_rot = yaw;
     m.custom_name = stack
@@ -315,7 +318,8 @@ pub fn spawn_stand(
     let rot = vanillite_world::entity::Rotation {
         y_rot: yaw,
         x_rot: 0.0,
-        y_head_rot: yaw,
+        // `snapTo` turns the yaw and the body: the head keeps the constructor's yaw.
+        y_head_rot: crate::mob::constructor_y_rot(seed),
     };
     let id = crate::mob::spawn(&mut level.entities, &network_ids, uuid, pos, rot, m);
     apply_entity_data_component(&mut level.entities, id, stack);
