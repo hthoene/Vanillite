@@ -2771,7 +2771,8 @@ impl Chunks {
 
     /// Prefetch hint ahead of a loop over chunks, in stages a few chunks apart: stage 0 starts
     /// loading the chunk (its holder is read now), stage 1 its list of sections, stage 2 the
-    /// sections that may tick randomly. No effect on anything but the caches.
+    /// sections that may tick randomly; stage 3 (natural spawning) the whole list of sections
+    /// and the `WORLD_SURFACE` heightmap. No effect on anything but the caches.
     #[inline]
     pub fn prefetch(&self, pos: ChunkPos, stage: u8) {
         let Some(c) = self.holders.get(&pos).and_then(|h| h.chunk.as_ref()) else {
@@ -2780,7 +2781,10 @@ impl Chunks {
         match stage {
             0 => vanillite_base::prefetch::read(&raw const c.chunk),
             1 => c.chunk.prefetch_sections(),
-            _ => c.chunk.prefetch_ticking_sections(),
+            2 => c.chunk.prefetch_ticking_sections(),
+            _ => c
+                .chunk
+                .prefetch_sections_and(vanillite_chunk::heightmap::HeightmapKind::WorldSurface),
         }
     }
 

@@ -2140,7 +2140,7 @@ impl ScenarioWorld for GameWorld {
         level.tick_chunk_runtime();
         level.post_process();
         let mut scratch = Vec::new();
-        level.tick_chunks(&mut scratch);
+        level.tick_chunks(&mut scratch, &vanillite_game::level::tiles::Phases::INLINE);
         level.run_block_events();
         self.tick_entities();
         let level = &mut self.level;
