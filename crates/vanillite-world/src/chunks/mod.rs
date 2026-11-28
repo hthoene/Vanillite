@@ -585,8 +585,9 @@ pub struct Chunks {
     next_ticket: u64,
     level_changes: Vec<LevelChange>,
     /// Chunks to check: those whose next step runs inline first (`false` sorts first), then
-    /// the most urgent (lowest [`urgency`] of the next step), then by rank (nearest to a focus).
-    check: BTreeSet<(bool, u8, u8, ChunkPos)>,
+    /// the most urgent (lowest [`urgency`] of the next step), then the lowest level, then by
+    /// rank (nearest to a focus).
+    check: BTreeSet<(bool, u8, u8, u8, ChunkPos)>,
     /// Points the players' views move towards ([`Chunks::set_focus`]).
     focus: Vec<ChunkPos>,
     /// Chunks parked on a neighbour.
@@ -1077,10 +1078,11 @@ impl Chunks {
             if holder.queued {
                 let job = !holder.queued_inline;
                 let reach = holder.queued_reach;
+                let (level, rank) = (holder.level, holder.rank);
                 self.check
-                    .remove(&(job, urgency(holder.level, reach), holder.rank, pos));
+                    .remove(&(job, urgency(level, reach), level, rank, pos));
                 self.check
-                    .insert((job, urgency(new, reach), holder.rank, pos));
+                    .insert((job, urgency(new, reach), new, rank, pos));
             }
             if let Some(unneeded) = &holder.unneeded {
                 unneeded.store(false, Ordering::Relaxed);
@@ -1097,8 +1099,9 @@ impl Chunks {
             if holder.queued {
                 let job = !holder.queued_inline;
                 let reach = holder.queued_reach;
+                let (level, rank) = (holder.level, holder.rank);
                 self.check
-                    .remove(&(job, urgency(holder.level, reach), holder.rank, pos));
+                    .remove(&(job, urgency(level, reach), level, rank, pos));
                 holder.queued = false;
             }
             // A generation step nobody needs any more is skipped if it did not start.
@@ -1148,6 +1151,7 @@ impl Chunks {
             self.check.insert((
                 !holder.queued_inline,
                 urgency(holder.level, holder.queued_reach),
+                holder.level,
                 rank,
                 pos,
             ));
@@ -1555,12 +1559,13 @@ impl Chunks {
                 }
                 let codec = Arc::clone(&self.slots.codec);
                 let tx = self.done_tx.clone();
-                let priority = self
-                    .holders
-                    .get(&pos)
-                    .map_or(job_priority(MAX_LEVEL, 0), |h| {
-                        job_priority(urgency(h.level, ChunkStatus::Empty.reach()), h.rank)
-                    });
+                let priority =
+                    self.holders
+                        .get(&pos)
+                        .map_or(job_priority(MAX_LEVEL, MAX_LEVEL, 0), |h| {
+                            let reach = ChunkStatus::Empty.reach();
+                            job_priority(urgency(h.level, reach), h.level, h.rank)
+                        });
                 self.slots.executor.spawn(
                     priority,
                     Box::new(move || {
@@ -1865,14 +1870,14 @@ impl Chunks {
 
     fn dispatch(&mut self) -> bool {
         let mut progress = false;
-        while let Some(&(job, level, rank, pos)) = self.check.first() {
+        while let Some(&(job, urgency, level, rank, pos)) = self.check.first() {
             // Spawn and full steps (first in the queue) need no job slot: they must not wait
             // until the generation of the whole area is through, or every chunk of a new area
             // would become full in the same tick.
             if job && self.in_flight >= self.settings.max_jobs {
                 break;
             }
-            self.check.remove(&(job, level, rank, pos));
+            self.check.remove(&(job, urgency, level, rank, pos));
             if let Some(holder) = self.holders.map_mut().get_mut(&pos) {
                 holder.queued = false;
             }
@@ -2118,7 +2123,7 @@ impl Chunks {
         }
         self.in_flight += 1;
         let tx = self.done_tx.clone();
-        let priority = job_priority(urgency(level, next.reach()), rank);
+        let priority = job_priority(urgency(level, next.reach()), level, rank);
         match next {
             ChunkStatus::InitializeLight => {
                 let light = Arc::clone(&self.slots.light);
@@ -2541,7 +2546,7 @@ impl Chunks {
             self.encode_jobs += 1;
             self.round_jobs += usize::from(round);
             self.slots.executor.spawn(
-                job_priority(MAX_LEVEL + 1, 0),
+                job_priority(MAX_LEVEL + 1, MAX_LEVEL + 1, 0),
                 Box::new(move || {
                     let mut ops = Vec::with_capacity(batch.len());
                     let mut errors = Vec::new();
@@ -3297,22 +3302,24 @@ impl Chunks {
     }
 }
 
-/// The level of the generation ticket of a chunk with this ticket level: the pyramid of a
-/// full chunk (or of the ring around full chunks); `None` above [`MAX_TICKET_LEVEL`].
 /// The order of a chunk's next step (lower first): the level of the most urgent chunk that
 /// may wait for it, its own level less the step's [`ChunkStatus::reach`]. The chunk under a
 /// player and everything its way to full needs (the structure starts eleven chunks away
-/// included) then come before the chunks around it, whose own levels are higher.
+/// included) then come before the chunks around it, whose own levels are higher. Steps of the
+/// same urgency go by level: where a view moves, the chunks entering it finish before the
+/// work for the chunks after them.
 fn urgency(level: u8, reach: u8) -> u8 {
     level.saturating_sub(reach)
 }
 
-/// The compute-pool priority of a chunk job: by urgency ([`urgency`]), then by rank
-/// ([`Chunks::set_focus`]).
-fn job_priority(level: u8, rank: u8) -> u32 {
-    u32::from(level) << 8 | u32::from(rank)
+/// The compute-pool priority of a chunk job: by urgency ([`urgency`]), then by level, then by
+/// rank ([`Chunks::set_focus`]). Below `1 << 20`, where the plugins' background jobs start.
+fn job_priority(urgency: u8, level: u8, rank: u8) -> u32 {
+    u32::from(urgency.min(63)) << 14 | u32::from(level.min(63)) << 8 | u32::from(rank)
 }
 
+/// The level of the generation ticket of a chunk with this ticket level: the pyramid of a
+/// full chunk (or of the ring around full chunks); `None` above [`MAX_TICKET_LEVEL`].
 fn generation_ticket_level(ticket: u8) -> Option<u8> {
     (ticket <= MAX_TICKET_LEVEL).then_some(ticket.max(FULL_LEVEL))
 }
