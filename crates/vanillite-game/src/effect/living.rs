@@ -1306,12 +1306,24 @@ pub fn on_hurt(
             f64::from(-sin * x + cos * z),
         );
         let y_rot = level_random.next_float() * 360.0;
+        let at = Vec3::new(pos.x, pos.y + f64::from(height) / 2.0, pos.z);
         out.push(Effect::SpawnMob {
             kind: ids::SILVERFISH,
-            pos: Vec3::new(pos.x, pos.y + f64::from(height) / 2.0, pos.z),
+            pos: at,
             y_rot,
             velocity,
         });
+        // `silverfish.playSound(SILVERFISH_HURT)` once it is added.
+        crate::survival::play_sound(
+            out,
+            None,
+            at,
+            "minecraft:entity.silverfish.hurt",
+            vanillite_protocol::packets::play::clientbound::SoundSource::Hostile,
+            1.0,
+            1.0,
+            crate::survival::sound_seed(),
+        );
     }
 }
 
@@ -1381,4 +1393,37 @@ pub fn add_to_mob(m: &mut crate::mob::MobData, new: EffectInstance) -> bool {
         return false;
     }
     active::add(&mut BareMobHost { m, kind }, new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `InfestedMobEffect.spawnSilverfish`: each silverfish comes with its hurt sound (S-12 of
+    /// #272).
+    #[test]
+    fn infested_silverfish_play_their_hurt_sound() {
+        let mut fx = ActiveEffects::default();
+        fx.force_add(crate::effect::EffectInstance::new(MobEffect::INFESTED, 100, 0));
+        let mut out = Vec::new();
+        // A seed whose first float is at most 0.1 (the 10 % chance).
+        let seed = (0..10_000_i64)
+            .find(|&s| LegacyRandom::new(s).next_float() <= 0.1)
+            .unwrap_or(0);
+        let mut random = LegacyRandom::new(seed);
+        let mut level_random = LegacyRandom::new(1);
+        on_hurt(
+            &fx,
+            &mut random,
+            &mut level_random,
+            Vec3::ZERO,
+            1.8,
+            Vec3::new(0.0, 0.0, 1.0),
+            &mut out,
+        );
+        let spawned = out.iter().filter(|e| matches!(e, Effect::SpawnMob { .. })).count();
+        let sounds = out.iter().filter(|e| matches!(e, Effect::Nearby { .. })).count();
+        assert!(spawned >= 1);
+        assert_eq!(spawned, sounds);
+    }
 }

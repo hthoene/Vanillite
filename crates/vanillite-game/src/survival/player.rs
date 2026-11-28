@@ -1250,8 +1250,8 @@ pub fn hurt_with(
     } else if took_full {
         player_sound(env, id, pos, types.get(kind).effects.sound());
     }
-    if !player.survival.effects.is_empty() {
-        // `onMobHurt` of the effects (Infested).
+    if !player.survival.effects.is_empty() && (!blocked || damage > 0.0) {
+        // `onMobHurt` of the effects (Infested), unless the hit was blocked completely.
         let e = entity.as_ref();
         let look = crate::effect::living::view_vector(e.rot().x_rot, e.rot().y_rot);
         let height = e.dims().height;
